@@ -52,6 +52,12 @@ export interface MessageUsage {
   accumulatedCacheTokens?: number
   /** Accumulated output tokens across all assistant messages in this turn */
   accumulatedCompletionTokens?: number
+  /** Provider/model that produced this usage. Persisted for historical exports. */
+  provider?: string
+  model?: string
+  /** Price and cost frozen when the response was received. */
+  pricing?: import('./usage-cost').UsagePricingSnapshot
+  cost?: import('./usage-cost').UsageCostSnapshot
 }
 
 export interface Message {

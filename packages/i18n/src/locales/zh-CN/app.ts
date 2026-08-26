@@ -38,6 +38,9 @@ export const app = {
     archiveFailed: "归档失败，请稍后重试",
     unarchiveFailed: "取消归档失败，请稍后重试",
     projectDeleted: "项目已删除",
+    projectUsageExporting: "正在汇总模型、Token 与费用…",
+    projectUsageExported: "用量明细已导出：{filename}",
+    projectUsageExportFailed: "用量导出失败：{error}",
     deleteFailed: "删除失败，请稍后重试",
     // Database refresh dialog
     databaseConnectionLost: "数据库连接已断开",

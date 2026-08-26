@@ -20,20 +20,8 @@ import { useT } from '@/i18n'
 import { useSettingsStore } from '@/store/settings.store'
 import { DISPLAY_CURRENCY, formatCost } from '@/lib/currency'
 import { useUsdToCnyRate } from '@/lib/fx-rate'
-import { getModelPricing } from '@/agent/providers/model-store'
-import {
-  getOpenRouterPricing,
-  type ORPricing,
-} from '@/agent/providers/openrouter-pricing'
 import type { Message } from '@/agent/message-types'
-
-/** Unified pricing shape used by the cost calculator. */
-interface ModelPricing {
-  input: number
-  output: number
-  /** Cache read; undefined → cache treated as free */
-  cacheRead?: number
-}
+import { calculateUsageCost, resolveUsagePricing } from '@/agent/usage-cost'
 
 // ── Aggregation ──────────────────────────────────────────────────
 
@@ -41,12 +29,26 @@ interface AggregatedUsage {
   input: number
   output: number
   cache: number
+  inputCost: number
+  outputCost: number
+  cacheCost: number
+  unpricedRequests: number
+  models: string[]
 }
 
-function aggregateAllMessages(messages: Message[]): AggregatedUsage {
+function aggregateAllMessages(
+  messages: Message[],
+  fallbackProvider: string,
+  fallbackModel: string
+): AggregatedUsage {
   let input = 0
   let output = 0
   let cache = 0
+  let inputCost = 0
+  let outputCost = 0
+  let cacheCost = 0
+  let unpricedRequests = 0
+  const models = new Set<string>()
   for (const m of messages) {
     if (m.role !== 'assistant') continue
     const u = m.usage
@@ -54,8 +56,29 @@ function aggregateAllMessages(messages: Message[]): AggregatedUsage {
     input += u.promptTokens
     output += u.completionTokens
     cache += u.cacheReadTokens || 0
+    const provider = u.provider || fallbackProvider
+    const model = u.model || fallbackModel
+    if (model) models.add(model)
+    const pricing = u.pricing ?? resolveUsagePricing(provider, model)
+    const cost = u.cost ?? (pricing ? calculateUsageCost(u, pricing) : null)
+    if (cost) {
+      inputCost += cost.inputUsd
+      outputCost += cost.outputUsd
+      cacheCost += cost.cacheReadUsd
+    } else {
+      unpricedRequests += 1
+    }
   }
-  return { input, output, cache }
+  return {
+    input,
+    output,
+    cache,
+    inputCost,
+    outputCost,
+    cacheCost,
+    unpricedRequests,
+    models: [...models],
+  }
 }
 
 // ── Formatting helpers ────────────────────────────────────────────
@@ -67,28 +90,6 @@ function formatTokens(n: number): string {
   return (n / 1_000_000).toFixed(2) + 'M'
 }
 
-/**
- * Parse a per-token USD string from a provider's /models response
- * (e.g. OpenRouter returns "0.0000025" meaning $0.0000025/token).
- * Returns null if missing or unparseable. Negative values are rejected
- * — OpenRouter uses "-1" as a sentinel for "dynamic pricing" and we
- * must not surface it as a negative cost.
- */
-function parseUsdPerToken(s: string | undefined | null): number | null {
-  if (s == null) return null
-  const n = parseFloat(s)
-  if (!Number.isFinite(n) || n < 0) return null
-  return n
-}
-
-/** Coerce ORPricing (already USD/1M) into the local ModelPricing shape. */
-function fromORPricing(p: ORPricing): ModelPricing {
-  return {
-    input: p.input,
-    output: p.output,
-    ...(p.cacheRead != null ? { cacheRead: p.cacheRead } : {}),
-  }
-}
 
 // ── Component ────────────────────────────────────────────────────
 
@@ -104,66 +105,19 @@ export function ConversationUsageBar({ messages }: ConversationUsageBarProps) {
   // a fresh rate lands. On the international build this is a no-op constant.
   const fxRate = useUsdToCnyRate()
 
-  const usage = useMemo(() => aggregateAllMessages(messages), [messages])
-
-  const pricing = useMemo<ModelPricing | null>(() => {
-    if (!modelName) return null
-
-    // Normalize: strip a leading "<vendor>/" prefix if present
-    // (e.g. "z-ai/glm-5.1" → "glm-5.1", "anthropic/claude-3-5-sonnet" → "claude-3-5-sonnet").
-    const slashIdx = modelName.lastIndexOf('/')
-    const bare = slashIdx >= 0 ? modelName.slice(slashIdx + 1) : modelName
-    const candidates = [
-      modelName,
-      ...(slashIdx >= 0 && bare ? [bare] : []),
-    ]
-
-    // 1. Dynamic pricing from the user's actual provider /models endpoint
-    //    (preferred when available — e.g. OpenRouter direct users).
-    for (const c of candidates) {
-      const dyn = getModelPricing(providerType, c)
-      if (dyn) {
-        const prompt = parseUsdPerToken(dyn.prompt)
-        const completion = parseUsdPerToken(dyn.completion)
-        const cacheRead = parseUsdPerToken(dyn.input_cache_read)
-        if (prompt != null || completion != null) {
-          return {
-            input: (prompt ?? 0) * 1_000_000,
-            output: (completion ?? 0) * 1_000_000,
-            ...(cacheRead != null ? { cacheRead: cacheRead * 1_000_000 } : {}),
-          }
-        }
+  const usage = useMemo(
+    () => aggregateAllMessages(messages, providerType, modelName),
+    [messages, modelName, providerType]
+  )
+  const cost = usage.unpricedRequests === 0
+    ? {
+        input: usage.inputCost,
+        output: usage.outputCost,
+        cache: usage.cacheCost,
+        total: usage.inputCost + usage.outputCost + usage.cacheCost,
       }
-    }
-
-    // 2. OpenRouter public pricing (universal fallback — covers all
-    //    providers that don't publish pricing via their own /models
-    //    endpoint, e.g. Zhipu direct, Tencent Cloud, OpenAI direct).
-    //    Pure static lookup from the bundled JSON snapshot.
-    for (const c of candidates) {
-      const or = getOpenRouterPricing(c)
-      if (or) return fromORPricing(or)
-    }
-
-    // 3. No pricing found — show "—" (never fabricate a price).
-    return null
-  }, [modelName, providerType])
-
-  const cost = useMemo(() => {
-    if (!pricing) return null
-    const input = (usage.input / 1_000_000) * pricing.input
-    const output = (usage.output / 1_000_000) * pricing.output
-    const cache =
-      usage.cache > 0 && pricing.cacheRead != null
-        ? (usage.cache / 1_000_000) * pricing.cacheRead
-        : 0
-    return {
-      input,
-      output,
-      cache,
-      total: input + output + cache,
-    }
-  }, [pricing, usage])
+    : null
+  const modelLabel = usage.models.length > 0 ? usage.models.join(', ') : 'unknown'
 
   const total = usage.input + usage.output + usage.cache
   // Avoid /0 — if no usage at all, render nothing (the bar would be 0% width).
@@ -214,14 +168,14 @@ export function ConversationUsageBar({ messages }: ConversationUsageBarProps) {
               input: formatCost(cost.input, DISPLAY_CURRENCY, fxRate),
               output: formatCost(cost.output, DISPLAY_CURRENCY, fxRate),
               cache: formatCost(cost.cache, DISPLAY_CURRENCY, fxRate),
-              model: modelName || providerType || 'unknown',
+              model: modelLabel,
             })}>
               {t('conversation.usageBar.cost', { amount: formatCost(cost.total, DISPLAY_CURRENCY, fxRate) })}
             </span>
           ) : (
             // Unknown pricing — show em-dash so we don't claim "free"
             // for models that are actually paid (e.g. GLM, MiniMax).
-            <span title={t('conversation.usageBar.unknownPricing', { model: modelName || providerType || 'unknown' })}>—</span>
+            <span title={t('conversation.usageBar.unknownPricing', { model: modelLabel })}>—</span>
           )}
         </div>
       </div>

@@ -74,8 +74,16 @@ export interface SubagentTaskUsage {
   total_tokens: number
   input_tokens: number
   output_tokens: number
+  cache_read_tokens?: number
   duration_ms: number
   tool_calls: number
+  provider?: string
+  model?: string
+  input_cost_usd?: number
+  output_cost_usd?: number
+  cache_read_cost_usd?: number
+  estimated_cost_usd?: number
+  cost_complete?: boolean
 }
 
 export interface SubagentTaskSummary {

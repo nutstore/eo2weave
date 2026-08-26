@@ -45,6 +45,9 @@ export const app = {
     archiveFailed: "보관 설정에 실패했습니다. 나중에 다시 시도해 주세요",
     unarchiveFailed: "보관 취소에 실패했습니다. 나중에 다시 시도해 주세요",
     projectDeleted: "프로젝트가 삭제되었습니다",
+    projectUsageExporting: "모델, 토큰 및 비용을 집계하는 중…",
+    projectUsageExported: "사용량 보고서를 내보냈습니다: {filename}",
+    projectUsageExportFailed: "사용량 내보내기 실패: {error}",
     deleteFailed: "삭제에 실패했습니다. 나중에 다시 시도해 주세요",
     // Database refresh dialog
     databaseConnectionLost: "데이터베이스 연결이 끊어졌습니다",

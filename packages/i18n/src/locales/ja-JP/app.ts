@@ -46,6 +46,9 @@ export const app = {
     unarchiveFailed:
       "アーカイブ解除に失敗しました。しばらくしてから再試行してください",
     projectDeleted: "プロジェクトを削除しました",
+    projectUsageExporting: "モデル、トークン、料金を集計中…",
+    projectUsageExported: "使用量レポートをエクスポートしました：{filename}",
+    projectUsageExportFailed: "使用量のエクスポートに失敗しました：{error}",
     deleteFailed: "削除に失敗しました。しばらくしてから再試行してください",
     // Database refresh dialog
     databaseConnectionLost: "データベース接続が切断されました",

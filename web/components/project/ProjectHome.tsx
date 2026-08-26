@@ -383,6 +383,7 @@ interface ProjectHomeProps {
   onRenameProject: (projectId: string, name: string) => void | Promise<void>
   onArchiveProject: (projectId: string, archived: boolean) => void | Promise<void>
   onDeleteProject: (projectId: string) => void | Promise<void>
+  onExportProjectUsage?: (project: Project) => void | Promise<void>
   onClearLocalData: () => void | Promise<void>
   onOpenDocs?: () => void | Promise<void>
   isClearingLocalData?: boolean
@@ -400,6 +401,7 @@ export function ProjectHome({
   onRenameProject,
   onArchiveProject,
   onDeleteProject,
+  onExportProjectUsage,
   onClearLocalData,
   onOpenDocs,
   isClearingLocalData = false,
@@ -459,7 +461,7 @@ export function ProjectHome({
   const [isActionSubmitting, setIsActionSubmitting] = useState(false)
   const [pendingProjectAction, setPendingProjectAction] = useState<{
     projectId: string
-    type: 'rename' | 'archive' | 'unarchive' | 'delete'
+    type: 'rename' | 'archive' | 'unarchive' | 'delete' | 'export_usage'
   } | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [showClearDataDialog, setShowClearDataDialog] = useState(false)
@@ -786,6 +788,16 @@ export function ProjectHome({
     }
   }
 
+  const handleExportUsage = async (project: Project) => {
+    if (!onExportProjectUsage) return
+    setPendingProjectAction({ projectId: project.id, type: 'export_usage' })
+    try {
+      await onExportProjectUsage(project)
+    } finally {
+      setPendingProjectAction(null)
+    }
+  }
+
   // Render project timeline item
   const renderProjectItem = (project: Project, index: number) => {
     const isActive = project.id === activeProjectId
@@ -857,6 +869,15 @@ export function ProjectHome({
                   {isRenamePending
                     ? t('common.processing')
                     : t('projectHome.project.rename')}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => void handleExportUsage(project)}
+                  disabled={!onExportProjectUsage || isProjectActionPending || isActionSubmitting}
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  {isProjectActionPending && pendingProjectAction?.type === 'export_usage'
+                    ? t('projectHome.project.exportingUsage')
+                    : t('projectHome.project.exportUsage')}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() => void handleArchiveClick(project, isArchived)}

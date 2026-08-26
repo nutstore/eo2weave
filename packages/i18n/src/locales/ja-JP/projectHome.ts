@@ -106,6 +106,8 @@ export const projectHome = {
       open: "開く",
       openProject: "プロジェクト「{name}」を開く",
       rename: "名前を変更",
+      exportUsage: "モデルと使用量をエクスポート",
+      exportingUsage: "エクスポート中…",
       moreActions: "その他の操作",
       archive: "アーカイブ",
       unarchive: "アーカイブ解除",

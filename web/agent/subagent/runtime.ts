@@ -868,14 +868,30 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         const completedAt = task.updated_at
         this.clearRunTimeout(task)
 
-        const latestAssistant = [...task.messages].reverse().find((msg) => msg.role === 'assistant')
-        if (latestAssistant?.usage) {
+        const assistantUsages = task.messages
+          .filter((msg) => msg.role === 'assistant' && msg.usage)
+          .map((msg) => msg.usage!)
+        if (assistantUsages.length > 0) {
+          const providers = new Set(assistantUsages.map((usage) => usage.provider).filter(Boolean))
+          const models = new Set(assistantUsages.map((usage) => usage.model).filter(Boolean))
+          const costComplete = assistantUsages.every((usage) => usage.cost != null)
+          const inputCost = assistantUsages.reduce((sum, usage) => sum + (usage.cost?.inputUsd ?? 0), 0)
+          const outputCost = assistantUsages.reduce((sum, usage) => sum + (usage.cost?.outputUsd ?? 0), 0)
+          const cacheReadCost = assistantUsages.reduce((sum, usage) => sum + (usage.cost?.cacheReadUsd ?? 0), 0)
           task.usage = {
-            total_tokens: latestAssistant.usage.totalTokens,
-            input_tokens: latestAssistant.usage.promptTokens,
-            output_tokens: latestAssistant.usage.completionTokens,
+            total_tokens: assistantUsages.reduce((sum, usage) => sum + usage.totalTokens, 0),
+            input_tokens: assistantUsages.reduce((sum, usage) => sum + usage.promptTokens, 0),
+            output_tokens: assistantUsages.reduce((sum, usage) => sum + usage.completionTokens, 0),
+            cache_read_tokens: assistantUsages.reduce((sum, usage) => sum + (usage.cacheReadTokens ?? 0), 0),
             duration_ms: Math.max(0, completedAt - startedAt),
             tool_calls: task.messages.filter((msg) => msg.role === 'tool').length,
+            ...(providers.size === 1 ? { provider: [...providers][0] } : {}),
+            ...(models.size === 1 ? { model: [...models][0] } : {}),
+            input_cost_usd: inputCost,
+            output_cost_usd: outputCost,
+            cache_read_cost_usd: cacheReadCost,
+            estimated_cost_usd: inputCost + outputCost + cacheReadCost,
+            cost_complete: costComplete,
           }
         }
         const finalResult = this.extractLatestAssistantContent(task.messages)

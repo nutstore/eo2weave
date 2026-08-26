@@ -200,10 +200,17 @@ describe('message-mappers', () => {
     const assistant = piToInternalMessage({
       role: 'assistant',
       content: [{ type: 'text', text: 'done' }],
+      provider: 'openai',
+      model: 'gpt-4o',
       usage: { input: 1, output: 2, totalTokens: 3 },
       timestamp: 123456,
     } as never)
-    expect(assistant).toMatchObject({ role: 'assistant', content: 'done', timestamp: 123456 })
+    expect(assistant).toMatchObject({
+      role: 'assistant',
+      content: 'done',
+      timestamp: 123456,
+      usage: { provider: 'openai', model: 'gpt-4o' },
+    })
 
     const tool = piToInternalMessage({
       role: 'toolResult',

@@ -113,6 +113,8 @@ export const projectHome = {
       open: "Open",
       openProject: "Open project \"{name}\"",
       rename: "Rename",
+      exportUsage: "Export model & usage",
+      exportingUsage: "Exporting…",
       moreActions: "More actions",
       archive: "Archive",
       unarchive: "Unarchive",

@@ -109,6 +109,8 @@ export const projectHome = {
       open: "打开",
       openProject: "打开项目「{name}」",
       rename: "重命名",
+      exportUsage: "导出模型与用量",
+      exportingUsage: "正在导出…",
       moreActions: "更多操作",
       archive: "归档",
       unarchive: "取消归档",

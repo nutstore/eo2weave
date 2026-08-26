@@ -12,6 +12,10 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }))
 
+vi.mock('@/components/activity/ActivityHeatmap', () => ({
+  ActivityHeatmap: () => null,
+}))
+
 vi.mock('@/store/theme.store', () => ({
   useTheme: () => ({
     mode: 'light',
@@ -78,6 +82,9 @@ const t = (key: string, params?: Record<string, string | number>) => {
     'projectHome.dialogs.startFreshConfirmPlaceholder': 'Start fresh',
     'projectHome.project.open': 'Open',
     'projectHome.project.openProject': 'Open project {name}',
+    'projectHome.project.moreActions': 'More actions',
+    'projectHome.project.exportUsage': 'Export model & usage',
+    'projectHome.project.exportingUsage': 'Exporting…',
     'projectHome.accentColors.teal': 'Teal',
     'projectHome.accentColors.rose': 'Rose',
     'projectHome.accentColors.amber': 'Amber',
@@ -240,5 +247,37 @@ describe('ProjectHome docs entry', () => {
 
     expect(inlineStyle?.textContent).not.toContain('fonts.googleapis.com')
     expect(inlineStyle?.textContent).not.toContain('@import url(')
+  })
+
+  it('exports model, token, and cost usage from the project action menu', async () => {
+    const user = userEvent.setup()
+    const project = {
+      id: 'project-export',
+      name: 'Exportable Project',
+      status: 'active' as const,
+      createdAt: Date.now() - 1000,
+      updatedAt: Date.now(),
+    }
+    const onExportProjectUsage = vi.fn()
+
+    render(
+      <ProjectHome
+        projects={[project]}
+        projectStats={{}}
+        activeProjectId=""
+        onOpenProject={vi.fn()}
+        onCreateProject={vi.fn()}
+        onRenameProject={vi.fn()}
+        onArchiveProject={vi.fn()}
+        onDeleteProject={vi.fn()}
+        onExportProjectUsage={onExportProjectUsage}
+        onClearLocalData={vi.fn()}
+      />
+    )
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }))
+    await user.click(await screen.findByText('Export model & usage'))
+
+    expect(onExportProjectUsage).toHaveBeenCalledWith(project)
   })
 })

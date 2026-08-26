@@ -1,6 +1,7 @@
 import type { AgentMessage as PiAgentMessage } from '@earendil-works/pi-agent-core'
 import type { Api, Message as PiMessage, Model } from '@earendil-works/pi-ai'
 import { createAssistantMessage, createToolMessage, type Message, type ToolCall } from '../message-types'
+import { createUsageSnapshot } from '../usage-cost'
 import { renderPageContextBlock } from '../workspace-assistant-context'
 import { ensureToolCallResults } from './tool-call-results'
 
@@ -284,12 +285,16 @@ export function piToInternalMessage(message: PiAgentMessage): Message | null {
       text || null,
       toolCalls.length > 0 ? toolCalls : undefined,
       hasRealUsage
-        ? {
-            promptTokens: rawUsage!.input || 0,
-            completionTokens: rawUsage!.output || 0,
-            totalTokens: rawUsage!.totalTokens || 0,
-            cacheReadTokens: rawUsage!.cacheRead || 0,
-          }
+        ? createUsageSnapshot(
+            {
+              promptTokens: rawUsage!.input || 0,
+              completionTokens: rawUsage!.output || 0,
+              totalTokens: rawUsage!.totalTokens || 0,
+              cacheReadTokens: rawUsage!.cacheRead || 0,
+            },
+            message.provider,
+            message.model,
+          )
         : undefined,
       reasoning || null
     )

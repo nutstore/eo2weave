@@ -42,6 +42,9 @@ export const app = {
     archiveFailed: "Failed to archive, please try again later",
     unarchiveFailed: "Failed to unarchive, please try again later",
     projectDeleted: "Project deleted",
+    projectUsageExporting: "Summarizing models, tokens, and cost…",
+    projectUsageExported: "Usage report exported: {filename}",
+    projectUsageExportFailed: "Usage export failed: {error}",
     deleteFailed: "Failed to delete, please try again later",
     // Database refresh dialog
     databaseConnectionLost: "Database connection lost",

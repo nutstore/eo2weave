@@ -104,6 +104,8 @@ export const projectHome = {
       open: "열기",
       openProject: "프로젝트 \"{name}\" 열기",
       rename: "이름 변경",
+      exportUsage: "모델 및 사용량 내보내기",
+      exportingUsage: "내보내는 중…",
       moreActions: "기타 작업",
       archive: "보관",
       unarchive: "보관 해제",
