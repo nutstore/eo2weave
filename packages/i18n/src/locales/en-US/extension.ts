@@ -13,11 +13,34 @@ export const extension = {
   verifyInstallLink: "Refresh Page",
   estimatedTime: "Estimated time: 3-5 minutes",
   prerequisite: "You'll need: Chrome or Edge browser",
-  previewNote: "The extension is currently in developer preview and requires manual installation (no coding needed)",
+
+  // Install method choice (step 1)
+  methodChoose: "Choose how you want to install:",
+  methodRecommended: "Recommended",
+  methodStoreTitle: "Install from Chrome Web Store",
+  methodStoreDesc: "One-click install with automatic updates. Requires access to chromewebstore.google.com.",
+  methodStoreBadge: "Auto-updates",
+  methodZipTitle: "Manual install (download package)",
+  methodZipDesc: "Download the extension package and load it manually. Works even if the store is unreachable.",
+  methodZipBadge: "Works offline from store",
 
   // Feature list
   featureSearch: "Search the internet",
   featureFetch: "Read web page content",
+
+  // Chrome Web Store flow (international build)
+  stepStoreOpen: "Open Chrome Web Store",
+  stepStoreInstall: "Add to Chrome",
+  storeOpenDesc: "The extension is published on the Chrome Web Store — installing takes one click and updates are automatic.",
+  storeOpenButton: "Open Chrome Web Store",
+  storeOpenHint: "The store page opens in a new tab. Click “Add to Chrome” there, then come back and click Next.",
+  storeNeedsChromium: "This browser doesn't support Chrome Web Store extensions. Please open this page in Chrome or Edge.",
+  storeInstallDesc: "Complete the installation on the Chrome Web Store page",
+  storeInstallStepA: "Click “Add to Chrome” on the store page",
+  storeInstallStepADesc: "The button is in the top-right corner of the store listing",
+  storeInstallStepB: "Confirm by clicking “Add extension” in the browser dialog",
+  storeInstallStepBDesc: "No developer mode needed — the extension installs and updates automatically",
+  storeInstallHint: "Once installed, “EO2Weave” appears in your extensions list",
 
   // Steps
   stepIntro: "Introduction",

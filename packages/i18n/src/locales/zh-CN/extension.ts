@@ -13,11 +13,34 @@ export const extension = {
   verifyInstallLink: "刷新页面",
   estimatedTime: "预计安装时间：3-5 分钟",
   prerequisite: "你需要准备：Chrome 或 Edge 浏览器",
-  previewNote: "插件目前为开发者预览版，需手动安装（无需编程知识）",
+
+  // 安装方式选择（第 1 步）
+  methodChoose: "请选择安装方式：",
+  methodRecommended: "推荐",
+  methodStoreTitle: "从 Chrome 应用商店安装",
+  methodStoreDesc: "一键安装，自动更新。需要能访问 chromewebstore.google.com。",
+  methodStoreBadge: "自动更新",
+  methodZipTitle: "手动安装（下载安装包）",
+  methodZipDesc: "下载插件包后手动加载，商店无法访问时也能安装。",
+  methodZipBadge: "不依赖商店",
 
   // Feature list
   featureSearch: "搜索互联网",
   featureFetch: "读取网页内容",
+
+  // Chrome Web Store 流程（海外站点构建）
+  stepStoreOpen: "打开 Chrome 应用商店",
+  stepStoreInstall: "添加至 Chrome",
+  storeOpenDesc: "插件已发布到 Chrome 应用商店，一键安装，自动更新。",
+  storeOpenButton: "打开 Chrome 应用商店",
+  storeOpenHint: "商店页面会在新标签页打开，点击“添加至 Chrome”，然后回到本页点击“下一步”。",
+  storeNeedsChromium: "当前浏览器不支持 Chrome 商店扩展，请使用 Chrome 或 Edge 打开本页面。",
+  storeInstallDesc: "在 Chrome 应用商店页面完成安装",
+  storeInstallStepA: "在商店页面点击“添加至 Chrome”",
+  storeInstallStepADesc: "按钮位于商店页面右上角",
+  storeInstallStepB: "在浏览器弹窗中点击“添加扩展程序”确认",
+  storeInstallStepBDesc: "无需开启开发者模式，插件会自动安装并自动更新",
+  storeInstallHint: "安装成功后，扩展列表中会出现“怡氧知知”",
 
   // Steps
   stepIntro: "介绍与准备",

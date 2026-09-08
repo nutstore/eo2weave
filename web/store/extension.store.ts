@@ -10,6 +10,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { isWebBridgeAvailable } from '@/agent/tools/web-bridge.tool'
 import { EXTENSION_LATEST_VERSION } from '@/app-build'
+import type { GuideMethod } from '@/lib/extension-distribution'
 import {
   registerDynamicProvider,
   unregisterDynamicProvider,
@@ -126,6 +127,8 @@ interface ExtensionState {
   bannerDismissedAt: number | null
   installGuideStep: number
   installGuideOpen: boolean
+  /** Which install method the user picked in the guide (null = still on the choice step) */
+  guideMethod: GuideMethod | null
   /** When the outdated banner was last dismissed */
   outdatedBannerDismissedAt: number | null
 
@@ -145,6 +148,8 @@ interface ExtensionState {
   openInstallGuide: () => void
   closeInstallGuide: () => void
   goToStep: (step: number) => void
+  /** Record the user's install-method choice (step 1) and enter its flow */
+  pickGuideMethod: (method: GuideMethod) => void
   resetInstallGuide: () => void
   setStatus: (status: ExtensionStatus) => void
 }
@@ -163,6 +168,7 @@ export const useExtensionStore = create<ExtensionState>()(
       bannerDismissedAt: null as number | null,
       installGuideStep: 1,
       installGuideOpen: false,
+      guideMethod: null as GuideMethod | null,
       outdatedBannerDismissedAt: null as number | null,
 
       // Actions
@@ -335,11 +341,18 @@ export const useExtensionStore = create<ExtensionState>()(
       },
 
       goToStep: (step: number) => {
+        // Going back to the choice step clears the method so the flow
+        // re-branches cleanly on the next pick instead of keeping a stale one.
+        if (step <= 1) set({ guideMethod: null })
         set({ installGuideStep: step })
       },
 
+      pickGuideMethod: (method) => {
+        set({ guideMethod: method, installGuideStep: 2 })
+      },
+
       resetInstallGuide: () => {
-        set({ installGuideStep: 1, installGuideOpen: false })
+        set({ installGuideStep: 1, installGuideOpen: false, guideMethod: null })
       },
 
       shouldShowOutdatedBanner: () => {
@@ -362,10 +375,12 @@ export const useExtensionStore = create<ExtensionState>()(
     }),
     {
       name: 'creatorweave-extension-store',
-      // Only persist these fields
+      // Only persist these fields (guideMethod kept so a page reload
+      // mid-guide re-enters the same flow instead of losing the choice)
       partialize: (state) => ({
         bannerDismissedAt: state.bannerDismissedAt,
         installGuideStep: state.installGuideStep,
+        guideMethod: state.guideMethod,
         outdatedBannerDismissedAt: state.outdatedBannerDismissedAt,
       }),
     },
