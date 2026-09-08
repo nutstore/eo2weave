@@ -183,6 +183,29 @@ export function useConversationLogic() {
     setDraftTextToRestore(null)
   }, [])
 
+  /**
+   * restoreDraftIntoInput — push `text` back into the editor for `convId`
+   * without round-tripping through the persisted draft store.
+   *
+   * Used after a rejected send: the optimistic clear has already emptied the
+   * editor and cleared this conversation's draft, so re-inject directly.
+   * AgentRichInput's draft effect only fills EMPTY editors, which is exactly
+   * what we want — if the user managed to type something new in the meantime,
+   * their text wins and the rejected text is dropped (it also stays available
+   * via ↑ input history).
+   */
+  const restoreDraftIntoInput = useCallback((convId: string | null, text: string, mentionedAgentIds: string[]) => {
+    // Only touch the live input when the user is still on the target
+    // conversation (convId may be null for a not-yet-created conversation —
+    // restoring the live input is still correct in that case).
+    if (convIdRef.current !== convId) return
+    if (!text.trim()) return
+    setInput(text)
+    setMentionedAgentIds(mentionedAgentIds)
+    draftConvIdRef.current = convId
+    setDraftTextToRestore(text)
+  }, [setInput, setMentionedAgentIds])
+
   // ── Initialize agents for mentions ──
   useEffect(() => {
     if (!activeProjectId) return
@@ -281,7 +304,13 @@ export function useConversationLogic() {
   const sendMessage = useCallback(
     async (
       text: string,
-      options?: { agentOverrideId?: string | null; assets?: import('@/types/asset').AssetMeta[] }
+      options?: {
+        agentOverrideId?: string | null
+        assets?: import('@/types/asset').AssetMeta[]
+        /** Called when the send was rejected and `text` was NOT delivered —
+         *  lets the input UI restore what the user typed (optimistic clear). */
+        onInputRejected?: (text: string) => void
+      }
     ) => {
       if (!text.trim()) return
 
@@ -294,7 +323,29 @@ export function useConversationLogic() {
       } = useSettingsStore.getState()
       if (!hasKey) {
         toast.error(t('conversation.toast.noApiKey'))
+        options?.onInputRejected?.(text)
         return
+      }
+
+      // Snapshot staged attachments SYNCHRONOUSLY, before any await. The
+      // optimistic input clear (see handleSend) bumps resetToken, and the
+      // editor's reset effect calls useAssetStore.clearAll() once React
+      // commits — so by the time the awaits below resume, the pending-asset
+      // store may already be empty. Keep the File references so a rejected
+      // send can hand the files back to the input.
+      const pendingSnapshot =
+        options?.assets && options.assets.length > 0
+          ? []
+          : [...useAssetStore.getState().pendingAssets]
+      /** Re-attach staged files if the optimistic clear already wiped them. */
+      const restoreAssetsIfWiped = () => {
+        if (pendingSnapshot.length === 0) return
+        const { pendingAssets: current, addFiles } = useAssetStore.getState()
+        if (current.length === 0) addFiles(pendingSnapshot.map((a) => a.file))
+      }
+      const rejectSend = () => {
+        options?.onInputRejected?.(text)
+        restoreAssetsIfWiped()
       }
 
       const { directoryHandle: dh } = useAgentStore.getState()
@@ -326,20 +377,27 @@ export function useConversationLogic() {
         ReturnType<(typeof import('@/agent/workspace-assistant-context'))['capturePageContext']>
       > = null
       {
-        const { capturePageUrl, capturePageContext, shouldRefreshPageContext } =
-          await import('@/agent/workspace-assistant-context')
-        const currentUrl = await capturePageUrl()
-        if (currentUrl) {
-          // Side-panel mode + URL read OK → compare against history.
-          const needRefresh = shouldRefreshPageContext(targetConv?.messages ?? [], currentUrl)
-          if (needRefresh) {
+        // Page context is best-effort: a failing extension round-trip must not
+        // abort the send (the input has already been cleared optimistically —
+        // aborting here would silently drop the user's message).
+        try {
+          const { capturePageUrl, capturePageContext, shouldRefreshPageContext } =
+            await import('@/agent/workspace-assistant-context')
+          const currentUrl = await capturePageUrl()
+          if (currentUrl) {
+            // Side-panel mode + URL read OK → compare against history.
+            const needRefresh = shouldRefreshPageContext(targetConv?.messages ?? [], currentUrl)
+            if (needRefresh) {
+              pageContext = await capturePageContext()
+            }
+          } else {
+            // Either non-side-panel mode (capturePageContext returns null too) or
+            // side-panel mode where URL read failed — fall back to a full capture.
+            // In non-side-panel mode this is a cheap null return.
             pageContext = await capturePageContext()
           }
-        } else {
-          // Either non-side-panel mode (capturePageContext returns null too) or
-          // side-panel mode where URL read failed — fall back to a full capture.
-          // In non-side-panel mode this is a cheap null return.
-          pageContext = await capturePageContext()
+        } catch (err) {
+          console.warn('[useConversationLogic] page-context capture failed; sending without it:', err)
         }
       }
 
@@ -352,8 +410,8 @@ export function useConversationLogic() {
       let wrotePendingAssets = false
       let clearPendingAssets: (() => void) | undefined
       if (!assets || assets.length === 0) {
-        const { pendingAssets, clearAll } = useAssetStore.getState()
-        if (pendingAssets.length > 0) {
+        const { clearAll } = useAssetStore.getState()
+        if (pendingSnapshot.length > 0) {
           try {
             // Ensure workspace is ready for asset writes.
             const { useWorkspaceStore } = await import('@/store/workspace.store')
@@ -363,7 +421,7 @@ export function useConversationLogic() {
             }
 
             assets = await writePendingAssetsToOPFS(
-              pendingAssets.map((a) => ({ name: a.name, file: a.file }))
+              pendingSnapshot.map((a) => ({ name: a.name, file: a.file }))
             )
             // Lazy OCR: only run OCR for non-vision models.
             const settingsState = useSettingsStore.getState()
@@ -371,7 +429,7 @@ export function useConversationLogic() {
               ? supportsImageInput(settingsState.modelName)
               : false
             const imageAssetIndexes: number[] = []
-            pendingAssets.forEach((a, idx) => {
+            pendingSnapshot.forEach((a, idx) => {
               if (a.mimeType.startsWith('image/') && isOcrCompatibleImage(a.mimeType)) {
                 imageAssetIndexes.push(idx)
               }
@@ -383,7 +441,7 @@ export function useConversationLogic() {
                 const results = await Promise.all(
                   imageAssetIndexes.map(async (idx) => {
                     try {
-                      const r = await performOcr(pendingAssets[idx].file)
+                      const r = await performOcr(pendingSnapshot[idx].file)
                       return { idx, text: r.text }
                     } catch {
                       return { idx, text: '' }
@@ -396,7 +454,7 @@ export function useConversationLogic() {
               }
             }
             assets = assets.map((assetMeta, idx) => {
-              const pending = pendingAssets[idx]
+              const pending = pendingSnapshot[idx]
               if (!pending) return assetMeta
               const carry: { ocrText?: string; ocrBase64?: string } = {}
               if (pending.ocrBase64) carry.ocrBase64 = pending.ocrBase64
@@ -411,7 +469,10 @@ export function useConversationLogic() {
             clearPendingAssets = clearAll
           } catch (err) {
             toast.error(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
-            return // Don't send — user can retry
+            // Don't send — user can retry. Hand the typed text and the staged
+            // files back to the input (the optimistic clear already removed them).
+            rejectSend()
+            return
           }
         }
       }
@@ -440,6 +501,7 @@ export function useConversationLogic() {
             void removeAssetsFromOPFS(assets)
           }
           toast.error(t('conversation.toast.queueFull'))
+          rejectSend()
         }
         return
       }
@@ -531,13 +593,58 @@ export function useConversationLogic() {
         ? getSuggestedFollowUp(currentConvId)
         : ''
     if (textToSend) {
+      // ── Optimistic input clear ──
+      // Clear the input BEFORE the async sendMessage pipeline runs. sendMessage
+      // awaits page-context capture / asset writes / OCR before it reaches its
+      // own setInput('') + resetToken bump — a window of tens of ms to seconds
+      // during which the sent text kept hanging in the input. Worse, if the
+      // user switched conversations inside that window, the switch-away draft
+      // save persisted the stale text and the editor remount re-injected it:
+      // "message sent, input still full".
+      //
+      // If sendMessage later REJECTS the send (no API key, upload failure,
+      // queue full) it invokes onInputRejected and we restore everything:
+      // typed text, mentions, and a persisted draft for that conversation.
+      const sentText = textToSend
+      const sentConvId = currentConvId
+      const sentMentionedAgentIds = currentMentionedAgentIds
+      setInput('')
+      setMentionedAgentIds([])
+      setInputResetToken((v) => v + 1)
+      if (sentConvId) {
+        useInputDraftStore.getState().clearDraft(sentConvId)
+      }
+      setDraftTextToRestore(null)
+      draftConvIdRef.current = null
+
+      const restoreInput = () => {
+        // If the user is still on the same conversation (or it was never
+        // created), put the text straight back into the live input. The
+        // editor was already cleared by the reset-token bump, so re-inject
+        // via draftTextToRestore — AgentRichInput's draft effect refills an
+        // empty editor and then calls onDraftRestored to consume the state.
+        // Otherwise persist a draft on the target conversation so the text
+        // reappears when the user switches back.
+        const targetId = sentConvId ?? convIdRef.current
+        if (convIdRef.current === sentConvId) {
+          restoreDraftIntoInput(targetId, sentText, sentMentionedAgentIds)
+        } else if (targetId && sentText.trim()) {
+          useInputDraftStore.getState().saveDraft(targetId, {
+            text: sentText,
+            mentionedAgentIds: sentMentionedAgentIds,
+            selectedFiles: [],
+          })
+        }
+      }
+
       // Assets are resolved inside sendMessage (from options or pendingAssets store)
-      sendMessage(textToSend, {
+      void sendMessage(textToSend, {
         agentOverrideId: inputTrimmed ? (currentMentionedAgentIds[0] ?? null) : null,
+        onInputRejected: restoreInput,
       })
       if (!inputTrimmed && currentConvId) clearSuggestedFollowUp(currentConvId)
     }
-  }, [handleSlashCommand, sendMessage, setInput, setMentionedAgentIds])
+  }, [handleSlashCommand, restoreDraftIntoInput, sendMessage, setInput, setMentionedAgentIds])
 
   const handleCancel = useCallback(() => {
     const currentConvId = convIdRef.current
