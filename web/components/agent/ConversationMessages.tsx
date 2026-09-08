@@ -115,7 +115,11 @@ const TurnRenderer = memo(function TurnRenderer({
       turn={turn}
       toolResults={ctx.toolResults}
       isProcessing={isLast}
-      isWaiting={ctx.runtimeProps.isWaiting}
+      // Waiting indicator only makes sense on the in-flight (last) turn.
+      // runtimeProps are built globally (active=true) for streaming data, so
+      // without this gate EVERY committed assistant turn would also render
+      // the three-dot waiting bubble while the agent waits for the model.
+      isWaiting={isLast ? ctx.runtimeProps.isWaiting : false}
       streamingState={ctx.runtimeProps.streamingState}
       streamingContent={ctx.streamingContent}
       currentToolCall={ctx.runtimeProps.currentToolCall}

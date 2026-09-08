@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationView } from '../ConversationView'
 
 type AssistantTurnBubbleProps = {
+  turn?: { type: string; messages: Array<{ id: string }> }
+  isProcessing?: boolean
+  isWaiting?: boolean
   runtimeSteps?: Array<{ id: string; type: string; content?: string; streaming?: boolean }>
 }
 
@@ -254,5 +257,40 @@ describe('ConversationView runtime step placement', () => {
 
     expect(calls.length).toBe(1)
     expect(callsWithRuntimeSteps.length).toBe(1)
+  })
+
+  it('only marks the last assistant turn as waiting while the agent waits for the model', () => {
+    const originalMessages = conversationState.conversations[0].messages
+    try {
+      // Two assistant turns (separated by user turns) while status is 'pending':
+      // the earlier committed turn must NOT show the waiting indicator.
+      conversationState.conversations[0].messages = [
+        { id: 'msg-user-1', role: 'user', content: 'first', timestamp: 1, type: 'message' },
+        { id: 'msg-assistant-1', role: 'assistant', content: 'ok', timestamp: 2, type: 'message', toolCalls: [], usage: null },
+        { id: 'msg-user-2', role: 'user', content: 'second', timestamp: 3, type: 'message' },
+        { id: 'msg-assistant-2', role: 'assistant', content: 'working', timestamp: 4, type: 'message', toolCalls: [], usage: null },
+      ]
+
+      render(<ConversationView />)
+
+      const calls = assistantTurnBubbleSpy.mock.calls.map((call) => call[0])
+      const lastCallForTurn = (assistantMsgId: string) =>
+        [...calls].reverse().find((props) => props.turn?.messages?.[0]?.id === assistantMsgId)
+
+      const earlierTurn = lastCallForTurn('msg-assistant-1')
+      const lastTurn = lastCallForTurn('msg-assistant-2')
+
+      expect(earlierTurn).toBeDefined()
+      expect(lastTurn).toBeDefined()
+      // Regression: previously isWaiting leaked to every assistant turn,
+      // rendering the three-dot bubble (and hiding the summary footer) on
+      // historical turns while waiting between loop iterations.
+      expect(earlierTurn!.isWaiting).toBe(false)
+      expect(earlierTurn!.isProcessing).toBe(false)
+      expect(lastTurn!.isWaiting).toBe(true)
+      expect(lastTurn!.isProcessing).toBe(true)
+    } finally {
+      conversationState.conversations[0].messages = originalMessages
+    }
   })
 })
