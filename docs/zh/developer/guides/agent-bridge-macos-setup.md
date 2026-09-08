@@ -81,7 +81,8 @@ cd native-host
 ./install.sh
 ```
 
-**注意**：`install.sh` 内置的扩展 ID 是官方发布的（`kdnnhmagmghdhfinoipgbcddnpmffbkp`）。
+**注意**：`install.sh` 内置的扩展 ID 是官方发布的（`kdnnhmagmghdhfinoipgbcddnpmffbkp`，
+Chrome 商店版 `canpcddlognjbengiodekfbbfnjafeml` 也在 `allowed_origins` 里）。
 如果你第 2 步加载的扩展 ID **不同**（自己 build 未固定 key 时可能不同），需要改一下：
 
 ```bash

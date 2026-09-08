@@ -22,6 +22,9 @@ HOST_NAME="com.creatorweave.nativehost"
 BIN_NAME="cw-native-host"
 APP_DIR="EO2Weave NativeHost"
 EXTENSION_ID="${EO2WEAVE_EXTENSION_ID:-kdnnhmagmghdhfinoipgbcddnpmffbkp}"
+# Chrome Web Store listing ID — always allowed in addition to $EXTENSION_ID
+# (the store generates its own ID because it rejects the pinned `key` field).
+CWS_EXTENSION_ID="canpcddlognjbengiodekfbbfnjafeml"
 
 SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="$SOURCE_DIR/$BIN_NAME"
@@ -51,7 +54,7 @@ write_manifest() {
   "description": "EO2Weave Native Host — disk file I/O",
   "path": "$INSTALLED_BIN",
   "type": "stdio",
-  "allowed_origins": ["chrome-extension://$EXTENSION_ID/"]
+  "allowed_origins": ["chrome-extension://$EXTENSION_ID/", "chrome-extension://$CWS_EXTENSION_ID/"]
 }
 EOF
     echo "已注册: $dir/$HOST_NAME.json"

@@ -75,7 +75,8 @@
 
 ## 4. References
 
-- Native Host extension ID: `kdnnhmagmghdhfinoipgbcddnpmffbkp`
+- Native Host extension IDs: `kdnnhmagmghdhfinoipgbcddnpmffbkp` (unpacked/dev),
+  `canpcddlognjbengiodekfbbfnjafeml` (Chrome Web Store listing)
 - Native host name: `com.creatorweave.nativehost`
 - First POC: `experiment-native-host-e3d2221.patch`
 - Config files: `~/.creatorweave/native-host-scopes.json`,

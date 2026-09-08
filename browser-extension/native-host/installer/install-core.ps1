@@ -8,11 +8,17 @@
 #   3. Register HKCU\Software\Google\Chrome\NativeMessagingHosts (no admin)
 #   4. Also register Edge when present
 
+# Extension IDs allowed to talk to the native host:
+#   kdnnh... : unpacked/dev loads (extension manifest pins a stable public key)
+#   canpc... : Chrome Web Store listing (the store generates its own ID because
+#              it rejects the pinned `key` field, see wxt.config.ts)
 param(
     [Parameter(Mandatory = $true)]
     [string]$SourceDir,
     [string]$ExtensionId = "kdnnhmagmghdhfinoipgbcddnpmffbkp"
 )
+
+$CwsExtensionId = "canpcddlognjbengiodekfbbfnjafeml"
 
 $ErrorActionPreference = "Stop"
 
@@ -37,7 +43,10 @@ $manifest = @{
     description = "EO2Weave Native Host - disk file I/O"
     path = $InstalledExe
     type = "stdio"
-    allowed_origins = @("chrome-extension://$ExtensionId/")
+    allowed_origins = @(
+        "chrome-extension://$ExtensionId/",
+        "chrome-extension://$CwsExtensionId/"
+    )
 } | ConvertTo-Json -Depth 3
 Set-Content -Path $ManifestPath -Value $manifest -Encoding UTF8
 Write-Host "Manifest: $ManifestPath"

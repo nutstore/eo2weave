@@ -22,7 +22,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Extension IDs allowed to talk to the native host:
+#   kdnnh... : unpacked/dev loads (extension manifest pins a stable public key)
+#   canpc... : Chrome Web Store listing (store-generated ID — see wxt.config.ts)
 $ExtensionId = "kdnnhmagmghdhfinoipgbcddnpmffbkp"
+$CwsExtensionId = "canpcddlognjbengiodekfbbfnjafeml"
 $HostName = "com.creatorweave.nativehost"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -61,7 +65,10 @@ $manifest = @{
     description = "CreatorWeave Native Host - disk file I/O"
     path = $InstalledExe
     type = "stdio"
-    allowed_origins = @("chrome-extension://$ExtensionId/")
+    allowed_origins = @(
+        "chrome-extension://$ExtensionId/",
+        "chrome-extension://$CwsExtensionId/"
+    )
 } | ConvertTo-Json -Depth 3
 
 Set-Content -Path $ManifestPath -Value $manifest -Encoding UTF8
