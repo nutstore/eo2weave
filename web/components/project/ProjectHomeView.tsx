@@ -9,6 +9,7 @@ import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { clearSQLiteAndProjectsDirectory, RESET_REQUIRES_TAB_CLOSURE } from '@/storage'
+import type { Project } from '@/sqlite/repositories/project.repository'
 import { ProjectHome } from '@/components/project/ProjectHome'
 import { projectWorkspacePath, projectsPath, docsPath } from '@/lib/route-paths'
 
@@ -76,6 +77,19 @@ export default function ProjectHomeView() {
 
   const handleOpenProject = async (projectId: string) => {
     router.push(projectWorkspacePath(projectId))
+  }
+
+  const handleExportProjectUsage = async (project: Project) => {
+    const toastId = toast.loading(t('app.projectUsageExporting'))
+    try {
+      const { exportProjectUsageCSV } = await import('@/services/export/project-usage-export')
+      const result = await exportProjectUsageCSV(project)
+      if (!result.success) throw new Error(result.error || 'Export failed')
+      toast.success(t('app.projectUsageExported', { filename: result.filename }), { id: toastId })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      toast.error(t('app.projectUsageExportFailed', { error: message }), { id: toastId })
+    }
   }
 
   const handleClearLocalData = async () => {
@@ -157,6 +171,7 @@ export default function ProjectHomeView() {
       onRenameProject={handleRenameProject}
       onArchiveProject={handleArchiveProject}
       onDeleteProject={handleDeleteProject}
+      onExportProjectUsage={handleExportProjectUsage}
       onClearLocalData={handleClearLocalData}
       onOpenDocs={() => router.push(docsPath(docsLanguage))}
       isClearingLocalData={isClearingLocalData}
