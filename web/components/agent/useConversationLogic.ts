@@ -249,13 +249,37 @@ export function useConversationLogic() {
     // shift the layout container itself (pushing it out of the viewport),
     // especially when the scroll height is very large.
     const container = scrollContainerRef.current
-    if (container) {
-      if (behavior === 'auto') {
-        container.scrollTop = container.scrollHeight
-      } else {
-        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
-      }
+    if (!container) return
+    if (behavior === 'auto') {
+      container.scrollTop = container.scrollHeight
+    } else {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
     }
+    // The scroll target above is a snapshot taken at call time, but content
+    // height usually keeps growing afterwards (attachment images decoding,
+    // code highlighting, mermaid/KaTeX rendering, late font swaps). A smooth
+    // scroll animates to the captured position, so it lands short of the real
+    // bottom. Keep re-asserting the bottom via rAF until the height settles,
+    // so the view stays pinned to the newest content.
+    let raf = 0
+    let lastHeight = container.scrollHeight
+    let stableFrames = 0
+    const settle = () => {
+      // User scrolled up while we were settling — stop fighting them.
+      if (!isUserAtBottomRef.current) return
+      const h = container.scrollHeight
+      if (h !== lastHeight) {
+        lastHeight = h
+        container.scrollTop = container.scrollHeight
+        stableFrames = 0
+      } else {
+        stableFrames += 1
+      }
+      // Stop after ~10 stable frames (~160ms) without height changes.
+      if (stableFrames < 10) raf = requestAnimationFrame(settle)
+    }
+    raf = requestAnimationFrame(settle)
+    return () => cancelAnimationFrame(raf)
   }, [activeMessagesLength, status])
 
   // ── Tool results map ──
