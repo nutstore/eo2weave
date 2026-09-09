@@ -1,35 +1,42 @@
 'use client'
 
-import { useParams, useRouter } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 import { DocumentationPage } from '@/components/docs/DocsPage'
 import { projectsPath } from '@/lib/route-paths'
+import type { DocPageContent, DocsCategory, DocsIndexes, DocsLanguage } from '@/lib/docs-server'
 
 /**
- * DocsPageView — param-extraction wrapper for the docs catch-all route.
+ * DocsPageView — client boundary for the docs route.
  *
- * Reads the catch-all segments via next/navigation's useParams (React 18:
- * synchronous, no Promise unwrapping) and validates language ∈ {zh,en} /
- * category ∈ {user,developer}, then delegates to the shared
- * DocumentationPage component (which keeps its internal navigation via
- * next/navigation as well).
+ * The server component (app/(app)/docs/[[...path]]/page.tsx) resolves the
+ * sidebar indexes and the current page markdown from the repository `docs/`
+ * tree at build time and passes them in as props. This wrapper only owns the
+ * in-app back action and forwards data to the presentational component.
  */
-export default function DocsPageView() {
-  const params = useParams<{ path?: string[] }>()
+export interface DocsPageViewProps {
+  language?: DocsLanguage
+  category?: DocsCategory
+  slug?: string
+  indexes: DocsIndexes
+  pageContent: DocPageContent | null
+}
+
+export default function DocsPageView({
+  language,
+  category,
+  slug,
+  indexes,
+  pageContent,
+}: DocsPageViewProps) {
   const navigate = useRouter()
-
-  const segments = params.path ?? []
-  const language = segments[0]
-  const category = segments[1]
-  const page = segments[2]
-
-  const isDocsLanguage = (v?: string): v is 'zh' | 'en' => v === 'zh' || v === 'en'
-  const isDocsCategory = (v?: string): v is 'user' | 'developer' => v === 'user' || v === 'developer'
 
   return (
     <DocumentationPage
-      language={isDocsLanguage(language) ? language : undefined}
-      category={isDocsCategory(category) ? category : undefined}
-      page={page}
+      language={language}
+      category={category}
+      page={slug}
+      indexes={indexes}
+      pageContent={pageContent}
       onBack={() => navigate.push(projectsPath())}
     />
   )

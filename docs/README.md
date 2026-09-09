@@ -26,7 +26,10 @@ Note: completed feature PRDs / plans / migration designs are removed from the re
 ## Maintenance Rules
 
 - Source of truth is `docs/`.
-- `web/public/docs/` is a synced copy used by the web app docs viewer.
-- `web/public/docs/` is generated content and should not be edited manually.
-- Prefer editing files in `docs/` first, then sync to `web/public/docs/` when needed.
+- The web app docs center renders `docs/` directly — the App Router docs route
+  reads this directory server-side at build time (`web/lib/docs-server.ts`).
+- There is no synced copy anymore (`web/public/docs/` was removed). Edits are
+  visible in `next dev` immediately and require no sync step.
+- Only `user/` and `developer/` are published; anything else in `docs/`
+  (design notes, README) is not reachable from the docs center.
 - Every docs-center page needs YAML frontmatter (`title`, `order`) for sidebar ordering.

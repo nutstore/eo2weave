@@ -77,8 +77,8 @@ playwright/.cache/
 *.tsbuildinfo
 
 # Docs
-# docs/ - allow docs directory
-web/public/docs/
+# docs/ is the single source of truth; the App Router docs route reads it
+# server-side at build time (web/lib/docs-server.ts) — no public/ copy exists.
 
 # Node version
 .nvmrc

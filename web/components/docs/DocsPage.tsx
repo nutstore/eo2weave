@@ -17,23 +17,19 @@ import { BrandButton } from '@creatorweave/ui'
 import { cn } from '@/lib/utils'
 import { useLocale } from '@/i18n'
 import type { Locale } from '@/i18n'
-
-interface DocIndex {
-  title: string
-  pages: Array<{
-    slug: string
-    title: string
-    file: string
-    category?: string
-  }>
-}
+import type { DocPageContent, DocsIndexes } from '@/lib/docs-server'
 
 type DocsLanguage = 'zh' | 'en'
+type DocsCategory = 'user' | 'developer'
 
 interface DocumentationPageProps {
   language?: DocsLanguage
-  category?: 'user' | 'developer'
+  category?: DocsCategory
   page?: string
+  /** Sidebar indexes for every language × category, resolved server-side. */
+  indexes: DocsIndexes
+  /** Markdown for the current page (null on index/home views or unknown slug). */
+  pageContent: DocPageContent | null
   onBack?: () => void
 }
 
@@ -66,8 +62,6 @@ const UI_TEXT: Record<
     chooseDocToRead: string
     docsRootLabel: string
     backToDirectory: string
-    indexLoadFailed: string
-    docLoadFailed: string
     docNotFound: string
   }
 > = {
@@ -85,8 +79,6 @@ const UI_TEXT: Record<
     chooseDocToRead: '选择一个文档开始阅读',
     docsRootLabel: '文档',
     backToDirectory: '返回目录',
-    indexLoadFailed: '目录加载失败',
-    docLoadFailed: '文档加载失败',
     docNotFound: '文档未找到',
   },
   en: {
@@ -103,8 +95,6 @@ const UI_TEXT: Record<
     chooseDocToRead: 'Choose a document to start reading',
     docsRootLabel: 'Docs',
     backToDirectory: 'Back to directory',
-    indexLoadFailed: 'Failed to load index',
-    docLoadFailed: 'Failed to load document',
     docNotFound: 'Document not found',
   },
 }
@@ -113,147 +103,21 @@ function localeToDocsLanguage(locale: Locale): DocsLanguage {
   return locale === 'zh-CN' ? 'zh' : 'en'
 }
 
-function buildIndexCandidates(lang: DocsLanguage, category: 'user' | 'developer'): string[] {
-  return [`/docs/${lang}/${category}/_index.json`]
-}
-
-function buildContentCandidates(
-  lang: DocsLanguage,
-  category: 'user' | 'developer',
-  file: string
-): string[] {
-  return [`/docs/${lang}/${category}/${file}`]
-}
-
-function isHtmlFallback(content: string): boolean {
-  const head = content.trimStart().slice(0, 120).toLowerCase()
-  return head.startsWith('<!doctype html') || head.startsWith('<html')
-}
-
-function stripMarkdownFrontmatter(content: string): string {
-  if (!content.startsWith('---\n')) {
-    return content
-  }
-
-  const end = content.indexOf('\n---\n', 4)
-  if (end === -1) {
-    return content
-  }
-
-  return content.slice(end + 5)
-}
-
-async function fetchDocIndex(lang: DocsLanguage, category: 'user' | 'developer'): Promise<DocIndex | null> {
-  const candidates = buildIndexCandidates(lang, category)
-  for (const path of candidates) {
-    try {
-      const res = await fetch(path)
-      if (!res.ok) continue
-      return (await res.json()) as DocIndex
-    } catch {
-      // try next candidate
-    }
-  }
-  return null
-}
-
-export function DocumentationPage({ language, category, page, onBack }: DocumentationPageProps) {
+export function DocumentationPage({
+  language,
+  category,
+  page,
+  indexes,
+  pageContent,
+  onBack,
+}: DocumentationPageProps) {
   const navigate = useRouter()
   const [locale, setLocale] = useLocale()
   const docsLang = language ?? localeToDocsLanguage(locale)
   const copy = UI_TEXT[docsLang]
-  const [index, setIndex] = useState<DocIndex | null>(null)
-  const [content, setContent] = useState<string>('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const index = category ? indexes[docsLang][category] : null
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
-
-  // Load doc index
-  useEffect(() => {
-    if (!category) {
-      setIndex(null)
-      return
-    }
-    let active = true
-    const loadIndex = async () => {
-      const candidates = buildIndexCandidates(docsLang, category)
-      for (const path of candidates) {
-        try {
-          const res = await fetch(path)
-          if (!res.ok) continue
-          const data = (await res.json()) as DocIndex
-          if (!active) return
-          setError(null)
-          setIndex(data)
-          return
-        } catch {
-          // try next candidate
-        }
-      }
-
-      if (!active) return
-      setIndex(null)
-      setError(copy.indexLoadFailed)
-    }
-
-    loadIndex()
-
-    return () => {
-      active = false
-    }
-  }, [category, docsLang, copy.indexLoadFailed])
-
-  // Load doc content
-  useEffect(() => {
-    if (!category || !page || !index) {
-      setContent('')
-      return
-    }
-    const pageEntry = index.pages.find((p) => p.slug === page)
-    if (!pageEntry) {
-      setContent('')
-      setError(copy.docNotFound)
-      return
-    }
-    setLoading(true)
-    setError(null)
-    let active = true
-
-    const loadContent = async () => {
-      const candidates = buildContentCandidates(docsLang, category, pageEntry.file)
-
-      for (const path of candidates) {
-        try {
-          const res = await fetch(path)
-          if (!res.ok) continue
-          const text = await res.text()
-          if (isHtmlFallback(text)) {
-            continue
-          }
-          if (!active) return
-          setContent(stripMarkdownFrontmatter(text))
-          return
-        } catch {
-          // try next candidate
-        }
-      }
-
-      if (!active) return
-      setContent('')
-      setError(copy.docLoadFailed)
-    }
-
-    loadContent().finally(() => {
-      if (active) {
-        setLoading(false)
-      }
-    })
-
-    return () => {
-      active = false
-    }
-  }, [category, page, index, docsLang, copy.docLoadFailed, copy.docNotFound])
 
   // Close mobile sidebar when navigating to a page
   useEffect(() => {
@@ -270,14 +134,13 @@ export function DocumentationPage({ language, category, page, onBack }: Document
     navigate.push(docsPath(lang ?? docsLang))
   }, [docsLang, navigate])
 
-  const switchLocale = useCallback(async (nextLocale: Locale) => {
+  const switchLocale = useCallback((nextLocale: Locale) => {
     if (locale === nextLocale) return
     const nextLang = localeToDocsLanguage(nextLocale)
 
     // Keep current page when target locale has same slug; otherwise fallback to category home.
     if (category && page) {
-      const nextIndex = await fetchDocIndex(nextLang, category)
-      const hasSameSlug = nextIndex?.pages.some((p) => p.slug === page) ?? false
+      const hasSameSlug = indexes[nextLang][category].pages.some((p) => p.slug === page)
       setLocale(nextLocale)
       navigateTo(category, hasSameSlug ? page : undefined, nextLang)
       return
@@ -289,7 +152,7 @@ export function DocumentationPage({ language, category, page, onBack }: Document
       return
     }
     navigateToHome(nextLang)
-  }, [category, page, locale, setLocale, navigateTo, navigateToHome])
+  }, [category, page, indexes, locale, setLocale, navigateTo, navigateToHome])
 
   const pages = index?.pages ?? []
 
@@ -655,17 +518,14 @@ export function DocumentationPage({ language, category, page, onBack }: Document
 
         {/* Content */}
         <div className="bg-[oklch(98%_0.005_60)] px-8 py-12 dark:bg-[oklch(12%_0.01_250)]">
-          {loading ? (
-            <div className="mx-auto max-w-3xl space-y-4">
-              <div className="h-10 w-2/3 animate-pulse rounded-lg bg-[oklch(90%_0.01_60)] dark:bg-[oklch(22%_0.01_60)]" />
-              <div className="h-4 w-full animate-pulse rounded bg-[oklch(90%_0.01_60)] dark:bg-[oklch(22%_0.01_60)]" />
-              <div className="h-4 w-5/6 animate-pulse rounded bg-[oklch(90%_0.01_60)] dark:bg-[oklch(22%_0.01_60)]" />
-              <div className="h-4 w-4/5 animate-pulse rounded bg-[oklch(90%_0.01_60)] dark:bg-[oklch(22%_0.01_60)]" />
-            </div>
-          ) : error ? (
+          {pageContent ? (
+            <article className="docs-content mx-auto max-w-3xl">
+              <MarkdownContent content={pageContent.markdown} />
+            </article>
+          ) : (
             <div className="mx-auto max-w-3xl text-center">
               <p className="mb-4 text-[oklch(50%_0.05_25)] dark:text-[oklch(65%_0.05_25)]">
-                {error}
+                {copy.docNotFound}
               </p>
               <button
                 onClick={() => navigateTo(category)}
@@ -674,11 +534,7 @@ export function DocumentationPage({ language, category, page, onBack }: Document
                 {copy.backToDirectory}
               </button>
             </div>
-          ) : content ? (
-            <article className="docs-content mx-auto max-w-3xl">
-              <MarkdownContent content={content} />
-            </article>
-          ) : null}
+          )}
         </div>
       </main>
 
