@@ -118,6 +118,7 @@ export const extension = {
   settingsInstalled: "Extension Ready",
   settingsNotInstalled: "Not Installed",
   settingsInstallButton: "Install Extension",
+  settingsStoreButton: "Install from Chrome Web Store",
   settingsVersion: "Version",
   settingsDescription: "The browser extension provides web search and content reading capabilities for the AI assistant",
   settingsCapabilities: "Extension Capabilities",
@@ -127,11 +128,18 @@ export const extension = {
   settingsLatestVersion: "Latest available",
   settingsCurrentVersion: "Currently installed",
   settingsUpdateAvailable: "Update available",
+  settingsNewerThanWeb: "Newer than web",
 
   // Outdated banner
   outdatedBannerTitle: "Extension Update Available",
   outdatedBannerDescription: "Your extension (v{current}) is outdated. Latest: v{latest}",
-  outdatedBannerAction: "Download Update",
+  outdatedBannerStoreAction: "Update from Store",
+  outdatedBannerZipAction: "Download Package",
+
+  // Newer-than-web banner
+  newerBannerTitle: "Extension is up to date",
+  newerBannerDescription: "Extension v{current} is newer than this web build (v{web}). You're all set — refresh to re-sync.",
+  newerBannerRefreshAction: "Refresh Page",
 
   // Mobile notice
   mobileNotice: "The browser extension is only available on desktop. Please open this page in Chrome or Edge on your computer to install.",

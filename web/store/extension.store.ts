@@ -122,6 +122,13 @@ interface ExtensionState {
   extensionVersion: string | null
   /** Whether the installed extension is older than the latest */
   outdated: boolean
+  /**
+   * Whether the installed extension is NEWER than the latest version known
+   * to this web build (e.g. the store auto-updated ahead of the web app, or
+   * the web app deploy lags behind). The extension keeps working normally —
+   * this only affects the informational banner.
+   */
+  newerThanWeb: boolean
 
   // --- Persisted state ---
   bannerDismissedAt: number | null
@@ -131,6 +138,8 @@ interface ExtensionState {
   guideMethod: GuideMethod | null
   /** When the outdated banner was last dismissed */
   outdatedBannerDismissedAt: number | null
+  /** When the "extension newer than web" banner was last dismissed */
+  newerBannerDismissedAt: number | null
 
   // --- Actions ---
   checkStatus: () => ExtensionStatus
@@ -145,6 +154,9 @@ interface ExtensionState {
   shouldShowBanner: () => boolean
   shouldShowOutdatedBanner: () => boolean
   dismissOutdatedBanner: () => void
+  /** Whether the informational "extension newer than web" banner should show */
+  shouldShowNewerBanner: () => boolean
+  dismissNewerBanner: () => void
   openInstallGuide: () => void
   closeInstallGuide: () => void
   goToStep: (step: number) => void
@@ -163,6 +175,7 @@ export const useExtensionStore = create<ExtensionState>()(
       codexOAuthRegistered: false,
       extensionVersion: null as string | null,
       outdated: false,
+      newerThanWeb: false,
 
       // Persisted state
       bannerDismissedAt: null as number | null,
@@ -170,6 +183,7 @@ export const useExtensionStore = create<ExtensionState>()(
       installGuideOpen: false,
       guideMethod: null as GuideMethod | null,
       outdatedBannerDismissedAt: null as number | null,
+      newerBannerDismissedAt: null as number | null,
 
       // Actions
       checkStatus: () => {
@@ -192,8 +206,12 @@ export const useExtensionStore = create<ExtensionState>()(
           fetchInstalledVersion().then((version) => {
             if (!version) return
             const latestVersion = EXTENSION_LATEST_VERSION
-            const isOutdated = compareVersions(version, latestVersion) < 0
-            set({ extensionVersion: version, outdated: isOutdated })
+            const cmp = compareVersions(version, latestVersion)
+            set({
+              extensionVersion: version,
+              outdated: cmp < 0,
+              newerThanWeb: latestVersion !== '0.0.0' && cmp > 0,
+            })
           }).catch(() => {})
         } else {
           // Extension not installed or in error state. If we previously had
@@ -202,7 +220,11 @@ export const useExtensionStore = create<ExtensionState>()(
           // forever waiting for codex to register.
           if (get().codexOAuthRegistered) {
             unregisterCodexOAuthProvider()
-            set({ codexOAuthRegistered: false, extensionVersion: null, outdated: false })
+            set({ codexOAuthRegistered: false, extensionVersion: null, outdated: false, newerThanWeb: false })
+          } else if (get().extensionVersion !== null) {
+            // Codex never registered but version state may linger from an
+            // earlier tick (e.g. the extension was disabled mid-session).
+            set({ extensionVersion: null, outdated: false, newerThanWeb: false })
           }
           // Flush deferred checkHasApiKey — the caller is asking "definitively,
           // is there a codex API key or not?" and we've done our best to find
@@ -369,6 +391,20 @@ export const useExtensionStore = create<ExtensionState>()(
         set({ outdatedBannerDismissedAt: Date.now() })
       },
 
+      shouldShowNewerBanner: () => {
+        const { status, newerThanWeb, newerBannerDismissedAt } = get()
+        if (status !== 'installed' || !newerThanWeb) return false
+        if (newerBannerDismissedAt) {
+          const elapsed = Date.now() - newerBannerDismissedAt
+          if (elapsed < OUTDATED_BANNER_DISMISS_DURATION_MS) return false
+        }
+        return true
+      },
+
+      dismissNewerBanner: () => {
+        set({ newerBannerDismissedAt: Date.now() })
+      },
+
       setStatus: (status: ExtensionStatus) => {
         set({ status })
       },
@@ -382,6 +418,7 @@ export const useExtensionStore = create<ExtensionState>()(
         installGuideStep: state.installGuideStep,
         guideMethod: state.guideMethod,
         outdatedBannerDismissedAt: state.outdatedBannerDismissedAt,
+        newerBannerDismissedAt: state.newerBannerDismissedAt,
       }),
     },
   ),

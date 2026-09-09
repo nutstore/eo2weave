@@ -12,6 +12,12 @@
  *
  * There is deliberately NO build-time branching here: both options ship in
  * every build. The guide marks the store option as "Recommended".
+ *
+ * Consumers of CHROME_WEB_STORE_URL:
+ *   - ExtensionInstallGuide (store flow, step 2)
+ *   - SettingsDialog extension panel (always-visible store install button,
+ *     paired with the zip download button so both channels stay reachable
+ *     from the settings page)
  */
 
 export type GuideMethod = 'store' | 'zip'

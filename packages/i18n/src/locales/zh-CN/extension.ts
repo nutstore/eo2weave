@@ -118,6 +118,7 @@ export const extension = {
   settingsInstalled: "插件已就绪",
   settingsNotInstalled: "未安装",
   settingsInstallButton: "安装插件",
+  settingsStoreButton: "从 Chrome 应用商店安装",
   settingsVersion: "版本",
   settingsDescription: "浏览器扩展为 AI 助手提供网页搜索和内容读取能力",
   settingsCapabilities: "插件能力",
@@ -127,11 +128,18 @@ export const extension = {
   settingsLatestVersion: "最新版本",
   settingsCurrentVersion: "当前安装",
   settingsUpdateAvailable: "有更新",
+  settingsNewerThanWeb: "新于网页版",
 
   // 过期提示横幅
   outdatedBannerTitle: "插件有新版本",
   outdatedBannerDescription: "你的插件版本 (v{current}) 已过期，最新版本为 v{latest}",
-  outdatedBannerAction: "下载更新",
+  outdatedBannerStoreAction: "到商店更新",
+  outdatedBannerZipAction: "下载安装包",
+
+  // 插件版本高于网页端提示横幅
+  newerBannerTitle: "插件已是最新",
+  newerBannerDescription: "插件版本 (v{current}) 比当前网页版本 (v{web}) 还新，功能一切正常，刷新页面即可同步。",
+  newerBannerRefreshAction: "刷新页面",
 
   // Mobile notice
   mobileNotice: "浏览器扩展仅支持桌面端，请在电脑上的 Chrome 或 Edge 浏览器中打开本页面进行安装。",

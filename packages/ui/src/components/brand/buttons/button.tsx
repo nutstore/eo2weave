@@ -55,12 +55,35 @@ const iconButtonVariants = cva(
   }
 )
 
-export interface BrandButtonProps
+export interface BrandButtonPropsBase
   extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "variant"> {
   asChild?: boolean
-  iconButton?: boolean
-  variant?: VariantProps<typeof buttonVariants>["variant"] | VariantProps<typeof iconButtonVariants>["variant"]
 }
+
+type ButtonVariant = NonNullable<
+  VariantProps<typeof buttonVariants>["variant"]
+>
+type IconButtonVariant = NonNullable<
+  VariantProps<typeof iconButtonVariants>["variant"]
+>
+
+/**
+ * Discriminated union on `iconButton` so `variant` is always validated
+ * against the correct variant set. The two variant sets share some names
+ * ("primary", "ghost") with DIFFERENT styles, and "default" only exists
+ * for icon buttons — without this union, `<BrandButton variant="default">`
+ * type-checked fine and silently rendered an unstyled (padding-less,
+ * borderless) regular button.
+ */
+export type BrandButtonProps =
+  | (BrandButtonPropsBase & {
+      iconButton?: false | undefined
+      variant?: ButtonVariant
+    })
+  | (BrandButtonPropsBase & {
+      iconButton: true
+      variant?: IconButtonVariant
+    })
 
 const BrandButton = React.memo(React.forwardRef<HTMLButtonElement, BrandButtonProps>(
   ({ className, variant, iconButton, ...props }, ref) => {

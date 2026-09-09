@@ -37,6 +37,7 @@ import {
   Keyboard,
   Database,
   ShieldCheck,
+  Store,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useT, useLocale, LOCALE_LABELS } from '@/i18n'
@@ -60,6 +61,7 @@ import { useSettingsStore } from '@/store/settings.store'
 import { useTheme, type ThemeMode } from '@/store/theme.store'
 import { useExtensionStore } from '@/store/extension.store'
 import { APP_BUILD_ID, APP_VERSION, EXTENSION_LATEST_VERSION } from '@/app-build'
+import { CHROME_WEB_STORE_URL } from '@/lib/extension-distribution'
 import { useWebContainerStore } from '@/store/webcontainer.store'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 import {
@@ -321,6 +323,7 @@ function ExtensionSettingsPanel() {
   const isInstalled = currentStatus === 'installed'
   const extensionVersion = useExtensionStore((s) => s.extensionVersion)
   const outdated = useExtensionStore((s) => s.outdated)
+  const newerThanWeb = useExtensionStore((s) => s.newerThanWeb)
   const latestVersion = EXTENSION_LATEST_VERSION
 
   return (
@@ -372,6 +375,11 @@ function ExtensionSettingsPanel() {
                   {t('extension.settingsUpdateAvailable')}
                 </span>
               )}
+              {isInstalled && newerThanWeb && (
+                <span className="rounded bg-primary-100 px-1.5 py-0.5 text-[10px] font-medium text-primary-700 dark:bg-primary-100/30 dark:text-primary-300">
+                  {t('extension.settingsNewerThanWeb')}
+                </span>
+              )}
               <span className={`font-mono text-sm font-medium ${
                 isInstalled && outdated
                   ? 'text-amber-700 dark:text-amber-400'
@@ -411,6 +419,18 @@ function ExtensionSettingsPanel() {
         </div>
       </div>
 
+      {/* Install from Chrome Web Store — one-click install + auto-updates.
+          Always visible: the store serves every Chromium browser and users
+          without store access can fall back to the zip button below. */}
+      <BrandButton
+        variant="primary"
+        className="w-full"
+        onClick={() => window.open(CHROME_WEB_STORE_URL, '_blank')}
+      >
+        <Store className="mr-2 h-4 w-4" />
+        {t('extension.settingsStoreButton')}
+      </BrandButton>
+
       {/* Download extension button — always visible */}
       <BrandButton
         variant="outline"
@@ -424,7 +444,7 @@ function ExtensionSettingsPanel() {
       {/* Install guide button — only when not installed */}
       {!isInstalled && (
         <BrandButton
-          variant="default"
+          variant="secondary"
           className="w-full"
           onClick={() => openInstallGuide()}
         >
@@ -466,7 +486,7 @@ function WebContainerSettingsPanel() {
       </div>
 
       <BrandButton
-        variant="default"
+        variant="primary"
         className="w-full"
         onClick={openPanel}
       >

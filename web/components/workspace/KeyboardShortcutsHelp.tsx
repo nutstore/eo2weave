@@ -166,7 +166,7 @@ export function KeyboardShortcutsHelp({
             </kbd>{' '}
             {t('keyboardShortcuts.closeHintKey')}
           </p>
-          <BrandButton variant="default" onClick={() => onOpenChange(false)}>
+          <BrandButton variant="outline" onClick={() => onOpenChange(false)}>
             {t('keyboardShortcuts.closeButton')}
           </BrandButton>
         </BrandDialogFooter>
