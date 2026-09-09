@@ -1,10 +1,12 @@
 /**
  * WelcomeScreen - setup onboarding with local folder mount
  *
- * State machine: welcome → api-key → mount-folder → ready
+ * State machine: welcome → api-key → select-model → mount-folder → ready
  * - welcome: shown only to first-time users (no project created + not seen)
  * - api-key: shown when no API key configured
- * - mount-folder: shown when API key ok but no folder mounted
+ * - select-model: shown when a provider key exists but no default
+ *   provider/model is selected yet (onboarding completion requires BOTH)
+ * - mount-folder: shown when model ok but no folder mounted
  *   (SKIPPED entirely in side-panel mode — sidebar users almost never
  *    need a mounted local folder)
  * - ready: shows quick-start prompts + rich input
@@ -13,12 +15,15 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
-import { Send, FolderOpen, Sparkles, KeyRound, ChevronRight, Shield, Loader2, ImageIcon, ArrowRight, Check, Cable } from 'lucide-react'
+import { Send, FolderOpen, Sparkles, KeyRound, ChevronRight, Shield, Loader2, ImageIcon, ArrowRight, Check, Cable, CircleHelp } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useSettingsStore } from '@/store/settings.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { useAssetStore } from '@/store/asset.store'
 import { useT } from '@/i18n'
+import { useI18nStore } from '@/i18n/store'
+import { docsPath } from '@/lib/route-paths'
 import { AgentRichInput, type AgentRichInputValue, type AgentInfo } from './agent/AgentRichInput'
 import type { FileMentionItem } from './agent/FileMentionExtension'
 import { useGatewayLogin, isLLMGatewayConfigured } from '@/hooks/useGatewayLogin'
@@ -31,7 +36,7 @@ import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { captureTab, isPageActionAvailable } from '@/agent/tools/page-action-bridge'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
 
-type OnboardingStep = 'welcome' | 'api-key' | 'mount-folder' | 'ready'
+type OnboardingStep = 'welcome' | 'api-key' | 'select-model' | 'mount-folder' | 'ready'
 
 // Side-panel (browser sidebar) mode skips the folder-mount step: that
 // workflow is for the full workbench, not the per-tab assistant panel.
@@ -39,8 +44,21 @@ function needsFolderMount(folderCount: number): boolean {
   return !isSidePanelMode() && folderCount === 0
 }
 
+/** "Connected" for onboarding purposes = provider key saved AND a default
+ *  provider/model selected. Keys alone don't make the app usable. */
+type ProviderReadiness = {
+  hasApiKey: boolean
+  hasUsableModel: boolean
+}
+
+function providerStep(readiness: ProviderReadiness): OnboardingStep {
+  if (!readiness.hasApiKey) return 'api-key'
+  if (!readiness.hasUsableModel) return 'select-model'
+  return 'ready'
+}
+
 function getInitialStep(
-  hasApiKey: boolean,
+  readiness: ProviderReadiness,
   folderCount: number,
   hasCreatedProject: boolean
 ): OnboardingStep {
@@ -48,7 +66,8 @@ function getInitialStep(
     && localStorage.getItem('creatorweave:onboarding:welcome-seen') === 'true'
 
   if (!hasCreatedProject && !welcomeSeen) return 'welcome'
-  if (!hasApiKey) return 'api-key'
+  const provider = providerStep(readiness)
+  if (provider !== 'ready') return provider
   if (needsFolderMount(folderCount)) return 'mount-folder'
   return 'ready'
 }
@@ -58,6 +77,40 @@ interface WelcomeScreenProps {
   onOpenSettings?: (tab?: SettingsTab) => void
 }
 
+/** "?" entry in the top-right corner of a setup card — opens the
+ *  model-configuration user guide. Tooltip explains what it does; hover
+ *  intent delay keeps it from flashing during normal click-through. */
+function SetupGuideLink() {
+  const t = useT()
+  const router = useRouter()
+  const locale = useI18nStore((s) => s.locale)
+  const docsLanguage = locale === 'zh-CN' ? 'zh' : 'en'
+  return (
+    // Own provider: this link renders inside setup-card headers, which sit
+    // OUTSIDE the screen-level TooltipProvider (that one only wraps the
+    // screenshot button). Radix throws "Tooltip must be used within
+    // TooltipProvider" without it.
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => router.push(docsPath(docsLanguage, 'user', 'model-setup'))}
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-opacity hover:opacity-100"
+            aria-label={t('welcome.setupGuideTooltip')}
+          >
+            <CircleHelp className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="left" sideOffset={4}>
+          <p className="font-medium">{t('welcome.setupGuideLinkTitle')}</p>
+          <p className="text-xs opacity-80">{t('welcome.setupGuideLinkDesc')}</p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
 export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeScreenProps) {
   const [inputValue, setInputValue] = useState('')
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null)
@@ -65,6 +118,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const hasApiKey = useSettingsStore((s) => s.hasApiKey)
   const hasApiKeyLoaded = useSettingsStore((s) => s.hasApiKeyLoaded)
   const checkHasApiKey = useSettingsStore((s) => s.checkHasApiKey)
+  const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
   const folderRoots = useFolderAccessStore((s) => s.roots)
   const addRoot = useFolderAccessStore((s) => s.addRoot)
@@ -95,8 +149,13 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   // flash a misleading prompt to users who already have a folder mounted.
   const rootsHydrated = useFolderAccessStore((s) => s.rootsHydrated)
 
+  const readiness: ProviderReadiness = {
+    hasApiKey,
+    hasUsableModel: !!providerType && !!modelName,
+  }
+
   const [step, setStep] = useState<OnboardingStep>(() =>
-    getInitialStep(hasApiKey, folderRoots.length, hasCreatedProject)
+    getInitialStep(readiness, folderRoots.length, hasCreatedProject)
   )
 
   useEffect(() => {
@@ -107,23 +166,29 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
 
   const { authState, isRunning: isGatewayLoginRunning, login: gatewayLogin, reset: resetGatewayLogin } = useGatewayLogin()
 
-  // Auto-advance step when API key / folder state changes
+  // Auto-advance step when API key / model-selection / folder state changes.
+  // The provider gate is two-fold: no key → api-key step; key saved but no
+  // default provider/model chosen → select-model step (guides the user to
+  // pick one instead of silently failing every send later). This does NOT
+  // auto-select a model — the user stays in control of their default.
   useEffect(() => {
     if (!hasApiKeyLoaded) return
     setStep((prev) => {
       if (prev === 'welcome') return prev
-      if (!hasApiKey) return 'api-key'
+      const provider = providerStep(readiness)
+      if (provider !== 'ready') return provider
       if (needsFolderMount(folderRoots.length)) return 'mount-folder'
       return 'ready'
     })
-  }, [hasApiKey, hasApiKeyLoaded, folderRoots.length])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length])
 
   const advanceFromWelcome = useCallback(() => {
     localStorage.setItem('creatorweave:onboarding:welcome-seen', 'true')
-    if (!hasApiKey) setStep('api-key')
+    const provider = providerStep(readiness)
+    if (provider !== 'ready') setStep(provider)
     else if (needsFolderMount(folderRoots.length)) setStep('mount-folder')
     else setStep('ready')
-  }, [hasApiKey, folderRoots.length])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, folderRoots.length])
 
   const advanceFromMount = useCallback(() => {
     setStep('ready')
@@ -263,9 +328,12 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                   {t('welcome.setupCardTitle')}
                 </p>
               </div>
-              <span className="text-[10px] font-medium uppercase tracking-wider text-amber-600 dark:text-amber-400">
-                {t('welcome.apiKeyLabel')}
-              </span>
+              <div className="flex shrink-0 items-center gap-1.5 text-amber-600 dark:text-amber-400">
+                <span className="text-[10px] font-medium uppercase tracking-wider">
+                  {t('welcome.apiKeyLabel')}
+                </span>
+                <SetupGuideLink />
+              </div>
             </div>
 
             {gatewayAvailable && (
@@ -318,6 +386,62 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
 
             {/* Skip — users who already configured a key and came Back from
                 step 3 have no auto-advance; this is their forward exit. */}
+            <div className="flex justify-center px-4 pb-3 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (needsFolderMount(folderRoots.length)) setStep('mount-folder')
+                  else setStep('ready')
+                }}
+                className="inline-flex h-8 items-center text-xs text-neutral-500 transition-colors hover:text-foreground"
+              >
+                {t('welcome.skipButton')}
+              </button>
+            </div>
+          </div>
+        ) : step === 'select-model' ? (
+          /* ── Default provider/model selection ──
+              A provider key exists (api-key step passed), but no default
+              provider+model is selected yet — without one every send would
+              fail with "model not configured". Guide the user to pick one
+              instead of auto-selecting on their behalf. */
+          <div className="overflow-hidden rounded-xl border border-primary-200 bg-primary-50/50 text-left dark:border-primary-800/50 dark:bg-primary-950/10">
+            <div className="flex items-center justify-between border-b border-primary-200/60 px-4 py-3 dark:border-primary-800/40">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 shrink-0 text-primary-600 dark:text-primary-400" />
+                <p className="text-sm font-medium text-primary-900 dark:text-primary-200">
+                  {t('welcome.selectModelCardTitle')}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5 text-primary-600 dark:text-primary-400">
+                <span className="text-[10px] font-medium uppercase tracking-wider">
+                  {t('welcome.apiKeyLabel')}
+                </span>
+                <SetupGuideLink />
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => onOpenSettings?.('llm')}
+              className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/60 dark:hover:bg-neutral-900/40"
+            >
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white dark:bg-neutral-800">
+                <Sparkles className="h-[18px] w-[18px] text-primary-600 dark:text-primary-500" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-foreground">
+                  {t('welcome.selectModelActionTitle')}
+                </span>
+                <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
+                  {t('welcome.selectModelActionDesc')}
+                </p>
+              </div>
+              <ChevronRight className="h-4 w-4 shrink-0 text-neutral-400" />
+            </button>
+
+            {/* Skip — picking a default is recommended but not blocking; the
+                top-bar switcher stays available for later. */}
             <div className="flex justify-center px-4 pb-3 pt-1">
               <button
                 type="button"

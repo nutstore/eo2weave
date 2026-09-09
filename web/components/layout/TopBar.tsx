@@ -215,6 +215,14 @@ export function TopBar({
         {/* Right: Actions */}
         {isMobile ? (
           <div className="ml-1 flex shrink-0 items-center gap-0.5">
+            {/* Model switcher — directly visible. Previously it only lived
+                inside the ⋯ more menu, which new users (especially in the
+                narrow side panel) never discovered. The TopBar renders on the
+                Welcome screen too, so this is the always-visible entry. */}
+            <div className="min-w-0 shrink">
+              <ModelQuickSwitch onManageProviders={() => openSettings('llm')} />
+            </div>
+
             {/* New conversation — primary action */}
             <ActionTooltip label={t('sidebar.newWorkspace')}>
               <BrandButton
@@ -359,11 +367,6 @@ export function TopBar({
                 {t('topbar.mobile.workDirectory')}
               </div>
               <FolderSelector />
-            </div>
-
-            {/* Model switcher */}
-            <div className="mb-2 rounded-lg border border-neutral-200 p-2 dark:border-neutral-700">
-              <ModelQuickSwitch onManageProviders={() => openSettings('llm')} />
             </div>
 
             {/* Image generation model + aspect ratio (combined).

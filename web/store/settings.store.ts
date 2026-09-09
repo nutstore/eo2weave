@@ -738,6 +738,14 @@ export const useSettingsStore = create<SettingsState>()(
           }
         }
         set(updates as SettingsState)
+
+        // hasApiKey tracks the ACTIVE provider's key — the user just switched
+        // it, so re-evaluate. This is what lets a first-time user who saved a
+        // key (while providerType was still empty) leave the onboarding
+        // select-model step as soon as they pick their default model.
+        apiKeyCache.delete(newProviderType)
+        apiKeyCachePromise.delete(newProviderType)
+        void get().checkHasApiKey()
       },
 
       getAvailableProviders: async () => {

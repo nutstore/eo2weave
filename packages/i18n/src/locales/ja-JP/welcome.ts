@@ -9,12 +9,20 @@ export const welcome = {
     // "no API key" setup card before SQLite has been consulted).
     checkingConfig: "AI 設定を確認中...",
     // Setup card (shown when no API key configured)
-    setupCardTitle: "開始前に、AI への接続方法を選択してください",
+    setupCardTitle: "開始前に、AI 設定を完了してください",
     setupGatewayTitle: "堅果雲アカウントでログイン",
     setupGatewayDesc: "堅果雲アカウントをお持ちですか？ワンクリックでログイン、API Key 不要",
     setupGatewayRecommend: "推奨",
     setupApiKeyTitle: "独自の API Key を構成",
     setupApiKeyDesc: "OpenAI、OpenRouter、Anthropic などに対応",
+    // select-model step (key saved but no default provider/model chosen)
+    selectModelCardTitle: "Key 保存済み — デフォルトモデルを選択してください",
+    selectModelActionTitle: "デフォルトのプロバイダーとモデルを選択",
+    selectModelActionDesc: "設定で構成済みのプロバイダーを展開し、モデルを 1 つデフォルトとして選択してください",
+    // Link to the model configuration guide (shown as a ? icon on setup cards)
+    setupGuideTooltip: "設定ガイドを開く：プロバイダー Key、ピン留めモデルとデフォルトモデル",
+    setupGuideLinkTitle: "設定方法は？",
+    setupGuideLinkDesc: "3 ステップ：プロバイダー Key → ピン留めモデル → デフォルトモデル",
     setupLocalFirstHint: "すべてのデータはブラウザにローカル保存され、サーバーにアップロードされません",
     // Conditional onboarding labels (these are not a linear progress count)
     welcomeLabel: "はじめる",

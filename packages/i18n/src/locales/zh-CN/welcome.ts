@@ -9,12 +9,20 @@ export const welcome = {
     // "no API key" setup card before SQLite has been consulted).
     checkingConfig: "正在检查 AI 配置...",
     // Setup card (shown when no API key configured)
-    setupCardTitle: "开始之前，请选择连接 AI 的方式",
+    setupCardTitle: "开始之前，请先完成 AI 配置",
     setupGatewayTitle: "用坚果云账号登录",
     setupGatewayDesc: "已有坚果云账号？一键登录即可使用，无需配置 API Key",
     setupGatewayRecommend: "推荐",
     setupApiKeyTitle: "配置自己的 API Key",
     setupApiKeyDesc: "支持 OpenAI、OpenRouter、Anthropic 等自定义模型",
+    // select-model step (key saved but no default provider/model chosen)
+    selectModelCardTitle: "Key 已保存，再选一个默认模型",
+    selectModelActionTitle: "选择默认服务商和模型",
+    selectModelActionDesc: "在设置里展开已配置的服务商，从模型列表中选一个作为默认",
+    // Link to the model configuration guide (shown as a ? icon on setup cards)
+    setupGuideTooltip: "查看配置教程：服务商 Key、常用模型与默认模型",
+    setupGuideLinkTitle: "如何配置？",
+    setupGuideLinkDesc: "三步完成：服务商 Key → 常用模型 → 默认模型",
     setupLocalFirstHint: "所有数据存储在本地浏览器中，不会上传到服务器",
     // Conditional onboarding labels (these are not a linear progress count)
     welcomeLabel: "开始使用",

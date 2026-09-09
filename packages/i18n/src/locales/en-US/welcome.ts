@@ -7,12 +7,20 @@ export const welcome = {
     // "no API key" setup card before SQLite has been consulted).
     checkingConfig: "Checking AI configuration...",
     // Setup card (shown when no API key configured)
-    setupCardTitle: "Choose how to connect AI before you start",
+    setupCardTitle: "Finish AI setup before you start",
     setupGatewayTitle: "Login with Jianguoyun Account",
     setupGatewayDesc: "Have a Jianguoyun account? Login instantly — no API Key needed",
     setupGatewayRecommend: "Recommended",
     setupApiKeyTitle: "Configure Your Own API Key",
     setupApiKeyDesc: "Supports OpenAI, OpenRouter, Anthropic, and more",
+    // select-model step (key saved but no default provider/model chosen)
+    selectModelCardTitle: "Key saved — now pick a default model",
+    selectModelActionTitle: "Choose a default provider & model",
+    selectModelActionDesc: "Expand a configured provider in Settings and pick one model as your default",
+    // Link to the model configuration guide (shown as a ? icon on setup cards)
+    setupGuideTooltip: "Open the setup guide: provider key, pinned models & default model",
+    setupGuideLinkTitle: "How do I set this up?",
+    setupGuideLinkDesc: "Three steps: provider key → pinned models → default model",
     setupLocalFirstHint: "All data is stored locally in your browser, never uploaded",
     // Conditional onboarding labels (these are not a linear progress count)
     welcomeLabel: "Get started",

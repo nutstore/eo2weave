@@ -211,7 +211,7 @@ export function ModelQuickSwitch({ onManageProviders }: ModelQuickSwitchProps = 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <BrandButton variant="outline" className="h-8 max-w-[280px] justify-between gap-2 px-2.5 text-xs">
+        <BrandButton variant="outline" className="h-8 max-w-[280px] min-[380px]:max-w-[160px] justify-between gap-2 px-2.5 text-xs">
           <span className="flex min-w-0 items-center gap-2">
             <Sparkles className="h-3.5 w-3.5 shrink-0 text-tertiary" />
             <span className="truncate text-secondary" title={currentLabel}>{currentLabel}</span>

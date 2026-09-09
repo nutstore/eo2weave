@@ -9,12 +9,20 @@ export const welcome = {
     // "no API key" setup card before SQLite has been consulted).
     checkingConfig: "AI 설정 확인 중...",
     // Setup card (shown when no API key configured)
-    setupCardTitle: "시작하기 전에 AI 연결 방법을 선택하세요",
+    setupCardTitle: "시작하기 전에 AI 설정을 완료하세요",
     setupGatewayTitle: "견과클라우드 계정으로 로그인",
     setupGatewayDesc: "견과클라우드 계정이 있나요? 원클릭 로그인, API Key 불필요",
     setupGatewayRecommend: "추천",
     setupApiKeyTitle: "자체 API Key 구성",
     setupApiKeyDesc: "OpenAI, OpenRouter, Anthropic 등 지원",
+    // select-model step (key saved but no default provider/model chosen)
+    selectModelCardTitle: "Key 저장됨 — 기본 모델을 선택하세요",
+    selectModelActionTitle: "기본 공급자 및 모델 선택",
+    selectModelActionDesc: "설정에서 구성된 공급자를 펼치고 모델을 하나 기본값으로 선택하세요",
+    // Link to the model configuration guide (shown as a ? icon on setup cards)
+    setupGuideTooltip: "설정 가이드 열기：공급자 Key, 고정 모델 및 기본 모델",
+    setupGuideLinkTitle: "설정 방법은?",
+    setupGuideLinkDesc: "3 단계：공급자 Key → 고정 모델 → 기본 모델",
     setupLocalFirstHint: "모든 데이터는 브라우저에 로컬 저장되며 서버에 업로드되지 않습니다",
     // Conditional onboarding labels (these are not a linear progress count)
     welcomeLabel: "시작하기",
