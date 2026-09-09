@@ -1,26 +1,53 @@
-import { cp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { zipSync } from 'fflate'
-import { readdir, readFile } from 'node:fs/promises'
+import { realpath } from 'node:fs/promises'
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const rootDir = path.resolve(webDir, '..')
 const publicDir = path.join(webDir, 'public')
 
+// Deterministic recursive copy — deliberately NOT fs.cp({dereference: true}).
+//
+// Why: pnpm installs packages as symlinks, and pyodide's package directory
+// itself contains symlinks (node_modules/ws, node_modules/@types/emscripten —
+// sibling .pnpm deps). fs.cp with dereference walks those and intermittently
+// throws EEXIST/ERR_FS_CP_EINVAL from its internal destination mkdir (verified
+// on Node v22.22, timing-dependent). Copying entries explicitly keeps the
+// behavior fixed.
+//
+// Symlinks are SKIPPED: they are node-side deps the browser never requests
+// (the python worker only fetches pyodide.js/*.wasm/*.whl via /assets/pyodide).
+async function copyDirContents(source, destination) {
+  await mkdir(destination, { recursive: true })
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const from = path.join(source, entry.name)
+    const to = path.join(destination, entry.name)
+    if (entry.isSymbolicLink()) continue
+    if (entry.isDirectory()) {
+      await copyDirContents(from, to)
+    } else if (entry.isFile()) {
+      await writeFile(to, await readFile(from))
+    }
+  }
+}
+
 async function copy(source, destination) {
   await rm(destination, { recursive: true, force: true })
-  await mkdir(path.dirname(destination), { recursive: true })
-  // dereference: pnpm installs packages (e.g. node_modules/pyodide) as symlinks
-  // into the .pnpm store. With fs.cp's default (dereference: false) the copied
-  // public/ asset would stay a symlink, which deployment packaging does not
-  // follow — the files never reach production and /assets/pyodide/* 404s.
-  await cp(source, destination, { recursive: true, dereference: true })
+  // Resolve the pnpm top-level symlink so the walk starts inside the real
+  // package directory (entry.isDirectory() etc. on a symlink Dirent would
+  // report the link, not the target).
+  const realSource = await realpath(source)
+  await copyDirContents(realSource, destination)
 }
 
 await copy(path.join(webDir, 'node_modules', 'pyodide'), path.join(publicDir, 'assets', 'pyodide'))
-execFileSync('node', ['scripts/sync-docs.mjs'], { cwd: webDir, stdio: 'inherit' })
+
+// Docs no longer need a build-time copy into public/: the App Router docs
+// route resolves them server-side from the repository docs/ tree at build
+// time (see lib/docs-server.ts and app/(app)/docs/[[...path]]/page.tsx).
 
 execFileSync('node', ['scripts/pack-skills.mjs', '../skill-store', 'public/skills'], {
   cwd: webDir,
