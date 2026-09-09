@@ -28,6 +28,7 @@ import type { FileMentionItem } from './FileMentionExtension'
 import { useInitialMessage } from './useInitialMessage'
 import { ConversationMessages } from './ConversationMessages'
 import type { ConversationMessagesHandle } from './ConversationMessages'
+import { ConversationUsageBar } from './ConversationUsageBar'
 import { ConversationEmptyState } from './ConversationEmptyState'
 import { AgentDropdown } from './AgentDropdown'
 import { ThinkingDropdown } from './ThinkingDropdown'
@@ -88,6 +89,13 @@ const VisionCapabilityIndicator = memo(function VisionCapabilityIndicator({
     </TooltipProvider>
   )
 })
+
+/**
+ * Memoized usage bar — the outer flex column re-renders while its scroll
+ * container stays untouched, so without memo every scroll-follower update
+ * would re-aggregate usage for the whole conversation.
+ */
+const ConversationUsageBarMemo = memo(ConversationUsageBar)
 
 /** Send / Cancel button — memoized to only re-render when its specific props change */
 const SendCancelButton = memo(function SendCancelButton({
@@ -412,6 +420,16 @@ export function ConversationView({
       onError={handleErrorBoundaryError}
     >
       <div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-white dark:bg-neutral-950">
+        {/* Cumulative token usage across all turns — rendered OUTSIDE the scroll
+            container (NOT sticky inside it). Sticky inside the scroller only
+            works while its parent block is in view; under virtual scrolling the
+            bar lived in Virtuoso's Header and scrolled away with the content.
+            Mounting it as a fixed row above the scroller keeps it pinned for
+            both render paths. It is conditionally rendered (returns null when a
+            conversation has no usage yet) and memoized so long-conversation
+            streaming does not re-render it on every token. */}
+        {activeMessages.length > 0 && <ConversationUsageBarMemo messages={activeMessages} />}
+
         {/* Messages area */}
         <div className="relative min-h-0 flex-1">
           <div ref={scrollContainerRef} className="custom-scrollbar absolute inset-0 overflow-y-auto">

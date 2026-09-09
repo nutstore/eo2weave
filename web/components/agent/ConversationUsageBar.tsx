@@ -1,5 +1,5 @@
 /**
- * ConversationUsageBar - sticky bar at the top of the conversation showing
+ * ConversationUsageBar - fixed bar above the conversation showing
  * cumulative token usage across all turns (all agent loops).
  *
  * Aggregates from EVERY assistant message in the conversation:
@@ -128,7 +128,13 @@ export function ConversationUsageBar({ messages }: ConversationUsageBarProps) {
   const cachePct = (usage.cache / total) * 100
 
   return (
-    <div className="sticky top-0 z-10 -mx-4 mb-4 border-b border-neutral-200/70 bg-neutral-50/80 px-4 py-2 backdrop-blur-sm dark:border-neutral-800/60 dark:bg-neutral-900/70">
+    // Rendered OUTSIDE the scroll container (ConversationView mounts this as a
+    // fixed row above the scroller), so it must NOT be sticky — the flex parent
+    // keeps it pinned at the top while only the message list below scrolls.
+    // Do not reintroduce `sticky top-0` here: sticky only pins within its own
+    // parent box, which is why it broke under virtual scrolling (Virtuoso
+    // header is exactly as tall as this bar → no sticky range).
+    <div className="shrink-0 border-b border-neutral-200/70 bg-neutral-50/80 px-4 py-2 backdrop-blur-sm dark:border-neutral-800/60 dark:bg-neutral-900/70">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
         {/* Left: label + breakdown */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

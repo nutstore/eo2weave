@@ -76,8 +76,17 @@ vi.mock('../AssistantTurnBubble', () => ({
   AssistantTurnBubble: () => <div data-testid="assistant-turn" />,
 }))
 
+/**
+ * Spy on the real ConversationUsageBar instead of mocking it: the bar is now
+ * owned by ConversationView (outside the scroller), so mocking it away here
+ * would silently detach these tests from the layout we actually ship.
+ */
+const usageBarSpy = vi.fn()
 vi.mock('../ConversationUsageBar', () => ({
-  ConversationUsageBar: () => <div data-testid="usage-bar" />,
+  ConversationUsageBar: (props: { messages: Message[] }) => {
+    usageBarSpy(props)
+    return <div data-testid="usage-bar" />
+  },
 }))
 
 vi.mock('../QueuedMessageCard', () => ({
@@ -133,6 +142,7 @@ describe('ConversationMessages virtualization', () => {
   beforeEach(() => {
     virtuosoSpy.mockClear()
     virtuosoScrollToIndexSpy.mockClear()
+    usageBarSpy.mockClear()
   })
 
   it('renders short conversations with the plain renderer (no Virtuoso)', () => {
@@ -143,11 +153,14 @@ describe('ConversationMessages virtualization', () => {
     expect(container.querySelectorAll('[data-testid="assistant-turn"]')).toHaveLength(45)
     // data-turn-index is only stamped on user turns (MessageNavBar contract)
     expect(container.querySelectorAll('[data-turn-index]')).toHaveLength(45)
-    expect(container.querySelector('[data-testid="usage-bar"]')).not.toBeNull()
+    // The usage bar is NOT inside the message list anymore — ConversationView
+    // renders it outside the scroller (sticky-in-Virtuoso-header regressed it).
+    expect(container.querySelector('[data-testid="usage-bar"]')).toBeNull()
+    expect(usageBarSpy).not.toHaveBeenCalled()
     expect(virtuosoSpy).not.toHaveBeenCalled()
   })
 
-  it('renders long conversations through Virtuoso with header/footer intact', async () => {
+  it('renders long conversations through Virtuoso without a list header (usage bar moved out)', async () => {
     // 55 pairs → 110 messages, above the threshold
     const { container } = renderConversation(makeMessages(55))
     await waitFor(() => {
@@ -155,8 +168,11 @@ describe('ConversationMessages virtualization', () => {
     })
     // All turns handed to Virtuoso as data
     expect(virtuosoSpy.mock.calls[0][0].data).toHaveLength(110)
-    // Header (usage bar) and Footer (messagesEnd div) rendered inside the list
-    expect(container.querySelector('[data-testid="usage-bar"]')).not.toBeNull()
+    // No Header slot: the usage bar must NOT be inside the virtualized list
+    const components = virtuosoSpy.mock.calls[0][0].components as { Header?: unknown }
+    expect(components.Header).toBeUndefined()
+    expect(container.querySelector('[data-testid="usage-bar"]')).toBeNull()
+    expect(usageBarSpy).not.toHaveBeenCalled()
     expect(container.querySelectorAll('[data-testid="message-bubble"]')).toHaveLength(55)
     // followOutput / atBottomStateChange wired
     expect(typeof virtuosoSpy.mock.calls[0][0].followOutput).toBe('function')

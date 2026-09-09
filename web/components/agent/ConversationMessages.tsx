@@ -8,14 +8,13 @@
  * streaming token (~60fps). Only this component tree re-renders.
  */
 
-import { memo, useMemo, forwardRef, useImperativeHandle, useCallback, useRef, useState, useLayoutEffect, useContext, createContext } from 'react'
+import { memo, useMemo, forwardRef, useImperativeHandle, useCallback, useRef, useState, useLayoutEffect } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import type { VirtuosoHandle } from 'react-virtuoso'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 import { useShallow } from 'zustand/react/shallow'
 import { MessageBubble } from './MessageBubble'
 import { AssistantTurnBubble } from './AssistantTurnBubble'
-import { ConversationUsageBar } from './ConversationUsageBar'
 import { groupMessagesIntoTurns } from './group-messages'
 import type { Turn } from './group-messages'
 import { QueuedMessageCard } from './QueuedMessageCard'
@@ -45,14 +44,17 @@ const SCROLL_SEEK_VELOCITY = 800
 const INCREASE_VIEWPORT_BY = 900
 
 /**
- * React context bridging ConversationMessages state into Virtuoso's
- * Header/Footer components (which render outside the data flow of itemContent).
+ * Module-level slot for Virtuoso's Footer component. Virtuoso renders its
+ * `components` from a stable identity, so the footer cannot close over the
+ * per-render `footer` node directly; instead the component body stores the
+ * latest node here on every render before Virtuoso commits, and the slot
+ * component reads it. Safe with a single conversation panel at a time —
+ * the same constraint the removed Context-based bridge operated under.
  */
-type VirtuosoContextValue = {
-  usageBarProps: { messages: Message[] }
-  footerNode: React.ReactNode
+let moduleLevelFooter: React.ReactNode = null
+function setVirtuosoFooter(node: React.ReactNode) {
+  moduleLevelFooter = node
 }
-const VirtuosoContext = createContext<VirtuosoContextValue>({ usageBarProps: { messages: [] }, footerNode: null })
 
 type TurnRendererProps = {
   turn: Turn
@@ -522,13 +524,18 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     />
   )
 
+  // Publish the footer for VirtuosoFooter BEFORE any return: the virtualized
+  // path's Footer slot reads this module-level slot. The plain path ignores it.
+  setVirtuosoFooter(footer)
+
   // ── Short conversations (or before the scroll parent resolves): plain renderer ──
+  // The cumulative usage bar is NOT rendered here anymore: it lives in
+  // ConversationView, OUTSIDE the scroll container, so it stays pinned (and is
+  // identical for both render paths — sticky-in-flow broke under Virtuoso).
   if (!shouldVirtualize || !scrollParent) {
     return (
       <div ref={rootRef} className="min-h-0 px-2 py-3 sm:px-4 sm:py-4">
         <div className="mx-auto w-full max-w-3xl space-y-4 px-3 sm:px-0">
-          {/* Cumulative token usage across all turns in this conversation */}
-          <ConversationUsageBar messages={activeMessages} />
           {turns.map((turn, idx) => (
             <TurnRenderer
               key={turn.type === 'user' ? turn.message.id : turn.messages[0].id}
@@ -551,49 +558,43 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   }
 
   return (
-    <VirtuosoContext.Provider value={{ usageBarProps: { messages: activeMessages }, footerNode: footer }}>
-      <div className="min-h-0 px-2 py-3 sm:px-4 sm:py-4">
-        <div className="mx-auto w-full max-w-3xl px-3 sm:px-0">
-          <Virtuoso
-            ref={virtuosoRef}
-            customScrollParent={scrollParent ?? undefined}
-            data={turns}
-            computeItemKey={(_index, turn) => (turn.type === 'user' ? turn.message.id : turn.messages[0].id)}
-            initialTopMostItemIndex={Math.max(0, turns.length - 1)}
-            followOutput={() => (isUserAtBottom ? 'smooth' : false)}
-            atBottomStateChange={setIsUserAtBottom}
-            increaseViewportBy={INCREASE_VIEWPORT_BY}
-            scrollSeekConfiguration={scrollSeekConfiguration}
-            components={{
-              Header: VirtualHeader,
-              Footer: VirtualFooter,
-              ScrollSeekPlaceholder: TurnPlaceholder,
-            }}
-            itemContent={(index, turn) => (
-              <TurnRenderer
-                turn={turn}
-                turnIndex={index}
-                ctx={renderCtx}
-                {...sharedTurnProps}
-              />
-            )}
-          />
-        </div>
+    <div className="min-h-0 px-2 py-3 sm:px-4 sm:py-4">
+      <div className="mx-auto w-full max-w-3xl">
+        <Virtuoso
+          ref={virtuosoRef}
+          customScrollParent={scrollParent ?? undefined}
+          data={turns}
+          computeItemKey={(_index, turn) => (turn.type === 'user' ? turn.message.id : turn.messages[0].id)}
+          initialTopMostItemIndex={Math.max(0, turns.length - 1)}
+          followOutput={() => (isUserAtBottom ? 'smooth' : false)}
+          atBottomStateChange={setIsUserAtBottom}
+          increaseViewportBy={INCREASE_VIEWPORT_BY}
+          scrollSeekConfiguration={scrollSeekConfiguration}
+          components={{
+            Footer: VirtuosoFooter,
+            ScrollSeekPlaceholder: TurnPlaceholder,
+          }}
+          itemContent={(index, turn) => (
+            <TurnRenderer
+              turn={turn}
+              turnIndex={index}
+              ctx={renderCtx}
+              {...sharedTurnProps}
+            />
+          )}
+        />
+        {/* NOTE: no footer JSX after the list on this path — the draft bubble /
+            queued messages / messagesEnd div must live INSIDE Virtuoso's Footer
+            slot so the scroller's scrollHeight includes them (followOutput and
+            messagesEndRef both depend on that). */}
       </div>
-    </VirtuosoContext.Provider>
+    </div>
   )
 }))
 
-/** Renders the cumulative token usage bar as the Virtuoso list header. */
-function VirtualHeader() {
-  const { usageBarProps } = useContext(VirtuosoContext)
-  return <ConversationUsageBar messages={usageBarProps.messages} />
-}
-
 /** Renders the draft bubble / queued messages as the Virtuoso list footer. */
-function VirtualFooter() {
-  const { footerNode } = useContext(VirtuosoContext)
-  return <>{footerNode}</>
+function VirtuosoFooter() {
+  return <>{moduleLevelFooter}</>
 }
 
 /** Lightweight placeholder shown for off-window turns during fast scrolling. */
