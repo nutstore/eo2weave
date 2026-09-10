@@ -168,7 +168,6 @@ export function useConversationLogic() {
       setDraftTextToRestore(null)
       draftConvIdRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     // setMentionedAgentIds / setSelectedFiles are useState setters (stable refs).
     // Values are read via refs to avoid stale closures without re-triggering.
   }, [convId])
@@ -548,7 +547,7 @@ export function useConversationLogic() {
     [t]
   )
 
-  const handleSlashCommand = useCallback(async (command: string, arg?: string) => {
+  const handleSlashCommand = useCallback(async (command: string) => {
     if (command === 'compact') {
       let targetConvId = convIdRef.current
       if (!targetConvId) {
@@ -558,26 +557,6 @@ export function useConversationLogic() {
         await setActive(targetConvId)
       }
       await useConversationStore.getState().compactConversation(targetConvId)
-    }
-    if (command === 'image') {
-      let targetConvId = convIdRef.current
-      if (!targetConvId) {
-        const { createNew, setActive } = useConversationStore.getState()
-        const conv = createNew('/image')
-        targetConvId = conv.id
-        await setActive(targetConvId)
-      }
-      // Parse --ar <ratio> from the argument (e.g. "/image --ar 16:9 熊猫")
-      let prompt = arg!
-      let aspectRatio: string | undefined
-      const arMatch = prompt.match(/--ar\s+(\S+)/)
-      if (arMatch) {
-        aspectRatio = arMatch[1]
-        prompt = prompt.replace(/--ar\s+\S+/, '').trim()
-      }
-      await useConversationStore
-        .getState()
-        .runImageGeneration(targetConvId, prompt, { aspectRatio })
     }
   }, [])
 
@@ -597,21 +576,25 @@ export function useConversationLogic() {
       return
     }
 
-    // /image <prompt> — AI image generation
-    if (inputTrimmed.startsWith('/image')) {
-      const prompt = inputTrimmed.slice(6).trim()
-      setInput('')
-      setMentionedAgentIds([])
-      setInputResetToken((v) => v + 1)
-      if (!prompt) {
-        toast.error(t('conversation.imageGen.emptyPrompt'))
+    // Legacy /image command — image generation now runs through the agent
+    // (generate_image tool). Show a one-time migration hint and keep the
+    // input untouched; on later attempts the text falls through and is sent
+    // as a normal message the agent can interpret.
+    if (inputTrimmed === '/image' || inputTrimmed.startsWith('/image ')) {
+      let hintShown = false
+      try {
+        hintShown = localStorage.getItem('image-command-migration-hint') === '1'
+        if (!hintShown) localStorage.setItem('image-command-migration-hint', '1')
+      } catch {
+        // Storage unavailable (private mode etc.) — show the hint every time
+      }
+      if (!hintShown) {
+        toast.info(t('conversation.imageGen.migrationHint'))
         return
       }
-      await handleSlashCommand('image', prompt)
-      return
     }
 
-    let textToSend = inputTrimmed
+    const textToSend = inputTrimmed
       ? inputRef.current
       : currentConvId
         ? getSuggestedFollowUp(currentConvId)
@@ -693,12 +676,17 @@ export function useConversationLogic() {
     [editAndResendUserMessage]
   )
 
-  const handleRegenerate: ((id: string) => void) | undefined = convId
-    ? useCallback(
-        (id: string) => regenerateUserMessage(convId, id),
-        [convId, regenerateUserMessage]
-      )
-    : undefined
+  // Always call unconditionally (rules-of-hooks); when convId is absent the
+  // callback degrades to a no-op, matching the old conditional hook contract
+  // (undefined) observed by consumers — they only invoke it with a message id.
+  const handleRegenerate = useCallback(
+    (id: string) => {
+      const currentConvId = convId
+      if (!currentConvId) return
+      regenerateUserMessage(currentConvId, id)
+    },
+    [convId, regenerateUserMessage]
+  )
 
   return {
     // Local UI state

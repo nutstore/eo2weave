@@ -217,10 +217,12 @@ export function AssetList({ assets, compact, onPreview }: { assets: AssetMeta[];
  * Collapses when there are more than 3 files.
  */
 export function AssetCompactList({ assets, onPreview }: { assets: AssetMeta[]; onPreview?: (name: string, blob: Blob) => void }) {
+  // Hooks must run unconditionally (rules-of-hooks) — early return stays below.
+  const [expanded, setExpanded] = useState(false)
+
   if (!assets || assets.length === 0) return null
 
   const FOLD_THRESHOLD = 3
-  const [expanded, setExpanded] = useState(false)
   const needsFold = assets.length > FOLD_THRESHOLD
   const visibleAssets = (needsFold && !expanded) ? assets.slice(0, FOLD_THRESHOLD) : assets
   const hiddenCount = assets.length - FOLD_THRESHOLD

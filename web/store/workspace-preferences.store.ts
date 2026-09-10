@@ -74,6 +74,8 @@ export interface WorkspacePreferences {
   pinnedWorkspaceIds: string[]
   /** File preview display mode: 'split' = side-by-side with conversation (default), 'overlay' = full-width drawer on top */
   filePreviewMode: 'split' | 'overlay'
+  /** User dismissed the input-area "generate image" quick chip — persistently remembered. */
+  imageGenChipDismissed: boolean
 }
 
 /**
@@ -106,6 +108,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferences = {
   autoApplyOnRunCompleteByWorkspace: {},
   pinnedWorkspaceIds: [],
   filePreviewMode: 'split',
+  imageGenChipDismissed: false,
 }
 
 /**
@@ -152,6 +155,9 @@ interface WorkspacePreferencesState extends WorkspacePreferences {
 
   // File preview mode actions
   setFilePreviewMode: (mode: 'split' | 'overlay') => void
+
+  // Quick-chip dismissal (image generation)
+  setImageGenChipDismissed: (dismissed: boolean) => void
 
   // Reset actions
   resetAll: () => void
@@ -317,6 +323,12 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
           state.filePreviewMode = mode
         }),
 
+      // Quick-chip dismissal (image generation)
+      setImageGenChipDismissed: (dismissed) =>
+        set((state) => {
+          state.imageGenChipDismissed = dismissed
+        }),
+
       // Reset actions
       resetAll: () =>
         set((state) => {
@@ -344,6 +356,7 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
         autoApplyOnRunCompleteByWorkspace: state.autoApplyOnRunCompleteByWorkspace,
         pinnedWorkspaceIds: state.pinnedWorkspaceIds,
         filePreviewMode: state.filePreviewMode,
+        imageGenChipDismissed: state.imageGenChipDismissed,
       }),
       migrate: (persistedState) => {
         const state = (persistedState || {}) as Partial<WorkspacePreferences>

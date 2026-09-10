@@ -788,7 +788,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               // Intentionally NOT awaited so switchWorkspace returns quickly —
               // opfs.store.refresh() has its own stale-result guard that drops
               // the update if the user has already moved on to another workspace.
-              ;(async () => {
+              (async () => {
                 try {
                   const { useOPFSStore } = await import('./opfs.store')
                   await useOPFSStore.getState().refresh()

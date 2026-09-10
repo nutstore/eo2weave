@@ -899,9 +899,6 @@ interface ConversationState {
   /** Compact conversation: generate context summary and stop (no agent loop). */
   compactConversation: (conversationId: string) => Promise<void>
 
-  /** Generate an image from a text prompt using the /image command. */
-  runImageGeneration: (conversationId: string, prompt: string, options?: { aspectRatio?: string; isRegeneration?: boolean }) => Promise<void>
-
   // Runtime state actions
   setConversationStatus: (id: string, status: ConversationStatus) => void
   appendStreamingContent: (id: string, delta: string) => void
@@ -1562,42 +1559,6 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 
       const originalContent = conv.messages[userMsgIndex]?.content?.trim()
 
-      // If the message to regenerate is a slash command, we need to dispatch the
-      // correct handler instead of just running the generic agent.
-      // IMPORTANT: We must do this *BEFORE* the state update, because the handlers
-      // themselves will manage the placeholder/streaming state.
-      if (originalContent?.startsWith('/image')) {
-        // First, clean up the old messages synchronously inside a `set`
-        set((draft) => {
-          const conv = draft.conversations.find((c) => c.id === conversationId)
-          if (!conv) return
-          if (idsToDelete.size > 0) {
-            conv.messages = conv.messages.filter((m) => !idsToDelete.has(m.id))
-          }
-          get().invalidateCompressionBaseline(conv, userMsgTimestamp)
-          conv.status = 'idle'
-          conv.error = null
-          conv.updatedAt = Date.now()
-        })
-        // Persist the cleanup
-        const updatedConv = get().conversations.find((c) => c.id === conversationId)
-        if (updatedConv) {
-          persistMessageReplace(conversationId, updatedConv.messages).catch((error) => {
-            console.error('[conversation.store] Failed to persist on regenerate (pre-image):', error)
-          })
-        }
-
-        // Then, run the image generation handler
-        const prompt = originalContent.slice(6).trim()
-        if (prompt) {
-          // Pass `isRegeneration: true` to prevent creating a duplicate user message
-          get().runImageGeneration(conversationId, prompt, { isRegeneration: true })
-        } else {
-          toast.error(i18nText('conversation.imageGen.emptyPromptRegenerate', '图片描述为空，无法重新生成'))
-        }
-        return
-      }
-
       // For non-command messages, do the cleanup and run the standard agent
       set((draft) => {
         const conv = draft.conversations.find((c) => c.id === conversationId)
@@ -1607,14 +1568,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           conv.messages = conv.messages.filter((m) => !idsToDelete.has(m.id))
         }
         get().invalidateCompressionBaseline(conv, userMsgTimestamp)
-        // Reset streaming state
         conv.status = 'idle'
-        conv.streamingContent = ''
-        conv.streamingReasoning = ''
-        conv.completedContent = null
-        conv.completedReasoning = null
-        conv.currentToolCall = null
-        conv.activeToolCalls = []
         conv.error = null
         conv.updatedAt = Date.now()
       })
@@ -1721,15 +1675,6 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 
       // If the edited message is a slash command (e.g. /compact),
       // dispatch the corresponding handler instead of runAgent.
-      if (newContent.trim().startsWith('/image')) {
-        const prompt = newContent.trim().slice(6).trim()
-        if (prompt) {
-          get().runImageGeneration(conversationId, prompt)
-        } else {
-          toast.error(i18nText('conversation.imageGen.emptyPrompt', '请输入图片描述，例如: /image 一只橘色的猫'))
-        }
-        return
-      }
       if (newContent.trim() === '/compact') {
         get().compactConversation(conversationId)
         return
@@ -4332,154 +4277,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       }
     },
 
-    // ── Image generation (/image command) ──
-    runImageGeneration: async (conversationId: string, prompt: string, options?: { aspectRatio?: string; isRegeneration?: boolean }) => {
-      const state = get()
-      if (state.isConversationRunning(conversationId)) {
-        toast.error(i18nText('conversation.imageGen.waitRunning', '请等待当前任务完成'))
-        return
-      }
-
-      const conv = state.conversations.find((c) => c.id === conversationId)
-      if (!conv) return
-
-      // 1. Resolve provider config (reuse same logic as runAgent)
-      const settingsState = useSettingsStore.getState()
-      const effectiveConfig = settingsState.getEffectiveProviderConfig()
-      if (!effectiveConfig) {
-        toast.error(i18nText('conversation.imageGen.configureProvider', '请先配置服务商'))
-        return
-      }
-
-      const apiKeyRepo = getApiKeyRepository()
-      const apiKey = await apiKeyRepo.load(effectiveConfig.apiKeyProviderKey)
-      if (!apiKey) {
-        toast.error(i18nText('conversation.imageGen.apiKeyMissing', 'API Key 未设置，请先在设置中配置'))
-        return
-      }
-
-      // 2. Create user message (if not regenerating) and placeholder assistant message
-      const { createUserMessage, createAssistantMessage } = await import('@/agent/message-types')
-      const { normalizeBaseUrl } = await import('@/agent/llm/pi-ai-url-utils')
-
-      const newMessages = [...conv.messages]
-      if (!options?.isRegeneration) {
-        const userMsg = createUserMessage(`/image ${prompt}`)
-        newMessages.push(userMsg)
-      }
-
-      const assistantMsg = createAssistantMessage(i18nText('conversation.imageGen.generating', '正在生成图片...'))
-      newMessages.push(assistantMsg)
-
-      set((state) => {
-        const c = state.conversations.find((c) => c.id === conversationId)
-        if (c) {
-          c.messages = newMessages
-          c.status = 'streaming'
-          c.updatedAt = Date.now()
-        }
-      })
-
-      // Persist user + placeholder messages
-      persistMessageReplace(conversationId, newMessages).catch((err) => {
-        console.error('[conversation.store] Failed to persist image gen messages:', err)
-      })
-
-      // 3. Set runtime streaming state
-      useConversationRuntimeStore.setState((state) => {
-        const r = ensureRuntime(state, conversationId)
-        r.status = 'streaming'
-        r.isContentStreaming = true
-        r.streamingContent = i18nText('conversation.imageGen.generating', '正在生成图片...')
-      })
-
-      // 4. Call image generation
-      try {
-        const { generateImage } = await import('@/agent/llm/image-gen')
-        const imageModelId = settingsState.imageGenModel || 'google/gemini-2.5-flash-image'
-        const aspectRatio = options?.aspectRatio || settingsState.imageGenAspectRatio || '1:1'
-        const result = await generateImage(prompt, {
-          apiKey,
-          baseUrl: normalizeBaseUrl(effectiveConfig.baseUrl),
-          modelId: imageModelId,
-          providerKey: effectiveConfig.apiKeyProviderKey,
-          aspectRatio,
-        })
-
-        // 5. Parse result
-        const textParts: string[] = []
-        const images: Array<{ data: string; mimeType: string }> = []
-        for (const block of result.output) {
-          if (block.type === 'text') textParts.push(block.text)
-          if (block.type === 'image' && block.data && block.mimeType) {
-            images.push({ data: block.data, mimeType: block.mimeType })
-          }
-        }
-
-        if (result.stopReason === 'error') {
-          throw new Error(result.errorMessage || i18nText('conversation.imageGen.failed', '图片生成失败').replace('{error}', ''))
-        }
-
-        // 6. Update assistant message with images
-        const contentText = textParts.join('') || (images.length > 0 ? i18nText('conversation.imageGen.generated', '已生成图片') : i18nText('conversation.imageGen.noResult', '图片生成完成（无结果）'))
-        set((state) => {
-          const c = state.conversations.find((c) => c.id === conversationId)
-          if (c) {
-            const msgIdx = c.messages.findIndex((m) => m.id === assistantMsg.id)
-            if (msgIdx >= 0) {
-              const newMessages = [...c.messages]
-              newMessages[msgIdx] = {
-                ...newMessages[msgIdx],
-                content: contentText,
-                images: images.length > 0 ? images : undefined,
-              }
-              c.messages = newMessages
-            }
-            c.status = 'idle'
-            c.updatedAt = Date.now()
-          }
-        })
-
-        // Persist updated messages
-        const updatedConv = get().conversations.find((c) => c.id === conversationId)
-        if (updatedConv) {
-          persistMessageReplace(conversationId, updatedConv.messages).catch((err) => {
-            console.error('[conversation.store] Failed to persist image result:', err)
-          })
-        }
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : i18nText('conversation.imageGen.failed', '图片生成失败').replace('{error}', '')
-        console.error('[conversation.store] Image generation error:', error)
-
-        set((state) => {
-          const c = state.conversations.find((c) => c.id === conversationId)
-          if (c) {
-            const msgIdx = c.messages.findIndex((m) => m.id === assistantMsg.id)
-            if (msgIdx >= 0) {
-              c.messages[msgIdx] = {
-                ...c.messages[msgIdx],
-                content: i18nText('conversation.imageGen.failed', '图片生成失败').replace('{error}', errorMsg),
-              }
-            }
-            c.status = 'idle'
-            c.error = errorMsg
-            c.updatedAt = Date.now()
-          }
-        })
-
-        toast.error(i18nText('conversation.imageGen.failed', '图片生成失败').replace('{error}', errorMsg))
-      } finally {
-        // Reset runtime state
-        useConversationRuntimeStore.setState((state) => {
-          const r = ensureRuntime(state, conversationId)
-          r.status = 'idle'
-          r.isContentStreaming = false
-          r.streamingContent = ''
-        })
-      }
-    },
-
-    // Runtime state actions
+    // ── Runtime state actions ──
     setConversationStatus: (id: string, status: ConversationStatus) => {
       set((state) => {
         const c = state.conversations.find((c) => c.id === id)

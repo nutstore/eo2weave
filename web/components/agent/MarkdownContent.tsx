@@ -195,7 +195,6 @@ function preserveCodeFenceMeta() {
   return (tree: MarkdownAstNode) => visit(tree)
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 // remark-breaks converts single line breaks (\n) into <br>, so poetry,
 // lyrics, and other content that relies on one-line-per-statement renders
 // correctly instead of being merged into a single paragraph.

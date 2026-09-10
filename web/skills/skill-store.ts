@@ -218,6 +218,7 @@ async function streamToBlob(
   const chunks: Uint8Array[] = []
   let loaded = 0
 
+  // eslint-disable-next-line no-constant-condition -- reader.read() loop with an explicit break on done
   while (true) {
     const { done, value } = await reader.read()
     if (done) break

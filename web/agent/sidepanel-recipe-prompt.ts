@@ -114,14 +114,12 @@ export async function getPendingRecipePrompt(): Promise<RecipePromptStatus | nul
   const { getSidePanelBindingId } = await import('@/agent/workspace-assistant-context')
   const binding = getSidePanelBindingId()
   if (!binding) {
-    // eslint-disable-next-line no-console
     console.info('[SidePanelRecipePrompt] skip: no side-panel binding (not side-panel mode)')
     return null
   }
 
   const agentWeb = (globalThis as { __agentWeb?: AgentWebRecipeBridge }).__agentWeb
   if (!agentWeb?.recipeCheckStatus) {
-    // eslint-disable-next-line no-console
     console.warn('[SidePanelRecipePrompt] skip: extension bridge unavailable', {
       hasAgentWeb: !!agentWeb,
       hasRecipeCheckStatus: !!agentWeb?.recipeCheckStatus,
@@ -143,7 +141,6 @@ export async function getPendingRecipePrompt(): Promise<RecipePromptStatus | nul
     return null
   }
   if (!status || status.ok === false) {
-    // eslint-disable-next-line no-console
     console.warn('[SidePanelRecipePrompt] skip: bridge returned failure/timeout', {
       status,
       hint: 'UNAUTHORIZED_TARGET = binding/trusted-origin check failed in background; null = 4s probe timeout',
@@ -151,19 +148,16 @@ export async function getPendingRecipePrompt(): Promise<RecipePromptStatus | nul
     return null
   }
   if (!status.applicable || !status.recipe || typeof status.recipe.id !== 'string') {
-    // eslint-disable-next-line no-console
     console.info('[SidePanelRecipePrompt] skip: no recipe matches bound tab URL', {
       status,
     })
     return null
   }
   if (status.enabled) {
-    // eslint-disable-next-line no-console
     console.info('[SidePanelRecipePrompt] skip: recipe already enabled', status.recipe?.id)
     return null
   }
   if (isRecipePromptDismissed(status.recipe.id)) {
-    // eslint-disable-next-line no-console
     console.info('[SidePanelRecipePrompt] skip: within dismissal cooldown', status.recipe.id)
     return null
   }
@@ -256,5 +250,5 @@ export async function debugRecipeProbe(): Promise<Record<string, unknown>> {
 }
 
 if (typeof window !== 'undefined') {
-  ;(window as unknown as { __cwDebugRecipeProbe?: typeof debugRecipeProbe }).__cwDebugRecipeProbe = debugRecipeProbe
+  (window as unknown as { __cwDebugRecipeProbe?: typeof debugRecipeProbe }).__cwDebugRecipeProbe = debugRecipeProbe
 }

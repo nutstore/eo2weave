@@ -177,11 +177,4 @@ export function registerBuiltinSlashCommands(): void {
     description: '压缩上下文，释放 token 空间',
     source: 'builtin',
   })
-  registerSlashCommand({
-    id: 'image',
-    label: 'Image',
-    description: 'AI 图片生成（可选 --ar 指定宽高比，如 /image --ar 16:9 风景画）',
-    source: 'builtin',
-    icon: 'Image',
-  })
 }

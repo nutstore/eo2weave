@@ -18,6 +18,7 @@ export interface PluginDownloadSaveResult {
 
 function sanitizeFileName(name: string): string {
   const normalized = name.trim().replace(/[\\/]/g, '_').replace(/\s+/g, ' ')
+  // eslint-disable-next-line no-control-regex -- intentionally strip ASCII control chars (NUL etc.) from downloaded file names
   const safe = normalized.replace(/[<>:"|?*\x00-\x1F]/g, '_')
   return safe || `download_${Date.now()}`
 }
@@ -57,6 +58,7 @@ async function resolveUniqueAssetPath(backend: AssetsBackend, path: string): Pro
   const ext = dotIndex > 0 ? fileName.slice(dotIndex) : ''
 
   let index = 1
+  // eslint-disable-next-line no-constant-condition -- probe candidate names until a free path is found
   while (true) {
     const candidateName = `${base}-${index}${ext}`
     const candidate = dir ? `${dir}/${candidateName}` : candidateName
@@ -109,8 +111,12 @@ function patchResultForAI(
   vfsPath: string,
   fileName: string
 ): Record<string, unknown> {
-  const { download_url: _downloadUrl, original_download_url: _originalDownloadUrl, ...rest } =
+  // Omit download_url/original_download_url from the result exposed to the AI;
+  // the local file copy makes those remote URLs obsolete.
+  const { download_url: _omitDownloadUrl, original_download_url: _omitOriginalUrl, ...rest } =
     originalResult
+  void _omitDownloadUrl
+  void _omitOriginalUrl
 
   const saveDir = vfsPath.slice(0, Math.max(vfsPath.lastIndexOf('/'), 0))
   return {

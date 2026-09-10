@@ -295,7 +295,11 @@ function rmrf(path) {
   try {
     const stat = pyodide.FS.stat(path)
     if (!pyodide.FS.isDir(stat.mode)) {
-      try { pyodide.FS.unlink(path) } catch {}
+      try {
+        pyodide.FS.unlink(path)
+      } catch {
+        // ignore: entry already gone, nothing to clean up
+      }
       return
     }
   } catch {
@@ -307,9 +311,15 @@ function rmrf(path) {
     for (const entry of entries) {
       rmrf(`${path}/${entry}`)
     }
-  } catch {}
+  } catch {
+    // ignore: readdir failed mid-recursion, best-effort cleanup
+  }
 
-  try { pyodide.FS.rmdir(path) } catch {}
+  try {
+    pyodide.FS.rmdir(path)
+  } catch {
+    // ignore: directory already removed or still in use
+  }
 }
 
 /**
@@ -396,7 +406,8 @@ async function ensureAssetsMounted(dirHandle) {
         })
         console.log('[Pyodide Worker] /mnt_assets refreshed via syncfs')
         return
-      } catch (syncErr) {
+      } catch {
+        // ignore: refresh failure is non-fatal, fall through to a full remount below
       }
     }
 
@@ -515,12 +526,6 @@ async function syncFromOPFSRaw() {
     console.warn('[Pyodide Worker] syncfs(true) failed:', msg)
     throw error
   }
-}
-
-async function syncFromOPFS() {
-  return runExclusiveFSOperation(async () => {
-    await syncFromOPFSRaw()
-  })
 }
 
 /**

@@ -16,6 +16,7 @@
  */
 
 // Matches any character outside the Latin-1 range (U+0000 – U+00FF).
+// eslint-disable-next-line no-control-regex -- intentional: control chars are part of Latin-1 (U+0000-U+00FF) and are accepted; only non-Latin-1 code points are rejected
 const NON_LATIN1_RE = /[^\u0000-\u00ff]/
 
 /**

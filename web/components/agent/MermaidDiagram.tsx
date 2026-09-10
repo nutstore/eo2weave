@@ -83,7 +83,7 @@ function loadMermaid(): Promise<MermaidApi> {
  * when zoomed to 2000% — exactly the "cannot view after zoom" bug).
  */
 function parseViewBox(svg: string): { width: number; height: number } | null {
-  const match = /viewBox=\"[\d.\-+eE]+\s+[\d.\-+eE]+\s+([\d.]+)\s+([\d.]+)\"/.exec(svg)
+  const match = /viewBox="[\d.\-+eE]+\s+[\d.\-+eE]+\s+([\d.]+)\s+([\d.]+)"/.exec(svg)
   return match ? { width: Number(match[1]), height: Number(match[2]) } : null
 }
 
@@ -106,7 +106,7 @@ export function mermaidViewBoxWidth(svg: string): number | null {
  * (banner + source) instead.
  */
 export function isMermaidErrorSvg(svg: string): boolean {
-  return svg.includes('Syntax error in text') || /class=\"error-(text|icon)\"/.test(svg)
+  return svg.includes('Syntax error in text') || /class="error-(text|icon)"/.test(svg)
 }
 
 /**

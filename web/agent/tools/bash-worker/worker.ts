@@ -258,7 +258,7 @@ function postExecError(requestId: number, error: string): void {
 
 /** Type-safe postMessage helper. */
 function postToMain(msg: FromWorkerMessage): void {
-  ;(self as DedicatedWorkerGlobalScope).postMessage(msg)
+  (self as DedicatedWorkerGlobalScope).postMessage(msg)
 }
 
 // Signal readiness

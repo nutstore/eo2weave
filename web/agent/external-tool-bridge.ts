@@ -141,7 +141,7 @@ export function collectAllExternalTools(): UnifiedToolEntry[] {
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[_:.\/\-]/g, ' ')
+    .replace(/[_:./-]/g, ' ')
     .split(/\s+/)
     .filter(t => t.length > 0)
 }
@@ -1105,7 +1105,7 @@ async function executeWebMCPTool(
         try {
           const { useAssetInventoryStore } = await import('@/store/asset-inventory.store')
           useAssetInventoryStore.getState().refresh().catch(() => {})
-        } catch {}
+        } catch { /* ignore: best-effort refresh, asset save already succeeded */ }
 
         return toolOkJson('call_tool', {
           result: wrapUntrustedContent(saveResult.patchedResult, {

@@ -149,16 +149,17 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
   // Determine which editor to use based on skill source.
   // user/builtin → SkillFileEditor (VSCode-style file tree + Monaco)
   // project/import → SkillEditor (form-based, since files are on native FS not OPFS)
-  const useFileEditor = (skill: SkillMetadata) => skill.source === 'user' || skill.source === 'builtin'
+  // Plain predicate (no hooks) — the "use" prefix would trip rules-of-hooks.
+  const resolveFileEditor = (skill: SkillMetadata) => skill.source === 'user' || skill.source === 'builtin'
 
   const handleView = useCallback((skill: SkillMetadata) => {
     setEditingSkill(skill); setEditorMode('view')
-    if (useFileEditor(skill)) setFileEditorOpen(true)
+    if (resolveFileEditor(skill)) setFileEditorOpen(true)
     else setFormEditorOpen(true)
   }, [])
   const handleEdit = useCallback((skill: SkillMetadata) => {
     setEditingSkill(skill); setEditorMode('edit')
-    if (useFileEditor(skill)) setFileEditorOpen(true)
+    if (resolveFileEditor(skill)) setFileEditorOpen(true)
     else setFormEditorOpen(true)
   }, [])
   const handleCreateNew = useCallback(() => { setCreateDialogOpen(true) }, [])
@@ -357,7 +358,7 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
 
       {/* Skill File Editor — VSCode-style file tree + Monaco editor.
           Used for user and builtin skills (stored in OPFS .skills/). */}
-      {editingSkill && useFileEditor(editingSkill) && (
+      {editingSkill && resolveFileEditor(editingSkill) && (
         <SkillFileEditor skill={editingSkill} open={fileEditorOpen} onClose={handleEditorClose} />
       )}
 

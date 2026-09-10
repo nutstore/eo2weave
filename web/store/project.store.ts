@@ -203,7 +203,7 @@ export const useProjectStore = create<ProjectState>()(
         // PR-B: active project is URL-driven, NOT restored from a persisted
         // singleton. Leave activeProjectId empty here; App.tsx's syncFromRoute
         // (driven by the URL :projectId param) sets it after init.
-        let normalizedActiveProjectId = ''
+        const normalizedActiveProjectId = ''
 
         // Dev-phase hard cleanup: remove legacy seeded default project if it exists.
         const hasLegacyDefault = normalizedProjects.some((project) => project.id === DEFAULT_PROJECT_ID)

@@ -29,7 +29,11 @@ interface AgentWebBridge {
 
 function getBridge(): AgentWebBridge | null {
   if (typeof window === 'undefined') return null
-  const w = window as unknown as { __agentWeb?: { nativeHostCall?: Function } }
+  const w = window as unknown as {
+    __agentWeb?: {
+      nativeHostCall?: (payload: Record<string, unknown>) => Promise<unknown>
+    }
+  }
   if (w.__agentWeb?.nativeHostCall && typeof w.__agentWeb.nativeHostCall === 'function') {
     return {
       nativeHostCall: (payload: Record<string, unknown>) =>

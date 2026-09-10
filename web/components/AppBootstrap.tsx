@@ -499,12 +499,10 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   // bridge probe (getPendingRecipePrompt returns null without a binding).
   const [recipePrompt, setRecipePrompt] = useState<RecipePromptStatus | null>(null)
   const probeRecipePrompt = useCallback(() => {
-    // eslint-disable-next-line no-console
     console.info('[SidePanelRecipePrompt] probing for pending recipe opt-in…')
     getPendingRecipePrompt()
       .then((status) => {
         if (status) {
-          // eslint-disable-next-line no-console
           console.info('[SidePanelRecipePrompt] showing opt-in modal for', status.recipe?.id)
           setRecipePrompt(status)
         }

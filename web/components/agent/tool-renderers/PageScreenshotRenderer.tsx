@@ -90,6 +90,9 @@ registerRenderer({
     )
   },
   Detail(ctx) {
+    // Hooks must run unconditionally (rules-of-hooks) — early returns stay below.
+    const [loaded, setLoaded] = useState(false)
+
     if (ctx.isError) {
       return (
         <div className="px-3 py-2">
@@ -120,12 +123,10 @@ registerRenderer({
     }
 
     const src = imagePartToDataUrl(img)
-    const [loaded, setLoaded] = useState(false)
 
     return (
       <div className="px-3 py-2 space-y-2">
         <div className="rounded-md overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900">
-          {/* eslint-disable-next-line jsx-a11y/alt-text */}
           <img
             src={src}
             alt="Screenshot of the current page"

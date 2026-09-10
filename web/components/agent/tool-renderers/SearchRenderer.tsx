@@ -93,11 +93,12 @@ registerRenderer({
     )
   },
   Detail(ctx) {
+    // Hooks must run unconditionally (rules-of-hooks) — early returns stay below.
+    const { files: fileResults, loading: overflowLoading, error: overflowError } = useOverflowFiles(ctx)
     if (ctx.isError) {
       return <ErrorDetail ctx={ctx} />
     }
 
-    const { files: fileResults, loading: overflowLoading, error: overflowError } = useOverflowFiles(ctx)
     const query = typeof ctx.args.query === 'string' ? ctx.args.query : ''
     const params = extractSearchParams(ctx)
 

@@ -104,10 +104,14 @@ export const opfsSkillsAdapter: PlatformAdapter = {
     try {
       await dir.removeEntry(fileName)
       return
-    } catch {}
+    } catch {
+      // ignore: not a plain file, fall through to recursive directory removal
+    }
     try {
       await dir.removeEntry(fileName, { recursive: true })
-    } catch {}
+    } catch {
+      // ignore: entry already gone, best-effort removal
+    }
   },
 
   async readLocalManifest(): Promise<BuiltinSkillsManifest | null> {

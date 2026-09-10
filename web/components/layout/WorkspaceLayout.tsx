@@ -271,7 +271,6 @@ export function WorkspaceLayout({
     // loadFromDB ran with an empty workspace list — when the store later
     // settles, this effect re-fires and retries.
     if (!loaded && workspaceReady) loadFromDB()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, loadError, loadFromDB, workspaceReady])
 
   // Pre-initialize Pyodide runtime in the background so first Python execution is fast

@@ -342,7 +342,7 @@ export class AgentLoop {
       })
 
       if (this.onLoopComplete) {
-        try { await this.onLoopComplete() } catch {}
+        try { await this.onLoopComplete() } catch { /* ignore: best-effort notification, never fail the loop */ }
       }
 
       callbacks?.onComplete?.(resultMessages)

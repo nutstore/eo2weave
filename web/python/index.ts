@@ -116,5 +116,5 @@ import { pythonExecutor } from './api'
  * This allows the Agent to execute Python code through the global scope.
  */
 if (typeof window !== 'undefined') {
-  ;(window as any).pythonExecutor = pythonExecutor
+  (window as any).pythonExecutor = pythonExecutor
 }

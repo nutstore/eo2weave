@@ -52,7 +52,6 @@ export function useStreamingMarkdown(
       return
     }
     setState((prev) => streamingMarkdownReducer(prev, { type: 'token', content, now: Date.now() }))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, streaming])
 
   // ── Derived timer pump: schedule the earliest pending tick ──

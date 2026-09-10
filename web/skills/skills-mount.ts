@@ -32,12 +32,10 @@ export async function isSkillsDirHealthy(): Promise<boolean> {
   try {
     const skillsRoot = await getSkillsDirectoryHandle()
     const builtinDir = await skillsRoot.getDirectoryHandle('builtin')
-    let count = 0
-    for await (const _ of builtinDir.values()) {
-      count++
-      if (count > 0) break // At least one entry is enough
-    }
-    return count > 0
+    // At least one entry is enough — check via iterator length probe.
+    const iterator = builtinDir.values()
+    const probe = await iterator.next()
+    return !probe.done
   } catch {
     return false
   }

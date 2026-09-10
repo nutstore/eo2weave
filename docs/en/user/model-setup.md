@@ -36,6 +36,8 @@ Inside an expanded card you can also:
 
 > 💡 Prefer local models (free, data never leaves your machine)? See [Connect Ollama local models](./ollama.md).
 
+> 💡 Want to generate images in conversation? Currently OpenRouter-style providers only — see [Image Generation](./image-generation.md).
+
 ## Step 2: Pin your favorite models (optional)
 
 Pinned models are a curated subset of a provider's models. Once pinned, the top-bar model switcher shows only those models for faster switching; without pins, the switcher lists the provider's full built-in catalog.

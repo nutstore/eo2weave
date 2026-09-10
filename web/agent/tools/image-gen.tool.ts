@@ -312,5 +312,7 @@ export const imageGenPromptDoc: ToolPromptDoc = {
   category: 'file-ops',
   lines: [
     '- `generate_image(prompt, aspect_ratio?)` - Generate an image from a text description. Returns the asset path for markdown embedding. Supports aspect ratios: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3.',
+    '- Image-creation intent (user says 画/生成图片/插图/封面/logo/配图, or "draw"/"generate an image"/"illustration"/"cover"/"logo"): call `generate_image` in the SAME turn — no clarifying questions for simple requests, and never substitute a text description for the actual image.',
+    '- Pick aspect_ratio from context (banner/hero → 16:9, poster → 3:4, avatar/icon → 1:1); omit when the user does not imply a shape. Available in both Plan and Act modes.',
   ],
 }

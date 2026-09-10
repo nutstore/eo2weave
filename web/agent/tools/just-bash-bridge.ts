@@ -383,7 +383,7 @@ export class VfsBridgeFs {
         try {
           const result = await this.agentBackend.readFile(relPath, { encoding: 'binary' })
           agExisting = await this.toWritableContent(result.content) as Uint8Array
-        } catch {}
+        } catch { /* ignore: file may not exist yet, append to empty content */ }
         const agToAppend = typeof content === 'string' ? this.latin1StringToBytes(content) : content
         const combined = new Uint8Array(agExisting.length + agToAppend.length)
         combined.set(agExisting)
@@ -396,7 +396,7 @@ export class VfsBridgeFs {
           if (typeof result.content === 'string') agExisting = result.content
           else if (result.content instanceof Uint8Array) agExisting = new TextDecoder().decode(result.content)
           else if (result.content instanceof ArrayBuffer) agExisting = new TextDecoder().decode(result.content)
-        } catch {}
+        } catch { /* ignore: file may not exist yet, append to empty content */ }
         const agToAppend = typeof content === 'string' ? content : new TextDecoder().decode(content)
         await this.agentBackend.writeFile(relPath, agExisting + agToAppend)
       }
@@ -456,7 +456,7 @@ export class VfsBridgeFs {
       if (this.assetsBackend.exists) {
         try { return await this.assetsBackend.exists(relPath) } catch { return false }
       }
-      try { await this.assetsBackend.listDir(relPath); return true } catch {}
+      try { await this.assetsBackend.listDir(relPath); return true } catch { /* ignore: not a directory; readFile probe below decides */ }
       try { await this.assetsBackend.readFile(relPath); return true } catch { return false }
     }
 
@@ -468,7 +468,7 @@ export class VfsBridgeFs {
       if (this.agentBackend.exists) {
         try { return await this.agentBackend.exists(relPath) } catch { return false }
       }
-      try { await this.agentBackend.listDir(relPath); return true } catch {}
+      try { await this.agentBackend.listDir(relPath); return true } catch { /* ignore: not a directory; readFile probe below decides */ }
       try { await this.agentBackend.readFile(relPath); return true } catch { return false }
     }
 
@@ -536,11 +536,11 @@ export class VfsBridgeFs {
       try {
         const result = await this.assetsBackend.readFile(relPath)
         return { isFile: true, isDirectory: false, isSymbolicLink: false, mode: DEFAULT_FILE_MODE, size: result.size, mtime: result.mtime ? new Date(result.mtime) : new Date() }
-      } catch {}
+      } catch { /* ignore: fall through to directory probe */ }
       try {
         const entries = await this.assetsBackend.listDir(relPath)
         if (entries.length > 0) return { isFile: false, isDirectory: true, isSymbolicLink: false, mode: DEFAULT_DIR_MODE, size: 0, mtime: new Date() }
-      } catch {}
+      } catch { /* ignore: neither file nor directory, ENOENT below */ }
       throw new Error(`ENOENT: no such file or directory, stat '${path}'`)
     }
 
@@ -552,11 +552,11 @@ export class VfsBridgeFs {
       try {
         const result = await this.agentBackend.readFile(relPath)
         return { isFile: true, isDirectory: false, isSymbolicLink: false, mode: DEFAULT_FILE_MODE, size: result.size, mtime: result.mtime ? new Date(result.mtime) : new Date() }
-      } catch {}
+      } catch { /* ignore: fall through to directory probe */ }
       try {
         const entries = await this.agentBackend.listDir(relPath)
         if (entries.length > 0) return { isFile: false, isDirectory: true, isSymbolicLink: false, mode: DEFAULT_DIR_MODE, size: 0, mtime: new Date() }
-      } catch {}
+      } catch { /* ignore: neither file nor directory, ENOENT below */ }
       throw new Error(`ENOENT: no such file or directory, stat '${path}'`)
     }
 
@@ -720,7 +720,7 @@ export class VfsBridgeFs {
       const relPath = this.toAssetsRelative(normalized)
       if (!relPath) return
       if (options?.recursive && this.assetsBackend.deleteDir) {
-        try { await this.assetsBackend.deleteDir(relPath); this._cachedAllPaths = null; return } catch {}
+        try { await this.assetsBackend.deleteDir(relPath); this._cachedAllPaths = null; return } catch { /* ignore: not a directory; deleteFile probe below handles it */ }
       }
       try { await this.assetsBackend.deleteFile(relPath); this._cachedAllPaths = null } catch {
         if (!options?.force) throw new Error(`ENOENT: no such file or directory, rm '${path}'`)
@@ -735,7 +735,7 @@ export class VfsBridgeFs {
       const relPath = this.toAgentsRelative(normalized)
       if (!relPath) return
       if (options?.recursive && this.agentBackend.deleteDir) {
-        try { await this.agentBackend.deleteDir(relPath); this._cachedAllPaths = null; return } catch {}
+        try { await this.agentBackend.deleteDir(relPath); this._cachedAllPaths = null; return } catch { /* ignore: not a directory; deleteFile probe below handles it */ }
       }
       try { await this.agentBackend.deleteFile(relPath); this._cachedAllPaths = null } catch {
         if (!options?.force) throw new Error(`ENOENT: no such file or directory, rm '${path}'`)

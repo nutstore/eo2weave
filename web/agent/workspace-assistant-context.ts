@@ -112,7 +112,7 @@ function recoverFromSessionStorage() {
     _sidePanelBindingId = sessionStorage.getItem(SIDE_PANEL_BINDING_KEY)
     const persistedHostname = sessionStorage.getItem(SIDE_PANEL_HOSTNAME_KEY)
     if (persistedHostname) _sidePanelHostname = persistedHostname
-  } catch {}
+  } catch { /* ignore: sessionStorage unavailable, defaults are fine */ }
 }
 recoverFromSessionStorage()
 
@@ -161,7 +161,6 @@ export async function fetchSidePanelContext(): Promise<unknown | null> {
     }
   ).__agentWeb
   if (!agentWeb?.fetchBoundPageContext) {
-    // eslint-disable-next-line no-console
     console.warn(
       '[Workspace Assistant] window.__agentWeb.fetchBoundPageContext not available',
       {
@@ -185,7 +184,6 @@ export async function fetchSidePanelContext(): Promise<unknown | null> {
     ])
     return (result as unknown) ?? null
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.warn('[Workspace Assistant] fetch context failed:', err)
     return null
   }
@@ -205,7 +203,7 @@ function extractHostname(originLike: string | null): string | null {
   }
 }
 
-;(function captureTriggerOnLoad() {
+function captureTriggerOnLoad() {
   if (typeof window === 'undefined') return
 
   const url = new URL(window.location.href)
@@ -227,7 +225,7 @@ function extractHostname(originLike: string | null): string | null {
   try {
     sessionStorage.setItem(SIDE_PANEL_MODE_KEY, '1')
     sessionStorage.setItem(SIDE_PANEL_BINDING_KEY, bindingId)
-  } catch {}
+  } catch { /* ignore: sessionStorage unavailable, context stays in-memory only */ }
 
   const hostname = extractHostname(params.get('origin'))
   if (hostname) {
@@ -244,7 +242,9 @@ function extractHostname(originLike: string | null): string | null {
     document.title,
     window.location.pathname + cleanHash,
   )
-})()
+}
+
+captureTriggerOnLoad()
 
 //=============================================================================
 // AppReady handler — find-or-create the per-hostname project.
@@ -298,7 +298,7 @@ export async function handleWorkspaceAssistantOnReady(
           projectId = map[projectKey]
         }
       }
-    } catch {}
+    } catch { /* ignore: corrupt/unavailable storage, fall through to name lookup */ }
 
     if (!projectId) {
       const existing = store.projects.find((p) => p.name === projectKey)
@@ -316,7 +316,7 @@ export async function handleWorkspaceAssistantOnReady(
       const map = raw ? (JSON.parse(raw) as Record<string, string>) : {}
       map[projectKey] = projectId!
       localStorage.setItem(HOSTNAME_TO_PROJECT_KEY, JSON.stringify(map))
-    } catch {}
+    } catch { /* ignore: best-effort persistence, routing still proceeds */ }
 
     // Bare project URL (workspace resolved from store state by the route
     // sync hook). NOTE: this module intentionally has no top-level imports

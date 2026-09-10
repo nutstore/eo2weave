@@ -433,6 +433,7 @@ async function executeNode(
         let parsed: { score: number; passed: boolean; issues: string[] } = { score: 0, passed: false, issues: [] }
 
         // Review loop: evaluate → if fail and retry available → re-run upstream → re-evaluate
+        // eslint-disable-next-line no-constant-condition -- bounded retry loop, exits via break when review passes or retries are exhausted
         while (true) {
           const reviewPrompt = `你是质量评审员。请根据以下标准评审内容：\n\n验收标准：${criteria}\n\n待审内容：\n${currentUpstreamData}\n\n请返回 JSON 格式：{"score": 数字, "passed": 布尔, "issues": [问题列表]}`
           const agentResult = await runAgentNode(

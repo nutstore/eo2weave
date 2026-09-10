@@ -71,6 +71,44 @@
       responses are gone — single-path only, binaries rejected with run_python
       hint. Agent suite now 64 files / 658 tests, zero failures.
 
+### Fixed 2026-09-10
+- [x] **generate_image exempted from Plan-mode gate** (PRD v1.4, R2.3) —
+      reclassified `write` → `read` in `agent-mode.ts` with a
+      planModeDescription limiting writes to OPFS assets (same precedent as
+      run_python/bash). Plan mode can now generate images directly; pinned by
+      `agent/__tests__/agent-mode.image-gen.test.ts` (also guards that real
+      write tools stay gated).
+- [x] **Prompt doc reinforced** (R2.2) — `imageGenPromptDoc` now instructs
+      same-turn tool invocation on image intent, no clarifying questions for
+      simple requests, context-driven aspect-ratio choice, and Plan/Act
+      availability.
+- [x] **Image-gen quick chip shipped** (PRD v1.3, R2.1) — input-area chip
+      pre-fills a natural-language prompt; decision "strict hide" implemented:
+      gate reuses `isImageGenAvailable()` (tool-registration source of truth)
+      and fails closed on any store exception. Dismissal persisted via
+      `imageGenChipDismissed` in workspace preferences. New
+      `AgentRichInputHandle.setText()` for programmatic prefill; i18n keys in
+      4 locales. Tests: chip gate/prefill/dismiss (3) + setText contract (2).
+- [x] **`/image` slash command path removed** (image-generation PRD v1.2, R1) —
+      image generation now runs solely through the Agent `generate_image` tool.
+      Removed: `runImageGeneration` (+ interface declaration), the `/image`
+      branches in `regenerateUserMessage` / `editAndResendUserMessage`, the
+      `handleSlashCommand` image branch, the slash-command registry entry, and
+      command-only i18n keys (4 locales). Legacy `msg.images` base64
+      rendering / download / export kept read-only. Typing `/image` now yields
+      a one-time migration hint that is sent as a normal message.
+- [x] **Legacy ESLint errors 82 → 0** (`eslint --quiet` clean in `web/`).
+      Typical fixes: empty catches annotated, targeted `no-constant-condition`
+      disables with rationale, conditional hooks flattened, non-hook `use*`
+      predicates renamed, `Function` types replaced with concrete signatures.
+- [x] **Typecheck clean** (`tsc --noEmit`) + skills-domain tests 34/34.
+
+> Remaining known test debt: `store/__tests__/skills.store.test.ts` (2 of 12
+> fail) — the tests predate the OPFS-era skills store: they mock the
+> SQLite-era `storage.toggleSkill` path (real impl now routes `source: 'user'`
+> through the skill manager) and don't mock `writeUserSkillMd`. Pre-existing
+> since the skills OPFS migration; not part of this pass.
+
 ---
 
 ## 4. References

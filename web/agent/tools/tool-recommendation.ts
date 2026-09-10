@@ -244,6 +244,7 @@ const TOOL_METADATA: Record<
 function getToolMetadata() {
   const entries = Object.entries(TOOL_METADATA)
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- synchronous helper behind sync methods (recommend/getAllTools); dynamic import would change the public API; failure already falls back to full metadata
     const { useSettingsStore } = require('@/store/settings.store')
     if (!useSettingsStore.getState().enableBatchSpawn) {
       return Object.fromEntries(entries.filter(([k]) => k !== 'batch_spawn'))

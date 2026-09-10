@@ -9,9 +9,7 @@ import toast from 'react-hot-toast'
 import { HtmlSandboxPreview } from '@/components/agent/HtmlSandboxPreview'
 import type { FormatPreviewProps } from '../../format-registry'
 
-interface HtmlPreviewProps extends FormatPreviewProps {}
-
-export function HtmlPreview({ blob, fileName, filePath }: HtmlPreviewProps) {
+export function HtmlPreview({ blob, fileName, filePath }: FormatPreviewProps) {
   const t = useT()
   const [content, setContent] = useState<string | null>(null)
   const [loading, setLoading] = useState(!!blob)

@@ -211,7 +211,7 @@ export function getInstallPromptController(win?: Window): InstallPromptControlle
     // console is the single source of truth (the raw buffer global is
     // consumed on adoption, so it cannot be used as a probe).
     if (process.env.NODE_ENV === 'development') {
-      ;(target as unknown as Record<string, unknown>).__cwInstallPrompt = defaultController
+      (target as unknown as Record<string, unknown>).__cwInstallPrompt = defaultController
     }
   }
   return defaultController

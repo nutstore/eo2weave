@@ -66,7 +66,6 @@ function QueuedAssetThumbnail({ asset }: { asset: AssetMeta }) {
       cancelled = true
       if (blobUrl) URL.revokeObjectURL(blobUrl)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isImage, asset.name])
 
   return (

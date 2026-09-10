@@ -23,6 +23,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { usePageActionSessionStore } from '@/store/page-action-session.store'
 import { useYoloModeStore, syncLegacyPageActionYolo } from '@/store/yolo-mode.store'
+import { useConversationStoreSQLite } from '@/store/conversation.store.sqlite'
 import { useT } from '@/i18n'
 
 export interface AgentModeSelectProps {
@@ -97,11 +98,11 @@ function ModeOption({
 
 /**
  * Read the active conversation id non-reactively (indicator positioning only).
- * Import is lazy so the component module stays loadable in isolation (tests).
+ * Store access goes through a guarded try/catch so the component module stays
+ * loadable in isolation (tests): a failed store lookup degrades to null.
  */
 function useConversationStoreSafeId(): string | null {
   try {
-    const { useConversationStoreSQLite } = require('@/store/conversation.store.sqlite') as typeof import('@/store/conversation.store.sqlite')
     return useConversationStoreSQLite.getState().activeConversationId
   } catch {
     return null

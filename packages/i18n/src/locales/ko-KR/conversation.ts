@@ -92,22 +92,17 @@ export const conversation = {
       continue: "계속",
       hint: "작업이 완료되지 않았을 수 있습니다. 메시지를 보내 에이전트가 계속 작업하도록 할 수 있습니다",
     },
-    // 이미지 생성
+    // 이미지 생성 (레거시 /image 명령어는 제거되었습니다 —— 이미지 생성은 Agent의 generate_image 도구로 수행됩니다)
     imageGen: {
-      title: "이미지 생성",
-      model: "모델",
-      aspectRatio: "기본 화면 비율",
-      previewFullscreen: "전체 화면 미리보기",
       downloadImage: "이미지 다운로드",
-      generating: "이미지 생성 중...",
-      generated: "이미지가 생성되었습니다",
-      noResult: "이미지 생성 완료 (결과 없음)",
-      failed: "이미지 생성 실패: {error}",
-      emptyPrompt: "이미지 설명을 입력하세요. 예: /image 주황색 고양이",
-      emptyPromptRegenerate: "이미지 설명이 비어 있어 재생성할 수 없습니다",
-      waitRunning: "현재 작업이 완료될 때까지 기다려 주세요",
-      configureProvider: "먼저 공급자를 구성해 주세요",
-      apiKeyMissing: "API Key가 설정되지 않았습니다. 설정에서 구성해 주세요",
+      migrationHint: "이미지 생성에 /image 명령어가 필요 없습니다 —— 원하는 이미지를 그대로 설명하면(예: 「주황색 고양이를 그려줘」) Agent가 생성합니다",
+      quickChip: {
+        label: "이미지 생성",
+        /** Prefilled into the input — user completes and sends it as a normal message. */
+        examplePrompt: "……의 그림을 그려주세요",
+        /** Accessible label for the dismiss button. */
+        dismissLabel: "「이미지 생성」 바로가기 닫기(다시 표시하지 않음)",
+      },
       aspectRatios: {
         '1:1': "정사각형",
         '16:9': "와이드",

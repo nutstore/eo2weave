@@ -237,6 +237,7 @@ async function streamFileIntoDeflate(
 ): Promise<void> {
   const reader = file.stream().getReader()
   try {
+    // eslint-disable-next-line no-constant-condition -- reader.read() loop with an explicit break on done
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -1181,6 +1182,7 @@ async function moveTreeIntoPlace(
       // Chunked copy — bounded memory even for multi-GB staged entries.
       const reader = src.stream().getReader()
       try {
+        // eslint-disable-next-line no-constant-condition -- reader.read() loop with an explicit break on done
         while (true) {
           const { done, value } = await reader.read()
           if (done) break

@@ -101,8 +101,17 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
   // Sync tools (writes to OPFS)
   ['sync-to-opfs', { name: 'sync-to-opfs', category: 'write' }],
 
-  // Image generation (writes generated images to OPFS assets)
-  ['generate_image', { name: 'generate_image', category: 'write' }],
+  // Image generation — EXEMPT from the Plan-mode write gate (decided
+  // 2026-09-10, image-generation PRD R2.3): the tool only writes generated
+  // images into the OPFS assets directory (never workspace files), so Plan
+  // mode can generate images directly. Classified 'read' following the same
+  // precedent as run_python/bash (sandboxed side effects, safe in plan mode);
+  // planModeDescription documents the limited write scope for UI/prompt use.
+  ['generate_image', {
+    name: 'generate_image',
+    category: 'read',
+    planModeDescription: 'Generate images into the assets directory (writes limited to OPFS assets — no workspace file modifications)',
+  }],
 
   // Page action write tools (mutate upstream page — requires Browser Extension + side panel)
   ['page_click', { name: 'page_click', category: 'write' }],

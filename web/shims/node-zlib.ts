@@ -1,9 +1,12 @@
 import { deflate, deflateRaw, gzip, inflate, inflateRaw, ungzip, constants } from 'pako'
 
+// Strip Node-only zlib options that pako does not understand (e.g.
+// maxOutputLength), keeping the node:zlib API shape intact for callers.
 function cleanOptions(options?: Record<string, unknown>) {
   if (!options) return options
-  const { maxOutputLength: _maxOutputLength, ...rest } = options
-  return rest
+  return Object.fromEntries(
+    Object.entries(options).filter(([key]) => key !== 'maxOutputLength')
+  )
 }
 
 export const gunzipSync = (data: Uint8Array, options?: Record<string, unknown>) => ungzip(data, cleanOptions(options))

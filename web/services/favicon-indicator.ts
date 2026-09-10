@@ -83,7 +83,7 @@ async function paintWithDot(color: string): Promise<void> {
   let img: HTMLImageElement
   try {
     img = await loadOriginalImage()
-  } catch (err) {
+  } catch {
     return
   }
 

@@ -37,6 +37,8 @@ export interface AgentInfo {
 /** Imperative handle exposed by AgentRichInput via forwardRef */
 export interface AgentRichInputHandle {
   focus: () => void
+  /** Programmatically replace the editor content (e.g. quick-chip prefill). */
+  setText: (text: string) => void
 }
 
 interface AgentRichInputProps {
@@ -928,10 +930,20 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
     editorRef.current = editor
   }, [disabled, editor])
 
-  // ── Expose focus via imperative handle ──
+  // ── Imperative handle: focus + programmatic text injection ──
   useImperativeHandle(ref, () => ({
     focus: () => editor?.commands.focus(),
-  }), [editor])
+    // setContent + emitValue keep the logic-layer input state (hasInput/send
+    // button) in sync — same contract as the draft-restore effect below.
+    setText: (text: string) => {
+      if (!editor || editor.isDestroyed) return
+      // setContent replaces the whole document — intentional for chip prefill
+      // (we do not merge with existing user text).
+      editor.commands.setContent(text)
+      editor.commands.focus('end')
+      emitValue(editor)
+    },
+  }), [editor, emitValue])
 
   // ── Clear editor on resetToken change (message sent) ──
   // IMPORTANT: this must NOT run when the editor instance is first created.

@@ -92,22 +92,17 @@ export const conversation = {
       continue: "続行",
       hint: "タスクが未完了の可能性があります。メッセージを送信してエージェントの作業を継続できます",
     },
-    // 画像生成
+    // 画像生成（旧 /image コマンドは削除されました —— 画像生成は Agent の generate_image ツールで行います）
     imageGen: {
-      title: "画像生成",
-      model: "モデル",
-      aspectRatio: "デフォルトのアスペクト比",
-      previewFullscreen: "フルスクリーンプレビュー",
       downloadImage: "画像をダウンロード",
-      generating: "画像を生成中...",
-      generated: "画像が生成されました",
-      noResult: "画像生成完了（結果なし）",
-      failed: "画像生成に失敗しました: {error}",
-      emptyPrompt: "画像の説明を入力してください。例: /image オレンジ色の猫",
-      emptyPromptRegenerate: "画像の説明が空です。再生成できません",
-      waitRunning: "現在のタスクが完了するまでお待ちください",
-      configureProvider: "先にプロバイダーを設定してください",
-      apiKeyMissing: "API Keyが設定されていません。設定で構成してください",
+      migrationHint: "画像生成に /image コマンドは不要です —— 必要な画像をそのまま説明（例：「オレンジ色の猫を描いて」）すれば、Agent が生成します",
+      quickChip: {
+        label: "画像を生成",
+        /** Prefilled into the input — user completes and sends it as a normal message. */
+        examplePrompt: "……の画像を描いてください",
+        /** Accessible label for the dismiss button. */
+        dismissLabel: "「画像を生成」ショートカットを閉じる（次回から表示しない）",
+      },
       aspectRatios: {
         '1:1': "正方形",
         '16:9': "ワイド",

@@ -1228,6 +1228,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
 
     const deadline = Date.now() + options.timeout_ms
+    // eslint-disable-next-line no-constant-condition -- bounded polling loop, exits via return on completion, successful enqueue, or deadline
     while (true) {
       if (task.status === 'completed') {
         return { success: false, message: 'TASK_ALREADY_COMPLETED' }

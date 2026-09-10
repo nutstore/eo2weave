@@ -122,8 +122,6 @@ function FileChangeListBlock({ changes }: { changes: FileChange[] }) {
   const [selected, setSelected] = useState<FileChange | null>(null)
   const shown = changes.slice(0, FILE_LIST_LIMIT)
   const overflow = changes.length - shown.length
-  // Lazy: Monaco loads only when the user actually opens a file.
-  const LazyFileDiffViewer = lazyFileDiffViewer()
 
   // Esc closes the diff viewer window. This is a read-only review overlay
   // (NOT the authorization modal — which must stay Esc-immune), so a
@@ -177,7 +175,7 @@ function FileChangeListBlock({ changes }: { changes: FileChange[] }) {
       )}
 
       {/* Near-fullscreen diff viewer overlay (large review window). */}
-      {selected && LazyFileDiffViewer && (
+      {selected && (
         <div
           className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 p-4"
           role="dialog"
@@ -217,16 +215,18 @@ function FileChangeListBlock({ changes }: { changes: FileChange[] }) {
 }
 
 /**
- * Lazily resolve the FileDiffViewer component (one shared module promise —
- * avoids pulling Monaco into the modal bundle until a file is expanded).
+ * Lazily resolved FileDiffViewer host (one shared module promise — avoids
+ * pulling Monaco into the modal bundle until a file is expanded). A real
+ * React component so its hooks live in a component (rules-of-hooks);
+ * renders nothing until the lazy module has loaded.
  */
 type FileDiffViewerModule = {
   FileDiffViewer: React.ComponentType<{ fileChange: FileChange | null }>
 }
 
 let fileDiffViewerPromise: Promise<FileDiffViewerModule | null> | null = null
-function lazyFileDiffViewer() {
-  const [comp, setComp] = useState<FileDiffViewerModule['FileDiffViewer'] | null>(null)
+function LazyFileDiffViewer({ fileChange }: { fileChange: FileChange | null }) {
+  const [Comp, setComp] = useState<FileDiffViewerModule['FileDiffViewer'] | null>(null)
   useEffect(() => {
     if (!fileDiffViewerPromise) {
       fileDiffViewerPromise = import('@/components/sync/FileDiffViewer')
@@ -244,7 +244,8 @@ function lazyFileDiffViewer() {
       cancelled = true
     }
   }, [])
-  return comp
+  if (!Comp) return null
+  return <Comp fileChange={fileChange} />
 }
 
 /**

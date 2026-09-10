@@ -17,6 +17,7 @@ import { toast } from 'sonner'
 import { useT } from '@/i18n'
 import { ErrorBoundary } from '@/components/error/ErrorBoundary'
 import { AgentRichInput, type AgentRichInputHandle } from './AgentRichInput'
+import { ImageGenQuickChip } from './ImageGenQuickChip'
 import { AgentModeSelect } from './AgentModeSelect'
 import { RunEndPolicySelect } from './RunEndPolicySelect'
 import { useConversationLogic } from './useConversationLogic'
@@ -393,6 +394,11 @@ export function ConversationView({
     return () => cancelAnimationFrame(raf)
   }, [convId, activeMessages.length])
 
+  // ── Image quick chip: pre-fill an example prompt into the editor ──
+  const handleChipPrefill = useCallback((text: string) => {
+    richInputRef.current?.setText(text)
+  }, [])
+
   // ── Stable error handler for ErrorBoundary ──
   const handleErrorBoundaryError = useCallback(
     (error: Error) => {
@@ -491,6 +497,9 @@ export function ConversationView({
         {/* Input area */}
         <div className="shrink-0 border-t border-neutral-200 bg-white px-2 py-2 dark:border-neutral-700 dark:bg-neutral-900 sm:px-4 sm:py-3">
           <div className="mx-auto flex max-w-3xl flex-col">
+            {/* Quick chip — shares the generate_image availability gate, so it
+                only ever promises what the current provider can deliver. */}
+            <ImageGenQuickChip onPrefill={handleChipPrefill} />
             <div className="relative">
               <AgentRichInput
                 ref={richInputRef}

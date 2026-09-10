@@ -17,7 +17,7 @@ export const NAME_BOOST = 2.0
 export function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[_:.\/\-]/g, ' ')
+    .replace(/[_:./-]/g, ' ')
     .split(/\s+/)
     .filter((t) => t.length > 0)
 }
