@@ -79,14 +79,30 @@ describe('streamingMarkdownReducer', () => {
       expect(s.promotionAt).toBeGreaterThan(before)
     })
 
-    it('a new token during the quiet window reschedules the promotion', () => {
+    it('a new token during the quiet window keeps the pending deadline', () => {
       let s = token(BIG)
-      // A new token arrives 100ms later (before the 240ms quiet window ends)
+      // A new token arrives 100ms later (before the 240ms quiet window ends):
+      // the pending deadline is KEPT (throttle, not debounce) so a steady
+      // stream cannot push promotion out indefinitely.
       const bigger = BIG + 'more tokens keep coming'
       s = streamingMarkdownReducer(s, { type: 'token', content: bigger, now: T0 + 100 })
       expect(s.mode).toBe('plain')
-      // promotion is now scheduled relative to the new token's arrival
-      expect(s.promotionAt).toBe(T0 + 100 + STREAMING_MARKDOWN_QUIET_MS)
+      // promotion still fires at the original quiet-window deadline
+      expect(s.promotionAt).toBe(T0 + STREAMING_MARKDOWN_QUIET_MS)
+    })
+
+    it('promotion deadline is kept under a continuous token stream (anti-starvation)', () => {
+      let s = token(BIG, T0)
+      // Tokens keep arriving every 50ms — the promotion deadline must never
+      // be pushed past its original anchor.
+      for (let i = 1; i <= 10; i++) {
+        s = streamingMarkdownReducer(s, {
+          type: 'token',
+          content: BIG + ' more '.repeat(i),
+          now: T0 + i * 50,
+        })
+        expect(s.promotionAt).toBe(T0 + STREAMING_MARKDOWN_QUIET_MS)
+      }
     })
   })
 
@@ -107,7 +123,33 @@ describe('streamingMarkdownReducer', () => {
       expect(s.mode).toBe('markdown') // stays markdown — no flash
       expect(s.latest).toBe(newContent)
       expect(s.snapshot).toBe(BIG) // old snapshot until refresh fires
-      expect(s.refreshAt).toBe(T0 + 1100 + STREAMING_MARKDOWN_MIN_UPDATE_MS)
+      // Deadline anchored to the last render (T0+1000), NOT to the token time.
+      expect(s.refreshAt).toBe(T0 + 1000 + STREAMING_MARKDOWN_MIN_UPDATE_MS)
+    })
+
+    it('refresh keeps firing under a steady token stream (anti-starvation)', () => {
+      let s = promoteToMarkdown(BIG)
+      let tokenAt = T0 + 1000
+      let refreshCount = 0
+      for (let i = 1; i <= 10; i++) {
+        tokenAt += 50 // tokens arrive every 50ms, MIN_UPDATE_MS = 150
+        s = streamingMarkdownReducer(s, {
+          type: 'token',
+          content: BIG + 'x'.repeat(i),
+          now: tokenAt,
+        })
+        // The hook's timer fires as soon as the deadline is due.
+        if (s.refreshAt !== null && tokenAt >= s.refreshAt) {
+          s = streamingMarkdownReducer(s, { type: 'refresh_tick', now: tokenAt })
+          expect(s.snapshot).toBe(BIG + 'x'.repeat(i))
+          refreshCount++
+        }
+      }
+      // 500ms of continuous tokens → at least 2 snapshot refreshes must have
+      // fired. Under the old debounce-style deadline (reset per token) this
+      // would be 0 — the snapshot stayed stale until the stream ended.
+      expect(refreshCount).toBeGreaterThanOrEqual(2)
+      expect(s.snapshot).toBe(BIG + 'x'.repeat(9))
     })
 
     it('refresh_tick after the min interval updates the snapshot', () => {
