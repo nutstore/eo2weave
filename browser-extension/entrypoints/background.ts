@@ -2056,6 +2056,30 @@ export default defineBackground(() => {
         }
 
         if (message.type === 'native_host_call') {
+          // SECURITY: native-host actions include direct disk writes
+          // (write_file/delete_file), command execution (exec_sync/exec_start)
+          // and exec-policy rewriting (set_execpolicy). This channel MUST NOT
+          // be reachable from arbitrary web pages: injected.content.ts runs on
+          // <all_urls>, so any page could otherwise relay privileged calls to
+          // the host binary (e.g. flip execpolicy to allow-all) with no user
+          // confirmation. Same trust boundary as resolveBoundSidePanelTab.
+          // Allowed senders: the EO2Weave web app origins, plus the
+          // extension's own pages (popup / side panel), whose sender.url is
+          // chrome-extension://<own id>/....
+          // NOTE: sender.id is NOT sufficient on its own — content-script
+          // relays carry the extension id too; the sender URL is the
+          // page-level trust anchor (browser-verified, not forgeable).
+          const senderUrl = _sender?.url ?? ''
+          const isExtensionOwnPage =
+            senderUrl.startsWith('chrome-extension://') && _sender?.id === chrome.runtime.id
+          if (!isExtensionOwnPage && !isTrustedCreatorWeaveSenderUrl(senderUrl)) {
+            sendResponse({
+              ok: false,
+              errorCode: 'UNAUTHORIZED_SENDER',
+              error: `native_host_call from untrusted sender: ${senderUrl || '(no url)'}`,
+            })
+            return
+          }
           // Native Host: disk file I/O via Chrome Native Messaging
           // content.ts relays page payload fields at the top level
           // ({ type, ...payload }). Keep the nested-payload fallback for
