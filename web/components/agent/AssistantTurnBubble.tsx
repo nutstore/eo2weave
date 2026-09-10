@@ -171,20 +171,26 @@ function buildTimeline(
         }
         break
       case 'content':
-        // Keep completed content that belongs to current in-flight iteration.
-        // Older completed content has already been committed and should be hidden.
-        {
-          const stepTs = typeof step.timestamp === 'number' ? step.timestamp : 0
-          if (stepTs >= latestCommittedTs) visibleSteps.push(step)
-        }
+      case 'reasoning': {
+        // Keep only latest in-flight completed reasoning/content.
+        //
+        // Dedup by CONTENT, not just timestamp: when a turn finishes, the
+        // assistant message (carrying the same reasoning/content) is committed
+        // while the completed runtime step can still be alive. The step's and
+        // the message's clocks come from different code paths, so a pure
+        // `stepTs >= latestCommittedTs` check lets the step survive when its
+        // timestamp drifted past the message — rendering the same thinking
+        // block twice. If the step's text is already committed anywhere in this
+        // turn, it is by definition already represented — hide it.
+        const stepTs = typeof step.timestamp === 'number' ? step.timestamp : 0
+        const alreadyCommitted = committed.some(
+          (msg) =>
+            (step.type === 'reasoning' ? msg.reasoning : msg.content) === step.content &&
+            step.content !== '',
+        )
+        if (stepTs >= latestCommittedTs && !alreadyCommitted) visibleSteps.push(step)
         break
-      case 'reasoning':
-        // Same as content: keep only latest in-flight completed reasoning.
-        {
-          const stepTs = typeof step.timestamp === 'number' ? step.timestamp : 0
-          if (stepTs >= latestCommittedTs) visibleSteps.push(step)
-        }
-        break
+      }
       case 'compression':
         // Hide if stale: completed compression from a previous iteration
         // (its timestamp is older than the latest committed message)

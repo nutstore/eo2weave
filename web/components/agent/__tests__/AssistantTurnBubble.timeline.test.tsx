@@ -393,4 +393,51 @@ describe('AssistantTurnBubble timeline ordering', () => {
     expect(text).toContain('New runtime content not yet committed')
     expect(text).not.toContain('Old runtime content')
   })
+
+  it('does not duplicate a committed assistant reasoning when the runtime step is newer than the message', () => {
+    // Race: the committed assistant message (with its reasoning text) is created
+    // BEFORE the runtime reasoning step's timestamp (step clock runs ahead).
+    // The step must be recognized as already-committed and hidden — otherwise
+    // the same thinking block renders twice, which is the reported bug where
+    // the Thinking component sometimes shows up duplicated.
+    const runtimeSteps: DraftAssistantStep[] = [
+      {
+        id: 'reasoning-live',
+        timestamp: 500, // AHEAD of the committed message (300)
+        type: 'reasoning',
+        content: 'Inspecting the data flow.',
+        streaming: false, // completed, but not yet evicted from runtime state
+      },
+    ]
+
+    const { container } = render(
+      <AssistantTurnBubble
+        turn={{
+          type: 'assistant',
+          messages: [
+            {
+              id: 'assistant-committed',
+              role: 'assistant',
+              content: 'Final answer',
+              reasoning: 'Inspecting the data flow.',
+              timestamp: 300,
+              toolCalls: [],
+            },
+          ],
+          timestamp: 300,
+          totalUsage: null,
+        }}
+        toolResults={new Map()}
+        isProcessing={true}
+        runtimeSteps={runtimeSteps}
+      />
+    )
+
+    const text = container.textContent || ''
+    // ReasoningSection renders a collapsible "Thinking Process" toggle header
+    // (the body only mounts when expanded). Counting the header occurrence is
+    // the reliable way to detect a duplicated thinking block.
+    const headerCount = text.split('workflow.thinkingProcess').length - 1
+    expect(headerCount).toBe(1)
+  })
 })

@@ -44,17 +44,21 @@ const SCROLL_SEEK_VELOCITY = 800
 const INCREASE_VIEWPORT_BY = 900
 
 /**
- * Module-level slot for Virtuoso's Footer component. Virtuoso renders its
- * `components` from a stable identity, so the footer cannot close over the
- * per-render `footer` node directly; instead the component body stores the
- * latest node here on every render before Virtuoso commits, and the slot
- * component reads it. Safe with a single conversation panel at a time —
- * the same constraint the removed Context-based bridge operated under.
+ * How the virtualized renderer receives footer content (draft bubble + queued
+ * messages): via Virtuoso's `context` prop, NOT a module-level slot.
+ *
+ * react-virtuoso memoizes its Footer slot wrapper and gives it no props, so it
+ * only re-renders when one of its subscribed stream values changes. The
+ * `context` stream is one of them — each parent render publishes a fresh
+ * footer node through `context`, and the slot re-renders reactively. A plain
+ * module variable read at render time stays frozen until an unrelated list
+ * change happens to re-render the slot (this is exactly the bug where queued
+ * messages and the streaming draft bubble stopped appearing on long
+ * conversations).
+ *
+ * The Footer component's identity stays module-stable, which is what the
+ * `components` object requires; only the CONTENT flows reactively.
  */
-let moduleLevelFooter: React.ReactNode = null
-function setVirtuosoFooter(node: React.ReactNode) {
-  moduleLevelFooter = node
-}
 
 type TurnRendererProps = {
   turn: Turn
@@ -524,10 +528,6 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     />
   )
 
-  // Publish the footer for VirtuosoFooter BEFORE any return: the virtualized
-  // path's Footer slot reads this module-level slot. The plain path ignores it.
-  setVirtuosoFooter(footer)
-
   // ── Short conversations (or before the scroll parent resolves): plain renderer ──
   // The cumulative usage bar is NOT rendered here anymore: it lives in
   // ConversationView, OUTSIDE the scroll container, so it stays pinned (and is
@@ -564,6 +564,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
           ref={virtuosoRef}
           customScrollParent={scrollParent ?? undefined}
           data={turns}
+          context={{ footerNode: footer }}
           computeItemKey={(_index, turn) => (turn.type === 'user' ? turn.message.id : turn.messages[0].id)}
           initialTopMostItemIndex={Math.max(0, turns.length - 1)}
           followOutput={() => (isUserAtBottom ? 'smooth' : false)}
@@ -592,9 +593,13 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   )
 }))
 
-/** Renders the draft bubble / queued messages as the Virtuoso list footer. */
-function VirtuosoFooter() {
-  return <>{moduleLevelFooter}</>
+/**
+ * Renders the draft bubble / queued messages as the Virtuoso list footer.
+ * Content arrives through Virtuoso's `context` prop so the memoized Footer
+ * slot re-renders whenever ConversationMessages publishes a new footer node.
+ */
+function VirtuosoFooter({ context }: { context?: { footerNode: React.ReactNode } }) {
+  return <>{context?.footerNode ?? null}</>
 }
 
 /** Lightweight placeholder shown for off-window turns during fast scrolling. */

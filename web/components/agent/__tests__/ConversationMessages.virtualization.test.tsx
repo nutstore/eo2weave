@@ -7,11 +7,12 @@
  */
 
 import { render, waitFor } from '@testing-library/react'
-import { forwardRef, useImperativeHandle } from 'react'
+import { forwardRef, useImperativeHandle, memo } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '@/agent/message-types'
 import { ConversationMessages } from '../ConversationMessages'
 import type { ConversationMessagesHandle } from '../ConversationMessages'
+import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 
 const {
   virtuosoSpy,
@@ -20,6 +21,27 @@ const {
   virtuosoSpy: vi.fn(),
   virtuosoScrollToIndexSpy: vi.fn(),
 }))
+
+/**
+ * Module-stable memoized Footer slot, mirroring the real library: react-virtuoso
+ * defines its Footer ONCE at module scope and wraps it in React.memo, so a new
+ * parent render does NOT remount it — it only re-renders when its `context`
+ * prop changes. The memo wrapper must be CACHED per component identity: creating
+ * `memo(Footer)` inside the mock's render would mint a fresh element type every
+ * render, forcing a remount and hiding frozen-footer bugs.
+ */
+const footerSlotCache = new WeakMap<
+  (props: { context?: unknown }) => React.ReactNode,
+  React.ComponentType<{ context?: unknown }>
+>()
+function getFooterSlot(Footer: (props: { context?: unknown }) => React.ReactNode) {
+  let slot = footerSlotCache.get(Footer)
+  if (!slot) {
+    slot = memo(Footer)
+    footerSlotCache.set(Footer, slot)
+  }
+  return slot
+}
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: forwardRef(function VirtuosoMock(props: Record<string, unknown>, ref) {
@@ -30,13 +52,16 @@ vi.mock('react-virtuoso', () => ({
       scrollTo: vi.fn(),
       scrollBy: vi.fn(),
     }))
-    const components = (props.components ?? {}) as {
-      Header?: () => React.ReactNode
-      Footer?: () => React.ReactNode
-    }
     const data = (props.data ?? []) as unknown[]
     const itemContent = props.itemContent as (index: number, item: unknown) => React.ReactNode
     const computeItemKey = props.computeItemKey as (index: number, item: unknown) => string
+    const components = (props.components ?? {}) as {
+      Header?: () => React.ReactNode
+      // Mirrors the real library: the Footer slot receives `context` as a prop
+      // (see contextPropIfNotDomElement in react-virtuoso's List.tsx).
+      Footer?: (props: { context?: unknown }) => React.ReactNode
+    }
+    const FooterSlot = components.Footer ? getFooterSlot(components.Footer) : null
     return (
       <div data-testid="virtuoso-mock">
         {components.Header ? <components.Header /> : null}
@@ -45,7 +70,7 @@ vi.mock('react-virtuoso', () => ({
             {itemContent(index, item)}
           </div>
         ))}
-        {components.Footer ? <components.Footer /> : null}
+        {FooterSlot ? <FooterSlot context={props.context} /> : null}
       </div>
     )
   }),
@@ -221,6 +246,56 @@ describe('ConversationMessages virtualization', () => {
     expect(virtuosoScrollToIndexSpy).not.toHaveBeenCalled()
     // DOM query path ran without throwing (no matching node inside jsdom-free
     // container is fine — the important part is it did NOT touch virtuoso)
+  })
+
+  it('delivers queued messages to the Virtuoso footer reactively via the context prop', () => {
+    // Regression: the footer used to be bridged through a module-level variable
+    // that Virtuoso's memoized Footer slot never re-read, so queued messages
+    // (and the streaming draft bubble) did not appear on long conversations.
+    // The footer content must flow through Virtuoso's `context` prop.
+    const runtimeState = useConversationRuntimeStore.getState()
+    runtimeState.pendingMessageQueues.delete('conv-1')
+
+    const messagesEndRef = { current: null as HTMLDivElement | null }
+    const noop = vi.fn()
+    const uiProps = {
+      // activeMessages is passed FRESH inside ui() below: a new array reference
+      // is what makes memo(ConversationMessages) re-render, standing in for the
+      // real zustand subscription push that happens in the app.
+      toolResults: new Map(),
+      isProcessing: true,
+      status: 'tool_calling',
+      onDeleteAgentLoop: noop,
+      onEditAndResend: noop,
+      onRegenerate: undefined,
+      onCancel: noop,
+      messagesEndRef,
+      conversationId: 'conv-1',
+      mentionAgents: [],
+    }
+    const ui = () => (
+      <div className="overflow-y-auto" data-testid="scroll-container">
+        <ConversationMessages {...uiProps} activeMessages={makeMessages(55)} />
+      </div>
+    )
+
+    // Deliberately rerender with the SAME element key: a remount would rebuild
+    // even a frozen Footer slot and defeat this regression test.
+    const { rerender, container } = render(ui())
+    // Agent processing, but queue still empty → no cards
+    expect(container.querySelectorAll('[data-testid="queued-card"]')).toHaveLength(0)
+
+    // Enqueue while processing → the NEXT render must surface the card inside
+    // the footer slot (previously it stayed invisible until an unrelated list
+    // change happened to re-render the frozen Footer slot).
+    runtimeState.pendingMessageQueues.set('conv-1', [
+      { text: 'queued hello', agentOverrideId: null, enqueuedAt: 1 },
+    ])
+    rerender(ui())
+
+    expect(container.querySelectorAll('[data-testid="queued-card"]')).toHaveLength(1)
+
+    runtimeState.pendingMessageQueues.delete('conv-1')
   })
 })
 
