@@ -97,6 +97,9 @@ describe('docs-server', () => {
     const paths = routes.map((r) => r.path.join('/'))
 
     expect(paths).toContain('') // docs home
+    // language level — REQUIRED: ProjectHome's docs button navigates to /docs/:lang
+    expect(paths).toContain('zh')
+    expect(paths).toContain('en')
     expect(paths).toContain('zh/user')
     expect(paths).toContain('zh/user/getting-started')
     expect(paths).toContain('zh/user/advanced-tips')

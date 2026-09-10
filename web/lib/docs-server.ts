@@ -237,12 +237,15 @@ export async function getAllDocIndexes(): Promise<DocsIndexes> {
 
 /**
  * Every prerenderable docs route for generateStaticParams:
- * /docs, /docs/:lang/:category, /docs/:lang/:category/:page.
+ * /docs, /docs/:lang, /docs/:lang/:category, /docs/:lang/:category/:page.
  * Enumerated from the actual docs tree, so only published pages become URLs.
+ * The language-only level is REQUIRED (ProjectHome's docs button navigates to
+ * /docs/:lang) — do not remove it.
  */
 export async function listAllDocRoutes(): Promise<Array<{ path: string[] }>> {
   const routes: Array<{ path: string[] }> = [{ path: [] }]
   for (const lang of DOCS_LANGUAGES) {
+    routes.push({ path: [lang] })
     for (const category of DOCS_CATEGORIES) {
       routes.push({ path: [lang, category] })
       const index = await getDocIndex(lang, category)
