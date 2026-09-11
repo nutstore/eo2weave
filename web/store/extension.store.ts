@@ -284,15 +284,18 @@ export const useExtensionStore = create<ExtensionState>()(
                 try {
                   const { useSettingsStore } = await import('@/store/settings.store')
                   const settings = useSettingsStore.getState()
+                  const modelIds = (resp.data.models || []).map((m: any) => m.id as string)
                   const existing = settings.pinnedModelsByProvider['codex-oauth']
                   if (!existing || existing.length === 0) {
-                    const models = resp.data.models || []
-                    if (models.length > 0) {
-                      settings.setPinnedModels(
-                        'codex-oauth',
-                        models.map((m: any) => m.id),
-                      )
+                    if (modelIds.length > 0) {
+                      settings.setPinnedModels('codex-oauth', modelIds)
                     }
+                  }
+                  // The extension response IS the authoritative list — record
+                  // which pins were confirmed present so pins that disappear
+                  // from a future response can be flagged as stale/delisted.
+                  if (modelIds.length > 0) {
+                    settings.markPinnedModelsSeen('codex-oauth', modelIds)
                   }
                   useSettingsStore.getState().triggerProviderRefresh()
                 } catch {

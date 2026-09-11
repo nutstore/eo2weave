@@ -31,6 +31,7 @@ vi.mock('@/store/settings.store', () => ({
     getState: () => ({
       pinnedModelsByProvider: {},
       setPinnedModels: vi.fn(),
+      markPinnedModelsSeen: vi.fn(),
       triggerProviderRefresh: mocks.triggerProviderRefresh,
       invalidateApiKeyCache: mocks.invalidateApiKeyCache,
       checkHasApiKey: mocks.checkHasApiKey,

@@ -133,6 +133,16 @@ interface SettingsState {
   // Pinned (user-selected) models per provider — subset of full model list
   pinnedModelsByProvider: Record<string, string[]>
 
+  /**
+   * "Seen" bookkeeping for stale-pinned detection: per provider, the pinned
+   * model ids that were CONFIRMED present in an authoritative model list at
+   * least once. A pinned id that (a) is in this set but (b) is missing from
+   * the current authoritative list is stale (likely delisted upstream).
+   * Manually-typed models never enter this set, so they are never flagged.
+   * Persisted alongside `pinnedModelsByProvider`.
+   */
+  pinnedSeenByProvider: Record<string, string[]>
+
   // Actions
   setProviderType: (type: LLMProviderType) => void
   setModelName: (name: string) => void
@@ -215,6 +225,23 @@ interface SettingsState {
   pinModel: (providerType: LLMProviderType, modelId: string) => void
   unpinModel: (providerType: LLMProviderType, modelId: string) => void
   setPinnedModels: (providerType: LLMProviderType, modelIds: string[]) => void
+  /**
+   * Record that the given pinned ids were seen in an authoritative model
+   * list (extension `codexGetStatus` response, /models cache, static
+   * registry, …). Call after obtaining a trusted list for a provider.
+   * Internal bookkeeping — does not bump `_providerRefreshVersion`.
+   */
+  markPinnedModelsSeen: (providerType: string, modelIds: string[]) => void
+  /**
+   * Pinned ids for a provider that were seen before but are missing from
+   * the given authoritative list → stale (likely delisted upstream).
+   */
+  getStalePinnedModels: (providerType: string, availableIds: string[]) => string[]
+  /**
+   * Remove the given ids from a provider's pinned list (and its seen
+   * bookkeeping). Returns the ids actually removed.
+   */
+  removePinnedModels: (providerType: string, modelIds: string[]) => string[]
 
   /**
    * Runtime version counter — incremented when provider/model list changes
@@ -329,6 +356,7 @@ export const useSettingsStore = create<SettingsState>()(
       imageGenModel: 'google/gemini-2.5-flash-image',
       imageGenAspectRatio: '1:1',
       pinnedModelsByProvider: {},
+      pinnedSeenByProvider: {},
       agentLoopNotifications: {
         enabled: true,
         onlyWhenHidden: true,
@@ -786,6 +814,11 @@ export const useSettingsStore = create<SettingsState>()(
                   })
               : allModels.map((m) => ({ id: m.id, name: m.name }))
 
+            // Built-in providers always have a static list — treat it as
+            // authoritative for seen bookkeeping (a pinned id that's absent
+            // from static + dynamic lists is effectively delisted).
+            get().markPinnedModelsSeen(providerType, allModels.map((m) => m.id))
+
             results.push({
               providerType,
               displayName: localizedProviderDisplayName(providerType, meta.displayName),
@@ -835,6 +868,10 @@ export const useSettingsStore = create<SettingsState>()(
                   return found ? { id: found.id, name: found.name } : { id: pid, name: pid }
                 })
               : allModels.map((m) => ({ id: m.id, name: m.name }))
+
+            // Dynamic registry list is authoritative (e.g. codex-oauth models
+            // registered from the extension response).
+            get().markPinnedModelsSeen(id, allModels.map((m) => m.id))
 
             results.push({
               providerType: id,
@@ -911,6 +948,61 @@ export const useSettingsStore = create<SettingsState>()(
           _providerRefreshVersion: state._providerRefreshVersion + 1,
         })
       },
+
+      markPinnedModelsSeen: (providerType, modelIds) => {
+        const state = get()
+        const pinned = state.pinnedModelsByProvider[providerType]
+        if (!pinned || pinned.length === 0) return
+        const seen = new Set(state.pinnedSeenByProvider[providerType] || [])
+        let changed = false
+        for (const id of modelIds) {
+          // Only track ids that are actually pinned — the seen set exists to
+          // answer "was this pin ever confirmed available?".
+          if (pinned.includes(id) && !seen.has(id)) {
+            seen.add(id)
+            changed = true
+          }
+        }
+        if (!changed) return
+        // Prune seen entries whose pins were already removed by the user, so
+        // the bookkeeping doesn't grow unbounded. Internal only — no refresh bump.
+        const prunedSeen = [...seen].filter((id) => pinned.includes(id))
+        set({
+          pinnedSeenByProvider: {
+            ...state.pinnedSeenByProvider,
+            [providerType]: prunedSeen,
+          },
+        })
+      },
+
+      getStalePinnedModels: (providerType, availableIds) => {
+        const state = get()
+        const pinned = state.pinnedModelsByProvider[providerType] || []
+        const seen = new Set(state.pinnedSeenByProvider[providerType] || [])
+        const available = new Set(availableIds)
+        return pinned.filter((id) => seen.has(id) && !available.has(id))
+      },
+
+      removePinnedModels: (providerType, modelIds) => {
+        const state = get()
+        const ids = new Set(modelIds)
+        const current = state.pinnedModelsByProvider[providerType] || []
+        const kept = current.filter((id) => !ids.has(id))
+        if (kept.length === current.length) return []
+        const seen = state.pinnedSeenByProvider[providerType] || []
+        set({
+          pinnedModelsByProvider: {
+            ...state.pinnedModelsByProvider,
+            [providerType]: kept,
+          },
+          pinnedSeenByProvider: {
+            ...state.pinnedSeenByProvider,
+            [providerType]: seen.filter((id) => !ids.has(id)),
+          },
+          _providerRefreshVersion: state._providerRefreshVersion + 1,
+        })
+        return current.filter((id) => ids.has(id))
+      },
     }),
     {
       name: 'bfosa-settings',
@@ -950,6 +1042,7 @@ export const useSettingsStore = create<SettingsState>()(
         imageGenModel: state.imageGenModel,
         imageGenAspectRatio: state.imageGenAspectRatio,
         pinnedModelsByProvider: state.pinnedModelsByProvider,
+        pinnedSeenByProvider: state.pinnedSeenByProvider,
         agentLoopNotifications: state.agentLoopNotifications,
       }),
       // On rehydration, restore dynamic providers

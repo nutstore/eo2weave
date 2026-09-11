@@ -184,4 +184,50 @@ describe('useSettingsStore', () => {
       expect(state.temperature).toBe(0.8)
     })
   })
+
+  describe('stale pinned model detection', () => {
+    const P = 'codex-oauth' as LLMProviderType
+
+    beforeEach(() => {
+      useSettingsStore.setState({ pinnedModelsByProvider: {}, pinnedSeenByProvider: {} })
+    })
+
+    it('markPinnedModelsSeen only tracks pinned ids and getStale flags absent seen pins', () => {
+      const s = useSettingsStore.getState()
+      s.setPinnedModels(P, ['m-alive', 'm-dead', 'm-manual'])
+
+      // Authoritative list contains only two of the three pins.
+      s.markPinnedModelsSeen(P, ['m-alive', 'm-dead'])
+
+      expect(s.getStalePinnedModels(P, ['m-alive'])).toEqual(['m-dead'])
+      // Manually-typed model was never seen → never flagged stale.
+      expect(s.getStalePinnedModels(P, ['m-alive'])).not.toContain('m-manual')
+    })
+
+    it('ignores seen-marking for unpinned ids and empty pin lists', () => {
+      const s = useSettingsStore.getState()
+      s.markPinnedModelsSeen(P, ['never-pinned'])
+      expect(useSettingsStore.getState().pinnedSeenByProvider[P]).toBeUndefined()
+
+      s.setPinnedModels(P, [])
+      s.markPinnedModelsSeen(P, ['anything'])
+      expect(useSettingsStore.getState().pinnedSeenByProvider[P]).toBeUndefined()
+    })
+
+    it('removePinnedModels removes pins + seen bookkeeping and returns removed ids', () => {
+      const s = useSettingsStore.getState()
+      s.setPinnedModels(P, ['a', 'b', 'c'])
+      s.markPinnedModelsSeen(P, ['a', 'b', 'c'])
+
+      const versionBefore = useSettingsStore.getState()._providerRefreshVersion
+      const removed = useSettingsStore.getState().removePinnedModels(P, ['b', 'ghost'])
+
+      expect(removed).toEqual(['b'])
+      expect(useSettingsStore.getState().pinnedModelsByProvider[P]).toEqual(['a', 'c'])
+      expect(useSettingsStore.getState().pinnedSeenByProvider[P]).toEqual(['a', 'c'])
+      expect(useSettingsStore.getState()._providerRefreshVersion).toBeGreaterThan(versionBefore)
+      // Removing an id that isn't pinned is a no-op.
+      expect(useSettingsStore.getState().removePinnedModels(P, ['ghost'])).toEqual([])
+    })
+  })
 })
