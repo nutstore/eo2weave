@@ -98,6 +98,8 @@ export const execDefinition: ToolDefinition = {
       '',
       'Requires both the Native Host and an authorized native-host root. FS Access-only roots cannot execute commands.',
       '',
+      'IMPORTANT — no-root auto-authorization: when the call omits "root" and no native-host root is authorized yet (and the Native Host is reachable), exec does NOT fail immediately. Instead the user gets an authorization modal; on approval the OS folder picker opens, the user picks a directory (the project/monorepo root works best), and the command runs inside it — all in this one call. There is nothing to configure beforehand; just call exec normally without "root". If the user declines or picks nothing, a no_scope error explains the manual path (cable icon → "Local connection").',
+      '',
       'Long-running processes (dev servers): set background to true and give the process a short name. One call starts it, waits until the port is ready (or ready_timeout / early exit), and returns the URL plus the log tail — you never poll. Later, use the `processes` tool to list processes, read recent output, or stop one by name.',
     ].join('\n'),
     parameters: {
@@ -199,13 +201,27 @@ export const execExecutor: ToolExecutor = async (args, context) => {
   }
 
   // --- Resolve scope_id from root name ---
-  const scopeId = await resolveScopeId(rootName, context)
+  let scopeId = await resolveScopeId(rootName, context)
   if (!scopeId) {
-    return toolErrorJson('exec', 'no_scope',
-      rootName
-        ? `No native-host root named "${rootName}" found. Use ls() to list available roots.`
-        : 'No native-host root authorized. Authorize a directory via native host first.',
-      { hint: 'Only native-host roots (marked with the cable icon) support command execution.' })
+    // No native-host root for this project. Before giving up, offer ONE
+    // in-flow authorization: if the native host is actually reachable and
+    // the caller didn't explicitly request a root that doesn't exist, ask
+    // the user via the shared auth modal; on approval, pop the OS folder
+    // picker (native host `pick_folder`) and retry the resolution. This
+    // turns the former dead end ("no root → exec unusable, agent must tell
+    // the user to find the cable icon") into a two-click flow.
+    scopeId = rootName
+      ? null
+      : await authorizeRootInFlow(context, cmdDisplay)
+    if (!scopeId) {
+      return rootName
+        ? toolErrorJson('exec', 'no_scope',
+            `No native-host root named "${rootName}" found. Use ls() to list available roots.`,
+            { hint: 'Only native-host roots (marked with the cable icon) support command execution.' })
+        : toolErrorJson('exec', 'no_scope',
+            'No native-host root authorized. Authorize a directory via native host first.',
+            { hint: 'Only native-host roots (marked with the cable icon) support command execution. The user can add one via the cable icon ("Local connection") next to the folder selector, or approve the in-flow authorization prompt when exec is called again without an explicit root.' })
+    }
   }
 
   // --- Step 1: check_policy ---
@@ -402,6 +418,93 @@ async function resolveScopeId(
   } catch {
     return null
   }
+}
+
+// ─── In-flow root authorization ───────────────────────────────
+
+/**
+ * Dedup guard: concurrent exec calls hitting the no-root state must share ONE
+ * authorization flow, otherwise two auth modals (and two OS folder pickers)
+ * pile up for the same missing root.
+ */
+let authorizeRootInFlight: Promise<string | null> | null = null
+
+/**
+ * Offer an in-flow native-host root authorization when exec runs with no
+ * authorized root.
+ *
+ * Flow: full-chain probe (page → extension → Rust host) → shared auth modal
+ * (user-facing explanation + the pending command as a `$ …` preview; the
+ * command's own execpolicy approval, when required, comes separately later)
+ * → the existing `addNativeHostRoot` store action, which pops the OS folder
+ * picker (native host `pick_folder`), registers the scope in the host's
+ * scopes.json (host-side dedup by canonical path means re-authorizing the
+ * same folder returns the SAME scope_id — `scope.rs add_scope`), creates the
+ * `project_roots` SQLite row and invalidates the root-map cache. On success
+ * the caller retries `resolveScopeId` and the command proceeds in the same
+ * tool call.
+ *
+ * Security posture is unchanged: the user picks the directory in the OS
+ * dialog and explicitly approves the modal; the agent never sees or chooses
+ * a path. Returns the fresh scope_id, or null when any step is declined /
+ * unavailable (the caller then returns the actionable no_scope error).
+ */
+async function authorizeRootInFlow(
+  context: { projectId?: string | null; workspaceId?: string | null; abortSignal?: AbortSignal },
+  cmdDisplay?: string,
+  projectId?: string | null
+): Promise<string | null> {
+  // Full-chain reachability: don't offer the flow when the Rust host isn't
+  // installed — the folder picker would never appear.
+  await probeNativeHost()
+  if (!isNativeHostReachable()) return null
+  if (context.abortSignal?.aborted) return null
+
+  if (authorizeRootInFlight) return authorizeRootInFlight
+  authorizeRootInFlight = doAuthorizeRootInFlow(context, cmdDisplay, projectId).finally(() => {
+    authorizeRootInFlight = null
+  })
+  return authorizeRootInFlight
+}
+
+async function doAuthorizeRootInFlow(
+  context: { projectId?: string | null; workspaceId?: string | null; abortSignal?: AbortSignal },
+  cmdDisplay?: string,
+  projectId?: string | null
+): Promise<string | null> {
+  const resolution = await useToolAuthStore.getState().request({
+    toolName: 'exec',
+    // Locale-aware descriptor rendered by ToolAuthModal.
+    description: { key: 'describeAuthorizeRoot' },
+    // The pending command renders as a `$ …` code block (ToolAuthModal's
+    // exec-like path) so the user can see what the authorization is FOR
+    // before picking a directory.
+    detail: cmdDisplay,
+    memoryKey: null,
+    conversationId: context.workspaceId ?? null,
+    signal: context.abortSignal,
+  })
+  if (!resolution.approved || context.abortSignal?.aborted) return null
+
+  // Reuse the store action: OS folder picker + scopes.json registration +
+  // project_roots row + root-map cache invalidation + toasts, all in one.
+  // Bind the new root to the CONVERSATION's project (context.projectId), not
+  // the global active-project pointer: resolveScopeId() looks the root up
+  // under the conversation's project, and the active pointer can change
+  // mid-run while the OS picker is open.
+  const { useFolderAccessStore } = await import('@/store/folder-access.store')
+  const added = await useFolderAccessStore.getState().addNativeHostRoot(projectId ?? undefined)
+  if (!added) return null
+  // Stale-authorization guard: the OS folder picker blocks for an unbounded
+  // time and the user may have aborted the run while it was open. Keep the
+  // freshly authorized root (explicitly user-approved — do not roll it back),
+  // but never let the pending command execute on an aborted run: execpolicy-
+  // 'auto' commands have no further approval gate after this point.
+  if (context.abortSignal?.aborted) return null
+
+  // The new root carries a fresh scope_id — resolve it directly instead of
+  // guessing it from the store shape.
+  return resolveScopeId(undefined, context)
 }
 
 // ─── Background processes ─────────────────────────────────────
@@ -701,6 +804,7 @@ export const execPromptDoc: ToolPromptDoc = {
     '  - `root` is an authorized root name such as `"<root-name>"`, not a file path. Specify it whenever multiple roots exist. `cwd`, when needed, is relative to root (for example `"packages/app"`), never absolute; use it instead of `cd`.',
     '  - Check `exit_code`, `stdout`, `stderr`, `timed_out`, and `truncated` in the result. Read-only and common verification commands are usually auto-approved; other commands require user approval, and dangerous commands are blocked.',
     '  - Commands see the version of the files that is ON DISK. Pending changes (from write/edit) are NOT on disk until synced: if a result carries `stale_disk`, the target root still has unsynced changes — call `sync-to-disk` first (asks the user for permission) and re-run the command when its result depends on those files. Delete-type changes are never auto-applied and may leave deleted files still present on disk.',
+    '  - If no native-host root is authorized yet, calling exec without `root` triggers an in-flow authorization: the user confirms a modal, picks a folder in the OS picker, and the command runs inside it in the same call. Do not ask the user to pre-authorize anything manually — just call exec normally.',
     '  - For long-running processes (dev servers): `exec({ command, background: true, name: "web", port: 5173 })` starts one and waits until ready in a single call. List / inspect / stop background processes with the `processes` tool.',
   ],
 }

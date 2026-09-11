@@ -130,6 +130,7 @@ export const agent = {
         fileChangesTitle: "{count} 件のファイル変更が保留中",
         moreFiles: "他 {count} 件",
         clickToPreview: "ファイルをクリックして変更をプレビュー",
+        describeAuthorizeRoot: "AI がコマンドを実行しようとしていますが、許可済みのローカルフォルダーがありません。承認すると OS のフォルダー選択ダイアログが開きます。プロジェクト（またはワークスペース）のルートフォルダーを選択してください。コマンドはその中で実行されます。",
     },
 
     execAuth: {

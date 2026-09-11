@@ -97,6 +97,7 @@ export const agent = {
         fileChangesTitle: "{count} file change(s) pending",
         moreFiles: "+{count} more",
         clickToPreview: "Click a file to preview its changes",
+        describeAuthorizeRoot: "The agent wants to run a command on your machine, but no local directory is authorized yet. Approving opens the OS folder picker — please select the project (or workspace) root; the command will run inside it.",
     },
 
     execAuth: {

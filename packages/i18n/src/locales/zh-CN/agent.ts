@@ -97,6 +97,7 @@ export const agent = {
         fileChangesTitle: "{count} 个文件变更待写入",
         moreFiles: "还有 {count} 个文件",
         clickToPreview: "点击文件可预览变更内容",
+        describeAuthorizeRoot: "AI 想在您的电脑上执行命令，但还没有已授权的本地目录。批准后将弹出系统目录选择器，请选择项目（或工作区）根目录；命令将在该目录内运行。",
     },
 
     execAuth: {

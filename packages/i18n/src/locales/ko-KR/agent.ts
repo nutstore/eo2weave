@@ -130,6 +130,7 @@ export const agent = {
         fileChangesTitle: "{count}개 파일 변경 대기 중",
         moreFiles: "+{count}개 더보기",
         clickToPreview: "파일을 클릭하면 변경 내용을 미리 볼 수 있습니다",
+        describeAuthorizeRoot: "AI가 명령을 실행하려 하지만 승인된 로컬 폴더가 아직 없습니다. 승인하면 OS 폴더 선택 대화상자가 열립니다. 프로젝트(또는 워크스페이스) 루트 폴더를 선택하세요. 명령은 그 안에서 실행됩니다.",
     },
 
     execAuth: {
