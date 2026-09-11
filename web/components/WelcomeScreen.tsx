@@ -8,7 +8,8 @@
  *   provider/model is selected yet (onboarding completion requires BOTH)
  * - mount-folder: shown when model ok but no folder mounted
  *   (SKIPPED entirely in side-panel mode — sidebar users almost never
- *    need a mounted local folder)
+ *    need a mounted local folder; a user who dismissed it via "Skip for
+ *    now" also never sees it again — the choice persists in localStorage)
  * - ready: shows quick-start prompts + rich input
  *
  * Steps are conditional, so use setup labels instead of a linear step count.
@@ -64,11 +65,13 @@ function getInitialStep(
 ): OnboardingStep {
   const welcomeSeen = typeof window !== 'undefined'
     && localStorage.getItem('creatorweave:onboarding:welcome-seen') === 'true'
+  const folderMountSkipped = typeof window !== 'undefined'
+    && localStorage.getItem('creatorweave:onboarding:folder-mount-skipped') === 'true'
 
   if (!hasCreatedProject && !welcomeSeen) return 'welcome'
   const provider = providerStep(readiness)
   if (provider !== 'ready') return provider
-  if (needsFolderMount(folderCount)) return 'mount-folder'
+  if (needsFolderMount(folderCount) && !folderMountSkipped) return 'mount-folder'
   return 'ready'
 }
 
@@ -157,6 +160,12 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const [step, setStep] = useState<OnboardingStep>(() =>
     getInitialStep(readiness, folderRoots.length, hasCreatedProject)
   )
+  // Mirror of the "folder-mount-skipped" localStorage flag, read once per
+  // mount alongside the initial step. WelcomeScreen remounts for each new
+  // conversation, so per-mount is sufficient to honor the skip. Kept in a
+  // setter-pair so skipping this session also skips the rest of the session.
+  const [folderMountSkipped, setFolderMountSkipped] = useState(() => typeof window !== 'undefined'
+    && localStorage.getItem('creatorweave:onboarding:folder-mount-skipped') === 'true')
 
   useEffect(() => {
     void checkHasApiKey().catch((err) => {
@@ -177,20 +186,29 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
       if (prev === 'welcome') return prev
       const provider = providerStep(readiness)
       if (provider !== 'ready') return provider
-      if (needsFolderMount(folderRoots.length)) return 'mount-folder'
-      return 'ready'
+      if (folderRoots.length > 0 || folderMountSkipped) return 'ready'
+      return 'mount-folder'
     })
-  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length, folderMountSkipped])
 
   const advanceFromWelcome = useCallback(() => {
     localStorage.setItem('creatorweave:onboarding:welcome-seen', 'true')
     const provider = providerStep(readiness)
     if (provider !== 'ready') setStep(provider)
-    else if (needsFolderMount(folderRoots.length)) setStep('mount-folder')
-    else setStep('ready')
-  }, [readiness.hasApiKey, readiness.hasUsableModel, folderRoots.length])
+    else if (folderRoots.length > 0 || folderMountSkipped) setStep('ready')
+    else setStep('mount-folder')
+  }, [readiness.hasApiKey, readiness.hasUsableModel, folderRoots.length, folderMountSkipped])
 
+  // "Skip" on the mount-folder step persists, so new conversations start at
+  // ready instead of nagging again. setFolderMountSkipped(true) matters on
+  // the very first skip: the state initializer ran before the flag existed,
+  // so without it the auto-advance effect would yank the user from ready
+  // back to mount-folder in this same session. Mounting later (Sidebar/
+  // FolderSelector/exec flow) still works and auto-completes onboarding
+  // once a root exists.
   const advanceFromMount = useCallback(() => {
+    localStorage.setItem('creatorweave:onboarding:folder-mount-skipped', 'true')
+    setFolderMountSkipped(true)
     setStep('ready')
   }, [])
 
@@ -390,8 +408,8 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               <button
                 type="button"
                 onClick={() => {
-                  if (needsFolderMount(folderRoots.length)) setStep('mount-folder')
-                  else setStep('ready')
+                  if (folderRoots.length > 0 || folderMountSkipped) setStep('ready')
+                  else setStep('mount-folder')
                 }}
                 className="inline-flex h-8 items-center text-xs text-neutral-500 transition-colors hover:text-foreground"
               >
@@ -446,8 +464,8 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               <button
                 type="button"
                 onClick={() => {
-                  if (needsFolderMount(folderRoots.length)) setStep('mount-folder')
-                  else setStep('ready')
+                  if (folderRoots.length > 0 || folderMountSkipped) setStep('ready')
+                  else setStep('mount-folder')
                 }}
                 className="inline-flex h-8 items-center text-xs text-neutral-500 transition-colors hover:text-foreground"
               >

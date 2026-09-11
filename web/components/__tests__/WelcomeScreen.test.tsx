@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -25,11 +25,15 @@ vi.mock('@/store/settings.store', () => ({
     hasApiKey: boolean
     hasApiKeyLoaded: boolean
     checkHasApiKey: () => Promise<void>
+    providerType: string
     modelName: string
   }) => unknown) => selector({
     hasApiKey: true,
     hasApiKeyLoaded: true,
     checkHasApiKey: async () => {},
+    // Readiness gate (commit 24bd878) requires BOTH providerType and
+    // modelName; without it the screen lands on select-model, not mount-folder.
+    providerType: 'openai',
     modelName: 'vision-model',
   }),
 }))
@@ -77,9 +81,16 @@ vi.mock('@/i18n', () => ({
     'welcome.mountFolderButton': 'Choose a folder',
     'welcome.mountFolderDesc': 'Choose a folder and AI can read and edit its files.',
     'welcome.skipButton': 'Skip for now',
+    'welcome.mountFolderBack': 'Back',
     'folderSelector.localConnection': 'Connect locally',
     'folderSelector.localConnectionDescription': 'Connect a folder through the local connection.',
   })[key] ?? key,
+}))
+
+// SetupGuideLink uses next/navigation's useRouter; jsdom/happy-dom has no
+// app router context, so provide a stub (pre-existing failure unblocked).
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn() }),
 }))
 
 vi.mock('@/hooks/useNativeHostPing', () => ({
@@ -115,6 +126,9 @@ describe('WelcomeScreen', () => {
     delete (window as unknown as { __agentWeb?: unknown }).__agentWeb
     addNativeHostRootMock.mockClear()
     localStorage.setItem('creatorweave:onboarding:welcome-seen', 'true')
+    // The mount-folder skip persists across remounts by design; clear it so
+    // tests below still see the mount-folder step from a clean baseline.
+    localStorage.removeItem('creatorweave:onboarding:folder-mount-skipped')
     // Reset mock state so each test starts from a deterministic baseline.
     // The hydration test flips `rootsHydrated` explicitly.
     folderAccessState.roots = []
@@ -142,6 +156,21 @@ describe('WelcomeScreen', () => {
     const privacyNote = screen.getByText('Your data stays in this browser.')
 
     expect(folderAction.compareDocumentPosition(privacyNote) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('persists the skip and does not show the mount-folder step again in a new conversation', () => {
+    render(<WelcomeScreen onStartConversation={vi.fn()} />)
+
+    // First conversation: user skips the folder-mount step.
+    fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }))
+    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
+
+    // Remount = switching to a new conversation: the mount-folder step
+    // must stay gone even though no folder was ever mounted.
+    cleanup()
+    render(<WelcomeScreen onStartConversation={vi.fn()} />)
+    expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Choose a folder' })).not.toBeInTheDocument()
   })
 
   it('captures a screenshot and stages it for the first conversation message', async () => {
