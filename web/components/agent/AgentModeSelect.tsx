@@ -5,8 +5,8 @@
  *   🔍 Plan  → agentMode='plan'                      (read-only, no writes)
  *   ⚡ Act   → agentMode='act', yolo off  (writes/external calls, each confirmed)
  *   🚀 YOLO  → agentMode='act', yolo on   (ALL prompt-level approvals skipped:
- *          external calls, disk writes, page-action writes — still URL-blacklist
- *          gated, never forbidden tools; conversation-scoped)
+ *          external calls, disk writes, page-action writes, command execution —
+ *          still URL-blacklist gated, never forbidden tools; conversation-scoped)
  *
  * Since PR-4 yolo generalizes beyond page-action tools (it also covers
  * call_tool and sync-to-disk), the option is shown EVERYWHERE — not only in

@@ -19,7 +19,7 @@ export const agent = {
         actDescription: "Can read, write, and call external tools — but every sensitive operation asks for your confirmation first.",
         planShort: "Read-only analysis",
         actShort: "Writes allowed, each operation confirmed",
-        yoloShort: "Auto-approves all confirmations (external calls, disk writes, etc.; this conversation only)",
+        yoloShort: "Auto-approves all confirmations (external calls, disk writes, command execution; this conversation only)",
         planLabel: "Read-only analysis mode",
         actLabel: "Writes allowed, confirmed per operation",
         switchTo: "Switch to",

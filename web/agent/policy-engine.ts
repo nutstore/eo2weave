@@ -318,7 +318,9 @@ function createPolicyTable(): Map<string, ToolPolicy> {
   // exec: the three-way decision itself is made by the native host
   // (execpolicy.json). The web side only receives the mapped result, so exec
   // does NOT go through getToolPolicy()/authorize() — exec.tool.ts maps
-  // auto/prompt/forbidden directly onto the shared modal channel.
+  // auto/prompt/forbidden directly onto the shared modal channel. The yolo
+  // bypass is likewise handled INSIDE exec.tool.ts (prompt → auto), keeping
+  // the forbidden gate before it; never route exec through authorize().
   set('exec', { level: 'auto' })
 
   // -- forbidden: LLM must never self-escalate ------------------------------

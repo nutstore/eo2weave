@@ -7,8 +7,10 @@
  * Approval flow (preApproved model):
  *   1. check_policy (stateless) → decision: 'auto' | 'prompt' | 'forbidden'
  *   2. 'auto'      → execute immediately
- *      'prompt'    → ask user via askUserQuestion → if approved, execute with preApproved
+ *      'prompt'    → ask the user via the shared auth modal → if approved, execute with preApproved
  *      'forbidden' → refuse, return error (never executed)
+ *      (YOLO on → 'prompt' downgrades to 'auto' at Step 2.5; the forbidden
+ *       check above always runs first, so yolo never covers forbidden.)
  *   3. Execute via exec_sync (stateless sendNativeMessage) → stdout/stderr/exit
  *
  * Security model: "transparent + approval" — no sandbox promises.
@@ -25,6 +27,10 @@ import { toolOkJson, toolErrorJson } from './tool-envelope'
 // exec deliberately passes memoryKey: null — exec grants are tuned through
 // execpolicy.json, never through "always allow".
 import { useToolAuthStore } from '@/store/tool-auth.store'
+// YOLO mode (conversation-scoped): when on, exec skips the prompt-level
+// approval modal entirely. Forbidden stays enforced (checked BEFORE this),
+// mirroring policy-engine where yolo never covers forbidden tools.
+import { isYoloOn } from '@/store/yolo-mode.store'
 import { isNativeHostReachable, probeNativeHost } from '@/lib/native-host-probe'
 
 // ─── Bridge types ──────────────────────────────────────────────
@@ -95,6 +101,7 @@ export const execDefinition: ToolDefinition = {
       '  - Read-only inspection commands and common build/test/lint commands are usually auto-approved',
       '  - Dangerous commands are forbidden',
       '  - Other commands prompt the user for approval',
+      '  - When the user has enabled YOLO mode, approval prompts are skipped and commands run immediately; forbidden commands are still blocked',
       '',
       'Requires both the Native Host and an authorized native-host root. FS Access-only roots cannot execute commands.',
       '',
@@ -124,7 +131,7 @@ export const execDefinition: ToolDefinition = {
         },
         background: {
           type: 'boolean',
-          description: 'Run as a detached background process (dev server). One call = start + wait until ready, returns { process_id, state: ready|timeout|exited, url, log_tail }. Always requires user approval.',
+          description: 'Run as a detached background process (dev server). One call = start + wait until ready, returns { process_id, state: ready|timeout|exited, url, log_tail }. Requires user approval unless YOLO mode is on.',
         },
         name: {
           type: 'string',
@@ -247,11 +254,24 @@ export const execExecutor: ToolExecutor = async (args, context) => {
       })
   }
 
-  // Background processes always require explicit user approval: they keep
-  // running after the session, hold ports, and continuously execute AI-modified
-  // code — one risk tier above one-shot commands.
+  // Background processes always require explicit user approval in normal
+  // modes: they keep running after the session, hold ports, and continuously
+  // execute AI-modified code — one risk tier above one-shot commands. Under
+  // YOLO (branch below) they skip the prompt like everything else.
   if (background && decision === 'auto') {
     decision = 'prompt'
+  }
+
+  // --- Step 2.5: YOLO mode skips the prompt-level approval ---
+  // Mirrors policy-engine decision step 3: yolo covers everything prompt-level
+  // but never forbidden (already returned above). This includes the forced
+  // background-process prompt — YOLO's contract is "run without interrupting
+  // me", so one-shot and background commands behave the same here. Forbidden
+  // commands (execpolicy.json) remain blocked regardless of yolo. A dedicated
+  // command-safety reviewer agent may later re-check the prompt/forbidden
+  // boundary inside this branch.
+  if (decision === 'prompt' && isYoloOn(context.workspaceId)) {
+    decision = 'auto'
   }
 
   // --- Step 3: Handle prompt (needs user approval) ---
@@ -802,7 +822,7 @@ export const execPromptDoc: ToolPromptDoc = {
     '  - Use `read` / `write` / `edit` / `delete` for all file operations. Do not use exec to create, modify, rename, or delete files; those changes bypass the normal workspace pending/sync flow.',
     '  - Pass an argv array, never a shell string: `["git", "status"]`, `["rg", "TODO", "src"]`, `["pnpm", "run", "typecheck"]`. Do not start commands with `bash`, `sh`, or `zsh`; that usually means the operation should be expressed as one direct argv command instead. Do not use `cd`, pipes, redirects, `&&`, `||`, or command substitution.',
     '  - `root` is an authorized root name such as `"<root-name>"`, not a file path. Specify it whenever multiple roots exist. `cwd`, when needed, is relative to root (for example `"packages/app"`), never absolute; use it instead of `cd`.',
-    '  - Check `exit_code`, `stdout`, `stderr`, `timed_out`, and `truncated` in the result. Read-only and common verification commands are usually auto-approved; other commands require user approval, and dangerous commands are blocked.',
+    '  - Check `exit_code`, `stdout`, `stderr`, `timed_out`, and `truncated` in the result. Read-only and common verification commands are usually auto-approved; other commands require user approval, and dangerous commands are blocked. When YOLO mode is on, approval prompts are skipped and commands run immediately (dangerous commands remain blocked).',
     '  - Commands see the version of the files that is ON DISK. Pending changes (from write/edit) are NOT on disk until synced: if a result carries `stale_disk`, the target root still has unsynced changes — call `sync-to-disk` first (asks the user for permission) and re-run the command when its result depends on those files. Delete-type changes are never auto-applied and may leave deleted files still present on disk.',
     '  - If no native-host root is authorized yet, calling exec without `root` triggers an in-flow authorization: the user confirms a modal, picks a folder in the OS picker, and the command runs inside it in the same call. Do not ask the user to pre-authorize anything manually — just call exec normally.',
     '  - For long-running processes (dev servers): `exec({ command, background: true, name: "web", port: 5173 })` starts one and waits until ready in a single call. List / inspect / stop background processes with the `processes` tool.',

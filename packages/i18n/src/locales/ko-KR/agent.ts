@@ -16,7 +16,7 @@ export const agent = {
         actDescription: "읽기·쓰기·외부 도구 호출이 가능하지만, 민감한 작업마다 확인을 요청합니다.",
         planShort: "읽기 전용 분석",
         actShort: "쓰기 허용, 작업마다 확인",
-        yoloShort: "확인이 필요한 모든 작업 자동 승인(외부 호출, 디스크 쓰기 등. 이 대화만)",
+        yoloShort: "확인이 필요한 모든 작업 자동 승인(외부 호출, 디스크 쓰기, 명령 실행 등. 이 대화만)",
         planLabel: "읽기 전용 분석 모드",
         actLabel: "쓰기 허용(작업마다 확인)",
         switchTo: "전환",
