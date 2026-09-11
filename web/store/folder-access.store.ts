@@ -979,8 +979,12 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       return true
     },
 
-    addNativeHostRoot: async () => {
-      const projectId = get().activeProjectId
+    addNativeHostRoot: async (projectIdOverride?: string) => {
+      // Explicit override wins (e.g. exec's in-flow authorization passes the
+      // CONVERSATION's project: the global active-project pointer can change
+      // mid-run, and a root bound to the wrong project would be invisible to
+      // resolveScopeId). Falls back to the UI pointer for direct user clicks.
+      const projectId = projectIdOverride ?? get().activeProjectId
       if (!projectId || !isNativeHostAvailable()) {
         toast.error(i18nText('projectRoots.nativeHostUnavailable', 'Local connection is unavailable'))
         return false
@@ -993,6 +997,10 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           toast.error(i18nText('projectRoots.rootAlreadyExists', `A folder named "${root.displayName}" already exists`, { name: root.displayName }))
           return false
         }
+        // Host-side scopes are GLOBAL: if another project already added this
+        // same local folder, the Rust host returns the SAME scope_id (scope.rs
+        // add_scope dedupes by canonical path) and we simply create another
+        // project binding for it — no extra error handling needed here.
         await getProjectRootRepository().createRoot({
           projectId,
           name: root.displayName,
@@ -1021,37 +1029,22 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       const root = get().roots.find((r) => r.id === rootId)
       if (!root) return
 
-      if (root.backend === 'native-host') {
-        // Best-effort revoke on the native host. NEVER abort the local removal:
-        // the SQLite row is the source of truth for the workspace view, and a
-        // scope that the host no longer knows (host reinstalled, scopes file
-        // lost, or extension/background bridge dead) would otherwise be
-        // unremovable forever — exactly the "unknown scope_id" deadlock.
-        if (!root.scopeId) {
-          console.warn(
-            '[FolderAccessStore] removeRoot: native-host root has no scopeId, removing locally only:',
-            root.name
-          )
-          toast.info(i18nText(
-            'projectRoots.nativeRootRemovedLocalOnly',
-            'Removed this folder from the project (no local-connection authorization to revoke)'
-          ))
-        } else {
-          try {
-            await new NativeHostExecutor().revokeRoot(projectId, root.scopeId)
-          } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'unknown error'
-            console.warn(
-              '[FolderAccessStore] removeRoot: revokeRoot failed, continuing with local removal:',
-              errorMessage
-            )
-            toast.warning(i18nText(
-              'projectRoots.nativeRootRevokeFailedRemovedLocally',
-              'Removed this folder from the project, but revoking its local-connection authorization failed: {error}',
-              { error: errorMessage }
-            ))
-          }
-        }
+      // NOTE: native-host scopes are global on the host side (shared across
+      // projects — adding the same local folder from another project reuses
+      // the same scope_id), so revoking happens AFTER the local removal below,
+      // guarded by a cross-project reference count.
+
+      // A native-host row without scopeId (partial write / migration drift)
+      // has nothing to revoke — remove locally and say so.
+      if (root.backend === 'native-host' && !root.scopeId) {
+        console.warn(
+          '[FolderAccessStore] removeRoot: native-host root has no scopeId, removing locally only:',
+          root.name
+        )
+        toast.info(i18nText(
+          'projectRoots.nativeRootRemovedLocalOnly',
+          'Removed this folder from the project (no local-connection authorization to revoke)'
+        ))
       }
 
       // Unbind handle
@@ -1059,6 +1052,49 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
 
       // Delete from SQLite
       await getProjectRootRepository().deleteRoot(rootId)
+
+      // Revoke the native-host scope only when this was the LAST project
+      // binding that scope. Otherwise the scope is still in use by other
+      // projects and must stay alive (it is global on the host side).
+      // Best-effort only: NEVER abort or fail the local removal because the
+      // revoke failed — a scope the host no longer knows (host reinstalled,
+      // scopes file lost, or extension/background bridge dead) must not make
+      // the root unremovable (the "unknown scope_id" deadlock).
+      // Known limitation: this check-then-act is not atomic across concurrent
+      // removeRoot calls (two tabs removing the last two bindings of one
+      // scope can both observe a remaining binding and both skip the revoke,
+      // leaving an orphaned host-side authorization). Accepted for the
+      // single-user desktop model; an orphan has no local binding and the
+      // next add of the same folder reuses the same scope_id.
+      if (root.backend === 'native-host' && root.scopeId) {
+        try {
+          const allBindings = await getProjectRootRepository().findByScopeId(root.scopeId)
+          if (allBindings.length === 0) {
+            await new NativeHostExecutor().revokeRoot(projectId, root.scopeId)
+            toast.info(i18nText(
+              'projectRoots.nativeRootScopeRevoked',
+              'Local-connection authorization revoked for this folder (no other project was using it)'
+            ))
+          } else {
+            toast.info(i18nText(
+              'projectRoots.nativeRootScopeStillShared',
+              'Removed this folder from the project. Its local-connection authorization is kept because {count} other project(s) still use it.',
+              { count: allBindings.length }
+            ))
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'unknown error'
+          console.warn(
+            '[FolderAccessStore] removeRoot: revokeRoot failed, continuing with local removal:',
+            errorMessage
+          )
+          toast.warning(i18nText(
+            'projectRoots.nativeRootRevokeFailedRemovedLocally',
+            'Removed this folder from the project, but revoking its local-connection authorization failed: {error}',
+            { error: errorMessage }
+          ))
+        }
+      }
 
       // Invalidate workspace-runtime root map cache (same rationale as addRoot).
       try {

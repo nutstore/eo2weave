@@ -164,6 +164,26 @@ export class ProjectRootRepository {
   }
 
   /**
+   * Find ALL bindings (across every project) that reference a native-host
+   * scope_id.
+   *
+   * The host-side scope store (~/.creatorweave/native-host-scopes.json) is
+   * global: adding the same local folder from multiple projects dedupes to a
+   * single scope_id (see Rust scope.rs add_scope). Revoking that scope from
+   * one project would break every other project still using it, so callers
+   * (folder-access.store removeRoot) use this to implement reference-counted
+   * revocation — only revoke when the last binding is removed.
+   */
+  async findByScopeId(scopeId: string): Promise<ProjectRoot[]> {
+    const db = getSQLiteDB()
+    const rows = await db.queryAll<ProjectRootRow>(
+      'SELECT * FROM project_roots WHERE backend = ? AND scope_id = ?',
+      ['native-host', scopeId]
+    )
+    return rows.map((row) => this.rowToRoot(row))
+  }
+
+  /**
    * Delete a root by ID.
    */
   async deleteRoot(id: string): Promise<void> {

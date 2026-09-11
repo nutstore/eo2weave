@@ -148,7 +148,8 @@ export interface FolderAccessStore extends FolderAccessActions {
   /** Add a new root (shows folder picker) */
   addRoot: () => Promise<boolean>
   /** Add a root through the explicitly selected Native Host picker. */
-  addNativeHostRoot: () => Promise<boolean>
+  /** Add a root through the explicitly selected Native Host picker. `projectIdOverride` binds the new root to a specific project (e.g. the conversation's project for exec in-flow authorization); defaults to the active project. */
+  addNativeHostRoot: (projectIdOverride?: string) => Promise<boolean>
   /** Remove a root by ID */
   removeRoot: (rootId: string) => Promise<void>
   /** Set a root as default */

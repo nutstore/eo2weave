@@ -22,8 +22,9 @@ export const projectRoots = {
     rootAlreadyExists: '已存在名为“{name}”的文件夹',
     nativeRootAdded: '已通过本机连接添加文件夹“{name}”',
     nativeRootAddFailed: "添加本机连接失败：{error}",
-    nativeRootMissingScope: "此本机连接缺少授权信息",
     nativeRootRevokeFailed: "移除本机连接失败：{error}",
     nativeRootRemovedLocalOnly: "已从项目中移除该文件夹（无本机连接授权需要撤销）",
     nativeRootRevokeFailedRemovedLocally: "已从项目中移除该文件夹，但撤销其本机连接授权失败：{error}",
+    nativeRootScopeRevoked: "已撤销该文件夹的本机连接授权（没有其他项目在使用它）",
+    nativeRootScopeStillShared: "已从项目中移除该文件夹。它的本机连接授权保留给仍在使用它的 {count} 个项目。",
 } as const

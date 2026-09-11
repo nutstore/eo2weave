@@ -22,8 +22,9 @@ export const projectRoots = {
     rootAlreadyExists: '“{name}” 이름의 폴더가 이미 있습니다',
     nativeRootAdded: '로컬 연결로 “{name}”을(를) 추가했습니다',
     nativeRootAddFailed: "로컬 연결 추가에 실패했습니다: {error}",
-    nativeRootMissingScope: "이 로컬 연결에 권한 정보가 없습니다",
     nativeRootRevokeFailed: "로컬 연결 제거에 실패했습니다: {error}",
     nativeRootRemovedLocalOnly: "이 폴더를 프로젝트에서 제거했습니다(취소할 로컬 연결 권한이 없음)",
     nativeRootRevokeFailedRemovedLocally: "이 폴더를 프로젝트에서 제거했지만 로컬 연결 권한 취소에 실패했습니다: {error}",
+    nativeRootScopeRevoked: "이 폴더의 로컬 연결 권한을 취소했습니다(다른 프로젝트가 사용하지 않음)",
+    nativeRootScopeStillShared: "이 폴더를 프로젝트에서 제거했습니다. 다른 {count}개 프로젝트가 아직 사용 중이므로 로컬 연결 권한은 유지됩니다.",
 } as const

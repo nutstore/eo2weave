@@ -22,8 +22,9 @@ export const projectRoots = {
     rootAlreadyExists: '「{name}」というフォルダーはすでに存在します',
     nativeRootAdded: 'ローカル接続で「{name}」を追加しました',
     nativeRootAddFailed: "ローカル接続の追加に失敗しました: {error}",
-    nativeRootMissingScope: "このローカル接続には認可情報がありません",
     nativeRootRevokeFailed: "ローカル接続の削除に失敗しました: {error}",
     nativeRootRemovedLocalOnly: "このフォルダーをプロジェクトから削除しました（取り消すべきローカル接続の認可はありません）",
     nativeRootRevokeFailedRemovedLocally: "このフォルダーをプロジェクトから削除しましたが、ローカル接続の認可取り消しに失敗しました: {error}",
+    nativeRootScopeRevoked: "このフォルダーのローカル接続認可を取り消しました（他のプロジェクトは使用していません）",
+    nativeRootScopeStillShared: "このフォルダーをプロジェクトから削除しました。他の {count} プロジェクトがまだ使用しているため、ローカル接続の認可は保持されます。",
 } as const

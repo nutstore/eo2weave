@@ -22,8 +22,9 @@ export const projectRoots = {
     rootAlreadyExists: 'A folder named “{name}” already exists',
     nativeRootAdded: 'Added “{name}” through local connection',
     nativeRootAddFailed: "Failed to add local connection: {error}",
-    nativeRootMissingScope: "This local connection is missing its authorization information",
     nativeRootRevokeFailed: "Failed to remove local connection: {error}",
     nativeRootRemovedLocalOnly: "Removed this folder from the project (no local-connection authorization to revoke)",
     nativeRootRevokeFailedRemovedLocally: "Removed this folder from the project, but revoking its local-connection authorization failed: {error}",
+    nativeRootScopeRevoked: "Local-connection authorization revoked for this folder (no other project was using it)",
+    nativeRootScopeStillShared: "Removed this folder from the project. Its local-connection authorization is kept because {count} other project(s) still use it.",
 } as const

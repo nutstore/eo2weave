@@ -19,6 +19,7 @@ const mockWorkspaceStore = vi.hoisted(() => ({
 
 const mockProjectRootRepo = vi.hoisted(() => ({
   findByProject: vi.fn(),
+  findByScopeId: vi.fn(),
   createRoot: vi.fn(),
   deleteRoot: vi.fn(),
   setDefaultRoot: vi.fn(),
@@ -26,6 +27,7 @@ const mockProjectRootRepo = vi.hoisted(() => ({
 
 const mockNativeHostExecutor = vi.hoisted(() => ({
   revokeRoot: vi.fn(),
+  authorizeRoot: vi.fn(),
 }))
 
 vi.mock('@/services/folder-access.repository', () => ({
@@ -53,6 +55,7 @@ vi.mock('@/opfs/native-disk/executor', () => ({
 vi.mock('@/opfs/native-disk/executor-native-host', () => ({
   NativeHostExecutor: class {
     revokeRoot = mockNativeHostExecutor.revokeRoot
+    authorizeRoot = mockNativeHostExecutor.authorizeRoot
   },
 }))
 
@@ -80,6 +83,8 @@ describe('folder-access.store runtime handle binding', () => {
     vi.clearAllMocks()
     mockRepo.loadAllForProject.mockResolvedValue([])
     mockProjectRootRepo.findByProject.mockResolvedValue([])
+    // Default: removed root was the last binding of its scope.
+    mockProjectRootRepo.findByScopeId.mockResolvedValue([])
     useFolderAccessStore.setState({
       activeProjectId: null,
       records: {},
@@ -152,7 +157,6 @@ describe('folder-access.store runtime handle binding', () => {
     const rootId = 'root-native-1'
     const scopeId = 'scope_missing'
     mockNativeHostExecutor.revokeRoot.mockRejectedValueOnce(new Error(`unknown scope_id: ${scopeId}`))
-
     useFolderAccessStore.setState({
       activeProjectId: projectId,
       roots: [{
@@ -173,6 +177,145 @@ describe('folder-access.store runtime handle binding', () => {
     expect(mockNativeHostExecutor.revokeRoot).toHaveBeenCalledWith(projectId, scopeId)
     expect(mockProjectRootRepo.deleteRoot).toHaveBeenCalledWith(rootId)
     expect(mockRepo.deleteByProjectAndRoot).toHaveBeenCalledWith(projectId, 'orphaned-folder')
+  })
+
+  // Regression: native-host scopes are GLOBAL on the host side — adding the
+  // same local folder from another project reuses the same scope_id. Removing
+  // the folder from one project used to revoke the shared scope, breaking
+  // every other project still using it.
+  it('keeps host authorization when another project still binds the same scope', async () => {
+    const projectId = 'project-shared'
+    const rootId = 'root-native-shared'
+    const scopeId = 'scope_shared'
+    mockProjectRootRepo.findByScopeId.mockResolvedValue([
+      {
+        id: 'root-other-project',
+        projectId: 'project-B',
+        name: 'shared-repo',
+        isDefault: true,
+        readOnly: false,
+        backend: 'native-host',
+        scopeId,
+        sortOrder: 0,
+        createdAt: Date.now(),
+      },
+    ])
+
+    useFolderAccessStore.setState({
+      activeProjectId: projectId,
+      roots: [{
+        id: rootId,
+        name: 'shared-repo',
+        isDefault: false,
+        readOnly: false,
+        backend: 'native-host',
+        scopeId,
+        handle: null,
+        persistedHandle: null,
+        status: 'ready',
+      }],
+    })
+
+    await useFolderAccessStore.getState().removeRoot(rootId)
+
+    expect(mockProjectRootRepo.findByScopeId).toHaveBeenCalledWith(scopeId)
+    expect(mockNativeHostExecutor.revokeRoot).not.toHaveBeenCalled()
+    expect(mockProjectRootRepo.deleteRoot).toHaveBeenCalledWith(rootId)
+    expect(mockRepo.deleteByProjectAndRoot).toHaveBeenCalledWith(projectId, 'shared-repo')
+  })
+
+  it('revokes host authorization when the removed root was the last binding', async () => {
+    const projectId = 'project-last'
+    const rootId = 'root-native-last'
+    const scopeId = 'scope_last'
+
+    useFolderAccessStore.setState({
+      activeProjectId: projectId,
+      roots: [{
+        id: rootId,
+        name: 'only-repo',
+        isDefault: false,
+        readOnly: false,
+        backend: 'native-host',
+        scopeId,
+        handle: null,
+        persistedHandle: null,
+        status: 'ready',
+      }],
+    })
+
+    await useFolderAccessStore.getState().removeRoot(rootId)
+
+    expect(mockProjectRootRepo.findByScopeId).toHaveBeenCalledWith(scopeId)
+    expect(mockNativeHostExecutor.revokeRoot).toHaveBeenCalledWith(projectId, scopeId)
+    expect(mockProjectRootRepo.deleteRoot).toHaveBeenCalledWith(rootId)
+  })
+
+  it('removes a native-host root with missing scopeId locally without revoking', async () => {
+    const projectId = 'project-noscope'
+    const rootId = 'root-native-noscope'
+
+    useFolderAccessStore.setState({
+      activeProjectId: projectId,
+      roots: [{
+        id: rootId,
+        name: 'drifted-repo',
+        isDefault: false,
+        readOnly: false,
+        backend: 'native-host',
+        scopeId: null,
+        handle: null,
+        persistedHandle: null,
+        status: 'idle',
+      }],
+    })
+
+    await useFolderAccessStore.getState().removeRoot(rootId)
+
+    expect(mockNativeHostExecutor.revokeRoot).not.toHaveBeenCalled()
+    expect(mockProjectRootRepo.findByScopeId).not.toHaveBeenCalled()
+    expect(mockProjectRootRepo.deleteRoot).toHaveBeenCalledWith(rootId)
+    expect(mockRepo.deleteByProjectAndRoot).toHaveBeenCalledWith(projectId, 'drifted-repo')
+  })
+
+  // Regression: exec's in-flow authorization passes the CONVERSATION's
+  // projectId so the new root is bound to the right project even when the
+  // global active-project pointer changed while the OS picker was open.
+  it('binds addNativeHostRoot to the explicit projectId override', async () => {
+    mockNativeHostExecutor.authorizeRoot.mockResolvedValue({
+      id: 'scope_new',
+      displayName: 'fresh-repo',
+    })
+    mockProjectRootRepo.createRoot.mockResolvedValue({
+      id: 'root-new',
+      projectId: 'conversation-project',
+      name: 'fresh-repo',
+      isDefault: false,
+      readOnly: false,
+      backend: 'native-host',
+      scopeId: 'scope_new',
+      sortOrder: 0,
+      createdAt: Date.now(),
+    })
+
+    const added = await useFolderAccessStore.getState().addNativeHostRoot('conversation-project')
+
+    expect(added).toBe(true)
+    expect(mockProjectRootRepo.createRoot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'conversation-project',
+        name: 'fresh-repo',
+        backend: 'native-host',
+        scopeId: 'scope_new',
+      })
+    )
+
+    // No override + no active project (beforeEach resets it) → no-op; exec
+    // always passes the override, UI callers always have an active project.
+    mockProjectRootRepo.createRoot.mockClear()
+    const noop = await useFolderAccessStore.getState().addNativeHostRoot()
+    expect(noop).toBe(false)
+    expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
   })
 
   // Regression: the store now exposes `rootsHydrated` so WelcomeScreen can
