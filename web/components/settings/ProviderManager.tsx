@@ -12,6 +12,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Eye,
   EyeOff,
+  AlertTriangle,
   Check,
   ExternalLink,
   Plus,
@@ -123,6 +124,9 @@ function ProviderCard({
     pinnedModelsByProvider,
     pinModel,
     unpinModel,
+    removePinnedModels,
+    markPinnedModelsSeen,
+    getStalePinnedModels,
     triggerProviderRefresh,
   } = useSettingsStore()
 
@@ -255,9 +259,21 @@ function ProviderCard({
     return result
   }, [isCustom, customProvider, providerType, dynamicModels])
 
+  // Record confirmed pins against the merged list (dynamic fetch + static +
+  // custom provider entries). This is what powers stale detection: a pin
+  // seen here at least once, then missing from a later list, gets flagged.
+  useEffect(() => {
+    if (allModels.length === 0) return
+    markPinnedModelsSeen(providerType, allModels.map((m) => m.id))
+  }, [allModels, markPinnedModelsSeen, providerType])
+
   // Pinned models for this provider (resolved to ModelInfo for display)
   const pinnedModels = useMemo(() => {
     const pinnedIds = pinnedModelsByProvider[providerType] || []
+    // Empty list = no trustworthy data (fetch pending/failed) → never flag.
+    const staleIds = new Set(
+      allModels.length > 0 ? getStalePinnedModels(providerType, allModels.map((m) => m.id)) : []
+    )
     return pinnedIds
       .map((id) => {
         const found = allModels.find((m) => m.id === id)
@@ -272,7 +288,8 @@ function ProviderCard({
           contextWindow: getModelContextWindow(providerType, id),
         }
       })
-  }, [pinnedModelsByProvider, providerType, allModels])
+      .map((m) => ({ ...m, stale: staleIds.has(m.id) }))
+  }, [pinnedModelsByProvider, providerType, allModels, getStalePinnedModels])
 
   // Filtered models for the "add model" dialog (all - pinned)
   const filteredModels = useMemo(() => {
@@ -323,6 +340,16 @@ function ProviderCard({
       setEditBaseUrl(customProvider.baseUrl)
     }
   }, [isEditing, customProvider])
+
+  // Remove all stale pinned models for this provider ("clean up delisted" button).
+  const handleClearStalePinned = useCallback(() => {
+    const staleIds = getStalePinnedModels(providerType, allModels.map((m) => m.id))
+    if (staleIds.length === 0) return
+    const removed = removePinnedModels(providerType, staleIds)
+    if (removed.length > 0) {
+      toast.success(t('settings.pinnedModels.staleRemoved', { count: removed.length }))
+    }
+  }, [getStalePinnedModels, removePinnedModels, providerType, allModels, t])
 
   const clearApiKey = useCallback(async () => {
     await deleteApiKey(providerKey)
@@ -761,8 +788,14 @@ function ProviderCard({
                 {pinnedModels.map((model) => (
                   <span
                     key={model.id}
-                    className="group inline-flex items-center gap-1 rounded-full border border-[var(--brand-border,rgba(13,148,136,0.12))] bg-[var(--brand-bg,rgba(13,148,136,0.05))] px-2 py-[3px] text-[11px] text-[var(--brand-light,#14b8a6)]/80 transition-colors cursor-default"
+                    title={model.stale ? t('settings.pinnedModels.staleTooltip') : undefined}
+                    className={
+                      model.stale
+                        ? 'group inline-flex items-center gap-1 rounded-full border border-dashed border-amber-500/50 bg-amber-500/10 px-2 py-[3px] text-[11px] text-amber-500 transition-colors cursor-default'
+                        : 'group inline-flex items-center gap-1 rounded-full border border-[var(--brand-border,rgba(13,148,136,0.12))] bg-[var(--brand-bg,rgba(13,148,136,0.05))] px-2 py-[3px] text-[11px] text-[var(--brand-light,#14b8a6)]/80 transition-colors cursor-default'
+                    }
                   >
+                    {model.stale ? <AlertTriangle className="h-3 w-3 shrink-0" /> : null}
                     {model.name}
                     <span className="text-[9px] text-tertiary">
                       {model.contextWindow != null &&
@@ -782,6 +815,18 @@ function ProviderCard({
                     </button>
                   </span>
                 ))}
+                {pinnedModels.some((m) => m.stale) ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-500/50 px-2 py-[3px] text-[11px] font-medium text-amber-500 transition-colors hover:bg-amber-500/10"
+                    onClick={handleClearStalePinned}
+                  >
+                    <X className="h-3 w-3" />
+                    {t('settings.pinnedModels.clearStale', {
+                      count: pinnedModels.filter((m) => m.stale).length,
+                    })}
+                  </button>
+                ) : null}
               </div>
             ) : (
               <p className="text-[11px] text-tertiary/60">
@@ -1114,7 +1159,7 @@ function LLMGatewayCard({
   onToggle: () => void
 }) {
   const t = useT()
-  const { triggerProviderRefresh, pinModel, unpinModel, pinnedModelsByProvider } = useSettingsStore()
+  const { triggerProviderRefresh, pinModel, unpinModel, removePinnedModels, markPinnedModelsSeen, getStalePinnedModels, pinnedModelsByProvider } = useSettingsStore()
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [allModels, setAllModels] = useState<Array<{ id: string; name: string }>>([])
   const [showModelPicker, setShowModelPicker] = useState(false)
@@ -1136,10 +1181,29 @@ function LLMGatewayCard({
   const isAuthRunning = authState.status === 'requesting' || authState.status === 'waiting' || authState.status === 'polling'
 
   const pinnedIds = pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE] || []
+  // allModels starts empty on mount (models fetch after expand+login) — an
+  // empty list is NOT authoritative, so suppress stale flags until it loads.
+  const staleIds = useMemo(
+    () => new Set(
+      allModels.length > 0
+        ? getStalePinnedModels(LLM_GATEWAY_PROVIDER_TYPE, allModels.map((m) => m.id))
+        : []
+    ),
+    [getStalePinnedModels, allModels]
+  )
   const pinned = pinnedIds.map((id) => {
     const found = allModels.find((m) => m.id === id)
-    return found || { id, name: id }
+    return { ...(found || { id, name: id }), stale: staleIds.has(id) }
   })
+
+  const handleClearStalePinnedGateway = useCallback(() => {
+    const ids = [...staleIds]
+    if (ids.length === 0) return
+    const removed = removePinnedModels(LLM_GATEWAY_PROVIDER_TYPE, ids)
+    if (removed.length > 0) {
+      toast.success(t('settings.pinnedModels.staleRemoved', { count: removed.length }))
+    }
+  }, [staleIds, removePinnedModels, t])
 
   const unpinned = allModels.filter((m) => !pinnedIds.includes(m.id))
   const filteredUnpinned = !modelSearch.trim()
@@ -1187,13 +1251,18 @@ function LLMGatewayCard({
         if (token && !cancelled) {
           const models = await fetchGatewayModels(baseURL, token)
           setAllModels(models)
+          // Gateway /models response is authoritative — record confirmed pins
+          // so pins absent from a later fetch get flagged as stale.
+          if (models.length > 0) {
+            markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
+          }
         }
       } catch {
         // ignore
       }
     })()
     return () => { cancelled = true }
-  }, [isLoggedIn, isExpanded])
+  }, [isLoggedIn, isExpanded, markPinnedModelsSeen])
 
   // Direct Device Code Flow — triggered by the login button, no extra dialog
   const handleLogin = useCallback(async () => {
@@ -1363,8 +1432,14 @@ function LLMGatewayCard({
                     {pinned.map((m) => (
                       <span
                         key={m.id}
-                        className="group inline-flex items-center gap-1 rounded-full border border-[var(--brand-border,rgba(13,148,136,0.12))] bg-[var(--brand-bg,rgba(13,148,136,0.05))] px-2 py-[3px] text-[11px] text-[var(--brand-light,#14b8a6)]/80 transition-colors cursor-default"
+                        title={m.stale ? t('settings.pinnedModels.staleTooltip') : undefined}
+                        className={
+                          m.stale
+                            ? 'group inline-flex items-center gap-1 rounded-full border border-dashed border-amber-500/50 bg-amber-500/10 px-2 py-[3px] text-[11px] text-amber-500 transition-colors cursor-default'
+                            : 'group inline-flex items-center gap-1 rounded-full border border-[var(--brand-border,rgba(13,148,136,0.12))] bg-[var(--brand-bg,rgba(13,148,136,0.05))] px-2 py-[3px] text-[11px] text-[var(--brand-light,#14b8a6)]/80 transition-colors cursor-default'
+                        }
                       >
+                        {m.stale ? <AlertTriangle className="h-3 w-3 shrink-0" /> : null}
                         {m.name}
                         <button
                           type="button"
@@ -1375,6 +1450,18 @@ function LLMGatewayCard({
                         </button>
                       </span>
                     ))}
+                    {pinned.some((m) => m.stale) ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded-full border border-amber-500/50 px-2 py-[3px] text-[11px] font-medium text-amber-500 transition-colors hover:bg-amber-500/10"
+                        onClick={handleClearStalePinnedGateway}
+                      >
+                        <X className="h-3 w-3" />
+                        {t('settings.pinnedModels.clearStale', {
+                          count: pinned.filter((m) => m.stale).length,
+                        })}
+                      </button>
+                    ) : null}
                   </div>
                 ) : (
                   <p className="text-[11px] text-tertiary/60">
