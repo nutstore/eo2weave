@@ -490,6 +490,9 @@ export const settings = {
       noApiModels: "No models available. Click refresh to fetch the model list first.",
       noMatch: "No matching models",
       dialogHint: "{count} models available. Click to add.",
+      staleTooltip: "This model is no longer in the provider's available list (likely delisted). Sending messages will fail — consider removing it.",
+      clearStale: "Remove unavailable ({count})",
+      staleRemoved: "Removed {count} unavailable model(s)",
     },
 
     // Nutstore AI usage quota

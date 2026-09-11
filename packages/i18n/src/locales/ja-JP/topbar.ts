@@ -18,6 +18,9 @@ export const topbar = {
       visionOnly: "ビジョンのみ",
       visionOnlyTooltip: "画像入力対応のモデルだけ表示",
       visionCapable: "画像入力対応",
+      delisted: "提供終了",
+      delistedTooltip: "このモデルはプロバイダーの利用可能リストに存在しません（提供終了の可能性）。メッセージ送信が失敗します",
+      currentModelDelistedTooltip: "選択中のモデルは提供終了の可能性があります。メッセージ送信が失敗するため、モデルの切り替えをおすすめします",
     },
     tooltips: {
       backToProjects: "プロジェクト一覧に戻る",

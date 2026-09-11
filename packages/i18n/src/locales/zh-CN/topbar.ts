@@ -18,6 +18,9 @@ export const topbar = {
       visionOnly: "仅视觉",
       visionOnlyTooltip: "只显示支持图片输入的模型",
       visionCapable: "支持图片输入",
+      delisted: "已下线",
+      delistedTooltip: "该模型已不在服务商可用列表中（可能已下线），发送消息会失败",
+      currentModelDelistedTooltip: "当前所选模型可能已下线，发送消息会失败，建议切换其他模型",
     },
     tooltips: {
       backToProjects: "返回项目列表",

@@ -490,6 +490,9 @@ export const settings = {
       noApiModels: "利用可能なモデルがありません。更新ボタンでモデルリストを取得してください",
       noMatch: "一致するモデルがありません",
       dialogHint: "{count} 個のモデルが選択可能です。クリックで追加",
+      staleTooltip: "このモデルはプロバイダーの利用可能リストに存在しません（提供終了の可能性）。メッセージ送信が失敗するため、削除をおすすめします",
+      clearStale: "利用不可を削除（{count}）",
+      staleRemoved: "利用不可のモデルを {count} 件削除しました",
     },
 
     // Nutstore AI usage quota

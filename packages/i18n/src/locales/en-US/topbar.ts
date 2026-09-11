@@ -17,6 +17,9 @@ export const topbar = {
       visionOnly: "Vision only",
       visionOnlyTooltip: "Only show models that support image input",
       visionCapable: "Supports image input",
+      delisted: "Delisted",
+      delistedTooltip: "This model is no longer in the provider's available list (likely delisted). Sending messages will fail.",
+      currentModelDelistedTooltip: "The selected model may have been delisted. Sending messages will fail — consider switching models.",
     },
     tooltips: {
       backToProjects: "Back to Project List",

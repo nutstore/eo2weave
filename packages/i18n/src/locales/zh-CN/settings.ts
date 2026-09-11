@@ -478,6 +478,9 @@ export const settings = {
       noApiModels: "暂无可用模型，请先点击刷新按钮获取模型列表",
       noMatch: "没有匹配的模型",
       dialogHint: "共 {count} 个模型可选，点击即可添加",
+      staleTooltip: "该模型已不在服务商可用列表中（可能已下线），发送消息会失败，建议移除",
+      clearStale: "移除失效模型（{count}）",
+      staleRemoved: "已移除 {count} 个失效常用模型",
     },
 
     // 坚果云 AI 使用额度

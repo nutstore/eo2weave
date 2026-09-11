@@ -18,6 +18,9 @@ export const topbar = {
       visionOnly: "비전만",
       visionOnlyTooltip: "이미지 입력 지원 모델만 표시",
       visionCapable: "이미지 입력 지원",
+      delisted: "제공 종료",
+      delistedTooltip: "이 모델은 더 이상 프로바이더의 사용 가능 목록에 없습니다(제공 종료 가능성). 메시지 전송이 실패합니다",
+      currentModelDelistedTooltip: "선택된 모델은 제공이 종료되었을 수 있습니다. 메시지 전송이 실패하므로 다른 모델로 전환하세요",
     },
     tooltips: {
       backToProjects: "프로젝트 목록으로 돌아가기",

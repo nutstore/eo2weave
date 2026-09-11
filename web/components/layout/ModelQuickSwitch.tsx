@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronDown, ChevronRight, Circle, Eye, Search, Settings, Sparkles } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Circle, Eye, Search, Settings, Sparkles } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
 import type { LLMProviderType } from '@/agent/providers/types'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
@@ -9,14 +9,14 @@ import { useT } from '@/i18n'
 interface AvailableProvider {
   providerType: LLMProviderType
   displayName: string
-  models: Array<{ id: string; name: string; hasVision?: boolean }>
+  models: Array<{ id: string; name: string; hasVision?: boolean; stale?: boolean }>
   providerKey: string
 }
 
 /** Flattened model entry used when searching across providers. */
 interface FlatModel {
   provider: AvailableProvider
-  model: { id: string; name: string; hasVision?: boolean }
+  model: { id: string; name: string; hasVision?: boolean; stale?: boolean }
 }
 
 interface ModelQuickSwitchProps {
@@ -88,13 +88,24 @@ export function ModelQuickSwitch({ onManageProviders }: ModelQuickSwitchProps = 
   )
 
   // Enrich each model with hasVision (vision capability from OpenRouter
-  // snapshot).  supportsImageInput is a sync snapshot lookup, so it never
-  // throws — no try/catch needed.
+  // snapshot) and stale (pinned before but missing from the provider's
+  // current list — likely delisted upstream, e.g. an old codex model).
+  // supportsImageInput is a sync snapshot lookup, so it never throws.
   const enrichedProviders = useMemo<AvailableProvider[]>(() => {
-    return visibleProviders.map((p) => ({
-      ...p,
-      models: p.models.map((m) => ({ ...m, hasVision: supportsImageInput(m.id) })),
-    }))
+    const { getStalePinnedModels } = useSettingsStore.getState()
+    return visibleProviders.map((p) => {
+      const staleIds = new Set(
+        getStalePinnedModels(p.providerType, p.models.map((m) => m.id))
+      )
+      return {
+        ...p,
+        models: p.models.map((m) => ({
+          ...m,
+          hasVision: supportsImageInput(m.id),
+          stale: staleIds.has(m.id),
+        })),
+      }
+    })
   }, [visibleProviders])
 
   useEffect(() => {
@@ -150,6 +161,18 @@ export function ModelQuickSwitch({ onManageProviders }: ModelQuickSwitchProps = 
       return tokens.every((tk) => hay.includes(tk))
     })
   }, [flatModels, trimmedQuery])
+
+  // Whether the currently-selected model is flagged stale (shown as a warning
+  // dot on the trigger button so users learn before sending a message).
+  const currentModelStale = useMemo(() => {
+    const currentProvider = providers.find((p) => p.providerType === providerType)
+    if (!currentProvider) return false
+    const { getStalePinnedModels } = useSettingsStore.getState()
+    return getStalePinnedModels(
+      providerType,
+      currentProvider.models.map((m) => m.id)
+    ).includes(modelName)
+  }, [providers, providerType, modelName])
 
   const currentLabel = useMemo(() => {
     // No API key configured → always show "unavailable" regardless of persisted values
@@ -215,6 +238,16 @@ export function ModelQuickSwitch({ onManageProviders }: ModelQuickSwitchProps = 
           <span className="flex min-w-0 items-center gap-2">
             <Sparkles className="h-3.5 w-3.5 shrink-0 text-tertiary" />
             <span className="truncate text-secondary" title={currentLabel}>{currentLabel}</span>
+            {currentModelStale ? (
+              <span
+                className="relative flex h-2 w-2 shrink-0"
+                title={t('topbar.modelSwitcher.currentModelDelistedTooltip')}
+                aria-label={t('topbar.modelSwitcher.currentModelDelistedTooltip')}
+              >
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+              </span>
+            ) : null}
           </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-tertiary" />
         </BrandButton>
@@ -302,7 +335,15 @@ export function ModelQuickSwitch({ onManageProviders }: ModelQuickSwitchProps = 
                     }`}>
                     <span className="flex min-w-0 items-baseline gap-2">
                       <span className="truncate" title={model.name}>{model.name}</span>
-                      {model.hasVision ? (
+                      {model.stale ? (
+                        <span
+                          className="inline-flex shrink-0 items-center gap-0.5 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-medium text-amber-500"
+                          title={t('topbar.modelSwitcher.delistedTooltip')}
+                        >
+                          <AlertTriangle className="h-2.5 w-2.5" />
+                          {t('topbar.modelSwitcher.delisted')}
+                        </span>
+                      ) : model.hasVision ? (
                         <Eye
                           className="h-3.5 w-3.5 shrink-0 text-primary"
                           aria-label={t('topbar.modelSwitcher.visionCapable')}
@@ -374,7 +415,15 @@ export function ModelQuickSwitch({ onManageProviders }: ModelQuickSwitchProps = 
                           >
                             <span className="flex min-w-0 items-center gap-2">
                               <span className="truncate" title={model.name}>{model.name}</span>
-                              {model.hasVision ? (
+                              {model.stale ? (
+                                <span
+                                  className="inline-flex shrink-0 items-center gap-0.5 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-medium text-amber-500"
+                                  title={t('topbar.modelSwitcher.delistedTooltip')}
+                                >
+                                  <AlertTriangle className="h-2.5 w-2.5" />
+                                  {t('topbar.modelSwitcher.delisted')}
+                                </span>
+                              ) : model.hasVision ? (
                                 <Eye
                                   className="h-3.5 w-3.5 shrink-0 text-primary"
                                   aria-label={t('topbar.modelSwitcher.visionCapable')}

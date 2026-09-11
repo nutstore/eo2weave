@@ -486,6 +486,9 @@ export const settings = {
       noApiModels: "사용 가능한 모델이 없습니다. 새로고침 버튼으로 모델 목록을 먼저 가져오세요",
       noMatch: "일치하는 모델이 없습니다",
       dialogHint: "{count}개의 모델을 선택할 수 있습니다. 클릭하여 추가",
+      staleTooltip: "이 모델은 더 이상 프로바이더의 사용 가능 목록에 없습니다(제공 종료 가능성). 메시지 전송이 실패하므로 제거를 권장합니다",
+      clearStale: "사용 불가 모델 제거({count})",
+      staleRemoved: "사용 불가 모델 {count}개를 제거했습니다",
     },
 
     // Nutstore AI usage quota
