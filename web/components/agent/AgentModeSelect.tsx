@@ -40,7 +40,9 @@ export interface AgentModeSelectProps {
 type VisibleMode = 'plan' | 'act' | 'yolo'
 
 function modeDotClass(mode: VisibleMode): string {
-  return mode === 'yolo' ? 'bg-warning' : 'bg-neutral-400'
+  if (mode === 'yolo') return 'bg-warning'
+  if (mode === 'act') return 'bg-primary-600 dark:bg-primary-400'
+  return 'bg-neutral-400'
 }
 
 const ChevronIcon = ({ className }: { className?: string }) => (
