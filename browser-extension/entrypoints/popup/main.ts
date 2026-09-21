@@ -1034,17 +1034,25 @@ function renderCapline(): void {
   }
 
   function loadUsageData() {
-    // Fire a live /codex/usage query (fresh numbers while the popup is open);
-    // fall back to the stored snapshot when the query is unavailable.
-    sendMessage({ type: 'codex_query_usage' }).then(function (resp) {
-      if (resp && resp.ok && resp.data) {
-        renderSnapshotUsage(resp.data);
-        loadResetCredits();
-        return;
+    // Stale-while-revalidate: paint the cached snapshot FIRST so the popup
+    // opens with numbers instead of an empty box, then re-render from the
+    // live /codex/usage query when it resolves (renderSnapshotUsage shows
+    // each snapshot's own updatedAt, so the swap is self-explaining).
+    sendMessage({ type: 'codex_get_usage' }).then(function (cachedResp) {
+      if (cachedResp && cachedResp.ok && cachedResp.data) {
+        renderSnapshotUsage(cachedResp.data);
       }
-      if (resp && !resp.ok) console.warn('[popup] live usage query failed:', resp.message || resp.error || resp.errorCode);
-      return sendMessage({ type: 'codex_get_usage' }).then(function (cachedResp) {
-        if (cachedResp && cachedResp.ok && cachedResp.data) renderSnapshotUsage(cachedResp.data);
+      // Fire the live refresh regardless — the cached paint is a preview,
+      // not a substitute. Errors fall through to the cached render above.
+      return sendMessage({ type: 'codex_query_usage' }).then(function (resp) {
+        if (resp && resp.ok && resp.data) {
+          renderSnapshotUsage(resp.data);
+          loadResetCredits();
+          return;
+        }
+        if (resp && !resp.ok) {
+          console.warn('[popup] live usage query failed:', resp.message || resp.error || resp.errorCode);
+        }
         loadResetCredits();
       });
     }).catch(function () {
