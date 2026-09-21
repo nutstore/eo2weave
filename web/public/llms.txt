@@ -1,0 +1,42 @@
+# EO2Weave (怡氧知知)
+
+> AI-native creator workspace with local-first files, knowledge workflows, and
+> multi-agent orchestration. Runs entirely in the browser as a PWA; files stay
+> on the user's machine (OPFS / native disk), never on our servers.
+
+EO2Weave 是面向创作者的 AI 原生工作台：本地优先的文件管理、知识工作流与多智能体
+编排。纯浏览器 PWA，文件保存在用户本机（OPFS / 本地磁盘），不上传服务器。
+
+## What makes it different
+
+- **Local-first**: documents and workspaces live in the browser's OPFS or the
+  user's local disk via a native host. No cloud copy by default.
+- **Multi-agent**: orchestrates coding agents (Claude Code, Codex CLI, OpenCode)
+  as subagents, plus its own built-in agent loop with tool calling.
+- **WebMCP-native**: the app itself is addressable by external AI agents via
+  the WebMCP protocol — agents can create projects, manage conversations,
+  read/write workspace files, and drive the built-in agent on the user's behalf.
+
+## Sites
+
+- International: https://weave.eo2suite.com
+- China: https://weave.eo2suite.cn
+
+## For AI agents (WebMCP)
+
+EO2Weave's own page registers 20 WebMCP tools on `navigator.modelContext`
+(Chrome 140+, polyfilled otherwise), including:
+
+- list_projects / create_project
+- list_conversations / search_conversations / get_messages / send_message
+- read_folder_file / write_folder_file / list_folder_files
+- list_providers / list_models / set_default_model
+
+Tools are discovered dynamically per open tab; AI agents with WebMCP support
+(e.g. Chrome with the WebMCP API, or the EO2Weave browser extension) can invoke
+them after user authorization.
+
+## Optional
+
+- [GitHub](https://github.com/nutstore/eo2weave): source code, issues, releases
+- [Privacy policy](https://weave.eo2suite.com/help/privacy): no telemetry; data stays local

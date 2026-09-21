@@ -1,0 +1,33 @@
+{
+  "$schema": "https://webmcp.org/schemas/site-v1.json",
+  "name": "EO2Weave",
+  "tagline": "AI-native creator workspace — local-first files, knowledge workflows, multi-agent orchestration",
+  "protocol": "webmcp",
+  "version": 1,
+  "transport": {
+    "kind": "page",
+    "description": "Tools are registered on navigator.modelContext by the page itself (imperative WebMCP). Open the site in a WebMCP-capable browser or use the EO2Weave browser extension; tools are discovered per tab and require user authorization before invocation."
+  },
+  "auth": {
+    "kind": "none-for-discovery",
+    "description": "Discovery is anonymous. Tool invocation requires an interactive session with the user logged in; authorization is granted per browser/tab."
+  },
+  "capabilities": {
+    "tools": {
+      "count": 20,
+      "groups": [
+        "projects (list_projects, create_project)",
+        "conversations (list_conversations, search_conversations, get_messages, send_message, rename_conversation)",
+        "workspace files (read_folder_file, write_folder_file, list_folder_files)",
+        "agent runs (get_run_status, get_run_progress, cancel_run)",
+        "providers & models (list_providers, list_models, add_pinned_model, remove_pinned_model, set_default_model)"
+      ]
+    }
+  },
+  "links": {
+    "site": "https://weave.eo2suite.com",
+    "cn": "https://weave.eo2suite.cn",
+    "repository": "https://github.com/nutstore/eo2weave",
+    "llms": "/llms.txt"
+  }
+}
