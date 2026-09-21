@@ -7,6 +7,21 @@ import {
 } from '../builtin-slash-commands'
 import { matchesBuiltinCommand } from '../builtin-slash-exec'
 
+const tr = (key: string) => {
+  const map: Record<string, string> = {
+    summary: '请总结以下内容：回复语言与内容语言一致。',
+    translate: '请将以下内容翻译为{lang}。只输出译文。',
+    explain: '请解释以下内容：回复语言与内容语言一致。',
+    polish: '请润色以下文字：回复语言与内容语言一致。',
+    titles: '基于以下内容生成 5 个备选标题。标题语言与内容语言一致。',
+    subjectInline: '输入的文字',
+    subjectSelection: '选中的文本',
+    subjectPage: '页面内容',
+    truncated: '[...内容过长已截断]',
+  }
+  return map[key] ?? key
+}
+
 describe('builtin slash command pack', () => {
   it('contains the P0 commands in dropdown order', () => {
     expect(BUILTIN_SLASH_COMMANDS.map((c) => c.id)).toEqual([
@@ -26,7 +41,7 @@ describe('builtin slash command pack', () => {
       pageUrl: 'https://example.com',
     }
     for (const def of BUILTIN_SLASH_COMMANDS) {
-      const prompt = def.buildPrompt({ ...ctx, langArg: 'en' })
+      const prompt = def.buildPrompt({ ...ctx, langArg: 'en' }, tr)
       expect(prompt).toContain('被选中的文本内容')
       expect(prompt).toContain('示例页面')
       expect(prompt).toContain('选中的文本')
@@ -41,39 +56,48 @@ describe('builtin slash command pack', () => {
       pageUrl: null,
     }
     const en = BUILTIN_SLASH_COMMANDS.find((c) => c.id === 'translate')!
-    expect(en.buildPrompt({ ...ctx, langArg: 'en' })).toContain('英文')
-    expect(en.buildPrompt({ ...ctx, langArg: undefined })).toContain('中文')
-    expect(en.buildPrompt({ ...ctx, langArg: '法语' })).toContain('法语')
+    expect(en.buildPrompt({ ...ctx, langArg: 'en' }, tr)).toContain('英文')
+    expect(en.buildPrompt({ ...ctx, langArg: undefined }, tr)).toContain('中文')
+    expect(en.buildPrompt({ ...ctx, langArg: '法语' }, tr)).toContain('法语')
   })
 
   it('falls back to page text only when no selection', () => {
     const def = BUILTIN_SLASH_COMMANDS.find((c) => c.id === 'summary')!
-    const pageOnly = def.buildPrompt({
-      selection: null,
-      pageText: '页面正文',
-      pageTitle: 'T',
-      pageUrl: null,
-    })
+    const pageOnly = def.buildPrompt(
+      {
+        selection: null,
+        pageText: '页面正文',
+        pageTitle: 'T',
+        pageUrl: null,
+      },
+      tr,
+    )
     expect(pageOnly).toContain('页面正文')
     expect(pageOnly).toContain('页面内容')
-    const selectionWins = def.buildPrompt({
-      selection: '选中的',
-      pageText: '页面正文',
-      pageTitle: 'T',
-      pageUrl: null,
-    })
+    const selectionWins = def.buildPrompt(
+      {
+        selection: '选中的',
+        pageText: '页面正文',
+        pageTitle: 'T',
+        pageUrl: null,
+      },
+      tr,
+    )
     expect(selectionWins).toContain('选中的')
     expect(selectionWins).not.toContain('页面正文')
   })
 
   it('inline subject without page meta uses neutral header', () => {
     const def = BUILTIN_SLASH_COMMANDS.find((c) => c.id === 'polish')!
-    const prompt = def.buildPrompt({
-      selection: '我的文字',
-      pageText: null,
-      pageTitle: null,
-      pageUrl: null,
-    })
+    const prompt = def.buildPrompt(
+      {
+        selection: '我的文字',
+        pageText: null,
+        pageTitle: null,
+        pageUrl: null,
+      },
+      tr,
+    )
     expect(prompt).toContain('【输入的文字】')
     expect(prompt).toContain('我的文字')
   })

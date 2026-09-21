@@ -156,5 +156,6 @@ export async function assembleBuiltinCommandPrompt(inputTrimmed: string): Promis
     pageUrl,
     langArg: def.takesLangArg ? langArg : undefined,
   }
-  return def.buildPrompt(ctx)
+  const tr = (key: string) => t(locale, `conversation.input.slashCommands.${key}`)
+  return def.buildPrompt(ctx, tr)
 }

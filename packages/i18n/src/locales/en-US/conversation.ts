@@ -89,9 +89,22 @@ export const conversation = {
         },
         titles: {
           label: "Titles",
-          description: "Generate 5 title options from the content",
+          description: "Generate 5 titles — inline text, or page/selection in side panel",
           chipPageMode: "page mode",
           noContent: "Nothing to analyze — select text or open a page with content",
+        },
+        subjectInline: "typed text",
+        subjectSelection: "selected text",
+        subjectPage: "page content",
+        truncated: "[...content too long, truncated]",
+        // Slash-command prompt templates (instruction language follows the UI
+        // locale; the reply language follows the content itself).
+        promptTemplates: {
+          summary: "Summarize the following content: one-sentence takeaway first, then 3-7 bullet points (one per line, bold the keywords), and a final line stating the core purpose of the original. Do not invent information that is not in the content. Reply in the same language as the content.",
+          translate: "Translate the following content into the target language. Requirements: preserve the original formatting (Markdown/code blocks/lists); do not translate proper nouns or code identifiers; keep the translation natural and fluent, not word-for-word. Output only the translation.",
+          explain: "Explain the following content: start with a plain-language one-sentence summary of what it is; then explain each key concept/term/piece of code (for code, what each part does and why it is written that way); end with an easy-to-understand analogy or example. Reply in the same language as the content.",
+          polish: "Polish the following text: keep the original meaning and tone, improve fluency, conciseness and expressiveness; fix typos and grammar issues. Output: 1) the polished full text; 2) a brief list of the main changes. Do not rewrite the meaning. Reply in the same language as the content.",
+          titles: "Generate 5 alternative titles for the following content. Requirements: one title per line, max 20 characters each, varied styles (at least: informative, curiosity-driven, benefit-driven); ordered by appeal; output only the title list. Titles in the same language as the content.",
         },
       },
       dropFilesHere: "Drop files here",

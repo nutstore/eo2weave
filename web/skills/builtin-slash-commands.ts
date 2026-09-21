@@ -37,7 +37,7 @@ export interface BuiltinSlashCommandDef {
    */
   takesInlineSubject?: boolean
   /** Build the final prompt sent through the agent pipeline */
-  buildPrompt: (ctx: SlashPromptContext) => string
+  buildPrompt: (ctx: SlashPromptContext, tr: (i18nKey: string) => string) => string
 }
 
 export interface SlashPromptContext {
@@ -68,15 +68,10 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
     i18nKey: 'summary',
     icon: 'FileText',
     takesInlineSubject: true,
-    buildPrompt: (ctx) => {
-      const subject = resolveSubject(ctx)
+    buildPrompt: (ctx, tr) => {
+      const subject = resolveSubject(ctx, tr)
       if (!subject) return ''
-      return [
-        '请总结以下内容，用中文输出。先给一句话结论，再列 3-7 个要点（每点一行，可加粗关键词），最后用一行给出原文的核心目的。不要编造内容中没有的信息。',
-        '',
-        subjectHeader(ctx),
-        subject,
-      ].join('\n')
+      return [tr('summary'), '', subjectHeader(ctx, tr), subject].join('\n')
     },
   },
   {
@@ -84,16 +79,11 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
     i18nKey: 'translate',
     icon: 'Languages',
     takesLangArg: true,
-    buildPrompt: (ctx) => {
-      const subject = resolveSubject(ctx)
+    buildPrompt: (ctx, tr) => {
+      const subject = resolveSubject(ctx, tr)
       if (!subject) return ''
       const lang = normalizeLang(ctx.langArg)
-      return [
-        `请将以下内容翻译为${lang}。要求：保留原有格式（Markdown/代码块/列表）；专有名词、代码标识符不翻译；译文自然流畅，不要逐字直译。只输出译文。`,
-        '',
-        subjectHeader(ctx),
-        subject,
-      ].join('\n')
+      return [tr('translate').replace('{lang}', lang), '', subjectHeader(ctx, tr), subject].join('\n')
     },
   },
   {
@@ -101,13 +91,13 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
     i18nKey: 'explain',
     icon: 'Lightbulb',
     takesInlineSubject: true,
-    buildPrompt: (ctx) => {
-      const subject = resolveSubject(ctx)
+    buildPrompt: (ctx, tr) => {
+      const subject = resolveSubject(ctx, tr)
       if (!subject) return ''
       return [
-        '请解释以下内容：先用一句大白话概括它在说什么；然后逐个解释其中的关键概念/术语/代码（若有代码，说明每段做什么、为什么这样写）；最后给一个便于理解的类比或示例。用中文输出。',
+        tr('explain'),
         '',
-        subjectHeader(ctx),
+        subjectHeader(ctx, tr),
         subject,
       ].join('\n')
     },
@@ -117,15 +107,10 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
     i18nKey: 'polish',
     icon: 'Sparkles',
     takesInlineSubject: true,
-    buildPrompt: (ctx) => {
-      const subject = resolveSubject(ctx)
+    buildPrompt: (ctx, tr) => {
+      const subject = resolveSubject(ctx, tr)
       if (!subject) return ''
-      return [
-        '请润色以下文字：保持原意和语气风格不变，提升流畅度、精炼度和表达力；修正错别字与语病。输出：1) 润色后的全文；2) 用简短列表说明主要改动点。不要改写原意。',
-        '',
-        subjectHeader(ctx),
-        subject,
-      ].join('\n')
+      return [tr('polish'), '', subjectHeader(ctx, tr), subject].join('\n')
     },
   },
   {
@@ -133,15 +118,10 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
     i18nKey: 'titles',
     icon: 'Heading',
     takesInlineSubject: true,
-    buildPrompt: (ctx) => {
-      const subject = resolveSubject(ctx)
+    buildPrompt: (ctx, tr) => {
+      const subject = resolveSubject(ctx, tr)
       if (!subject) return ''
-      return [
-        '基于以下内容生成 5 个备选标题，用中文。要求：每个标题一行、不超过 20 字、风格各异（至少包含：信息型、悬念型、利益型各一个）；按吸引力排序；只输出标题列表。',
-        '',
-        subjectHeader(ctx),
-        subject,
-      ].join('\n')
+      return [tr('titles'), '', subjectHeader(ctx, tr), subject].join('\n')
     },
   },
 ]
@@ -151,22 +131,22 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
 // ============================================================================
 
 /** Selection wins over page body; returns null when neither exists. */
-function resolveSubject(ctx: SlashPromptContext): string | null {
+function resolveSubject(ctx: SlashPromptContext, tr: (i18nKey: string) => string): string | null {
   if (ctx.selection && ctx.selection.trim()) return ctx.selection.trim()
   if (ctx.pageText && ctx.pageText.trim()) {
-    return truncatePageText(ctx.pageText)
+    return truncatePageText(ctx.pageText, tr('truncated'))
   }
   return null
 }
 
-function subjectHeader(ctx: SlashPromptContext): string {
+function subjectHeader(ctx: SlashPromptContext, tr: (i18nKey: string) => string): string {
   const hasPageTitle = !!(ctx.pageTitle && ctx.pageTitle.trim())
   const hasPageMeta = !!(ctx.pageUrl && ctx.pageUrl.trim())
   // Inline subject (typed after the command): no page metadata exists.
   if (!hasPageTitle && !hasPageMeta) {
-    return '【输入的文字】'
+    return `【${tr('subjectInline')}】`
   }
-  const source = ctx.selection?.trim() ? '选中的文本' : '页面内容'
+  const source = ctx.selection?.trim() ? tr('subjectSelection') : tr('subjectPage')
   if (hasPageTitle) {
     return `【${source}｜${ctx.pageTitle}】`
   }
@@ -174,10 +154,13 @@ function subjectHeader(ctx: SlashPromptContext): string {
 }
 
 /** Hard-truncate page text with an explicit marker so the model knows. */
-export function truncatePageText(text: string): string {
+export function truncatePageText(
+  text: string,
+  truncatedMark = '[...内容过长已截断]',
+): string {
   const t = text.trim()
   if (t.length <= PAGE_TEXT_MAX_CHARS) return t
-  return `${t.slice(0, PAGE_TEXT_MAX_CHARS)}\n\n[...内容过长已截断]`
+  return `${t.slice(0, PAGE_TEXT_MAX_CHARS)}\n\n${truncatedMark}`
 }
 
 const LANG_MAP: Record<string, string> = {
