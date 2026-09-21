@@ -91,7 +91,13 @@ export type { WorkspaceFiles } from './workspace'
 export { ProjectManager, type ProjectInfo } from './project'
 
 // Full OPFS backup (zip) — export & import (full restore)
-export { exportOPFSBackup, downloadOPFSBackup, importOPFSBackup } from './backup'
+export {
+  exportOPFSBackup,
+  downloadOPFSBackup,
+  writeOPFSBackupToDirectory,
+  DIRECTORY_BACKUP_FILENAME,
+  importOPFSBackup,
+} from './backup'
 
 // Agent
 export {

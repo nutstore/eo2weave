@@ -605,6 +605,102 @@ export async function downloadOPFSBackup(): Promise<{
   }
 }
 
+
+//-----------------------------------------------------------------------------
+// Write backup to a user-granted local directory (FS Access API)
+//-----------------------------------------------------------------------------
+
+/** Fixed archive filename written into the target directory (overwrite each run). */
+export const DIRECTORY_BACKUP_FILENAME = 'eo2weave-backup.zip'
+
+/**
+ * Create a full OPFS backup zip (same pipeline as `downloadOPFSBackup`) and
+ * stream it into a user-granted local directory — typically a cloud-sync
+ * folder (Nutstore / OneDrive / iCloud Drive / a plain folder), whose client
+ * handles the upload. The archive is written under a FIXED name so each run
+ * overwrites the previous file in place; history/rollback is delegated to
+ * the sync client's versioning.
+ *
+ * Contract notes:
+ * - Same SQLite close/re-open dance as `downloadOPFSBackup` (the worker must
+ *   not hold OPFS sync-access handles while we read the database file).
+ * - The spill-cleanup is immediate (not the 60s deferred timer used for
+ *   anchor downloads): `blob.stream()` is consumed synchronously inside this
+ *   function, so the spill file is no longer needed once the copy completes.
+ *   A concurrent deferred timer from an earlier download is harmless —
+ *   removeEntry on an absent directory is caught and ignored.
+ * - On copy failure the target file may be left truncated/partial (browser
+ *   implementation detail of aborting a writable); the caller must not
+ *   record success (lastBackupAt) for a failed run.
+ */
+export async function writeOPFSBackupToDirectory(
+  dirHandle: FileSystemDirectoryHandle,
+): Promise<{
+  fileName: typeof DIRECTORY_BACKUP_FILENAME
+  includesDeviceKey: boolean
+  includesLocalStorage: boolean
+  byteLength: number
+}> {
+  // Release the SQLite worker's OPFS sync-access handles (see
+  // downloadOPFSBackup for the full rationale).
+  let dbClosed = false
+  try {
+    const { getSQLiteDB } = await import('@/sqlite')
+    await getSQLiteDB().close()
+    dbClosed = true
+  } catch (error) {
+    console.warn('[OPFS] Backup: closing SQLite worker failed (continuing):', error)
+  }
+
+  try {
+    const { blob, includesDeviceKey, includesLocalStorage } = await exportOPFSBackup()
+
+    const fileHandle = await dirHandle.getFileHandle(DIRECTORY_BACKUP_FILENAME, {
+      create: true,
+    })
+    // createWritable() truncates by default — an explicit overwrite of the
+    // previous archive, which is the intended semantics for this feature.
+    const writable = await fileHandle.createWritable({ keepExistingData: false })
+    try {
+      await blob.stream().pipeTo(writable)
+    } catch (error) {
+      // pipeTo aborts the stream on failure; make sure the writable is
+      // closed/aborted so the OS file lock is released promptly.
+      try {
+        await writable.abort(error instanceof Error ? error : new Error(String(error)))
+      } catch {
+        /* already aborted/closed */
+      }
+      throw error
+    }
+
+    // The spill file has been fully consumed by the stream above — immediate
+    // cleanup is safe here (unlike the deferred download path).
+    try {
+      const opfsRoot = await navigator.storage.getDirectory()
+      await opfsRoot.removeEntry(BACKUP_TMP_DIR, { recursive: true })
+    } catch {
+      /* absent or locked — harmless either way */
+    }
+
+    return {
+      fileName: DIRECTORY_BACKUP_FILENAME,
+      includesDeviceKey,
+      includesLocalStorage,
+      byteLength: blob.size,
+    }
+  } finally {
+    if (dbClosed) {
+      try {
+        const { getSQLiteDB } = await import('@/sqlite')
+        await getSQLiteDB().initialize()
+      } catch (error) {
+        console.warn('[OPFS] Backup: re-initializing SQLite worker failed:', error)
+      }
+    }
+  }
+}
+
 //-----------------------------------------------------------------------------
 // Import (restore)
 //-----------------------------------------------------------------------------

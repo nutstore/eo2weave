@@ -43,6 +43,23 @@ export const projectHome = {
       backingUp: "バックアップ中…",
       importBackup: "インポート",
       restoringBackup: "復元中…",
+      // ローカルディレクトリへのバックアップ（FS Access API）
+      backupToLocal: {
+        title: "ローカルディレクトリにバックアップ",
+        description: "完全バックアップを選択したフォルダに書き込みます。同期クライアントと組み合わせると自動でクラウド backup になります。",
+        pickDirectory: "バックアップ先を選択",
+        changeDirectory: "ディレクトリを変更",
+        directoryLabel: "バックアップ先",
+        pathHiddenHint: "ブラウザはフォルダ名のみ表示し、完全なパスは公開しません",
+        lastBackupAt: "前回のバックアップ: {{time}}",
+        backingUp: "バックアップ中…",
+        backupNow: "今すぐバックアップ",
+        success: "{{directory}} にバックアップを書き込みました",
+        failed: "バックアップに失敗しました: {{error}}",
+        permissionDenied: "ディレクトリへの書き込み権限が許可されませんでした",
+        pickDirectoryFirst: "先にバックアップ先を選択してください",
+        pickFailed: "ディレクトリの選択に失敗しました",
+      },
       diagnostics: "診断",
       diagnosticsDescription:
         "実行環境とストレージ状態を収集します。問題発生時にワンクリックでコピーして開発者に共有できます。",

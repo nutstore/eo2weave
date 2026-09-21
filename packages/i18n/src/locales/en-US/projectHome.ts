@@ -45,6 +45,23 @@ export const projectHome = {
       backingUp: "Backing up…",
       importBackup: "Import",
       restoringBackup: "Restoring…",
+      // Backup to a local directory (FS Access API)
+      backupToLocal: {
+        title: "Back up to a local directory",
+        description: "Write a full backup into a folder you choose — pairs well with sync clients for automatic cloud backup.",
+        pickDirectory: "Choose backup directory",
+        changeDirectory: "Change directory",
+        directoryLabel: "Backup directory",
+        pathHiddenHint: "Browsers only show the folder name, not the full path",
+        lastBackupAt: "Last backup: {{time}}",
+        backingUp: "Backing up…",
+        backupNow: "Back up now",
+        success: "Backup written to {{directory}}",
+        failed: "Backup failed: {{error}}",
+        permissionDenied: "Write permission for the directory was not granted",
+        pickDirectoryFirst: "Choose a backup directory first",
+        pickFailed: "Failed to pick directory",
+      },
       diagnostics: "Diagnostics",
       diagnosticsDescription:
         "Collect runtime environment and storage state. Copy the report to share with the developer when something goes wrong.",

@@ -45,6 +45,7 @@ import {
   Check,
   Download,
   Upload,
+  HardDrive,
   ChevronDown,
   AlertTriangle,
 } from 'lucide-react'
@@ -55,6 +56,8 @@ import { ExtensionBanner } from '@/components/extension'
 import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { runDiagnostics, copyMarkdownToClipboard } from '@/storage/diagnostics'
 import { RESET_REQUIRES_TAB_CLOSURE } from '@/storage/init'
+import { getRuntimeCapability } from '@/storage/runtime-capability'
+import { backupSettingsRepo, type BackupSettingsRecord } from '@/services/backup-settings.repository'
 import { SiteFooter } from '@/components/layout/SiteFooter'
 import { toast } from 'sonner'
 
@@ -474,6 +477,12 @@ export function ProjectHome({
   const [showExportConfirm, setShowExportConfirm] = useState(false)
   const importInputRef = useRef<HTMLInputElement>(null)
 
+  // ── Backup to local directory (FS Access API) ──
+  const [backupDirName, setBackupDirName] = useState<string | null>(null)
+  const [lastBackupAt, setLastBackupAt] = useState<number | null>(null)
+  const [isBackingUpToDir, setIsBackingUpToDir] = useState(false)
+  const dirBackupSupported = getRuntimeCapability().canPickDirectory
+
   // Diagnostic report state
   const [diagOpen, setDiagOpen] = useState(false)
   const [diagRunning, setDiagRunning] = useState(false)
@@ -541,6 +550,116 @@ export function ProjectHome({
     } finally {
       setIsExportingDB(false)
     }
+  }
+
+  // ── Backup to local directory ──
+  // Load persisted settings (handle + dirName + lastBackupAt) on mount.
+  useEffect(() => {
+    if (!dirBackupSupported) return
+    let cancelled = false
+    backupSettingsRepo
+      .load()
+      .then((record: BackupSettingsRecord | null) => {
+        if (cancelled || !record) return
+        setBackupDirName(record.dirName)
+        setLastBackupAt(record.lastBackupAt)
+      })
+      .catch(() => {
+        /* IndexedDB unavailable — feature stays in "not set up" state */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dirBackupSupported])
+
+  const handlePickBackupDirectory = async () => {
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+      // Verify write access eagerly so a denied grant surfaces at pick time.
+      const perm = await handle.queryPermission({ mode: 'readwrite' })
+      if (perm !== 'granted') {
+        const requested = await handle.requestPermission({ mode: 'readwrite' })
+        if (requested !== 'granted') {
+          toast.error(t('projectHome.sidebar.backupToLocal.permissionDenied'))
+          return
+        }
+      }
+      await backupSettingsRepo.save({
+        id: 'backup-dir',
+        dirHandle: handle,
+        dirName: handle.name,
+        lastBackupAt: null,
+      })
+      setBackupDirName(handle.name)
+      setLastBackupAt(null)
+    } catch (error) {
+      // User dismissed the picker — not an error.
+      if ((error as DOMException)?.name !== 'AbortError') {
+        console.error('[ProjectHome] Failed to pick backup directory:', error)
+        toast.error(t('projectHome.sidebar.backupToLocal.pickFailed'))
+      }
+    }
+  }
+
+  const performDirectoryBackup = async () => {
+    const record = await backupSettingsRepo.load()
+    if (!record?.dirHandle) {
+      toast.error(t('projectHome.sidebar.backupToLocal.pickDirectoryFirst'))
+      return
+    }
+    // Permission may be 'prompt' again after a browser restart (persisted
+    // handles require a user gesture to re-activate).
+    const perm = await record.dirHandle.queryPermission({ mode: 'readwrite' })
+    if (perm !== 'granted') {
+      const requested = await record.dirHandle.requestPermission({ mode: 'readwrite' })
+      if (requested !== 'granted') {
+        toast.error(t('projectHome.sidebar.backupToLocal.permissionDenied'))
+        return
+      }
+    }
+    setIsBackingUpToDir(true)
+    const toastId = toast.loading(t('projectHome.sidebar.backupToLocal.backingUp'))
+    try {
+      const { writeOPFSBackupToDirectory } = await import('@/opfs')
+      await writeOPFSBackupToDirectory(record.dirHandle)
+      const now = Date.now()
+      await backupSettingsRepo.updateLastBackupAt(now)
+      setLastBackupAt(now)
+      toast.success(
+        t('projectHome.sidebar.backupToLocal.success', { directory: record.dirName ?? '' }),
+        { id: toastId },
+      )
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      console.error('[ProjectHome] Failed to write backup to directory:', error)
+      toast.error(t('projectHome.sidebar.backupToLocal.failed', { error: errorMsg }), {
+        id: toastId,
+        duration: 10000,
+      })
+    } finally {
+      setIsBackingUpToDir(false)
+    }
+  }
+
+  const handleBackupDirPrimaryAction = async () => {
+    if (!backupDirName) {
+      await handlePickBackupDirectory()
+      return
+    }
+    const record = await backupSettingsRepo.load()
+    if (!record?.dirHandle) {
+      await handlePickBackupDirectory()
+      return
+    }
+    const perm = await record.dirHandle.queryPermission({ mode: 'readwrite' })
+    if (perm === 'prompt') {
+      const requested = await record.dirHandle.requestPermission({ mode: 'readwrite' })
+      if (requested !== 'granted') {
+        toast.error(t('projectHome.sidebar.backupToLocal.permissionDenied'))
+        return
+      }
+    }
+    await performDirectoryBackup()
   }
 
   // Import a full OPFS backup zip — picked via hidden file input, then a
@@ -1260,6 +1379,61 @@ export function ProjectHome({
                 </BrandButton>
               </div>
             </div>
+
+            {/* Backup to local directory (FS Access API browsers only) */}
+            {dirBackupSupported && (
+              <div className="home-reveal home-delay-6 rounded-xl border border-border/60 bg-card p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <HardDrive className="w-4 h-4 text-tertiary" />
+                  <span className="home-mono text-xs font-medium text-muted-foreground">
+                    {t('projectHome.sidebar.backupToLocal.title')}
+                  </span>
+                </div>
+                <p className="home-body text-sm text-secondary dark:text-secondary-foreground mb-4">
+                  {t('projectHome.sidebar.backupToLocal.description')}
+                </p>
+                {backupDirName && (
+                  <div className="mb-3 space-y-1">
+                    <div className="home-mono text-xs text-secondary dark:text-secondary-foreground">
+                      {t('projectHome.sidebar.backupToLocal.directoryLabel')}: {backupDirName}
+                    </div>
+                    <div className="home-mono text-[11px] text-muted-foreground">
+                      {t('projectHome.sidebar.backupToLocal.pathHiddenHint')}
+                    </div>
+                    {lastBackupAt && (
+                      <div className="home-mono text-[11px] text-muted-foreground">
+                        {t('projectHome.sidebar.backupToLocal.lastBackupAt', { time: new Date(lastBackupAt).toLocaleString() })}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="flex flex-col gap-2">
+                  <BrandButton
+                    variant="ghost"
+                    className="w-full text-tertiary hover:text-primary hover:border-primary/50"
+                    onClick={() => void handleBackupDirPrimaryAction()}
+                    disabled={isBackingUpToDir || isExportingDB || isImportingDB}
+                  >
+                    <HardDrive className="w-3.5 h-3.5 mr-1.5" />
+                    {isBackingUpToDir
+                      ? t('projectHome.sidebar.backupToLocal.backingUp')
+                      : backupDirName
+                        ? t('projectHome.sidebar.backupToLocal.backupNow')
+                        : t('projectHome.sidebar.backupToLocal.pickDirectory')}
+                  </BrandButton>
+                  {backupDirName && (
+                    <BrandButton
+                      variant="ghost"
+                      className="w-full text-xs text-tertiary hover:text-primary hover:border-primary/50"
+                      onClick={() => void handlePickBackupDirectory()}
+                      disabled={isBackingUpToDir || isExportingDB || isImportingDB}
+                    >
+                      {t('projectHome.sidebar.backupToLocal.changeDirectory')}
+                    </BrandButton>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Diagnostics */}
             <div className="home-reveal home-delay-6 rounded-xl border border-border/60 bg-card p-5">

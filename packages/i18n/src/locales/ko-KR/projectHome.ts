@@ -41,6 +41,23 @@ export const projectHome = {
       backingUp: "백업 중…",
       importBackup: "가져오기",
       restoringBackup: "복원 중…",
+      // 로컬 디렉터리 백업 (FS Access API)
+      backupToLocal: {
+        title: "로컬 디렉터리에 백업",
+        description: "전체 백업을 선택한 폴더에 기록합니다. 동기화 클라이언트와 함께 사용하면 자동 클라우드 백업이 됩니다.",
+        pickDirectory: "백업 디렉터리 선택",
+        changeDirectory: "디렉터리 변경",
+        directoryLabel: "백업 디렉터리",
+        pathHiddenHint: "브라우저는 폴더 이름만 표시하며 전체 경로는 노출하지 않습니다",
+        lastBackupAt: "마지막 백업: {{time}}",
+        backingUp: "백업 중…",
+        backupNow: "지금 백업",
+        success: "{{directory}}에 백업을 기록했습니다",
+        failed: "백업 실패: {{error}}",
+        permissionDenied: "디렉터리 쓰기 권한이 허용되지 않았습니다",
+        pickDirectoryFirst: "먼저 백업 디렉터리를 선택하세요",
+        pickFailed: "디렉터리 선택 실패",
+      },
       diagnostics: "진단",
       diagnosticsDescription:
         "실행 환경과 저장소 상태를 수집합니다. 문제 발생 시 한 번에 복사해서 개발자에게 공유할 수 있습니다.",
