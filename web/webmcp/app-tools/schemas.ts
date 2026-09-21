@@ -114,7 +114,8 @@ export const APP_TOOLS: AppToolDefinition[] = [
     name: 'rename_conversation',
     description:
       'Rename a conversation. Marks the title as manual (auto-title generation ' +
-      'will not overwrite it).',
+      'will not overwrite it). Operates on THIS EO2Weave instance only — when ' +
+      'multiple instances are open, use the variant matching the conversation\u2019s origin.',
     inputSchema: {
       type: 'object',
       properties: {

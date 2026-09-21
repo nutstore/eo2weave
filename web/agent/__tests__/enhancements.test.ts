@@ -76,6 +76,8 @@ describe('buildRuntimeEnhancedPrompt — self-context block', () => {
     expect(prompt).toContain('## This Conversation')
     expect(prompt).toContain('conversationId: conv_123')
     expect(prompt).toContain('projectId: proj_9')
+    expect(prompt).toContain('instance: ')
+    expect(prompt).toContain('ONLY call the variant whose source host matches')
   })
 
   it('omits projectId line when absent', async () => {

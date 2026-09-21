@@ -231,11 +231,17 @@ export async function buildRuntimeEnhancedPrompt(input: InjectEnhancementsInput)
     if (input.toolContext.projectId) {
       lines.push(`projectId: ${input.toolContext.projectId}`)
     }
+    // Instance identity (multi-instance deployments): the same 20 app-tools
+    // are registered by every running EO2Weave instance (localhost dev, cn,
+    // com, embedded). search_tools results carry the source host prefix —
+    // the agent MUST pick the tool whose host matches this origin.
+    lines.push(`instance: ${typeof window !== 'undefined' ? window.location.origin : ''}`)
     lines.push(
       'Use these ids with the EO2Weave self-control tools (rename_conversation, ' +
         'list_conversations, search_conversations, send_message, get_messages) — ' +
         'e.g. to rename THIS conversation or search sibling conversations in the ' +
-        'same project.',
+        'same project. When multiple EO2Weave instances expose the same tool, ' +
+        'ONLY call the variant whose source host matches the instance above.',
     )
     enhancedPrompt += lines.join('\n')
   }
