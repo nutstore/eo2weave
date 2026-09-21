@@ -9,18 +9,24 @@
 //
 // SECURITY: keep this allowlist intentionally exact. Production is dual-site
 // (.cn / .com); legacy creatorweave.eo2suite.cn stays trusted during the
-// migration window; localhost:5173 is the local dev origin.
+// migration window; any loopback dev origin (localhost/127.0.0.1/[::1] on
+// any port) is trusted for local development.
 
-import { CW_WEBAPP_ORIGINS } from './webapp-origins'
+import { CW_WEBAPP_ORIGINS, isLocalDevOrigin } from './webapp-origins'
 
 const TRUSTED_CREATORWEAVE_ORIGINS = new Set(CW_WEBAPP_ORIGINS)
 
-/** True only when the message originated from an approved CreatorWeave origin. */
+/**
+ * True only when the message originated from an approved CreatorWeave origin
+ * (production + legacy sites) or from any local dev server (loopback on any
+ * port — see isLocalDevOrigin).
+ */
 export function isTrustedCreatorWeaveSenderUrl(senderUrl: string | undefined): boolean {
   if (!senderUrl) return false
 
   try {
-    return TRUSTED_CREATORWEAVE_ORIGINS.has(new URL(senderUrl).origin)
+    const url = new URL(senderUrl)
+    return TRUSTED_CREATORWEAVE_ORIGINS.has(url.origin) || isLocalDevOrigin(url.origin)
   } catch {
     return false
   }

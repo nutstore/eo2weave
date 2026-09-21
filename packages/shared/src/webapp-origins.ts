@@ -37,3 +37,31 @@ export const CW_WEBAPP_APP_PATH = '/projects'
 export function isCwWebappOrigin(origin: string): boolean {
   return CW_WEBAPP_ORIGINS.includes(origin)
 }
+
+/**
+ * True when `origin` is a local dev origin (localhost / 127.0.0.1 / [::1])
+ * on ANY port. Dev servers don't always run on 5173 (port taken → Vite
+ * auto-increments, custom --port, etc.), so trust the loopback family
+ * rather than one hardcoded port.
+ *
+ * SECURITY: loopback origins are still cross-origin to each other — a
+ * malicious local dev server on port 3000 could call the extension bridge
+ * exactly like the real app. That is acceptable: anyone able to run code
+ * on the user's machine already out-ranks anything the extension protects
+ * (native host scopes, browser storage). Keep this check loopback-ONLY:
+ * never widen to 0.0.0.0, LAN IPs, or *.local hostnames.
+ */
+export function isLocalDevOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    const host = url.hostname
+    return (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '[::1]' // URL keeps IPv6 brackets in hostname, e.g. '[::1]'
+    )
+  } catch {
+    return false
+  }
+}

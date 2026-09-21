@@ -16,6 +16,22 @@ describe('page action extension authorization', () => {
     expect(isTrustedCreatorWeaveSenderUrl('http://localhost:5173/side-panel')).toBe(true)
   })
 
+  it('trusts loopback dev origins on any port (localhost / 127.0.0.1 / [::1])', () => {
+    // Dev servers auto-increment or use custom ports — the loopback family
+    // is trusted regardless of port.
+    expect(isTrustedCreatorWeaveSenderUrl('http://localhost:3000/side-panel')).toBe(true)
+    expect(isTrustedCreatorWeaveSenderUrl('http://127.0.0.1:8787/')).toBe(true)
+    expect(isTrustedCreatorWeaveSenderUrl('http://[::1]:5173/')).toBe(true)
+  })
+
+  it('still rejects non-loopback hosts even with the dev port', () => {
+    // LAN IPs / lookalike hostnames / subdomain tricks are NOT loopback.
+    expect(isTrustedCreatorWeaveSenderUrl('http://192.168.1.5:5173/')).toBe(false)
+    expect(isTrustedCreatorWeaveSenderUrl('http://localhost.attacker.example:5173/')).toBe(false)
+    expect(isTrustedCreatorWeaveSenderUrl('http://localhost:5173.attacker.example/')).toBe(false)
+    expect(isTrustedCreatorWeaveSenderUrl('https://evil.example/')).toBe(false)
+  })
+
   it('rejects missing and lookalike sender URLs', () => {
     expect(isTrustedCreatorWeaveSenderUrl(undefined)).toBe(false)
     expect(isTrustedCreatorWeaveSenderUrl(`${CW_WEBAPP_ORIGIN_LEGACY}.attacker.example`)).toBe(false)
