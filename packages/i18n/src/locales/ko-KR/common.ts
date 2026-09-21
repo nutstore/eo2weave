@@ -19,5 +19,7 @@ export const common = {
     summary: "요약",
     collapse: "접기",
     expandToViewFull: "전체 내용 보기",
+    seconds: "초",
+    minutes: "분",
     skipToContent: "본문으로 건너뛰기",
 } as const

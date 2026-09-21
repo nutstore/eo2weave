@@ -27,4 +27,12 @@ export const projectRoots = {
     nativeRootRevokeFailedRemovedLocally: "이 폴더를 프로젝트에서 제거했지만 로컬 연결 권한 취소에 실패했습니다: {error}",
     nativeRootScopeRevoked: "이 폴더의 로컬 연결 권한을 취소했습니다(다른 프로젝트가 사용하지 않음)",
     nativeRootScopeStillShared: "이 폴더를 프로젝트에서 제거했습니다. 다른 {count}개 프로젝트가 아직 사용 중이므로 로컬 연결 권한은 유지됩니다.",
+    folderSelected: "폴더가 선택되었습니다: {name}",
+    clickButtonAgain: "버튼을 다시 클릭하여 권한을 다시 허용해 주세요",
+    permissionReleased: "폴더 권한이 해제되었습니다",
+    directoryPickerUnavailable: "이 브라우저는 디렉터리 선택기를 지원하지 않습니다",
+    addRootFailed: '"{name}" 폴더 추가에 실패했습니다',
+    rootAdded: '"{name}" 폴더가 추가되었습니다',
+    rootRemoved: '"{name}" 폴더가 제거되었습니다',
+    pickFailedGeneric: "폴더 선택에 실패했습니다",
 } as const

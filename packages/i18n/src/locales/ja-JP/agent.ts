@@ -3,6 +3,8 @@ export const agent = {
     inputHint: "@を入力して一時的にエージェントを切り替え",
     createNew: "新しいエージェントを作成...",
     noAgents: "利用可能なエージェントがありません",
+    dropdownGuide: "複数のエージェントを使いたい場合は、チャットで「〇〇なエージェントを作成して」と入力してください。",
+    dropdownGuideCompact: "エージェントを作成して役割分担で協力",
     create: "作成",
     delete: "{id}を削除",
     confirmDelete: "エージェント「{id}」を削除しますか？",
@@ -12,6 +14,7 @@ export const agent = {
     mode: {
         plan: "プラン",
         act: "アクション",
+        yolo: "YOLO",
         planDescription: "読み取り専用モード。エージェントは分析と計画が可能ですが、ファイルの変更はできません。",
         actDescription: "読み取り・書き込み・外部ツール呼び出しが可能ですが、重要な操作ごとに確認を求めます。",
         planShort: "読み取り専用分析",
@@ -35,6 +38,21 @@ export const agent = {
         autoDescription: "この設定は現在のワークスペースに保存されます。新規作成と編集のみ自動適用され、削除は常に手動確認が必要です。",
         menuLabel: "完了後の適用ポリシー",
         currentAriaLabel: "完了後の適用ポリシー：{policy}。クリックして変更します。",
+    },
+
+    vision: {
+        supported: "現在のモデルは画像入力に対応しています",
+        unsupported: "現在のモデルは画像入力に対応していません",
+        capture: "現在のページをキャプチャ",
+        screenshotUnavailable: "ブラウザーのサイドパネルでスクリーンショット機能を使用してください",
+    },
+    pageScreenshot: {
+        title: "現在のページをキャプチャ",
+        description: "ドラッグで範囲を選択するか、全画面のスクリーンショットをそのまま送信してください",
+        cancelAria: "スクリーンショットをキャンセル",
+        insert: "画像を挿入",
+        captureFailed: "現在のページをキャプチャできません",
+        cropFailed: "スクリーンショットを生成できません",
     },
 
     toolSearch: {

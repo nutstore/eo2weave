@@ -38,6 +38,21 @@ function i18nText(key: string, fallback: string, params?: Record<string, string 
 }
 
 /**
+ * Map a folder-pick failure to a user-facing message (i18n).
+ * Never surfaces raw error.message — it may contain paths or browser internals.
+ * User cancellation (AbortError / 'User cancelled') is silent by contract with the caller.
+ */
+function pickDirectoryErrorText(error: unknown): string {
+  if (error instanceof DOMException && error.name === 'SecurityError') {
+    return i18nText('projectRoots.clickButtonAgain', 'Please click the button again to restore permission')
+  }
+  if (error instanceof DOMException && error.name === 'NotAllowedError') {
+    return i18nText('projectRoots.permissionDenied', 'Permission denied')
+  }
+  return i18nText('projectRoots.pickFailedGeneric', 'Failed to select folder')
+}
+
+/**
  * Create an empty record
  * @param projectId Project ID
  * @param rootName Root name (defaults to projectId for backward compat)
@@ -368,7 +383,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           state.records[projectId] = record
         })
 
-        toast.success(`Folder selected: ${handle.name}`)
+        toast.success(i18nText('projectRoots.folderSelected', `Folder selected: ${handle.name}`, { name: handle.name }))
 
         // Ensure a ProjectRoot record exists so loadRoots() can find it
         const rootRepo = getProjectRootRepository()
@@ -412,7 +427,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           }
         })
 
-        toast.error('Failed to select folder: ' + (error instanceof Error ? error.message : 'Unknown error'))
+        toast.error(pickDirectoryErrorText(error))
         return false
       }
     },
@@ -503,11 +518,11 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           bindRuntimeDirectoryHandle(projectId, rootName, handle)
           await notifyWorkspaceNativeDirectoryGranted(handle)
 
-          toast.success('Folder permission restored')
+          toast.success(i18nText('projectRoots.permissionRestored', 'Folder permission restored'))
           get().clearFilePaths()
           return true
         } else {
-          toast.error('Permission denied')
+          toast.error(i18nText('projectRoots.permissionDenied', 'Permission denied'))
           set((state) => {
             const r = state.records[projectId]
             if (r) r.status = 'needs_user_activation'
@@ -523,7 +538,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
             const r = state.records[projectId]
             if (r) r.status = 'needs_user_activation'
           })
-          toast.info('Please click the button again to restore permission')
+          toast.info(i18nText('projectRoots.clickButtonAgain', 'Please click the button again to restore permission'))
         } else {
           set((state) => {
             const r = state.records[projectId]
@@ -532,7 +547,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
               r.error = error instanceof Error ? error.message : 'Unknown error'
             }
           })
-          toast.error('Failed to restore permission')
+          toast.error(i18nText('projectRoots.permissionFailed', 'Failed to restore permission'))
         }
         return false
       }
@@ -562,7 +577,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
         })
 
         get().clearFilePaths()
-        toast.success('Folder permission released')
+        toast.success(i18nText('projectRoots.permissionReleased', 'Folder permission released'))
         console.log('[FolderAccessStore] Released and deleted record for project:', projectId)
       } catch (error) {
         console.error('[FolderAccessStore] Release failed:', error)
@@ -900,7 +915,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       // Check if we have directory picker capability
       const capability = getRuntimeCapability()
       if (!capability.canPickDirectory) {
-        toast.error('Directory picker not available in this browser')
+        toast.error(i18nText('projectRoots.directoryPickerUnavailable', 'Directory picker not available in this browser'))
         return false
       }
 
@@ -913,7 +928,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       // Check for duplicate name
       const existing = get().roots
       if (existing.some((r) => r.name === rootName)) {
-        toast.error(`A root named "${rootName}" already exists`)
+        toast.error(i18nText('projectRoots.rootAlreadyExists', `A folder named "${rootName}" already exists`, { name: rootName }))
         return false
       }
 
@@ -925,7 +940,8 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
         await getProjectRootRepository().createRoot({ projectId, name: rootName })
       } catch (createError) {
         console.error('[FolderAccessStore] addRoot: createRoot failed, aborting before handle bind:', createError)
-        toast.error(`Failed to add root "${rootName}": ${createError instanceof Error ? createError.message : 'database error'}`)
+        console.error('[FolderAccessStore] addRoot: database error details:', createError)
+        toast.error(i18nText('projectRoots.addRootFailed', `Failed to add folder "${rootName}"`, { name: rootName }))
         return false
       }
 
@@ -975,7 +991,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       // Clear the local file path cache after adding a root.
       get().clearFilePaths()
 
-      toast.success(`Added root "${rootName}"`)
+      toast.success(i18nText('projectRoots.rootAdded', `Added folder "${rootName}"`, { name: rootName }))
       return true
     },
 
@@ -1138,7 +1154,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       // Clear the local file path cache after removing a root.
       get().clearFilePaths()
 
-      toast.success(`Removed root "${root.name}"`)
+      toast.success(i18nText('projectRoots.rootRemoved', `Removed folder "${root.name}"`, { name: root.name }))
     },
 
     setDefaultRoot: async (rootId: string) => {

@@ -27,4 +27,12 @@ export const projectRoots = {
     nativeRootRevokeFailedRemovedLocally: "このフォルダーをプロジェクトから削除しましたが、ローカル接続の認可取り消しに失敗しました: {error}",
     nativeRootScopeRevoked: "このフォルダーのローカル接続認可を取り消しました（他のプロジェクトは使用していません）",
     nativeRootScopeStillShared: "このフォルダーをプロジェクトから削除しました。他の {count} プロジェクトがまだ使用しているため、ローカル接続の認可は保持されます。",
+    folderSelected: "フォルダーを選択しました：{name}",
+    clickButtonAgain: "ボタンをもう一度クリックして再承認してください",
+    permissionReleased: "フォルダーの権限を解放しました",
+    directoryPickerUnavailable: "このブラウザーはディレクトリピッカーに対応していません",
+    addRootFailed: "フォルダー「{name}」を追加できませんでした",
+    rootAdded: "フォルダー「{name}」を追加しました",
+    rootRemoved: "フォルダー「{name}」を削除しました",
+    pickFailedGeneric: "フォルダーの選択に失敗しました",
 } as const

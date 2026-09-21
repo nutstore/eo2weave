@@ -134,6 +134,7 @@ export const skillEditor = {
     description: "설명",
     descriptionPlaceholder: "이 스킬의 기능을 간단히 설명",
     tagsPlaceholder: "review, quality",
+    tagsHelp: "쉼표로 구분. 분류와 검색에 사용됩니다",
     triggerKeywords: "트리거 키워드",
     triggerKeywordsPlaceholder: "리뷰, 확인",
     triggerKeywordsHelp: "쉼표로 구분, 매치 시 자동 활성화",

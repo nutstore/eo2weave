@@ -37,6 +37,13 @@ export const topbar = {
       more: "もっと",
       webContainer: "WebContainer",
     },
+    projectSwitcher: {
+      createProject: "新しいプロジェクト",
+      manageProjects: "すべてのプロジェクトを管理",
+      noProjects: "プロジェクトはまだありません",
+      workspaceCount: "{count} 件のチャット",
+      shortcut: "⌘P",
+    },
     mobile: {
       workDirectory: "作業ディレクトリ",
       workspaceSettings: "チャット設定",

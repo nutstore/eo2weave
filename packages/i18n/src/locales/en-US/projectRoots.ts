@@ -27,4 +27,12 @@ export const projectRoots = {
     nativeRootRevokeFailedRemovedLocally: "Removed this folder from the project, but revoking its local-connection authorization failed: {error}",
     nativeRootScopeRevoked: "Local-connection authorization revoked for this folder (no other project was using it)",
     nativeRootScopeStillShared: "Removed this folder from the project. Its local-connection authorization is kept because {count} other project(s) still use it.",
+    folderSelected: "Folder selected: {name}",
+    clickButtonAgain: "Please click the button again to authorize",
+    permissionReleased: "Folder permission released",
+    directoryPickerUnavailable: "Directory picker not available in this browser",
+    addRootFailed: 'Failed to add folder "{name}"',
+    rootAdded: 'Added folder "{name}"',
+    rootRemoved: 'Removed folder "{name}"',
+    pickFailedGeneric: "Failed to select folder",
 } as const

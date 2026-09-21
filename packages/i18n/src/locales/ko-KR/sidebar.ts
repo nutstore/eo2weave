@@ -1,5 +1,7 @@
 // 사이드바 컴포넌트
 export const sidebar = {
+    activeTab: "활성",
+    archivedTab: "보관됨",
     expandSidebar: "사이드바 펼치기",
     collapseSidebar: "사이드바 접기",
     closeSidebar: "사이드바 닫기",
@@ -19,6 +21,13 @@ export const sidebar = {
     deleteWorkspace: "채팅 삭제",
     confirmDeleteWorkspace: '이 채팅을 삭제하시겠습니까?',
     renameWorkspace: "채팅 이름 변경",
+    archiveWorkspace: "채팅 보관",
+    unarchiveWorkspace: "보관 해제",
+    workspaceArchived: "채팅이 보관되었습니다",
+    workspaceUnarchived: "채팅 보관이 해제되었습니다",
+    archiveFailed: "보관에 실패했습니다",
+    unarchiveFailed: "보관 해제에 실패했습니다",
+    exportWorkspace: "채팅 내보내기",
     pinWorkspace: "채팅 고정",
     unpinWorkspace: "고정 해제",
     moreActions: "더 보기",
@@ -36,6 +45,21 @@ export const sidebar = {
     snapshots: "저장 기록",
 
     // Snapshot List
+    snapshotDetail: {
+      id: "ID",
+      workspace: "채팅",
+      source: "소스",
+      createdAt: "생성 시간",
+      committedAt: "커밋 시간",
+      files: "파일",
+      loadingFile: "파일 내용을 불러오는 중...",
+      binaryFileHint: "바이너리 파일은 텍스트 diff 미리보기를 지원하지 않습니다",
+      beforeSize: "변경 전 크기",
+      afterSize: "변경 후 크기",
+      fileDeletedHint: "이 파일은 이 저장 기록에서 삭제되었습니다",
+      selectFileHint: "목록에서 파일을 선택하여 차이를 확인하세요",
+      viewDetail: "상세",
+    },
     snapshotList: {
       title: "저장 기록",
       noSnapshots: "저장 기록이 없습니다",

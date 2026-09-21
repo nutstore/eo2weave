@@ -27,4 +27,12 @@ export const projectRoots = {
     nativeRootRevokeFailedRemovedLocally: "已从项目中移除该文件夹，但撤销其本机连接授权失败：{error}",
     nativeRootScopeRevoked: "已撤销该文件夹的本机连接授权（没有其他项目在使用它）",
     nativeRootScopeStillShared: "已从项目中移除该文件夹。它的本机连接授权保留给仍在使用它的 {count} 个项目。",
+    folderSelected: "已选择文件夹：{name}",
+    clickButtonAgain: "请点击按钮重新授权",
+    permissionReleased: "文件夹权限已释放",
+    directoryPickerUnavailable: "当前浏览器不支持目录选择器",
+    addRootFailed: '添加文件夹"{name}"失败',
+    rootAdded: '已添加文件夹"{name}"',
+    rootRemoved: '已移除文件夹"{name}"',
+    pickFailedGeneric: "选择文件夹失败",
 } as const

@@ -44,6 +44,7 @@ import { PageScreenshotCropDialog } from './agent/PageScreenshotCropDialog'
 import type { SettingsTab } from '@/components/settings/SettingsDialog'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
+import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { captureTab, isPageActionAvailable } from '@/agent/tools/page-action-bridge'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
 
@@ -51,7 +52,10 @@ type OnboardingStep = 'welcome' | 'api-key' | 'select-model' | 'mount-folder' | 
 
 // Side-panel (browser sidebar) mode skips the folder-mount step: that
 // workflow is for the full workbench, not the per-tab assistant panel.
+// Browsers without the directory picker (e.g. mobile) skip it too — the
+// step can never succeed there, so showing it would dead-end onboarding.
 function needsFolderMount(folderCount: number): boolean {
+  if (!getRuntimeCapability().canPickDirectory) return false
   return !isSidePanelMode() && folderCount === 0
 }
 

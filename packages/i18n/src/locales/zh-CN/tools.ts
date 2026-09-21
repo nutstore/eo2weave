@@ -81,6 +81,7 @@ export const tools = {
   searchTextInsideFiles: '在文件内搜索文本',
   analyzeProjectStructure: '分析项目结构',
   explainHowCodeWorks: '解释代码的工作原理',
+  recommendedTools: '推荐工具',
   basedOnMessage: '根据您的消息，这些工具可能会有帮助',
   toolSuggestion: '{count} 个工具建议',
   toolSuggestions: '{count} 个工具建议',

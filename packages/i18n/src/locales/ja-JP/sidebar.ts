@@ -1,5 +1,7 @@
 // サイドバーコンポーネント
 export const sidebar = {
+    activeTab: "アクティブ",
+    archivedTab: "アーカイブ済み",
     expandSidebar: "サイドバーを展開",
     collapseSidebar: "サイドバーを折りたたむ",
     closeSidebar: "サイドバーを閉じる",
@@ -19,6 +21,13 @@ export const sidebar = {
     deleteWorkspace: "チャットを削除",
     confirmDeleteWorkspace: 'このチャットを削除しますか？',
     renameWorkspace: "チャット名を変更",
+    archiveWorkspace: "チャットをアーカイブ",
+    unarchiveWorkspace: "アーカイブを解除",
+    workspaceArchived: "チャットをアーカイブしました",
+    workspaceUnarchived: "チャットのアーカイブを解除しました",
+    archiveFailed: "アーカイブに失敗しました",
+    unarchiveFailed: "アーカイブ解除に失敗しました",
+    exportWorkspace: "チャットをエクスポート",
     pinWorkspace: "チャットをピン留め",
     unpinWorkspace: "ピン留めを解除",
     moreActions: "その他の操作",
@@ -36,6 +45,21 @@ export const sidebar = {
     snapshots: "保存記録",
 
     // Snapshot List
+    snapshotDetail: {
+      id: "ID",
+      workspace: "チャット",
+      source: "ソース",
+      createdAt: "作成日時",
+      committedAt: "コミット日時",
+      files: "ファイル",
+      loadingFile: "ファイルの内容を読み込み中...",
+      binaryFileHint: "バイナリファイルはテキスト差分プレビューに対応していません",
+      beforeSize: "変更前のサイズ",
+      afterSize: "変更後のサイズ",
+      fileDeletedHint: "このファイルはこの保存記録で削除されました",
+      selectFileHint: "リストからファイルを選択して差分を表示",
+      viewDetail: "詳細",
+    },
     snapshotList: {
       title: "保存記録",
       noSnapshots: "保存記録がありません",

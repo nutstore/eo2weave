@@ -3,6 +3,8 @@ export const agent = {
     inputHint: "@를 입력하여 일시적으로 에이전트 전환",
     createNew: "새 에이전트 생성...",
     noAgents: "사용 가능한 에이전트 없음",
+    dropdownGuide: '여러 에이전트가 필요하신가요? 채팅에서 "…하는 에이전트 만들어 줘"라고 입력하세요.',
+    dropdownGuideCompact: "에이전트를 만들어 역할별로 협업",
     create: "생성",
     delete: "{id} 삭제",
     confirmDelete: '에이전트 "{id}"을(를) 삭제하시겠습니까?',
@@ -12,6 +14,7 @@ export const agent = {
     mode: {
         plan: "계획",
         act: "실행",
+        yolo: "YOLO",
         planDescription: "읽기 전용 모드. 에이전트는 분석과 계획은 가능하지만 파일을 수정할 수 없습니다.",
         actDescription: "읽기·쓰기·외부 도구 호출이 가능하지만, 민감한 작업마다 확인을 요청합니다.",
         planShort: "읽기 전용 분석",
@@ -35,6 +38,21 @@ export const agent = {
         autoDescription: "이 설정은 현재 작업 공간에 저장됩니다. 새로 만들기와 편집만 자동 적용되며, 삭제는 항상 수동 확인이 필요합니다.",
         menuLabel: "완료 후 적용 정책",
         currentAriaLabel: "완료 후 적용 정책: {policy}. 클릭하여 변경합니다.",
+    },
+
+    vision: {
+        supported: "현재 모델은 이미지 입력을 지원합니다",
+        unsupported: "현재 모델은 이미지 입력을 지원하지 않습니다",
+        capture: "현재 페이지 캡처",
+        screenshotUnavailable: "브라우저 사이드 패널의 스크린샷 기능을 사용해 주세요",
+    },
+    pageScreenshot: {
+        title: "현재 페이지 캡처",
+        description: "드래그로 영역을 선택하거나 전체 스크린샷을 그대로 전송하세요",
+        cancelAria: "스크린샷 취소",
+        insert: "이미지 삽입",
+        captureFailed: "현재 페이지를 캡처할 수 없습니다",
+        cropFailed: "스크린샷을 생성할 수 없습니다",
     },
 
     toolSearch: {

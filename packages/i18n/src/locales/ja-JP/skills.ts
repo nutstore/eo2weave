@@ -134,6 +134,7 @@ export const skillEditor = {
     description: "説明",
     descriptionPlaceholder: "このスキルの機能を簡潔に説明",
     tagsPlaceholder: "review, quality",
+    tagsHelp: "カンマ区切り。分類と検索に使用します",
     triggerKeywords: "トリガーキーワード",
     triggerKeywordsPlaceholder: "レビュー, 確認",
     triggerKeywordsHelp: "カンマ区切り、マッチ時に自動起動",
