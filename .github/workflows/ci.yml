@@ -1,0 +1,38 @@
+name: CI
+
+# Lightweight CI for non-release pushes/PRs: keeps the four locale packs
+# (zh-CN / en-US / ja-JP / ko-KR) in key parity. Missing keys silently fall
+# back to the default locale, so a dropped key ships invisible regressions —
+# scripts/check-i18n-parity.mjs catches them before merge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  i18n-parity:
+    name: i18n key parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          # reads packageManager from package.json (pnpm@10.21.0)
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check i18n key parity
+        run: pnpm check:i18n
