@@ -66,6 +66,18 @@ describe('builtin slash command pack', () => {
     expect(selectionWins).not.toContain('页面正文')
   })
 
+  it('inline subject without page meta uses neutral header', () => {
+    const def = BUILTIN_SLASH_COMMANDS.find((c) => c.id === 'polish')!
+    const prompt = def.buildPrompt({
+      selection: '我的文字',
+      pageText: null,
+      pageTitle: null,
+      pageUrl: null,
+    })
+    expect(prompt).toContain('【输入的文字】')
+    expect(prompt).toContain('我的文字')
+  })
+
   it('normalizeLang maps codes and passes through unknowns', () => {
     expect(normalizeLang('en')).toBe('英文')
     expect(normalizeLang('ZH')).toBe('中文')

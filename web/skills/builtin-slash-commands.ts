@@ -30,6 +30,12 @@ export interface BuiltinSlashCommandDef {
   icon: string
   /** Builtin-only: command takes a language argument */
   takesLangArg?: boolean
+  /**
+   * True when trailing text after the command is the SUBJECT itself
+   * ("/polish 这段文字" works in ANY mode, no page context needed).
+   * When false, trailing text is meaningless (no such command today).
+   */
+  takesInlineSubject?: boolean
   /** Build the final prompt sent through the agent pipeline */
   buildPrompt: (ctx: SlashPromptContext) => string
 }
@@ -61,6 +67,7 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
     id: 'summary',
     i18nKey: 'summary',
     icon: 'FileText',
+    takesInlineSubject: true,
     buildPrompt: (ctx) => {
       const subject = resolveSubject(ctx)
       if (!subject) return ''
@@ -93,6 +100,7 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
     id: 'explain',
     i18nKey: 'explain',
     icon: 'Lightbulb',
+    takesInlineSubject: true,
     buildPrompt: (ctx) => {
       const subject = resolveSubject(ctx)
       if (!subject) return ''
@@ -108,6 +116,7 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
     id: 'polish',
     i18nKey: 'polish',
     icon: 'Sparkles',
+    takesInlineSubject: true,
     buildPrompt: (ctx) => {
       const subject = resolveSubject(ctx)
       if (!subject) return ''
@@ -123,6 +132,7 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandDef[] = [
     id: 'titles',
     i18nKey: 'titles',
     icon: 'Heading',
+    takesInlineSubject: true,
     buildPrompt: (ctx) => {
       const subject = resolveSubject(ctx)
       if (!subject) return ''
@@ -150,8 +160,14 @@ function resolveSubject(ctx: SlashPromptContext): string | null {
 }
 
 function subjectHeader(ctx: SlashPromptContext): string {
+  const hasPageTitle = !!(ctx.pageTitle && ctx.pageTitle.trim())
+  const hasPageMeta = !!(ctx.pageUrl && ctx.pageUrl.trim())
+  // Inline subject (typed after the command): no page metadata exists.
+  if (!hasPageTitle && !hasPageMeta) {
+    return '【输入的文字】'
+  }
   const source = ctx.selection?.trim() ? '选中的文本' : '页面内容'
-  if (ctx.pageTitle) {
+  if (hasPageTitle) {
     return `【${source}｜${ctx.pageTitle}】`
   }
   return `【${source}】`

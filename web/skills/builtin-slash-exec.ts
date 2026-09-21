@@ -2,13 +2,10 @@
  * Builtin slash command execution helpers — bridge between the input layer
  * (useConversationLogic.handleSend) and the command pack templates.
  *
- * Resolution order for the subject text:
- *   1. Live selection from the bound page (side-panel mode, fresh pull —
- *      cheaper than a full context refresh: one executeScript round-trip)
- *   2. pageContext.selectedText already in history (rare — selection changes)
- *   3. Page body text via a body-text executeScript (page mode)
- * The chosen scope is surfaced to the user through a toast so "page mode"
- * fallback is never silent (requirement #1).
+ * Subject resolution order (works in BOTH main-app and side-panel modes):
+ *   1. Inline subject after the command — "/polish 文字", "/translate en 文字"
+ *   2. Live page selection (side-panel mode)
+ *   3. Page body text (side-panel mode; page-mode toast keeps it perceivable)
  */
 
 import type { SlashPromptContext } from './builtin-slash-commands'
@@ -89,7 +86,13 @@ async function fetchPageBodyText(): Promise<string | null> {
 
 /**
  * Build the final prompt for a builtin command. Returns null (after showing
- * a user-facing toast) when neither selection nor page text is available.
+ * a user-facing toast) when no subject is available.
+ *
+ * Subject resolution order (works in BOTH main-app and side-panel modes):
+ *   1. Inline subject typed after the command — "/polish 这段文字" or
+ *      "/translate en 这段文字" (translate: first token = target lang)
+ *   2. Live page selection (side-panel mode)
+ *   3. Page body text (side-panel mode, surfaced with a page-mode toast)
  */
 export async function assembleBuiltinCommandPrompt(inputTrimmed: string): Promise<string | null> {
   const { toast } = await import('sonner')
@@ -101,29 +104,57 @@ export async function assembleBuiltinCommandPrompt(inputTrimmed: string): Promis
   const def = BUILTIN_SLASH_COMMANDS.find((c) => c.id === id)
   if (!def) return null
 
-  const info = await fetchLivePageInfo()
-  const selection = info?.selectedText ?? null
-  const pageText = info?.pageText ?? null
-  const pageTitle = info?.pageTitle ?? null
-  const pageUrl = info?.pageUrl ?? null
+  // ── 1. Inline subject (any mode) ──
+  let inlineSubject: string | null = null
+  let langArg: string | undefined
+  if (def.takesLangArg) {
+    // /translate [lang] [text…] — lang optional, remaining tokens = subject
+    const rest = parts.slice(1)
+    const first = (rest[0] ?? '').toLowerCase()
+    const knownLang = ['zh', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'ru'].includes(first)
+    if (rest.length > 0 && knownLang) {
+      langArg = rest[0]
+      inlineSubject = rest.slice(1).join(' ').trim() || null
+    } else {
+      inlineSubject = rest.join(' ').trim() || null
+    }
+  } else if (def.takesInlineSubject) {
+    inlineSubject = parts.slice(1).join(' ').trim() || null
+  }
 
+  let selection: string | null = null
+  let pageText: string | null = null
+  let pageTitle: string | null = null
+  let pageUrl: string | null = null
+
+  // ── 2/3. Page context (side-panel only) — skipped when inline subject exists ──
+  if (!inlineSubject) {
+    const info = await fetchLivePageInfo()
+    selection = info?.selectedText ?? null
+    pageText = info?.pageText ?? null
+    pageTitle = info?.pageTitle ?? null
+    pageUrl = info?.pageUrl ?? null
+  }
+
+  const hasInline = !!(inlineSubject && inlineSubject.trim())
   const hasSelection = !!(selection && selection.trim())
   const hasPage = !!(pageText && pageText.trim())
-  if (!hasSelection && !hasPage) {
+
+  if (!hasInline && !hasSelection && !hasPage) {
     toast.info(t(locale, `conversation.input.slashCommands.${def.i18nKey}.noContent`))
     return null
   }
   // Requirement: the page-body fallback must be user-perceivable.
-  if (!hasSelection && hasPage) {
+  if (!hasInline && !hasSelection && hasPage) {
     toast.info(t(locale, `conversation.input.slashCommands.${def.i18nKey}.chipPageMode`))
   }
 
   const ctx: SlashPromptContext = {
-    selection: hasSelection ? selection : null,
-    pageText: hasSelection ? null : pageText,
+    selection: hasInline ? inlineSubject : hasSelection ? selection : null,
+    pageText: !hasInline && !hasSelection ? pageText : null,
     pageTitle,
     pageUrl,
-    langArg: def.takesLangArg ? parts.slice(1).join(' ') : undefined,
+    langArg: def.takesLangArg ? langArg : undefined,
   }
   return def.buildPrompt(ctx)
 }
