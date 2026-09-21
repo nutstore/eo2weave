@@ -532,7 +532,7 @@ export const settings = {
     gatewayRateLimits: {
       availableCredit: "利用可能クレジット",
       monthly: "月間パッケージ",
-      topup: "チャージパック {count}",
+      topup: "クレジットパック {count}",
       resetUnknown: "リセット時刻不明",
       resetSoon: "まもなくリセット",
       resetInHours: "{count}時間後にリセット",

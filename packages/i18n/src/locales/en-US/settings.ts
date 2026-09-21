@@ -533,7 +533,7 @@ export const settings = {
     gatewayRateLimits: {
       availableCredit: "Available credits",
       monthly: "Monthly quota",
-      topup: "Top-up pack {count}",
+      topup: "Credit pack {count}",
       resetUnknown: "Reset time unknown",
       resetSoon: "Resets soon",
       resetInHours: "Resets in {count}h",

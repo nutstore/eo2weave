@@ -520,7 +520,7 @@ export const settings = {
     gatewayRateLimits: {
       availableCredit: "可用积分",
       monthly: "本月套餐",
-      topup: "充值包 {count}",
+      topup: "积分包 {count}",
       resetUnknown: "重置时间未知",
       resetSoon: "即将重置",
       resetInHours: "{count} 小时后重置",
