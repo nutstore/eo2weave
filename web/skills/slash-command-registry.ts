@@ -19,14 +19,16 @@
 export interface SlashCommandItem {
   /** 命令 ID，如 'compact'、'brainstorm' */
   id: string
-  /** 显示名称 */
+  /** 显示名称（builtin 命令存 i18n key，UI 层翻译） */
   label: string
-  /** 下拉菜单中的简短描述 */
+  /** 下拉菜单中的简短描述（builtin 命令存 i18n key，UI 层翻译） */
   description: string
-  /** 命令来源 */
+  /** 命令来源 — builtin 与 skill 在菜单中分组展示 */
   source: 'builtin' | 'skill' | 'plugin' | 'user'
   /** 可选的图标名（Lucide icon） */
   icon?: string
+  /** builtin 命令是否接受参数（如 /translate <lang>），UI 用于占位提示 */
+  takesArg?: boolean
 }
 
 // ============================================================================
@@ -176,5 +178,12 @@ export function registerBuiltinSlashCommands(): void {
     label: 'Compact',
     description: '压缩上下文，释放 token 空间',
     source: 'builtin',
+  })
+  // P0 builtin light-operation pack (summary/translate/explain/polish/titles)
+  // — labels are i18n keys resolved by the dropdown at render time.
+  import('./builtin-slash-commands').then(({ registerBuiltinCommandPack }) =>
+    registerBuiltinCommandPack(),
+  ).catch(() => {
+    // Never let the pack registration break startup (compact still works).
   })
 }

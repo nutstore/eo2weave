@@ -856,6 +856,15 @@ export default defineContentScript({
       },
 
       /**
+       * Pull readable body text from the upstream tab (page-mode slash
+       * commands: /summary /titles when nothing is selected). Returns a
+       * truncated plain-text string, or null on failure.
+       */
+      async fetchPageBodyText(binding: string) {
+        return sendToBridge('requestPageBodyText', { binding })
+      },
+
+      /**
        * Run a page-interaction action in the upstream tab's MAIN world.
        *
        * The extension relays `action` to `window.__cwPageAction.run(action)`

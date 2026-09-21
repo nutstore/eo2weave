@@ -59,6 +59,41 @@ export const conversation = {
         slashCommand: "快捷指令",
         shortcutsHint: "↑↓ 历史  Shift+Enter 换行",
       },
+      // 斜杠命令（builtin 命令包 + 分组标签）
+      slashCommands: {
+        groupBuiltin: "内置命令",
+        groupSkill: "Skills",
+        summary: {
+          label: "总结",
+          description: "总结页面或选中内容，输出要点",
+          chipPageMode: "页面模式",
+          noContent: "没有可总结的内容 — 选中文字或打开有正文的页面",
+        },
+        translate: {
+          label: "翻译",
+          description: "翻译选中内容（/translate zh|en|ja…，默认中文）",
+          chipPageMode: "页面模式",
+          noContent: "没有可翻译的内容 — 先选中文字",
+        },
+        explain: {
+          label: "解释",
+          description: "解释选中的代码或术语",
+          chipPageMode: "页面模式",
+          noContent: "没有可解释的内容 — 先选中文字",
+        },
+        polish: {
+          label: "润色",
+          description: "润色选中的文字",
+          chipPageMode: "页面模式",
+          noContent: "没有可润色的内容 — 先选中文字",
+        },
+        titles: {
+          label: "取标题",
+          description: "基于内容生成 5 个标题备选",
+          chipPageMode: "页面模式",
+          noContent: "没有可分析的内容 — 选中文字或打开有正文的页面",
+        },
+      },
       dropFilesHere: "拖拽文件到此处",
       extractingFolder: "正在展开文件夹中的文件…",
       attachFiles: "添加附件",

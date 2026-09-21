@@ -89,6 +89,9 @@ interface SuggestionDropdownProps<T> {
   renderItem: (item: T, isSelected: boolean) => React.ReactNode
   width?: string // default 'w-72'
   selectedColor?: string // default 'bg-primary-50 text-primary-700 dark:bg-primary-100/40 dark:text-primary-700'
+  /** Optional grouping: items are rendered under sticky headers keyed by
+   *  the returned group label (in items order — sort before passing in). */
+  groupBy?: (item: T) => string
 }
 
 const SuggestionDropdown = forwardRef(
@@ -100,6 +103,7 @@ const SuggestionDropdown = forwardRef(
       renderItem,
       width = 'w-72',
       selectedColor = 'bg-primary-50 text-primary-700 dark:bg-primary-100/40 dark:text-primary-700',
+      groupBy,
     }: SuggestionDropdownProps<T>,
     ref: React.Ref<SuggestionDropdownHandle>,
   ) {
@@ -171,9 +175,16 @@ const SuggestionDropdown = forwardRef(
         <div ref={scrollContainerRef} className="max-h-96 overflow-y-auto py-1">
           {items.map((item, idx) => {
             const selected = idx === selectedIndex
+            const group = groupBy?.(item) ?? null
+            const showGroupHeader = group !== null && (idx === 0 || groupBy?.(items[idx - 1]) !== group)
             return (
+              <div key={getItemKey(item)}>
+              {showGroupHeader && (
+                <div className="sticky top-0 z-10 bg-card px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400 dark:bg-neutral-900 dark:text-neutral-500">
+                  {group}
+                </div>
+              )}
               <button
-                key={getItemKey(item)}
                 data-idx={idx}
                 type="button"
                 role="option"
@@ -190,6 +201,7 @@ const SuggestionDropdown = forwardRef(
               >
                 {renderItem(item, selected)}
               </button>
+              </div>
             )
           })}
         </div>
@@ -1491,20 +1503,36 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
         />
       )}
 
-      {/* Slash command suggestions dropdown – rendered by tiptap SlashCommandExtension */}
+      {/* Slash command suggestions dropdown – rendered by tiptap SlashCommandExtension.
+          Builtin commands (source='builtin') and skill commands are visually
+          grouped: builtin first with a "Built-in" header, then "Skills". */}
       {showSlashSuggestion && slashSuggestionCommand && (
         <SuggestionDropdown<SlashCommandItem>
           ref={slashSuggestionDropdownRef}
-          items={slashSuggestionItems}
+          items={[...slashSuggestionItems].sort((a, b) => {
+            // builtin first, skills after (stable within group)
+            if (a.source !== b.source) return a.source === 'builtin' ? -1 : 1
+            return 0
+          })}
           getItemKey={(cmd) => cmd.id}
           onSelect={(cmd) => slashSuggestionCommand?.(cmd)}
           width="w-auto"
+          groupBy={(cmd) =>
+            cmd.source === 'skill' ? t('conversation.input.slashCommands.groupSkill') : t('conversation.input.slashCommands.groupBuiltin')
+          }
           renderItem={(cmd, _selected) => (
             <span className="text-neutral-700 dark:text-neutral-300">
               /{cmd.id}
               <span className="ml-2 text-neutral-500 dark:text-neutral-500">
-                {cmd.description}
+                {cmd.source === 'builtin'
+                  ? t(`conversation.input.slashCommands.${cmd.label}.description`)
+                  : cmd.description}
               </span>
+              {cmd.source === 'skill' && (
+                <span className="ml-2 shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-400 dark:bg-neutral-800 dark:text-neutral-400">
+                  {t('conversation.input.slashCommands.groupSkill')}
+                </span>
+              )}
             </span>
           )}
         />

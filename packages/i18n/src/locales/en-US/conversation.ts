@@ -59,6 +59,41 @@ export const conversation = {
         slashCommand: "Slash command",
         shortcutsHint: "{arrow} history  Shift+Enter newline",
       },
+      // Slash commands (builtin pack + grouping labels)
+      slashCommands: {
+        groupBuiltin: "Built-in",
+        groupSkill: "Skills",
+        summary: {
+          label: "Summarize",
+          description: "Summarize the page or selection into key points",
+          chipPageMode: "page mode",
+          noContent: "Nothing to summarize — select text or open a page with content",
+        },
+        translate: {
+          label: "Translate",
+          description: "Translate selection (/translate zh|en|ja…, default zh)",
+          chipPageMode: "page mode",
+          noContent: "Nothing to translate — select some text first",
+        },
+        explain: {
+          label: "Explain",
+          description: "Explain the selected code or term",
+          chipPageMode: "page mode",
+          noContent: "Nothing to explain — select some text first",
+        },
+        polish: {
+          label: "Polish",
+          description: "Polish the selected text",
+          chipPageMode: "page mode",
+          noContent: "Nothing to polish — select some text first",
+        },
+        titles: {
+          label: "Titles",
+          description: "Generate 5 title options from the content",
+          chipPageMode: "page mode",
+          noContent: "Nothing to analyze — select text or open a page with content",
+        },
+      },
       dropFilesHere: "Drop files here",
       extractingFolder: "Extracting files from folder…",
       attachFiles: "Attach files",

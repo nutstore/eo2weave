@@ -58,6 +58,16 @@ export const conversation = {
         slashCommand: "명령어",
         shortcutsHint: "↑↓ 기록  Shift+Enter 줄바꿈",
       },
+      // 슬래시 명령어
+      slashCommands: {
+        groupBuiltin: "기본 명령어",
+        groupSkill: "Skills",
+        summary: { label: "요약", description: "페이지나 선택 영역을 요약", chipPageMode: "페이지 모드", noContent: "요약할 내용이 없습니다 — 텍스트를 선택하세요" },
+        translate: { label: "번역", description: "선택 영역 번역 (/translate zh|en|ja…)", chipPageMode: "페이지 모드", noContent: "번역할 내용이 없습니다 — 텍스트를 선택하세요" },
+        explain: { label: "설명", description: "선택한 코드나 용어를 설명", chipPageMode: "페이지 모드", noContent: "설명할 내용이 없습니다 — 텍스트를 선택하세요" },
+        polish: { label: "다듬기", description: "선택한 텍스트를 다듬기", chipPageMode: "페이지 모드", noContent: "다듬을 내용이 없습니다 — 텍스트를 선택하세요" },
+        titles: { label: "제목 생성", description: "내용에서 제목 5개 생성", chipPageMode: "페이지 모드", noContent: "분석할 내용이 없습니다 — 텍스트를 선택하세요" },
+      },
       dropFilesHere: "여기에 파일을 드롭하세요",
       extractingFolder: "폴더 내 파일을 추출하는 중…",
       attachFiles: "파일 첨부",

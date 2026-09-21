@@ -9,6 +9,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { assembleBuiltinCommandPrompt, matchesBuiltinCommand } from '@/skills/builtin-slash-exec'
 import { useShallow } from 'zustand/react/shallow'
 import { toast } from 'sonner'
 import { useAgentStore } from '@/store/agent.store'
@@ -565,6 +566,22 @@ export function useConversationLogic() {
     const currentConvId = convIdRef.current
     const currentMentionedAgentIds = mentionedAgentIdsRef.current
     const { getSuggestedFollowUp, clearSuggestedFollowUp } = useConversationRuntimeStore.getState()
+
+    // P0 builtin light-operation pack (/summary /translate /explain /polish
+    // /titles): assemble the prompt from template + page context, then fall
+    // through to the STANDARD send pipeline as a normal user message — no
+    // separate request channel, so quota/compaction/cache stay intact.
+    if (matchesBuiltinCommand(inputTrimmed)) {
+      setInput('')
+      setMentionedAgentIds([])
+      setInputResetToken((v) => v + 1)
+      const assembled = await assembleBuiltinCommandPrompt(inputTrimmed)
+      if (assembled === null) return // user-facing toast already shown
+      // Overwrite the pending input with the assembled prompt and continue
+      // into the normal send path below (textToSend = inputRef.current).
+      setInput(assembled)
+      inputRef.current = assembled
+    }
 
     // Slash command execution happens only when user explicitly sends.
     // Clear input BEFORE the async compact to avoid stale text visible during LLM call.

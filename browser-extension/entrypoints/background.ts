@@ -1414,6 +1414,38 @@ export default defineBackground(() => {
         // Return shape: { url, title, selectedText, providerContext } | null
         // The split makes responsibility clear: url/title/selectedText are
         // "what we recorded", providerContext is "what the upstream site told us".
+        if (message.type === 'requestPageBodyText') {
+          // Page-mode slash commands (/summary /titles on a page without a
+          // selection): pull readable body text from the bound tab.
+          const bodyTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
+          if (bodyTabId === null) {
+            sendResponse(null)
+            return
+          }
+          try {
+            const results = await chrome.scripting.executeScript({
+              target: { tabId: bodyTabId },
+              world: 'MAIN',
+              func: () => {
+                // Clone-safe text extraction: skip script/style/nav noise.
+                const clone = document.body.cloneNode(true) as HTMLElement
+                clone
+                  .querySelectorAll('script, style, noscript, nav, header, footer, svg')
+                  .forEach((el) => el.remove())
+                return (clone.innerText || clone.textContent || '')
+                  .replace(/\n{3,}/g, '\n\n')
+                  .trim()
+                  .slice(0, 40000)
+              },
+            })
+            const bodyResult = Array.isArray(results) ? results[0]?.result : null
+            sendResponse(typeof bodyResult === 'string' ? bodyResult : null)
+          } catch {
+            sendResponse(null)
+          }
+          return
+        }
+
         if (message.type === 'requestBoundPageContext') {
           const targetTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
           if (targetTabId === null) {
