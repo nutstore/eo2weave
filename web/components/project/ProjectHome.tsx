@@ -1317,8 +1317,8 @@ export function ProjectHome({
                       {t('projectHome.sidebar.startFreshDescription')}
                     </p>
                     <BrandButton
-                      variant="ghost"
-                      className="w-full text-xs text-tertiary hover:text-danger hover:border-danger/50"
+                      variant="outline"
+                      className="w-full text-xs hover:text-danger hover:border-danger/50"
                       onClick={() => setShowClearDataDialog(true)}
                       disabled={isClearingLocalData || isLoading}
                     >
@@ -1338,8 +1338,8 @@ export function ProjectHome({
                 {t('projectHome.sidebar.cacheDescription')}
               </p>
               <BrandButton
-                variant="ghost"
-                className="w-full text-tertiary hover:text-primary hover:border-primary/50"
+                variant="outline"
+                className="w-full"
                 onClick={() => void handleClearCache()}
                 disabled={isClearingCache}
               >
@@ -1360,8 +1360,8 @@ export function ProjectHome({
               </p>
               <div className="flex flex-col gap-2">
                 <BrandButton
-                  variant="ghost"
-                  className="w-full text-tertiary hover:text-primary hover:border-primary/50"
+                  variant="outline"
+                  className="w-full"
                   onClick={() => setShowExportConfirm(true)}
                   disabled={isExportingDB || isImportingDB}
                 >
@@ -1369,8 +1369,8 @@ export function ProjectHome({
                   {t('projectHome.sidebar.exportBackup')}
                 </BrandButton>
                 <BrandButton
-                  variant="ghost"
-                  className="w-full text-tertiary hover:text-primary hover:border-primary/50"
+                  variant="outline"
+                  className="w-full"
                   onClick={handleImportBackupSelected}
                   disabled={isExportingDB || isImportingDB}
                 >
@@ -1409,8 +1409,8 @@ export function ProjectHome({
                 )}
                 <div className="flex flex-col gap-2">
                   <BrandButton
-                    variant="ghost"
-                    className="w-full text-tertiary hover:text-primary hover:border-primary/50"
+                    variant="outline"
+                    className="w-full"
                     onClick={() => void handleBackupDirPrimaryAction()}
                     disabled={isBackingUpToDir || isExportingDB || isImportingDB}
                   >
@@ -1447,8 +1447,8 @@ export function ProjectHome({
                 {t('projectHome.sidebar.diagnosticsDescription')}
               </p>
               <BrandButton
-                variant="ghost"
-                className="w-full text-tertiary hover:text-primary hover:border-primary/50"
+                variant="outline"
+                className="w-full"
                 onClick={() => void handleRunDiagnostics()}
                 disabled={diagRunning}
               >
