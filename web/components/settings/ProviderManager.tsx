@@ -1140,22 +1140,45 @@ function NewProviderForm({ onClose }: { onClose: () => void }) {
 // LLM Gateway Card - Special provider card for Device Code Flow
 // =============================================================================
 
-/** Format an ISO reset/expiry timestamp as a compact relative string. */
-function formatResetTime(iso: string | null | undefined, t: (key: string, params?: Record<string, string | number>) => string): string {
-  if (!iso) return t('settings.gatewayRateLimits.resetUnknown')
+/** Which i18n keys to use for a relative deadline: monthly reset vs pack expiry. */
+type RelativeTimeMode = 'reset' | 'expiry'
+
+const RELATIVE_TIME_KEYS: Record<RelativeTimeMode, { unknown: string; soon: string; inHours: string; inDays: string }> = {
+  reset: {
+    unknown: 'settings.gatewayRateLimits.resetUnknown',
+    soon: 'settings.gatewayRateLimits.resetSoon',
+    inHours: 'settings.gatewayRateLimits.resetInHours',
+    inDays: 'settings.gatewayRateLimits.resetInDays',
+  },
+  expiry: {
+    unknown: 'settings.gatewayRateLimits.expireUnknown',
+    soon: 'settings.gatewayRateLimits.expireSoon',
+    inHours: 'settings.gatewayRateLimits.expireInHours',
+    inDays: 'settings.gatewayRateLimits.expireInDays',
+  },
+}
+
+/** Format an ISO deadline timestamp as a compact relative string.
+ *
+ * Monthly packages reset (expires_at is the next reset date); top-up packs
+ * simply expire at that date and are never replenished. */
+function formatDeadlineTime(iso: string | null | undefined, mode: RelativeTimeMode, t: (key: string, params?: Record<string, string | number>) => string): string {
+  const keys = RELATIVE_TIME_KEYS[mode]
+  if (!iso) return t(keys.unknown)
   const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return t('settings.gatewayRateLimits.resetUnknown')
+  if (Number.isNaN(d.getTime())) return t(keys.unknown)
   const diffMs = d.getTime() - Date.now()
   const diffH = Math.round(diffMs / 3_600_000)
-  if (diffH <= 0) return t('settings.gatewayRateLimits.resetSoon')
-  if (diffH < 24) return t('settings.gatewayRateLimits.resetInHours', { count: diffH })
-  return t('settings.gatewayRateLimits.resetInDays', { count: Math.round(diffH / 24) })
+  if (diffH <= 0) return t(keys.soon)
+  if (diffH < 24) return t(keys.inHours, { count: diffH })
+  return t(keys.inDays, { count: Math.round(diffH / 24) })
 }
 
 /** Render one credit package (monthly quota or top-up pack) as a usage bar. */
-function CreditPackageBar({ label, pkg, t }: {
+function CreditPackageBar({ label, pkg, timeMode, t }: {
   label: string
   pkg: CreditPackage
+  timeMode: RelativeTimeMode
   t: (key: string, params?: Record<string, string | number>) => string
 }) {
   const total = typeof pkg.total_credit === 'number' ? pkg.total_credit : 0
@@ -1183,7 +1206,7 @@ function CreditPackageBar({ label, pkg, t }: {
         />
       </div>
       <div className="text-[10px] text-tertiary/70 mt-0.5">
-        {formatResetTime(pkg.expires_at, t)}
+        {formatDeadlineTime(pkg.expires_at, timeMode, t)}
       </div>
     </div>
   )
@@ -1649,6 +1672,7 @@ function LLMGatewayCard({
                         <CreditPackageBar
                           label={t('settings.gatewayRateLimits.monthly')}
                           pkg={rateLimitsResult.credit_usage.monthly}
+                          timeMode="reset"
                           t={t}
                         />
                       )}
@@ -1666,6 +1690,7 @@ function LLMGatewayCard({
                             key={pkg.package_id || idx}
                             label={t('settings.gatewayRateLimits.topup', { count: idx + 1 })}
                             pkg={pkg}
+                            timeMode="expiry"
                             t={t}
                           />
                         ))}
