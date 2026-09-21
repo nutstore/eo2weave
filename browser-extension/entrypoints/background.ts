@@ -24,7 +24,7 @@ import {
   isTrustedCreatorWeaveSenderUrl,
 } from '@creatorweave/shared'
 import { SidePanelBindingStore, type SidePanelBinding } from '../lib/side-panel-binding-store'
-import { getCwWebappBaseUrl } from '../lib/webapp-origins'
+import { getCwWebappBaseUrl, CW_WEBAPP_APP_PATH } from '../lib/webapp-origins'
 
 // Config
 const CONFIG = {
@@ -1271,7 +1271,7 @@ export default defineBackground(() => {
     // real query string rather than the fragment: `/#/?…` is not a route in
     // Next, and its root-page redirect can win the startup race before the
     // side-panel routing handler consumes the metadata.
-    const cwUrl = `${cwBase}/?${params.toString()}`
+    const cwUrl = `${cwBase}${CW_WEBAPP_APP_PATH}?${params.toString()}`
     // eslint-disable-next-line no-console
     console.log('[CreatorWeave][bg] opening side panel', {
       tabId,
@@ -1295,7 +1295,7 @@ export default defineBackground(() => {
         '[CreatorWeave] Side panel open failed, falling back to new tab:',
         err,
       )
-      chrome.tabs.create({ url: `${cwBase}/#/` }).catch(() => {})
+      chrome.tabs.create({ url: `${cwBase}${CW_WEBAPP_APP_PATH}` }).catch(() => {})
     })
   }
 

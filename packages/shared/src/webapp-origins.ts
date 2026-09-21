@@ -26,6 +26,13 @@ export const CW_WEBAPP_ORIGINS: readonly string[] = [
   CW_WEBAPP_ORIGIN_DEV,
 ]
 
+/**
+ * In-app path the extension should open (side panel / popup fallback).
+ * The marketing landing page now owns `/`; the workspace lives under
+ * `/projects`. Kept here so the extension and web app share one constant.
+ */
+export const CW_WEBAPP_APP_PATH = '/projects'
+
 /** True when `origin` is one of the web app's own origins. */
 export function isCwWebappOrigin(origin: string): boolean {
   return CW_WEBAPP_ORIGINS.includes(origin)

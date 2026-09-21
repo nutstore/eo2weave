@@ -2,7 +2,7 @@
 // Store builds (CW_CODEX_OAUTH=0) hide the whole Codex box in the popup.
 declare const __CW_CODEX_OAUTH__: boolean;
 
-import { getCwWebappBaseUrl } from '../../lib/webapp-origins';
+import { getCwWebappBaseUrl, CW_WEBAPP_APP_PATH } from '../../lib/webapp-origins';
 
 function t(key: string, substitutions?: string | string[]): string {
   return chrome.i18n.getMessage(key as any, substitutions) || key;
@@ -65,7 +65,7 @@ try { document.getElementById('version')!.textContent = 'v' + chrome.runtime.get
     if (typeof tabId !== 'number') {
       // No valid tab yet (very rare — popup opened before query resolved):
       // open the web app in a plain tab as a graceful fallback.
-      chrome.tabs.create({ url: getCwWebappBaseUrl() + '/#/' });
+      chrome.tabs.create({ url: getCwWebappBaseUrl() + CW_WEBAPP_APP_PATH });
       window.close();
       return;
     }
@@ -95,7 +95,7 @@ try { document.getElementById('version')!.textContent = 'v' + chrome.runtime.get
       tabId: tabId,
       // Use a normal query for the Next.js App Router. A fragment launch URL
       // (`/#/?…`) races the root-page redirect during initial hydration.
-      path: cwBase + '/?' + params.toString(),
+      path: cwBase + CW_WEBAPP_APP_PATH + '?' + params.toString(),
       enabled: true,
     }).catch(function (err: any) {
       // eslint-disable-next-line no-console
@@ -106,7 +106,7 @@ try { document.getElementById('version')!.textContent = 'v' + chrome.runtime.get
     }).catch(function (err: any) {
       // eslint-disable-next-line no-console
       console.warn('[EO2Weave popup] side panel open failed, falling back to new tab:', err);
-      chrome.tabs.create({ url: cwBase + '/#/' }).catch(function () {});
+      chrome.tabs.create({ url: cwBase + CW_WEBAPP_APP_PATH }).catch(function () {});
       window.close();
     });
   });
