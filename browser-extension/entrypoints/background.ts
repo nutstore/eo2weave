@@ -757,7 +757,12 @@ async function codexBackendJsonRequest<T>(
 }
 
 async function getCodexResetCredits(tokens: any): Promise<CodexResetCreditsResponse> {
-  return codexBackendJsonRequest<CodexResetCreditsResponse>(CODEX_RESET_CREDITS_URL, tokens);
+  const data = await codexBackendJsonRequest<CodexResetCreditsResponse>(CODEX_RESET_CREDITS_URL, tokens);
+  // Cache for the popup's stale-while-revalidate render (same pattern as
+  // codex_usage): the next popup open paints this instantly instead of
+  // staring at an empty box during the network round-trip.
+  await chrome.storage.local.set({ codex_reset_credits: { data, updatedAt: Date.now() } });
+  return data;
 }
 
 // Codex usage snapshot from the live /codex/usage endpoint. The five-hour and
@@ -2089,6 +2094,15 @@ export default defineBackground(() => {
           return;
         }
 
+        if (CODEX_OAUTH_ENABLED && message.type === 'codex_get_reset_credits_cached') {
+          // Cached-only read for the popup's instant paint; may be null.
+          chrome.storage.local.get('codex_reset_credits', function (res) {
+            const entry = res && res.codex_reset_credits;
+            sendResponse(entry && entry.data ? { ok: true, data: entry.data } : { ok: false });
+          });
+          return;
+        }
+
         if (CODEX_OAUTH_ENABLED && message.type === 'codex_get_reset_credits') {
           const tokens = await CODEX!.getCodexTokens();
           if (!tokens?.access_token) {
@@ -2117,6 +2131,9 @@ export default defineBackground(() => {
           }
           try {
             const data = await CODEX!.consumeCodexResetCredit(tokens, creditId);
+            // Credit count changed — drop the stale cache so the next popup
+            // open re-fetches instead of painting a consumed credit.
+            await chrome.storage.local.remove('codex_reset_credits');
             sendResponse({ ok: true, data });
           } catch (err: any) {
             sendResponse({ ok: false, errorCode: 'RESET_CREDIT_CONSUME_FAILED', status: 502, message: String(err?.message || err) });

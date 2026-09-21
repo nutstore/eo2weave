@@ -974,12 +974,11 @@ function renderCapline(): void {
     });
   });
 
-  function loadResetCredits() {
-    sendMessage({ type: 'codex_get_reset_credits' }).then(function (resp) {
-      if (!resp || !resp.ok || !resp.data) {
-        resetCreditBox.style.display = 'none';
-        return;
-      }
+  function renderResetCredits(resp: any) {
+    if (!resp || !resp.ok || !resp.data) {
+      resetCreditBox.style.display = 'none';
+      return;
+    }
       var credits = Array.isArray(resp.data.credits) ? resp.data.credits : [];
       var available = credits.filter(function (credit: any) { return credit && credit.status === 'available' && credit.id; });
       var count = typeof resp.data.available_count === 'number' ? resp.data.available_count : available.length;
@@ -997,6 +996,19 @@ function renderCapline(): void {
         ? t('resetCreditExpires', new Date(expiresAt).toLocaleDateString())
         : '';
       resetCreditBtn.dataset.creditId = available[0].id;
+  }
+
+  // Stale-while-revalidate (mirrors loadUsageData): paint the cached credit
+  // count instantly on popup open, then refresh from the live endpoint. The
+  // cache is dropped on consume, so a just-used credit never lingers.
+  function loadResetCredits() {
+    sendMessage({ type: 'codex_get_reset_credits_cached' }).then(function (cachedResp) {
+      if (cachedResp && cachedResp.ok && cachedResp.data) {
+        renderResetCredits(cachedResp);
+      }
+      return sendMessage({ type: 'codex_get_reset_credits' }).then(function (resp) {
+        renderResetCredits(resp);
+      });
     }).catch(function () {
       resetCreditBox.style.display = 'none';
     });
@@ -1082,7 +1094,7 @@ function renderCapline(): void {
   });
 
   resetBtn.addEventListener('click', async function () {
-    await chrome.storage.local.remove(['codex_pending_auth', 'codex_tokens', 'codex_token_saved_at', 'codex_usage']);
+    await chrome.storage.local.remove(['codex_pending_auth', 'codex_tokens', 'codex_token_saved_at', 'codex_usage', 'codex_reset_credits']);
     logEl.textContent = '';
     setCodexStatus('idle', t('notAuthorized'));
     var usageEl = document.getElementById('codexUsage')!;
