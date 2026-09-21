@@ -48,7 +48,6 @@ export const projectHome = {
         pickDirectory: "백업 디렉터리 선택",
         changeDirectory: "디렉터리 변경",
         directoryLabel: "백업 디렉터리",
-        pathHiddenHint: "브라우저는 폴더 이름만 표시하며 전체 경로는 노출하지 않습니다",
         lastBackupAt: "마지막 백업: {time}",
         backingUp: "백업 중…",
         backupNow: "지금 백업",

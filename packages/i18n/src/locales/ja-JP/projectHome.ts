@@ -50,7 +50,6 @@ export const projectHome = {
         pickDirectory: "バックアップ先を選択",
         changeDirectory: "ディレクトリを変更",
         directoryLabel: "バックアップ先",
-        pathHiddenHint: "ブラウザはフォルダ名のみ表示し、完全なパスは公開しません",
         lastBackupAt: "前回のバックアップ: {time}",
         backingUp: "バックアップ中…",
         backupNow: "今すぐバックアップ",

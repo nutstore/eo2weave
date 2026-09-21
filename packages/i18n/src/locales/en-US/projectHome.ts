@@ -52,7 +52,6 @@ export const projectHome = {
         pickDirectory: "Choose backup directory",
         changeDirectory: "Change directory",
         directoryLabel: "Backup directory",
-        pathHiddenHint: "Browsers only show the folder name, not the full path",
         lastBackupAt: "Last backup: {time}",
         backingUp: "Backing up…",
         backupNow: "Back up now",

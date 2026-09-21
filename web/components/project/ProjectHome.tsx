@@ -1398,7 +1398,6 @@ export function ProjectHome({
                       {t('projectHome.sidebar.backupToLocal.directoryLabel')}: {backupDirName}
                     </div>
                     <div className="home-mono text-[11px] text-muted-foreground">
-                      {t('projectHome.sidebar.backupToLocal.pathHiddenHint')}
                     </div>
                     {lastBackupAt && (
                       <div className="home-mono text-[11px] text-muted-foreground">

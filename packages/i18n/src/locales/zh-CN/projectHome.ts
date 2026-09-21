@@ -48,7 +48,6 @@ export const projectHome = {
         pickDirectory: "选择备份目录",
         changeDirectory: "更改目录",
         directoryLabel: "备份目录",
-        pathHiddenHint: "浏览器仅显示文件夹名，不暴露完整路径",
         lastBackupAt: "上次备份: {time}",
         backingUp: "正在备份…",
         backupNow: "立即备份",
