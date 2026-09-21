@@ -350,20 +350,71 @@ describe('importOPFSBackup', () => {
     }
   })
 
-  it('preserves staging while clearing old OPFS data', async () => {
+  it('preserves old data and staging on failure, and uses quarantine on success', async () => {
     const zipped = zipOf({ 'bfosa-unified.sqlite': SQLITE_HEADER })
     const { root, map, restore } = installFakeOpfs({ 'old-file.txt': { kind: 'file' } })
     try {
       await importOPFSBackup(new FakeFile('backup.zip', zipped) as unknown as File)
       const removedNames = root.removeEntry.mock.calls.map(([name]) => name)
-      // First occurrence is stale-temp cleanup and the last is final cleanup;
-      // there must be no staging deletion between creation and the move.
+      // Success path (two-phase commit): stale-temp cleanup first; then the
+      // old data is cleared ONLY after the staged tree has moved into the
+      // quarantine dir; finally both temp dirs are cleaned up. The staging
+      // dir is never deleted between creation and the move.
       expect(removedNames).toEqual([
         '.eo2weave-backup-tmp',
+        '.eo2weave-backup-tmp-old',
         'old-file.txt',
         '.eo2weave-backup-tmp',
+        '.eo2weave-backup-tmp-old',
       ])
       expect(map.has('bfosa-unified.sqlite')).toBe(true)
+      expect(map.has('old-file.txt')).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('keeps old data intact when the staged tree fails to move into place', async () => {
+    const zipped = zipOf({ 'bfosa-unified.sqlite': SQLITE_HEADER })
+    // The move into quarantine copies files via createWritable(); make the
+    // quarantine copy of the db fail to simulate a mid-move failure. The
+    // fake OPFS map-based handles don't go through the real prototype, so
+    // patch the fake root's getDirectoryHandle to return a quarantine dir
+    // whose file writes fail for the db entry.
+    const { root, map, restore } = installFakeOpfs({ 'old-file.txt': { kind: 'file' } })
+    const origGetDirectoryHandle = root.getDirectoryHandle.bind(root)
+    const failingQuarantine: Record<string, unknown> = {
+      entries: function* () {
+        // Empty — nothing staged yet; simulate failure by throwing when the
+        // mover asks for the file handle path below via getFile.
+      },
+      getDirectoryHandle: async () => failingQuarantine,
+      removeEntry: async () => {},
+      getFileHandle: (_name: string) => {
+        throw new Error('QuotaExceededError: simulated mid-move failure')
+      },
+    }
+    ;(root as unknown as { getDirectoryHandle: unknown }).getDirectoryHandle = async (
+      name: string,
+      opts?: { create?: boolean }
+    ) => {
+      if (name === '.eo2weave-backup-tmp-old') {
+        return failingQuarantine as unknown as FileSystemDirectoryHandle
+      }
+      return origGetDirectoryHandle(name, opts)
+    }
+    try {
+      await expect(
+        importOPFSBackup(new FakeFile('backup.zip', zipped) as unknown as File)
+      ).rejects.toThrow(/simulated mid-move failure/)
+      // Old data untouched — the whole point of the two-phase commit.
+      expect(map.has('old-file.txt')).toBe(true)
+      expect(map.has('bfosa-unified.sqlite')).toBe(false)
+      // Staging + quarantine preserved for retry (no success cleanup ran).
+      // (Quarantine creation happens after the stale-temp cleanup at the top
+      // of the flow, so its removeEntry of the tmp dir is the only call.)
+      const removedNames = root.removeEntry.mock.calls.map(([name]) => name)
+      expect(removedNames).toEqual(['.eo2weave-backup-tmp', '.eo2weave-backup-tmp-old'])
     } finally {
       restore()
     }

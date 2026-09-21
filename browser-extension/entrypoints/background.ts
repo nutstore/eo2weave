@@ -1384,17 +1384,35 @@ export default defineBackground(() => {
           return
         }
 
-        if (message.type === 'web_search') {
-          sendResponse(await handleSearch(message));
-          return;
-        }
-
-        if (message.type === 'web_fetch') {
-          sendResponse(await handleFetch(message));
-          return;
-        }
-
-        if (message.type === 'web_fetch_render') {
+        if (message.type === 'web_search' || message.type === 'web_fetch' || message.type === 'web_fetch_render') {
+          // SECURITY: these handlers make background fetches with the
+          // extension's <all_urls> host permissions. injected.content.ts runs
+          // on every page and relays page-side window.postMessage into this
+          // listener, so without a gate ANY web page could use the extension
+          // as a CORS/Intranet proxy (read localhost/LAN responses and exfil
+          // them). Same trust boundary as native_host_call below: only the
+          // EO2Weave web app origins and the extension's own pages may drive
+          // background fetches. The sender URL is browser-verified and
+          // cannot be forged by page scripts.
+          const bridgeSenderUrl = _sender?.url ?? ''
+          const isOwnPage =
+            bridgeSenderUrl.startsWith('chrome-extension://') && _sender?.id === chrome.runtime.id
+          if (!isOwnPage && !isTrustedCreatorWeaveSenderUrl(bridgeSenderUrl)) {
+            sendResponse({
+              ok: false,
+              errorCode: 'UNAUTHORIZED_SENDER',
+              error: `${message.type} from untrusted sender: ${bridgeSenderUrl || '(no url)'}`,
+            })
+            return
+          }
+          if (message.type === 'web_search') {
+            sendResponse(await handleSearch(message));
+            return;
+          }
+          if (message.type === 'web_fetch') {
+            sendResponse(await handleFetch(message));
+            return;
+          }
           sendResponse(await handleFetchRender(message));
           return;
         }
@@ -2142,13 +2160,33 @@ export default defineBackground(() => {
         }
 
         if (CODEX_OAUTH_ENABLED && message.type === 'codex_proxy_fetch') {
+          // SECURITY: this handler sends the user's Codex OAuth Bearer token.
+          // It must never be reachable from arbitrary web pages, and the
+          // destination must be pinned to the Codex backend — a caller cannot
+          // be allowed to redirect the token to a URL of its choosing.
+          // Same trust boundary as native_host_call: only EO2Weave web app
+          // origins and the extension's own pages. The sender URL is
+          // browser-verified and cannot be forged by page scripts.
+          const codexSenderUrl = _sender?.url ?? ''
+          const isOwnPage =
+            codexSenderUrl.startsWith('chrome-extension://') && _sender?.id === chrome.runtime.id
+          if (!isOwnPage && !isTrustedCreatorWeaveSenderUrl(codexSenderUrl)) {
+            sendResponse({
+              ok: false,
+              errorCode: 'UNAUTHORIZED_SENDER',
+              status: 403,
+              message: `codex_proxy_fetch from untrusted sender: ${codexSenderUrl || '(no url)'}`,
+            });
+            return;
+          }
+          // Ignore caller-supplied URL overrides — token-bearing requests go
+          // to the Codex backend endpoint only.
+          const requestUrl = CODEX!.CODEX_RESPONSES_URL;
           let tokens = await CODEX!.getCodexTokens();
           if (!tokens?.access_token) {
             sendResponse({ ok: false, errorCode: 'NOT_AUTHORIZED', status: 0, message: 'Not authorized. Please complete device code login first.' });
             return;
           }
-
-          const requestUrl = message.url || CODEX!.CODEX_RESPONSES_URL;
           const requestInit: RequestInit = {
             method: message.method || 'POST',
             body: message.body ? JSON.stringify(message.body) : undefined,
@@ -2490,6 +2528,14 @@ export default defineBackground(() => {
 
       if (!CODEX_OAUTH_ENABLED || message.type !== 'codex_proxy_fetch_stream') return;
 
+      // SECURITY: this streaming port sends the user's Codex OAuth Bearer
+      // token. Pin the destination to the Codex backend endpoint and reject
+      // callers we cannot trust. chrome.runtime.connect ports from content
+      // scripts carry no sender URL, and content.ts relays port requests
+      // from ANY page — so the URL override in message.url must be ignored
+      // regardless of origin (fail-closed on destination).
+      const requestUrl = CODEX!.CODEX_RESPONSES_URL;
+
       (async () => {
         const CODEX_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
         const CODEX_HARD_TIMEOUT_MS = 30 * 60 * 1000;
@@ -2590,7 +2636,6 @@ export default defineBackground(() => {
             return;
           }
 
-          const requestUrl = message.url || CODEX!.CODEX_RESPONSES_URL;
           const body = { ...(message.body || {}), stream: true };
           const fetchOptions = (accessToken: string): RequestInit => ({
             method: 'POST',

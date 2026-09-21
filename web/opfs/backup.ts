@@ -264,9 +264,10 @@ async function streamOPFSToZip(
   stats: { fileCount: number; totalBytes: number },
 ): Promise<void> {
   for await (const [name, handle] of dir.entries()) {
-    // Skip the backup temp directory (spill target for large exports) —
-    // otherwise an export would zip its own in-progress output.
-    if (!prefix && name === BACKUP_TMP_DIR) continue
+    // Skip the backup temp directory (spill target for large exports) and
+    // the import quarantine dir — otherwise an export would zip its own
+    // in-progress output / leftover import state.
+    if (!prefix && (name === BACKUP_TMP_DIR || name === `${BACKUP_TMP_DIR}-old`)) continue
     const path = prefix ? `${prefix}/${name}` : name
     if (handle.kind === 'file') {
       let file: File
@@ -966,6 +967,10 @@ function shouldSkipBackupEntry(rawPath: string): boolean {
   if (rawPath.split('/').pop() === '.DS_Store') return true
   if (rawPath === '.bfosa-pool' || rawPath.startsWith('.bfosa-pool/')) return true
   if (rawPath === BACKUP_TMP_DIR || rawPath.startsWith(BACKUP_TMP_DIR + '/')) return true
+  // Import quarantine dir (two-phase commit staging sibling) — never export
+  // or validate it as content.
+  const quarantineDirName = `${BACKUP_TMP_DIR}-old`
+  if (rawPath === quarantineDirName || rawPath.startsWith(quarantineDirName + '/')) return true
   return false
 }
 
@@ -1152,6 +1157,11 @@ export async function importOPFSBackup(file: File): Promise<{ fileCount: number 
   const { token } = beginReset()
   setStorageResetMarker(token)
 
+  // Files successfully moved into the OPFS root (phase C). Declared here so
+  // the finally block can distinguish "failed before any data changed" from
+  // "failed mid-promotion".
+  let moved = 0
+
   try {
     // Release the SQLite worker's OPFS locks before replacing files. Dynamic
     // import keeps this module loadable without pulling the sqlite chunk.
@@ -1166,21 +1176,37 @@ export async function importOPFSBackup(file: File): Promise<{ fileCount: number 
     const { resetWorkspaceManager } = await import('@/opfs')
     resetWorkspaceManager()
 
-    // The staging tree lives under the same OPFS root, so preserve it while
-    // deleting the old data. Removing it here invalidates `stagingDir` in a
-    // real browser even though the old Map-based unit fake kept it readable.
-    await clearOPFSRoot(opfsRoot, new Set([BACKUP_TMP_DIR]))
-
     // Side-channel entries — extracted from the staged tree (small files,
     // safe to read into memory) BEFORE the tree is moved into place.
     const deviceKeyBytes = await readStagedFile(stagingDir, DEVICE_KEY_FILE)
     const localStorageBytes = await readStagedFile(stagingDir, LOCALSTORAGE_FILE)
 
-    // Phase 2 — move the staged tree into place. Directory moves via
-    // removeEntry+copy are O(files) but each file copy is chunked, so
-    // memory stays flat; OPFS has no rename-across-directories.
-    let moved = 0
-    await moveTreeIntoPlace(stagingDir, opfsRoot, '', (path) => {
+    // Two-phase commit. The previous order (clear root → move staged files in)
+    // meant a mid-move failure (quota exceeded, locked entry) left the user
+    // with NO old data, NO staged copy (the finally block deleted it), and
+    // only the on-disk zip as a fallback. Now:
+    //   Phase A: move the staged tree into a quarantine sibling dir.
+    //   Phase B: clear the old data (staging + quarantine preserved).
+    //   Phase C: move the quarantined tree into the root.
+    // A failure in phase A or B aborts with the OLD DATA fully intact; a
+    // failure in phase C is the only window where old data is gone — and the
+    // quarantined tree + on-disk zip both remain for retry.
+    const quarantineName = `${BACKUP_TMP_DIR}-old`
+    await opfsRoot.removeEntry(quarantineName, { recursive: true }).catch((error) => {
+      if (!isImportNotFoundError(error) && !isImportLockError(error)) throw error
+    })
+    const quarantineDir = await opfsRoot.getDirectoryHandle(quarantineName, { create: true })
+    // Phase A — staging → quarantine. Memory stays O(chunk): each file copy
+    // is chunked; OPFS has no rename-across-directories.
+    await moveTreeIntoPlace(stagingDir, quarantineDir, '', () => true)
+
+    // Phase B — delete the old data. The staging dir and quarantine dir live
+    // under the same OPFS root, so preserve both while clearing.
+    await clearOPFSRoot(opfsRoot, new Set([BACKUP_TMP_DIR, quarantineName]))
+
+    // Phase C — quarantine → root.
+    moved = 0
+    await moveTreeIntoPlace(quarantineDir, opfsRoot, '', (path) => {
       const keep = path !== DEVICE_KEY_FILE && path !== LOCALSTORAGE_FILE
       if (keep) moved++
       return keep
@@ -1216,12 +1242,27 @@ export async function importOPFSBackup(file: File): Promise<{ fileCount: number 
     )
     return { fileCount: moved }
   } finally {
-    // Best-effort staging cleanup — after a successful move the dir only
-    // holds the two extracted side-channel files (already deleted by the
-    // mover); after a failure it may hold partial data.
-    try {
-      await opfsRoot.removeEntry(BACKUP_TMP_DIR, { recursive: true })
-    } catch { /* ignore */ }
+    // Cleanup policy (two-phase commit): on a SUCCESSFUL import the staging
+    // dir is empty (the mover deleted each moved file) and the quarantine dir
+    // has been fully consumed — remove both. On a FAILURE, keep them: the
+    // staged archive copy is the retry path when the on-disk zip is missing
+    // or the user wants to retry without re-picking the file. Stale leftovers
+    // are tolerated by the next import (staging setup removes them) and by
+    // the restore validator, and skipped by export walkers.
+    const moveSucceeded = moved > 0
+    if (moveSucceeded) {
+      try {
+        await opfsRoot.removeEntry(BACKUP_TMP_DIR, { recursive: true })
+      } catch { /* ignore */ }
+      try {
+        await opfsRoot.removeEntry(`${BACKUP_TMP_DIR}-old`, { recursive: true })
+      } catch { /* ignore */ }
+    } else {
+      console.warn(
+        '[OPFS] Backup import failed before any file moved — staging copy preserved in "' +
+          BACKUP_TMP_DIR + '" for retry. Re-run the import (the same zip) to retry.'
+      )
+    }
     // The reset marker intentionally survives until the post-reload
     // initStorage() clears it after a healthy initialization.
     endReset(token)

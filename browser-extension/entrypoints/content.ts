@@ -12,7 +12,11 @@
 // ============================================================
 
 // Build-time Codex OAuth feature flag (see wxt.config.ts).
+// NOTE: no longer consulted in the relay — streaming type gating is driven by
+// STREAMING_MESSAGE_TYPES; the background rejects codex_* messages itself
+// when the feature flag is off (CODEX_OAUTH_ENABLED checks).
 declare const __CW_CODEX_OAUTH__: boolean;
+void (__CW_CODEX_OAUTH__ as boolean | undefined);
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -29,6 +33,49 @@ export default defineContentScript({
 
     // ── Request/Response relay (existing) ──
 
+    // SECURITY: allow-list of bridge message types this relay may forward to
+    // the background. content.ts runs on every page and any page script can
+    // post a message bearing the __agentWebBridge marker (the marker is NOT a
+    // secret — MAIN-world code and page scripts share the same window). An
+    // untyped forward would let arbitrary pages drive privileged background
+    // handlers (native_host_call, codex_*, webmcp_*). Only the types the
+    // extension's own injected bridge (injected.content.ts → window.__agentWeb)
+    // actually sends are relayed; everything else is dropped.
+    const RELAYABLE_MESSAGE_TYPES = new Set([
+      // Web bridge (web-bridge.tool.ts via __agentWeb.search/fetch)
+      'web_search',
+      'web_fetch',
+      'web_fetch_render',
+      // Extension metadata probe
+      'extension_get_version',
+      // Codex OAuth bridge (chatgpt.com backend relay)
+      'codex_get_status',
+      'codex_proxy_fetch',
+      'codex_proxy_fetch_stream',
+      // External MCP proxy bridge
+      'mcp_proxy_fetch',
+      'mcp_proxy_fetch_stream',
+      // WebMCP tool discovery / invocation (host authorization enforced
+      // inside the background handlers)
+      'webmcp_discover_tools',
+      'webmcp_invoke_tool',
+      'webmcp_get_host_authorization',
+      'webmcp_recipe_get_status',
+      'webmcp_recipe_enable',
+      'webmcp_plugin_download_stream',
+      // Side-panel page bridge (binding-gated in background)
+      'requestBoundPageContext',
+      'requestPageBodyText',
+      'runBoundPageAction',
+      'captureBoundTab',
+    ])
+    // Streaming request types travel through a dedicated runtime port.
+    const STREAMING_MESSAGE_TYPES = new Set([
+      'codex_proxy_fetch_stream',
+      'webmcp_plugin_download_stream',
+      'mcp_proxy_fetch_stream',
+    ])
+
     // Streaming ports are keyed by the page request id so page-side timeout,
     // iterator return(), or ReadableStream cancellation can abort upstream.
     const streamingPorts = new Map<string, chrome.runtime.Port>()
@@ -39,6 +86,22 @@ export default defineContentScript({
 
       const { id, type, payload } = event.data;
       if (!id) return;
+
+      if (typeof type !== 'string' || !RELAYABLE_MESSAGE_TYPES.has(type)) {
+        // Unknown/unauthorized type — do NOT forward. Reply with an error so
+        // a legitimate caller misbehaving fails loudly instead of timing out.
+        window.postMessage({
+          __agentWebBridge: true,
+          __agentWebResponse: true,
+          id,
+          response: {
+            ok: false,
+            errorCode: 'UNAUTHORIZED_MESSAGE_TYPE',
+            error: `Bridge relay rejected message type: ${String(type)}`,
+          },
+        }, '*');
+        return;
+      }
 
       if (event.data.__agentWebStreamCancel === true) {
         const streamPort = streamingPorts.get(id)
@@ -53,11 +116,7 @@ export default defineContentScript({
       if (!type) return;
 
       // ── Streaming request: use port-based messaging ──
-      if (
-        (__CW_CODEX_OAUTH__ && type === 'codex_proxy_fetch_stream') ||
-        type === 'webmcp_plugin_download_stream' ||
-        type === 'mcp_proxy_fetch_stream'
-      ) {
+      if (STREAMING_MESSAGE_TYPES.has(type)) {
         try {
           const port = chrome.runtime.connect({ name: 'agent_bridge_stream' });
           streamingPorts.set(id, port)
