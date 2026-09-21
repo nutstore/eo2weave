@@ -1291,11 +1291,7 @@ export default defineBackground(() => {
     chrome.sidePanel.open({ tabId }).then(() => {
       _sidePanelTabs.add(tabId)
     }).catch((err: any) => {
-      console.warn(
-        '[CreatorWeave] Side panel open failed, falling back to new tab:',
-        err,
-      )
-      chrome.tabs.create({ url: `${cwBase}${CW_WEBAPP_APP_PATH}` }).catch(() => {})
+      console.warn('[CreatorWeave] Side panel open failed:', err)
     })
   }
 

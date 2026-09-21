@@ -105,9 +105,7 @@ try { document.getElementById('version')!.textContent = 'v' + chrome.runtime.get
       window.close();
     }).catch(function (err: any) {
       // eslint-disable-next-line no-console
-      console.warn('[EO2Weave popup] side panel open failed, falling back to new tab:', err);
-      chrome.tabs.create({ url: cwBase + CW_WEBAPP_APP_PATH }).catch(function () {});
-      window.close();
+      console.warn('[EO2Weave popup] side panel open failed:', err);
     });
   });
 })();
