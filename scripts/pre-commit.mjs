@@ -54,6 +54,23 @@ if (fs.existsSync(webAppDir)) {
   await $`git add -u .`
 }
 
+// i18n key parity — missing locale keys fall back to the default locale at
+// runtime, so dropped translations ship as silent regressions. Cheap AST
+// check, so it runs unconditionally on every commit. Runs from the project
+// root (the cwd above is web/, and the script lives in the root package).
+console.log('')
+console.log('🌍 Running i18n key parity check...')
+try {
+  await $`node ${path.join(projectRoot, 'scripts', 'check-i18n-parity.mjs')}`
+} catch {
+  console.log('')
+  console.log(red('❌ i18n key parity check failed'))
+  console.log('    Add the missing keys to every locale (see list above), or')
+  console.log('    update the EXCEPTIONS list in scripts/check-i18n-parity.mjs')
+  console.log('    if the asymmetry is intentional.')
+  failed = true
+}
+
 console.log('')
 if (failed) {
   console.log(red('❌ Pre-commit checks failed. Please fix the issues above.'))
