@@ -402,13 +402,16 @@ class SQLiteWorkerClient {
     })
   }
 
-  private sendExecute(sql: string, params: unknown[] = []): Promise<void> {
-    return this.sendRequest<void>({
-      type: 'execute',
-      sql,
-      params,
-      id: this.nextRequestId('execute'),
-    })
+  private sendExecute(sql: string, params: unknown[] = [], timeout?: number): Promise<void> {
+    return this.sendRequest<void>(
+      {
+        type: 'execute',
+        sql,
+        params,
+        id: this.nextRequestId('execute'),
+      },
+      timeout
+    )
   }
 
   private async acquireTransactionSlot(): Promise<() => void> {
@@ -441,8 +444,8 @@ class SQLiteWorkerClient {
     return this.runOutsideTransaction(() => this.sendQueryFirst<T>(sql, params))
   }
 
-  execute(sql: string, params: unknown[] = []): Promise<void> {
-    return this.runOutsideTransaction(() => this.sendExecute(sql, params))
+  execute(sql: string, params: unknown[] = [], timeout?: number): Promise<void> {
+    return this.runOutsideTransaction(() => this.sendExecute(sql, params, timeout))
   }
 
   async transaction<T>(callback: (tx: SQLiteTransaction) => Promise<T>): Promise<T> {
@@ -723,6 +726,16 @@ class SQLiteDatabaseManager {
    */
   async execute(sql: string, params: unknown[] = []): Promise<void> {
     return (await this.getReadyWorkerClient()).execute(sql, params)
+  }
+
+  /**
+   * Execute a statement with a custom request timeout. Use for long-running
+   * statements (e.g. VACUUM on a large database) that exceed the default
+   * 30s worker request timeout — hitting that timeout hard-terminates the
+   * worker mid-request.
+   */
+  async executeWithTimeout(sql: string, timeoutMs: number): Promise<void> {
+    return (await this.getReadyWorkerClient()).execute(sql, [], timeoutMs)
   }
 
   /**

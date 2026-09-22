@@ -60,8 +60,31 @@ export async function vacuumDatabase(): Promise<number | null> {
     // 2. Lazily re-open and compact. PRAGMAs run on the dedicated worker.
     await getSQLiteDB().initialize()
     try {
-      await getSQLiteDB().execute('PRAGMA wal_checkpoint(TRUNCATE)')
-      await getSQLiteDB().execute('VACUUM')
+      // Skip the expensive rebuild when there is little free space to
+      // reclaim — VACUUM cost scales with total db size, not free-page count.
+      try {
+        const freelistRow = await getSQLiteDB().queryFirst<{ c: number }>(
+          'PRAGMA freelist_count'
+        )
+        const totalRow = await getSQLiteDB().queryFirst<{ c: number }>(
+          'PRAGMA page_count'
+        )
+        const freelist = freelistRow?.c ?? 0
+        const total = totalRow?.c ?? 0
+        if (total > 0 && freelist / total < 0.2) {
+          console.log(
+            `[Storage] VACUUM skipped: freelist ${freelist}/${total} pages below 20% threshold`
+          )
+          await getSQLiteDB().close()
+          return 0
+        }
+      } catch (pragmaError) {
+        console.warn('[Storage] freelist probe failed (running VACUUM anyway):', pragmaError)
+      }
+      // VACUUM on a large database can take minutes — the default 30s
+      // request timeout would hard-terminate the worker mid-rebuild.
+      await getSQLiteDB().executeWithTimeout('PRAGMA wal_checkpoint(TRUNCATE)', 60_000)
+      await getSQLiteDB().executeWithTimeout('VACUUM', 5 * 60_000)
     } finally {
       // 3. Restore the "worker released" contract for the caller (backup
       //    path walks OPFS right after this; the panel shows fresh sizes).
