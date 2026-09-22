@@ -48,6 +48,7 @@ import {
   HardDrive,
   ChevronDown,
   AlertTriangle,
+  Database,
 } from 'lucide-react'
 import { useTheme, ACCENT_COLORS, type AccentColor } from '@/store/theme.store'
 import { useT, useLocale, LOCALE_LABELS, type Locale } from '@/i18n'
@@ -57,6 +58,8 @@ import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { runDiagnostics, copyMarkdownToClipboard } from '@/storage/diagnostics'
 import { RESET_REQUIRES_TAB_CLOSURE } from '@/storage/init'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
+import { vacuumDatabase } from '@/storage/vacuum'
+import { formatBytes } from '@/lib/utils'
 import { backupSettingsRepo, type BackupSettingsRecord } from '@/services/backup-settings.repository'
 import { SiteFooter } from '@/components/layout/SiteFooter'
 import { toast } from 'sonner'
@@ -489,6 +492,10 @@ export function ProjectHome({
   const [diagReport, setDiagReport] = useState<string>('')
   const [diagCopied, setDiagCopied] = useState(false)
 
+  // Storage panel state (usage readout + reclaim action)
+  const [storageUsage, setStorageUsage] = useState<{ usage: number; quota: number } | null>(null)
+  const [isReclaiming, setIsReclaiming] = useState(false)
+
   const createInputRef = useRef<HTMLInputElement>(null)
 
   // Confirm text for clearing local data (needs to match translated placeholder)
@@ -733,6 +740,46 @@ export function ProjectHome({
     if (ok) {
       setDiagCopied(true)
       window.setTimeout(() => setDiagCopied(false), 2000)
+    }
+  }
+
+  // Refresh the storage usage readout (used / quota).
+  const refreshStorageUsage = async () => {
+    try {
+      const estimate = await navigator.storage.estimate()
+      setStorageUsage({ usage: estimate.usage ?? 0, quota: estimate.quota ?? 0 })
+    } catch {
+      setStorageUsage(null)
+    }
+  }
+
+  useEffect(() => {
+    void refreshStorageUsage()
+  }, [])
+
+  // Reclaim free pages from the SQLite database (wal_checkpoint + VACUUM).
+  // Non-fatal on error: the button stays available for retry.
+  const handleReclaimStorage = async () => {
+    if (isReclaiming) return
+    setIsReclaiming(true)
+    const toastId = toast.loading(t('projectHome.sidebar.storageReclaiming'))
+    try {
+      const reclaimed = await vacuumDatabase()
+      if (reclaimed === null) {
+        toast.error(t('projectHome.sidebar.storageReclaimFailed'), { id: toastId })
+      } else if (reclaimed < 1024 * 1024) {
+        toast.success(t('projectHome.sidebar.storageOptimal'), { id: toastId })
+      } else {
+        toast.success(t('projectHome.sidebar.storageReclaimed', { size: formatBytes(reclaimed) }), {
+          id: toastId,
+        })
+      }
+    } catch (error) {
+      console.error('[ProjectHome] Storage reclaim failed:', error)
+      toast.error(t('projectHome.sidebar.storageReclaimFailed'), { id: toastId })
+    } finally {
+      setIsReclaiming(false)
+      void refreshStorageUsage()
     }
   }
 
@@ -1433,6 +1480,37 @@ export function ProjectHome({
                 </div>
               </div>
             )}
+
+            {/* Storage usage + reclaim */}
+            <div className="home-reveal home-delay-6 rounded-xl border border-border/60 bg-card p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Database className="w-4 h-4 text-tertiary" />
+                <span className="home-mono text-xs font-medium text-muted-foreground">
+                  {t('projectHome.sidebar.storage')}
+                </span>
+              </div>
+              <p className="home-body text-sm text-secondary dark:text-secondary-foreground mb-4">
+                {t('projectHome.sidebar.storageDescription')}
+              </p>
+              {storageUsage && storageUsage.quota > 0 && (
+                <div className="home-mono text-xs text-secondary dark:text-secondary-foreground mb-4">
+                  {formatBytes(storageUsage.usage)} / {formatBytes(storageUsage.quota)}
+                  {' '}
+                  ({((storageUsage.usage / storageUsage.quota) * 100).toFixed(1)}%)
+                </div>
+              )}
+              <BrandButton
+                variant="outline"
+                className="w-full"
+                onClick={() => void handleReclaimStorage()}
+                disabled={isReclaiming}
+              >
+                <Database className="w-3.5 h-3.5 mr-1.5" />
+                {isReclaiming
+                  ? t('projectHome.sidebar.storageReclaiming')
+                  : t('projectHome.sidebar.storageReclaim')}
+              </BrandButton>
+            </div>
 
             {/* Diagnostics */}
             <div className="home-reveal home-delay-6 rounded-xl border border-border/60 bg-card p-5">

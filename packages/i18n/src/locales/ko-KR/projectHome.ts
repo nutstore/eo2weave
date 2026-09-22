@@ -61,6 +61,13 @@ export const projectHome = {
       diagnosticsDescription:
         "실행 환경과 저장소 상태를 수집합니다. 문제 발생 시 한 번에 복사해서 개발자에게 공유할 수 있습니다.",
       runDiagnostics: "진단 실행",
+      storage: "저장 공간",
+      storageDescription: "브라우저 저장 사용량을 확인하고 삭제 후 남은 공간을 회수합니다.",
+      storageReclaim: "공간 회수",
+      storageReclaiming: "회수 중…",
+      storageReclaimed: "{size} 회수됨",
+      storageOptimal: "저장 공간이 이미 최적화되어 있습니다",
+      storageReclaimFailed: "회수에 실패했습니다. 나중에 다시 시도해 주세요",
     },
     theme: {
       modeTitle: "테마 모드",

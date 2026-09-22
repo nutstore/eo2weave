@@ -63,6 +63,13 @@ export const projectHome = {
       diagnosticsDescription:
         "実行環境とストレージ状態を収集します。問題発生時にワンクリックでコピーして開発者に共有できます。",
       runDiagnostics: "診断を実行",
+      storage: "ストレージ",
+      storageDescription: "ブラウザのストレージ使用量を確認し、削除後の空き領域を回収します。",
+      storageReclaim: "空き領域を回収",
+      storageReclaiming: "回収中…",
+      storageReclaimed: "{size} を回収しました",
+      storageOptimal: "ストレージはすでに最適化されています",
+      storageReclaimFailed: "回収に失敗しました。後でもう一度お試しください",
     },
     theme: {
       modeTitle: "テーマモード",

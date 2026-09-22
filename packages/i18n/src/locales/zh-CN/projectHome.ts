@@ -61,6 +61,13 @@ export const projectHome = {
       diagnosticsDescription:
         "收集运行环境和存储状态信息，遇到问题时可一键复制反馈给开发者。",
       runDiagnostics: "运行诊断",
+      storage: "存储空间",
+      storageDescription: "查看浏览器存储占用，删除数据后回收空闲空间。",
+      storageReclaim: "回收空间",
+      storageReclaiming: "正在回收…",
+      storageReclaimed: "已回收 {size}",
+      storageOptimal: "空间已是最优",
+      storageReclaimFailed: "回收失败，请稍后重试",
     },
     // 主题设置
     theme: {

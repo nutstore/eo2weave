@@ -65,6 +65,13 @@ export const projectHome = {
       diagnosticsDescription:
         "Collect runtime environment and storage state. Copy the report to share with the developer when something goes wrong.",
       runDiagnostics: "Run Diagnostics",
+      storage: "Storage",
+      storageDescription: "See browser storage usage and reclaim free space after deleting data.",
+      storageReclaim: "Reclaim space",
+      storageReclaiming: "Reclaiming…",
+      storageReclaimed: "Reclaimed {size}",
+      storageOptimal: "Storage is already optimal",
+      storageReclaimFailed: "Reclaim failed, please try again later",
     },
     // Theme settings
     theme: {
