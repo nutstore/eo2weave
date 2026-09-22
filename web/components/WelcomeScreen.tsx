@@ -381,7 +381,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
           <div
             role="status"
             aria-live="polite"
-            className="flex h-32 items-center justify-center rounded-xl border border-neutral-200 bg-card px-4 dark:border-neutral-800 dark:bg-neutral-900"
+            className="mb-6 flex h-32 items-center justify-center rounded-xl border border-neutral-200 bg-card px-4 dark:border-neutral-800 dark:bg-neutral-900"
           >
             <Loader2 className="h-4 w-4 animate-spin text-neutral-400 dark:text-neutral-500" />
             <span className="ml-2 text-sm text-neutral-500 dark:text-neutral-400">
@@ -390,7 +390,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
           </div>
         ) : step === 'welcome' ? (
           /* ── Welcome ── */
-          <div className="rounded-xl border border-border bg-card p-6 text-center">
+          <div className="mb-6 rounded-xl border border-border bg-card p-6 text-center">
             <p className="mb-1 text-xs font-medium uppercase tracking-wider text-primary-600">
               {t('welcome.welcomeLabel')}
             </p>
@@ -557,7 +557,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
           </div>
         ) : step === 'mount-folder' ? (
           /* ── Local folder setup ── */
-          <div className="rounded-xl border border-border bg-card p-6 text-center">
+          <div className="mb-6 rounded-xl border border-border bg-card p-6 text-center">
             <p className="mb-1 text-xs font-medium uppercase tracking-wider text-primary-600">
               {t('welcome.mountFolderLabel')}
             </p>
