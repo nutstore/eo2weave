@@ -139,16 +139,20 @@ export function FolderSelector() {
       type="button"
       onClick={handleAddNativeHostRoot}
       disabled={isAddingNativeHost}
+      aria-label={t('folderSelector.localConnection')}
       className={cn(
-        'flex h-8 items-center gap-1.5 rounded-md border border-border bg-white px-3 py-1',
-        'text-xs font-normal text-secondary transition-colors hover:bg-primary-50 focus:outline-none',
-        'dark:border-border dark:bg-card dark:hover:bg-muted',
+        'flex h-7 w-7 items-center justify-center rounded-md border border-border bg-white',
+        'text-secondary transition-colors hover:border-primary-100 hover:bg-primary-50 hover:text-primary-600 focus:outline-none',
+        'dark:border-border dark:bg-card dark:hover:border-primary-600 dark:hover:bg-muted',
         isAddingNativeHost && 'cursor-wait opacity-70'
       )}
-      title={t('folderSelector.localConnectionDescription')}
+      title={`${t('folderSelector.localConnection')}\n${t('folderSelector.localConnectionDescription')}`}
     >
-      {isAddingNativeHost ? <Loader2 className="h-[14px] w-[14px] animate-spin text-primary-600" /> : <Cable className="h-[14px] w-[14px]" />}
-      <span>{t('folderSelector.localConnection')}</span>
+      {isAddingNativeHost ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" />
+      ) : (
+        <Cable className="h-3.5 w-3.5" />
+      )}
     </button>
   )
 
