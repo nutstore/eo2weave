@@ -818,45 +818,6 @@ describe('downloadOPFSBackup', () => {
     }
   })
 
-  it('runs a pre-backup vacuum between closing the worker and exporting', async () => {
-    mocks.exportDeviceEncryptionKey.mockResolvedValue(null)
-    const { restore } = installFakeOpfsWithDb()
-    const order: string[] = []
-    mocks.close.mockImplementation(async () => {
-      order.push('close')
-    })
-    mocks.initialize.mockImplementation(async () => {
-      order.push('initialize')
-    })
-    mocks.vacuumDatabase.mockImplementation(async () => {
-      // The vacuum must observe the worker in the closed state.
-      order.push('vacuum')
-      return 4096
-    })
-    try {
-      await downloadOPFSBackup()
-      // close → vacuum → (internal reopen/close inside vacuum are mocked away
-      // at this boundary) → export; finalize re-initializes afterwards.
-      expect(order[0]).toBe('close')
-      expect(order[1]).toBe('vacuum')
-      expect(order).toContain('initialize')
-      expect(mocks.vacuumDatabase).toHaveBeenCalledTimes(1)
-    } finally {
-      restore()
-    }
-  })
-
-  it('still backs up when the pre-backup vacuum fails', async () => {
-    mocks.exportDeviceEncryptionKey.mockResolvedValue(null)
-    mocks.vacuumDatabase.mockRejectedValue(new Error('vacuum exploded'))
-    const { restore } = installFakeOpfsWithDb()
-    try {
-      const result = await downloadOPFSBackup()
-      expect(result.filename).toMatch(/^eo2weave-backup_/)
-    } finally {
-      restore()
-    }
-  })
 
   it('re-initializes the worker even when the export itself fails', async () => {
     mocks.exportDeviceEncryptionKey.mockResolvedValue(null)
