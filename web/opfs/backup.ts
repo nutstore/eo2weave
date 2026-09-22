@@ -550,6 +550,20 @@ export async function downloadOPFSBackup(): Promise<{
   }
 
   try {
+    // Best-effort pre-backup VACUUM: the worker is closed right now (locks
+    // released, WAL flushed), which is the ideal window. Reclaims free pages
+    // so the archive doesn't carry them; failure must not block the backup.
+    try {
+      const { vacuumDatabase } = await import('@/storage/vacuum')
+      const reclaimed = await vacuumDatabase()
+      if (reclaimed && reclaimed > 0) {
+        console.log(`[OPFS] Backup: pre-backup VACUUM reclaimed ${formatBytes(reclaimed)}`)
+      }
+      // vacuumDatabase() re-closes the worker, preserving the contract below.
+    } catch (vacuumError) {
+      console.warn('[OPFS] Backup: pre-backup VACUUM failed (continuing):', vacuumError)
+    }
+
     const { blob, filename, includesDeviceKey, includesLocalStorage } =
       await exportOPFSBackup()
     const url = URL.createObjectURL(blob)
@@ -654,6 +668,18 @@ export async function writeOPFSBackupToDirectory(
   }
 
   try {
+    // Best-effort pre-backup VACUUM (same rationale as downloadOPFSBackup):
+    // run while the worker is closed; failure must not block the backup.
+    try {
+      const { vacuumDatabase } = await import('@/storage/vacuum')
+      const reclaimed = await vacuumDatabase()
+      if (reclaimed && reclaimed > 0) {
+        console.log(`[OPFS] Backup: pre-backup VACUUM reclaimed ${formatBytes(reclaimed)}`)
+      }
+    } catch (vacuumError) {
+      console.warn('[OPFS] Backup: pre-backup VACUUM failed (continuing):', vacuumError)
+    }
+
     const { blob, includesDeviceKey, includesLocalStorage } = await exportOPFSBackup()
 
     const fileHandle = await dirHandle.getFileHandle(DIRECTORY_BACKUP_FILENAME, {
