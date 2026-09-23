@@ -75,7 +75,8 @@ export async function vacuumDatabase(): Promise<number | null> {
           console.log(
             `[Storage] VACUUM skipped: freelist ${freelist}/${total} pages below 20% threshold`
           )
-          await getSQLiteDB().close()
+          // return from inside the try: the finally below still closes the
+          // worker, restoring the released-worker contract exactly once.
           return 0
         }
       } catch (pragmaError) {
