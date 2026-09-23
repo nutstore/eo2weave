@@ -32,7 +32,9 @@ Inside an expanded card you can also:
 - **Refresh the model list**: click the refresh icon next to "My models" to pull the real model list from the provider's `/models` API
 - **Configure multiple providers**: repeat the steps above — each provider stores its own key independently
 
-> 💡 Recommended: Jianguoyun AI. Click "Login with Jianguoyun Account" on the welcome screen and you're done — no manual key management.
+> 💡 Prefer no API key at all? Install the browser extension and log in to ChatGPT: **Use GPT via Browser Extension** on the welcome screen. GPT-6 Luna is the recommended default model (GPT-5.6 Luna when the 6 isn't listed yet).
+
+> 💡 Recommended (China network): Jianguoyun AI. Click "Login with Jianguoyun Account" on the welcome screen and you're done — no manual key management. (Domestic deployment only.)
 
 > 💡 Prefer local models (free, data never leaves your machine)? See [Connect Ollama local models](./ollama.md).
 

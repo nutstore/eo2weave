@@ -10,6 +10,9 @@ export const welcome = {
     checkingConfig: "AI 설정 확인 중...",
     // Setup card (shown when no API key configured)
     setupCardTitle: "시작하기 전에 AI 설정을 완료하세요",
+    setupExtensionTitle: "브라우저 확장으로 GPT 사용",
+    setupExtensionDesc: "확장을 설치하고 ChatGPT에 로그인하면 바로 사용할 수 있습니다. API Key 불필요. 추천 모델: GPT-6 Luna (또는 GPT-5.6 Luna)",
+    setupExtensionRecommend: "추천",
     setupGatewayTitle: "견과클라우드 계정으로 로그인",
     setupGatewayDesc: "견과클라우드 계정이 있나요? 원클릭 로그인, API Key 불필요",
     setupGatewayRecommend: "추천",

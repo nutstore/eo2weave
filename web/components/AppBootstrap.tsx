@@ -325,6 +325,17 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
             await saveApiKey(getLLMGatewayApiKeyProviderKey(), token)
             await updateGatewayModels(token)
           }
+        } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {
+          // The gateway can never register here (region-gated off on global
+          // builds, or client id missing). A user carrying a persisted
+          // llm-gateway providerType from a CN deployment would otherwise
+          // keep checkHasApiKey deferred forever when some OTHER dynamic
+          // provider registers successfully (e.g. codex-oauth) — flush so
+          // the stale provider resolves to a definitive "no key".
+          // NOTE: import inside this branch — the `useSettingsStore` binding
+          // in the try block above is block-scoped and not visible here.
+          const { useSettingsStore } = await import('@/store/settings.store')
+          await useSettingsStore.getState().checkHasApiKey({ flush: true })
         }
       } catch (err) {
         console.error('[App] Failed to register LLM Gateway provider:', err)

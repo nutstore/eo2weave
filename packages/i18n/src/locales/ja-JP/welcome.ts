@@ -10,6 +10,9 @@ export const welcome = {
     checkingConfig: "AI 設定を確認中...",
     // Setup card (shown when no API key configured)
     setupCardTitle: "開始前に、AI 設定を完了してください",
+    setupExtensionTitle: "ブラウザ拡張機能で GPT を利用",
+    setupExtensionDesc: "拡張機能をインストールして ChatGPT にログインするだけ。API Key 不要。おすすめモデル：GPT-6 Luna（または GPT-5.6 Luna）",
+    setupExtensionRecommend: "推奨",
     setupGatewayTitle: "堅果雲アカウントでログイン",
     setupGatewayDesc: "堅果雲アカウントをお持ちですか？ワンクリックでログイン、API Key 不要",
     setupGatewayRecommend: "推奨",

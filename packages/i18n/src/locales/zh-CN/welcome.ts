@@ -10,6 +10,10 @@ export const welcome = {
     checkingConfig: "正在检查 AI 配置...",
     // Setup card (shown when no API key configured)
     setupCardTitle: "开始之前，请先完成 AI 配置",
+    // Extension card (global build): 通过浏览器插件登录 ChatGPT 免 Key 使用 GPT 模型。
+    setupExtensionTitle: "通过浏览器插件使用 GPT",
+    setupExtensionDesc: "安装插件并登录 ChatGPT 即可使用，无需配置 API Key。推荐模型：GPT-6 Luna（或 GPT-5.6 Luna）",
+    setupExtensionRecommend: "推荐",
     setupGatewayTitle: "用坚果云账号登录",
     setupGatewayDesc: "已有坚果云账号？一键登录即可使用，无需配置 API Key",
     setupGatewayRecommend: "推荐",

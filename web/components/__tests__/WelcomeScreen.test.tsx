@@ -107,6 +107,15 @@ vi.mock('@/hooks/useGatewayLogin', () => ({
   useGatewayLogin: () => ({ authState: null, isRunning: false, login: async () => false, reset: vi.fn() }),
 }))
 
+vi.mock('@/store/extension.store', () => ({
+  useExtensionStore: (selector: (state: { status: string }) => unknown) =>
+    selector({ status: 'not_installed' }),
+}))
+
+vi.mock('@/lib/deploy-region', () => ({
+  ENABLE_LLM_GATEWAY: false,
+}))
+
 vi.mock('@/agent/llm/pi-ai-model-resolver', () => ({
   supportsImageInput: () => true,
 }))

@@ -24,7 +24,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
-import { Send, FolderOpen, Sparkles, KeyRound, ChevronRight, Shield, Loader2, ImageIcon, ArrowRight, Check, Cable, CircleHelp } from 'lucide-react'
+import { Send, FolderOpen, Sparkles, KeyRound, ChevronRight, Shield, Loader2, ImageIcon, ArrowRight, Check, Cable, CircleHelp, Puzzle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useSettingsStore } from '@/store/settings.store'
@@ -38,6 +38,9 @@ import { docsPath } from '@/lib/route-paths'
 import { AgentRichInput, type AgentRichInputValue, type AgentInfo } from './agent/AgentRichInput'
 import type { FileMentionItem } from './agent/FileMentionExtension'
 import { useGatewayLogin, isLLMGatewayConfigured } from '@/hooks/useGatewayLogin'
+import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
+import { useExtensionStore } from '@/store/extension.store'
+import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 import { useNativeHostPing } from '@/hooks/useNativeHostPing'
 import { DeviceCodeFlowDialog } from './agent/DeviceCodeFlowDialog'
 import { PageScreenshotCropDialog } from './agent/PageScreenshotCropDialog'
@@ -170,6 +173,16 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   // installed (click would fail with a raw Chrome "host not found" error).
   // Re-probes on window focus.
   const nativeHostAvailable = useNativeHostPing() === 'available'
+  // International (global) build onboarding: recommend the browser extension
+  // (ChatGPT login → GPT models, e.g. GPT-6 Luna) instead of the Nutstore AI
+  // gateway, which is CN-only. Clicking the card opens the existing install
+  // guide; once the extension registers codex-oauth, the readiness effect
+  // auto-advances the flow. Hidden on mobile (extensions can't install) and
+  // once the extension is already installed.
+  const extensionStatus = useExtensionStore((s) => s.status)
+  const showExtensionCard = !ENABLE_LLM_GATEWAY
+    && extensionStatus === 'not_installed'
+    && !isMobileDeviceForExtension()
   const gatewayAvailable = isLLMGatewayConfigured()
   const supportsVision = supportsImageInput(modelName, providerType || undefined)
   const canCaptureScreenshot = supportsVision && isPageActionAvailable()
@@ -211,6 +224,14 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   }, [checkHasApiKey])
 
   const { authState, isRunning: isGatewayLoginRunning, login: gatewayLogin, reset: resetGatewayLogin } = useGatewayLogin()
+
+  // Open the standard extension install guide (store / zip flows). The card
+  // itself does not log in — after install + ChatGPT authorization the
+  // extension store registers codex-oauth and the readiness effect below
+  // auto-advances from this step.
+  const handleExtensionSetup = useCallback(() => {
+    useExtensionStore.getState().openInstallGuide()
+  }, [])
 
   // Auto-advance step when API key / model-selection / folder state changes.
   // The provider gate is two-fold: no key → api-key step; key saved but no
@@ -435,6 +456,36 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 <SetupGuideLink />
               </div>
             </div>
+
+            {/* Global build: recommend the browser extension (ChatGPT login
+                → GPT models). Stays above the manual-key entry; hidden once
+                the extension is detected (codex-oauth then satisfies the
+                readiness gate directly). */}
+            {showExtensionCard && (
+              <button
+                type="button"
+                onClick={handleExtensionSetup}
+                className="flex w-full items-center gap-3 border-b border-amber-200/60 px-4 py-3.5 text-left transition-colors hover:bg-white/60 dark:border-amber-800/40 dark:hover:bg-neutral-900/40"
+              >
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-50 dark:bg-primary-50/40">
+                  <Puzzle className="h-[18px] w-[18px] text-primary-600 dark:text-primary-500" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-foreground">
+                      {t('welcome.setupExtensionTitle')}
+                    </span>
+                    <span className="rounded-full bg-primary-600 px-2 py-0.5 text-[10px] font-semibold text-white">
+                      {t('welcome.setupExtensionRecommend')}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
+                    {t('welcome.setupExtensionDesc')}
+                  </p>
+                </div>
+                <ChevronRight className="h-4 w-4 shrink-0 text-neutral-400" />
+              </button>
+            )}
 
             {gatewayAvailable && (
               <button

@@ -8,6 +8,11 @@ export const welcome = {
     checkingConfig: "Checking AI configuration...",
     // Setup card (shown when no API key configured)
     setupCardTitle: "Finish AI setup before you start",
+    // Extension card (global build): log in to ChatGPT through the browser
+    // extension to use GPT models without an API key.
+    setupExtensionTitle: "Use GPT via Browser Extension",
+    setupExtensionDesc: "Install the extension and log in to ChatGPT — no API Key needed. Recommended model: GPT-6 Luna (or GPT-5.6 Luna)",
+    setupExtensionRecommend: "Recommended",
     setupGatewayTitle: "Login with Jianguoyun Account",
     setupGatewayDesc: "Have a Jianguoyun account? Login instantly — no API Key needed",
     setupGatewayRecommend: "Recommended",

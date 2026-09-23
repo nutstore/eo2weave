@@ -12,8 +12,14 @@
  * Environment variables:
  * - NEXT_PUBLIC_JIANGUOYUN_AI_BASE_URL: Gateway base URL (default: https://ai.jianguoyun.com)
  * - NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID: Device client ID (required for auth)
+ *
+ * Region gate: the gateway is a domestic (CN build) service only — see
+ * lib/deploy-region.ts. On international builds getGatewayClientId() always
+ * returns '', which hides every entry point (welcome card, settings card,
+ * model lists, startup registration) through isLLMGatewayConfigured().
  */
 
+import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderMeta } from './types'
 import { registerDynamicProvider, unregisterDynamicProvider } from './types'
 import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getValidAccessToken, type RateLimitsResponse } from './llm-gateway-auth'
@@ -33,6 +39,10 @@ function getGatewayBaseURL(): string {
 }
 
 function getGatewayClientId(): string {
+  // CN-only service: never expose the gateway on international builds, even
+  // if the client-id env var is present in the wrong build pipeline. All
+  // gateway entry points consult this via isLLMGatewayConfigured().
+  if (!ENABLE_LLM_GATEWAY) return ''
   return process.env.NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID || ''
 }
 

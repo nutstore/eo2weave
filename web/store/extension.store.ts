@@ -92,6 +92,19 @@ async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; n
     contextWindow: m.contextWindow || 200000,
   }))
 
+  // Recommended-model priority: the extension's catalog order is server-side
+  // and NOT user-facing ordering. Reorder so GPT-6 Luna leads, falling back to
+  // GPT-5.6 Luna when the 6 isn't in the catalog yet — the "models[0] is
+  // auto-selected when the user has no explicit default" convention (see
+  // WelcomeScreen auto-advance + setPinnedModels flow) makes list order the
+  // de-facto recommendation for international users.
+  const RECOMMENDED_FIRST = ['gpt-6-luna', 'gpt-5.6-luna']
+  models.sort((a, b) => {
+    const ai = RECOMMENDED_FIRST.indexOf(a.id)
+    const bi = RECOMMENDED_FIRST.indexOf(b.id)
+    return (ai === -1 ? RECOMMENDED_FIRST.length : ai) - (bi === -1 ? RECOMMENDED_FIRST.length : bi)
+  })
+
   registerDynamicProvider(
     CODEX_OAUTH_PROVIDER_ID,
     {
