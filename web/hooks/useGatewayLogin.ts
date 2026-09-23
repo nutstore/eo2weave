@@ -89,6 +89,19 @@ export function useGatewayLogin(): UseGatewayLoginResult {
         useSettingsStore.getState().setModelName(models[0].id)
       }
 
+      // Seed the curated default pin (deepseek-v4.1-flash) for first-time
+      // gateway users — same first-save seeding as ProviderManager, so the
+      // top-bar switcher works without manual pinning. Intersection with the
+      // live catalog skips an out-of-curation default.
+      if ((useSettingsStore.getState().pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
+        const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
+        const defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
+        if (defaults.length > 0) {
+          useSettingsStore.getState().setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+          useSettingsStore.getState().markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+        }
+      }
+
       // Sync global hasApiKey so UI reacts immediately (must come AFTER provider/model set)
       useSettingsStore.getState().setHasApiKey(true)
 

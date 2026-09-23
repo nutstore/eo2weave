@@ -46,6 +46,7 @@ import type {
 import { useDynamicModels } from '@/agent/providers/use-dynamic-models'
 import { canFetchModels } from '@/agent/providers/model-fetcher'
 import { getCachedModels, getModelContextWindow } from '@/agent/providers/model-store'
+import { getDefaultPinnedModels } from '@/agent/providers/default-models'
 import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
 import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHeader, BrandDialogBody, BrandDialogFooter, BrandDialogTitle, BrandDialogClose } from '@creatorweave/ui'
@@ -392,6 +393,25 @@ function ProviderCard({
       ? customProvider?.baseUrl || ''
       : config?.baseURL || ''
     await refreshModels(trimmedKey, url)
+
+    // Seed default pinned models on first save: providers curated in
+    // default-models.ts get their value pick auto-pinned so the top-bar
+    // switcher works immediately. Only when the user has NEVER pinned for
+    // this provider. The curated list is always intersected with a catalog —
+    // the freshly fetched one when available, otherwise the static list — so
+    // a not-yet-served default is skipped instead of becoming a stale pin.
+    if (!isCustom && (useSettingsStore.getState().pinnedModelsByProvider[providerKey]?.length ?? 0) === 0) {
+      const cached = getCachedModels(providerType, providerKey)
+      const availableIds = cached && cached.length > 0
+        ? cached.map((m) => m.id)
+        : getModelsForProvider(providerType).map((m) => m.id)
+      const defaults = getDefaultPinnedModels(providerKey, availableIds)
+      if (defaults.length > 0) {
+        useSettingsStore.getState().setPinnedModels(providerKey, defaults)
+        // Record them as seen so a later catalog change can flag stale pins.
+        useSettingsStore.getState().markPinnedModelsSeen(providerKey, defaults)
+      }
+    }
 
     // For custom providers, sync fetched dynamic models into persisted customProvider.models.
     if (isCustom && customProvider) {
@@ -1357,6 +1377,18 @@ function LLMGatewayCard({
 
       // Fetch and register model list
       await updateGatewayModels(tokens.access_token)
+
+      // Seed the curated default (deepseek-v4.1-flash) when the user has
+      // never pinned a gateway model — intersected against the live catalog
+      // so an out-of-curation default is simply skipped.
+      if ((useSettingsStore.getState().pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
+        const gatewayModels = getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)
+        const defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, gatewayModels)
+        if (defaults.length > 0) {
+          useSettingsStore.getState().setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+          useSettingsStore.getState().markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+        }
+      }
 
       setIsLoggedIn(true)
       triggerProviderRefresh()
