@@ -11,7 +11,6 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Settings,
   WandSparkles,
-  KeyRound,
   List,
   Keyboard,
   Workflow,
@@ -22,7 +21,6 @@ import {
   MoreHorizontal,
 } from 'lucide-react'
 import { ProjectSwitcher } from './ProjectSwitcher'
-import { useHasApiKey, useSettingsStore } from '@/store/settings.store'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import type { SettingsTab } from '@/components/settings/SettingsDialog'
 import { ConversationStorageBadge } from '@/components/conversation'
@@ -108,8 +106,6 @@ export function TopBar({
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>(undefined)
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const mobileMorePanelRef = useRef<HTMLDivElement | null>(null)
-  const hasApiKey = useHasApiKey() // Use the reactive hook that syncs with database
-  const hasApiKeyLoaded = useSettingsStore((s) => s.hasApiKeyLoaded)
   const hasImageModels = useHasImageModels()
   const flowPanelOpen = useFlowStore((s) => s.panelOpen)
   const t = useT()
@@ -238,15 +234,6 @@ export function TopBar({
               </BrandButton>
             </ActionTooltip>
 
-            {/* API key warning badge — can't hide this in more menu */}
-            {hasApiKeyLoaded && !hasApiKey && (
-              <ActionTooltip label={t('topbar.tooltips.openApiKeySettings')}>
-                <BrandButton iconButton onClick={() => openSettings()} className="h-7 w-7" aria-label={t('topbar.tooltips.openApiKeySettings')}>
-                  <KeyRound className="h-[14px] w-[14px]" />
-                </BrandButton>
-              </ActionTooltip>
-            )}
-
             {/* More menu */}
             <ActionTooltip label={t('topbar.tooltips.appSettings')}>
               <BrandButton
@@ -266,20 +253,9 @@ export function TopBar({
               <FolderSelector />
             </div>
 
-            {/* API Key status - consistent button style */}
-            {hasApiKeyLoaded && !hasApiKey && (
-              <ActionTooltip label={t('topbar.tooltips.openApiKeySettings')}>
-                <button
-                  type="button"
-                  onClick={() => openSettings()}
-                  className="hover:bg-warning-100 focus:ring-warning inline-flex h-8 items-center gap-1.5 rounded-md border border-warning-200 bg-warning-50 px-2.5 text-xs font-medium text-warning focus:outline-none focus:ring-2"
-                >
-                  <KeyRound className="h-4 w-4" />
-                  <span>{t('topbar.noApiKey')}</span>
-                </button>
-              </ActionTooltip>
-            )}
-
+            {/* Model switcher — always visible; in the unconfigured state its
+                popover shows the single "Manage LLM Providers" CTA (the old
+                amber warning button here was removed as a duplicate entry). */}
             <div className="shrink-0">
               <ModelQuickSwitch onManageProviders={() => openSettings('llm')} />
             </div>

@@ -235,8 +235,8 @@ export function ModelQuickSwitch({ onManageProviders }: ModelQuickSwitchProps = 
     }
   }
 
-  // Always show the button so users can see it even when nothing is configured
-  // (previously it was hidden when no providers existed)
+  // Always show the switcher so users can find it even when nothing is
+  // configured (previously it was hidden when no providers existed).
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -449,8 +449,10 @@ export function ModelQuickSwitch({ onManageProviders }: ModelQuickSwitchProps = 
           </div>
         )}
 
-        {/* Manage providers entry — opens settings → LLM tab */}
-        {onManageProviders && (
+        {/* Manage providers entry — opens settings → LLM tab. Skipped in the
+            empty state above, which already renders its own CTA; without this
+            gate the unconfigured popover would show TWO identical buttons. */}
+        {onManageProviders && enrichedProviders.length > 0 && (
           <>
             <div className="mt-2 border-t border-border/40" />
             <button
