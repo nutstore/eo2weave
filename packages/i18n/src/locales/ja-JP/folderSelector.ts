@@ -4,7 +4,7 @@ export const folderSelector = {
     browserAccess: "ブラウザーアクセス",
     browserAccessDescription: "ブラウザーでフォルダーを選択してアクセスを許可",
     localConnection: "ローカル接続",
-    localConnectionDescription: "eo2weave のローカルサービスでフォルダーに接続",
+    localConnectionDescription: "おすすめ —— eo2weave のローカルサービスで接続。セッションをまたいで認証が維持され、再選択は不要",
     switchFolder: "フォルダを切り替え",
     releaseHandle: "ハンドルを解放",
     copyPath: "フォルダ名をコピー",

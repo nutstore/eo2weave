@@ -4,7 +4,7 @@ export const folderSelector = {
     browserAccess: "Browser access",
     browserAccessDescription: "Choose and authorize a folder through your browser",
     localConnection: "Local connection",
-    localConnectionDescription: "Connect a folder through the eo2weave local service",
+    localConnectionDescription: "Recommended — connects through the eo2weave local service and stays authorized across sessions",
     switchFolder: "Switch Folder",
     releaseHandle: "Release Handle",
     copyPath: "Copy Folder Name",

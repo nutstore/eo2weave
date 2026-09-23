@@ -9,7 +9,7 @@
  * - Handles permission restoration
  */
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import {
   FolderOpen,
@@ -24,9 +24,30 @@ import { useFolderAccessStore } from '@/store/folder-access.store'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { bindRuntimeDirectoryHandle } from '@/native-fs'
 import { useT } from '@/i18n'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
 import { useNativeHostPing } from '@/hooks/useNativeHostPing'
 import { cn } from '@/lib/utils'
 import type { RootInfo } from '@/types/folder-access'
+
+/** Stable tooltip wrapper — module level so it is not recreated per render.
+ *  Wraps content in its own TooltipProvider because FolderSelector also
+ *  renders outside TopBar's provider (e.g. mobile "more" panel). */
+function IconTooltip({
+  label,
+  children,
+}: {
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent side="bottom" className="whitespace-pre-line">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
 
 export function FolderSelector() {
   const t = useT()
@@ -135,57 +156,65 @@ export function FolderSelector() {
   )
 
   const nativeHostButton = nativeHostAvailable && (
-    <button
-      type="button"
-      onClick={handleAddNativeHostRoot}
-      disabled={isAddingNativeHost}
-      aria-label={t('folderSelector.localConnection')}
-      className={cn(
-        'flex h-7 w-7 items-center justify-center rounded-md border border-border bg-white',
-        'text-secondary transition-colors hover:border-primary-100 hover:bg-primary-50 hover:text-primary-600 focus:outline-none',
-        'dark:border-border dark:bg-card dark:hover:border-primary-600 dark:hover:bg-muted',
-        isAddingNativeHost && 'cursor-wait opacity-70'
-      )}
-      title={`${t('folderSelector.localConnection')}\n${t('folderSelector.localConnectionDescription')}`}
+    <IconTooltip
+      label={`${t('folderSelector.localConnection')}\n${t('folderSelector.localConnectionDescription')}`}
     >
-      {isAddingNativeHost ? (
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" />
-      ) : (
-        <Cable className="h-3.5 w-3.5" />
-      )}
-    </button>
+      <button
+        type="button"
+        onClick={handleAddNativeHostRoot}
+        disabled={isAddingNativeHost}
+        aria-label={t('folderSelector.localConnection')}
+        className={cn(
+          'flex h-7 w-7 items-center justify-center rounded-md border border-border bg-white',
+          'text-secondary transition-colors hover:border-primary-100 hover:bg-primary-50 hover:text-primary-600 focus:outline-none',
+          'dark:border-border dark:bg-card dark:hover:border-primary-600 dark:hover:bg-muted',
+          isAddingNativeHost && 'cursor-wait opacity-70'
+        )}
+      >
+        {isAddingNativeHost ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" />
+        ) : (
+          <Cable className="h-3.5 w-3.5" />
+        )}
+      </button>
+    </IconTooltip>
   )
 
   // No roots: show the two explicit authorization paths.
   if (roots.length === 0) {
     return (
       <div className="relative flex items-center gap-2" ref={containerRef}>
-        <button
-          type="button"
-          onClick={handleAddRoot}
-          disabled={!canPickDirectory || isAdding}
-          className={cn(
-            'flex h-8 items-center gap-1.5 rounded-md border border-border bg-white px-3 py-1',
-            'text-xs font-normal text-secondary',
-            'transition-colors hover:bg-primary-50 focus:outline-none dark:border-border dark:bg-card dark:hover:bg-muted',
-            isAdding && 'cursor-wait opacity-70',
-            !canPickDirectory && 'cursor-not-allowed opacity-70'
-          )}
-          title={
+        <IconTooltip
+          label={
             !canPickDirectory
               ? t('folderSelector.sandboxMode')
-              : t('folderSelector.browserAccessDescription')
+              : `${t('folderSelector.browserAccess')}\n${t('folderSelector.browserAccessDescription')}`
           }
         >
-          {isAdding ? (
-            <Loader2 className="h-[14px] w-[14px] animate-spin text-primary-600" />
-          ) : (
-            <FolderOpen className="h-[14px] w-[14px]" />
-          )}
-          <span className="text-xs font-normal text-secondary">
-            {isAdding ? t('folderSelector.loading') : t('folderSelector.browserAccess')}
-          </span>
-        </button>
+          <button
+            type="button"
+            onClick={handleAddRoot}
+            disabled={!canPickDirectory || isAdding}
+            aria-label={
+              !canPickDirectory
+                ? t('folderSelector.sandboxMode')
+                : t('folderSelector.browserAccess')
+            }
+            className={cn(
+              'flex h-7 w-7 items-center justify-center rounded-md border border-border bg-white',
+              'text-secondary transition-colors hover:border-primary-100 hover:bg-primary-50 hover:text-primary-600 focus:outline-none',
+              'dark:border-border dark:bg-card dark:hover:border-primary-600 dark:hover:bg-muted',
+              isAdding && 'cursor-wait opacity-70',
+              !canPickDirectory && 'cursor-not-allowed opacity-70'
+            )}
+          >
+            {isAdding ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" />
+            ) : (
+              <FolderOpen className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </IconTooltip>
         {nativeHostButton}
       </div>
     )
@@ -209,24 +238,25 @@ export function FolderSelector() {
 
       {/* Add button */}
       {canPickDirectory && (
-        <button
-          type="button"
-          onClick={handleAddRoot}
-          disabled={isAdding}
-          className={cn(
-            'flex h-7 w-7 items-center justify-center rounded-md border border-dashed border-border',
-            'text-secondary transition-colors hover:border-primary-100 hover:bg-primary-50 hover:text-primary-600',
-            'dark:border-border dark:hover:border-primary-600 dark:hover:bg-muted',
-            isAdding && 'cursor-wait opacity-70'
-          )}
-          title={t('projectRoots.addFolder')}
-        >
-          {isAdding ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Plus className="h-3.5 w-3.5" />
-          )}
-        </button>
+        <IconTooltip label={t('projectRoots.addFolder')}>
+          <button
+            type="button"
+            onClick={handleAddRoot}
+            disabled={isAdding}
+            className={cn(
+              'flex h-7 w-7 items-center justify-center rounded-md border border-dashed border-border',
+              'text-secondary transition-colors hover:border-primary-100 hover:bg-primary-50 hover:text-primary-600',
+              'dark:border-border dark:hover:border-primary-600 dark:hover:bg-muted',
+              isAdding && 'cursor-wait opacity-70'
+            )}
+          >
+            {isAdding ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Plus className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </IconTooltip>
       )}
       {nativeHostButton}
     </div>
