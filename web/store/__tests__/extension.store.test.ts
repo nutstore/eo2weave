@@ -56,10 +56,32 @@ describe('extension store', () => {
     useExtensionStore.setState({ codexOAuthRegistered: false })
   })
 
-  it('saves the Codex OAuth virtual key through the initialized key store', async () => {
+  it('registers the live catalog models without rewriting their IDs', async () => {
+    Object.defineProperty(window, '__agentWeb', {
+      configurable: true,
+      value: { codexGetStatus: vi.fn(async () => ({
+        ok: true,
+        data: { authorized: true, models: [
+          { id: 'gpt-6-luna', name: 'GPT-6-Luna', contextWindow: 272000, capabilities: ['code', 'reasoning', 'vision'] },
+          { id: 'gpt-5.6-luna', name: 'GPT-5.6-Luna', contextWindow: 272000, capabilities: ['code', 'reasoning', 'vision'] },
+        ] },
+      })) },
+    })
     await useExtensionStore.getState().ensureCodexRegistered()
-
+    const registered = mocks.registerDynamicProvider.mock.calls[0]
+    expect(registered[2].models.map((model: { id: string }) => model.id)).toEqual(['gpt-6-luna', 'gpt-5.6-luna'])
+    expect(registered[2].models[0].contextWindow).toBe(272000)
     expect(mocks.saveApiKey).toHaveBeenCalledWith('codex-oauth', CODEX_OAUTH_API_KEY)
+  })
+
+  it('does not register fabricated models when the catalog is unavailable', async () => {
+    Object.defineProperty(window, '__agentWeb', {
+      configurable: true,
+      value: { codexGetStatus: vi.fn(async () => ({ ok: true, data: { authorized: true, models: [] } })) },
+    })
+    await useExtensionStore.getState().ensureCodexRegistered()
+    expect(mocks.registerDynamicProvider).not.toHaveBeenCalled()
+    expect(useExtensionStore.getState().codexOAuthRegistered).toBe(false)
   })
 })
 

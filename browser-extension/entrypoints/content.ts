@@ -48,6 +48,8 @@ export default defineContentScript({
       'web_fetch_render',
       // Extension metadata probe
       'extension_get_version',
+      // Native host requests are additionally origin- and action-gated in background.
+      'native_host_call',
       // Codex OAuth bridge (chatgpt.com backend relay)
       'codex_get_status',
       'codex_proxy_fetch',
@@ -83,6 +85,14 @@ export default defineContentScript({
     window.addEventListener('message', (event) => {
       // Only accept messages from same window, with our bridge marker
       if (event.source !== window || event.data?.__agentWebBridge !== true) return;
+
+      // Our own outgoing messages (responses, stream chunks) also carry the
+      // bridge marker and postMessage re-delivers them to THIS listener.
+      // Drop them: without this guard every reply falls into the allow-list
+      // rejection branch below, which posts another reply, which re-enters
+      // the listener — an infinite self-posting loop that pins a CPU core
+      // and leaks memory in the tab.
+      if (event.data.__agentWebResponse === true || event.data.__agentWebStream === true) return;
 
       const { id, type, payload } = event.data;
       if (!id) return;

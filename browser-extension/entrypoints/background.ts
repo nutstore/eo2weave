@@ -581,8 +581,9 @@ interface CodexBlockExports {
   CODEX_CLIENT_ID: string;
   CODEX_AUTH_POLL_ALARM: string;
   CODEX_RESPONSES_URL: string;
+  CODEX_BACKEND_API_URL: string;
   TOKEN_REFRESH_MARGIN_MS: number;
-  CODEX_DEFAULT_MODELS: unknown;
+  parseCodexModels: (value: unknown) => Array<{ id: string; name: string; contextWindow: number; capabilities: string[] }>;
 }
 let CODEX = null as null | CodexBlockExports;
 
@@ -615,14 +616,19 @@ const CODEX_PENDING_AUTH_KEY = 'codex_pending_auth';
 const CODEX_AUTH_POLL_ALARM = 'codex_auth_poll_alarm';
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000; // refresh 5 min before expiry
 
-const CODEX_DEFAULT_MODELS = [
-  { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 1000000, capabilities: ['code', 'reasoning', 'vision'] },
-  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 400000, capabilities: ['code', 'reasoning', 'vision'] },
-  { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 1000000, capabilities: ['code', 'reasoning', 'vision'] },
-  { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', contextWindow: 258000, capabilities: ['code', 'reasoning', 'vision'] },
-  { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', contextWindow: 258000, capabilities: ['code', 'reasoning', 'vision'] },
-  { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', contextWindow: 258000, capabilities: ['code', 'reasoning', 'vision'] },
-];
+function parseCodexModels(value: unknown) {
+  if (!value || typeof value !== 'object' || !Array.isArray((value as { models?: unknown }).models)) return [];
+  const models = (value as { models: unknown[] }).models;
+  return models.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const model = item as Record<string, unknown>;
+    if (typeof model.slug !== 'string' || !model.slug.trim()) return [];
+    const name = typeof model.display_name === 'string' && model.display_name.trim() ? model.display_name : model.slug;
+    const capabilities = ['code', 'reasoning'];
+    if (Array.isArray(model.input_modalities) && model.input_modalities.includes('image')) capabilities.push('vision');
+    return [{ id: model.slug, name, contextWindow: typeof model.context_window === 'number' && Number.isFinite(model.context_window) && model.context_window > 0 ? model.context_window : 200000, capabilities }];
+  });
+}
 
 
 async function saveCodexTokens(tokens: any) {
@@ -916,7 +922,8 @@ CODEX = {
   CODEX_AUTH_POLL_ALARM,
   CODEX_RESPONSES_URL,
   TOKEN_REFRESH_MARGIN_MS,
-  CODEX_DEFAULT_MODELS,
+  parseCodexModels,
+  CODEX_BACKEND_API_URL,
 };
 
 }
@@ -2024,7 +2031,7 @@ export default defineBackground(() => {
         }
 
         if (CODEX_OAUTH_ENABLED && message.type === 'codex_get_status') {
-          const tokens = await CODEX!.getCodexTokens();
+          let tokens = await CODEX!.getCodexTokens();
           const pending = await CODEX!.getPendingCodexAuth();
           let authState: string = 'idle';
           let authorized = false;
@@ -2039,7 +2046,7 @@ export default defineBackground(() => {
               // Token expired or about to expire — try proactive refresh
               if (tokens.refresh_token) {
                 try {
-                  await CODEX!.refreshCodexAccessToken(tokens);
+                  tokens = await CODEX!.refreshCodexAccessToken(tokens);
                   authState = 'authorized';
                   authorized = true;
                 } catch {
@@ -2065,12 +2072,45 @@ export default defineBackground(() => {
             authState = 'expired';
           }
 
+          let models: ReturnType<typeof CODEX.parseCodexModels> = [];
+          let modelsEndpointProbe: Record<string, unknown> | null = null;
+          if (authorized && tokens?.access_token) {
+            // The catalog uses the Codex client version (not the ChatGPT web
+            // version). Keep this probe separate from the extension version.
+            const url = `${CODEX!.CODEX_BACKEND_API_URL}/codex/models?client_version=0.156.1`;
+            try {
+              const response = await fetch(url, {
+                method: 'GET',
+                headers: CODEX!.codexHeaders(tokens.access_token),
+                signal: AbortSignal.timeout(10000),
+              });
+              const body = await response.text();
+              let parsed: unknown = null;
+              try { parsed = JSON.parse(body); } catch { /* preserve status/content-type only */ }
+              modelsEndpointProbe = {
+                url,
+                status: response.status,
+                ok: response.ok,
+                contentType: response.headers.get('content-type'),
+                // Only expose the response shape; never forward raw body data
+                // from an authenticated backend endpoint to the page.
+                responseKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : [],
+              };
+              if (response.ok) models = CODEX!.parseCodexModels(parsed);
+            } catch (error) {
+              modelsEndpointProbe = {
+                url,
+                error: error instanceof Error ? error.message : String(error),
+              };
+            }
+          }
           sendResponse({
             ok: true,
             data: {
               authorized,
               authState,
-              models: CODEX!.CODEX_DEFAULT_MODELS,
+              models,
+              modelsEndpointProbe,
               updatedAt: tokens ? await chrome.storage.local.get('codex_token_saved_at').then(r => r.codex_token_saved_at || null) : null,
             },
           });

@@ -37,13 +37,6 @@ let codexRegisterPromise: Promise<void> | null = null
 /** Virtual API key for codex-oauth (real token is in the extension) */
 export const CODEX_OAUTH_API_KEY = '__codex_oauth_extension_bridge__'
 
-/** Default models for Codex OAuth (fallback if extension doesn't return models) */
-const CODEX_OAUTH_FALLBACK_MODELS = [
-  { id: 'gpt-5.4', name: 'GPT-5.4', capabilities: ['code', 'reasoning', 'vision'] as const, contextWindow: 1000000 },
-  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', capabilities: ['code', 'reasoning', 'vision'] as const, contextWindow: 400000 },
-  { id: 'gpt-5.5', name: 'GPT-5.5', capabilities: ['code', 'reasoning', 'vision'] as const, contextWindow: 1000000 },
-]
-
 /** Compare two semver strings. Returns -1 if a < b, 0 if equal, 1 if a > b. */
 function compareVersions(a: string, b: string): number {
   const pa = a.split('.').map(Number)
@@ -88,11 +81,11 @@ async function fetchInstalledVersion(): Promise<string | null> {
 
 /**
  * Register the codex-oauth provider into the dynamic provider registry.
- * Accepts models from the extension response; falls back to defaults if not provided.
+ * Accepts the live catalog returned by the extension.
  * Also persists a virtual API key so the standard provider pipeline works.
  */
-async function registerCodexOAuthProvider(extensionModels?: Array<{ id: string; name: string; contextWindow?: number; capabilities?: string[] }>) {
-  const models = (extensionModels && extensionModels.length > 0 ? extensionModels : CODEX_OAUTH_FALLBACK_MODELS).map(m => ({
+async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; name: string; contextWindow?: number; capabilities?: string[] }>) {
+  const models = extensionModels.map(m => ({
     id: m.id,
     name: m.name,
     capabilities: (m.capabilities || ['code', 'reasoning']) as ['code', 'reasoning'],
@@ -293,7 +286,7 @@ export const useExtensionStore = create<ExtensionState>()(
 
             try {
               const resp = await bridge.codexGetStatus()
-              if (resp?.ok && resp.data?.authorized && !get().codexOAuthRegistered) {
+              if (resp?.ok && resp.data?.authorized && Array.isArray(resp.data.models) && resp.data.models.length > 0 && !get().codexOAuthRegistered) {
                 await registerCodexOAuthProvider(resp.data.models)
                 set({ codexOAuthRegistered: true })
                 // Auto-pin codex models if none pinned yet + refresh provider list
@@ -326,6 +319,17 @@ export const useExtensionStore = create<ExtensionState>()(
                   await useSettingsStore.getState().checkHasApiKey()
                 } catch {
                   // Cache invalidation / re-check is best-effort.
+                }
+              } else if (resp?.ok && resp.data?.authorized) {
+                // Catalog is temporarily unavailable; keep the existing provider
+                // and retry on the next status check without inventing models.
+                if (!get().codexOAuthRegistered) {
+                  try {
+                    const { useSettingsStore } = await import('@/store/settings.store')
+                    await useSettingsStore.getState().checkHasApiKey({ flush: true })
+                  } catch {
+                    // Best-effort flush.
+                  }
                 }
               } else {
                 // Not authorized, or auth revoked. Flush any deferred
