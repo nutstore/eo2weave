@@ -6,18 +6,19 @@ export const welcome = {
     // Shown while the async API-key check is in flight (avoids flashing the
     // "no API key" setup card before SQLite has been consulted).
     checkingConfig: "Checking AI configuration...",
-    // Setup card (shown when no API key configured)
-    setupCardTitle: "Finish AI setup before you start",
+    // Minimal-list setup card (no API key configured): header is the
+    // 'Connect AI' label (welcome.apiKeyLabel); row descriptions carry the
+    // billing story per path.
     // Extension card (global build): log in to ChatGPT through the browser
     // extension to use GPT models without an API key.
     setupExtensionTitle: "Use GPT via Browser Extension",
-    setupExtensionDesc: "Install the extension and log in to ChatGPT — no API Key needed. Recommended model: GPT-6 Luna (or GPT-5.6 Luna)",
+    setupExtensionDesc: "Install the extension and log in to Codex with your ChatGPT account — usage draws on your ChatGPT subscription, not API billing, so no API Key is needed. Recommended model: GPT-6 Luna (or GPT-5.6 Luna)",
     setupExtensionRecommend: "Recommended",
     setupGatewayTitle: "Login with Jianguoyun Account",
     setupGatewayDesc: "Have a Jianguoyun account? Login instantly — no API Key needed",
     setupGatewayRecommend: "Recommended",
     setupApiKeyTitle: "Configure Your Own API Key",
-    setupApiKeyDesc: "Supports OpenAI, OpenRouter, Anthropic, and more",
+    setupApiKeyDesc: "Billed per provider — supports OpenAI, OpenRouter, Anthropic, and more",
     // select-model step (key saved but no default provider/model chosen)
     selectModelCardTitle: "Key saved — now pick a default model",
     selectModelActionTitle: "Choose a default provider & model",
@@ -28,9 +29,7 @@ export const welcome = {
     setupGuideLinkDesc: "Three steps: provider key → pinned models → default model",
     setupLocalFirstHint: "All data is stored locally in your browser, never uploaded",
     // Conditional onboarding labels (these are not a linear progress count)
-    welcomeLabel: "Get started",
     apiKeyLabel: "Connect AI",
-    mountFolderLabel: "Add a local folder",
     welcomeHeading: "Welcome to eo2weave",
     welcomeSubtitle: "Your local AI workspace for files, code, and creation",
     continueButton: "Continue",
@@ -39,7 +38,6 @@ export const welcome = {
     mountFolderDesc: "AI can read and write your files. Files never leave your browser.",
     mountFolderButton: "Select folder",
     mountFolderBack: "Back",
-    mountFolderMounted: "Mounted folders",
     readyHint: "Type a message, or drop in a file and I'll take it from there",
     sendBlockedNotReady: "Finish the setup above first — your text is saved and ready once you're set up.",
     gateway: {

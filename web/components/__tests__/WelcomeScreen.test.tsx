@@ -225,6 +225,8 @@ describe('WelcomeScreen', () => {
     // The mount-folder skip persists across remounts by design; clear it so
     // tests below still see the mount-folder step from a clean baseline.
     localStorage.removeItem('creatorweave:onboarding:folder-mount-skipped')
+    // Same for the AI-setup skip (persists across refreshes by design).
+    localStorage.removeItem('creatorweave:onboarding:ai-setup-skipped')
     // Reset mock state so each test starts from a deterministic baseline.
     // The hydration test flips `rootsHydrated` explicitly.
     folderAccessState.roots = []
@@ -343,6 +345,57 @@ describe('WelcomeScreen', () => {
   // readiness flip (e.g. clearing an API key while replacing it in Settings)
   // unmounted the editor and silently discarded the user's unsent text.
 
+  // ── AI-setup skip persistence ──
+  // Bug: "Skip for now" on the api-key card only mutated local state, so a
+  // page refresh recomputed the provider gate and resurrected the setup card
+  // the user had just dismissed.
+
+  it('persists the AI-setup skip so a remount does not resurrect the card', () => {
+    // Unconfigured baseline: no key, no provider/model chosen (empty string
+    // is falsy — same gate the component uses).
+    settingsState.hasApiKey = false
+    settingsState.providerType = ''
+    settingsState.modelName = ''
+    const first = render(<WelcomeScreen onStartConversation={vi.fn()} />)
+    expect(screen.getByText('welcome.apiKeyLabel')).toBeInTheDocument()
+
+    // Skip → flag written + card dismissed (folder roots empty → mount-folder)
+    fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }))
+    expect(localStorage.getItem('creatorweave:onboarding:ai-setup-skipped')).toBe('true')
+    expect(screen.queryByText('welcome.apiKeyLabel')).not.toBeInTheDocument()
+
+    // Simulate a refresh: full unmount + fresh mount against the same
+    // localStorage (getInitialStep reads the persisted flag).
+    first.unmount()
+    const second = render(<WelcomeScreen onStartConversation={vi.fn()} />)
+    expect(screen.queryByText('welcome.apiKeyLabel')).not.toBeInTheDocument()
+    second.unmount()
+  })
+
+  it('clears the AI-setup skip once onboarding completes', () => {
+    localStorage.setItem('creatorweave:onboarding:ai-setup-skipped', 'true')
+    // Skipped + unconfigured: initial render must NOT show the setup card
+    settingsState.hasApiKey = false
+    settingsState.providerType = ''
+    settingsState.modelName = ''
+    const { rerender } = render(<WelcomeScreen onStartConversation={vi.fn()} />)
+    expect(screen.queryByText('welcome.apiKeyLabel')).not.toBeInTheDocument()
+
+    // User configures key + default model (e.g. via top-bar switcher)
+    settingsState.hasApiKey = true
+    settingsState.providerType = 'openai'
+    settingsState.modelName = 'vision-model'
+    rerender(<WelcomeScreen onStartConversation={vi.fn()} />)
+
+    // Completion consumed the skip: a later deliberate unconfigure re-prompts
+    expect(localStorage.getItem('creatorweave:onboarding:ai-setup-skipped')).toBeNull()
+    settingsState.hasApiKey = false
+    settingsState.providerType = ''
+    settingsState.modelName = ''
+    rerender(<WelcomeScreen onStartConversation={vi.fn()} />)
+    expect(screen.getByText('welcome.apiKeyLabel')).toBeInTheDocument()
+  })
+
   it('keeps the rich input mounted when the readiness gate temporarily leaves ready', () => {
     const { rerender } = render(<WelcomeScreen onStartConversation={vi.fn()} />)
     advanceToReady()
@@ -354,7 +407,8 @@ describe('WelcomeScreen', () => {
     settingsState.hasApiKey = false
     rerender(<WelcomeScreen onStartConversation={vi.fn()} />)
     // Auto-advance pulled the step back to api-key, but the input survives.
-    expect(screen.getByText('welcome.setupCardTitle')).toBeInTheDocument()
+    // (Minimal-list card header renders the 'Connect AI' label.)
+    expect(screen.getByText('welcome.apiKeyLabel')).toBeInTheDocument()
     expect(screen.getByTestId('agent-rich-input')).toBeInTheDocument()
 
     settingsState.hasApiKey = true

@@ -8,16 +8,17 @@ export const welcome = {
     // Shown while the async API-key check is in flight (avoids flashing the
     // "no API key" setup card before SQLite has been consulted).
     checkingConfig: "AI 설정 확인 중...",
-    // Setup card (shown when no API key configured)
-    setupCardTitle: "시작하기 전에 AI 설정을 완료하세요",
+    // Minimal-list setup card: header is the 'Connect AI' label
+    // (welcome.apiKeyLabel); row descriptions carry the billing story.
+    // Extension card (global build):
     setupExtensionTitle: "브라우저 확장으로 GPT 사용",
-    setupExtensionDesc: "확장을 설치하고 ChatGPT에 로그인하면 바로 사용할 수 있습니다. API Key 불필요. 추천 모델: GPT-6 Luna (또는 GPT-5.6 Luna)",
+    setupExtensionDesc: "확장을 설치하고 ChatGPT 계정으로 Codex에 로그인하세요. 사용량은 ChatGPT 구독 할당량에서 차감되며 API 과금이 아닙니다. API Key 불필요. 추천 모델: GPT-6 Luna (또는 GPT-5.6 Luna)",
     setupExtensionRecommend: "추천",
     setupGatewayTitle: "견과클라우드 계정으로 로그인",
     setupGatewayDesc: "견과클라우드 계정이 있나요? 원클릭 로그인, API Key 불필요",
     setupGatewayRecommend: "추천",
     setupApiKeyTitle: "자체 API Key 구성",
-    setupApiKeyDesc: "OpenAI, OpenRouter, Anthropic 등 지원",
+    setupApiKeyDesc: "공급자별 API 과금. OpenAI, OpenRouter, Anthropic 등 지원",
     // select-model step (key saved but no default provider/model chosen)
     selectModelCardTitle: "Key 저장됨 — 기본 모델을 선택하세요",
     selectModelActionTitle: "기본 공급자 및 모델 선택",
@@ -28,9 +29,7 @@ export const welcome = {
     setupGuideLinkDesc: "3 단계：공급자 Key → 고정 모델 → 기본 모델",
     setupLocalFirstHint: "모든 데이터는 브라우저에 로컬 저장되며 서버에 업로드되지 않습니다",
     // Conditional onboarding labels (these are not a linear progress count)
-    welcomeLabel: "시작하기",
     apiKeyLabel: "AI 연결",
-    mountFolderLabel: "로컬 폴더 추가",
     welcomeHeading: "EO2Weave 에 오신 것을 환영합니다",
     welcomeSubtitle: "로컬 AI 워크스페이스, 파일과 코드는 브라우저 안에",
     continueButton: "계속",
@@ -39,7 +38,6 @@ export const welcome = {
     mountFolderDesc: "AI가 파일을 직접 읽고 쓸 수 있습니다. 파일은 브라우저를 벗어나지 않습니다.",
     mountFolderButton: "폴더 선택",
     mountFolderBack: "뒤로",
-    mountFolderMounted: "마운트된 폴더",
     readyHint: "메시지를 입력하거나 파일을 드롭하세요",
     sendBlockedNotReady: "먼저 위의 설정을 완료하세요——입력한 내용은 저장되어 있으며, 설정이 끝나면 바로 보낼 수 있습니다.",
     gateway: {

@@ -8,17 +8,17 @@ export const welcome = {
     // Shown while the async API-key check is in flight (avoids flashing the
     // "no API key" setup card before SQLite has been consulted).
     checkingConfig: "正在检查 AI 配置...",
-    // Setup card (shown when no API key configured)
-    setupCardTitle: "开始之前，请先完成 AI 配置",
+    // Minimal-list setup card（未配置 API Key 时展示）：头部为「连接 AI」
+    // 标签（welcome.apiKeyLabel），计费差异写在各行描述里。
     // Extension card (global build): 通过浏览器插件登录 ChatGPT 免 Key 使用 GPT 模型。
     setupExtensionTitle: "通过浏览器插件使用 GPT",
-    setupExtensionDesc: "安装插件并登录 ChatGPT 即可使用，无需配置 API Key。推荐模型：GPT-6 Luna（或 GPT-5.6 Luna）",
+    setupExtensionDesc: "安装插件后用 ChatGPT 账号登录 Codex 授权——用量走你的 ChatGPT 订阅额度，不走 API 计费，无需 API Key。推荐模型：GPT-6 Luna（或 GPT-5.6 Luna）",
     setupExtensionRecommend: "推荐",
     setupGatewayTitle: "用坚果云账号登录",
     setupGatewayDesc: "已有坚果云账号？一键登录即可使用，无需配置 API Key",
     setupGatewayRecommend: "推荐",
     setupApiKeyTitle: "配置自己的 API Key",
-    setupApiKeyDesc: "支持 OpenAI、OpenRouter、Anthropic 等自定义模型",
+    setupApiKeyDesc: "按各家 API 计费，支持 OpenAI、OpenRouter、Anthropic 等",
     // select-model step (key saved but no default provider/model chosen)
     selectModelCardTitle: "Key 已保存，再选一个默认模型",
     selectModelActionTitle: "选择默认服务商和模型",
@@ -29,9 +29,7 @@ export const welcome = {
     setupGuideLinkDesc: "三步完成：服务商 Key → 常用模型 → 默认模型",
     setupLocalFirstHint: "所有数据存储在本地浏览器中，不会上传到服务器",
     // Conditional onboarding labels (these are not a linear progress count)
-    welcomeLabel: "开始使用",
     apiKeyLabel: "连接 AI",
-    mountFolderLabel: "添加本地文件夹",
     welcomeHeading: "欢迎使用 怡氧知知",
     welcomeSubtitle: "本地 AI 创作工坊，文件和代码都在浏览器中",
     continueButton: "继续",
@@ -40,7 +38,6 @@ export const welcome = {
     mountFolderDesc: "AI 可以直接读写你的文件。文件不离开浏览器。",
     mountFolderButton: "选择文件夹",
     mountFolderBack: "上一步",
-    mountFolderMounted: "已挂载的文件夹",
     readyHint: "可以直接对话，或拖入文件让我处理",
     sendBlockedNotReady: "请先完成上方设置——输入的内容已保存，设置完成后即可发送。",
     gateway: {

@@ -8,16 +8,17 @@ export const welcome = {
     // Shown while the async API-key check is in flight (avoids flashing the
     // "no API key" setup card before SQLite has been consulted).
     checkingConfig: "AI 設定を確認中...",
-    // Setup card (shown when no API key configured)
-    setupCardTitle: "開始前に、AI 設定を完了してください",
+    // Minimal-list setup card: header is the 'Connect AI' label
+    // (welcome.apiKeyLabel); row descriptions carry the billing story.
+    // Extension card (global build):
     setupExtensionTitle: "ブラウザ拡張機能で GPT を利用",
-    setupExtensionDesc: "拡張機能をインストールして ChatGPT にログインするだけ。API Key 不要。おすすめモデル：GPT-6 Luna（または GPT-5.6 Luna）",
+    setupExtensionDesc: "拡張機能をインストールし、ChatGPT アカウントで Codex にログインするだけ。利用量は ChatGPT サブスクリプションの枠から消費され、API 課金は発生しません（API Key 不要）。おすすめモデル：GPT-6 Luna（または GPT-5.6 Luna）",
     setupExtensionRecommend: "推奨",
     setupGatewayTitle: "堅果雲アカウントでログイン",
     setupGatewayDesc: "堅果雲アカウントをお持ちですか？ワンクリックでログイン、API Key 不要",
     setupGatewayRecommend: "推奨",
     setupApiKeyTitle: "独自の API Key を構成",
-    setupApiKeyDesc: "OpenAI、OpenRouter、Anthropic などに対応",
+    setupApiKeyDesc: "プロバイダーごとの API 課金。OpenAI、OpenRouter、Anthropic などに対応",
     // select-model step (key saved but no default provider/model chosen)
     selectModelCardTitle: "Key 保存済み — デフォルトモデルを選択してください",
     selectModelActionTitle: "デフォルトのプロバイダーとモデルを選択",
@@ -28,9 +29,7 @@ export const welcome = {
     setupGuideLinkDesc: "3 ステップ：プロバイダー Key → ピン留めモデル → デフォルトモデル",
     setupLocalFirstHint: "すべてのデータはブラウザにローカル保存され、サーバーにアップロードされません",
     // Conditional onboarding labels (these are not a linear progress count)
-    welcomeLabel: "はじめる",
     apiKeyLabel: "AI に接続",
-    mountFolderLabel: "ローカルフォルダを追加",
     welcomeHeading: "EO2Weave へようこそ",
     welcomeSubtitle: "ローカル AI ワークスペース、ファイルとコードはブラウザ内に",
     continueButton: "続ける",
@@ -39,7 +38,6 @@ export const welcome = {
     mountFolderDesc: "AI がファイルを直接読み書きできます。ファイルはブラウザから出ません。",
     mountFolderButton: "フォルダを選択",
     mountFolderBack: "戻る",
-    mountFolderMounted: "マウント済みフォルダ",
     readyHint: "メッセージを入力、またはファイルをドロップしてください",
     sendBlockedNotReady: "先に上のセットアップを完了してください——入力内容は保存されており、準備ができたら送信できます。",
     gateway: {

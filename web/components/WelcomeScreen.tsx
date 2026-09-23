@@ -84,10 +84,15 @@ function getInitialStep(
     && localStorage.getItem('creatorweave:onboarding:welcome-seen') === 'true'
   const folderMountSkipped = typeof window !== 'undefined'
     && localStorage.getItem('creatorweave:onboarding:folder-mount-skipped') === 'true'
+  // "Skip for now" on the AI-setup card persists too — otherwise a refresh
+  // recomputes the provider gate and nags the skipped user all over again.
+  // The flag is cleared once onboarding completes (readiness turns ready).
+  const aiSetupSkipped = typeof window !== 'undefined'
+    && localStorage.getItem('creatorweave:onboarding:ai-setup-skipped') === 'true'
 
   if (!hasCreatedProject && !welcomeSeen) return 'welcome'
   const provider = providerStep(readiness)
-  if (provider !== 'ready') return provider
+  if (provider !== 'ready' && !aiSetupSkipped) return provider
   if (needsFolderMount(folderCount) && !folderMountSkipped) return 'mount-folder'
   return 'ready'
 }
@@ -216,6 +221,11 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   // setter-pair so skipping this session also skips the rest of the session.
   const [folderMountSkipped, setFolderMountSkipped] = useState(() => typeof window !== 'undefined'
     && localStorage.getItem('creatorweave:onboarding:folder-mount-skipped') === 'true')
+  // Same pattern for the AI-setup card's "Skip for now": without the mirror,
+  // the auto-advance effect below would yank the user from wherever they went
+  // straight back to the api-key/select-model card within this session.
+  const [aiSetupSkipped, setAiSetupSkipped] = useState(() => typeof window !== 'undefined'
+    && localStorage.getItem('creatorweave:onboarding:ai-setup-skipped') === 'true')
 
   useEffect(() => {
     void checkHasApiKey().catch((err) => {
@@ -238,24 +248,49 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   // default provider/model chosen → select-model step (guides the user to
   // pick one instead of silently failing every send later). This does NOT
   // auto-select a model — the user stays in control of their default.
+  // A persisted AI-setup skip downgrades the provider gate: the user said
+  // "not now", so they land on mount-folder/ready instead of the setup card.
   useEffect(() => {
     if (!hasApiKeyLoaded) return
     setStep((prev) => {
       if (prev === 'welcome') return prev
       const provider = providerStep(readiness)
-      if (provider !== 'ready') return provider
+      if (provider !== 'ready' && !aiSetupSkipped) return provider
       if (folderRoots.length > 0 || folderMountSkipped) return 'ready'
       return 'mount-folder'
     })
-  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length, folderMountSkipped])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, folderRoots.length, folderMountSkipped, aiSetupSkipped])
+
+  // Onboarding completed (key + default model configured): the AI-setup skip
+  // has served its purpose. Clear it so a LATER deliberate unconfigure (user
+  // clears their key) correctly re-prompts instead of staying silenced.
+  useEffect(() => {
+    if (!hasApiKeyLoaded) return
+    if (readiness.hasApiKey && readiness.hasUsableModel && aiSetupSkipped) {
+      localStorage.removeItem('creatorweave:onboarding:ai-setup-skipped')
+      setAiSetupSkipped(false)
+    }
+  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, aiSetupSkipped])
 
   const advanceFromWelcome = useCallback(() => {
     localStorage.setItem('creatorweave:onboarding:welcome-seen', 'true')
     const provider = providerStep(readiness)
-    if (provider !== 'ready') setStep(provider)
+    if (provider !== 'ready' && !aiSetupSkipped) setStep(provider)
     else if (folderRoots.length > 0 || folderMountSkipped) setStep('ready')
     else setStep('mount-folder')
-  }, [readiness.hasApiKey, readiness.hasUsableModel, folderRoots.length, folderMountSkipped])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, folderRoots.length, folderMountSkipped, aiSetupSkipped])
+
+  // "Skip for now" on the AI-setup cards (api-key / select-model) persists,
+  // mirroring the mount-folder skip: a refresh must not resurrect the card
+  // the user just dismissed. The flag self-clears once onboarding completes
+  // (see the readiness effect above), so a later deliberate unconfigure
+  // re-prompts. Sending is still blocked until ready (see handleSubmit).
+  const skipAiSetup = useCallback(() => {
+    localStorage.setItem('creatorweave:onboarding:ai-setup-skipped', 'true')
+    setAiSetupSkipped(true)
+    if (folderRoots.length > 0 || folderMountSkipped) setStep('ready')
+    else setStep('mount-folder')
+  }, [folderRoots.length, folderMountSkipped])
 
   // "Skip" on the mount-folder step persists, so new conversations start at
   // ready instead of nagging again. setFolderMountSkipped(true) matters on
@@ -402,7 +437,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
           <div
             role="status"
             aria-live="polite"
-            className="mb-6 flex h-32 items-center justify-center rounded-xl border border-neutral-200 bg-card px-4 dark:border-neutral-800 dark:bg-neutral-900"
+            className="mb-6 flex h-32 items-center justify-center rounded-xl border border-border bg-card px-4"
           >
             <Loader2 className="h-4 w-4 animate-spin text-neutral-400 dark:text-neutral-500" />
             <span className="ml-2 text-sm text-neutral-500 dark:text-neutral-400">
@@ -410,18 +445,18 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             </span>
           </div>
         ) : step === 'welcome' ? (
-          /* ── Welcome ── */
-          <div className="mb-6 rounded-xl border border-border bg-card p-6 text-center">
-            <p className="mb-1 text-xs font-medium uppercase tracking-wider text-primary-600">
-              {t('welcome.welcomeLabel')}
-            </p>
-            <h2 className="mb-2 text-xl font-semibold text-foreground">
+          /* ── Welcome ──
+              Minimal card: plain bordered card container, no decorative
+              label/icon — content is just heading + copy + actions.
+              Primary action is the inverted button, secondary a text link. */
+          <div className="mb-6 rounded-xl border border-border bg-card px-6 py-5 text-center">
+            <h2 className="mb-1.5 text-lg font-semibold text-foreground">
               {t('welcome.welcomeHeading')}
             </h2>
-            <p className="mb-6 text-sm text-neutral-500 dark:text-neutral-400">
+            <p className="mb-5 text-sm text-neutral-500 dark:text-neutral-400">
               {t('welcome.welcomeSubtitle')}
             </p>
-            <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
+            <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
               <button
                 type="button"
                 onClick={advanceFromWelcome}
@@ -433,42 +468,36 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               <button
                 type="button"
                 onClick={advanceFromWelcome}
-                className="inline-flex h-10 items-center justify-center rounded-lg border border-border px-5 text-sm font-medium text-secondary transition-colors hover:bg-muted"
+                className="inline-flex h-10 items-center justify-center gap-1 rounded-lg px-3 text-sm font-medium text-neutral-500 transition-colors hover:text-foreground"
               >
                 {t('welcome.skipButton')}
               </button>
             </div>
           </div>
         ) : step === 'api-key' ? (
-          /* ── AI connection setup ── */
-          <div className="overflow-hidden rounded-xl border border-amber-200 bg-amber-50/50 text-left dark:border-amber-800/50 dark:bg-amber-950/10">
-            <div className="flex items-center justify-between border-b border-amber-200/60 px-4 py-3 dark:border-amber-800/40">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
-                  {t('welcome.setupCardTitle')}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5 text-amber-600 dark:text-amber-400">
-                <span className="text-[10px] font-medium uppercase tracking-wider">
-                  {t('welcome.apiKeyLabel')}
-                </span>
-                <SetupGuideLink />
-              </div>
+          /* ── AI connection setup ──
+              Minimal list: one "Connect AI" header, then one row per way to
+              connect. Each row's description carries its billing story
+              (subscription vs per-provider API) so the paths are directly
+              comparable. Global build: the extension row leads and is hidden
+              once the extension is detected (codex-oauth then satisfies the
+              readiness gate directly). */
+          <div className="mb-6 rounded-xl border border-border bg-card px-1.5 py-1.5">
+            <div className="flex items-center justify-between px-3 pb-1 pt-2.5">
+              <h2 className="text-base font-semibold text-foreground">
+                {t('welcome.apiKeyLabel')}
+              </h2>
+              <SetupGuideLink />
             </div>
 
-            {/* Global build: recommend the browser extension (ChatGPT login
-                → GPT models). Stays above the manual-key entry; hidden once
-                the extension is detected (codex-oauth then satisfies the
-                readiness gate directly). */}
             {showExtensionCard && (
               <button
                 type="button"
                 onClick={handleExtensionSetup}
-                className="flex w-full items-center gap-3 border-b border-amber-200/60 px-4 py-3.5 text-left transition-colors hover:bg-white/60 dark:border-amber-800/40 dark:hover:bg-neutral-900/40"
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors hover:bg-muted/50"
               >
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-50 dark:bg-primary-50/40">
-                  <Puzzle className="h-[18px] w-[18px] text-primary-600 dark:text-primary-500" />
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-primary-50 dark:bg-primary-500/10">
+                  <Puzzle className="h-[18px] w-[18px] text-primary-600 dark:text-primary-400" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -487,6 +516,10 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               </button>
             )}
 
+            {showExtensionCard && gatewayAvailable && (
+              <div className="mx-3 h-px bg-neutral-200/70 dark:bg-neutral-800/70" />
+            )}
+
             {gatewayAvailable && (
               <button
                 type="button"
@@ -494,10 +527,10 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                   await gatewayLogin()
                 }}
                 disabled={isGatewayLoginRunning}
-                className="flex w-full items-center gap-3 border-b border-amber-200/60 px-4 py-3.5 text-left transition-colors hover:bg-white/60 disabled:opacity-60 dark:border-amber-800/40 dark:hover:bg-neutral-900/40"
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors hover:bg-muted/50 disabled:opacity-60"
               >
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-50 dark:bg-primary-50/40">
-                  <Shield className="h-[18px] w-[18px] text-primary-600 dark:text-primary-500" />
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-primary-50 dark:bg-primary-500/10">
+                  <Shield className="h-[18px] w-[18px] text-primary-600 dark:text-primary-400" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -516,12 +549,16 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               </button>
             )}
 
+            {(showExtensionCard || gatewayAvailable) && (
+              <div className="mx-3 h-px bg-neutral-200/70 dark:bg-neutral-800/70" />
+            )}
+
             <button
               type="button"
               onClick={() => onOpenSettings?.('llm')}
-              className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/60 dark:hover:bg-neutral-900/40"
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors hover:bg-muted/50"
             >
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-neutral-100 dark:bg-neutral-800">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-neutral-100 dark:bg-neutral-800">
                 <KeyRound className="h-[18px] w-[18px] text-neutral-600 dark:text-neutral-400" />
               </div>
               <div className="min-w-0 flex-1">
@@ -536,14 +573,12 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             </button>
 
             {/* Skip — users who already configured a key and came Back from
-                step 3 have no auto-advance; this is their forward exit. */}
-            <div className="flex justify-center px-4 pb-3 pt-1">
+                step 3 have no auto-advance; this is their forward exit.
+                Persists (ai-setup-skipped) so a refresh stays skipped. */}
+            <div className="flex justify-center pb-2 pt-1">
               <button
                 type="button"
-                onClick={() => {
-                  if (folderRoots.length > 0 || folderMountSkipped) setStep('ready')
-                  else setStep('mount-folder')
-                }}
+                onClick={skipAiSetup}
                 className="inline-flex h-8 items-center text-xs text-neutral-500 transition-colors hover:text-foreground"
               >
                 {t('welcome.skipButton')}
@@ -554,31 +589,23 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
           /* ── Default provider/model selection ──
               A provider key exists (api-key step passed), but no default
               provider+model is selected yet — without one every send would
-              fail with "model not configured". Guide the user to pick one
-              instead of auto-selecting on their behalf. */
-          <div className="overflow-hidden rounded-xl border border-primary-200 bg-primary-50/50 text-left dark:border-primary-800/50 dark:bg-primary-950/10">
-            <div className="flex items-center justify-between border-b border-primary-200/60 px-4 py-3 dark:border-primary-800/40">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4 shrink-0 text-primary-600 dark:text-primary-400" />
-                <p className="text-sm font-medium text-primary-900 dark:text-primary-200">
-                  {t('welcome.selectModelCardTitle')}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5 text-primary-600 dark:text-primary-400">
-                <span className="text-[10px] font-medium uppercase tracking-wider">
-                  {t('welcome.apiKeyLabel')}
-                </span>
-                <SetupGuideLink />
-              </div>
+              fail with "model not configured". Same minimal-list language
+              as the connect step. */
+          <div className="mb-6 rounded-xl border border-border bg-card px-1.5 py-1.5">
+            <div className="flex items-center justify-between px-3 pb-1 pt-2.5">
+              <h2 className="text-base font-semibold text-foreground">
+                {t('welcome.selectModelCardTitle')}
+              </h2>
+              <SetupGuideLink />
             </div>
 
             <button
               type="button"
               onClick={() => onOpenSettings?.('llm')}
-              className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/60 dark:hover:bg-neutral-900/40"
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors hover:bg-muted/50"
             >
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white dark:bg-neutral-800">
-                <Sparkles className="h-[18px] w-[18px] text-primary-600 dark:text-primary-500" />
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-primary-50 dark:bg-primary-500/10">
+                <Sparkles className="h-[18px] w-[18px] text-primary-600 dark:text-primary-400" />
               </div>
               <div className="min-w-0 flex-1">
                 <span className="block text-sm font-semibold text-foreground">
@@ -592,14 +619,11 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             </button>
 
             {/* Skip — picking a default is recommended but not blocking; the
-                top-bar switcher stays available for later. */}
-            <div className="flex justify-center px-4 pb-3 pt-1">
+                top-bar switcher stays available for later. Persists too. */}
+            <div className="flex justify-center pb-2 pt-1">
               <button
                 type="button"
-                onClick={() => {
-                  if (folderRoots.length > 0 || folderMountSkipped) setStep('ready')
-                  else setStep('mount-folder')
-                }}
+                onClick={skipAiSetup}
                 className="inline-flex h-8 items-center text-xs text-neutral-500 transition-colors hover:text-foreground"
               >
                 {t('welcome.skipButton')}
@@ -607,51 +631,65 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
             </div>
           </div>
         ) : step === 'mount-folder' ? (
-          /* ── Local folder setup ── */
-          <div className="mb-6 rounded-xl border border-border bg-card p-6 text-center">
-            <p className="mb-1 text-xs font-medium uppercase tracking-wider text-primary-600">
-              {t('welcome.mountFolderLabel')}
-            </p>
-            <div className="mx-auto mb-4 inline-flex h-12 w-12 items-center justify-center rounded-xl bg-primary-50/80 shadow-sm">
-              <FolderOpen className="h-6 w-6 text-primary-600" />
-            </div>
-            <h2 className="mb-2 text-xl font-semibold text-foreground">
+          /* ── Local folder setup ──
+              Minimal card, same as welcome: bordered card container, no
+              icon decoration; primary action inverted, secondary as text
+              link. */
+          <div className="mb-6 rounded-xl border border-border bg-card px-6 py-5 text-center">
+            <h2 className="mb-1.5 text-lg font-semibold text-foreground">
               {t('welcome.mountFolderTitle')}
             </h2>
-            <p className="mx-auto mb-6 max-w-md text-sm text-neutral-500 dark:text-neutral-400">
+            <p className="mx-auto mb-5 max-w-md text-sm text-neutral-500 dark:text-neutral-400">
               {t('welcome.mountFolderDesc')}
             </p>
-            <button
-              type="button"
-              onClick={() => void handleSelectFolder()}
-              data-tour="welcome-open-folder"
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-primary-600 px-5 text-sm font-medium text-white transition-colors hover:bg-primary-700"
-            >
-              <FolderOpen className="h-4 w-4" />
-              {t('welcome.mountFolderButton')}
-            </button>
-            {nativeHostAvailable && (
+            <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
+              {nativeHostAvailable && (
+                // Primary path: the native-host connection survives reloads and
+                // re-authorizes silently, unlike per-session directory handles.
+                // Own provider: the screen-level TooltipProvider only wraps the
+                // screenshot button, so this one needs its own.
+                <TooltipProvider delayDuration={200}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => void handleAddNativeHostRoot()}
+                        disabled={isAddingNativeHost}
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-primary-600 px-5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-wait disabled:opacity-70"
+                      >
+                        {isAddingNativeHost
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <Cable className="h-4 w-4" />}
+                        {t('folderSelector.localConnection')}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" sideOffset={6}>
+                      {t('folderSelector.localConnectionDescription')}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
               <button
                 type="button"
-                onClick={() => void handleAddNativeHostRoot()}
-                disabled={isAddingNativeHost}
-                title={t('folderSelector.localConnectionDescription')}
-                className="ml-3 inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-primary-200 bg-white px-5 text-sm font-medium text-primary-700 transition-colors hover:bg-primary-50 disabled:cursor-wait disabled:opacity-70 dark:border-primary-800 dark:bg-card dark:text-primary-300 dark:hover:bg-muted"
+                onClick={() => void handleSelectFolder()}
+                data-tour="welcome-open-folder"
+                className={
+                  nativeHostAvailable
+                    ? // Secondary peer while the local connection is available
+                      "inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-border bg-card px-5 text-sm font-medium text-secondary transition-colors hover:bg-muted"
+                    : // Only path when the native host is not installed
+                      "inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-primary-600 px-5 text-sm font-medium text-white transition-colors hover:bg-primary-700"
+                }
               >
-                {isAddingNativeHost
-                  ? <Loader2 className="h-4 w-4 animate-spin text-primary-600" />
-                  : <Cable className="h-4 w-4" />}
-                {t('folderSelector.localConnection')}
+                <FolderOpen className="h-4 w-4" />
+                {t('welcome.mountFolderButton')}
               </button>
-            )}
+            </div>
             {/* Already mounted folders */}
             {folderRoots.length > 0 && (
-              <div className="mt-4 space-y-2">
-                <p className="text-xs font-medium uppercase tracking-wider text-neutral-400">
-                  {t('welcome.mountFolderMounted')}
-                </p>
+              <div className="mx-auto mt-5 max-w-md border-t border-neutral-200/80 pt-3 dark:border-neutral-800/80">
                 {folderRoots.map((root) => (
-                  <div key={root.id} className="flex items-center justify-center gap-2 text-xs text-secondary">
+                  <div key={root.id} className="flex items-center justify-center gap-2 py-0.5 text-xs text-secondary">
                     <Check className="h-3 w-3 text-success" />
                     <span className="truncate">{root.name}</span>
                   </div>
@@ -659,7 +697,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 <button
                   type="button"
                   onClick={advanceFromMount}
-                  className="mt-2 inline-flex h-9 items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-4 text-sm font-medium text-primary-700 transition-colors hover:bg-primary-100"
+                  className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary-600 px-4 text-sm font-medium text-white transition-colors hover:bg-primary-700"
                 >
                   {t('welcome.continueButton')}
                   <ArrowRight className="h-3.5 w-3.5" />
@@ -667,7 +705,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               </div>
             )}
             {/* Skip + Back */}
-            <div className="mt-6 flex justify-center gap-4">
+            <div className="mt-5 flex justify-center gap-4">
               <button
                 type="button"
                 onClick={() => setStep('api-key')}
