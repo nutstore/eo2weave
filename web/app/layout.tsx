@@ -91,7 +91,13 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang={IS_CN_BUILD ? 'zh-CN' : 'en'}>
+    // suppressHydrationWarning: browser extensions (e.g. the Tongyi assistant
+    // plugin) inject attributes like data-redeviation-bs-uid / class
+    // tongyi-design-pc onto <html> before React hydrates, which triggers a
+    // dev-only attribute-mismatch warning we cannot fix app-side. This only
+    // silences attribute diffs on <html> itself — child-tree mismatches
+    // (the ones that indicate real bugs) still warn as usual.
+    <html lang={IS_CN_BUILD ? 'zh-CN' : 'en'} suppressHydrationWarning>
       <body>
         {/* Schema.org structured data — machine-readable app identity for
             search engines and AI answer engines. Region-matched to the build. */}
