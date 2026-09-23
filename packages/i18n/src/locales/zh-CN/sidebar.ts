@@ -150,8 +150,10 @@ export const sidebar = {
       binaryContent:
         "二进制文件不支持预览",
       noImageContent: "无图片内容",
-      fileDeleted: "文件已删除（变更版本中无内容）",
       cannotReadChangedVersion: "无法读取变更版本内容",
+      addPreviewUnavailable: "该新增文件的预览内容暂不可用",
+      addPreviewUnavailableHint: "变更本身不受影响，同意同步后文件仍会正常创建；只是预览正文暂时读不到。",
+      changedVersionBodyUnavailable: "新版本内容读取失败——已隐藏对比视图，避免把每一行误显示为删除。",
       loadingMonaco: "正在加载 Monaco 编辑器...",
       modified: "变更",
       current: "当前",

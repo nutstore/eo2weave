@@ -101,6 +101,72 @@ async function readNativeFileViaConversation(
     return null
   }
 }
+
+function fileContentToText(content: unknown): string | null {
+  if (typeof content === 'string') return content
+  return null
+}
+
+/**
+ * Fallback readers for the "changed version" (OPFS draft) side.
+ *
+ * readFileFromOPFS navigates the raw OPFS files/ tree directly and can miss
+ * content that lives in the workspace cache layer (e.g. writes that only
+ * updated readCachedFile's store). Route every miss through the runtime's
+ * readFile (multi-root routing + cache fallback) before giving up, and fall
+ * back to readCachedFile last so pending create/modify drafts still render.
+ */
+async function readChangedVersionText(
+  conversation: import('@/opfs').WorkspaceRuntime,
+  filePath: string
+): Promise<string | null> {
+  let recoveredVia: 'runtime-read' | 'cached' | null = null
+  try {
+    const result = await conversation.readFile(filePath, undefined, { policy: 'prefer_opfs' })
+    const text = fileContentToText(result.content)
+    if (text !== null) {
+      recoveredVia = 'runtime-read'
+      return text
+    }
+  } catch {
+    // Fall through to the cached-file fallback below.
+  }
+  try {
+    const cached = await conversation.readCachedFile(filePath)
+    const text = fileContentToText(cached)
+    if (text !== null) recoveredVia = 'cached'
+    return text
+  } catch {
+    return null
+  } finally {
+    if (recoveredVia) {
+      // Recovery telemetry: tells us how often the primary files/ read is
+      // broken (candidate causes: workspace-not-ready race, path-form
+      // divergence, cross-conversation reads). High hit rate = the primary
+      // reader needs fixing, not just this fallback.
+      console.info(
+        `[FileDiffViewer] primary OPFS read missed; recovered via ${recoveredVia}: ${filePath}`,
+      )
+    } else {
+      // Terminal miss: capture the discriminating evidence. exactPendingMatch
+      // rules out cross-workspace binding; basenameMatches exposes path-form
+      // divergence; pendingCount rules out a stale/orphaned change entry.
+      try {
+        const pending = conversation.getPendingChanges()
+        const pendingPaths = pending.map((p) => p.path)
+        const base = filePath.split('/').pop() ?? ''
+        console.error('[FileDiffViewer] changed-version body unreadable after all fallbacks', {
+          path: filePath,
+          pendingCount: pendingPaths.length,
+          exactPendingMatch: pendingPaths.includes(filePath),
+          basenameMatches: pendingPaths.filter((p) => p.endsWith(base)).slice(0, 5),
+        })
+      } catch {
+        // Diagnostics are best-effort; never mask the original failure.
+      }
+    }
+  }
+}
 const LazyDiffViewer = React.lazy(() => import('./LazyDiffViewer'))
 
 import { type CommentSide, type LineComment } from './comment-types'
@@ -418,6 +484,13 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
           try {
             if (fileChange.type !== 'delete') {
               opfsContent = await readFileFromOPFS(conversationId, filePath)
+              // Direct files/ navigation can miss cache-layer drafts (the
+              // add-type diff in the sync-to-disk auth flow). Retry through
+              // the runtime's routed reader + cache before showing the
+              // unreadable placeholder.
+              if (opfsContent === null) {
+                opfsContent = await readChangedVersionText(conversation, filePath)
+              }
             }
           } catch (err) {
             console.warn('[FileDiffViewer] Failed to read OPFS content:', err)
@@ -691,10 +764,39 @@ export const FileDiffViewer: React.FC<FileDiffViewerProps> = ({ fileChange, snap
       )
     }
 
+    if (content.opfs === null && fileChange.type === 'modify') {
+      // Changed-version body unreadable. Diffing the full disk text against an
+      // empty string renders EVERY line as a deletion — actively misleading
+      // (looks like the agent wants to wipe the file). Never silently diff
+      // against a missing side; hide the diff and say so.
+      return (
+        <div className="flex h-full flex-col">
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-300">
+            {t('sidebar.fileDiffViewer.changedVersionBodyUnavailable')}
+          </div>
+          <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-tertiary dark:text-muted">
+            {t('sidebar.fileDiffViewer.cannotReadChangedVersion')}
+          </div>
+        </div>
+      )
+    }
+
     if (!content.showNativePanel && content.opfs === null) {
+      if (fileChange.type === 'add') {
+        // New-file change whose body could not be loaded. This is NOT an
+        // error state — the change itself is still valid and syncs normally;
+        // only the preview body is missing. Say that instead of the generic
+        // unreadable-content message.
+        return (
+          <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+            <p className="text-sm text-secondary dark:text-foreground">{t('sidebar.fileDiffViewer.addPreviewUnavailable')}</p>
+            <p className="max-w-md text-xs text-tertiary dark:text-muted">{t('sidebar.fileDiffViewer.addPreviewUnavailableHint')}</p>
+          </div>
+        )
+      }
       return (
         <div className="flex h-full items-center justify-center text-sm text-tertiary dark:text-muted">
-          {fileChange.type === 'delete' ? t('sidebar.fileDiffViewer.fileDeleted') : t('sidebar.fileDiffViewer.cannotReadChangedVersion')}
+          {t('sidebar.fileDiffViewer.cannotReadChangedVersion')}
         </div>
       )
     }

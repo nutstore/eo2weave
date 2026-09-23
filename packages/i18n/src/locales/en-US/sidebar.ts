@@ -154,8 +154,10 @@ export const sidebar = {
       binaryContent:
         "Binary file content is not supported for preview",
       noImageContent: "No image content",
-      fileDeleted: "File deleted (no content in changed version)",
       cannotReadChangedVersion: "Cannot read changed version content",
+      addPreviewUnavailable: "Preview body unavailable for this new file",
+      addPreviewUnavailableHint: "The change itself is intact — approving sync will still create this file. Only the inline preview body could not be loaded.",
+      changedVersionBodyUnavailable: "New version content could not be loaded — diff hidden to avoid showing every line as deleted.",
       loadingMonaco: "Loading Monaco editor...",
       modified: "Modified",
       current: "Current",

@@ -169,8 +169,10 @@ export const sidebar = {
       binaryContent:
         "バイナリファイルの内容はプレビューに対応していません",
       noImageContent: "画像コンテンツなし",
-      fileDeleted: "ファイル削除済み（変更バージョンに内容なし）",
       cannotReadChangedVersion: "変更バージョンの内容を読み込めません",
+      addPreviewUnavailable: "この新規ファイルのプレビュー本文を表示できません",
+      addPreviewUnavailableHint: "変更自体は失われていません。同期を承認すればファイルは通常どおり作成されます。",
+      changedVersionBodyUnavailable: "新版本文を読み込めませんでした — 全行が削除として表示されるのを避けるため、差分を非表示にしています。",
       loadingMonaco: "Monacoエディタを読み込み中...",
       modified: "変更",
       current: "現在",

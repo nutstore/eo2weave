@@ -169,8 +169,10 @@ export const sidebar = {
       binaryContent:
         "바이너리 파일 내용은 미리보기를 지원하지 않습니다",
       noImageContent: "이미지 내용 없음",
-      fileDeleted: "파일 삭제됨 (변경된 버전에 내용 없음)",
       cannotReadChangedVersion: "변경된 버전을 읽을 수 없습니다",
+      addPreviewUnavailable: "이 새 파일의 미리보기 본문을 표시할 수 없습니다",
+      addPreviewUnavailableHint: "변경 자체는 정상이며 동기화를 승인하면 파일이 정상적으로 생성됩니다.",
+      changedVersionBodyUnavailable: "새 버전 내용을 불러오지 못했습니다 — 모든 줄이 삭제로 표시되는 것을 막기 위해 diff를 숨겼습니다.",
       loadingMonaco: "Monaco 에디터를 불러오는 중...",
       modified: "변경",
       current: "현재",

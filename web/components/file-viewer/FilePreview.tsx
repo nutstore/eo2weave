@@ -164,6 +164,36 @@ function triggerDownload(url: string, fileName: string) {
   // Do NOT revoke — url may be a long-lived blob URL (e.g. imageUrl)
 }
 
+/** Shape of WorkspaceRuntime.readFile / opfs.store.readFile results */
+interface WorkspaceReadResult {
+  content: unknown
+  metadata: { mtime?: number | null }
+}
+
+/**
+ * Normalize a workspace read result into FilePreview's text/blob state.
+ * Shared by the opfs.store read and the project-runtime fallback so both
+ * paths distribute content identically (Blob vs string vs ArrayBuffer).
+ */
+function applyReadResult(
+  result: WorkspaceReadResult,
+  fileType: 'text' | 'image' | 'binary' | 'office' | 'format'
+): { text?: string; blob?: Blob; fSize: number; mtime: number | null } {
+  const mtime = result.metadata.mtime || null
+  if (result.content instanceof Blob) {
+    return { blob: result.content, fSize: result.content.size, mtime }
+  }
+  if (typeof result.content === 'string') {
+    return { text: result.content, fSize: new Blob([result.content]).size, mtime }
+  }
+  // ArrayBuffer - for image/office/format, keep as Blob; for text, decode it
+  const buffer = result.content as ArrayBuffer
+  if (fileType === 'image' || fileType === 'office' || fileType === 'format') {
+    return { blob: new Blob([buffer]), fSize: buffer.byteLength, mtime }
+  }
+  return { text: new TextDecoder().decode(buffer), fSize: buffer.byteLength, mtime }
+}
+
 export function FilePreview({ filePath, fileHandle, onClose, blob: externalBlob }: FilePreviewProps) {
   const t = useT()
   const display = useWorkspacePreferencesStore((s) => s.display)
@@ -556,6 +586,7 @@ export function FilePreview({ filePath, fileHandle, onClose, blob: externalBlob 
       let fSize = 0
       let opfsMtime: number | null = null
       let diskMtime: number | null = null
+      let opfsReadError: string | null = null
 
       // Fast path: external blob provided (e.g. from OPFS assets/)
       if (externalBlob) {
@@ -569,27 +600,46 @@ export function FilePreview({ filePath, fileHandle, onClose, blob: externalBlob 
         try {
           const opfs = (await import('@/store/opfs.store')).useOPFSStore.getState()
           const result = await opfs.readFile(path)
+          const applied = applyReadResult(result, fileType)
+          text = applied.text
+          blob = applied.blob
+          fSize = applied.fSize
+          opfsMtime = applied.mtime
+        } catch (readErr) {
+          // OPFS read failed. Keep the real cause visible: native-host roots
+          // have no FileSystemFileHandle fallback, so swallowing this error
+          // leaves the user with a generic "Cannot read file" and no clues.
+          opfsReadError = readErr instanceof Error ? readErr.message : String(readErr)
+          console.warn(`[FilePreview] readFile failed for "${path}":`, readErr)
 
-          if (result.content instanceof Blob) {
-            blob = result.content
-            fSize = result.content.size
-          } else if (typeof result.content === 'string') {
-            text = result.content
-            fSize = new Blob([result.content]).size
-          } else {
-            // ArrayBuffer - for image/office/format, keep as Blob; for text, decode it
-            const buffer = result.content as ArrayBuffer
-            fSize = buffer.byteLength
-            if (fileType === 'image' || fileType === 'office' || fileType === 'format') {
-              blob = new Blob([buffer])
-            } else {
-              const decoder = new TextDecoder()
-              text = decoder.decode(buffer)
+          // Fallback: read through the active project's workspace runtime
+          // directly. This covers two real failure modes the store wrapper
+          // can't: (1) no active conversation workspace (welcome screen —
+          // opfs.store throws "No active workspace" because activeWorkspaceId
+          // is URL-driven and null before a conversation is opened); (2)
+          // native-host roots where the OPFS files/ dir has no copy. The
+          // runtime itself routes multi-root paths and native-host scopes,
+          // so only the store-level workspace gate is bypassed here.
+          try {
+            const { getWorkspaceManager } = await import('@/opfs')
+            const { useProjectStore } = await import('@/store/project.store')
+            const manager = await getWorkspaceManager()
+            const projectId = useProjectStore.getState().activeProjectId || null
+            const wsMeta = projectId
+              ? manager.getAllWorkspaces().find((w) => w.projectId === projectId)
+              : manager.getAllWorkspaces()[0]
+            const workspace = wsMeta ? await manager.getWorkspace(wsMeta.workspaceId) : undefined
+            if (workspace) {
+              const result = await workspace.readFile(path)
+              const applied = applyReadResult(result, fileType)
+              text = applied.text
+              blob = applied.blob
+              fSize = applied.fSize
+              opfsMtime = applied.mtime
             }
+          } catch (fallbackErr) {
+            console.warn('[FilePreview] project-runtime fallback read failed:', fallbackErr)
           }
-          opfsMtime = result.metadata.mtime || null
-        } catch {
-          // OPFS read failed, will try disk
         }
 
         if (fileHandle) {
@@ -617,14 +667,22 @@ export function FilePreview({ filePath, fileHandle, onClose, blob: externalBlob 
             // Disk read failed, rely on OPFS if available
           }
         } else if (!text && !blob) {
-          setError(t('filePreview.cannotReadFile'))
+          setError(
+            opfsReadError
+              ? `${t('filePreview.cannotReadFile')} (${opfsReadError})`
+              : t('filePreview.cannotReadFile')
+          )
           setLoading(false)
           return
         }
       } // end else (no externalBlob)
 
       if (!text && !blob) {
-        setError(t('filePreview.cannotReadFile'))
+        setError(
+          opfsReadError
+            ? `${t('filePreview.cannotReadFile')} (${opfsReadError})`
+            : t('filePreview.cannotReadFile')
+        )
         setLoading(false)
         return
       }
