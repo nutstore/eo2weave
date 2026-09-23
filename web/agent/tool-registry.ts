@@ -555,9 +555,9 @@ export class ToolRegistry {
    */
   private isVisionModelAvailable(): boolean {
     try {
-      const { modelName } = useSettingsStore.getState()
+      const { modelName, providerType } = useSettingsStore.getState()
       if (!modelName) return false
-      return supportsImageInput(modelName)
+      return supportsImageInput(modelName, providerType || undefined)
     } catch {
       return false
     }

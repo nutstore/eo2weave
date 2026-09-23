@@ -49,17 +49,19 @@ import { FlowCanvasPanel } from './FlowCanvasPanel'
 
 const VisionCapabilityIndicator = memo(function VisionCapabilityIndicator({
   modelName,
+  providerType,
   canCapture,
   isCapturing,
   onCapture,
 }: {
   modelName: string
+  providerType: string
   canCapture: boolean
   isCapturing: boolean
   onCapture: () => void
 }) {
   const t = useT()
-  const supportsVision = supportsImageInput(modelName)
+  const supportsVision = supportsImageInput(modelName, providerType || undefined)
   const label = !supportsVision
     ? t('agent.vision.unsupported')
     : canCapture
@@ -186,6 +188,7 @@ export function ConversationView({
   const conversationMessagesRef = useRef<ConversationMessagesHandle>(null)
   const richInputRef = useRef<AgentRichInputHandle>(null)
   const modelName = useSettingsStore((s) => s.modelName)
+  const providerType = useSettingsStore((s) => s.providerType)
 
   const logic = useConversationLogic()
   const {
@@ -209,7 +212,7 @@ export function ConversationView({
     sendMessage('继续')
   }, [convId, sendMessage])
 
-  const supportsVision = supportsImageInput(modelName)
+  const supportsVision = supportsImageInput(modelName, providerType || undefined)
   const canCaptureScreenshot = supportsVision && isPageActionAvailable()
 
   const handleCaptureScreenshot = useCallback(async () => {
@@ -534,6 +537,7 @@ export function ConversationView({
                 leadingAccessory={(
                   <VisionCapabilityIndicator
                     modelName={modelName}
+                    providerType={providerType}
                     canCapture={canCaptureScreenshot}
                     isCapturing={isCapturingScreenshot}
                     onCapture={() => void handleCaptureScreenshot()}

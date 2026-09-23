@@ -307,8 +307,8 @@ function ProviderCard({
   // a glance which models accept image input.  supportsImageInput is a sync
   // snapshot lookup that never throws.
   const filteredModelsWithVision = useMemo(() => {
-    return filteredModels.map((m) => ({ ...m, hasVision: supportsImageInput(m.id) }))
-  }, [filteredModels])
+    return filteredModels.map((m) => ({ ...m, hasVision: supportsImageInput(m.id, providerType) }))
+  }, [filteredModels, providerType])
 
   // Load API Key (always check on mount; reload when expanded for freshness).
   // Errors are surfaced to the user instead of silently swallowed — when
@@ -436,6 +436,13 @@ function ProviderCard({
       toast.error(t('settings.toast.apiKeyRequired'))
       return
     }
+    // Also refresh the OpenRouter snapshot (pricing / context / input
+    // modalities). Vision badges and context labels in the UI read from this
+    // snapshot — without this, a newly released model (e.g. gpt-6-sol/luna)
+    // stays "unknown" until the next app boot's throttled auto-refresh.
+    void import('@/agent/providers/openrouter-pricing').then(
+      ({ refreshOpenRouterModelsNow }) => refreshOpenRouterModelsNow()
+    )
     const url = isCustom
       ? customProvider?.baseUrl || ''
       : config?.baseURL || ''
@@ -1277,7 +1284,7 @@ function LLMGatewayCard({
   // Enrich with vision capability for the "add model" picker (LLM Gateway).
   // supportsImageInput is a sync snapshot lookup that never throws.
   const filteredUnpinnedWithVision = useMemo(() => {
-    return filteredUnpinned.map((m) => ({ ...m, hasVision: supportsImageInput(m.id) }))
+    return filteredUnpinned.map((m) => ({ ...m, hasVision: supportsImageInput(m.id, LLM_GATEWAY_PROVIDER_TYPE) }))
   }, [filteredUnpinned])
 
   // Check login status.  Errors here previously left `isLoggedIn = false`

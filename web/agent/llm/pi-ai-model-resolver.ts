@@ -1,7 +1,7 @@
 import { getModel } from '@earendil-works/pi-ai'
 import type { Api, KnownProvider, Model } from '@earendil-works/pi-ai'
 import type { LLMProviderType } from '@/agent/providers/types'
-import { isChineseProviderType, isPotentiallyDynamicProviderType } from '@/agent/providers/types'
+import { isChineseProviderType, isPotentiallyDynamicProviderType, getModelsForProvider } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
 import { CW_OPENAI_FETCH_API } from './pi-ai-custom-openai-fetch'
@@ -98,10 +98,21 @@ function lookupContextWindow(providerType: LLMProviderType, modelName: string): 
  * the model is unknown or has no modality info — sending image_url to a model
  * that doesn't support it causes the entire API request to fail.
  */
-function resolveInputModalities(modelName: string): Array<'text' | 'image'> {
+function resolveInputModalities(modelName: string, providerType?: LLMProviderType): Array<'text' | 'image'> {
   const modalities = getOpenRouterInputModalities(modelName)
   if (modalities && modalities.includes('image')) {
     return ['text', 'image']
+  }
+  // Fallback for models missing from the OpenRouter snapshot (newly released
+  // models, e.g. gpt-6-sol/gpt-6-luna): consult the dynamic provider registry's
+  // declared capabilities (codex-oauth models carry 'vision' from the
+  // extension response).
+  if (providerType) {
+    try {
+      // Static import is safe: types.ts does not import this module.
+      const found = getModelsForProvider(providerType).find((m) => m.id === modelName)
+      if (found?.capabilities?.includes('vision')) return ['text', 'image']
+    } catch { /* registry unavailable — keep conservative default */ }
   }
   return ['text']
 }
@@ -112,11 +123,16 @@ function resolveInputModalities(modelName: string): Array<'text' | 'image'> {
  * need to render vision-capability indicators without constructing a full
  * `Model<Api>` — those callers usually don't have a `baseUrl` / `apiMode` in
  * hand, and `resolvePiAIModel`'s 3rd arg is required.
+ *
+ * Pass `providerType` when available: for models missing from the OpenRouter
+ * snapshot (newly released, e.g. gpt-6-sol/luna), the dynamic provider
+ * registry's declared capabilities are consulted as a fallback. Runtime
+ * call sites (attach-image gating, OCR skip, page_screenshot registration)
+ * MUST pass it — otherwise the UI badge and the actual send path disagree.
  */
-export function supportsImageInput(modelName: string): boolean {
-  return resolveInputModalities(modelName).includes('image')
+export function supportsImageInput(modelName: string, providerType?: LLMProviderType): boolean {
+  return resolveInputModalities(modelName, providerType).includes('image')
 }
-
 function createOpenAICompatibleFallback(
   providerType: LLMProviderType,
   modelName: string,
@@ -133,7 +149,7 @@ function createOpenAICompatibleFallback(
       provider: providerType,
       baseUrl: normalizeBaseUrl(baseUrl),
       reasoning: true,
-      input: resolveInputModalities(modelName),
+      input: resolveInputModalities(modelName, providerType),
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
       maxTokens: DEFAULT_MAX_TOKENS,

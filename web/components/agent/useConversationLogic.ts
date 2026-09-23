@@ -450,7 +450,7 @@ export function useConversationLogic() {
             // Lazy OCR: only run OCR for non-vision models.
             const settingsState = useSettingsStore.getState()
             const hasVision = settingsState.modelName
-              ? supportsImageInput(settingsState.modelName)
+              ? supportsImageInput(settingsState.modelName, settingsState.providerType || undefined)
               : false
             const imageAssetIndexes: number[] = []
             pendingSnapshot.forEach((a, idx) => {

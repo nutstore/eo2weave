@@ -11,6 +11,8 @@ interface AvailableProvider {
   displayName: string
   models: Array<{ id: string; name: string; hasVision?: boolean; stale?: boolean }>
   providerKey: string
+  /** Authoritative model ids (registry list) — pins missing from here are stale. */
+  authoritativeIds?: string[]
 }
 
 /** Flattened model entry used when searching across providers. */
@@ -87,21 +89,26 @@ export function ModelQuickSwitch({ onManageProviders }: ModelQuickSwitchProps = 
     [providers]
   )
 
-  // Enrich each model with hasVision (vision capability from OpenRouter
-  // snapshot) and stale (pinned before but missing from the provider's
-  // current list — likely delisted upstream, e.g. an old codex model).
-  // supportsImageInput is a sync snapshot lookup, so it never throws.
+  // Enrich each model with hasVision and stale:
+  // - hasVision: OpenRouter snapshot first (authoritative modality metadata);
+  //   for models missing from the snapshot (newly released, e.g. gpt-6-sol/luna),
+  //   fall back to the provider registry's declared capabilities via the
+  //   providerType argument (codex-oauth models carry 'vision' from the
+  //   extension response).
+  // - stale: pinned before but missing from the provider's AUTHORITATIVE id
+  //   list (registry / static list) — not from `models`, which is pinned-derived
+  //   and would always contain every pin (making stale detection impossible).
   const enrichedProviders = useMemo<AvailableProvider[]>(() => {
     const { getStalePinnedModels } = useSettingsStore.getState()
     return visibleProviders.map((p) => {
       const staleIds = new Set(
-        getStalePinnedModels(p.providerType, p.models.map((m) => m.id))
+        getStalePinnedModels(p.providerType, p.authoritativeIds ?? p.models.map((m) => m.id))
       )
       return {
         ...p,
         models: p.models.map((m) => ({
           ...m,
-          hasVision: supportsImageInput(m.id),
+          hasVision: supportsImageInput(m.id, p.providerType),
           stale: staleIds.has(m.id),
         })),
       }

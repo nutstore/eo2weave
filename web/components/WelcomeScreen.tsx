@@ -171,7 +171,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   // Re-probes on window focus.
   const nativeHostAvailable = useNativeHostPing() === 'available'
   const gatewayAvailable = isLLMGatewayConfigured()
-  const supportsVision = supportsImageInput(modelName)
+  const supportsVision = supportsImageInput(modelName, providerType || undefined)
   const canCaptureScreenshot = supportsVision && isPageActionAvailable()
   const screenshotLabel = !supportsVision
     ? t('agent.vision.unsupported')

@@ -233,6 +233,9 @@ interface SettingsState {
     displayName: string
     models: Array<{ id: string; name: string }>
     providerKey: string
+    /** Authoritative model ids for this provider (registry / static list),
+     *  NOT the pinned-derived display list. Pins missing from here are stale. */
+    authoritativeIds: string[]
   }>>
 
   /**
@@ -810,6 +813,7 @@ export const useSettingsStore = create<SettingsState>()(
           displayName: string
           models: Array<{ id: string; name: string }>
           providerKey: string
+          authoritativeIds: string[]
         }> = []
 
         // Check built-in providers (parallel loadApiKey for performance)
@@ -842,6 +846,7 @@ export const useSettingsStore = create<SettingsState>()(
               displayName: localizedProviderDisplayName(providerType, meta.displayName),
               models,
               providerKey: providerType,
+              authoritativeIds: allModels.map((m) => m.id),
             })
           }
         }
@@ -863,6 +868,7 @@ export const useSettingsStore = create<SettingsState>()(
               displayName: cp.name,
               models,
               providerKey: cp.id,
+              authoritativeIds: cp.models,
             })
           }
         }
@@ -896,6 +902,7 @@ export const useSettingsStore = create<SettingsState>()(
               displayName: meta?.displayName || id,
               models,
               providerKey: id,
+              authoritativeIds: allModels.map((m) => m.id),
             })
           }
         }
@@ -922,9 +929,34 @@ export const useSettingsStore = create<SettingsState>()(
                 displayName: localizedProviderDisplayName(llmGatewayProviderKey, gwMeta?.displayName || 'Nutstore AI'),
                 models,
                 providerKey: llmGatewayProviderKey,
+                authoritativeIds: allModels.map((m) => m.id),
               })
             }
           } catch { /* ignore */ }
+        }
+
+        // Auto-remove stale pins (pinned + previously confirmed available +
+        // absent from the authoritative list → delisted upstream). Runs on
+        // every provider-list load and is idempotent. Guards:
+        // - An EMPTY authoritativeIds (registry not loaded yet / gateway
+        //   before login) is not authoritative — skip, never wipe pins.
+        // - Keep the currently selected model even if stale: the user is on
+        //   it, and the topbar already flags it (currentModelDelistedTooltip).
+        const current = get()
+        for (const r of results) {
+          if (r.authoritativeIds.length === 0) continue
+          const staleIds = current.getStalePinnedModels(r.providerType, r.authoritativeIds)
+          if (staleIds.length === 0) continue
+          const keep = r.providerType === current.providerType ? new Set([current.modelName]) : new Set<string>()
+          const toRemove = staleIds.filter((id) => !keep.has(id))
+          if (toRemove.length === 0) continue
+          get().removePinnedModels(r.providerType, toRemove)
+          console.info(
+            `[settings] auto-removed delisted pinned models (${r.providerType}): ${toRemove.join(', ')}`,
+          )
+          // Hide them from this response too, so the UI never renders a pin
+          // that was just auto-removed (no flash between refreshes).
+          r.models = r.models.filter((m) => !toRemove.includes(m.id))
         }
 
         return results
