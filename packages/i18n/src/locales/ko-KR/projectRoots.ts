@@ -35,4 +35,5 @@ export const projectRoots = {
     rootAdded: '"{name}" 폴더가 추가되었습니다',
     rootRemoved: '"{name}" 폴더가 제거되었습니다',
     pickFailedGeneric: "폴더 선택에 실패했습니다",
+    sidePanelPickerUnavailable: "사이드 패널에서는 폴더를 직접 선택할 수 없습니다. 메인 탭에서 한 번 권한을 부여한 뒤, 사이드 패널에서 권한 복원을 클릭하세요",
 } as const

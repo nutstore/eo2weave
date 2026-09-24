@@ -256,6 +256,7 @@ export function DropZone({ onFilesDrop, onPrompt, className, minimal }: DropZone
   const handleSelectFolder = async () => {
     try {
       const handle = await selectFolderReadWrite()
+      if (!handle) return
       setDirectoryHandle(handle)
     } catch (error) {
       if (error instanceof Error && error.message === 'User cancelled') return

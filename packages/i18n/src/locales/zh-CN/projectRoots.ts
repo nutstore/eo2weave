@@ -35,4 +35,5 @@ export const projectRoots = {
     rootAdded: '已添加文件夹"{name}"',
     rootRemoved: '已移除文件夹"{name}"',
     pickFailedGeneric: "选择文件夹失败",
+    sidePanelPickerUnavailable: "侧边栏无法直接选择文件夹：请先在主标签页中授权一次，回到侧边栏点击恢复权限即可",
 } as const

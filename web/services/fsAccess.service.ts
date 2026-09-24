@@ -10,7 +10,7 @@ export function isSupported(): boolean {
  * Select a folder with readwrite permission for Agent file operations.
  * @returns FileSystemDirectoryHandle with write access
  */
-export async function selectFolderReadWrite(): Promise<FileSystemDirectoryHandle> {
+export async function selectFolderReadWrite(): Promise<FileSystemDirectoryHandle | null> {
   if (!isSupported()) {
     throw new Error('File System Access API is not supported')
   }

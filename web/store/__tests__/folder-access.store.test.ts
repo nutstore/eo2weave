@@ -6,6 +6,9 @@ const mockRepo = vi.hoisted(() => ({
   save: vi.fn(),
   delete: vi.fn(),
   deleteByProjectAndRoot: vi.fn(),
+  findByProjectAndRoot: vi.fn(),
+  saveParkedHandle: vi.fn(),
+  takeParkedHandle: vi.fn(),
 }))
 
 const mockNativeFS = vi.hoisted(() => ({
@@ -30,9 +33,21 @@ const mockNativeHostExecutor = vi.hoisted(() => ({
   authorizeRoot: vi.fn(),
 }))
 
+const mockAgentStoreModule = vi.hoisted(() => ({
+  useAgentStore: { setState: vi.fn() },
+}))
+
+const mockSidePanelContext = vi.hoisted(() => ({
+  isSidePanelMode: vi.fn(() => false),
+}))
+
 vi.mock('@/services/folder-access.repository', () => ({
   folderAccessRepo: mockRepo,
 }))
+
+vi.mock('@/agent/workspace-assistant-context', () => mockSidePanelContext)
+
+vi.mock('@/store/agent.store', () => mockAgentStoreModule)
 
 vi.mock('@/services/fsAccess.service', () => ({
   selectFolderReadWrite: vi.fn(),
@@ -315,6 +330,98 @@ describe('folder-access.store runtime handle binding', () => {
     mockProjectRootRepo.createRoot.mockClear()
     const noop = await useFolderAccessStore.getState().addNativeHostRoot()
     expect(noop).toBe(false)
+    expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
+  })
+
+  // ─── adoptPickedRoot (folder-pick tab handoff) ──────────────────────
+
+  /** Build a minimal fake directory handle for adopt tests. */
+  function fakeHandle(name: string): FileSystemDirectoryHandle {
+    return { name } as unknown as FileSystemDirectoryHandle
+  }
+
+  it('adoptPickedRoot adopts a project-scoped picked handle (SQLite-first ordering)', async () => {
+    const projectId = 'project-adopt'
+    const handle = fakeHandle('picked-repo')
+    mockRepo.findByProjectAndRoot.mockResolvedValue({
+      projectId,
+      rootName: 'picked-repo',
+      persistedHandle: handle,
+      status: 'ready',
+    })
+    mockRepo.save.mockResolvedValue(undefined)
+    mockProjectRootRepo.createRoot.mockResolvedValue({
+      id: 'root-adopted',
+      projectId,
+      name: 'picked-repo',
+    })
+    useFolderAccessStore.setState({ activeProjectId: projectId })
+
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('picked-repo')
+
+    expect(adopted).toBe(true)
+    // SQLite row MUST be created before the runtime handle is bound (the
+    // addRoot anti-orphan contract).
+    expect(mockProjectRootRepo.createRoot).toHaveBeenCalledWith({ projectId, name: 'picked-repo' })
+    expect(mockNativeFS.bindRuntimeDirectoryHandle).toHaveBeenCalledWith(projectId, 'picked-repo', handle)
+    expect(mockRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+      projectId,
+      rootName: 'picked-repo',
+      persistedHandle: handle,
+      status: 'ready',
+    }))
+    // Parked slot must be untouched when the project-scoped record hit.
+    expect(mockRepo.takeParkedHandle).not.toHaveBeenCalled()
+  })
+
+  it('adoptPickedRoot falls back to the parked handle when no project record exists', async () => {
+    const projectId = 'project-adopt-parked'
+    const handle = fakeHandle('parked-repo')
+    mockRepo.findByProjectAndRoot.mockResolvedValue(null)
+    mockRepo.takeParkedHandle.mockResolvedValue(handle)
+    mockRepo.save.mockResolvedValue(undefined)
+    mockProjectRootRepo.createRoot.mockResolvedValue({ id: 'root-2', projectId, name: 'parked-repo' })
+    useFolderAccessStore.setState({ activeProjectId: projectId })
+
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('parked-repo')
+
+    expect(adopted).toBe(true)
+    expect(mockRepo.takeParkedHandle).toHaveBeenCalledTimes(1)
+    expect(mockNativeFS.bindRuntimeDirectoryHandle).toHaveBeenCalledWith(projectId, 'parked-repo', handle)
+  })
+
+  it('adoptPickedRoot reports duplicates as already-exists without creating', async () => {
+    const projectId = 'project-adopt-dup'
+    mockRepo.findByProjectAndRoot.mockResolvedValue({
+      projectId,
+      rootName: 'dup-repo',
+      persistedHandle: fakeHandle('dup-repo'),
+      status: 'ready',
+    })
+    // Root already present in SQLite.
+    mockProjectRootRepo.findByProject.mockResolvedValue([
+      { id: 'root-dup', projectId, name: 'dup-repo' },
+    ])
+    useFolderAccessStore.setState({ activeProjectId: projectId })
+
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('dup-repo')
+
+    expect(adopted).toBe(false)
+    expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
+    expect(mockNativeFS.bindRuntimeDirectoryHandle).not.toHaveBeenCalled()
+    const { toast } = await import('sonner')
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('already exists'))
+  })
+
+  it('adoptPickedRoot fails cleanly when neither record nor parked handle exists', async () => {
+    const projectId = 'project-adopt-missing'
+    mockRepo.findByProjectAndRoot.mockResolvedValue(null)
+    mockRepo.takeParkedHandle.mockResolvedValue(null)
+    useFolderAccessStore.setState({ activeProjectId: projectId })
+
+    const adopted = await useFolderAccessStore.getState().adoptPickedRoot('ghost-repo')
+
+    expect(adopted).toBe(false)
     expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
   })
 

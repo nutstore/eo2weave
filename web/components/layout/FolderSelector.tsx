@@ -23,6 +23,7 @@ import {
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { bindRuntimeDirectoryHandle } from '@/native-fs'
+import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useT } from '@/i18n'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
 import { useNativeHostPing } from '@/hooks/useNativeHostPing'
@@ -54,7 +55,7 @@ export function FolderSelector() {
   const containerRef = useRef<HTMLDivElement>(null)
 
   // Multi-root state
-  const { roots, activeProjectId, addRoot, addNativeHostRoot, removeRoot, loadRoots, toggleReadOnly } =
+  const { roots, activeProjectId, addRoot, adoptPickedRoot, addNativeHostRoot, removeRoot, loadRoots, toggleReadOnly } =
     useFolderAccessStore()
 
   // UI state
@@ -86,15 +87,56 @@ export function FolderSelector() {
     loadRoots()
   }, [activeProjectId, loadRoots])
 
+  // Folder-pick handoff (side panel → full tab) ────────────────────────
+  // Chromium's showDirectoryPicker is unreliable inside the side panel
+  // (crbug 40240444 family): it can reject with AbortError even after a
+  // successful selection — indistinguishable from a real cancel. When
+  // running in that window shape, the add-folder entry hands off to a
+  // dedicated full-tab picker (/folder-pick) instead; this listener adopts
+  // the picked handle when the tab reports back over BroadcastChannel.
+  const isSidePanel = isSidePanelMode()
+  useEffect(() => {
+    if (!isSidePanel) return
+    let channel: BroadcastChannel | null = null
+    try {
+      channel = new BroadcastChannel('creatorweave-folder-pick')
+    } catch {
+      return
+    }
+    channel.onmessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; name?: string } | null
+      if (data?.type !== 'folder-picked' || !data.name) return
+      void adoptPickedRoot(data.name)
+    }
+    return () => {
+      channel?.close()
+    }
+  }, [isSidePanel, adoptPickedRoot])
+
   const handleAddRoot = useCallback(async () => {
     if (!canPickDirectory || isAdding) return
+    // Side panel: hand off to the reliable full-tab picker instead of
+    // calling the broken in-panel native picker.
+    if (isSidePanel) {
+      setIsAdding(true)
+      try {
+        const url = new URL(window.location.href)
+        url.hash = ''
+        url.search = activeProjectId ? `?projectId=${encodeURIComponent(activeProjectId)}` : ''
+        url.pathname = '/folder-pick'
+        window.open(url.toString(), '_blank', 'noopener')
+      } finally {
+        setIsAdding(false)
+      }
+      return
+    }
     setIsAdding(true)
     try {
       await addRoot()
     } finally {
       setIsAdding(false)
     }
-  }, [addRoot, canPickDirectory, isAdding])
+  }, [addRoot, canPickDirectory, isAdding, isSidePanel, activeProjectId])
 
   const handleAddNativeHostRoot = useCallback(async () => {
     if (!nativeHostAvailable || isAddingNativeHost) return

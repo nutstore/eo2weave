@@ -35,4 +35,5 @@ export const projectRoots = {
     rootAdded: 'Added folder "{name}"',
     rootRemoved: 'Removed folder "{name}"',
     pickFailedGeneric: "Failed to select folder",
+    sidePanelPickerUnavailable: "Cannot pick a folder from the side panel: authorize it once in a main tab, then click Restore Permission here",
 } as const

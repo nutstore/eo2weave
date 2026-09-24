@@ -342,6 +342,58 @@ class FolderAccessRepository {
       updatedAt: raw.updatedAt,
     }
   }
+
+  /**
+   * Park a handle picked in the standalone folder-pick tab.
+   *
+   * The pick tab may open before the user has entered a specific project
+   * (e.g. from the root route), so there is no projectId to file the record
+   * under. The handle is parked under a well-known compound key; the panel
+   * adopts it into the active project on the broadcast and deletes the
+   * parked entry immediately.
+   */
+  async saveParkedHandle(handle: FileSystemDirectoryHandle): Promise<void> {
+    const db = await this.ensureDB()
+    const PARKED_KEY = '__folder-pick:parked'
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      const store = tx.objectStore(STORE_NAME)
+      const request = store.put({
+        _compoundKey: PARKED_KEY,
+        projectId: '',
+        rootName: handle.name,
+        folderName: handle.name,
+        persistedHandle: handle,
+        status: 'ready',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+      request.onsuccess = () => resolve()
+      request.onerror = () => reject(request.error)
+    })
+  }
+
+  /**
+   * Take (load + delete) the parked handle written by the folder-pick tab.
+   * Returns null when nothing is parked.
+   */
+  async takeParkedHandle(): Promise<FileSystemDirectoryHandle | null> {
+    const db = await this.ensureDB()
+    const PARKED_KEY = '__folder-pick:parked'
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      const store = tx.objectStore(STORE_NAME)
+      const getRequest = store.get(PARKED_KEY)
+      getRequest.onsuccess = () => {
+        const raw = getRequest.result as any
+        store.delete(PARKED_KEY)
+        resolve(raw?.persistedHandle ?? null)
+      }
+      getRequest.onerror = () => reject(getRequest.error)
+    })
+  }
 }
 
 export const folderAccessRepo = new FolderAccessRepository()

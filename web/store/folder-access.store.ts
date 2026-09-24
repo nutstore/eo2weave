@@ -19,6 +19,7 @@ import { toast } from 'sonner'
 import type { FolderAccessRecord, FolderAccessStatus, FolderAccessStore, RootInfo } from '@/types/folder-access'
 import { folderAccessRepo } from '@/services/folder-access.repository'
 import { selectFolderReadWrite } from '@/services/fsAccess.service'
+import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
 import {
   bindRuntimeDirectoryHandle,
@@ -919,8 +920,40 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
         return false
       }
 
-      // Pick folder
-      const handle = await selectFolderReadWrite()
+      // Pick folder. selectFolderReadWrite resolves null on cancellation.
+      //
+      // KNOWN CHROMIUM BUG (crbug 40240444 + WICG/file-system-access#314):
+      // inside the extension side panel, showDirectoryPicker() rejects with
+      // AbortError EVEN AFTER the user successfully selects a folder — the
+      // same DOMException shape as a real dismissal, with no signal to tell
+      // them apart. selectFolderReadWrite maps every AbortError to
+      // Error('User cancelled'), so the catch below cannot distinguish a
+      // real cancel from the bug. That is why the side panel never calls
+      // this path (FolderSelector hands off to the /folder-pick full tab);
+      // this catch is the fallback for when that handoff fails to open.
+      let handle: Awaited<ReturnType<typeof selectFolderReadWrite>>
+      try {
+        handle = await selectFolderReadWrite()
+      } catch (error) {
+        console.error('[FolderAccessStore] addRoot: directory picker failed:', error)
+        if (isSidePanelMode()) {
+          // Known Chromium quirk in side-panel windows: the native picker can
+          // reject with AbortError even after a successful selection. Guide
+          // the user to the reliable path (persisted handle restore) instead
+          // of a misleading "cancelled" message.
+          toast.info(
+            i18nText(
+              'projectRoots.sidePanelPickerUnavailable',
+              'Cannot pick a folder from the side panel: authorize it once in a main tab, then click Restore Permission here'
+            )
+          )
+        } else if (!(error instanceof Error && error.message === 'User cancelled')) {
+          // Outside a side panel a real dismissal is silent by contract;
+          // anything else is a genuine failure.
+          toast.error(i18nText('projectRoots.pickFailedGeneric', 'Failed to select folder'))
+        }
+        return false
+      }
       if (!handle) return false
 
       const rootName = handle.name
@@ -989,6 +1022,83 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       } catch { /* ignore */ }
 
       // Clear the local file path cache after adding a root.
+      get().clearFilePaths()
+
+      toast.success(i18nText('projectRoots.rootAdded', `Added folder "${rootName}"`, { name: rootName }))
+      return true
+    },
+
+    adoptPickedRoot: async (name: string) => {
+      const projectId = get().activeProjectId
+      if (!projectId) return false
+
+      // The pick tab filed the record under this project when it knew the
+      // projectId, otherwise it parked the handle in the shared slot.
+      let handle: FileSystemDirectoryHandle | null = null
+      try {
+        const record = await folderAccessRepo.findByProjectAndRoot(projectId, name)
+        if (record?.persistedHandle) {
+          handle = record.persistedHandle
+        } else {
+          handle = await folderAccessRepo.takeParkedHandle()
+        }
+      } catch (error) {
+        console.error('[FolderAccessStore] adoptPickedRoot: failed to load picked handle:', error)
+      }
+      if (!handle) {
+        console.warn('[FolderAccessStore] adoptPickedRoot: no handle found for', name)
+        return false
+      }
+
+      const rootName = handle.name
+
+      // Duplicate check — same contract as addRoot. Without this, a re-pick
+      // of an already-mounted folder fails on createRoot's UNIQUE constraint
+      // with the generic "add failed" message instead of the accurate one.
+      const existingRoots = await getProjectRootRepository().findByProject(projectId)
+      if (existingRoots.some((r) => r.name === rootName)) {
+        toast.error(i18nText('projectRoots.rootAlreadyExists', `A folder named "${rootName}" already exists`, { name: rootName }))
+        return false
+      }
+
+      // Same ordering contract as addRoot: SQLite row first, then bind the
+      // runtime handle and persist, so a failed create never leaves an
+      // orphaned handle.
+      try {
+        await getProjectRootRepository().createRoot({ projectId, name: rootName })
+      } catch (createError) {
+        console.error('[FolderAccessStore] adoptPickedRoot: createRoot failed:', createError)
+        toast.error(i18nText('projectRoots.addRootFailed', `Failed to add folder "${rootName}"`, { name: rootName }))
+        return false
+      }
+
+      bindRuntimeDirectoryHandle(projectId, rootName, handle)
+
+      try {
+        await folderAccessRepo.save({
+          projectId,
+          rootName,
+          handle,
+          persistedHandle: handle,
+          folderName: rootName,
+          status: 'ready',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })
+      } catch (error) {
+        console.error('[FolderAccessStore] adoptPickedRoot: persist failed:', error)
+      }
+
+      await get().loadRoots()
+
+      try {
+        const { useAgentStore } = await import('./agent.store')
+        useAgentStore.setState({
+          directoryHandle: handle,
+          directoryName: rootName,
+        })
+      } catch { /* ignore */ }
+
       get().clearFilePaths()
 
       toast.success(i18nText('projectRoots.rootAdded', `Added folder "${rootName}"`, { name: rootName }))

@@ -2,6 +2,7 @@ import { common } from './common'
 import { app } from './app'
 import { topbar } from './topbar'
 import { folderSelector } from './folderSelector'
+import { folderPick } from './folderPick'
 import { settings } from './settings'
 import { projectRoots } from './projectRoots'
 import { workspaceSettings } from './workspaceSettings'
@@ -39,6 +40,7 @@ export const zhCN = {
   app,
   topbar,
   folderSelector,
+  folderPick,
   settings,
   projectRoots,
   workspaceSettings,

@@ -35,4 +35,5 @@ export const projectRoots = {
     rootAdded: "フォルダー「{name}」を追加しました",
     rootRemoved: "フォルダー「{name}」を削除しました",
     pickFailedGeneric: "フォルダーの選択に失敗しました",
+    sidePanelPickerUnavailable: "サイドパネルからはフォルダーを選択できません。メインタブで一度許可してから、サイドパネルで「権限を回復」をクリックしてください",
 } as const
