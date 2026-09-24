@@ -174,11 +174,17 @@ vi.mock('../agent/AgentRichInput', async () => {
     initialText,
     onDraftRestored,
     onChange,
+    sendState,
   }: {
     leadingAccessory?: ReactNode
     initialText?: string
     onDraftRestored?: () => void
     onChange?: (value: { text: string; mentionedAgentIds: string[] }) => void
+    sendState?: {
+      isSendDisabled: boolean
+      onSend: () => void
+      sendTitle: string
+    }
   }) => {
     const [consumedText, setConsumedText] = useState<string | null>(null)
     useEffect(() => {
@@ -197,6 +203,17 @@ vi.mock('../agent/AgentRichInput', async () => {
         >
           type
         </button>
+        {sendState && (
+          <button
+            type="button"
+            data-testid="mock-send"
+            onClick={sendState.onSend}
+            disabled={sendState.isSendDisabled}
+            title={sendState.sendTitle}
+          >
+            send
+          </button>
+        )}
         {leadingAccessory}
       </div>
     )
@@ -424,8 +441,9 @@ describe('WelcomeScreen', () => {
     fireEvent.click(screen.getByTestId('mock-input-type'))
     expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
 
-    // i18n mock returns the raw key — the send button's title is 'welcome.send'
-    fireEvent.click(screen.getByTitle('welcome.send'))
+    // Send lives inside AgentRichInput's toolbar — the mock renders it as
+    // data-testid="mock-send" wired to the sendState.onSend callback.
+    fireEvent.click(screen.getByTestId('mock-send'))
     expect(onStart).toHaveBeenCalledWith('typed text')
     expect(inputDraftState.drafts.has('proj-1')).toBe(false)
   })
@@ -471,7 +489,7 @@ describe('WelcomeScreen', () => {
     // On the api-key step, type and hit send.
     fireEvent.click(screen.getByTestId('mock-input-type'))
     expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
-    fireEvent.click(screen.getByTitle('welcome.send'))
+    fireEvent.click(screen.getByTestId('mock-send'))
 
     // No conversation starts; the user is pointed at the setup card instead.
     expect(onStart).not.toHaveBeenCalled()
@@ -487,7 +505,7 @@ describe('WelcomeScreen', () => {
     advanceToReady()
 
     fireEvent.click(screen.getByTestId('mock-input-type'))
-    fireEvent.click(screen.getByTitle('welcome.send'))
+    fireEvent.click(screen.getByTestId('mock-send'))
 
     expect(onStart).toHaveBeenCalledWith('typed text')
     expect(toastWarningMock).not.toHaveBeenCalled()

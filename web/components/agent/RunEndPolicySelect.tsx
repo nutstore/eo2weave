@@ -125,6 +125,12 @@ export function RunEndPolicySelect({
 
   const currentLabel = labelFor(runEndPolicy)
 
+  /** Auto gets a teal tint (actively applying changes); manual stays gray. */
+  const triggerClass =
+    runEndPolicy === 'auto'
+      ? 'bg-primary-100/60 text-primary-700 dark:bg-primary-100/15 dark:text-primary-300'
+      : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
+
   return (
     <div ref={containerRef} className={`relative inline-flex shrink-0 ${className}`}>
       <button
@@ -152,10 +158,10 @@ export function RunEndPolicySelect({
             openMenu(POLICIES[POLICIES.length - 1])
           }
         }}
-        className={`inline-flex min-h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-[11px] font-medium text-neutral-600 transition-colors dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 ${
+        className={`inline-flex h-7 min-h-0 shrink-0 items-center gap-1 rounded-full border-none px-2 text-[11px] font-medium transition-colors sm:h-auto sm:min-h-8 sm:gap-1.5 sm:px-2.5 ${triggerClass} ${
           disabled
             ? 'cursor-not-allowed opacity-40'
-            : 'hover:bg-neutral-100 dark:hover:bg-neutral-700'
+            : 'hover:brightness-95 dark:hover:brightness-110'
         } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900`}
       >
         <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${runEndPolicy === 'auto' ? 'bg-primary-500' : 'bg-neutral-400'}`} />

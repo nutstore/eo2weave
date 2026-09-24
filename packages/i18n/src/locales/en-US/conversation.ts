@@ -57,7 +57,6 @@ export const conversation = {
         fileMention: "Reference file",
         agentMention: "Mention agent",
         slashCommand: "Slash command",
-        shortcutsHint: "{arrow} history  Shift+Enter newline",
       },
       // Slash commands (builtin pack + grouping labels)
       slashCommands: {

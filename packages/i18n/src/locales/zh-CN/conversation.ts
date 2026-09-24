@@ -57,7 +57,6 @@ export const conversation = {
         fileMention: "引用文件",
         agentMention: "指定 Agent",
         slashCommand: "快捷指令",
-        shortcutsHint: "↑↓ 历史  Shift+Enter 换行",
       },
       // 斜杠命令（builtin 命令包 + 分组标签）
       slashCommands: {

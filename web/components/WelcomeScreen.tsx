@@ -24,7 +24,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
-import { Send, FolderOpen, Sparkles, KeyRound, ChevronRight, Shield, Loader2, ImageIcon, ArrowRight, Check, Cable, CircleHelp, Puzzle } from 'lucide-react'
+import { FolderOpen, Sparkles, KeyRound, ChevronRight, Shield, Loader2, ImageIcon, ArrowRight, Check, Cable, CircleHelp, Puzzle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useSettingsStore } from '@/store/settings.store'
@@ -752,6 +752,14 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                 onDeleteAgent={async () => false}
                 onChange={handleInputChange}
                 onSubmit={handleSubmit}
+                sendState={{
+                  isProcessing: false,
+                  isSendDisabled: !inputValue.trim(),
+                  onSend: handleSubmit,
+                  onCancel: () => {},
+                  sendTitle: t('welcome.send'),
+                  cancelTitle: t('welcome.send'),
+                }}
                 initialText={draftToRestore ?? undefined}
                 onDraftRestored={restoreDraft}
                 leadingAccessory={(
@@ -781,15 +789,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
                   </TooltipProvider>
                 )}
               />
-              <button
-                type="button"
-                onClick={handleSubmit}
-                disabled={!inputValue.trim()}
-                className="absolute bottom-4 right-4 z-10 rounded-xl bg-primary-600 p-2 text-white shadow-sm transition-colors hover:bg-primary-700 disabled:opacity-30 disabled:hover:bg-primary-600"
-                title={t('welcome.send')}
-              >
-                <Send className="h-4 w-4" />
-              </button>
             </div>
           </>
         )}

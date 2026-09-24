@@ -50,9 +50,15 @@ export function AgentDropdown({
       <button
         type="button"
         onClick={() => setIsOpen((v) => !v)}
-        className="inline-flex min-h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs font-medium text-neutral-600 transition-colors hover:border-neutral-300 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:border-neutral-600 dark:hover:bg-neutral-700"
+        className="inline-flex h-7 min-h-0 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border-none bg-neutral-100 px-2 text-[11px] font-medium text-neutral-700 transition-colors hover:bg-neutral-200/70 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700/70 sm:h-auto sm:min-h-8 sm:gap-1.5 sm:px-2.5 sm:text-xs"
       >
-        <span className="max-w-[120px] truncate">@{activeAgentId || 'default'}</span>
+        <span
+          aria-hidden="true"
+          className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary-400 to-primary-600 text-[9px] font-bold leading-none text-white"
+        >
+          @
+        </span>
+        <span className="max-w-[120px] truncate">{activeAgentId || 'default'}</span>
         <ChevronDown className={`h-3 w-3 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 

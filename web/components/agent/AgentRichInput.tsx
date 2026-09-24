@@ -8,8 +8,9 @@ import History from '@tiptap/extension-history'
 import Mention from '@tiptap/extension-mention'
 import { FileMention, type FileMentionItem } from './FileMentionExtension'
 import { SlashCommandExtension, type SlashCommandItem } from './SlashCommandExtension'
-import { Plus, Trash2, Check, FileIcon, FolderIcon, Paperclip, X, ImageIcon, Loader2, FileText } from 'lucide-react'
+import { FileIcon, FolderIcon, Paperclip, X, ImageIcon, Loader2, FileText, AtSign, Hash, SlashSquare, ArrowUp, Square } from 'lucide-react'
 import { useT } from '@/i18n'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
 import { useAssetStore } from '@/store/asset.store'
 import { extractDroppedFiles } from '@/lib/dragdrop'
 import { Lightbox } from './Lightbox'
@@ -69,7 +70,20 @@ interface AgentRichInputProps {
   onDeleteAgent: (id: string) => Promise<boolean>
   /** Slash command callback (e.g. 'compact'). */
   onSlashCommand?: (command: string) => void
-  /** Optional action rendered directly below the attachment button. */
+  /** Send / stop button state + callbacks.
+   *  The toolbar owns the send button so the whole composer moves as one unit.
+   *  When omitted the toolbar's send button is hidden (tests / minimal usage). */
+  sendState?: {
+    /** True while the agent is processing (button shows Stop). */
+    isProcessing: boolean
+    /** True when there is nothing to send (empty input). */
+    isSendDisabled: boolean
+    onSend: () => void
+    onCancel: () => void
+    sendTitle: string
+    cancelTitle: string
+  }
+  /** Optional action rendered next to the attachment button in the toolbar. */
   leadingAccessory?: ReactNode
 }
 
@@ -102,7 +116,7 @@ const SuggestionDropdown = forwardRef(
       onSelect,
       renderItem,
       width = 'w-72',
-      selectedColor = 'bg-primary-50 text-primary-700 dark:bg-primary-100/40 dark:text-primary-700',
+      selectedColor = 'bg-primary-50 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300',
       groupBy,
     }: SuggestionDropdownProps<T>,
     ref: React.Ref<SuggestionDropdownHandle>,
@@ -181,7 +195,7 @@ const SuggestionDropdown = forwardRef(
               <div key={getItemKey(item)}>
               {showGroupHeader && (
                 <div className="sticky top-0 z-10 bg-card px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400 dark:bg-neutral-900 dark:text-neutral-500">
-                  {group}
+                  <span className="not-italic">{group}</span>
                 </div>
               )}
               <button
@@ -338,26 +352,16 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   onSetIsComposing,
   isProcessing,
   onCancel,
-  activeAgentId,
-  allAgents,
-  onSetActiveAgent,
-  onCreateAgent,
-  onDeleteAgent,
   onSlashCommand,
+  sendState,
   leadingAccessory,
 }: AgentRichInputProps, ref) {
   const t = useT()
-  const [isFocused, setIsFocused] = useState(false)
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   // Markdown preview: rendered in a Lightbox (children mode) when the user
   // clicks a .md attachment chip before sending.
   const [mdPreviewContent, setMdPreviewContent] = useState<{ name: string; text: string } | null>(null)
   const [mdPreviewLoading, setMdPreviewLoading] = useState(false)
-  // Agent selector state
-  const [showAgentSelector, setShowAgentSelector] = useState(false)
-  const [isCreatingAgent, setIsCreatingAgent] = useState(false)
-  const [newAgentInput, setNewAgentInput] = useState('')
-  const [agentSelection, setAgentSelection] = useState(0)
   const [isDragOver, setIsDragOver] = useState(false)
   /** True while dropped folders are being expanded into files. */
   const [isExtractingDropped, setIsExtractingDropped] = useState(false)
@@ -436,9 +440,6 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   const disabledRef = useRef(disabled)
   const onSubmitRef = useRef(onSubmit)
   const onChangeRef = useRef(onChange)
-  const showAgentSelectorRef = useRef(showAgentSelector)
-  const agentSelectionRef = useRef(agentSelection)
-  const allAgentsRef = useRef(allAgents)
   const agentsRef = useRef(agents)
   const isProcessingRef = useRef(isProcessing)
   const onCancelRef = useRef(onCancel)
@@ -455,6 +456,24 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
     [],
   )
 
+  /**
+   * insertTrigger — toolbar helper for the @ / slash buttons.
+   * Inserts the trigger character at the caret (or at the end when unfocused)
+   * — the exact same path as typing it manually, so the corresponding tiptap
+   * Suggestion popup opens. No-op before the editor instance exists (one
+   * render frame after mount; not clickable in practice).
+   */
+  const insertTrigger = useCallback(
+    (trigger: string) => {
+      const ed = editorRef.current
+      if (!ed || ed.isDestroyed) return
+      ed.commands.focus('end')
+      ed.commands.insertContent(trigger)
+      emitValue(ed)
+    },
+    [emitValue],
+  )
+
   // ---- ref sync ----------------------------------------------------------
   useEffect(() => { disabledRef.current = disabled }, [disabled])
   useEffect(() => { onSubmitRef.current = onSubmit }, [onSubmit])
@@ -463,9 +482,6 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   useEffect(() => { isProcessingRef.current = isProcessing }, [isProcessing])
   useEffect(() => { onCancelRef.current = onCancel }, [onCancel])
   useEffect(() => { onSlashCommandRef.current = onSlashCommand }, [onSlashCommand])
-  useEffect(() => { showAgentSelectorRef.current = showAgentSelector }, [showAgentSelector])
-  useEffect(() => { agentSelectionRef.current = agentSelection }, [agentSelection])
-  useEffect(() => { allAgentsRef.current = allAgents }, [allAgents])
 
   // ---- editor -------------------------------------------------------------
   const editor = useEditor({
@@ -932,8 +948,8 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
       }
       emitValue(updated)
     },
-    onFocus: () => setIsFocused(true),
-    onBlur: () => setIsFocused(false),
+    onFocus: () => {},
+    onBlur: () => {},
   })
 
   useEffect(() => {
@@ -1030,99 +1046,6 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
     }
   }, [editor, onSetIsComposing])
 
-  const [agentCreateError, setAgentCreateError] = useState(false)
-
-  // ---- Agent selector handlers -------------------------------------------
-  const handleCreateAgent = useCallback(async () => {
-    const id = newAgentInput.trim()
-    if (!id) return
-    setAgentCreateError(false)
-    const created = await onCreateAgent(id)
-    if (!created) {
-      setAgentCreateError(true)
-      return
-    }
-    await onSetActiveAgent(created.id)
-    setNewAgentInput('')
-    setIsCreatingAgent(false)
-    setShowAgentSelector(false)
-  }, [newAgentInput, onCreateAgent, onSetActiveAgent])
-
-  const handleDeleteAgent = useCallback(
-    async (agentId: string, e: React.MouseEvent) => {
-      e.stopPropagation()
-      if (agentId === 'default') return
-      if (!window.confirm(`Delete agent "${agentId}"?`)) return
-      const success = await onDeleteAgent(agentId)
-      if (success) {
-        const newAgents = allAgentsRef.current.filter((a) => a.id !== agentId)
-        if (agentSelectionRef.current >= newAgents.length) {
-          setAgentSelection(Math.max(0, newAgents.length - 1))
-        }
-      }
-    },
-    [onDeleteAgent],
-  )
-
-  const handleSelectAgent = useCallback(
-    async (agentId: string) => {
-      await onSetActiveAgent(agentId)
-      setShowAgentSelector(false)
-    },
-    [onSetActiveAgent],
-  )
-
-  // Keyboard navigation for agent selector
-  useEffect(() => {
-    if (!showAgentSelector) return
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const currentAgents = allAgentsRef.current
-      const currentSelection = agentSelectionRef.current
-
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setAgentSelection((idx) => {
-          const max = Math.max(currentAgents.length - 1, 0)
-          return idx >= max ? max : idx + 1
-        })
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setAgentSelection((idx) => Math.max(0, idx - 1))
-      } else if (e.key === 'Escape') {
-        e.preventDefault()
-        setShowAgentSelector(false)
-        setIsCreatingAgent(false)
-      } else if (e.key === 'Enter' && !isCreatingAgent) {
-        e.preventDefault()
-        const agent = currentAgents[currentSelection]
-        if (agent) {
-          void handleSelectAgent(agent.id)
-        }
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [showAgentSelector, isCreatingAgent, handleSelectAgent])
-
-  // Click outside to close agent selector
-  useEffect(() => {
-    if (!showAgentSelector) return
-
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      if (!target.closest('.agent-selector-dropdown') && !target.closest('.agent-selector-button')) {
-        setShowAgentSelector(false)
-        setIsCreatingAgent(false)
-      }
-    }
-
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showAgentSelector])
-
-  const isEmpty = editor ? editor.isEmpty : true
   const showSuggestion = !disabled && suggestionItems.length > 0 && !!suggestionCommand
   const showFileSuggestion = !disabled && fileSuggestionItems.length > 0 && !!fileSuggestionCommand
   const showSlashSuggestion = !disabled && slashSuggestionItems.length > 0 && !!slashSuggestionCommand
@@ -1207,10 +1130,23 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
           }
         }}
       />
-      <div className="focus-within:border-primary-500 focus-within:ring-primary-500/20 min-h-[88px] w-full rounded-xl border border-neutral-300 bg-card pl-11 pr-14 py-4 text-sm shadow-sm transition-all hover:border-primary-300 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-offset-1 dark:border-neutral-600 dark:bg-neutral-900 dark:hover:border-primary-700 dark:focus-within:bg-neutral-900 dark:focus-within:border-primary-500">
+      <div className="w-full overflow-hidden rounded-2xl border border-neutral-200 bg-card shadow-sm transition-colors focus-within:border-primary-400 dark:border-neutral-700 dark:bg-neutral-900 dark:focus-within:border-primary-500">
+        {/* Editor row — clicking anywhere in the empty area focuses the editor */}
+        <div
+          className="relative cursor-text px-3.5 pb-1 pt-3"
+          onClick={() => editor?.commands.focus()}
+        >
         {editor && (
           <>
             <EditorContent editor={editor} />
+
+            {/* Placeholder overlay — the toolbar below now carries the @ # /
+                affordances, so only the prompt text remains here. */}
+            {editor.isEmpty && (
+              <div className="pointer-events-none absolute left-3.5 top-3 max-w-[calc(100%-2rem)] truncate text-sm text-neutral-400 dark:text-neutral-500">
+                {placeholder}
+              </div>
+            )}
 
             {/* Pending asset uploads preview */}
             {pendingAssets.length > 0 && (
@@ -1294,160 +1230,164 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
             )}
           </>
         )}
-        {!isFocused && isEmpty && (
-          // Full hints shown when input is empty and unfocused
-          // Pin both edges so the absolute box covers the parent input's width
-          // (and lets the hint chips track along with it on resize) instead of
-          // sizing to shrink-to-fit content. Chips wrap to a second line on
-          // narrow screens via `flex-wrap` + `gap-y-1`; labels stay short
-          // (just describe the action — kbd chip shows the keypress) so they
-          // fit comfortably even when wrapping.
-          <div className="pointer-events-none absolute inset-x-0 top-4 px-11">
-            <div className="truncate text-sm text-muted">
-              {placeholder}
-            </div>
-            <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] leading-none text-muted">
-              <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                <kbd className="shrink-0 rounded border border-neutral-200 bg-neutral-100 px-1 py-px font-mono text-[10px] dark:border-neutral-700 dark:bg-neutral-800">#</kbd>
-                <span>{t('conversation.input.hints.fileMention')}</span>
-              </span>
-              <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                <kbd className="shrink-0 rounded border border-neutral-200 bg-neutral-100 px-1 py-px font-mono text-[10px] dark:border-neutral-700 dark:bg-neutral-800">@</kbd>
-                <span>{t('conversation.input.hints.agentMention')}</span>
-              </span>
-              <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                <kbd className="shrink-0 rounded border border-neutral-200 bg-neutral-100 px-1 py-px font-mono text-[10px] dark:border-neutral-700 dark:bg-neutral-800">/</kbd>
-                <span>{t('conversation.input.hints.slashCommand')}</span>
-              </span>
-            </div>
-          </div>
-        )}
+        </div>
 
-        {/* Persistent shortcut hints — always visible at bottom of input */}
-        {(isFocused || !isEmpty) && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-1.5 flex justify-center">
-            <span className="text-[9px] text-neutral-400 dark:text-neutral-500">
-              {t('conversation.input.hints.shortcutsHint')}
-            </span>
-          </div>
-        )}
-
-        {/* Upload attachment button */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled}
-          className="absolute left-3 top-4 rounded-lg p-1.5 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-500 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-          title={t('conversation.input.attachFiles')}
-        >
-          <Paperclip className="h-4 w-4" />
-        </button>
-        {leadingAccessory && (
-          <div className="absolute left-3 top-12 z-10">
-            {leadingAccessory}
-          </div>
-        )}
-      </div>
-
-      {/* Agent selector dropdown - expands downward */}
-      {showAgentSelector && (
-        <div className="agent-selector-dropdown absolute top-full left-0 z-20 mt-1 w-60 overflow-hidden rounded-lg border border-neutral-200 bg-card shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
-          <div className="max-h-[280px] overflow-y-auto py-1">
-            {allAgents.map((agent, idx) => {
-              const isActive = agent.id === activeAgentId
-              const selected = idx === agentSelection
-              return (
-                <div
-                  key={agent.id}
-                  className={`flex items-center gap-2 px-3 py-2 ${
-                    selected
-                      ? 'bg-primary-50 dark:bg-primary-100/40'
-                      : 'hover:bg-neutral-100 dark:hover:bg-neutral-800'
-                  }`}
-                >
+        {/* Toolbar row — persistent affordances: attach · screenshot · @ · /
+            on the left, send/stop on the right. */}
+        <TooltipProvider delayDuration={250}>
+        <div className="flex items-center justify-between border-t border-neutral-100 px-1.5 py-1 dark:border-neutral-800">
+          <div className="flex items-center gap-0.5">
+            {/* Upload attachment button */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
                   <button
                     type="button"
-                    onClick={() => void handleSelectAgent(agent.id)}
-                    className="flex flex-1 items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={disabled}
+                    aria-label={t('conversation.input.attachFiles')}
+                    className="rounded-lg p-2 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
                   >
-                    <span
-                      className={`text-sm font-medium ${
-                        isActive
-                          ? 'text-primary-700 dark:text-primary-700'
-                          : 'dark:text-foreground'
-                      }`}
-                    >
-                      @{agent.id}
-                    </span>
-                    {agent.name && agent.name !== agent.id && (
-                      <span className="truncate text-xs text-neutral-400 dark:text-neutral-400">
-                        {agent.name}
-                      </span>
-                    )}
+                    <Paperclip className="h-4 w-4" />
                   </button>
-                  {isActive && (
-                    <Check className="h-3.5 w-3.5 text-primary-600 dark:text-primary-500" />
-                  )}
-                  {agent.id !== 'default' && (
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={6}>
+                {t('conversation.input.attachFiles')}
+              </TooltipContent>
+            </Tooltip>
+            {leadingAccessory && (
+              <div className="flex items-center gap-0.5">{leadingAccessory}</div>
+            )}
+            {/* @ agent mention — inserts the trigger into the editor (same
+                path as typing '@' manually, so the suggestion popup opens). */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <button
+                    type="button"
+                    onClick={() => insertTrigger('@')}
+                    disabled={disabled}
+                    aria-label={t('conversation.input.hints.agentMention')}
+                    className="rounded-lg p-2 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                  >
+                    <AtSign className="h-4 w-4" />
+                  </button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={6}>
+                {t('conversation.input.hints.agentMention')}
+              </TooltipContent>
+            </Tooltip>
+            {/* # file mention — same as typing '#': opens the file search
+                suggestion. Only shown when file search is wired up (the
+                FileMention extension is configured under the same condition). */}
+            {onSearchFiles && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex">
                     <button
                       type="button"
-                      onClick={(e) => void handleDeleteAgent(agent.id, e)}
-                      className="rounded p-1.5 hover:bg-neutral-200 hover:text-red-600 text-neutral-500 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1"
-                      title={`Delete ${agent.id}`}
+                      onClick={() => insertTrigger('#')}
+                      disabled={disabled}
+                      aria-label={t('conversation.input.hints.fileMention')}
+                      className="rounded-lg p-2 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
+                      <Hash className="h-4 w-4" />
                     </button>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-
-          {/* Create new agent row */}
-          <div className="border-t border-neutral-200 dark:border-neutral-700">
-            {isCreatingAgent ? (
-              <div className="flex items-center gap-1.5 px-3 py-2">
-                <input
-                  value={newAgentInput}
-                  onChange={(e) => setNewAgentInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      void handleCreateAgent()
-                    } else if (e.key === 'Escape') {
-                      setIsCreatingAgent(false)
-                      setNewAgentInput('')
-                    }
-                  }}
-                  placeholder={t('conversation.input.agentIdPlaceholder')}
-                  autoFocus
-                  className="h-7 flex-1 rounded border border-neutral-300 bg-card px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-800"
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleCreateAgent()}
-                  disabled={!newAgentInput.trim()}
-                  className="rounded bg-primary-600 px-2 py-1 text-xs text-white hover:bg-primary-700 disabled:opacity-40"
-                >
-                  {t('conversation.input.createAgent')}
-                </button>
-                {agentCreateError && (
-                  <span className="text-[10px] text-danger">{t('conversation.input.agentCreateFailed')}</span>
-                )}
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setIsCreatingAgent(true)}
-                className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-neutral-100 text-neutral-400 dark:text-neutral-400 dark:hover:bg-neutral-800"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>{t('agent.createNew')}</span>
-              </button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  {t('conversation.input.hints.fileMention')}
+                </TooltipContent>
+              </Tooltip>
             )}
+            {/* / slash command — inserts the trigger into the editor. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <button
+                    type="button"
+                    onClick={() => insertTrigger('/')}
+                    disabled={disabled}
+                    aria-label={t('conversation.input.hints.slashCommand')}
+                    className="rounded-lg p-2 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 text-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                  >
+                    <SlashSquare className="h-4 w-4" />
+                  </button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={6}>
+                {t('conversation.input.hints.slashCommand')}
+              </TooltipContent>
+            </Tooltip>
           </div>
+          {sendState && (
+            <div className="flex items-center gap-1.5 pr-1">
+              {sendState.isProcessing ? (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex">
+                        <button
+                          type="button"
+                          onClick={sendState.onCancel}
+                          aria-label={sendState.cancelTitle}
+                          className="flex h-8 w-8 items-center justify-center rounded-xl bg-red-600 text-white shadow-sm transition-colors hover:bg-red-700"
+                        >
+                          <Square className="h-3.5 w-3.5" fill="currentColor" />
+                        </button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={6}>
+                      {sendState.cancelTitle}
+                    </TooltipContent>
+                  </Tooltip>
+                  {!sendState.isSendDisabled && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-flex">
+                          <button
+                            type="button"
+                            onClick={sendState.onSend}
+                            aria-label={sendState.sendTitle}
+                            className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary-600 text-white shadow-sm transition-colors hover:bg-primary-700"
+                          >
+                            <ArrowUp className="h-4 w-4" />
+                          </button>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" sideOffset={6}>
+                        {sendState.sendTitle}
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </>
+              ) : (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex">
+                      <button
+                        type="button"
+                        onClick={sendState.onSend}
+                        disabled={sendState.isSendDisabled}
+                        aria-label={sendState.sendTitle}
+                        className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary-600 text-white shadow-sm transition-colors hover:bg-primary-700 disabled:opacity-30 disabled:hover:bg-primary-600"
+                      >
+                        <ArrowUp className="h-4 w-4" />
+                      </button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={6}>
+                    {sendState.sendTitle}
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </div>
+          )}
         </div>
-      )}
+        </TooltipProvider>
+      </div>
 
       {/* Mention suggestions dropdown – rendered by tiptap suggestion plugin */}
       {showSuggestion && suggestionCommand && (

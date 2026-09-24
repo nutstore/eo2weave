@@ -1,8 +1,14 @@
 /**
  * ContextUsageBar — compact context window usage indicator.
+ *
+ * Direction-4 redesign: a mini conic-gradient donut replaces the straight bar.
+ * The donut is pure CSS (conic-gradient + ::after mask hole) so no extra
+ * dependency is introduced. Tone (teal / amber / red) follows the same
+ * thresholds as before (>=95 danger, >=85 warning).
  */
 
 import { useT } from '@/i18n'
+import type { CSSProperties } from 'react'
 import { cn } from '@/lib/utils'
 import type { ContextWindowUsage } from '@/agent/message-types'
 
@@ -45,25 +51,37 @@ export function ContextUsageBar({
   const displayPercent = Math.max(0, Math.min(100, (contextWindowUsage.usedTokens / modelMaxTokens) * 100))
   const usageTone = getUsageToneClass(displayPercent)
 
-  return (
-    <div className="flex items-center gap-2.5 sm:mt-0">
-      <div className="relative h-1 w-12 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-700">
-        <div
-          className={cn(
-            'h-full rounded-full transition-all duration-500',
-            displayPercent >= 95 ? 'bg-danger' : displayPercent >= 85 ? 'bg-warning' : 'bg-primary-500'
-          )}
-          style={{ width: `${Math.min(displayPercent, 100)}%` }}
-        />
-      </div>
+  const donutColorClass =
+    displayPercent >= 95
+      ? 'text-danger dark:text-danger'
+      : displayPercent >= 85
+        ? 'text-warning dark:text-warning'
+        : 'text-primary-500 dark:text-primary-400'
 
-      <span className={cn('text-xs font-semibold tabular-nums', usageTone.text)}>
+  const tooltip = t('conversation.tokenBudget', {
+    effectiveBudget: contextWindowUsage.maxTokens,
+    modelMaxTokens,
+    reserveTokens,
+  })
+
+  return (
+    <div className="flex shrink-0 items-center gap-1.5 sm:gap-2.5">
+      <span
+        role="img"
+        aria-label={usageTone.label}
+        title={usageTone.label}
+        style={{ '--usage-percent': displayPercent } as CSSProperties}
+        className={cn('usage-donut shrink-0', donutColorClass)}
+      />
+      <span className={cn('text-[11px] font-semibold tabular-nums sm:text-xs', usageTone.text)}>
         {displayPercent.toFixed(0)}%
       </span>
 
+      {/* Token counts: hidden on narrow screens — they alone made the toolbar
+          wrap on mobile. The tooltip on the donut still carries the detail. */}
       <span
-        className="text-[11px] tabular-nums text-neutral-500 dark:text-neutral-400"
-        title={t('conversation.tokenBudget', { effectiveBudget: contextWindowUsage.maxTokens, modelMaxTokens, reserveTokens })}
+        className="hidden text-[11px] tabular-nums text-neutral-500 dark:text-neutral-400 sm:inline"
+        title={tooltip}
       >
         {formatTokenCompact(contextWindowUsage.usedTokens)}
         <span className="mx-0.5 opacity-50">/</span>

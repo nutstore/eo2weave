@@ -45,6 +45,20 @@ function modeDotClass(mode: VisibleMode): string {
   return 'bg-neutral-400'
 }
 
+/**
+ * Trigger pill styles for the visible mode. YOLO gets an amber tint so the
+ * risk state is visible at a glance; Act gets a teal tint; Plan stays gray.
+ */
+function modeTriggerClass(mode: VisibleMode): string {
+  if (mode === 'yolo') {
+    return 'bg-warning/15 text-warning dark:bg-warning/15 dark:text-warning'
+  }
+  if (mode === 'act') {
+    return 'bg-primary-100/60 text-primary-700 dark:bg-primary-100/15 dark:text-primary-300'
+  }
+  return 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
+}
+
 const ChevronIcon = ({ className }: { className?: string }) => (
   <svg className={className} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 5l3 3 3-3" />
@@ -193,10 +207,10 @@ export function AgentModeSelect({
         onClick={() => !disabled && setOpen((prev) => !prev)}
         disabled={disabled}
         aria-label={t('agent.mode.currentAriaLabel', { mode: visibleLabel })}
-        className={`inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-[11px] font-medium text-neutral-600 transition-colors dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 ${
+        className={`inline-flex h-7 min-h-0 shrink-0 items-center gap-1 rounded-full border-none px-2 text-[11px] font-medium transition-colors sm:h-auto sm:min-h-8 sm:gap-1.5 sm:px-2.5 ${modeTriggerClass(visibleMode)} ${
           disabled
             ? 'cursor-not-allowed opacity-40'
-            : 'hover:bg-neutral-100 dark:hover:bg-neutral-700'
+            : 'hover:brightness-95 dark:hover:brightness-110'
         }`}
       >
         <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${modeDotClass(visibleMode)}`} />

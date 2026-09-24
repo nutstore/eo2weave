@@ -12,7 +12,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react'
-import { Send, StopCircle, AlertTriangle, RefreshCw, WifiOff, KeyRound, ImageIcon, Loader2 } from 'lucide-react'
+import { AlertTriangle, RefreshCw, WifiOff, KeyRound, ImageIcon, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useT } from '@/i18n'
 import { ErrorBoundary } from '@/components/error/ErrorBoundary'
@@ -101,71 +101,6 @@ const VisionCapabilityIndicator = memo(function VisionCapabilityIndicator({
  */
 const ConversationUsageBarMemo = memo(ConversationUsageBar)
 
-/** Send / Cancel button — memoized to only re-render when its specific props change */
-const SendCancelButton = memo(function SendCancelButton({
-  isProcessing,
-  isSendDisabled,
-  onSend,
-  onCancel,
-  sendTitle,
-  cancelTitle,
-}: {
-  isProcessing: boolean
-  isSendDisabled: boolean
-  onSend: () => void
-  onCancel: () => void
-  sendTitle: string
-  cancelTitle: string
-}) {
-  // When processing and send is disabled (no input), show only cancel
-  if (isProcessing && isSendDisabled) {
-    return (
-      <button
-        type="button"
-        onClick={onCancel}
-        className="absolute bottom-4 right-4 rounded-xl bg-red-600 p-2 text-white shadow-sm transition-colors hover:bg-red-700"
-        title={cancelTitle}
-      >
-        <StopCircle className="h-4 w-4" />
-      </button>
-    )
-  }
-  // When processing but user has typed text, show both send (queue) and cancel
-  if (isProcessing && !isSendDisabled) {
-    return (
-      <>
-        <button
-          type="button"
-          onClick={onSend}
-          className="absolute bottom-4 right-4 rounded-xl bg-primary-600 p-2 text-white shadow-sm transition-colors hover:bg-primary-700"
-          title={sendTitle}
-        >
-          <Send className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="absolute bottom-4 right-14 rounded-xl bg-red-600 p-2 text-white shadow-sm transition-colors hover:bg-red-700"
-          title={cancelTitle}
-        >
-          <StopCircle className="h-4 w-4" />
-        </button>
-      </>
-    )
-  }
-  return (
-    <button
-      type="button"
-      onClick={onSend}
-      disabled={isSendDisabled}
-      className="absolute bottom-4 right-4 rounded-xl bg-primary-600 p-2 text-white shadow-sm transition-colors hover:bg-primary-700 disabled:opacity-30 disabled:hover:bg-primary-600"
-      title={sendTitle}
-    >
-      <Send className="h-4 w-4" />
-    </button>
-  )
-})
-
 interface ConversationViewProps {
   initialMessage?: string | null
   onInitialMessageConsumed?: () => void
@@ -203,7 +138,6 @@ export function ConversationView({
     agentMode, setAgentMode,
     sendMessage, handleSend, handleCancel,
     handleDeleteAgentLoop, handleEditAndResend, handleRegenerate,
-    queueDepth,
   } = logic
 
   // ── Retry handler for error banner: send "继续" to start a new loop ──
@@ -534,6 +468,14 @@ export function ConversationView({
                 onChange={handleInputChange}
                 onSubmit={handleSendAndFocus}
                 onSlashCommand={logic.handleSlashCommand}
+                sendState={{
+                  isProcessing,
+                  isSendDisabled: (!hasInput && !suggestedFollowUp) || !hasApiKey || disabled,
+                  onSend: handleSendAndFocus,
+                  onCancel: handleCancel,
+                  sendTitle: t('conversation.buttons.send'),
+                  cancelTitle: t('conversation.buttons.stop'),
+                }}
                 leadingAccessory={(
                   <VisionCapabilityIndicator
                     modelName={modelName}
@@ -544,25 +486,13 @@ export function ConversationView({
                   />
                 )}
               />
-              <SendCancelButton
-                isProcessing={isProcessing}
-                isSendDisabled={(!hasInput && !suggestedFollowUp) || !hasApiKey || disabled}
-                onSend={handleSendAndFocus}
-                onCancel={handleCancel}
-                sendTitle={t('conversation.buttons.send')}
-                cancelTitle={t('conversation.buttons.stop')}
-              />
-              {isProcessing && queueDepth > 0 && (!hasInput && !suggestedFollowUp) && (
-                <span className="absolute bottom-4 right-14 rounded-full bg-primary-100 px-2 py-0.5 text-xs font-medium text-primary-700 dark:bg-primary-100/30 dark:text-primary-700">
-                  {t('conversation.queue.badge', { count: queueDepth })}
-                </span>
-              )}
             </div>
           </div>
 
-          {/* Compact toolbar row */}
-          <div className="mx-auto mt-1.5 flex max-w-3xl flex-col gap-1.5 sm:mt-2 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex flex-wrap items-center gap-2 pt-0.5 sm:flex-nowrap sm:pt-0">
+          {/* Compact toolbar row — single line on ALL viewports: pills scroll
+              horizontally on narrow screens instead of wrapping into 3 rows. */}
+          <div className="mx-auto mt-1.5 flex max-w-3xl items-center justify-between gap-1.5 sm:mt-2">
+            <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pt-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-2 sm:overflow-visible">
               <AgentDropdown
                 allAgents={allAgents}
                 activeAgentId={activeAgentId}
@@ -582,7 +512,7 @@ export function ConversationView({
                 disabled={disabled}
               />
             </div>
-            <div className="flex items-center gap-2 self-start sm:self-auto">
+            <div className="flex shrink-0 items-center gap-2 pl-1 sm:pl-0">
               <ContextUsageBar contextWindowUsage={activeContextWindowUsage} isProcessing={isProcessing} />
             </div>
           </div>

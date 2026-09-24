@@ -56,7 +56,6 @@ export const conversation = {
         fileMention: "파일 참조",
         agentMention: "에이전트 지정",
         slashCommand: "명령어",
-        shortcutsHint: "↑↓ 기록  Shift+Enter 줄바꿈",
       },
       // 슬래시 명령어
       slashCommands: {

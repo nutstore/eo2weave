@@ -784,6 +784,39 @@
   animation: heat-panel-slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* === Context usage mini donut (ContextUsageBar) ===
+ * Pure-CSS conic-gradient ring. The filled arc uses currentColor so the
+ * tone (teal / amber / danger) is driven by the same text-* class that
+ * colors the percentage. The inner hole matches the card background in
+ * both light and dark themes. Size/scale are fixed (h-3.5 w-3.5 = 14px).
+ */
+.usage-donut {
+  position: relative;
+  display: inline-block;
+  height: 14px;
+  width: 14px;
+  border-radius: 9999px;
+  /* Literal hex (neutral-200/neutral-700) instead of theme() — keeps the ring
+     independent from Tailwind config resolution. */
+  background: conic-gradient(currentColor calc(var(--usage-percent, 0) * 1%), #e5e7eb 0);
+}
+
+.dark .usage-donut {
+  background: conic-gradient(currentColor calc(var(--usage-percent, 0) * 1%), #404040 0);
+}
+
+.usage-donut::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 9999px;
+  background: var(--card, #ffffff);
+}
+
+.dark .usage-donut::after {
+  background: var(--card-dark, #171717);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .heat-cell {
     animation: none;

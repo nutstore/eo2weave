@@ -56,7 +56,6 @@ export const conversation = {
         fileMention: "ファイル参照",
         agentMention: "エージェント指定",
         slashCommand: "コマンド",
-        shortcutsHint: "↑↓ 履歴  Shift+Enter 改行",
       },
       // スラッシュコマンド
       slashCommands: {
