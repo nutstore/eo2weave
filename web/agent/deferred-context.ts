@@ -15,11 +15,12 @@ export function createContextCollector(sourceCallId: string) {
   let bytes = 0
   return {
     emit(content: ContextPart[]) {
-      if (closed) return
+      if (closed) return false
       const copy = structuredClone(content)
       bytes += new TextEncoder().encode(JSON.stringify(copy)).byteLength
       if (bytes > 16 * 1024 * 1024) throw new Error('Deferred context exceeds 16 MiB')
       events.push({ sourceCallId, sequence: events.length, content: copy })
+      return true
     },
     close(): DeferredContext[] {
       closed = true

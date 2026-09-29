@@ -26,6 +26,8 @@ export interface MessageRow {
 
 /** Fields stored in meta_json */
 interface MessageMeta {
+  displayContent?: string
+  deferredContext?: Message['deferredContext']
   kind?: 'normal' | 'context_summary' | 'run_changes'
   reasoning?: string | null
   reasoningDurationMs?: number
@@ -248,6 +250,14 @@ export class MessageRepository {
       meta.images = message.images
       hasMeta = true
     }
+    if (message.displayContent !== undefined) {
+      meta.displayContent = message.displayContent
+      hasMeta = true
+    }
+    if (message.deferredContext !== undefined) {
+      meta.deferredContext = message.deferredContext
+      hasMeta = true
+    }
     if (message.contentParts !== undefined) {
       meta.contentParts = message.contentParts
       hasMeta = true
@@ -288,6 +298,8 @@ export class MessageRepository {
       assets: meta.assets,
       images: meta.images,
       contentParts: meta.contentParts,
+      displayContent: meta.displayContent,
+      deferredContext: meta.deferredContext,
       runChanges: meta.runChanges,
       readImageHandoff: meta.readImageHandoff,
     }

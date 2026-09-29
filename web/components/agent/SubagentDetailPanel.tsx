@@ -127,7 +127,7 @@ function buildPersistedSteps(messages: Message[]): {
   const toolResults = new Map<string, string>()
   for (const message of messages) {
     if (message.role === 'tool' && message.toolCallId) {
-      toolResults.set(message.toolCallId, message.content ?? '')
+      toolResults.set(message.toolCallId, message.displayContent ?? message.content ?? '')
     }
   }
 

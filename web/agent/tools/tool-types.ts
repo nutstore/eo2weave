@@ -254,6 +254,17 @@ export interface ToolDefinition {
 
 /** Context provided to tool executors */
 export interface ToolContext {
+  /** Invocation-scoped tool capability, supplied only to run_code. */
+  codeTools?: {
+    names: string[]
+    invoke: (call: {
+      toolName: string
+      toolCallId: string
+      args: Record<string, unknown>
+      signal: AbortSignal
+      onContext: (event: import('@/agent/deferred-context').DeferredContext) => void
+    }) => Promise<import('@/agent/tool-invocation').InvocationOutcome>
+  }
   /** Append caller context after this invocation completes. */
   deferContext?: (content: import('@/agent/deferred-context').ContextPart[]) => void
   /** Root directory handle for file operations */

@@ -213,7 +213,7 @@ function createPolicyTable(): Map<string, ToolPolicy> {
   // -- auto: read-only & sandboxed -----------------------------------------
   for (const name of [
     'read', 'write', 'edit', 'delete', 'search', 'ls',
-    'run_python', 'bash',
+    'run_python', 'bash', 'run_code',
     'ocr', 'read_image',
     'canvas_add_node', 'canvas_connect', 'canvas_create', 'canvas_disconnect',
     'canvas_get', 'canvas_remove', 'canvas_run', 'canvas_update',

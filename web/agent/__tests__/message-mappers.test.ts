@@ -8,6 +8,16 @@ import {
 } from '../loop/message-mappers'
 
 describe('message-mappers', () => {
+  it('persists UI traces separately from the model conversation', () => {
+    const deferred = [{ sourceCallId: 'child', sequence: 0, content: [{ type: 'text', text: 'observation' }] }]
+    const mapped = piToInternalMessage({ role: 'toolResult', toolCallId: 'parent', toolName: 'run_code', content: [{ type: 'text', text: 'final result' }], details: { displayContent: 'PRIVATE_TRACE', deferred }, isError: false, timestamp: 1 } as never)!
+    expect(mapped.displayContent).toBe('PRIVATE_TRACE')
+    expect(mapped.deferredContext).toEqual(deferred)
+    const messages: Message[] = [{ id: 'a', role: 'assistant', content: null, timestamp: 0, toolCalls: [{ id: 'parent', type: 'function', function: { name: 'run_code', arguments: '{}' } }] }, mapped]
+    const wire = internalToPiMessages(messages, { api: 'openai', provider: 'openai', id: 'test-model' } as never, '')
+    expect(JSON.stringify(wire)).not.toContain('PRIVATE_TRACE')
+    expect(JSON.stringify(wire)).toContain('final result')
+  })
   it('parseToolArgs returns invalid marker for malformed JSON', () => {
     expect(parseToolArgs('{bad-json')).toEqual({ __invalid_arguments: true })
   })

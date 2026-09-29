@@ -1,5 +1,6 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { type AgentMode } from '../agent-mode'
+import { projectTools } from '@/agent/tool-projection'
 import { invokeTool } from '@/agent/tool-invocation'
 import type { ContextManager } from '../context-manager'
 import type { PiAIProvider } from '../llm/pi-ai-provider'
@@ -43,7 +44,7 @@ export interface BuildAgentToolsInput {
 }
 
 export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
-  return input.toolRegistry.getToolDefinitionsForMode(input.mode).map((toolDef) => ({
+  return projectTools(input.toolRegistry.getToolDefinitionsForMode(input.mode)).modelTools.map((toolDef) => ({
     name: toolDef.function.name,
     label: toolDef.function.name,
     description: toolDef.function.description || '',
@@ -83,6 +84,13 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
           },
         })
         let rawResult = outcome.raw
+        const displayContent = toolDef.function.name === 'run_code' ? rawResult : undefined
+        if (displayContent) {
+          const parsed = JSON.parse(rawResult)
+          // Child traces belong to the UI, never to the model's tool response.
+          const { meta, ...response } = parsed
+          rawResult = JSON.stringify({ ...response, ...(meta?.logs ? { logs: meta.logs } : {}) })
+        }
 
         // Truncate oversized results before normalizeToolResult.
         // If the result exceeds the context budget, write it to an assets file
@@ -155,47 +163,6 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
           }
         }
 
-        let elicitationData: {
-          mode: 'binary'
-          message: string
-          toolName: string
-          args: Record<string, unknown>
-          serverId: string
-        } | null = null
-        try {
-          const parsedResult = JSON.parse(rawResult)
-          if (parsedResult._elicitation?.mode === 'binary') {
-            elicitationData = parsedResult._elicitation
-          }
-        } catch {
-          // non-json tool output
-        }
-
-        if (elicitationData && input.callbacks?.onElicitation) {
-          console.warn('[#LoopStop] elicitation_detected', {
-            toolCallId,
-            toolName: elicitationData.toolName,
-            serverId: elicitationData.serverId,
-          })
-          input.callbacks.onElicitation({
-            ...elicitationData,
-            toolCallId,
-          })
-          input.onElicitationDetected?.()
-        }
-
-        if (toolDef.function.name === 'run_python' && rawResult) {
-          try {
-            const parsedResult = JSON.parse(rawResult)
-            if (parsedResult.fileChanges) {
-              const { useConversationContextStore } = await import('@/store/conversation-context.store')
-              useConversationContextStore.getState().addChanges(parsedResult.fileChanges)
-            }
-          } catch {
-            // ignore non-json outputs
-          }
-        }
-
         return {
           content: (() => {
             // If the envelope carried multimodal contentParts (e.g. a
@@ -210,7 +177,7 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
             }
             return [{ type: 'text' as const, text: finalContent }, ...outcome.deferred.flatMap(event => event.content)]
           })(),
-          details: { ...finalDetails, deferred: outcome.deferred },
+          details: { ...finalDetails, deferred: outcome.deferred, displayContent },
         }
       } catch (toolError) {
         if (toolError instanceof Error && toolError.message.includes('timed out')) {

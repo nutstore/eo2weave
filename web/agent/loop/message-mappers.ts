@@ -326,6 +326,9 @@ export function piToInternalMessage(message: PiAgentMessage): Message | null {
           }
         : {}),
     })
+    const details = message.details as { displayContent?: string; deferred?: import('@/agent/deferred-context').DeferredContext[] } | undefined
+    tool.displayContent = details?.displayContent
+    tool.deferredContext = details?.deferred
     tool.timestamp = message.timestamp || tool.timestamp || now
     return tool
   }

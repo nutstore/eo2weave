@@ -30,6 +30,7 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
   // ============================================================================
   // READ-ONLY TOOLS (Available in Plan mode)
   // ============================================================================
+  ['run_code', { name: 'run_code', category: 'read', planModeDescription: 'Compose allowed tools; each nested call checks Plan-mode policy.' }],
   ['read', { name: 'read', category: 'read' }],
   ['search', { name: 'search', category: 'read' }],
   ['ls', { name: 'ls', category: 'read' }],

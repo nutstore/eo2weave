@@ -35,6 +35,8 @@ describe('generic QuickJS runtime', () => {
   })
   it('rejects lossy return values and undefined host arguments', async () => {
     expect(await run('return { f: () => {} }')).toMatchObject({ ok: false })
+    expect(await run('return new Map([[1,2]])')).toMatchObject({ ok: false })
+    expect(await run('return new Date()')).toMatchObject({ ok: false })
     expect(await run('return await f(undefined)', { globals: {}, functions: { f: async () => null } })).toMatchObject({ ok: false })
     expect(await run('return')).toEqual({ ok: true, value: null })
   })
@@ -47,6 +49,12 @@ describe('generic QuickJS runtime', () => {
     const request = { code: 'const a = []; while (true) a.push(new Array(10000).fill(1))', filename: 'memory.js', setup: '', limits: { ...DEFAULT_LIMITS, memoryBytes: 2 * 1024 * 1024, timeoutMs: 500 } }
     expect(await executeQuickJs(wasm, request, empty, new AbortController().signal)).toMatchObject({ ok: false })
     expect(await executeQuickJs(wasm, { ...request, code: 'await f(); await f()', limits: { ...DEFAULT_LIMITS, maxHostCalls: 1 } }, { globals: {}, functions: { f: async () => null } }, new AbortController().signal)).toMatchObject({ ok: false })
+  })
+  it('charges guest CPU independently from async host waiting', async () => {
+    const request = { code: 'await f(); return 1', filename: 'cpu.js', setup: '', limits: { ...DEFAULT_LIMITS, cpuTimeMs: 20, timeoutMs: 1000 } }
+    const bindings = { globals: {}, functions: { f: async () => { await new Promise(resolve => setTimeout(resolve, 40)); return null } } }
+    expect(await executeQuickJs(wasm, request, bindings, new AbortController().signal)).toEqual({ ok: true, value: 1 })
+    expect(await executeQuickJs(wasm, { ...request, code: 'while(true) {}' }, empty, new AbortController().signal)).toMatchObject({ ok: false, error: { code: 'JS_CPU_LIMIT' } })
   })
   it('reports user source locations and accepts async function syntax', () => {
     expect(preflight('await Promise.resolve();\nreturn 1')).toEqual([])

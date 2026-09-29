@@ -29,6 +29,7 @@ import { getRenderer } from './tool-renderers/registry'
 import type { ToolRenderCtx } from './tool-renderers/types'
 
 // Side-effect imports: each file calls registerRenderer() on load
+import './tool-renderers/RunCodeRenderer'
 import './tool-renderers/FileReadRenderer'
 import './tool-renderers/FileEditRenderer'
 import './tool-renderers/SearchRenderer'

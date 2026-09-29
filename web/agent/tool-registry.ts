@@ -22,6 +22,7 @@ const TOOL_ALIASES: Record<string, string> = {
 }
 
 // Import read tool
+import { runCodeDefinition, runCodeExecutor, runCodePromptDoc } from '@/agent/tools/run-code.tool'
 import { readDefinition, readExecutor, readPromptDoc } from './tools/read.tool'
 // Import write tool
 import { writeDefinition, writeExecutor, writePromptDoc } from './tools/write.tool'
@@ -205,6 +206,7 @@ import {
 import { isSidePanelMode } from './workspace-assistant-context'
 
 const BUILTIN_TOOLS: Array<{ definition: ToolDefinition; executor: ToolExecutor }> = [
+  { definition: runCodeDefinition, executor: runCodeExecutor },
   // Unified IO tools (read, write, edit)
   { definition: readDefinition, executor: readExecutor },
   { definition: writeDefinition, executor: writeExecutor },
@@ -259,6 +261,7 @@ const BUILTIN_TOOLS: Array<{ definition: ToolDefinition; executor: ToolExecutor 
  * structured tool schemas, not duplicated in the system prompt.
  */
 const ALL_PROMPT_DOCS: ToolPromptDoc[] = [
+  runCodePromptDoc,
   readPromptDoc,
   writePromptDoc,
   editPromptDoc,
@@ -386,6 +389,7 @@ export class ToolRegistry {
     }
 
     try {
+      if (name === 'run_code') return await entry.executor(args, context)
       // Use auto-retry for transient errors
       return await withAutoRetry(async () => entry.executor(args, context))
     } catch (error) {

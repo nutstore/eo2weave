@@ -18,6 +18,8 @@ export interface GeneratedImage {
 }
 
 export interface ToolCall {
+  /** UI correlation for a tool invoked inside run_code. */
+  parentToolCallId?: string
   id: string
   type: 'function'
   function: {
@@ -61,6 +63,9 @@ export interface MessageUsage {
 }
 
 export interface Message {
+  /** UI-only tool trace; excluded from model conversion. */
+  displayContent?: string
+  deferredContext?: import('@/agent/deferred-context').DeferredContext[]
   id: string
   role: MessageRole
   content: string | null

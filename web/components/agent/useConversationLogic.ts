@@ -292,7 +292,9 @@ export function useConversationLogic() {
         // If the tool message has contentParts (e.g. screenshot images),
         // serialize the full message (content + contentParts) as JSON so
         // the renderer can extract the image.
-        if (msg.contentParts && msg.contentParts.length > 0) {
+        if (msg.displayContent) {
+          map.set(msg.toolCallId, msg.displayContent)
+        } else if (msg.contentParts && msg.contentParts.length > 0) {
           map.set(
             msg.toolCallId,
             JSON.stringify({

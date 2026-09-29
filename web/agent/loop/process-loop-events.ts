@@ -111,7 +111,8 @@ export async function processPiLoopEvents(
     }
 
     if (typedEvent.type === 'tool_execution_end') {
-      const resultText = input.extractTextContent((typedEvent.result as PiToolResultMessage)?.content) || ''
+      const details = (typedEvent.result as PiToolResultMessage)?.details as { displayContent?: string } | undefined
+      const resultText = details?.displayContent ?? input.extractTextContent((typedEvent.result as PiToolResultMessage)?.content) ?? ''
       pendingToolCompletions.set(typedEvent.toolCallId, {
         toolCall: {
           id: typedEvent.toolCallId,

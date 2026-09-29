@@ -1,7 +1,14 @@
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue }
 
 export interface ExecutionLimits {
   timeoutMs: number
+  cpuTimeMs: number
   memoryBytes: number
   maxHostCalls: number
   maxConcurrentCalls: number
@@ -9,7 +16,8 @@ export interface ExecutionLimits {
 }
 
 export const DEFAULT_LIMITS: ExecutionLimits = {
-  timeoutMs: 120_000,
+  timeoutMs: 600_000,
+  cpuTimeMs: 10_000,
   memoryBytes: 64 * 1024 * 1024,
   maxHostCalls: 200,
   maxConcurrentCalls: 16,
@@ -30,29 +38,51 @@ export interface RuntimeBindings {
 }
 
 export interface RuntimeFailure {
+  toolName?: string
   code: string
   message: string
 }
 
-export type ExecutionResult =
-  | { ok: true; value: JsonValue }
-  | { ok: false; error: RuntimeFailure }
+export type ExecutionResult = { ok: true; value: JsonValue } | { ok: false; error: RuntimeFailure }
 
 export function failure(error: unknown): RuntimeFailure {
   return {
-    code: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'JS_EXECUTION_FAILED',
+    ...(error && typeof error === 'object' && 'toolName' in error
+      ? { toolName: String(error.toolName) }
+      : {}),
+    code:
+      error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : 'JS_EXECUTION_FAILED',
     message: error instanceof Error ? error.message : String(error),
   }
 }
 
 /** Reject lossy values instead of silently altering a host-call contract. */
 export function jsonText(value: unknown, maxBytes: number): string {
-  const text = JSON.stringify(value, (_key, item) => {
-    if (item === undefined || typeof item === 'function' || typeof item === 'symbol' || typeof item === 'bigint' ||
-      (typeof item === 'number' && !Number.isFinite(item))) throw new Error('Expected lossless JSON data')
+  const text = JSON.stringify(value, function (key, item) {
+    const original = this[key]
+    if (
+      original !== null &&
+      typeof original === 'object' &&
+      !Array.isArray(original) &&
+      Object.getPrototypeOf(original) !== Object.prototype &&
+      Object.getPrototypeOf(original) !== null
+    ) {
+      throw new Error('Expected plain JSON objects and arrays')
+    }
+    if (
+      item === undefined ||
+      typeof item === 'function' ||
+      typeof item === 'symbol' ||
+      typeof item === 'bigint' ||
+      (typeof item === 'number' && !Number.isFinite(item))
+    )
+      throw new Error('Expected lossless JSON data')
     return item
   })
   if (typeof text !== 'string') throw new Error('Expected JSON data')
-  if (new TextEncoder().encode(text).byteLength > maxBytes) throw new Error('JSON transfer limit exceeded')
+  if (new TextEncoder().encode(text).byteLength > maxBytes)
+    throw new Error('JSON transfer limit exceeded')
   return text
 }
