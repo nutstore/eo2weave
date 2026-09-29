@@ -239,7 +239,7 @@ export interface ReadFileStateEntry {
   offset?: number
   limit?: number
   isPartialView?: boolean
-  source?: 'workspace' | 'native' | 'opfs' | 'agent' | 'assets' | 'skills' | 'native_fallback'
+  source?: 'workspace' | 'native' | 'opfs' | 'agent' | 'assets' | 'skills' | 'webmcp' | 'native_fallback'
 }
 
 /** Tool definition in OpenAI function calling format */

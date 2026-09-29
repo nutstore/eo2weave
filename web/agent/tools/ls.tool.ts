@@ -114,7 +114,7 @@ function createDirectoryToolDefinition(name: string, description: string): ToolD
 
 export const lsDefinition: ToolDefinition = createDirectoryToolDefinition(
   'ls',
-  'List directory contents. With pattern: search files matching glob. Without pattern: list tree structure. Supports workspace relative paths and vfs://workspace/..., vfs://agents/{id}/..., or vfs://assets/... in path.'
+  'List directory contents. With pattern: search files matching glob. Without pattern: list tree structure. Supports workspace relative paths and vfs://workspace/..., vfs://agents/{id}/..., vfs://assets/..., or vfs://webmcp/... in path.'
 )
 
 
@@ -223,6 +223,14 @@ type DiscoveryScope =
         options?: { allowMissing?: boolean }
       ) => Promise<{ handle: FileSystemDirectoryHandle; exists: boolean }>
     }
+  | {
+      kind: 'webmcp'
+      subPath: string
+      resolveHandle: (
+        path: string,
+        options?: { allowMissing?: boolean }
+      ) => Promise<{ handle: FileSystemDirectoryHandle; exists: boolean }>
+    }
 
 async function resolveDiscoveryScope(
   rawPath: unknown,
@@ -264,6 +272,18 @@ async function resolveDiscoveryScope(
         kind: 'skills',
         subPath: resolved.path,
         resolveHandle: (path, options) => resolveDirectoryHandle(skillsHandle, path, options),
+      }
+    }
+
+    if (resolved.kind === 'webmcp') {
+      const webmcpHandle = await resolved.backend.getDirectoryHandle?.()
+      if (!webmcpHandle) {
+        throw new Error('WebMCP directory not available.')
+      }
+      return {
+        kind: 'webmcp',
+        subPath: resolved.path,
+        resolveHandle: (path, options) => resolveDirectoryHandle(webmcpHandle, path, options),
       }
     }
 

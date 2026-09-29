@@ -17,6 +17,9 @@ export const WORKSPACE_MOUNT = '/workspace'
 /** Mount point for assets (user-uploaded / agent-generated files). */
 export const ASSETS_MOUNT = '/assets'
 
+/** Mount point for OPFS webmcp/ files. */
+export const WEBMCP_MOUNT = '/webmcp'
+
 /** Mount point for agent namespace files (vfs://agents/<agentId>/...). */
 export const AGENTS_MOUNT = '/agents'
 
@@ -94,6 +97,15 @@ export function isSystemPath(path: string): boolean {
 export function isAssetsPath(path: string): boolean {
   const normalized = path.startsWith('/') ? path : normalizeAbsolutePath(path)
   return normalized === ASSETS_MOUNT || normalized.startsWith(ASSETS_MOUNT + '/')
+}
+
+export function isWebmcpPath(path: string): boolean {
+  const normalized = path.startsWith('/') ? path : normalizeAbsolutePath(path)
+  return normalized === WEBMCP_MOUNT || normalized.startsWith(WEBMCP_MOUNT + '/')
+}
+
+export function toWebmcpRelative(absPath: string): string {
+  return absPath === WEBMCP_MOUNT ? '' : absPath.slice(WEBMCP_MOUNT.length + 1)
 }
 
 /** Check if a path is under /agents. */

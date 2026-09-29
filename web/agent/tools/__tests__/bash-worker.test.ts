@@ -243,6 +243,18 @@ describe('WorkerVfsBridgeFs', () => {
     expect(calls[0].backend).toBe('agent')
   })
 
+  it('routes WebMCP files to the WebMCP backend', async () => {
+    const { invoker, calls } = makeMockRpc({ readFile: (req) => `webmcp:${req.path}` })
+    const fs = new WorkerVfsBridgeFs(invoker, ['root'], false, false, {
+      readOnly: false,
+      restrictAgentCoreFiles: false,
+    })
+
+    expect(await fs.readFile('/webmcp/reports/result.txt')).toBe('webmcp:reports/result.txt')
+    expect(calls[0].backend).toBe('webmcp')
+    expect(calls[0].path).toBe('reports/result.txt')
+  })
+
   it('blocks subagent access to protected core files', async () => {
     const { invoker } = makeMockRpc()
     const fs = new WorkerVfsBridgeFs(invoker, ['root'], false, true, {

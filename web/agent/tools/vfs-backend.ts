@@ -1,7 +1,7 @@
 /**
  * Known backend label strings for type-safe comparisons.
  */
-export type BackendLabel = 'workspace' | 'agent' | 'assets' | 'skills'
+export type BackendLabel = 'workspace' | 'agent' | 'assets' | 'skills' | 'webmcp'
 
 /**
  * VFS Backend — Adapter interface for unified file I/O across storage backends.

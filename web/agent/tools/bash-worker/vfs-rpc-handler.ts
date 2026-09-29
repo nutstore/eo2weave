@@ -20,6 +20,7 @@ import type {
 } from '../vfs-backend'
 import { WorkspaceBackend } from '../backends/workspace-backend'
 import { AssetsBackend } from '../backends/assets-backend'
+import { WebMcpBackend } from '../backends/webmcp-backend'
 import { AgentBackend } from '../backends/agent-backend'
 import {
   isProtectedAgentCoreFile,
@@ -70,7 +71,7 @@ export async function handleVfsRpc(
     // here, reject early (see guard below).
 
     // Plan-mode read-only enforcement (defense-in-depth; worker also checks)
-    if (config.readOnly && isWriteMethod(req.method) && req.backend === 'workspace') {
+    if (config.readOnly && isWriteMethod(req.method) && req.backend !== 'agent') {
       return {
         type: 'vfs-result',
         rpcId,
@@ -130,6 +131,8 @@ function resolveBackend(backend: VfsRpcRequest['backend'], config: VfsRpcHandler
       )
     case 'assets':
       return new AssetsBackend(config.workspaceId)
+    case 'webmcp':
+      return new WebMcpBackend()
     default:
       throw new Error(`Backend '${backend}' requires async resolution — use handleAgentRpc`)
   }

@@ -37,7 +37,7 @@ export const readDefinition: ToolDefinition = {
   function: {
     name: 'read',
     description:
-      'Read file contents. Uses cached version if file has pending modifications. Supports workspace relative paths and vfs://workspace/... or vfs://agents/{id}/....',
+      'Read file contents. Uses cached version if file has pending modifications. Supports workspace relative paths and vfs://workspace/..., vfs://agents/{id}/..., or vfs://webmcp/....',
     parameters: {
       type: 'object',
       properties: {
@@ -596,6 +596,7 @@ function normalizeReadStateSource(
     value === 'agent' ||
     value === 'assets' ||
     value === 'skills' ||
+    value === 'webmcp' ||
     value === 'native_fallback'
   ) {
     return value
@@ -633,7 +634,7 @@ export const readPromptDoc: ToolPromptDoc = {
   category: 'file-ops',
   section: '### File Operations',
   lines: [
-    '- `read(path)` - Read file contents (supports relative workspace paths and `vfs://workspace/...`, `vfs://agents/{id}/...`)',
+    '- `read(path)` - Read file contents (supports relative workspace paths and `vfs://workspace/...`, `vfs://agents/{id}/...`, `vfs://webmcp/...`)',
     '- `read(paths)` - Read multiple files',
   ],
 }

@@ -30,14 +30,17 @@ import {
   DEFAULT_DIR_MODE,
   WORKSPACE_MOUNT,
   ASSETS_MOUNT,
+  WEBMCP_MOUNT,
   AGENTS_MOUNT,
   normalizeAbsolutePath,
   dirnameOf as dirname,
   isSystemPath,
   isAssetsPath,
+  isWebmcpPath,
   isAgentsPath,
   toWorkspaceRelative,
   toAssetsRelative,
+  toWebmcpRelative,
   toAgentsRelative,
   normalizeWriteEncoding,
   latin1StringToBytes,
@@ -100,6 +103,7 @@ export class WorkerVfsBridgeFs {
     this.ensureSysDir('/etc')
     this.ensureSysDir(WORKSPACE_MOUNT)
     if (hasAssets) this.ensureSysDir(ASSETS_MOUNT)
+    this.ensureSysDir(WEBMCP_MOUNT)
     if (hasAgent) this.ensureSysDir(AGENTS_MOUNT)
 
     // /dev/null — black hole
@@ -606,6 +610,10 @@ export class WorkerVfsBridgeFs {
     if (isAssetsPath(normalized)) {
       this.assertAgentPathAllowed(normalized)
       return { backend: 'assets', relPath: toAssetsRelative(normalized) }
+    }
+
+    if (isWebmcpPath(normalized)) {
+      return { backend: 'webmcp', relPath: toWebmcpRelative(normalized) }
     }
 
     if (isAgentsPath(normalized)) {

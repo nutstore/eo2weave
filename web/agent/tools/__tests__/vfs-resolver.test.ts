@@ -64,6 +64,20 @@ describe('vfs-resolver', () => {
     }
   })
 
+  it('resolves the WebMCP namespace without a workspace', async () => {
+    const result = await resolveVfsTarget('vfs://webmcp/reports/result.txt', makeContext({ workspaceId: null }), 'write')
+    expect(result.kind).toBe('webmcp')
+    expect(result.path).toBe('reports/result.txt')
+    expect(result.backend.label).toBe('webmcp')
+
+    const root = await resolveVfsTarget('vfs://webmcp/', makeContext(), 'list', { allowEmptyPath: true })
+    expect(root.kind).toBe('webmcp')
+    expect(root.path).toBe('')
+
+    await expect(resolveVfsTarget('vfs://webmcp/../agents/default/SOUL.md', makeContext(), 'read'))
+      .rejects.toThrow('Path cannot include')
+  })
+
   it('resolves vfs agent write with default agent permissions', async () => {
     const agentManager = { readPath: vi.fn(), writePath: vi.fn(), deletePath: vi.fn() }
     getProjectMock.mockResolvedValue({ agentManager })

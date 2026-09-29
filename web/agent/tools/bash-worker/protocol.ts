@@ -16,7 +16,7 @@
 // ---------------------------------------------------------------------------
 
 /** Which VFS backend a file operation targets. */
-export type VfsRpcBackend = 'workspace' | 'assets' | 'agent'
+export type VfsRpcBackend = 'workspace' | 'assets' | 'agent' | 'webmcp'
 
 /** File operation method names (subset of VfsBridgeFs / VfsBackend). */
 export type VfsRpcMethod =

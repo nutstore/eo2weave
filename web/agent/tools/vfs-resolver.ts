@@ -6,6 +6,7 @@ import { WorkspaceBackend } from './backends/workspace-backend'
 import { AgentBackend } from './backends/agent-backend'
 import { AssetsBackend } from './backends/assets-backend'
 import { SkillsBackend } from './backends/skills-backend'
+import { WebMcpBackend } from './backends/webmcp-backend'
 import { isProtectedAgentCoreFile } from './agent-file-protection'
 
 export { isProtectedAgentCoreFile } from './agent-file-protection'
@@ -39,10 +40,16 @@ export interface SkillsTarget {
   backend: VfsBackend
 }
 
-export type ResolvedVfsTarget = WorkspaceTarget | AgentTarget | AssetsTarget | SkillsTarget
+export interface WebMcpTarget {
+  kind: 'webmcp'
+  path: string
+  backend: VfsBackend
+}
+
+export type ResolvedVfsTarget = WorkspaceTarget | AgentTarget | AssetsTarget | SkillsTarget | WebMcpTarget
 
 interface ParsedPath {
-  namespace: 'workspace' | 'agents' | 'assets' | 'skills'
+  namespace: 'workspace' | 'agents' | 'assets' | 'skills' | 'webmcp'
   path: string
   agentId?: string
 }
@@ -149,6 +156,13 @@ function parseVfsPath(
     }
   }
 
+  if (namespace === 'webmcp') {
+    return {
+      namespace: 'webmcp',
+      path: normalizeRelativePath(parts.slice(1).join('/'), { allowEmpty: allowEmptyPath }),
+    }
+  }
+
   throw new Error(`Unsupported vfs namespace: ${namespace || '(empty)'}`)
 }
 
@@ -203,6 +217,14 @@ export async function resolveVfsTarget(
       kind: 'skills',
       path: parsed.path,
       backend: new SkillsBackend(),
+    }
+  }
+
+  if (parsed.namespace === 'webmcp') {
+    return {
+      kind: 'webmcp',
+      path: parsed.path,
+      backend: new WebMcpBackend(),
     }
   }
 

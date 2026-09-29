@@ -80,14 +80,16 @@ export function tryDecodeAsText(data: ArrayBuffer | Uint8Array): string | null {
  * For agent targets: constructs a synthetic path for tracking.
  */
 export function getResolvedPathForLoopGuard(target: Awaited<ReturnType<typeof import('./vfs-resolver').resolveVfsTarget>>): string {
-  if (target.backend.label === 'workspace') {
+  if (target.kind === 'workspace') {
     return target.path
   }
-  if (target.backend.label === 'skills') {
+  if (target.kind === 'skills') {
     return `vfs://skills/${target.path}`
   }
-  // For agent targets, construct a synthetic path
-  return `vfs://agents/${(target as any).agentId}/${target.path}`
+  if (target.kind === 'assets' || target.kind === 'webmcp') {
+    return `vfs://${target.kind}/${target.path}`
+  }
+  return `vfs://agents/${target.agentId}/${target.path}`
 }
 
 export function formatToolErrorMessage(error: unknown): string {

@@ -26,7 +26,7 @@ export const deleteDefinition: ToolDefinition = {
       'Soft delete file(s). Marks files as pending deletion in OPFS workspace. ' +
       'Use path for single file, or paths for batch. ' +
       'IMPORTANT: Files are not removed from real disk until sync is executed. ' +
-      'Supports vfs://workspace/..., vfs://agents/{id}/..., and vfs://assets/... paths.',
+      'Supports vfs://workspace/..., vfs://agents/{id}/..., vfs://assets/..., and vfs://webmcp/... paths.',
     parameters: {
       type: 'object',
       properties: {
