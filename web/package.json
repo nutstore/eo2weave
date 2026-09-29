@@ -3,8 +3,8 @@
   "version": "1.1.7",
   "private": true,
   "scripts": {
-    "dev": "node scripts/copy-pyodide.mjs && node scripts/prepare-pwa.mjs && next dev --hostname 0.0.0.0 --port 5173",
-    "build": "pnpm run prepare:assets && pnpm run prepare:pwa && next build",
+    "dev": "node scripts/copy-quickjs.mjs && node scripts/copy-pyodide.mjs && node scripts/prepare-pwa.mjs && next dev --hostname 0.0.0.0 --port 5173",
+    "build": "node scripts/copy-quickjs.mjs && pnpm run prepare:assets && pnpm run prepare:pwa && next build",
     "prepare:pwa": "node scripts/prepare-pwa.mjs",
     "prepare:pyodide": "node scripts/copy-pyodide.mjs",
     "build:extension": "cd ../browser-extension && pnpm install && pnpm run build",
@@ -28,6 +28,7 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "@babel/parser": "7.28.5",
     "@creatorweave/config": "workspace:*",
     "@creatorweave/i18n": "workspace:*",
     "@creatorweave/shared": "workspace:*",
@@ -83,6 +84,7 @@
     "pako": "^2.1.0",
     "pdfjs-dist": "^4.10.38",
     "pyodide": "^0.29.3",
+    "quickjs-wasi": "3.6.1",
     "react": "^18.3.1",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^18.3.1",

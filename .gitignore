@@ -101,3 +101,6 @@ prototypes/
 browser-extension/native-host/installer/*.zip
 browser-extension/native-host/installer/staging-*/
 browser-extension/native-host/installer/scripts-pkg/
+
+# Copied from the pinned runtime package at dev/build time
+web/public/assets/quickjs/
