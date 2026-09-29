@@ -37,7 +37,7 @@ function makeMockRpc(
 //                   otherwise UTF-8-encodes the string
 
 function makeRoundTripRpc(
-  stores: Partial<Record<'workspace' | 'assets' | 'agent', Map<string, Uint8Array>>>,
+  stores: Partial<Record<VfsRpcRequest['backend'], Map<string, Uint8Array>>>,
 ) {
   const decoder = new TextDecoder() // non-fatal: invalid bytes → U+FFFD (like decodeToString)
   const calls: VfsRpcRequest[] = []

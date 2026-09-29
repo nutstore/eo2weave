@@ -254,6 +254,8 @@ export interface ToolDefinition {
 
 /** Context provided to tool executors */
 export interface ToolContext {
+  /** Append caller context after this invocation completes. */
+  deferContext?: (content: import('@/agent/deferred-context').ContextPart[]) => void
   /** Root directory handle for file operations */
   directoryHandle: FileSystemDirectoryHandle | null
   /** True when this tool call originates from a delegated subagent. */

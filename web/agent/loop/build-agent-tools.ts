@@ -1,17 +1,15 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
-import { isToolAllowedInMode, type AgentMode } from '../agent-mode'
-import { getToolPolicy } from '../policy-engine'
+import { type AgentMode } from '../agent-mode'
+import { invokeTool } from '@/agent/tool-invocation'
 import type { ContextManager } from '../context-manager'
 import type { PiAIProvider } from '../llm/pi-ai-provider'
 import type { Message, ToolCall } from '../message-types'
 import type { ToolRegistry } from '../tool-registry'
-import { notifyOtherToolCall } from '../tools/loop-guard'
 import type { ToolContext } from '../tools/tool-types'
 import { isToolEnvelopeV2 } from '../tools/tool-envelope'
 import type { AgentCallbacks, AgentLoopConfig } from './types'
 import {
   coerceToolArgs,
-  executeToolWithTimeout,
   normalizeToolResult,
   truncateLargeToolResult,
 } from './tool-execution'
@@ -62,25 +60,6 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
       }
 
       try {
-        // Mode-based tool access control
-        if (!isToolAllowedInMode(toolDef.function.name, input.mode)) {
-          throw new Error(
-            `Tool "${toolDef.function.name}" is not available in ${input.mode} mode. ` +
-            `This tool requires write access. Switch to Act mode to use it.`
-          )
-        }
-
-        if (input.beforeToolCall) {
-          const before = await input.beforeToolCall({
-            toolName: toolDef.function.name,
-            toolCallId,
-            args,
-          })
-          if (before?.block) {
-            throw new Error(before.reason || 'Tool execution was blocked by policy.')
-          }
-        }
-
         // 计算当前上下文使用情况，传递给工具用于自我调节
         const contextConfig = input.contextManager.getConfig()
         const maxContextTokens = contextConfig.maxContextTokens || input.provider.maxContextTokens || 200000
@@ -94,66 +73,16 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
         // 在调用工具前更新 toolContext 的 contextUsage
         const originalToolContext = input.getToolContext()
 
-        // Sync agentMode from the store so that switch_agent_mode takes effect
-        // immediately for subsequent tool calls (e.g. bash Plan-mode write protection).
-        const { getCurrentWorkspaceAgentMode } = await import(
-          '@/store/workspace-preferences.store'
-        )
-        const currentMode = getCurrentWorkspaceAgentMode()
-
-        const toolContextWithUsage: ToolContext = {
-          ...originalToolContext,
-          agentMode: currentMode,
-          contextUsage: {
-            usedTokens: realUsedTokens ?? 0,
-            maxTokens: maxContextTokens - reserveTokens,
+        const outcome = await invokeTool(input, {
+          toolName: toolDef.function.name,
+          toolCallId,
+          args,
+          context: {
+            ...originalToolContext,
+            contextUsage: { usedTokens: realUsedTokens ?? 0, maxTokens: maxContextTokens - reserveTokens },
           },
-        }
-        input.setToolContext(toolContextWithUsage)
-
-        let rawResult = ''
-        try {
-          // Resolve effective timeout: respect per-call timeout for tools that declare one
-          // (e.g. python tool accepts a `timeout` parameter). Use the larger of the per-call
-          // value or the global default so we never accidentally reduce a legitimate timeout.
-          let effectiveTimeoutMs: number | null = input.toolExecutionTimeout
-          if (
-            input.toolTimeoutExemptions.has(toolDef.function.name) ||
-            // Prompt-level tools wait for a USER decision in the auth modal
-            // (policy-engine → tool-auth.store). Like ask_user_question, the
-            // outer timer must NOT run while the modal is open — a 30s timeout
-            // would kill the call while the user is still deciding. These tools
-            // wait indefinitely for approve/deny (abort still works).
-            getToolPolicy(toolDef.function.name).level === 'prompt'
-          ) {
-            effectiveTimeoutMs = null
-          } else if (typeof args.timeout === 'number' && args.timeout > 0) {
-            effectiveTimeoutMs = Math.min(args.timeout, 300_000) // cap at 5 min for safety
-          }
-
-          rawResult = await executeToolWithTimeout({
-            toolName: toolDef.function.name,
-            args,
-            timeoutMs: effectiveTimeoutMs,
-            runAbortSignal: input.getAbortSignal(),
-            externalAbortSignal: toolContextWithUsage.abortSignal,
-            execute: (abortSignal) =>
-              input.toolRegistry.execute(toolDef.function.name, args, {
-                ...toolContextWithUsage,
-                abortSignal,
-                currentToolCallId: toolCallId,
-              }),
-          })
-        } finally {
-          // 无论工具执行成功或失败，都恢复原始上下文
-          input.setToolContext(originalToolContext)
-          // Loop guard: reset consecutive counter after non-read/non-search tool execution.
-          // This ensures that read→write→read doesn't accumulate consecutive reads.
-          const toolName = toolDef.function.name
-          if (toolName !== 'read' && toolName !== 'search') {
-            notifyOtherToolCall(originalToolContext)
-          }
-        }
+        })
+        let rawResult = outcome.raw
 
         // Truncate oversized results before normalizeToolResult.
         // If the result exceeds the context budget, write it to an assets file
@@ -206,25 +135,11 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
             : undefined,
         })
 
-        const normalized = normalizeToolResult(rawResult)
+        const normalized = rawResult === outcome.raw ? outcome.presentation : normalizeToolResult(rawResult)
 
         let finalContent = normalized.content
         let finalDetails = normalized.details
         let finalIsError = normalized.isError
-
-        if (input.afterToolCall) {
-          const patched = await input.afterToolCall({
-            toolName: toolDef.function.name,
-            toolCallId,
-            args,
-            content: finalContent,
-            details: finalDetails,
-            isError: finalIsError,
-          })
-          if (patched?.content !== undefined) finalContent = patched.content
-          if (patched?.details !== undefined) finalDetails = patched.details
-          if (patched?.isError !== undefined) finalIsError = patched.isError
-        }
 
         if (finalIsError) {
           // If the error is already wrapped in a ToolEnvelopeV2 (e.g. from MCP tools),
@@ -233,7 +148,7 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
           if (isToolEnvelopeV2(finalDetails.parsed)) {
             finalContent = rawResult
             finalIsError = false
-          } else {
+          } else if (outcome.deferred.length === 0) {
             throw new Error(
               finalContent.replace(/^Error(?:\s*\[[^\]]+\])?:\s*/i, '') || 'Tool execution failed'
             )
@@ -291,11 +206,11 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
               | { contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> }
               | undefined
             if (parsed && Array.isArray(parsed.contentParts) && parsed.contentParts.length > 0) {
-              return parsed.contentParts
+              return [...parsed.contentParts, ...outcome.deferred.flatMap(event => event.content)]
             }
-            return [{ type: 'text', text: finalContent }]
+            return [{ type: 'text' as const, text: finalContent }, ...outcome.deferred.flatMap(event => event.content)]
           })(),
-          details: finalDetails,
+          details: { ...finalDetails, deferred: outcome.deferred },
         }
       } catch (toolError) {
         if (toolError instanceof Error && toolError.message.includes('timed out')) {
