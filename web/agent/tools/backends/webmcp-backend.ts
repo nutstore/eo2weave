@@ -36,11 +36,12 @@ export class WebMcpBackend implements VfsBackend {
   async readFile(path: string, options?: VfsReadOptions): Promise<VfsReadResult> {
     const { dir, name } = await this.parent(path)
     const file = await (await dir.getFileHandle(name)).getFile()
-    const encoding = options?.encoding ?? (getFileContentType(path) === 'text' ? 'text' : 'binary')
+    const isText = getFileContentType(path) === 'text'
+    const encoding = options?.encoding ?? (isText ? 'text' : 'binary')
     return {
       content: encoding === 'text' ? await file.text() : await file.arrayBuffer(),
       size: file.size,
-      mimeType: file.type || (getFileContentType(path) === 'text' ? 'text/plain' : 'application/octet-stream'),
+      mimeType: file.type || (isText ? 'text/plain' : 'application/octet-stream'),
       source: 'webmcp',
       mtime: file.lastModified,
     }
@@ -64,14 +65,17 @@ export class WebMcpBackend implements VfsBackend {
   async deleteDir(path: string): Promise<{ deletedFiles: string[]; deletedDirs: string[] }> {
     if (!path) throw new Error('Cannot delete WebMCP root directory')
     const { dir: parent, name } = await this.parent(path)
-    try {
-      await parent.getFileHandle(name)
-      await this.deleteFile(path)
-      return { deletedFiles: [path], deletedDirs: [] }
-    } catch (error) {
-      if (error instanceof DOMException && error.name !== 'NotFoundError' && error.name !== 'TypeMismatchError') {
+    const isFile = await parent.getFileHandle(name).then(
+      () => true,
+      (error) => {
+        // NotFound/TypeMismatch mean "not a file here"; fall through to directory deletion.
+        if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'TypeMismatchError')) return false
         throw error
       }
+    )
+    if (isFile) {
+      await parent.removeEntry(name)
+      return { deletedFiles: [path], deletedDirs: [] }
     }
     const deletedFiles: string[] = []
     const deletedDirs: string[] = []

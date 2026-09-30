@@ -12,7 +12,6 @@ function createInput(overrides: Record<string, unknown> = {}) {
     getAllMessages: () => [],
     getAbortSignal: () => undefined,
     getToolContext: () => ({ directoryHandle: null }),
-    setToolContext: () => {},
     provider: { maxContextTokens: 128000, estimateTokens: () => 1 } as any,
     contextManager: { getConfig: () => ({ maxContextTokens: 128000, reserveTokens: 4096 }) } as any,
     toolExecutionTimeout: overrides.toolExecutionTimeout as number ?? 30000,

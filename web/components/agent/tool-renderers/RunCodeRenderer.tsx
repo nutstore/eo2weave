@@ -9,7 +9,7 @@ registerRenderer({
     return <span className="truncate">{String(ctx.args.purpose || 'run_code')}</span>
   },
   Detail(ctx) {
-    const meta = ctx.result?.meta as { calls?: CodeToolTrace[]; logs?: string[] } | undefined
+    const meta = ctx.result?.meta as { calls?: CodeToolTrace[] } | undefined
     return <div className="space-y-2 px-3 py-2">
       <pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">{String(ctx.args.code || '')}</pre>
       {meta?.calls?.map(call => <details key={call.id}>

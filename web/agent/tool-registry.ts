@@ -21,8 +21,14 @@ const TOOL_ALIASES: Record<string, string> = {
   sync: 'sync-to-opfs', // renamed in PR-3 (tool authorization redesign)
 }
 
+// Import run_code tool
+import {
+  RUN_CODE_TOOL,
+  runCodeDefinition,
+  runCodeExecutor,
+  runCodePromptDoc,
+} from './tools/run-code.tool'
 // Import read tool
-import { runCodeDefinition, runCodeExecutor, runCodePromptDoc } from '@/agent/tools/run-code.tool'
 import { readDefinition, readExecutor, readPromptDoc } from './tools/read.tool'
 // Import write tool
 import { writeDefinition, writeExecutor, writePromptDoc } from './tools/write.tool'
@@ -389,7 +395,8 @@ export class ToolRegistry {
     }
 
     try {
-      if (name === 'run_code') return await entry.executor(args, context)
+      // run_code may have side effects; never auto-retry the whole program.
+      if (name === RUN_CODE_TOOL) return await entry.executor(args, context)
       // Use auto-retry for transient errors
       return await withAutoRetry(async () => entry.executor(args, context))
     } catch (error) {

@@ -1,4 +1,3 @@
-import { webmcpCommand } from './webmcp-command'
 /**
  * bash-worker entry point — runs inside a Web Worker.
  *
@@ -16,6 +15,7 @@ import { webmcpCommand } from './webmcp-command'
 /// <reference lib="webworker" />
 
 import { WorkerVfsBridgeFs, type VfsRpcInvoker } from './worker-vfs-bridge'
+import { webmcpCommand } from './webmcp-command'
 import type {
   ToWorkerMessage,
   FromWorkerMessage,

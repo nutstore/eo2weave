@@ -4,6 +4,8 @@
  */
 
 import type { PiAIProvider } from '../llm/pi-ai-provider'
+import type { ContextPart, DeferredContext } from '../deferred-context'
+import type { InvocationOutcome } from '../tool-invocation'
 
 /** JSON Schema subset for tool parameter definitions */
 export interface JSONSchemaProperty {
@@ -16,6 +18,7 @@ export interface JSONSchemaProperty {
   default?: unknown
   minimum?: number
   maximum?: number
+  minLength?: number
   oneOf?: JSONSchemaProperty[]
 }
 
@@ -262,11 +265,11 @@ export interface ToolContext {
       toolCallId: string
       args: Record<string, unknown>
       signal: AbortSignal
-      onContext: (event: import('@/agent/deferred-context').DeferredContext) => void
-    }) => Promise<import('@/agent/tool-invocation').InvocationOutcome>
+      onContext: (event: DeferredContext) => void
+    }) => Promise<InvocationOutcome>
   }
   /** Append caller context after this invocation completes. */
-  deferContext?: (content: import('@/agent/deferred-context').ContextPart[]) => void
+  deferContext?: (content: ContextPart[]) => void
   /** Root directory handle for file operations */
   directoryHandle: FileSystemDirectoryHandle | null
   /** True when this tool call originates from a delegated subagent. */

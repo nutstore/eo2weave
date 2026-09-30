@@ -5,7 +5,6 @@ import { executeQuickJs } from '@/runtime/quickjs/runtime'
 import { runCodeDefinition, runCodeExecutor } from '@/agent/tools/run-code.tool'
 import { buildAgentTools, type BuildAgentToolsInput } from '@/agent/loop/build-agent-tools'
 import type { ToolDefinition, ToolExecutor } from '@/agent/tools/tool-types'
-import { projectTools } from '@/agent/tool-projection'
 
 let wasm: WebAssembly.Module
 vi.mock('@/runtime/quickjs/client', () => ({ executeCode: (...args: Parameters<typeof import('@/runtime/quickjs/client').executeCode>) => executeQuickJs(wasm, ...args) }))
@@ -22,7 +21,7 @@ function setup(executor: ToolExecutor, mode: 'act' | 'plan' = 'act') {
     toolRegistry: { getToolDefinitionsForMode: () => definitions, execute }, mode,
     beforeToolCall: before,
     getAllMessages: () => [], getAbortSignal: () => undefined,
-    getToolContext: () => ({ directoryHandle: null }), setToolContext: vi.fn(),
+    getToolContext: () => ({ directoryHandle: null }),
     provider: { maxContextTokens: 128000, estimateTokens: () => 1 },
     contextManager: { getConfig: () => ({}) }, toolExecutionTimeout: 5000, toolTimeoutExemptions: new Set(),
   } as unknown as BuildAgentToolsInput
@@ -32,20 +31,26 @@ function setup(executor: ToolExecutor, mode: 'act' | 'plan' = 'act') {
 }
 
 describe('run_code integration', () => {
-  it('keeps all direct tools and excludes recursive code execution', () => {
-    const { tools } = setup(async () => '{}')
+  it('keeps all direct tools and excludes recursive code execution', async () => {
+    const { tools, run } = setup(async () => '{}')
     expect(tools.map(t => t.name)).toEqual(['read', 'write', 'run_code'])
-    expect(projectTools([runCodeDefinition]).codeTools).toEqual([])
+    expect(runCodeDefinition.function.name).toBe("run_code")
   })
   it('uses the same execution hooks, keeps intermediate results out of model context, and records UI traces', async () => {
-    const { run, before, input } = setup(async () => JSON.stringify({ value: 5, secret: 'INTERMEDIATE_ONLY' }))
+    const { run, before } = setup(async () => JSON.stringify({ value: 5, secret: 'INTERMEDIATE_ONLY' }))
     const result = await run('const a = await tools.read({path:"a"}); console.log("done"); return a.value + 1')
     expect(JSON.stringify(result.content)).toContain('6')
     expect(JSON.stringify(result.content)).not.toContain('INTERMEDIATE_ONLY')
     expect(JSON.stringify(result.content)).toContain('done')
     expect((result.details as { displayContent: string }).displayContent).toContain('INTERMEDIATE_ONLY')
     expect(before.mock.calls.map(c => c[0].toolName)).toEqual(['run_code', 'read'])
-    expect(input.setToolContext).not.toHaveBeenCalled()
+  })
+  it('applies afterToolCall to the model-facing run_code result', async () => {
+    const { run, input } = setup(async () => '{}')
+    input.afterToolCall = vi.fn(async (ctx) => (ctx.toolName === 'run_code' ? { content: 'PATCHED' } : undefined))
+    const result = await run('return 1')
+    expect(result.content).toEqual([{ type: 'text', text: 'PATCHED' }])
+    expect(JSON.stringify(vi.mocked(input.afterToolCall!).mock.calls.at(-1)![0])).not.toContain('"calls"')
   })
   it('defers images and explicit context even if the program subsequently fails', async () => {
     const { run } = setup(async (_args, ctx) => {
