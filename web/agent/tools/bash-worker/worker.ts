@@ -15,6 +15,7 @@
 /// <reference lib="webworker" />
 
 import { WorkerVfsBridgeFs, type VfsRpcInvoker } from './worker-vfs-bridge'
+import { webmcpCommand } from './webmcp-command'
 import type {
   ToWorkerMessage,
   FromWorkerMessage,
@@ -163,6 +164,7 @@ async function handleExec(req: WorkerExecRequest): Promise<void> {
 
   const bash: BashInstance = new BashClass({
     fs: bridgeFs as any,
+    customCommands: [webmcpCommand],
     cwd: cwd || defaultCwd,
     executionLimits: {
       maxCommandCount: 5000,

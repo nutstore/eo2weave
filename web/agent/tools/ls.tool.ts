@@ -208,23 +208,7 @@ type DiscoveryScope =
       ) => Promise<{ handle: FileSystemDirectoryHandle; exists: boolean }>
     }
   | {
-      kind: 'assets'
-      subPath: string
-      resolveHandle: (
-        path: string,
-        options?: { allowMissing?: boolean }
-      ) => Promise<{ handle: FileSystemDirectoryHandle; exists: boolean }>
-    }
-  | {
-      kind: 'skills'
-      subPath: string
-      resolveHandle: (
-        path: string,
-        options?: { allowMissing?: boolean }
-      ) => Promise<{ handle: FileSystemDirectoryHandle; exists: boolean }>
-    }
-  | {
-      kind: 'webmcp'
+      kind: 'assets' | 'skills' | 'webmcp'
       subPath: string
       resolveHandle: (
         path: string,
@@ -251,39 +235,15 @@ async function resolveDiscoveryScope(
       }
     }
 
-    if (resolved.kind === 'assets') {
-      const assetsHandle = await resolved.backend.getDirectoryHandle?.()
-      if (!assetsHandle) {
-        throw new Error('Assets directory not available.')
+    if (resolved.kind === 'assets' || resolved.kind === 'skills' || resolved.kind === 'webmcp') {
+      const rootHandle = await resolved.backend.getDirectoryHandle?.()
+      if (!rootHandle) {
+        throw new Error(`${resolved.backend.label} directory not available.`)
       }
       return {
-        kind: 'assets',
+        kind: resolved.kind,
         subPath: resolved.path,
-        resolveHandle: (path, options) => resolveDirectoryHandle(assetsHandle, path, options),
-      }
-    }
-
-    if (resolved.kind === 'skills') {
-      const skillsHandle = await resolved.backend.getDirectoryHandle?.()
-      if (!skillsHandle) {
-        throw new Error('Skills directory not available.')
-      }
-      return {
-        kind: 'skills',
-        subPath: resolved.path,
-        resolveHandle: (path, options) => resolveDirectoryHandle(skillsHandle, path, options),
-      }
-    }
-
-    if (resolved.kind === 'webmcp') {
-      const webmcpHandle = await resolved.backend.getDirectoryHandle?.()
-      if (!webmcpHandle) {
-        throw new Error('WebMCP directory not available.')
-      }
-      return {
-        kind: 'webmcp',
-        subPath: resolved.path,
-        resolveHandle: (path, options) => resolveDirectoryHandle(webmcpHandle, path, options),
+        resolveHandle: (path, options) => resolveDirectoryHandle(rootHandle, path, options),
       }
     }
 

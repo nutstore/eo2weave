@@ -2,12 +2,17 @@ import { executeCode } from '@/runtime/quickjs/client'
 import { DEFAULT_LIMITS, type JsonValue } from '@/runtime/quickjs/types'
 import { toolErrorJson, toolOkJson, isToolEnvelopeV2 } from '@/agent/tools/tool-envelope'
 import type { ToolDefinition, ToolExecutor, ToolPromptDoc } from '@/agent/tools/tool-types'
-import type { DeferredContext } from '@/agent/deferred-context'
+import type { ContextPart, DeferredContext } from '@/agent/deferred-context'
+
+export const RUN_CODE_TOOL = 'run_code'
+
+const MAX_TRACE_CHARS = 2 * 1024 * 1024
+const MAX_LOG_BYTES = 64 * 1024
 
 export const runCodeDefinition: ToolDefinition = {
   type: 'function',
   function: {
-    name: 'run_code',
+    name: RUN_CODE_TOOL,
     description: [
       'Execute an async JavaScript function body to combine available tools and process their results.',
       'purpose and code are required. Top-level await and return work; TypeScript and imports do not.',
@@ -22,9 +27,10 @@ export const runCodeDefinition: ToolDefinition = {
       properties: {
         purpose: {
           type: 'string',
+          minLength: 1,
           description: 'A concise explanation of this execution, in the user’s language.',
         },
-        code: { type: 'string', description: 'Async JavaScript function body.' },
+        code: { type: 'string', minLength: 1, description: 'Async JavaScript function body.' },
       },
       required: ['purpose', 'code'],
     },
@@ -39,25 +45,30 @@ export interface CodeToolTrace {
   result: string
 }
 
-export const runCodeExecutor: ToolExecutor = async (args, context) => {
-  if (
-    typeof args.purpose !== 'string' ||
-    !args.purpose.trim() ||
-    typeof args.code !== 'string' ||
-    !args.code.trim()
-  ) {
-    return toolErrorJson('run_code', 'INVALID_INPUT', 'purpose and code must be nonempty strings')
+/** Drops UI-only call traces (`meta`) from a run_code envelope before it reaches the model. */
+export function stripRunCodeTrace(raw: string): string {
+  try {
+    const response = JSON.parse(raw)
+    delete response.meta
+    return JSON.stringify(response)
+  } catch {
+    return raw
   }
+}
+
+export const runCodeExecutor: ToolExecutor = async (args, context) => {
   const tools = context.codeTools
   if (!tools)
-    return toolErrorJson('run_code', 'UNAVAILABLE', 'Tool invocation context is unavailable')
+    return toolErrorJson(RUN_CODE_TOOL, 'UNAVAILABLE', 'Tool invocation context is unavailable')
+  // Arguments are schema-validated by invokeTool before reaching the executor.
+  const code = args.code as string
   const traces: CodeToolTrace[] = []
   const deferred = new Map<number, DeferredContext[]>()
   const logs: string[] = []
   let logBytes = 0
   let traceChars = 0
   const traceText = (value: string) => {
-    const remaining = Math.max(0, 2 * 1024 * 1024 - traceChars)
+    const remaining = Math.max(0, MAX_TRACE_CHARS - traceChars)
     traceChars += value.length
     return value.length <= remaining
       ? value
@@ -67,7 +78,7 @@ export const runCodeExecutor: ToolExecutor = async (args, context) => {
   const signal = context.abortSignal ?? new AbortController().signal
   const result = await executeCode(
     {
-      code: args.code,
+      code,
       filename: 'run_code.js',
       limits: DEFAULT_LIMITS,
       setup: `
@@ -80,8 +91,7 @@ export const runCodeExecutor: ToolExecutor = async (args, context) => {
       globals: { toolNames: tools.names },
       functions: {
         invokeTool: async ([name, value], callSignal) => {
-          if (closed || typeof name !== 'string' || !tools.names.includes(name))
-            throw new Error(`Tool unavailable: ${name}`)
+          if (closed || typeof name !== 'string') throw new Error(`Tool unavailable: ${name}`)
           if (!value || typeof value !== 'object' || Array.isArray(value))
             throw new Error('Tool arguments must be an object')
           const sequence = traces.length
@@ -114,18 +124,14 @@ export const runCodeExecutor: ToolExecutor = async (args, context) => {
                   : { code: 'TOOL_FAILED', message: outcome.presentation.content }
               throw Object.assign(new Error(detail.message), { ...detail, toolName: name })
             }
-            const parts = outcome.presentation.details.parsed as
-              | { contentParts?: import('@/agent/deferred-context').ContextPart[] }
+            // Attach nested images to the run_code result so the model can see them.
+            const parsed = outcome.presentation.details.parsed as
+              | { contentParts?: ContextPart[] }
               | undefined
-            if (parts?.contentParts?.some((part) => part.type === 'image')) {
-              deferred.set(sequence, [
-                ...outcome.deferred,
-                {
-                  sourceCallId: trace.id,
-                  sequence: outcome.deferred.length,
-                  content: parts.contentParts,
-                },
-              ])
+            if (parsed?.contentParts?.some((part) => part.type === 'image')) {
+              const events = deferred.get(sequence) ?? []
+              events.push({ sourceCallId: trace.id, sequence: events.length, content: parsed.contentParts })
+              deferred.set(sequence, events)
             }
             return outcome.value as JsonValue
           } catch (error) {
@@ -145,7 +151,7 @@ export const runCodeExecutor: ToolExecutor = async (args, context) => {
           if (closed) return null
           const text = String(value)
           logBytes += new TextEncoder().encode(text).byteLength
-          if (logBytes <= 64 * 1024) logs.push(text)
+          if (logBytes <= MAX_LOG_BYTES) logs.push(text)
           else if (logs.at(-1) !== '[Logs truncated]') logs.push('[Logs truncated]')
           return null
         },
@@ -161,11 +167,13 @@ export const runCodeExecutor: ToolExecutor = async (args, context) => {
     }
   const contexts = [...deferred.entries()].sort(([a], [b]) => a - b).flatMap(([, events]) => events)
   for (const event of contexts) context.deferContext?.(event.content)
-  const meta = { calls: traces, deferred: contexts }
+  // `meta.calls` is the UI trace; stripRunCodeTrace removes it from model context.
+  const meta = { calls: traces }
   return result.ok
-    ? toolOkJson('run_code', { value: result.value, logs }, { meta })
-    : toolErrorJson('run_code', result.error.code, result.error.message, {
-        meta: { ...meta, logs },
+    ? toolOkJson(RUN_CODE_TOOL, { value: result.value, logs }, { meta })
+    : toolErrorJson(RUN_CODE_TOOL, result.error.code, result.error.message, {
+        details: { logs },
+        meta,
       })
 }
 

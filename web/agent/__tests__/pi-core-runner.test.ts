@@ -56,7 +56,6 @@ describe('pi-core-runner', () => {
       beforeToolCall: undefined,
       afterToolCall: undefined,
       getToolContext: () => ({ directoryHandle: null }),
-      setToolContext: () => {},
       provider: {
         getModel: () => ({ api: 'openai', provider: 'openai', id: 'm', maxTokens: 1024 }),
         getApiKey: () => 'k',
@@ -125,7 +124,6 @@ describe('pi-core-runner', () => {
       beforeToolCall: undefined,
       afterToolCall: undefined,
       getToolContext: () => ({ directoryHandle: null }),
-      setToolContext: () => {},
       provider: {
         getModel: () => ({ api: 'openai', provider: 'openai', id: 'm', maxTokens: 1024 }),
         getApiKey: () => 'k',
@@ -194,7 +192,6 @@ describe('pi-core-runner', () => {
       beforeToolCall: undefined,
       afterToolCall: undefined,
       getToolContext: () => ({ directoryHandle: null }),
-      setToolContext: () => {},
       provider: {
         getModel: () => ({ api: 'openai', provider: 'openai', id: 'm', maxTokens: 1024 }),
         getApiKey: () => 'k',
@@ -286,7 +283,6 @@ describe('pi-core-runner', () => {
       beforeToolCall: undefined,
       afterToolCall: undefined,
       getToolContext: () => ({ directoryHandle: null }),
-      setToolContext: () => {},
       provider: {
         getModel: () => ({ api: 'openai', provider: 'openai', id: 'm', maxTokens: 1024 }),
         getApiKey: () => 'k',

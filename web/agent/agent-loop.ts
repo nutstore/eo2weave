@@ -151,9 +151,6 @@ export class AgentLoop {
         beforeToolCall: this.beforeToolCall,
         afterToolCall: this.afterToolCall,
         getToolContext: () => this.toolContext,
-        setToolContext: (context) => {
-          this.toolContext = context
-        },
         provider: this.provider,
         contextManager: this.contextManager,
         toolExecutionTimeout: this.toolExecutionTimeout,

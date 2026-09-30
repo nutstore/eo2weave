@@ -786,8 +786,13 @@ export default defineContentScript({
       },
 
       /**
-       * Discover WebMCP tools across tabs in current browser window.
+       * Sync validated OPFS package snapshots to the extension.
        */
+      async webMCPSetPackages(packages: unknown[]) {
+        return sendToBridge('webmcp_set_packages', { packages });
+      },
+
+      /** Discover WebMCP tools across tabs in the current window. */
       async webMCPDiscover(options?: { force?: boolean }) {
         // Only `force` is honored from pages. includeDisabled is a popup-only
         // escape hatch — a page must never see disabled (unauthorized) tools,

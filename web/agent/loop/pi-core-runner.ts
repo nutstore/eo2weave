@@ -81,7 +81,6 @@ export interface ExecutePiCoreLoopInput {
   beforeToolCall?: AgentLoopConfig['beforeToolCall']
   afterToolCall?: AgentLoopConfig['afterToolCall']
   getToolContext: () => ToolContext
-  setToolContext: (context: ToolContext) => void
   provider: PiAIProvider
   contextManager: ContextManager
   toolExecutionTimeout: number
@@ -177,7 +176,6 @@ export async function executePiCoreLoop(
     getAllMessages: () => allMessages,
     getAbortSignal: () => input.signal,
     getToolContext: input.getToolContext,
-    setToolContext: input.setToolContext,
     provider: input.provider,
     contextManager: input.contextManager,
     toolExecutionTimeout: input.toolExecutionTimeout,
