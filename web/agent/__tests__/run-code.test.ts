@@ -34,7 +34,7 @@ describe('run_code integration', () => {
   it('keeps all direct tools and excludes recursive code execution', async () => {
     const { tools, run } = setup(async () => '{}')
     expect(tools.map(t => t.name)).toEqual(['read', 'write', 'run_code'])
-    expect(runCodeDefinition.function.name).toBe("run_code")
+    expect(JSON.stringify((await run('if (tools.run_code) return "exposed"; return await invokeTool("run_code", { purpose: "x", code: "1" })')).content)).toContain('Tool unavailable')
   })
   it('uses the same execution hooks, keeps intermediate results out of model context, and records UI traces', async () => {
     const { run, before } = setup(async () => JSON.stringify({ value: 5, secret: 'INTERMEDIATE_ONLY' }))

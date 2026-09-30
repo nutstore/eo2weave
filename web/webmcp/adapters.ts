@@ -1,4 +1,4 @@
-import { validateManifest, validatePackage, validatePackageSnapshot, type WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
+import { validateManifest, validatePackage, type WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
 
 export interface PackageFiles {
   readFile(path: string): Promise<string>
@@ -13,7 +13,10 @@ export async function readPackage(files: PackageFiles, directory: string): Promi
   return validatePackage(manifest, sources, id)
 }
 
-/** Invalid/incomplete packages are withdrawn as a whole. */
+/**
+ * Invalid/incomplete packages are withdrawn as a whole. Snapshot-level limits
+ * are enforced by the extension background when the snapshot is stored.
+ */
 export async function readPackageCatalog(
   files: PackageFiles & { directories(): Promise<string[]> },
 ): Promise<{ packages: WebMCPPackage[]; errors: string[] }> {
@@ -23,5 +26,5 @@ export async function readPackageCatalog(
     try { packages.push(await readPackage(files, directory)) }
     catch (error) { errors.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`) }
   }
-  return { packages: validatePackageSnapshot(packages), errors }
+  return { packages, errors }
 }

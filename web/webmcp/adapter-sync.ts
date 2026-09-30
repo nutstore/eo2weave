@@ -8,7 +8,10 @@ type AdapterBridge = {
   webMCPSetPackages(packages: WebMCPPackage[]): Promise<{ ok: boolean; error: string }>
 }
 
-/** Injection has its own lifecycle and never calls or changes discovery. */
+/**
+ * Polls OPFS webmcp/ every 3s and pushes the package snapshot to the extension
+ * when it changes. Returns a stop function.
+ */
 export function startWebMCPAdapterSync(): () => void {
   const backend = new WebMcpBackend()
   let stopped = false

@@ -1,4 +1,5 @@
-import { validatePackageSnapshot, parseWorkflow, matchesToolUrl } from '@creatorweave/shared/webmcp-adapter'
+import { validatePackageSnapshot, parseWorkflow } from '@creatorweave/shared/webmcp-adapter'
+import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
 import { createWorkflow, type WorkflowStep } from '@creatorweave/shared/webmcp-workflow'
 import { registerPageTools } from './register-tools'
 

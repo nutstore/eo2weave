@@ -1,6 +1,3 @@
-import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
-import type { WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
-import { WEBMCP_PACKAGES_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter-storage'
 // ============================================================
 // WebMCP relay — STATIC ISOLATED-world content script.
 //
@@ -23,6 +20,9 @@ import { WEBMCP_PACKAGES_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter
 // cannot forge a report about a different tab.
 // ============================================================
 
+import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
+import type { WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
+import { WEBMCP_PACKAGES_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter-storage'
 import {
   WEBMCP_INVOKE_IN_TAB_TYPE,
   WEBMCP_INVOKE_RELAY_TIMEOUT_MS,
@@ -74,7 +74,6 @@ export default defineContentScript({
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local' && changes[WEBMCP_PACKAGES_STORAGE_KEY]) refreshAdapters()
     })
-
 
     // ── Recipe activation (consent-gated) ──
     // storage.local holds the user's enabled-recipe map. When a

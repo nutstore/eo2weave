@@ -1,9 +1,9 @@
-import { validatePackageSnapshot } from '@creatorweave/shared/webmcp-adapter'
-import { WEBMCP_PACKAGES_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter-storage'
 // ============================================================
 // Background Service Worker
 // ============================================================
 
+import { validatePackageSnapshot } from '@creatorweave/shared/webmcp-adapter'
+import { WEBMCP_PACKAGES_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter-storage'
 import { discoverWebMCPToolsInCurrentWindow } from './webmcp/discovery'
 import { invokeWebMCPTool } from './webmcp/invoke'
 import {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { validateManifest, validatePackage, validatePackageSnapshot, parseWorkflow, matchesToolUrl } from '@creatorweave/shared/webmcp-adapter'
+import { validateManifest, validatePackage, validatePackageSnapshot, parseWorkflow } from '@creatorweave/shared/webmcp-adapter'
+import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
 import { createWorkflow, type WorkflowStep } from '@creatorweave/shared/webmcp-workflow'
 import { readPackage, readPackageCatalog } from '../adapters'
 import { webmcpCommand } from '@/agent/tools/bash-worker/webmcp-command'
