@@ -1,38 +1,27 @@
-import { validateAdapter, validateAdapterSnapshot, type WebMCPAdapter } from '@creatorweave/shared/webmcp-adapter'
+import { validateManifest, validatePackage, validatePackageSnapshot, type WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
 
-export interface AdapterFiles {
+export interface PackageFiles {
   readFile(path: string): Promise<string>
 }
 
-export async function readAdapter(files: AdapterFiles, directory: string): Promise<WebMCPAdapter> {
-  const root = directory.replace(/\/$/, '')
-  const [metadata, source] = await Promise.all([
-    files.readFile(`${root}/tool.json`), files.readFile(`${root}/index.js`),
-  ])
-  return validateAdapter(JSON.parse(metadata), source)
+export async function readPackage(files: PackageFiles, directory: string): Promise<WebMCPPackage> {
+  const root = directory.replace(/\/+$/, '')
+  const id = root.split('/').pop()!
+  const manifest = validateManifest(JSON.parse(await files.readFile(`${root}/manifest.json`)), id)
+  const sources: Record<string, string> = Object.create(null)
+  for (const tool of manifest.tools) sources[tool.path] = await files.readFile(`${root}/${tool.path}`)
+  return validatePackage(manifest, sources, id)
 }
 
-/** Invalid/incomplete packages are omitted so stale registrations are withdrawn. */
-export async function readAdapterCatalog(
-  files: AdapterFiles & { directories(): Promise<string[]> },
-): Promise<{ adapters: WebMCPAdapter[]; errors: string[] }> {
-  const adapters: WebMCPAdapter[] = []
+/** Invalid/incomplete packages are withdrawn as a whole. */
+export async function readPackageCatalog(
+  files: PackageFiles & { directories(): Promise<string[]> },
+): Promise<{ packages: WebMCPPackage[]; errors: string[] }> {
+  const packages: WebMCPPackage[] = []
   const errors: string[] = []
   for (const directory of (await files.directories()).sort()) {
-    try { adapters.push(await readAdapter(files, directory)) }
+    try { packages.push(await readPackage(files, directory)) }
     catch (error) { errors.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`) }
   }
-  // Conflicting names are rejected together rather than resolved by directory order.
-  const counts = new Map<string, number>()
-  for (const adapter of adapters) {
-    const key = `${adapter.origin}/${adapter.name}`
-    counts.set(key, (counts.get(key) ?? 0) + 1)
-  }
-  const unique = adapters.filter(adapter => {
-    const key = `${adapter.origin}/${adapter.name}`
-    if (counts.get(key) === 1) return true
-    errors.push(`Duplicate adapter: ${key}`)
-    return false
-  })
-  return { adapters: validateAdapterSnapshot(unique), errors }
+  return { packages: validatePackageSnapshot(packages), errors }
 }

@@ -9,16 +9,19 @@
     ".": "./src/index.ts",
     "./webmcp-adapter": "./src/webmcp-adapter.ts",
     "./webmcp-workflow": "./src/webmcp-workflow.ts",
-    "./webmcp-adapter-storage": "./src/webmcp-adapter-storage.ts"
+    "./webmcp-adapter-storage": "./src/webmcp-adapter-storage.ts",
+    "./webmcp-url": "./src/webmcp-url.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@babel/types": "7.29.0",
     "@creatorweave/config": "workspace:*",
     "typescript": "^5.7.2"
   },
   "dependencies": {
-    "@babel/parser": "7.28.5"
+    "@babel/parser": "7.28.5",
+    "@cfworker/json-schema": "^4.1.1"
   }
 }

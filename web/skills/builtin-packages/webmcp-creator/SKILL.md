@@ -1,87 +1,110 @@
 ---
 name: cw-webmcp-creator
-description: Create and debug WebMCP adapters that expose website actions as tools through inspect/run workflows. Use when a website needs reusable WebMCP tools or an existing adapter needs repair.
-version: 1.0.0
+description: Create and debug WebMCP packages that expose website actions as tools through inspect/run workflows. Use when a website needs reusable WebMCP tools or an existing package needs repair.
+version: 2.0.0
 ---
 
 # WebMCP creator
 
-Create adapters in the origin-wide OPFS WebMCP directory. The app automatically reads this directory and syncs valid adapters to the browser extension. The extension registers them in every tab with an exactly matching origin, including newly opened tabs. Existing WebMCP discovery and authorization apply to these tools.
+Create packages in the origin-wide OPFS WebMCP directory. The app reads package manifests and syncs valid packages to the extension. Tools register on pages whose complete URL matches their urlRegex. Existing discovery and authorization apply to these tools.
 
-## Files
-
-Each tool occupies one immediate subdirectory:
+## Package files
 
 ```text
-/webmcp/read-page-title/
-  tool.json
-  index.js
+/webmcp/com.example.tools/
+  manifest.json
+  read-title.js
+  search.js
 ```
 
-These are bash paths. File tools use `vfs://webmcp/read-page-title/tool.json` and `vfs://webmcp/read-page-title/index.js`.
+These are bash paths. File tools use `vfs://webmcp/com.example.tools/manifest.json` and `vfs://webmcp/com.example.tools/read-title.js`. Each immediate directory is a package. Its directory name must equal its manifest id.
 
-`tool.json` has exactly four required fields:
+Every manifest field and every tool field below is required:
 
 ```json
 {
-  "origin": "https://example.com",
-  "name": "read-page-title",
-  "description": "Read the title of the current page.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {},
-    "required": [],
-    "additionalProperties": false
-  }
+  "id": "com.example.tools",
+  "version": "1.0.0",
+  "description": "Example website tools",
+  "tools": [
+    {
+      "name": "read-title",
+      "description": "Read the title of an article page.",
+      "urlRegex": "^https://example\\.com/articles(?:/[^?#]*)?(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "./read-title.js"
+    }
+  ]
 }
 ```
 
-Use the actual page origin, including scheme and non-default port, without a path or trailing slash. Wildcards and subdomain expansion are unavailable. Tool names start with a letter and contain up to 64 letters, digits, underscores or hyphens. Names must be unique within an origin; use a site-specific prefix where native or bundled tools could collide. Write a precise description of the action and its effects. Use a valid JSON Schema object for arguments.
+Use a reverse-domain package id, with lowercase letters, digits and hyphens in dot-separated segments. It is a stable namespace, independent of the URLs the package targets. Version uses semantic versioning. Give each tool a name starting with a letter and containing at most 64 letters, digits, underscores or hyphens. Names must be unique within a package. The registered name is `<package-id>.<tool-name>`, at most 128 characters, so different packages can use the same local tool names.
 
-`index.js` contains one default export of a nonempty literal array. Every step has exactly `description`, `inspect`, and `run`. There are no imports, SDK modules, named exports, or top-level helper declarations. Helpers may be declared inside step functions.
+Tool paths are relative .js files inside the package; subdirectories are supported. Paths cannot escape the package directory. Descriptions explain each tool's action and effects. Input and output schemas belong to the tool's steps.
+
+## URL matching
+
+urlRegex is a JavaScript regular expression string without flags. It must start with ^ and end with $. Matching uses the browser's normalized, complete HTTP(S) URL.href, including query and hash, and requires a complete-string match. JSON requires double escaping for regex backslashes. Escape literal hostname dots and explicitly handle query/hash when those should be accepted. A rule can match multiple domains or routes.
+
+Use actual page URLs to check positive and negative cases. Include a different path and a similar-looking hostname that should not match. Page URL changes trigger rematching and registration or withdrawal of the tool. Match only the pages the tool can handle; inspect still checks login, DOM readiness and action prerequisites.
+
+## Tool source and steps
+
+Each tool file contains one default export of a nonempty literal array. Every step has exactly five required fields: description, inputSchema, outputSchema, inspect and run. Schemas use JSON literals; expressions, variables and getters are unavailable in schemas. There are no imports, SDK modules, named exports or top-level helper declarations. Helpers can be declared inside step functions.
+
+Example `read-title.js`:
 
 ```js
 export default [
   {
-    description: 'Read the page title',
-    inspect({ args, state, signal }) {
-      if (!document.title.trim()) {
-        return { status: 'blocked', message: 'This page has no title yet. Wait for it to load and invoke the tool again.' };
-      }
-      return { status: 'ready' };
+    description: 'Read the article title',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false
     },
-    run({ args, state, signal }) {
+    outputSchema: {
+      type: 'object',
+      properties: { title: { type: 'string' }, url: { type: 'string' } },
+      required: ['title', 'url'],
+      additionalProperties: false
+    },
+    inspect({ input, state, signal }) {
+      return document.title.trim()
+        ? { status: 'ready' }
+        : { status: 'blocked', message: 'The article title is not loaded yet. Wait and invoke the tool again.' };
+    },
+    run({ input, state, signal }) {
       return { title: document.title, url: location.href };
     }
   }
 ];
 ```
 
-## Workflow behavior
+Schemas use JSON Schema Draft-07. Local $ref references within a schema are supported; external schemas are not fetched. Recognized format keywords are validated. The first inputSchema must explicitly have type: object, because it supplies the WebMCP tool argument schema. Later schemas can describe any JSON value, including primitives, arrays and null; boolean schemas are also supported.
 
-Each invocation starts at the first step with `{ args, state: {}, signal }`. `args` contains the tool arguments. `state` is shared between that invocation's steps; store intermediate values there. Concurrent calls have separate state. Functions can be async and execute in the target page, with access to its DOM and browser APIs.
+Every invocation starts with `{ input: <tool arguments>, state: {}, signal }`. Each step's input is validated before inspect. Functions can be async and run in the target page with DOM/browser APIs. State is shared across steps of one invocation; concurrent calls have independent state.
 
-For each step the runner awaits `inspect(context)`:
+inspect must return one of:
 
-- `{ status: 'blocked', message: '...' }` ends the whole workflow immediately. The WebMCP result contains `status: 'blocked'`, the one-based step number, its description and the message. The message should identify what prevented execution and a concrete next action.
-- `{ status: 'ready' }` causes the runner to await `run(context)` and advance to the next step.
+- `{ status: 'blocked', message: '...' }`: end the workflow immediately and return status, one-based step number, description and message. Give a concrete reason and next action. No run or later step executes; blocked results bypass the step's outputSchema.
+- `{ status: 'ready' }`: await run, validate its output, and pass that output as the next step's input.
 
-The final result is `{ status: 'completed', result: <last run return value> }`; an undefined return becomes null. Other inspect states and exceptions fail the call. There is no implicit retry, recovery agent, skip, resume or backtracking. A later invocation starts from step one, so avoid repeating irreversible actions after a subsequent step blocks.
+Undefined run returns become null before output validation. Invalid input/output, invalid inspect states and exceptions fail the call. Completion returns `{ status: 'completed', result: <last step output> }`. There is no implicit retry, skip, recovery, resume or backtracking. A later invocation starts from step one; avoid repeating irreversible actions after a subsequent step blocks.
 
-Keep inspect observational. Put actions in run. Check route, login state, required elements and prerequisites before each action. For route-specific tools, return blocked on other paths within the same origin. After a DOM action, await a bounded condition for the expected change before returning. Full page navigation destroys the workflow; return a useful navigation result and use a later call on the destination page. Do not assume state survives navigation. Respect `signal` in long asynchronous operations; it is aborted when the adapter is replaced or removed.
+Keep inspect observational and put actions in run. After a DOM action, await a bounded condition for the expected change before returning. Full page navigation destroys the workflow: return a useful navigation result and invoke a tool on the destination page later. State does not survive navigation. Respect signal in long asynchronous operations; it is aborted when the tool is replaced or withdrawn.
 
-## Create and validate
+## Create, validate and verify
 
-Inspect the actual target page using the available page tools before choosing selectors. Build the smallest workflow that implements the requested action. Use stable labels, attributes and visible content; inspect should detect missing or changed UI instead of guessing.
+Inspect the actual target page using available page tools before choosing selectors. Build the smallest workflow that implements the requested action. Use stable labels, attributes and visible content; inspect should detect missing or changed UI.
 
-Write both files, then validate with the built-in bash command:
+Write the manifest and all referenced tool files, then run:
 
 ```bash
-webmcp validate /webmcp/read-page-title
+webmcp validate /webmcp/com.example.tools
 ```
 
-Relative directories resolve from the bash working directory. Exit code 0 means the metadata and workflow structure passed, 1 reports an invalid or unreadable adapter, and 2 indicates incorrect command usage. Fix the diagnostic and rerun. Validation parses JavaScript without executing it: it cannot prove selectors, site behavior, inspection return values or permissions. It checks that inputSchema is an object schema; verify its full JSON Schema semantics when authoring it.
+Relative package directories resolve from the bash working directory. Exit code 0 means the entire package passed, 1 reports an invalid or unreadable package, and 2 indicates incorrect usage. Validation checks required fields, package identity, tool names, source paths, URL regexes, JS structure and every step schema without executing adapter functions. It cannot prove selectors, runtime data, regex intent or site behavior. Fix diagnostics and rerun; verify successful and blocked cases on the intended page. Invoke mutating tools only within the user's requested scope.
 
-While the app is open and WebMCP is enabled, valid changes are synced approximately every three seconds. The existing discovery loop then observes registrations. The extension must support adapter sync; reload the updated extension and refresh already-open target tabs if they predate that version. The extension retains the latest snapshot for future tab loads. Invalid, incomplete, deleted or conflicting adapters are withdrawn on the next sync. To remove a tool, delete its adapter directory while the app is open. Disabling WebMCP in the app syncs an empty adapter snapshot.
+While the app is open and WebMCP is enabled, changes sync approximately every three seconds. Any invalid or missing referenced source withdraws the whole package. Deleting a tool from the manifest withdraws it; deleting a package directory withdraws all its tools. Unreferenced files are ignored. Disabling WebMCP syncs an empty package snapshot. The extension retains the latest snapshot for future tab loads.
 
-Verify the tool on the intended page, including a blocked case. Invoke mutating tools only within the user's requested scope. The target page's Content Security Policy may prohibit dynamic JavaScript compilation; format validation cannot detect that. Inspect the target page console for `[WebMCP adapters] Injection failed` and the app console for sync/validation errors. Do not disable a site's CSP to make an adapter work.
+Reload the updated extension and refresh target tabs opened before that version. Page CSP may prohibit dynamic JavaScript compilation; format validation cannot detect this. Inspect the target page console for `[WebMCP adapters] Injection failed` and the app console for sync/validation diagnostics. Do not disable a site's CSP to make a package work.

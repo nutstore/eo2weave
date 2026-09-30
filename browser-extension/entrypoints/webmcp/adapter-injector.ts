@@ -1,38 +1,47 @@
-import { validateAdapterSnapshot, workflowExpression } from '@creatorweave/shared/webmcp-adapter'
-import { runWorkflow, type WorkflowStep } from '@creatorweave/shared/webmcp-workflow'
+import { validatePackageSnapshot, parseWorkflow, matchesToolUrl } from '@creatorweave/shared/webmcp-adapter'
+import { createWorkflow, type WorkflowStep } from '@creatorweave/shared/webmcp-workflow'
 import { registerPageTools } from './register-tools'
 
 /** Per-document registrations; snapshots are serialized to avoid stale async writes. */
-export function createAdapterInjector(origin: string) {
+export function createAdapterInjector(getUrl: () => string) {
   const active = new Map<string, { fingerprint: string; controller: AbortController }>()
   let queue = Promise.resolve()
   return (snapshot: unknown): Promise<void> => {
     const sync = async () => {
-      const adapters = validateAdapterSnapshot(snapshot).filter(adapter => adapter.origin === origin)
-      const wanted = new Map(adapters.map(adapter => [adapter.name, JSON.stringify(adapter)]))
+      const packages = validatePackageSnapshot(snapshot)
+      const tools = packages.flatMap(pkg => pkg.manifest.tools
+        .filter(tool => matchesToolUrl(tool.urlRegex, getUrl()))
+        .map(tool => ({ ...tool, name: `${pkg.manifest.id}.${tool.name}`, source: pkg.sources[tool.path] })))
+      const wanted = new Map(tools.map(tool => [tool.name, JSON.stringify(tool)]))
       for (const [name, registration] of active) {
         if (wanted.get(name) === registration.fingerprint) continue
         registration.controller.abort()
         active.delete(name)
       }
       const failures: string[] = []
-      for (const adapter of adapters) {
-        if (active.has(adapter.name)) continue
+      for (const tool of tools) {
+        if (active.has(tool.name)) continue
         const controller = new AbortController()
         try {
-          // Parse the literal export once. Page CSP applies to this compilation.
-          const steps = new Function(`"use strict"; return (${workflowExpression(adapter.source)});`)() as WorkflowStep[]
+          const { expression, contracts } = parseWorkflow(tool.source)
+          // Page CSP applies to compilation. Schemas come from parsed JSON literals.
+          const functions = new Function(`"use strict"; return (${expression});`)() as WorkflowStep[]
+          const steps = functions.map((step, index) => ({ ...step, ...contracts[index] }))
+          const execute = createWorkflow(steps)
           await registerPageTools([{
-            name: adapter.name,
-            description: adapter.description,
-            inputSchema: adapter.inputSchema,
+            name: tool.name,
+            description: tool.description,
+            inputSchema: steps[0].inputSchema as Record<string, unknown>,
             annotations: {},
-            execute: args => runWorkflow(steps, args, controller.signal),
+            execute: args => {
+              if (!matchesToolUrl(tool.urlRegex, getUrl())) throw new Error('The current URL no longer matches this tool')
+              return execute(args, controller.signal)
+            },
           }], controller)
-          active.set(adapter.name, { fingerprint: wanted.get(adapter.name)!, controller })
+          active.set(tool.name, { fingerprint: wanted.get(tool.name)!, controller })
         } catch (error) {
           controller.abort()
-          failures.push(`${adapter.name}: ${error instanceof Error ? error.message : String(error)}`)
+          failures.push(`${tool.name}: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
       if (failures.length) throw new Error(failures.join('\n'))

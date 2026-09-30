@@ -1,41 +1,46 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAdapterInjector } from '../../../browser-extension/entrypoints/webmcp/adapter-injector'
+import { pkg, manifest } from './fixtures'
 
 vi.mock('../../../browser-extension/entrypoints/webmcp/register-tools', () => ({ registerPageTools: vi.fn(async () => {}) }))
 import { registerPageTools } from '../../../browser-extension/entrypoints/webmcp/register-tools'
-const source = `export default [{description:'Read',inspect(){return {status:'ready'}},run(){return 'title'}}]`
-const adapter = { origin: 'https://example.com', name: 'title', description: 'Read title', inputSchema: { type: 'object' }, source }
-
 beforeEach(() => vi.clearAllMocks())
 
-describe('adapter injection', () => {
-  it('matches exact origins and preserves unchanged registrations', async () => {
-    const sync = createAdapterInjector('https://example.com')
-    await sync([{ ...adapter, origin: 'https://other.example.com' }])
+describe('package injection', () => {
+  it('matches URL regexes, namespaces names, and preserves unchanged registrations', async () => {
+    let href = 'https://other.test/articles'
+    const sync = createAdapterInjector(() => href)
+    await sync([pkg])
     expect(registerPageTools).not.toHaveBeenCalled()
-    await sync([adapter])
-    await sync([adapter])
+    href = 'https://example.com/articles'
+    await sync([pkg])
+    await sync([pkg])
     expect(registerPageTools).toHaveBeenCalledTimes(1)
     const [tools] = vi.mocked(registerPageTools).mock.calls[0]
+    expect(tools[0].name).toBe('com.example.tools.read-title')
+    expect(tools[0].inputSchema).toEqual({ type: 'object' })
     expect(await tools[0].execute({})).toEqual({ status: 'completed', result: 'title' })
+    href = 'https://example.com/other'
+    expect(() => tools[0].execute({})).toThrow('no longer matches')
+    await sync([pkg])
+    expect(vi.mocked(registerPageTools).mock.calls[0][1].signal.aborted).toBe(true)
   })
-  it('withdraws removed and changed adapters', async () => {
-    const sync = createAdapterInjector(adapter.origin)
-    await sync([adapter])
+  it('withdraws removed or changed tools and allows the same name in different packages', async () => {
+    const sync = createAdapterInjector(() => 'https://example.com/articles')
+    await sync([pkg, { ...pkg, manifest: { ...manifest, id: 'com.other.tools' } }])
+    expect(registerPageTools).toHaveBeenCalledTimes(2)
     const first = vi.mocked(registerPageTools).mock.calls[0][1]
-    await sync([{ ...adapter, description: 'Updated' }])
+    await sync([{ ...pkg, manifest: { ...manifest, tools: [{ ...manifest.tools[0], description: 'Updated' }] } }])
     expect(first.signal.aborted).toBe(true)
-    const second = vi.mocked(registerPageTools).mock.calls[1][1]
+    const updated = vi.mocked(registerPageTools).mock.calls[2][1]
     await sync([])
-    expect(second.signal.aborted).toBe(true)
+    expect(updated.signal.aborted).toBe(true)
   })
   it('serializes overlapping updates and retries failed registrations', async () => {
-    const sync = createAdapterInjector(adapter.origin)
+    const sync = createAdapterInjector(() => 'https://example.com/articles')
     vi.mocked(registerPageTools).mockRejectedValueOnce(new Error('Name collision'))
-    await expect(sync([adapter])).rejects.toThrow('Name collision')
-    const pending = sync([adapter])
-    const removal = sync([])
-    await Promise.all([pending, removal])
+    await expect(sync([pkg])).rejects.toThrow('Name collision')
+    await Promise.all([sync([pkg]), sync([])])
     expect(vi.mocked(registerPageTools).mock.calls[1][1].signal.aborted).toBe(true)
   })
 })

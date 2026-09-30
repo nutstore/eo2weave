@@ -60,7 +60,7 @@ export default defineContentScript({
       // WebMCP tool discovery / invocation (host authorization enforced
       // inside the background handlers)
       'webmcp_discover_tools',
-      'webmcp_set_adapters',
+      'webmcp_set_packages',
       'webmcp_invoke_tool',
       'webmcp_get_host_authorization',
       'webmcp_recipe_get_status',

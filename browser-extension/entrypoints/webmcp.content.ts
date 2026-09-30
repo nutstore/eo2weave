@@ -1,4 +1,6 @@
-import { WEBMCP_ADAPTERS_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter-storage'
+import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
+import type { WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
+import { WEBMCP_PACKAGES_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter-storage'
 // ============================================================
 // WebMCP relay — STATIC ISOLATED-world content script.
 //
@@ -52,18 +54,25 @@ export default defineContentScript({
     const invokeWaiters = new Map<string, InvokeWaiter>()
 
     const syncAdapters = async () => {
-      const stored = await chrome.storage.local.get(WEBMCP_ADAPTERS_STORAGE_KEY)
-      const adapters = Array.isArray(stored[WEBMCP_ADAPTERS_STORAGE_KEY])
-        ? stored[WEBMCP_ADAPTERS_STORAGE_KEY].filter((adapter: { origin: string }) => adapter.origin === location.origin)
-        : []
-      window.postMessage(buildRelayEnvelope({ kind: 'adapters-sync', adapters }), location.origin)
+      const stored = await chrome.storage.local.get(WEBMCP_PACKAGES_STORAGE_KEY)
+      const snapshot: WebMCPPackage[] = Array.isArray(stored[WEBMCP_PACKAGES_STORAGE_KEY]) ? stored[WEBMCP_PACKAGES_STORAGE_KEY] : []
+      // Send only matching tool metadata and code into this page's MAIN world.
+      const packages = snapshot.flatMap(pkg => {
+        const tools = pkg.manifest.tools.filter(tool => matchesToolUrl(tool.urlRegex, location.href))
+        if (!tools.length) return []
+        return [{
+          manifest: { ...pkg.manifest, tools },
+          sources: Object.fromEntries(tools.map(tool => [tool.path, pkg.sources[tool.path]])),
+        }]
+      })
+      window.postMessage(buildRelayEnvelope({ kind: 'packages-sync', packages }), location.origin)
     }
     const refreshAdapters = () => { void syncAdapters().catch(error => console.warn('[WebMCP adapters]', error)) }
     refreshAdapters()
     // MAIN and ISOLATED scripts have no guaranteed startup order.
     setTimeout(refreshAdapters, 1500)
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes[WEBMCP_ADAPTERS_STORAGE_KEY]) refreshAdapters()
+      if (area === 'local' && changes[WEBMCP_PACKAGES_STORAGE_KEY]) refreshAdapters()
     })
 
 
@@ -126,13 +135,15 @@ export default defineContentScript({
     // calls ITS OWN (MAIN-world) history object, invisible to this
     // ISOLATED world. `location`, however, IS synchronized across
     // worlds, so a light poll + popstate catches every route change.
-    let lastPath = location.pathname
+    let lastUrl = location.href
     const onRouteChange = () => {
-      if (location.pathname === lastPath) return
-      lastPath = location.pathname
+      if (location.href === lastUrl) return
+      lastUrl = location.href
+      refreshAdapters()
       void syncRecipeState()
     }
     window.addEventListener('popstate', onRouteChange)
+    window.addEventListener('hashchange', onRouteChange)
     window.setInterval(onRouteChange, 1000)
 
     // ── Downstream: page agent → background ──

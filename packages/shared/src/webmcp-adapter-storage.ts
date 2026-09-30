@@ -1,1 +1,1 @@
-export const WEBMCP_ADAPTERS_STORAGE_KEY = 'cw_webmcp_adapters'
+export const WEBMCP_PACKAGES_STORAGE_KEY = 'cw_webmcp_packages'

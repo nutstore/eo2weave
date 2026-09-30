@@ -81,7 +81,7 @@ export default defineContentScript({
       })
     }
 
-    const syncAdapters = createAdapterInjector(location.origin)
+    const syncAdapters = createAdapterInjector(() => location.href)
 
     window.addEventListener('message', (event) => {
       if (event.source !== window) return
@@ -91,8 +91,8 @@ export default defineContentScript({
       const command = parseRelayCommand(data)
       if (!command) return
 
-      if (command.kind === 'adapters-sync') {
-        void syncAdapters(command.adapters).catch(error => console.warn('[WebMCP adapters] Injection failed:', error))
+      if (command.kind === 'packages-sync') {
+        void syncAdapters(command.packages).catch(error => console.warn('[WebMCP adapters] Injection failed:', error))
       } else if (command.kind === 'recipe-activate') {
         // Idempotent: same-app SPA route changes re-run the bridge's
         // syncRecipeState and re-send activate for the SAME recipe.
