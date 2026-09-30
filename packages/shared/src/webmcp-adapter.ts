@@ -1,6 +1,6 @@
 import { parse } from '@babel/parser'
 
-export const WEBMCP_ADAPTERS_STORAGE_KEY = 'cw_webmcp_adapters'
+export { WEBMCP_ADAPTERS_STORAGE_KEY } from './webmcp-adapter-storage'
 export interface WebMCPAdapter {
   origin: string
   name: string

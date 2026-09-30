@@ -796,6 +796,10 @@ export default defineContentScript({
       /**
        * Discover WebMCP tools across tabs in current browser window.
        */
+      async webMCPSetAdapters(adapters: unknown[]) {
+        return sendToBridge('webmcp_set_adapters', { adapters });
+      },
+
       async webMCPDiscover(options?: { force?: boolean }) {
         // Only `force` is honored from pages. includeDisabled is a popup-only
         // escape hatch — a page must never see disabled (unauthorized) tools,

@@ -1,3 +1,4 @@
+import { WEBMCP_ADAPTERS_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter-storage'
 // ============================================================
 // WebMCP relay — STATIC ISOLATED-world content script.
 //
@@ -49,6 +50,22 @@ export default defineContentScript({
 
   main() {
     const invokeWaiters = new Map<string, InvokeWaiter>()
+
+    const syncAdapters = async () => {
+      const stored = await chrome.storage.local.get(WEBMCP_ADAPTERS_STORAGE_KEY)
+      const adapters = Array.isArray(stored[WEBMCP_ADAPTERS_STORAGE_KEY])
+        ? stored[WEBMCP_ADAPTERS_STORAGE_KEY].filter((adapter: { origin: string }) => adapter.origin === location.origin)
+        : []
+      window.postMessage(buildRelayEnvelope({ kind: 'adapters-sync', adapters }), location.origin)
+    }
+    const refreshAdapters = () => { void syncAdapters().catch(error => console.warn('[WebMCP adapters]', error)) }
+    refreshAdapters()
+    // MAIN and ISOLATED scripts have no guaranteed startup order.
+    setTimeout(refreshAdapters, 1500)
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes[WEBMCP_ADAPTERS_STORAGE_KEY]) refreshAdapters()
+    })
+
 
     // ── Recipe activation (consent-gated) ──
     // storage.local holds the user's enabled-recipe map. When a

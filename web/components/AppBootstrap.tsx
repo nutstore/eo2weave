@@ -58,6 +58,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   useEffect(() => {
     let disposed = false
     let stopWebMCPSyncLoop: (() => void) | null = null
+    let stopAdapterSync: (() => void) | null = null
 
     // Install Codex bridge fetch wrapper once at app startup.
     // This wraps globalThis.fetch to intercept chatgpt.com requests
@@ -72,6 +73,10 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       stopWebMCPSyncLoop = startWebMCPSyncLoop()
     })
 
+    import('@/webmcp/adapter-sync').then(({ startWebMCPAdapterSync }) => {
+      if (!disposed) stopAdapterSync = startWebMCPAdapterSync()
+    })
+
     const initial = setTimeout(extensionCheckStatus, 1000)
     const interval = setInterval(extensionCheckStatus, 5000)
     return () => {
@@ -79,6 +84,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       clearTimeout(initial)
       clearInterval(interval)
       if (stopWebMCPSyncLoop) stopWebMCPSyncLoop()
+      if (stopAdapterSync) stopAdapterSync()
     }
   }, [extensionCheckStatus])
 

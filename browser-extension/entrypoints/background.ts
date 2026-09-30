@@ -1,3 +1,4 @@
+import { validateAdapterSnapshot, WEBMCP_ADAPTERS_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter'
 // ============================================================
 // Background Service Worker
 // ============================================================
@@ -1982,6 +1983,21 @@ export default defineBackground(() => {
               errorCode: 'CAPTURE_FAILED',
               error: err?.message || String(err),
             })
+          }
+          return
+        }
+
+        if (message.type === 'webmcp_set_adapters') {
+          if (!isTrustedCreatorWeaveSenderUrl(_sender?.url ?? '')) {
+            sendResponse({ ok: false, error: 'Untrusted adapter source' })
+            return
+          }
+          try {
+            const adapters = validateAdapterSnapshot(message.adapters)
+            await chrome.storage.local.set({ [WEBMCP_ADAPTERS_STORAGE_KEY]: adapters })
+            sendResponse({ ok: true, error: '' })
+          } catch (error) {
+            sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) })
           }
           return
         }
