@@ -1,3 +1,4 @@
+import { webmcpCommand } from './webmcp-command'
 /**
  * bash-worker entry point — runs inside a Web Worker.
  *
@@ -163,6 +164,7 @@ async function handleExec(req: WorkerExecRequest): Promise<void> {
 
   const bash: BashInstance = new BashClass({
     fs: bridgeFs as any,
+    customCommands: [webmcpCommand],
     cwd: cwd || defaultCwd,
     executionLimits: {
       maxCommandCount: 5000,

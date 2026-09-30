@@ -79,6 +79,10 @@ importers:
         version: 5.7.3
 
   packages/shared:
+    dependencies:
+      '@babel/parser':
+        specifier: 7.28.5
+        version: 7.28.5
     devDependencies:
       '@creatorweave/config':
         specifier: workspace:*
