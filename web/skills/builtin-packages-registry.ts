@@ -77,6 +77,12 @@ function registerSkill(
 // Import skill files through webpack's asset/source rule (inline as strings at build time)
 // Directory name (socratic-brainstorm) is just the filesystem location;
 // the skill identity is set by registerSkill('cw-brainstorm', ...).
+import webmcpCreatorSkillMd from './builtin-packages/webmcp-creator/SKILL.md?raw'
+
+registerSkill('cw-webmcp-creator', [
+  { path: 'SKILL.md', content: webmcpCreatorSkillMd },
+])
+
 import brainstormSkillMd from './builtin-packages/socratic-brainstorm/SKILL.md?raw'
 
 registerSkill('cw-brainstorm', [
