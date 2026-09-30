@@ -1,4 +1,4 @@
-import { preflight } from '@/runtime/quickjs/preflight'
+import { preflightFailure } from '@/runtime/quickjs/preflight'
 import {
   failure,
   jsonText,
@@ -28,17 +28,8 @@ export async function executeCode(
   bindings: RuntimeBindings,
   signal: AbortSignal
 ): Promise<ExecutionResult> {
-  const diagnostics = preflight(request.code)
-  if (diagnostics.length)
-    return {
-      ok: false,
-      error: {
-        code: 'JS_PREFLIGHT_FAILED',
-        message: diagnostics
-          .map((d) => `${d.message} at ${d.line}:${d.column}\n${d.frame}`)
-          .join('\n'),
-      },
-    }
+  const invalid = preflightFailure(request.code)
+  if (invalid) return invalid
   if (signal.aborted)
     return { ok: false, error: { code: 'JS_CANCELED', message: 'Execution canceled' } }
   const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
@@ -87,7 +78,6 @@ export async function executeCode(
       try {
         if (!Object.hasOwn(bindings.functions, message.name))
           throw new Error(`Unknown host function: ${message.name}`)
-        jsonText(message.args, request.limits.maxTransferBytes)
         const value = await bindings.functions[message.name]!(message.args, controller.signal)
         result = { ok: true, value: JSON.parse(jsonText(value, request.limits.maxTransferBytes)) }
       } catch (error) {

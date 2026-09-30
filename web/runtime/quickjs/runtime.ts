@@ -1,31 +1,22 @@
 import { QuickJS, type Deferred } from 'quickjs-wasi'
-import { preflight, wrapCode } from '@/runtime/quickjs/preflight'
+import { preflightFailure, wrapCode } from '@/runtime/quickjs/preflight'
 import {
   failure,
   jsonText,
   type ExecuteRequest,
   type ExecutionResult,
   type RuntimeBindings,
+  type RuntimeFailure,
 } from '@/runtime/quickjs/types'
 
-/** No agent, storage, or browser capabilities are installed implicitly. */
 export async function executeQuickJs(
   wasm: WebAssembly.Module,
   request: ExecuteRequest,
   bindings: RuntimeBindings,
   signal: AbortSignal
 ): Promise<ExecutionResult> {
-  const diagnostics = preflight(request.code)
-  if (diagnostics.length)
-    return {
-      ok: false,
-      error: {
-        code: 'JS_PREFLIGHT_FAILED',
-        message: diagnostics
-          .map((d) => `${d.message} at ${d.line}:${d.column}\n${d.frame}`)
-          .join('\n'),
-      },
-    }
+  const invalid = preflightFailure(request.code)
+  if (invalid) return invalid
   const { limits } = request
   for (const value of Object.values(limits))
     if (!Number.isSafeInteger(value) || value <= 0)
@@ -46,6 +37,14 @@ export async function executeQuickJs(
   const controller = new AbortController()
   const onAbort = () => controller.abort()
   signal.addEventListener('abort', onAbort, { once: true })
+  const interruption = (): RuntimeFailure | null =>
+    controller.signal.aborted
+      ? { code: 'JS_CANCELED', message: 'Execution canceled' }
+      : Date.now() >= deadline
+        ? { code: 'JS_TIMEOUT', message: 'Execution timed out' }
+        : remainingCpu <= 0
+          ? { code: 'JS_CPU_LIMIT', message: 'CPU time limit exceeded' }
+          : null
   let closed = false
   let calls = 0
   const pending = new Set<Deferred>()
@@ -99,14 +98,7 @@ export async function executeQuickJs(
       })()
         .then(
           (value) => settle({ ok: true, value }),
-          (error) =>
-            settle({
-              ok: false,
-              error:
-                remainingCpu <= 0
-                  ? { code: 'JS_CPU_LIMIT', message: 'CPU time limit exceeded' }
-                  : failure(error),
-            })
+          (error) => settle({ ok: false, error: interruption() ?? failure(error) })
         )
         .catch(() => {
           // Oversized replies must settle, too; never leave a guest Promise hanging.
@@ -149,13 +141,9 @@ export async function executeQuickJs(
       )
     )
     try {
-      while (true) {
-        if (controller.signal.aborted)
-          throw Object.assign(new Error('Execution canceled'), { code: 'JS_CANCELED' })
-        if (Date.now() >= deadline)
-          throw Object.assign(new Error('Execution timed out'), { code: 'JS_TIMEOUT' })
-        if (remainingCpu <= 0)
-          throw Object.assign(new Error('CPU time limit exceeded'), { code: 'JS_CPU_LIMIT' })
+      for (;;) {
+        // The outer catch reports the specific interruption reason.
+        if (interruption()) throw new Error('Execution interrupted')
         guest(() => runtime.executePendingJobs())
         if (result.promiseState !== 0) break
         await new Promise((resolve) => setTimeout(resolve, 0))
@@ -193,16 +181,7 @@ export async function executeQuickJs(
       result.dispose()
     }
   } catch (error) {
-    return {
-      ok: false,
-      error: controller.signal.aborted
-        ? { code: 'JS_CANCELED', message: 'Execution canceled' }
-        : Date.now() >= deadline
-          ? { code: 'JS_TIMEOUT', message: 'Execution timed out' }
-          : remainingCpu <= 0
-            ? { code: 'JS_CPU_LIMIT', message: 'CPU time limit exceeded' }
-            : failure(error),
-    }
+    return { ok: false, error: interruption() ?? failure(error) }
   } finally {
     closed = true
     controller.abort()

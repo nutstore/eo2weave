@@ -1,4 +1,6 @@
 import { parse } from '@babel/parser'
+import { assertNoModuleLoading } from '@creatorweave/shared/js-ast'
+import type { ExecutionResult } from '@/runtime/quickjs/types'
 
 export interface Diagnostic {
   line: number
@@ -16,23 +18,7 @@ export function preflight(code: string): Diagnostic[] {
   if (code.length > 1024 * 1024)
     return [{ line: 1, column: 1, message: 'Source exceeds 1 Mi character limit', frame: '' }]
   try {
-    // Module loading is not provided by this runtime. Detect syntax through AST,
-    // not substrings, so strings and comments remain valid.
-    const ast = parse(wrapCode(code), { sourceType: 'script', createImportExpressions: true })
-    const visit = (node: unknown): void => {
-      if (!node || typeof node !== 'object') return
-      const value = node as Record<string, unknown>
-      if (value.type === 'ImportExpression')
-        throw Object.assign(new Error('Module loading is unavailable'), {
-          loc: value.loc && (value.loc as { start: unknown }).start,
-        })
-      for (const [key, child] of Object.entries(value)) {
-        if (key === 'loc') continue
-        if (Array.isArray(child)) child.forEach(visit)
-        else if (child && typeof child === 'object') visit(child)
-      }
-    }
-    visit(ast)
+    assertNoModuleLoading(parse(wrapCode(code), { sourceType: 'script', createImportExpressions: true }))
     return []
   } catch (error) {
     const caught = error as Error & { loc?: { line: number; column: number } }
@@ -47,5 +33,18 @@ export function preflight(code: string): Diagnostic[] {
         frame: `${line} | ${lines[line - 1]}\n${' '.repeat(String(line).length + 3 + column - 1)}^`,
       },
     ]
+  }
+}
+
+/** Returns a JS_PREFLIGHT_FAILED result when the source does not parse, otherwise null. */
+export function preflightFailure(code: string): ExecutionResult | null {
+  const diagnostics = preflight(code)
+  if (!diagnostics.length) return null
+  return {
+    ok: false,
+    error: {
+      code: 'JS_PREFLIGHT_FAILED',
+      message: diagnostics.map((d) => `${d.message} at ${d.line}:${d.column}\n${d.frame}`).join('\n'),
+    },
   }
 }

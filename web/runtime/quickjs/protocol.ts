@@ -2,7 +2,6 @@ import type {
   ExecuteRequest,
   ExecutionResult,
   JsonValue,
-  RuntimeFailure,
 } from '@/runtime/quickjs/types'
 
 export type WorkerRequest =
@@ -18,7 +17,3 @@ export type WorkerRequest =
 export type WorkerResponse =
   | { type: 'invoke'; id: number; name: string; args: JsonValue[] }
   | { type: 'result'; result: ExecutionResult }
-
-export function rejected(error: RuntimeFailure): ExecutionResult {
-  return { ok: false, error }
-}
