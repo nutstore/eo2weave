@@ -1,12 +1,14 @@
 import { readCardCover, readNoteImages, readNoteVideo } from './xiaohongshu-media'
 import type { CoverInfo } from './xiaohongshu-media'
 import { fieldText, readUser, readInteractInfo, readCardFields } from './xiaohongshu-fields'
+import { xiaohongshuRecipe } from './xiaohongshu'
 
 type PageKind = 'home' | 'search' | 'note' | 'profile' | 'login' | 'unavailable' | 'unknown'
 type LoginState = 'logged_in' | 'logged_out' | 'unknown'
 
 interface ToolResult {
   status: 'ok' | 'navigated' | 'error'
+  recipe_version: string
   page_url: string
   page_kind: PageKind
   data: Record<string, unknown> | null
@@ -89,7 +91,7 @@ function pageKind(): PageKind {
 }
 
 function result(status: ToolResult['status'], data: Record<string, unknown> | null = null): ToolResult {
-  return { status, page_url: location.href, page_kind: pageKind(), data, error_code: null, message: null }
+  return { status, recipe_version: xiaohongshuRecipe.version, page_url: location.href, page_kind: pageKind(), data, error_code: null, message: null }
 }
 
 function error(code: string, message: string): ToolResult {

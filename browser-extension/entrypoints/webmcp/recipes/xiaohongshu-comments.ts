@@ -79,7 +79,7 @@ function parseComment(row: HTMLElement, parentId: string | null, excluded: HTMLE
   const author = ownField(row, '.user-name, .author .name, .author-wrapper .name, .name', excluded, 120).text
   const published = ownField(row, '.date, .comment-time, .time', excluded, 120).text
   // Upstream comment_feed.go locates website rows using #comment-{commentID}.
-  const rawId = clean(row.getAttribute('data-comment-id') || row.getAttribute('data-id') || domId(row) || fallbackId)
+  const rawId = domId(clean(row.getAttribute('data-comment-id') || row.getAttribute('data-id') || row.id || fallbackId))
   const id = rawId || `signature:${signature([parentId, author, body.text, published].join('\u001f'))}`
   return {
     comment_id: id,
@@ -93,8 +93,8 @@ function parseComment(row: HTMLElement, parentId: string | null, excluded: HTMLE
   }
 }
 
-function domId(row: HTMLElement): string {
-  return row.id.startsWith('comment-') ? row.id.slice('comment-'.length) : row.id
+function domId(value: string): string {
+  return value.startsWith('comment-') ? value.slice('comment-'.length) : value
 }
 
 function readRows(root: HTMLElement): Comment[] {
@@ -115,7 +115,7 @@ function readRows(root: HTMLElement): Comment[] {
       .filter((candidate) => candidate !== row && !candidate.contains(row))
       .filter((candidate, _, all) => !all.some((other) => other !== candidate && other.contains(candidate)))
     const excluded = [...replyContainers, ...replies]
-    const parent = parseComment(row, null, excluded, thread.getAttribute('data-comment-id') || thread.getAttribute('data-id') || domId(thread))
+    const parent = parseComment(row, null, excluded, thread.getAttribute('data-comment-id') || thread.getAttribute('data-id') || thread.id)
     if (!parent) continue
     add(parent)
     for (const reply of replies) {
