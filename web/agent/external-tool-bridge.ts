@@ -23,7 +23,7 @@ import { getMCPManager } from '@/mcp/mcp-manager'
 import { useWebMCPStore } from '@/webmcp/store'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
 import { consumeAndSavePluginDownload } from '@/webmcp/plugin-download'
-import { isSidePanelMode, getSidePanelHostname } from './workspace-assistant-context'
+import { isSidePanelMode, getSidePanelHostname, getSidePanelBindingId } from './workspace-assistant-context'
 
 // Zod validation (for WebMCP)
 import { z } from 'zod'
@@ -1038,6 +1038,13 @@ async function executeWebMCPTool(
   if (validationError) return validationError
 
   const preferredTabId = store.getPreferredTabIdForTool(toolInfo.groupKey, toolInfo.fullName)
+  const boundXiaohongshuTab = isSidePanelMode() && toolInfo.hostname === 'www.xiaohongshu.com'
+  const binding = boundXiaohongshuTab ? getSidePanelBindingId() : null
+  if (boundXiaohongshuTab && !binding) {
+    return toolErrorJson('call_tool', 'BOUND_TAB_UNAVAILABLE', 'The Xiaohongshu side-panel tab binding is unavailable.', {
+      retryable: true,
+    })
+  }
 
   try {
     const response = await bridge.webMCPInvoke({
@@ -1045,6 +1052,7 @@ async function executeWebMCPTool(
       fullToolName: toolInfo.fullName,
       args: toolArgs,
       preferredTabId,
+      ...(binding ? { binding } : {}),
     })
 
     if (!response.ok) {
@@ -1239,7 +1247,8 @@ export function collectSidePanelPageTools(): WebMCPRegisteredToolLike[] {
       .filter(
         (t) =>
           t.hostname === hostname &&
-          (_sidePanelBoundTabId === null || t.representativeTabId === _sidePanelBoundTabId),
+          (_sidePanelBoundTabId === null ||
+            store.getGroupByKey(t.groupKey)?.tabs.some((tab) => tab.tabId === _sidePanelBoundTabId) === true),
       )
   } catch {
     return []

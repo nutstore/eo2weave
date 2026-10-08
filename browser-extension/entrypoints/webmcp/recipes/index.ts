@@ -11,11 +11,12 @@ import type { WebMCPRecipe } from './types'
 import { jmailRecipe } from './jmail-world'
 import { jmessageRecipe } from './jmessage-world'
 import { doubanMovieRecipe, doubanSearchRecipe } from './douban-movie'
+import { xiaohongshuRecipe } from './xiaohongshu'
 
 export { ENABLED_RECIPES_STORAGE_KEY } from './types'
 export type { WebMCPRecipe, WebMCPRecipeTool } from './types'
 
-export const recipes: WebMCPRecipe[] = [jmailRecipe, jmessageRecipe, doubanMovieRecipe, doubanSearchRecipe]
+export const recipes: WebMCPRecipe[] = [jmailRecipe, jmessageRecipe, doubanMovieRecipe, doubanSearchRecipe, xiaohongshuRecipe]
 
 /** Does `pathname` fall inside one of the recipe's path prefixes?
  *  Undefined prefixes = all paths. '/' matches only the exact root

@@ -1953,7 +1953,22 @@ export default defineBackground(() => {
         }
 
         if (message.type === 'webmcp_invoke_tool') {
-          sendResponse(await invokeWebMCPTool(message));
+          const request = {
+            groupKey: message.groupKey,
+            fullToolName: message.fullToolName,
+            args: message.args,
+            preferredTabId: message.preferredTabId,
+          }
+          if (message.binding !== undefined) {
+            const requiredTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
+            if (requiredTabId === null) {
+              sendResponse({ ok: false, errorCode: 'BOUND_TAB_UNAVAILABLE', error: 'The side-panel tab binding is invalid or unavailable.' })
+              return
+            }
+            sendResponse(await invokeWebMCPTool({ ...request, requiredTabId }))
+            return
+          }
+          sendResponse(await invokeWebMCPTool(request));
           return;
         }
 

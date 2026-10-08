@@ -30,29 +30,39 @@ export default defineConfig({
   // (WXT 0.19's DEFAULT template has no mode suffix — dev and build would
   // overwrite each other in the same chrome-mv3 dir.)
   outDirTemplate: '{{browser}}-mv{{manifestVersion}}{{modeSuffix}}',
-  // WXT copies public assets AFTER vite's closeBundle, so locale stripping
-  // runs in WXT's own `build:done` hook (after everything is on disk).
+  // WXT copies public assets AFTER vite's closeBundle, so build-specific
+  // locale changes run here (after everything is on disk).
   hooks: {
     'build:done': (wxt) => {
-      if (CODEX_OAUTH) return;
+      const isDevBuild = wxt.config.mode === 'development';
+      if (!isDevBuild && CODEX_OAUTH) return;
       const fs = require('fs') as typeof import('fs');
       const pathMod = require('path') as typeof import('path');
       // Dev builds land in chrome-mv3-dev ({{modeSuffix}}), builds in chrome-mv3.
-      const outBase = wxt.config.mode === 'development' ? 'dist/chrome-mv3-dev' : 'dist/chrome-mv3';
+      const outBase = isDevBuild ? 'dist/chrome-mv3-dev' : 'dist/chrome-mv3';
       const localesDir = pathMod.resolve(__dirname, outBase + '/_locales');
-      // eslint-disable-next-line no-console
-      console.log(`[strip-codex-locales] rewriting ${localesDir}`);
       if (!fs.existsSync(localesDir)) return;
+      const now = new Date();
+      const buildTime = [now.getHours(), now.getMinutes(), now.getSeconds()]
+        .map((part) => String(part).padStart(2, '0'))
+        .join(':');
       for (const locale of fs.readdirSync(localesDir)) {
         const file = pathMod.join(localesDir, locale, 'messages.json');
         if (!fs.existsSync(file)) continue;
         try {
           const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
           let changed = false;
-          for (const key of Object.keys(parsed)) {
-            if (/codex|devicecode|resetcredit|useresetcredit|authorizedcanuse|waitingforauthorization|extensionnamedev/i.test(key)) {
-              delete parsed[key];
-              changed = true;
+          if (isDevBuild && typeof parsed.extensionNameDev?.message === 'string') {
+            parsed.extensionNameDev.message += ` ${buildTime}`;
+            changed = true;
+          }
+          if (!CODEX_OAUTH) {
+            for (const key of Object.keys(parsed)) {
+              if (/codex|devicecode|resetcredit|useresetcredit|authorizedcanuse|waitingforauthorization/i.test(key)
+                || (!isDevBuild && /extensionnamedev/i.test(key))) {
+                delete parsed[key];
+                changed = true;
+              }
             }
           }
           if (changed) fs.writeFileSync(file, JSON.stringify(parsed, null, 2));
@@ -213,7 +223,8 @@ export default defineConfig({
   },
   // `manifest` as a function receives WXT's ConfigEnv (mode: 'development'
   // for `wxt`, 'production' for `wxt build`). We use it to give dev builds a
-  // distinct NAME — "EO2Weave Dev" / "怡氧知知 Dev" via __MSG_extensionNameDev__
+  // distinct NAME — "EO2Weave Dev HH:mm:ss" / "怡氧知知 Dev HH:mm:ss"
+  // via __MSG_extensionNameDev__
   // — so chrome://extensions and the toolbar tooltip can tell the two unpacked
   // loads apart. Without this, both builds share the same pinned extension
   // key → same extension ID → two identically-named entries.

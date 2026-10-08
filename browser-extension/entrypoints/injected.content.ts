@@ -805,6 +805,7 @@ export default defineContentScript({
         fullToolName: string
         args?: Record<string, unknown>
         preferredTabId?: number
+        binding?: string
       }) {
         return sendToBridge('webmcp_invoke_tool', payload || {});
       },

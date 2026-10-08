@@ -201,6 +201,11 @@ async function pickTargetTabId(
   hostname: string,
   request: WebMCPInvokeRequest,
 ): Promise<number | null> {
+  if (typeof request.requiredTabId === 'number') {
+    return (await tabMatchesGroup(request.requiredTabId, groupKey, hostname))
+      ? request.requiredTabId
+      : null
+  }
   if (
     typeof request.preferredTabId === 'number' &&
     (await tabMatchesGroup(request.preferredTabId, groupKey, hostname))
@@ -377,8 +382,10 @@ export async function invokeWebMCPTool(
       hostname,
       toolName,
       fullToolName: request.fullToolName,
-      errorCode: 'TOOL_TARGET_NOT_FOUND',
-      error: `No open tab found for WebMCP group: ${groupKey}`,
+      errorCode: typeof request.requiredTabId === 'number' ? 'BOUND_TAB_UNAVAILABLE' : 'TOOL_TARGET_NOT_FOUND',
+      error: typeof request.requiredTabId === 'number'
+        ? 'The bound tab no longer exposes this WebMCP tool group'
+        : `No open tab found for WebMCP group: ${groupKey}`,
     }
   }
 

@@ -45,7 +45,20 @@ export {
  * Keep this function out of any cross-workspace import.
  */
 export function getCwWebappBaseUrl(): string {
-  if (import.meta.env.MODE === 'development') return CW_WEBAPP_ORIGIN_DEV
+  if (import.meta.env.MODE === 'development') {
+    const configured = import.meta.env.VITE_CW_DEV_WEBAPP_ORIGIN
+    if (configured) {
+      try {
+        const url = new URL(configured)
+        if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1')) {
+          return url.origin
+        }
+      } catch {
+        // Ignore malformed overrides and use the standard development origin.
+      }
+    }
+    return CW_WEBAPP_ORIGIN_DEV
+  }
   const nav: { language?: string; languages?: readonly string[] } =
     typeof navigator === 'undefined' ? {} : navigator
   const primary = nav.language || nav.languages?.[0] || ''

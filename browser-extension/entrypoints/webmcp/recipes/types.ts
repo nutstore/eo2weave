@@ -21,6 +21,8 @@ export interface WebMCPRecipeTool {
   /** Short display title for the management page. */
   title: string
   description: string
+  /** False for tools that change account/session state or publish content. */
+  readOnlyHint?: boolean
   /** JSON Schema for the tool's input arguments. */
   inputSchema?: Record<string, unknown>
 }

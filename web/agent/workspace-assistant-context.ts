@@ -107,6 +107,7 @@ export function hasPendingSidePanelProjectRoute(): boolean {
 //
 // SIDE_PANEL_FLAG_KEY is NOT restored here — handleWorkspaceAssistantOnReady
 // owns its lifecycle (it consumes + removes that key after project routing).
+// Hostname and binding remain in storage for the lifetime of this panel.
 function recoverFromSessionStorage() {
   try {
     _sidePanelBindingId = sessionStorage.getItem(SIDE_PANEL_BINDING_KEY)
@@ -222,17 +223,21 @@ function captureTriggerOnLoad() {
   const bindingId = params.get('binding')
   if (!bindingId) return
   _sidePanelBindingId = bindingId
+  // A new launch replaces all binding metadata, including an absent origin.
+  // Never retain a previous site's hostname when the binding changes.
+  const hostname = extractHostname(params.get('origin'))
+  _sidePanelHostname = hostname
   try {
     sessionStorage.setItem(SIDE_PANEL_MODE_KEY, '1')
     sessionStorage.setItem(SIDE_PANEL_BINDING_KEY, bindingId)
+    if (hostname) {
+      sessionStorage.setItem(SIDE_PANEL_FLAG_KEY, '1')
+      sessionStorage.setItem(SIDE_PANEL_HOSTNAME_KEY, hostname)
+    } else {
+      sessionStorage.removeItem(SIDE_PANEL_FLAG_KEY)
+      sessionStorage.removeItem(SIDE_PANEL_HOSTNAME_KEY)
+    }
   } catch { /* ignore: sessionStorage unavailable, context stays in-memory only */ }
-
-  const hostname = extractHostname(params.get('origin'))
-  if (hostname) {
-    _sidePanelHostname = hostname
-    sessionStorage.setItem(SIDE_PANEL_FLAG_KEY, '1')
-    sessionStorage.setItem(SIDE_PANEL_HOSTNAME_KEY, hostname)
-  }
 
   // The binding is now in sessionStorage. Remove all transient metadata from
   // the URL; `sender.url` is never used as binding state.
@@ -276,7 +281,8 @@ export async function handleWorkspaceAssistantOnReady(
   sessionStorage.removeItem(SIDE_PANEL_FLAG_KEY)
 
   const hostname = sessionStorage.getItem(SIDE_PANEL_HOSTNAME_KEY)
-  sessionStorage.removeItem(SIDE_PANEL_HOSTNAME_KEY)
+  // Only the routing request is one-shot. Tool discovery also needs this
+  // hostname after a refresh or HMR reload, when the launch URL is gone.
 
   // Prefer hostname. A panel opened without an origin has no deterministic
   // routing key, so leave the current project unchanged.
@@ -379,7 +385,8 @@ async function readWebmcpToolsForHost(
       // Tab scoping (when known): same-hostname tabs in different apps
       // (jmail.world / vs /messages) expose disjoint tool groups; only the
       // group backed by the BOUND tab is relevant to this snapshot.
-      if (typeof tabId === 'number' && tool.representativeTabId !== tabId) continue
+      if (typeof tabId === 'number' &&
+        useWebMCPStore.getState().getGroupByKey(tool.groupKey)?.tabs.some((tab) => tab.tabId === tabId) !== true) continue
       if (seen.has(tool.fullName)) continue
       seen.add(tool.fullName)
       out.push({
