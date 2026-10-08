@@ -6,7 +6,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Search and filter notes, read loaded comments, home feeds and profiles, and manage sign-in in your current Xiaohongshu tab.',
   category: 'social',
-  version: '0.2.5',
+  version: '0.2.6',
   glyph: '📕',
   tools: [
     {
@@ -78,7 +78,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_read_comments', title: 'Read loaded comments',
-      description: 'Read rendered comments on the open note with parent/reply relationships. Displayed total, loaded count and returned count are separate. This reads currently loaded DOM, not all comments.',
+      description: 'Read rendered comments with parent/reply relationships. Exact current-note/DOM comment IDs also supply upstream id, noteId, content, likeCount, createTime, ipLocation, liked, userInfo, subCommentCount and showTags. Inspect fields_scope/state_match; signature IDs are not server IDs and unknown fields are null. subComments repeats only matched replies included in this return; inspect sub_comments_scope/sub_comments_partial and do not double-count nested/flat copies. cursor/hasMore refer to page-state parent pagination, not proof of all replies. Displayed total, loaded count and returned count are separate. Summarize at most 5 rows; keep raw results in tool history.',
       inputSchema: { type: 'object', properties: {
         limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum returned comments (default 20)' },
         include_replies: { type: 'boolean', description: 'Include currently rendered replies (default true)' },
@@ -86,7 +86,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_load_more_comments', title: 'Load more comments',
-      description: 'Scroll the note comment area and optionally expand explicit reply controls for a bounded number of rounds. Inspect added_count, load_succeeded and stop_reason; no new comments does not mean all comments were read.',
+      description: 'Scroll comments and optionally expand explicit reply controls for bounded rounds, then return rendered comments with exact-ID matched upstream state fields. Inspect fields_scope/state_match, sub_comments_scope/sub_comments_partial and page-state cursor/hasMore. added_count counts new DOM identities; no_new_comments does not prove all comments loaded. Nested subComments repeat returned flat replies, so do not double-count. Summarize at most 5 rows; keep raw results in tool history.',
       inputSchema: { type: 'object', properties: {
         max_rounds: { type: 'integer', minimum: 1, maximum: 5, description: 'Maximum loading rounds (default 2)' },
         expand_replies: { type: 'boolean', description: 'Expand visible show-more-replies controls (default false)' },

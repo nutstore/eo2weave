@@ -1,7 +1,8 @@
 import {
   HOST, clean, visible, result, error, currentNoteId, isUnavailablePage,
-  unavailableNote, loginState, metricText,
+  unavailableNote, loginState, metricText, initialState,
 } from './xiaohongshu-page'
+import { commentState, commentFields, stateReplyIds } from './xiaohongshu-comment-fields'
 
 const COMMENTS = '.comments-container, .comments-el, .comments-list, .comment-list'
 const REPLIES = '.reply-container, .replies, .reply-list, .child-comments, .sub-comments'
@@ -77,7 +78,8 @@ function parseComment(row: HTMLElement, parentId: string | null, excluded: HTMLE
   if (!body.text) return null
   const author = ownField(row, '.user-name, .author .name, .author-wrapper .name, .name', excluded, 120).text
   const published = ownField(row, '.date, .comment-time, .time', excluded, 120).text
-  const rawId = clean(row.getAttribute('data-comment-id') || row.getAttribute('data-id') || row.id || fallbackId)
+  // Upstream comment_feed.go locates website rows using #comment-{commentID}.
+  const rawId = clean(row.getAttribute('data-comment-id') || row.getAttribute('data-id') || domId(row) || fallbackId)
   const id = rawId || `signature:${signature([parentId, author, body.text, published].join('\u001f'))}`
   return {
     comment_id: id,
@@ -89,6 +91,10 @@ function parseComment(row: HTMLElement, parentId: string | null, excluded: HTMLE
     published_at: published,
     likes_text: ownField(row, '.like-wrapper .count, .like-count, .like .count', excluded, 40).text,
   }
+}
+
+function domId(row: HTMLElement): string {
+  return row.id.startsWith('comment-') ? row.id.slice('comment-'.length) : row.id
 }
 
 function readRows(root: HTMLElement): Comment[] {
@@ -109,7 +115,7 @@ function readRows(root: HTMLElement): Comment[] {
       .filter((candidate) => candidate !== row && !candidate.contains(row))
       .filter((candidate, _, all) => !all.some((other) => other !== candidate && other.contains(candidate)))
     const excluded = [...replyContainers, ...replies]
-    const parent = parseComment(row, null, excluded, thread.getAttribute('data-comment-id') || thread.getAttribute('data-id') || thread.id)
+    const parent = parseComment(row, null, excluded, thread.getAttribute('data-comment-id') || thread.getAttribute('data-id') || domId(thread))
     if (!parent) continue
     add(parent)
     for (const reply of replies) {
@@ -142,7 +148,31 @@ function loadingVisible(root: HTMLElement): boolean {
 function snapshot(root: HTMLElement, limit: number, includeReplies: boolean) {
   const rows = readRows(root)
   const eligible = rows.filter((row) => includeReplies || row.parent_comment_id === null)
-  const comments = eligible.slice(0, limit)
+  const state = commentState(initialState(), currentNoteId()!)
+  const selected = eligible.slice(0, limit).map((row) => ({
+    ...row,
+    ...commentFields(state, row.comment_id, row.parent_comment_id, row.id_source === 'dom'),
+  }))
+  type EnrichedComment = typeof selected[number] & {
+    subComments: EnrichedComment[] | null
+    sub_comments_scope: 'returned_visible_replies' | 'unavailable'
+    sub_comments_partial: boolean
+  }
+  // Keep the upstream reply field limited to the same returned DOM rows.
+  // Hidden, unloaded and limit-excluded state replies must not leak into the result.
+  const withReplies = (row: typeof selected[number], ancestors = new Set<string>()): EnrichedComment => {
+    const ids = row.fields_scope === 'current_note_page_state' ? stateReplyIds(state, row.comment_id) : null
+    const next = new Set(ancestors).add(row.comment_id)
+    const replies = selected.filter((reply) => reply.parent_comment_id === row.comment_id
+      && reply.fields_scope === 'current_note_page_state' && !next.has(reply.comment_id))
+    return {
+      ...row,
+      subComments: ids ? replies.map((reply) => withReplies(reply, next)) : null,
+      sub_comments_scope: ids ? 'returned_visible_replies' : 'unavailable',
+      sub_comments_partial: ids === null || ids.length !== replies.length || ids.some((id) => !replies.some((reply) => reply.id === id)),
+    }
+  }
+  const comments = selected.map((row) => withReplies(row))
   const total = metricText(root, '.total, .comments-total, .comment-count, .comments-header')
     ?? metricText(document, '.interact-container .chat-wrapper .count, .interact-container .chat-wrapper .count-num')
   return {
@@ -156,7 +186,11 @@ function snapshot(root: HTMLElement, limit: number, includeReplies: boolean) {
     truncated: eligible.length > limit || comments.some((row) => row.text_truncated),
     include_replies: includeReplies,
     comments_scope: 'currently_loaded_dom',
-    id_policy: 'DOM IDs when available; otherwise author, body and date signatures can merge indistinguishable duplicates.',
+    comment_state_scope: state.scope,
+    comment_state_partial: state.partial,
+    cursor: state.cursor,
+    hasMore: state.hasMore,
+    id_policy: 'DOM IDs (with the site comment- prefix removed) when available; otherwise content signatures. Only exact IDs and parent relationships receive state fields; signatures are not server comment IDs.',
     end_of_comments_visible: endVisible(root),
     empty_comments_visible: emptyVisible(root),
     has_unexpanded_replies: expansionButtons(root).length > 0,
