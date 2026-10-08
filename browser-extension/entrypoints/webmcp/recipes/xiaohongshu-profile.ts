@@ -3,6 +3,7 @@ import {
   initialState, isUnavailablePage, searchCards, resolveCardNote, metricText,
 } from './xiaohongshu-page'
 import type { SearchItem, StateFeed } from './xiaohongshu-page'
+import { readCardCover } from './xiaohongshu-media'
 
 const PROFILE_PATH = /^\/user\/profile\/([a-zA-Z0-9_-]{8,80})\/?$/
 const EMPTY_SELECTORS = '.feeds-empty, .note-list-empty, .empty-notes, .empty-state, .empty-container, .no-note, .no-content, .feeds-container .empty, .note-list .empty'
@@ -66,7 +67,15 @@ function loadedCardReferences(kind: 'feed' | 'profile'): StateFeed[] {
     if (!feed || typeof feed !== 'object' || typeof feed.id !== 'string') return []
     if (feed.modelType && feed.modelType !== 'note') return []
     // State can repair access parameters for an exact visible card ID only.
-    return [{ id: feed.id, xsecToken: typeof feed.xsecToken === 'string' ? feed.xsecToken : undefined }]
+    const noteCard = unwrap(feed.noteCard)
+    return [{
+      id: feed.id,
+      xsecToken: typeof feed.xsecToken === 'string' ? feed.xsecToken : undefined,
+      noteCard: {
+        cover: noteCard && typeof noteCard === 'object' && !Array.isArray(noteCard)
+          ? (noteCard as { cover?: unknown }).cover : undefined,
+      },
+    }]
   })
 }
 
@@ -86,6 +95,7 @@ function visibleCards(kind: 'feed' | 'profile'): ProfileCard[] {
         .map((link) => normalizedProfileUrl(link.href)).find((url) => url !== null) ?? null,
       note_url: resolved.url,
       note_type: Array.from(card.querySelectorAll('video, .play-icon, .video-icon')).some(visible) ? 'video' : null,
+      cover: readCardCover(card, resolved.feed?.noteCard?.cover),
       visible_metrics: { likes_text: metricText(card, '.like-wrapper .count, .like-wrapper .count-num, .like-count') },
       source: 'dom',
     })

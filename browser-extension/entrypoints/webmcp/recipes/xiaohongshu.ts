@@ -6,7 +6,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Search and filter notes, read loaded comments, home feeds and profiles, and manage sign-in in your current Xiaohongshu tab.',
   category: 'social',
-  version: '0.2.2',
+  version: '0.2.3',
   glyph: '📕',
   tools: [
     {
@@ -30,7 +30,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     {
       name: 'xhs_list_search_results',
       title: 'Read search results',
-      description: 'Read the currently loaded note cards on the Xiaohongshu search page. An empty list means the loaded page has no matching notes; it is not a timeout.',
+      description: 'Read the currently loaded note cards and available cover image information on the Xiaohongshu search page. Missing cover fields are null. An empty list means the loaded page has no matching notes; it is not a timeout.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -53,7 +53,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     {
       name: 'xhs_read_current_note',
       title: 'Read the open note',
-      description: 'Read visible title, author, text, type, interaction counts and currently loaded comments from the note open in this tab. Missing fields are null. NOTE_UNAVAILABLE includes site error details when present; do not infer an account restriction or risk-control cause from this error alone.',
+      description: 'Read visible title, author, text, type, interaction counts, currently loaded comments and imageList from the note open in this tab. Images include available URLs, dimensions and Live Photo flags; inspect image_list_scope and image_list_partial. Image URLs do not provide image text or content understanding. Missing fields are null. NOTE_UNAVAILABLE includes site error details when present; do not infer an account restriction or risk-control cause from this error alone.',
       inputSchema: { type: 'object', properties: {} },
     },
     {
@@ -100,7 +100,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_list_feeds', title: 'Read home feed cards',
-      description: 'Read currently rendered home feed cards and complete source links. Does not fetch an entire recommendation feed. Call xhs_open_note with a returned note_url to read a note.',
+      description: 'Read currently rendered home feed cards, available cover image information and complete source links. Does not fetch an entire recommendation feed. Call xhs_open_note with a returned note_url to read a note.',
       inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum returned cards (default 10)' } } },
     },
     {
@@ -110,7 +110,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_read_profile', title: 'Read the open profile',
-      description: 'Read visible profile information, displayed counts and currently loaded cards of the selected profile tab. Missing fields and unknown tab are null. Pending tab results cannot be read as the new tab.',
+      description: 'Read visible profile information, displayed counts, currently loaded cards and available cover image information of the selected profile tab. Missing fields and unknown tab are null. Pending tab results cannot be read as the new tab.',
       inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum returned cards (default 10)' } } },
     },
     {

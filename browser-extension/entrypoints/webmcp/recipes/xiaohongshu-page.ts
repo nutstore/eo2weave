@@ -1,3 +1,6 @@
+import { readCardCover, readNoteImages } from './xiaohongshu-media'
+import type { CoverInfo } from './xiaohongshu-media'
+
 type PageKind = 'home' | 'search' | 'note' | 'profile' | 'login' | 'unavailable' | 'unknown'
 type LoginState = 'logged_in' | 'logged_out' | 'unknown'
 
@@ -20,6 +23,7 @@ interface StateFeed {
     displayTitle?: string
     user?: { nickname?: string; nickName?: string }
     interactInfo?: { likedCount?: string; commentCount?: string; collectedCount?: string }
+    cover?: unknown
   }
 }
 
@@ -31,6 +35,7 @@ interface StateNote {
   time?: number
   user?: { nickname?: string; nickName?: string }
   interactInfo?: { likedCount?: string; commentCount?: string; collectedCount?: string }
+  imageList?: unknown
 }
 
 const HOST = 'www.xiaohongshu.com'
@@ -160,7 +165,8 @@ function loadedStateNote(): StateNote | null {
   const id = currentNoteId()
   const detailMap = initialState()?.note?.noteDetailMap
   const note = id && detailMap && typeof detailMap === 'object' ? detailMap[id]?.note : null
-  return note && typeof note === 'object' ? note as StateNote : null
+  if (!note || typeof note !== 'object' || (note.noteId && note.noteId !== id)) return null
+  return note as StateNote
 }
 
 function normalizedNoteUrl(value: unknown): string | null {
@@ -226,6 +232,7 @@ interface SearchItem {
   author: string | null
   note_url: string | null
   note_type: string | null
+  cover: CoverInfo | null
   visible_metrics: { likes_text: string | null }
   source: 'dom' | 'page_state_correlated_with_dom'
 }
@@ -246,6 +253,7 @@ function domSearchItems(): SearchItem[] {
       author: textAt(card, '.author .name, .author, .user-name', 120),
       note_url: noteUrl,
       note_type: matched?.noteCard?.type ?? null,
+      cover: readCardCover(card, matched?.noteCard?.cover),
       visible_metrics: { likes_text: metricText(card, '.like-wrapper .count, .like-wrapper, .like-count') },
       source: 'dom',
     })
@@ -266,6 +274,7 @@ function correlatedStateItems(): SearchItem[] {
       author: limited(feed.noteCard?.user?.nickname ?? feed.noteCard?.user?.nickName, 120),
       note_url: noteUrlFromFeed(feed),
       note_type: feed.noteCard?.type ?? null,
+      cover: null,
       visible_metrics: { likes_text: null },
       source: 'page_state_correlated_with_dom',
     })
@@ -364,6 +373,7 @@ function readNote(): Record<string, unknown> {
     comments_text: metricText(metricsRoot, '.chat-wrapper .count, .chat-wrapper .count-num, .comment-count'),
   }
   const noteType = state?.type ?? (document.querySelector('video') ? 'video' : null)
+  const mediaRoot = document.querySelector('#noteContainer, .note-container, .note-detail') ?? document
   return {
     note_url: location.href,
     note_id: currentNoteId(),
@@ -373,6 +383,7 @@ function readNote(): Record<string, unknown> {
     body,
     published_at: publishedAt,
     note_type: noteType,
+    ...readNoteImages(state?.imageList, mediaRoot),
     visible_metrics: metrics,
     loaded_comments: readComments(),
     comments_scope: 'currently_loaded',
