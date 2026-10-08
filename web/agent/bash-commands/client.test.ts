@@ -130,6 +130,20 @@ describe('external commands across the Bash worker boundary', () => {
     expect(invoke).not.toHaveBeenCalled()
   })
 
+  it('emits the page lifecycle cancellation event when Bash is stopped', async () => {
+    register(() => new Promise(() => {}))
+    const canceled = vi.fn()
+    window.addEventListener('creatorweave:bash-cancel', canceled)
+    try {
+      const controller = new AbortController()
+      const running = bashExec({ ...opts, abortSignal: controller.signal }, config)
+      const stopped = expect(running).rejects.toThrow('aborted')
+      controller.abort()
+      await stopped
+      expect(canceled).toHaveBeenCalledTimes(1)
+    } finally { window.removeEventListener('creatorweave:bash-cancel', canceled) }
+  })
+
   it('rejects on stop and never posts a late plugin result to a new worker', async () => {
     let resolve!: (result: { stdout: string; stderr: string; exitCode: number }) => void
     register(() => new Promise(r => { resolve = r }))

@@ -48,6 +48,9 @@ export default defineContentScript({
       'web_fetch_render',
       // Extension metadata probe
       'extension_get_version',
+      'browser_command',
+      'browser_command_ping',
+      'browser_command_cancel',
       // Native host requests are additionally origin- and action-gated in background.
       'native_host_call',
       // Codex OAuth bridge (chatgpt.com backend relay)

@@ -6,6 +6,9 @@ import { createProxyCommand } from '@/agent/tools/bash-worker/proxy-command'
 import { ToolRegistry } from '@/agent/tool-registry'
 import { bashDefinition, bashToolExecutor } from '@/agent/tools/bash.tool'
 
+// Match Webpack's browser condition, including exports absent from the Node entry.
+vi.mock('just-bash', async () => import('just-bash/browser'))
+
 function command(name = 'extension-echo', output?: string): ExternalBashCommand {
   return {
     isAlive: async () => true,

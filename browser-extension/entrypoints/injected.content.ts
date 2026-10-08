@@ -11,6 +11,7 @@
 
 import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
+import { installBrowserCommand } from '../lib/bash-commands/browser/provider'
 
 // Build-time Codex OAuth feature flag (see wxt.config.ts). Store builds
 // (CW_CODEX_OAUTH=0) fold the guards below and treeshake the bridge names.
@@ -1097,8 +1098,11 @@ export default defineContentScript({
       },
     };
 
+    const disposeBrowserCommand = installBrowserCommand(sendToBridge)
+
     ;(window as any).__agentWebBridgeState = {
       dispose() {
+        disposeBrowserCommand()
         window.removeEventListener('message', onBridgeMessage)
         window.removeEventListener('message', onScheduleTrigger)
         for (const [id, pending] of _pending) {

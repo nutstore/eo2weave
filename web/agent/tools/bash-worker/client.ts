@@ -127,6 +127,7 @@ function ensureWorker(handlerConfig: VfsRpcHandlerConfig): Worker {
   }
 
   worker.onerror = (e) => {
+    notifyExternalCancellation()
     console.error('[bash-worker] error:', e.message)
     if (pendingExec) {
       pendingExec.reject(new Error(`bash worker error: ${e.message}`))
@@ -201,6 +202,7 @@ export async function bashExec(opts: BashExecOptions, handlerConfig: VfsRpcHandl
     }
   }
   opts.abortSignal?.addEventListener('abort', onAbort, { once: true })
+  if (opts.abortSignal?.aborted) onAbort()
 
   try {
     return await Promise.race([execPromise, timeoutPromise])
@@ -237,6 +239,8 @@ function handleExecResponse(msg: WorkerExecResponse): void {
   if (msg.requestId !== pendingExec.requestId) return
 
   const { resolve, reject } = pendingExec
+  // Dispose any background shell jobs that outlive this execution.
+  notifyExternalCancellation()
   pendingExec = null
 
   if (!msg.ok) {
@@ -279,7 +283,7 @@ async function handleCommandRequest(req: CommandRpcRequest, originWorker: Worker
   } catch (error) {
     resp.result = { stdout: '', stderr: `${req.name}: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 }
   }
-  // Stopping Bash cannot stop plugin code; never deliver its late result to another execution.
+  // Plugins may honor the cancellation event; still reject every late result.
   if (worker === originWorker && pendingExec === execution) originWorker.postMessage(resp)
 }
 
@@ -309,7 +313,13 @@ async function handleVfsRequest(req: VfsRpcRequest, config: VfsRpcHandlerConfig)
 // Cleanup
 // ---------------------------------------------------------------------------
 
+/** Lifecycle notification only; command business inputs remain args/stdin. */
+function notifyExternalCancellation(): void {
+  if (pendingExec && typeof window !== 'undefined') window.dispatchEvent(new Event('creatorweave:bash-cancel'))
+}
+
 function terminateWorker(): void {
+  notifyExternalCancellation()
   if (worker) {
     worker.terminate()
     worker = null

@@ -247,7 +247,7 @@ export default defineConfig({
     ...(IS_STORE_BUILD
       ? {}
       : { key: process.env.CREATORWEAVE_CHROMIUM_EXTENSION_KEY || DEFAULT_CHROMIUM_EXTENSION_KEY }),
-    permissions: ['scripting', 'tabs', 'storage', 'alarms', 'notifications', 'sidePanel', 'nativeMessaging'],
+    permissions: ['debugger', 'scripting', 'tabs', 'storage', 'alarms', 'notifications', 'sidePanel', 'nativeMessaging'],
     host_permissions: ['<all_urls>'],
     // No global side_panel config — side panel is only enabled per-tab
     // via setOptions({ tabId }) when user clicks the workspace assistant button.

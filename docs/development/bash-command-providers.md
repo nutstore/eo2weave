@@ -44,9 +44,12 @@ Contract:
 - Bash pipes, redirection and conditionals work normally. Names that match
   existing commands follow just-bash command resolution; shell keywords and
   builtins retain their shell semantics.
-- Exceptions and invalid results become command errors. Bash timeout/stop stops
-  waiting, but cannot cancel plugin code or reverse its side effects. The plugin
-  owns its communication, cleanup and cancellation behavior.
+- Exceptions and invalid results become command errors. Web emits the page event
+  `creatorweave:bash-cancel` when a Bash execution ends or its worker stops,
+  including timeout and explicit stop. Providers may listen and cancel their
+  pending work through their own bridge. The event has no payload and does not
+  change `invoke({args, stdin})`. Web cannot force arbitrary plugin code to stop
+  or reverse effects; the plugin owns its transport and cancellation behavior.
 - Web probes `isAlive()` every 15 seconds, before model requests and before Bash
   execution. A false result, exception or 3-second timeout removes the command.
   Web also checks liveness before each external invocation. `isAlive` must check

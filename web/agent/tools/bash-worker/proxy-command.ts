@@ -1,5 +1,6 @@
-import { latin1FromBytes, type Command } from 'just-bash'
+import type { Command } from 'just-bash/browser'
 import type { BashCommandInput, BashCommandResult } from '@/agent/bash-commands/registry'
+import { latin1StringToBytes } from './bridge-shared'
 
 export function createProxyCommand(
   name: string,
@@ -9,7 +10,10 @@ export function createProxyCommand(
     name,
     async execute(args, context) {
       try {
-        const bytes = Uint8Array.from(latin1FromBytes(context.stdin), char => char.charCodeAt(0))
+        // ByteString is a Latin-1 byte buffer at runtime. The browser entry of
+        // just-bash does not export the Node entry's latin1FromBytes helper.
+        if (typeof context.stdin !== 'string') throw new TypeError('Expected a Bash byte string')
+        const bytes = latin1StringToBytes(context.stdin)
         const stdin = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
         return await invoke(name, { args, stdin })
       } catch (error) {
