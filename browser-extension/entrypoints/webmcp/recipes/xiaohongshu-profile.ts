@@ -5,6 +5,7 @@ import {
 import type { SearchItem, StateFeed } from './xiaohongshu-page'
 import { readCardCover } from './xiaohongshu-media'
 import { fieldRecord, readCardFields } from './xiaohongshu-fields'
+import { readProfileFields } from './xiaohongshu-profile-fields'
 
 const PROFILE_PATH = /^\/user\/profile\/([a-zA-Z0-9_-]{8,80})\/?$/
 const EMPTY_SELECTORS = '.feeds-empty, .note-list-empty, .empty-notes, .empty-state, .empty-container, .no-note, .no-content, .feeds-container .empty, .note-list .empty'
@@ -274,12 +275,14 @@ export const xiaohongshuProfileTools: Record<string, (args: Record<string, unkno
     if (failure) return failure
     const root = profileRoot() ?? document
     const items = visibleCards('profile')
+    const nickname = profileNickname()
+    const redIdText = textAt(root, '.user-redId, .user-red-id, .red-id', 120)
     return result('ok', {
       profile_url: location.href,
       profile_id: id,
-      nickname: profileNickname(),
+      nickname,
       description: textAt(root, '.user-desc, .user-description, .user-basic .desc, .info-part .desc', 2000),
-      red_id_text: textAt(root, '.user-redId, .user-red-id, .red-id', 120),
+      red_id_text: redIdText,
       location_text: textAt(root, '.user-IP, .user-ip, .ip-location', 120),
       visible_metrics: {
         following_text: profileMetric(root, ['关注']),
@@ -294,6 +297,7 @@ export const xiaohongshuProfileTools: Record<string, (args: Record<string, unkno
       partial: items.length > limit,
       results_scope: 'currently_loaded',
       profile_scope: 'visible_dom',
+      ...readProfileFields(initialState(), { profileId: id, nickname, redIdText }),
     })
   },
 

@@ -6,7 +6,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Search and filter notes, read loaded comments, home feeds and profiles, and manage sign-in in your current Xiaohongshu tab.',
   category: 'social',
-  version: '0.2.9',
+  version: '0.2.10',
   glyph: '📕',
   tools: [
     {
@@ -113,7 +113,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_read_profile', title: 'Read the open profile',
-      description: 'Read visible profile information, displayed counts and loaded cards of the selected tab, including cover and exact-ID matched page-state user, interactInfo and video.capa fields. Inspect card fields_scope; liked/collected null means unknown, not false, and state counts may differ from visible_metrics. Missing fields and unknown tab are null. Pending tab results cannot be read as the new tab.',
+      description: 'Read visible profile information, displayed counts and loaded cards of the selected tab. Also return upstream userBasicInfo (source user.userPageData.basicInfo: gender, ipLocation, desc, imageb, nickname, images, redId) and interactions (type/name/count string entries). Inspect profile_fields_scope, profile_state_match, profile_match_basis and profile_fields_partial: these state fields require a matching profile ID or matching visible redId plus nickname. Unknown state fields remain null; empty strings and gender=0 are retained, not guessed. Numeric gender is not translated to a label; counts remain original strings. Keep visible_metrics separate from interactions; rounding or update timing can differ. Cards include cover and exact-ID matched page-state user, interactInfo and video.capa. Inspect card fields_scope; liked/collected null means unknown, not false. Pending tab results cannot be read as the new tab. Summarize fields and URL presence; do not repeat complete signed image URLs or all cards.',
       inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum returned cards (default 10)' } } },
     },
     {
