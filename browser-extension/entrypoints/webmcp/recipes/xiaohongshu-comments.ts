@@ -3,6 +3,10 @@ import {
   unavailableNote, loginState, metricText, initialState,
 } from './xiaohongshu-page'
 import { commentState, commentFields, stateReplyIds } from './xiaohongshu-comment-fields'
+import {
+  COMMENT_POLICY, normalizeCommentTarget, skipReplyControl, commentScrollDelta,
+  commentScrollNotch, commentScrollInterval, type CommentScrollSpeed,
+} from './xiaohongshu-comment-policy'
 
 const COMMENTS = '.comments-container, .comments-el, .comments-list, .comment-list'
 const REPLIES = '.reply-container, .replies, .reply-list, .child-comments, .sub-comments'
@@ -249,6 +253,38 @@ function rowKeys(root: HTMLElement): Set<string> {
   return new Set(readRows(root).map((row) => `${row.parent_comment_id ?? ''}/${row.comment_id}`))
 }
 
+function parentCount(root: HTMLElement): number {
+  return readRows(root).filter((row) => row.parent_comment_id === null).length
+}
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+async function scrollComments(container: HTMLElement, speed: CommentScrollSpeed, stagnant: number, deadline: number, checkPage: () => unknown) {
+  const before = container.scrollTop
+  const viewportHeight = window.innerHeight || container.clientHeight
+  const large = stagnant >= COMMENT_POLICY.largeScrollTrigger
+  const pushCount = large ? 3 + Math.floor(Math.random() * 3) : 1
+  const push = async (delta: number) => {
+    for (let remaining = delta; remaining > 0 && Date.now() < deadline;) {
+      if (checkPage()) return
+      const step = Math.min(remaining, commentScrollNotch())
+      container.scrollTop = Math.min(container.scrollHeight - container.clientHeight, container.scrollTop + step)
+      remaining -= step
+      if (remaining > 0) await pause(commentScrollInterval())
+    }
+    await pause(Math.min(150, Math.max(0, deadline - Date.now())))
+  }
+  for (let index = 0; index < pushCount && Date.now() < deadline; index++) {
+    await push(commentScrollDelta(viewportHeight, speed, large))
+    if (checkPage()) break
+  }
+  // Upstream humanScroll retries an ineffective container scroll at 3 viewports.
+  if (container.scrollTop - before < COMMENT_POLICY.minScrollDelta && Date.now() < deadline && !checkPage()) {
+    await push(viewportHeight * 3)
+  }
+  return container.scrollTop - before
+}
+
 export const xiaohongshuCommentTools: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
   async xhs_read_comments(args) {
     const invalidPage = guard()
@@ -270,9 +306,18 @@ export const xiaohongshuCommentTools: Record<string, (args: Record<string, unkno
     if (invalidPage) return invalidPage
     const limit = validateLimit(args)
     if (!limit) return error('INVALID_LIMIT', 'limit must be an integer from 1 to 100.')
-    const maxRounds = args.max_rounds === undefined ? 2 : Number(args.max_rounds)
-    if (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 5) return error('INVALID_ARGUMENT', 'max_rounds must be an integer from 1 to 5.')
     if (args.expand_replies !== undefined && typeof args.expand_replies !== 'boolean') return error('INVALID_ARGUMENT', 'expand_replies must be a boolean.')
+    const maxCommentItems = normalizeCommentTarget(args.max_comment_items, COMMENT_POLICY.parentTarget)
+    const replyLimit = normalizeCommentTarget(args.reply_limit, COMMENT_POLICY.replyLimit)
+    if (maxCommentItems === null || replyLimit === null) return error('INVALID_ARGUMENT', 'max_comment_items and reply_limit must be safe integers. Omitted/nonpositive values use upstream defaults 20 and 10.')
+    const scrollSpeed = args.scroll_speed === undefined || args.scroll_speed === '' ? 'normal' : args.scroll_speed
+    if (scrollSpeed !== 'slow' && scrollSpeed !== 'normal' && scrollSpeed !== 'fast') return error('INVALID_ARGUMENT', 'scroll_speed must be slow, normal or fast.')
+    const expandRequested = args.expand_replies === true
+    // Preserve the verified expansion-only call; an explicit parent target combines both operations.
+    const loadParents = !expandRequested || args.max_comment_items !== undefined
+    const defaultRounds = loadParents ? Math.min(maxCommentItems * 3, 500) : 2
+    const maxRounds = args.max_rounds === undefined ? defaultRounds : Number(args.max_rounds)
+    if (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 500) return error('INVALID_ARGUMENT', 'max_rounds must be an integer from 1 to 500. Calls yield within 50 seconds even when more rounds are requested.')
     let root = commentRoot()
     if (!root) return error('COMMENTS_UNSUPPORTED', 'No recognizable visible comments container is present.')
     const noteId = currentNoteId()!
@@ -282,7 +327,12 @@ export const xiaohongshuCommentTools: Record<string, (args: Record<string, unkno
       .map((row) => `${row.parent_comment_id}/${row.comment_id}`))
     const seen = new Set(initiallySeen)
     const seenReplies = new Set(initialReplies)
-    const expandRequested = args.expand_replies === true
+    const startedAt = Date.now()
+    const deadline = startedAt + COMMENT_POLICY.callBudgetMs
+    const initialParentCount = parentCount(root)
+    let stagnantRounds = 0
+    let clickAttempts = 0
+    const skippedControls = new Set<HTMLElement>()
     let stopReason = 'round_limit'
     let rounds = 0
     const actions: string[] = []
@@ -293,29 +343,47 @@ export const xiaohongshuCommentTools: Record<string, (args: Record<string, unkno
     for (let round = 0; round < maxRounds; round++) {
       const invalid = guard(noteId, pageUrl)
       if (invalid) return invalid
-      const expand = expandRequested ? expansionButtons(root)[0] : undefined
-      if (expandRequested && !expand) {
+      if (Date.now() >= deadline) { stopReason = 'time_limit'; break }
+      const tryExpansion = expandRequested && (!loadParents || round % COMMENT_POLICY.buttonClickInterval === 0 || endVisible(root))
+      const buttons = tryExpansion ? expansionButtons(root) : []
+      for (const button of buttons) {
+        if (skipReplyControl(expansionText(button), replyLimit) && !skippedControls.has(button)) {
+          skippedControls.add(button)
+          if (expansionDiagnostics.length < 30) expansionDiagnostics.push({ round: round + 1, text: expansionText(button).slice(0, 80), clicked: false, skipped: 'reply_limit', reply_limit: replyLimit })
+        }
+      }
+      const expand = buttons.find((button) => !skipReplyControl(expansionText(button), replyLimit))
+      if (tryExpansion && !expand && !loadParents) {
         expansionDiagnostics.push({
           round: round + 1,
           controls: expansionControls(root).slice(0, 5).map(({ text, disabled }) => ({ text: text.slice(0, 80), disabled, recognized: EXPAND_TEXT.test(text) })),
           clicked: false,
         })
-        stopReason = 'no_expand_controls'
-        if (!clickedCount) {
+        stopReason = buttons.length ? 'reply_limit' : 'no_expand_controls'
+        if (!clickedCount && !buttons.length) {
           expansionError = 'REPLY_EXPAND_UNAVAILABLE'
           expansionMessage = 'No enabled visible .show-more reply expansion control was recognized. No scroll fallback was performed. Inspect reply_expansion.diagnostics; scroll separately with expand_replies=false if needed.'
         }
         break
       }
+      if (loadParents && !expand && parentCount(root) >= maxCommentItems) { stopReason = 'target_reached'; break }
       if (!expand && (endVisible(root) || emptyVisible(root))) { stopReason = 'end_of_list'; break }
       const before = rowKeys(root)
       const beforeReplies = new Set(readRows(root).filter((row) => row.parent_comment_id !== null)
         .map((row) => `${row.parent_comment_id}/${row.comment_id}`))
       if (expand) {
-        const diagnostic = { round: round + 1, text: expansionText(expand).slice(0, 80), clicked: false, added_reply_count: 0 }
+        const diagnostic = { round: round + 1, text: expansionText(expand).slice(0, 80), clicked: false, added_reply_count: 0, click_attempts: 0 }
         expansionDiagnostics.push(diagnostic)
         let clicked = false
-        try { clicked = clickExpansion(expand, root) } catch { /* Return a bounded click failure instead of scrolling. */ }
+        for (let attempt = 0; attempt < COMMENT_POLICY.clickAttempts && Date.now() < deadline; attempt++) {
+          const invalid = guard(noteId, pageUrl)
+          if (invalid) return invalid
+          clickAttempts++
+          diagnostic.click_attempts++
+          try { clicked = clickExpansion(expand, root) } catch { /* Retry as upstream does for scroll/click failures. */ }
+          if (clicked) break
+          if (attempt + 1 < COMMENT_POLICY.clickAttempts) await pause(Math.min(COMMENT_POLICY.clickRetryMs, Math.max(0, deadline - Date.now())))
+        }
         const pageError = guard(noteId, pageUrl)
         if (pageError) return pageError
         if (!clicked) {
@@ -333,13 +401,18 @@ export const xiaohongshuCommentTools: Record<string, (args: Record<string, unkno
           return { ...error('COMMENTS_SCROLL_UNSUPPORTED', 'No recognizable scrollable note/comments container is present.'), data: snapshot(root, limit, true) }
         }
         const previousTop = container.scrollTop
-        container.scrollTop = container.scrollHeight
+        const scrollingRoot = root
+        Array.from(scrollingRoot.querySelectorAll<HTMLElement>('.parent-comment')).filter((row) => rendered(row, scrollingRoot)).at(-1)
+          ?.scrollIntoView?.({ block: 'end', inline: 'nearest', behavior: 'instant' })
+        await scrollComments(container, scrollSpeed as CommentScrollSpeed, stagnantRounds, deadline, () => guard(noteId, pageUrl))
+        const pageError = guard(noteId, pageUrl)
+        if (pageError) return pageError
         actions.push(container.scrollTop !== previousTop ? 'scroll_changed' : 'scroll_unchanged')
       }
       rounds++
       let changed = false
       const started = Date.now()
-      while (Date.now() - started < ROUND_TIMEOUT_MS) {
+      while (Date.now() - started < ROUND_TIMEOUT_MS && Date.now() < deadline) {
         const pageError = guard(noteId, pageUrl)
         if (pageError) return pageError
         const currentRoot = commentRoot()
@@ -355,7 +428,7 @@ export const xiaohongshuCommentTools: Record<string, (args: Record<string, unkno
         changed = expand ? newReplyCount > 0 : Array.from(currentKeys).some((key) => !before.has(key))
         // A parent-list end marker can already be visible while a reply request is pending.
         if (changed || (!expand && (endVisible(root) || emptyVisible(root)))) break
-        await new Promise((resolve) => setTimeout(resolve, POLL_MS))
+        await pause(Math.min(POLL_MS, Math.max(0, deadline - Date.now())))
       }
       if (!changed) {
         stopReason = !expand && (endVisible(root) || emptyVisible(root)) ? 'end_of_list' : loadingVisible(root) ? 'timeout' : 'no_new_comments'
@@ -363,9 +436,18 @@ export const xiaohongshuCommentTools: Record<string, (args: Record<string, unkno
           expansionError = 'REPLY_EXPAND_NOT_OBSERVED'
           expansionMessage = 'A reply expansion click was dispatched, but no additional rendered reply was observed within the loading window. Do not report expansion as successful.'
           stopReason = loadingVisible(root) ? 'timeout' : 'no_new_replies'
+          break
         }
-        break
+        if (Date.now() >= deadline) { stopReason = 'time_limit'; break }
+        if (endVisible(root) || emptyVisible(root)) { stopReason = 'end_of_list'; break }
+        stagnantRounds++
+        if (stagnantRounds >= COMMENT_POLICY.stagnantLimit) { stopReason = 'stagnant_limit'; break }
+        if (round + 1 === maxRounds) break
+        continue
       }
+      stagnantRounds = 0
+      stopReason = 'round_limit'
+      if (loadParents && parentCount(root) >= maxCommentItems) { stopReason = 'target_reached'; break }
       if (endVisible(root) && !(args.expand_replies === true && expansionButtons(root).length > 0)) {
         stopReason = 'end_of_list'; break
       }
@@ -379,14 +461,32 @@ export const xiaohongshuCommentTools: Record<string, (args: Record<string, unkno
       attempted_rounds: rounds,
       actions,
       added_count: addedCount,
-      load_succeeded: expandRequested ? addedReplyCount > 0 : addedCount > 0,
+      load_succeeded: loadParents ? addedCount > 0 : addedReplyCount > 0,
       stop_reason: stopReason,
+      elapsed_ms: Date.now() - startedAt,
+      loading_policy: {
+        mode: loadParents ? 'load_parent_comments' : 'expand_replies_only',
+        max_comment_items: maxCommentItems,
+        reply_limit: replyLimit,
+        scroll_speed: scrollSpeed,
+        max_rounds: maxRounds,
+        call_budget_ms: COMMENT_POLICY.callBudgetMs,
+        returned_limit: limit,
+      },
+      initial_parent_count: initialParentCount,
+      added_parent_count: Array.from(seen).filter((key) => key.startsWith('/') && !initiallySeen.has(key)).length,
+      parent_target_evaluated: loadParents,
+      parent_target_reached: loadParents && parentCount(root) >= maxCommentItems,
+      loading_partial: loadParents && parentCount(root) < maxCommentItems && !endVisible(root) && !emptyVisible(root),
+      retry_summary: { click_attempts: clickAttempts, stagnant_rounds: stagnantRounds },
       reply_expansion: {
         requested: expandRequested,
         clicked_count: clickedCount,
         added_reply_count: addedReplyCount,
         succeeded: expandRequested && addedReplyCount > 0,
-        diagnostics: expansionDiagnostics,
+        skipped_by_reply_limit: skippedControls.size,
+        diagnostics: expansionDiagnostics.slice(0, 30),
+        diagnostics_partial: expansionDiagnostics.length > 30,
       },
     }
     return expansionError ? { ...error(expansionError, expansionMessage), data } : result('ok', data)

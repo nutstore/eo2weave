@@ -6,7 +6,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Search and filter notes, read loaded comments, home feeds and profiles, and manage sign-in in your current Xiaohongshu tab.',
   category: 'social',
-  version: '0.2.8',
+  version: '0.2.9',
   glyph: '📕',
   tools: [
     {
@@ -86,11 +86,14 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_load_more_comments', title: 'Load more comments',
-      description: 'Load comments for bounded rounds. When the task asks to expand/show/read collapsed replies, explicitly pass expand_replies=true: click visible .show-more reply controls after bringing them into view, without substituting list scrolling. Inspect reply_expansion.succeeded, added_reply_count and diagnostics; a click alone does not prove replies loaded. Missing/blocked controls or unobserved expansion return explicit errors. For scrolling to more parent comments, call separately with expand_replies=false. Inspect fields_scope/state_match, sub_comments_scope/sub_comments_partial and page-state cursor/hasMore. added_count counts new DOM identities; no_new_comments does not prove all comments loaded. Nested subComments repeat returned flat replies, so do not double-count. Summarize at most 5 rows; keep raw results in tool history.',
+      description: 'Load more parent comments toward max_comment_items (cumulative parent target, upstream default 20), with optional reply expansion. limit only caps returned parent+reply rows; it never sets the loading target. When asked to expand collapsed replies pass expand_replies=true. Without max_comment_items this preserves expansion-only behavior; supply max_comment_items to combine upstream-style periodic expansion and scrolling. reply_limit defaults to 10: larger numbered reply controls are skipped, not errors. scroll_speed uses upstream slow/normal/fast ratios. Retries, max_rounds and a 50s budget bound each call. Inspect parent_target_reached, loading_partial, stop_reason and loading_policy; continue with the same target if a round/time limit prevented reaching it. Inspect reply_expansion.succeeded, added_reply_count and diagnostics; a click alone does not prove replies loaded. Missing/blocked controls or unobserved expansion in expansion-only mode return explicit errors, never substituted scrolling. cursor/hasMore describe parent pagination, not reply completeness. Nested subComments repeat returned flat replies; do not double-count. Summarize at most 5 rows; retain raw results in tool history.',
       inputSchema: { type: 'object', properties: {
-        max_rounds: { type: 'integer', minimum: 1, maximum: 5, description: 'Maximum loading rounds (default 2)' },
-        expand_replies: { type: 'boolean', description: 'Set true whenever the user asks to expand/read collapsed replies. True clicks visible reply controls only; false/omitted scrolls for more parent comments (default false, matching upstream).' },
-        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum returned comments (default 20)' },
+        max_rounds: { type: 'integer', minimum: 1, maximum: 500, description: 'Loading attempt cap. Parent mode defaults to target*3 capped at 500, expansion-only defaults to 2. All calls yield progress within 50 seconds.' },
+        expand_replies: { type: 'boolean', description: 'Expand replies (default false). True without max_comment_items is expansion-only; true with a parent target combines expansion and parent loading.' },
+        max_comment_items: { type: 'integer', minimum: 0, description: 'Cumulative loaded parent-comment target, excluding replies (upstream default 20; 0 also uses 20). Supplying this enables parent loading even when expand_replies=true. Batches may overshoot; this is not a return limit.' },
+        reply_limit: { type: 'integer', minimum: 0, description: 'Skip numbered reply buttons above this threshold (upstream default 10; 0 also uses 10). Expand-more buttons without a number remain eligible.' },
+        scroll_speed: { type: 'string', enum: ['slow', 'normal', 'fast'], description: 'Upstream scroll amplitude profile (default normal).' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum returned parent+reply rows (default 20), independent of the parent loading target.' },
       } },
     },
     {
