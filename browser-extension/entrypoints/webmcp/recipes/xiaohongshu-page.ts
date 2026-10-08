@@ -1,5 +1,6 @@
 import { readCardCover, readNoteImages, readNoteVideo } from './xiaohongshu-media'
 import type { CoverInfo } from './xiaohongshu-media'
+import { fieldText, readUser, readInteractInfo, readCardFields } from './xiaohongshu-fields'
 
 type PageKind = 'home' | 'search' | 'note' | 'profile' | 'login' | 'unavailable' | 'unknown'
 type LoginState = 'logged_in' | 'logged_out' | 'unknown'
@@ -21,9 +22,10 @@ interface StateFeed {
   noteCard?: {
     type?: string
     displayTitle?: string
-    user?: { nickname?: string; nickName?: string }
-    interactInfo?: { likedCount?: string; commentCount?: string; collectedCount?: string }
+    user?: { nickname?: string; nickName?: string; userId?: string; avatar?: string }
+    interactInfo?: { likedCount?: string; commentCount?: string; collectedCount?: string; sharedCount?: string; liked?: boolean; collected?: boolean }
     cover?: unknown
+    video?: unknown
   }
 }
 
@@ -33,8 +35,10 @@ interface StateNote {
   desc?: string
   type?: string
   time?: number
-  user?: { nickname?: string; nickName?: string }
-  interactInfo?: { likedCount?: string; commentCount?: string; collectedCount?: string }
+  ipLocation?: string
+  xsecToken?: string
+  user?: { nickname?: string; nickName?: string; userId?: string; avatar?: string }
+  interactInfo?: { likedCount?: string; commentCount?: string; collectedCount?: string; sharedCount?: string; liked?: boolean; collected?: boolean }
   imageList?: unknown
   video?: unknown
 }
@@ -227,7 +231,7 @@ function metricText(root: ParentNode, selectors: string): string | null {
   return text && /\d/.test(text) ? text : null
 }
 
-interface SearchItem {
+interface SearchItem extends ReturnType<typeof readCardFields> {
   index: number
   title: string | null
   author: string | null
@@ -255,6 +259,7 @@ function domSearchItems(): SearchItem[] {
       note_url: noteUrl,
       note_type: matched?.noteCard?.type ?? null,
       cover: readCardCover(card, matched?.noteCard?.cover),
+      ...readCardFields(matched?.noteCard),
       visible_metrics: { likes_text: metricText(card, '.like-wrapper .count, .like-wrapper, .like-count') },
       source: 'dom',
     })
@@ -276,6 +281,8 @@ function correlatedStateItems(): SearchItem[] {
       note_url: noteUrlFromFeed(feed),
       note_type: feed.noteCard?.type ?? null,
       cover: null,
+      // Title-only correlation is insufficient for attaching an author's or interaction state.
+      ...readCardFields(undefined),
       visible_metrics: { likes_text: null },
       source: 'page_state_correlated_with_dom',
     })
@@ -384,6 +391,12 @@ function readNote(): Record<string, unknown> {
     body,
     published_at: publishedAt,
     note_type: noteType,
+    user: readUser(state?.user),
+    interactInfo: readInteractInfo(state?.interactInfo),
+    time: typeof state?.time === 'number' && Number.isSafeInteger(state.time) && state.time >= 0 ? state.time : null,
+    ipLocation: fieldText(state?.ipLocation),
+    xsecToken: fieldText(state?.xsecToken),
+    fields_scope: state ? 'current_note_page_state' : 'unavailable',
     ...readNoteImages(state?.imageList, mediaRoot),
     ...readNoteVideo(state?.video),
     visible_metrics: metrics,

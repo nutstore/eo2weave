@@ -6,7 +6,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Search and filter notes, read loaded comments, home feeds and profiles, and manage sign-in in your current Xiaohongshu tab.',
   category: 'social',
-  version: '0.2.4',
+  version: '0.2.5',
   glyph: '📕',
   tools: [
     {
@@ -30,7 +30,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     {
       name: 'xhs_list_search_results',
       title: 'Read search results',
-      description: 'Read the currently loaded note cards and available cover image information on the Xiaohongshu search page. Missing cover fields are null. An empty list means the loaded page has no matching notes; it is not a timeout.',
+      description: 'Read currently loaded search cards, cover images and exact-ID matched page-state user, interactInfo and video.capa fields. fields_scope identifies the state source. liked/collected are current account states; null means unknown, not false. visible_metrics are webpage counts and may differ from state counts. Missing fields are null. An empty list means the loaded page has no matching notes; it is not a timeout.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -53,7 +53,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     {
       name: 'xhs_read_current_note',
       title: 'Read the open note',
-      description: 'Read title, author, text, type, interaction counts, loaded comments, imageList and video metadata from the note open in this tab. Images include available URLs, dimensions and Live Photo flags. Video preserves all available encoding/quality streams and existing subtitle URLs decoded from mediaV2; capability/meta duration is seconds and stream duration is milliseconds. Inspect image_list_scope/image_list_partial and video_scope/video_partial/subtitles_scope. URLs may expire and are not downloaded, transcribed or interpreted. Missing fields are null; null subtitles means unavailable, not proven absent. Keep raw results in tool history and summarize media in short tables instead of repeating every URL. NOTE_UNAVAILABLE includes site error details when present; do not infer an account restriction or risk-control cause from this error alone.',
+      description: 'Read title, author, text, type, visible counts, loaded comments, imageList and video from the open note. Exact current-note state also supplies user, interactInfo, time, ipLocation and xsecToken; inspect fields_scope. liked/collected are current account states, null means unknown; state counts may differ from visible_metrics and time is returned unchanged. Video preserves all available encoding/quality streams and existing subtitle URLs from mediaV2; capability/meta duration is seconds and stream duration is milliseconds. Inspect image_list_scope/image_list_partial and video_scope/video_partial/subtitles_scope. URLs may expire and are not downloaded, transcribed or interpreted. Missing fields are null; null subtitles means unavailable, not proven absent. Keep raw results in tool history and summarize media in short tables instead of repeating every URL. NOTE_UNAVAILABLE includes site error details; do not infer an account restriction or risk-control cause from this error alone.',
       inputSchema: { type: 'object', properties: {} },
     },
     {
@@ -100,7 +100,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_list_feeds', title: 'Read home feed cards',
-      description: 'Read currently rendered home feed cards, available cover image information and complete source links. Does not fetch an entire recommendation feed. Call xhs_open_note with a returned note_url to read a note.',
+      description: 'Read rendered home cards, cover images, complete source links and exact-ID matched page-state user, interactInfo and video.capa fields. Inspect fields_scope; liked/collected null means unknown, not false. State counts may differ from visible_metrics. Does not fetch an entire recommendation feed. Call xhs_open_note with a returned note_url to read a note.',
       inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum returned cards (default 10)' } } },
     },
     {
@@ -110,7 +110,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_read_profile', title: 'Read the open profile',
-      description: 'Read visible profile information, displayed counts, currently loaded cards and available cover image information of the selected profile tab. Missing fields and unknown tab are null. Pending tab results cannot be read as the new tab.',
+      description: 'Read visible profile information, displayed counts and loaded cards of the selected tab, including cover and exact-ID matched page-state user, interactInfo and video.capa fields. Inspect card fields_scope; liked/collected null means unknown, not false, and state counts may differ from visible_metrics. Missing fields and unknown tab are null. Pending tab results cannot be read as the new tab.',
       inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum returned cards (default 10)' } } },
     },
     {
