@@ -1,3 +1,4 @@
+import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 /**
  * Tool Registry - manages tool registration, lookup, and execution.
  *
@@ -330,7 +331,7 @@ export class ToolRegistry {
   /** Get all tool definitions (for LLM API), respecting feature flags */
   getToolDefinitions(): ToolDefinition[] {
     return this.filterByFeatureFlags(
-      Array.from(this.tools.values()).map((entry) => entry.definition),
+      Array.from(this.tools.values()).map((entry) => this.withBashCommands(entry.definition)),
     )
   }
 
@@ -340,7 +341,7 @@ export class ToolRegistry {
    * In 'act' mode, all tools are returned.
    */
   getToolDefinitionsForMode(mode: AgentMode): ToolDefinition[] {
-    let definitions = Array.from(this.tools.values()).map((entry) => entry.definition)
+    let definitions = Array.from(this.tools.values()).map((entry) => this.withBashCommands(entry.definition, mode))
 
     // Filter by feature flags first
     definitions = this.filterByFeatureFlags(definitions)
@@ -351,6 +352,19 @@ export class ToolRegistry {
 
     // Plan mode: filter to read-only tools only
     return definitions.filter(tool => isToolAllowedInMode(tool.function.name, mode))
+  }
+
+  private withBashCommands(definition: ToolDefinition, mode: AgentMode = 'act'): ToolDefinition {
+    if (definition.function.name !== 'bash' || mode !== 'act') return definition
+    const manual = bashCommandRegistry.describe()
+    if (!manual) return definition
+    return {
+      ...definition,
+      function: {
+        ...definition.function,
+        description: `${definition.function.description}\n\nAdditional registered bash commands (these override same-name commands):\n${manual}`,
+      },
+    }
   }
 
   /** Filter out tools disabled by feature flags (e.g. batch_spawn) */

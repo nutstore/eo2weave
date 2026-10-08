@@ -19,6 +19,7 @@ import type { ToolContext, ToolDefinition, ToolExecutor, ToolPromptDoc } from '.
 import { resolveVfsTarget } from './vfs-resolver'
 import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from './agent-file-protection'
 import { isToolTimeoutError } from './tool-utils'
+import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 import { bashExec } from './bash-worker/client'
 import type { VfsRpcHandlerConfig } from './bash-worker/vfs-rpc-handler'
 
@@ -134,6 +135,7 @@ export const bashToolExecutor: ToolExecutor = async (
   const startTime = Date.now()
 
   try {
+    await bashCommandRegistry.refresh()
     const result = await bashExec(
       {
         command,

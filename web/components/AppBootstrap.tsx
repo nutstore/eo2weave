@@ -1,5 +1,7 @@
 'use client'
 
+import { installBashCommandAPI } from '@/agent/bash-commands/public-api'
+
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast, Toaster } from 'sonner'
 import { UnsupportedBrowser } from '@/components/UnsupportedBrowser'
@@ -39,6 +41,7 @@ import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
  * `window` at module scope.
  */
 export function AppBootstrap({ children }: { children?: React.ReactNode }) {
+  useEffect(() => { installBashCommandAPI() }, [])
   const [isRuntimeSupported, setIsRuntimeSupported] = useState(true)
   const [isStorageReady, setIsStorageReady] = useState(false)
   const [loadingProgress, setLoadingProgress] = useState<number | undefined>(undefined)

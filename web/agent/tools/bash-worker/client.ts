@@ -13,11 +13,15 @@
  * After terminate, the worker is destroyed; the next exec call recreates it.
  */
 
+import { bashCommandRegistry, type ExternalBashCommand } from '@/agent/bash-commands/registry'
+
 import type {
   ToWorkerMessage,
   FromWorkerMessage,
   WorkerExecRequest,
   WorkerExecResponse,
+  CommandRpcRequest,
+  CommandRpcResponse,
   VfsRpcRequest,
   VfsRpcResponse,
   WorkerInitMessage,
@@ -75,6 +79,7 @@ let activeHandlerConfig: VfsRpcHandlerConfig | null = null
 /** Pending exec — only one at a time (bash tool calls are serialized by agent loop). */
 let pendingExec: {
   requestId: number
+  commands: Map<string, ExternalBashCommand>
   resolve: (resp: BashExecResult) => void
   reject: (err: Error) => void
 } | null = null
@@ -102,12 +107,16 @@ function ensureWorker(handlerConfig: VfsRpcHandlerConfig): Worker {
   // Create the module worker through a statically analyzable URL so Next's
   // webpack build emits worker.ts and its dependencies as a separate chunk.
   worker = createBashWorker()
+  const createdWorker = worker
 
   worker.onmessage = (e: MessageEvent<FromWorkerMessage>) => {
+    if (worker !== createdWorker) return
     const msg = e.data
     if (!msg) return
     if (msg.type === 'exec-result') {
       handleExecResponse(msg)
+    } else if (msg.type === 'command') {
+      void handleCommandRequest(msg, createdWorker)
     } else if (msg.type === 'vfs') {
       // Read from the module-level mutable variable, NOT the closure capture.
       // This ensures the latest handlerConfig (updated on each exec) is used.
@@ -159,11 +168,13 @@ export async function bashExec(opts: BashExecOptions, handlerConfig: VfsRpcHandl
   const requestId = ++requestIdCounter
 
   const execPromise = new Promise<BashExecResult>((resolve, reject) => {
-    pendingExec = { requestId, resolve, reject }
+    const commands = opts.readOnly ? new Map<string, ExternalBashCommand>() : bashCommandRegistry.snapshot()
+    pendingExec = { requestId, commands, resolve, reject }
     const req: WorkerExecRequest = {
       type: 'exec',
       requestId,
       command: opts.command,
+      externalCommands: Array.from(commands.keys()),
       cwd: opts.cwd,
       rootNames: opts.rootNames,
       readOnly: opts.readOnly,
@@ -182,9 +193,10 @@ export async function bashExec(opts: BashExecOptions, handlerConfig: VfsRpcHandl
 
   // Abort: also terminate.
   const onAbort = () => {
+    const pending = pendingExec
     terminateWorker()
-    if (pendingExec && pendingExec.requestId === requestId) {
-      pendingExec.reject(new Error('bash execution aborted'))
+    if (pending && pending.requestId === requestId) {
+      pending.reject(new Error('bash execution aborted'))
       pendingExec = null
     }
   }
@@ -244,6 +256,31 @@ function handleExecResponse(msg: WorkerExecResponse): void {
     stdoutKind: msg.stdoutKind,
     elapsedMs: msg.elapsedMs ?? 0,
   })
+}
+
+async function handleCommandRequest(req: CommandRpcRequest, originWorker: Worker): Promise<void> {
+  const execution = pendingExec
+  if (!execution || execution.requestId !== req.requestId) return
+  const resp: CommandRpcResponse = {
+    type: 'command-result', rpcId: req.rpcId,
+    result: { stdout: '', stderr: `${req.name}: command unavailable\n`, exitCode: 127 },
+  }
+  try {
+    const command = execution.commands.get(req.name)
+    if (command && await bashCommandRegistry.checkAlive(command)) {
+      if (worker !== originWorker || pendingExec !== execution) return
+      const result = await command.invoke({ args: req.input.args, stdin: req.input.stdin })
+      if (!result || typeof result.stdout !== 'string' || typeof result.stderr !== 'string' ||
+          !Number.isInteger(result.exitCode) || result.exitCode < 0 || result.exitCode > 255) {
+        throw new TypeError('invoke must return { stdout: string, stderr: string, exitCode: 0..255 }')
+      }
+      resp.result = { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode }
+    }
+  } catch (error) {
+    resp.result = { stdout: '', stderr: `${req.name}: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 }
+  }
+  // Stopping Bash cannot stop plugin code; never deliver its late result to another execution.
+  if (worker === originWorker && pendingExec === execution) originWorker.postMessage(resp)
 }
 
 async function handleVfsRequest(req: VfsRpcRequest, config: VfsRpcHandlerConfig): Promise<void> {

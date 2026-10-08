@@ -1,3 +1,4 @@
+import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 import { produce } from 'immer'
 import { agentLoopContinue, type StreamFn } from '@earendil-works/pi-agent-core'
 import { streamSimple as piAiStreamSimple } from '@earendil-works/pi-ai'
@@ -167,6 +168,7 @@ export async function executePiCoreLoop(
   const model = input.provider.getModel()
   const apiKey = input.provider.getApiKey()
 
+  await bashCommandRegistry.refresh()
   const agentTools = buildAgentTools({
     toolRegistry: input.toolRegistry,
     mode: input.mode,
@@ -298,6 +300,14 @@ export async function executePiCoreLoop(
       temperature: settingsState.temperature,
       reasoning,
       convertToLlm: async (agentMessages) => {
+        await bashCommandRegistry.refresh()
+        // Pick up commands registered/replaced while this agent loop is running.
+        const bash = agentTools.find(tool => tool.name === 'bash')
+        if (bash) {
+          const definition = input.toolRegistry.getToolDefinitionsForMode(input.mode)
+            .find(tool => tool.function.name === 'bash')
+          bash.description = definition?.function.description || ''
+        }
         const contextConfig = input.contextManager.getConfig()
         const converted = await convertAgentMessagesToLlm({
           agentMessages,
