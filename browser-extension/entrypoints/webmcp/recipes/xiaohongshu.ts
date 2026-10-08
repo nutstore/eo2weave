@@ -6,7 +6,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Search and filter notes, read loaded comments, home feeds and profiles, and manage sign-in in your current Xiaohongshu tab.',
   category: 'social',
-  version: '0.2.3',
+  version: '0.2.4',
   glyph: '📕',
   tools: [
     {
@@ -53,7 +53,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     {
       name: 'xhs_read_current_note',
       title: 'Read the open note',
-      description: 'Read visible title, author, text, type, interaction counts, currently loaded comments and imageList from the note open in this tab. Images include available URLs, dimensions and Live Photo flags; inspect image_list_scope and image_list_partial. Image URLs do not provide image text or content understanding. Missing fields are null. NOTE_UNAVAILABLE includes site error details when present; do not infer an account restriction or risk-control cause from this error alone.',
+      description: 'Read title, author, text, type, interaction counts, loaded comments, imageList and video metadata from the note open in this tab. Images include available URLs, dimensions and Live Photo flags. Video preserves all available encoding/quality streams and existing subtitle URLs decoded from mediaV2; capability/meta duration is seconds and stream duration is milliseconds. Inspect image_list_scope/image_list_partial and video_scope/video_partial/subtitles_scope. URLs may expire and are not downloaded, transcribed or interpreted. Missing fields are null; null subtitles means unavailable, not proven absent. Keep raw results in tool history and summarize media in short tables instead of repeating every URL. NOTE_UNAVAILABLE includes site error details when present; do not infer an account restriction or risk-control cause from this error alone.',
       inputSchema: { type: 'object', properties: {} },
     },
     {

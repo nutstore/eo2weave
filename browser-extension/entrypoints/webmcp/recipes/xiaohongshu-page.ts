@@ -1,4 +1,4 @@
-import { readCardCover, readNoteImages } from './xiaohongshu-media'
+import { readCardCover, readNoteImages, readNoteVideo } from './xiaohongshu-media'
 import type { CoverInfo } from './xiaohongshu-media'
 
 type PageKind = 'home' | 'search' | 'note' | 'profile' | 'login' | 'unavailable' | 'unknown'
@@ -36,6 +36,7 @@ interface StateNote {
   user?: { nickname?: string; nickName?: string }
   interactInfo?: { likedCount?: string; commentCount?: string; collectedCount?: string }
   imageList?: unknown
+  video?: unknown
 }
 
 const HOST = 'www.xiaohongshu.com'
@@ -384,6 +385,7 @@ function readNote(): Record<string, unknown> {
     published_at: publishedAt,
     note_type: noteType,
     ...readNoteImages(state?.imageList, mediaRoot),
+    ...readNoteVideo(state?.video),
     visible_metrics: metrics,
     loaded_comments: readComments(),
     comments_scope: 'currently_loaded',
