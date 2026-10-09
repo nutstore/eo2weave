@@ -28,7 +28,9 @@ export function createAdapterInjector(
             execute: args => {
               controller.signal.throwIfAborted()
               if (!matchesToolUrl(tool.urlRegex, getUrl())) throw new Error('The current URL no longer matches this tool')
-              return invoke(tool, args, controller.signal)
+              // Registration belongs to the page; execution belongs to the SW.
+              // Removing a proxy must not cancel an already-triggered workflow.
+              return invoke(tool, args, new AbortController().signal)
             },
           }], controller)
           active.set(tool.name, { fingerprint: wanted.get(tool.name)!, controller })

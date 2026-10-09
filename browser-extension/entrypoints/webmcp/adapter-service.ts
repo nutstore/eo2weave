@@ -27,11 +27,10 @@ interface Dependencies {
   loadWasm(): Promise<WebAssembly.Module>
   trusted(sender: chrome.runtime.MessageSender): boolean
   resolveBinding(senderUrl: string, binding: unknown): Promise<number | null>
-  authorize(sender: chrome.runtime.MessageSender): Promise<void>
   changed(): void
 }
 
-/** Bound read-only setup work as well as VM execution to the caller's cancellation. */
+/** Bound WASM loading as well as VM execution to explicit cancellation. */
 function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted()
   return new Promise((resolve, reject) => {
@@ -161,9 +160,6 @@ export function createAdapterService(deps: Dependencies) {
         if (execution.tabId === tabId && execution.documentId === documentId && execution.requestId === requestId) execution.controller.abort()
       }
     },
-    cancelTab(tabId: number) {
-      for (const execution of executions.values()) if (execution.tabId === tabId) execution.controller.abort()
-    },
     async invoke(sender: chrome.runtime.MessageSender, message: Record<string, unknown>): Promise<ExecutionResult> {
       let executionId: string | undefined
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -175,19 +171,13 @@ export function createAdapterService(deps: Dependencies) {
         if (!selected) throw new Error('Adapter registration is stale, ambiguous or unavailable')
         const { host, route } = selected
         if (executions.size >= 8) throw new Error('Adapter concurrency limit exceeded')
-        // Prevent recursive cycles through call_tool (including A -> B -> A).
-        if ([...executions.values()].some(item => item.route === route)) throw new Error('Adapter is already executing; recursive invocation is unavailable')
         executionId = crypto.randomUUID()
         const controller = new AbortController()
         executions.set(executionId, { ...target, host, route, controller, requestId: message.requestId })
         timer = setTimeout(() => controller.abort(), ADAPTER_TIMEOUT_MS)
-        await abortable(() => deps.authorize(sender), controller.signal)
-        controller.signal.throwIfAborted()
         const wasm = await abortable(deps.loadWasm, controller.signal)
         controller.signal.throwIfAborted()
         return await executeAdapterWorkflow(wasm, route.source, message.args as JsonValue, [...host.toolNames], async ([name, args], signal) => {
-          signal.throwIfAborted()
-          await abortable(() => deps.authorize(sender), signal)
           signal.throwIfAborted()
           if (!isRecord(args) || typeof name !== 'string') throw new Error('Tool arguments must be an object')
           return invokeHost(host, executionId!, name, args as JsonValue, signal)

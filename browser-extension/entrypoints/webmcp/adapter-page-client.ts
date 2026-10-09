@@ -10,11 +10,13 @@ export function invokeAdapterFromPage(tool: AdapterDescriptor, args: Record<stri
       clearTimeout(timer)
       signal.removeEventListener('abort', abort)
       window.removeEventListener('message', receive)
-      window.removeEventListener('pagehide', abort)
+      window.removeEventListener('pagehide', detach)
       if (error) reject(error)
       else resolve(value)
     }
     const abort = () => { send('cancel'); finish(new Error('Adapter execution canceled')) }
+    // A full navigation destroys the caller, not the service-worker workflow.
+    const detach = () => finish(new Error('Adapter caller document unloaded; workflow continues'))
     const receive = (event: MessageEvent) => {
       const data = event.data
       if (event.source !== window || data?.[ADAPTER_PAGE_MARKER] !== true || data.kind !== 'result' || data.requestId !== requestId) return
@@ -22,7 +24,7 @@ export function invokeAdapterFromPage(tool: AdapterDescriptor, args: Record<stri
     }
     const timer = setTimeout(() => { send('cancel'); finish(new Error('Adapter execution timed out')) }, ADAPTER_TIMEOUT_MS + 1_000)
     signal.addEventListener('abort', abort, { once: true })
-    window.addEventListener('pagehide', abort, { once: true })
+    window.addEventListener('pagehide', detach, { once: true })
     window.addEventListener('message', receive)
     send('invoke')
   })

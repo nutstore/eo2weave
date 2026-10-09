@@ -39,6 +39,22 @@ describe('package injection', () => {
     await sync([])
     expect(updated.signal.aborted).toBe(true)
   })
+  it('keeps an already-triggered workflow independent of proxy withdrawal on navigation', async () => {
+    let href = 'https://example.com/articles'
+    const sync = createAdapterInjector(() => href, invoke)
+    await sync([descriptor])
+    const [tools, registration] = vi.mocked(registerPageTools).mock.calls[0]
+    let complete!: (result: { status: string; result: string }) => void
+    invoke.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    const result = tools[0].execute({})
+    const executionSignal = (invoke.mock.calls[0] as unknown as [unknown, unknown, AbortSignal])[2]
+    href = 'https://destination.test/results'
+    await sync([])
+    expect(registration.signal.aborted).toBe(true)
+    expect(executionSignal.aborted).toBe(false)
+    complete({ status: 'completed', result: 'destination title' })
+    await expect(result).resolves.toEqual({ status: 'completed', result: 'destination title' })
+  })
   it('serializes overlapping updates and retries failed registrations', async () => {
     const sync = createAdapterInjector(() => 'https://example.com/articles', invoke)
     vi.mocked(registerPageTools).mockRejectedValueOnce(new Error('Name collision'))
