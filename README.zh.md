@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Chrome 应用商店](https://img.shields.io/chrome-web-store/v/canpcddlognjbengiodekfbbfnjafeml?logo=googlechrome&logoColor=white&label=Chrome%20%E5%BA%94%E7%94%A8%E5%95%86%E5%BA%97)](https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml)
 [![用户数](https://img.shields.io/chrome-web-store/users/canpcddlognjbengiodekfbbfnjafeml?logo=googlechrome&logoColor=white&label=%E7%94%A8%E6%88%B7%E6%95%B0)](https://chromewebstore.google.com/detail/eo2weave/canpcddlognjbengiodekfbbfnjafeml)
-[![Edge 加载项](https://img.shields.io/badge/Edge%20%E5%8A%A0%E8%BD%BD%E9%A1%B9-v1.1.6-0C7BBB?logo=microsoftedge&logoColor=white)](https://microsoftedge.microsoft.com/addons/detail/eo2weave/hnndljbngdmcldojkaedhpehlghkljdm)
+[![Edge 加载项](https://img.shields.io/badge/Edge%20%E5%8A%A0%E8%BD%BD%E9%A1%B9-v1.1.7-0C7BBB?logo=microsoftedge&logoColor=white)](https://microsoftedge.microsoft.com/addons/detail/eo2weave/hnndljbngdmcldojkaedhpehlghkljdm)
 
 [English](./README.md) | 简体中文
 

@@ -1,6 +1,6 @@
 {
   "name": "browser-extension",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "AI workspace in your browser sidebar, using the current page to help you read, write, analyze, and act with WebMCP authorization.",
   "private": true,
   "type": "module",
