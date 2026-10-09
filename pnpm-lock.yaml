@@ -49,6 +49,15 @@ importers:
         specifier: ^0.19.0
         version: 0.19.29(@types/node@20.19.32)(rollup@4.57.1)(terser@5.46.0)
 
+  packages/behavior-tree:
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.7.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@20.19.32)(happy-dom@20.5.0)(terser@5.46.0)
+
   packages/config:
     dependencies:
       tailwindcss:
