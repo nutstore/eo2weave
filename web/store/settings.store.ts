@@ -800,6 +800,7 @@ export const useSettingsStore = create<SettingsState>()(
       getAvailableProviders: async () => {
         const { loadApiKey } = await import('@/security/api-key-store')
         const { PROVIDER_META, getModelsForProvider } = await import('@/agent/providers/types')
+        const { getCachedModels } = await import('@/agent/providers/model-store')
         let llmGatewayProviderKey: string | undefined
         try {
           const mod = await import('@/agent/providers/llm-gateway-provider')
@@ -836,17 +837,37 @@ export const useSettingsStore = create<SettingsState>()(
                   })
               : allModels.map((m) => ({ id: m.id, name: m.name }))
 
-            // Built-in providers always have a static list — treat it as
-            // authoritative for seen bookkeeping (a pinned id that's absent
-            // from static + dynamic lists is effectively delisted).
-            get().markPinnedModelsSeen(providerType, allModels.map((m) => m.id))
+            // Authoritative list = static registry + dynamic /models cache,
+            // merged the same way ProviderManager's allModels does. A
+            // static-only list here wrongly flags pins for models the
+            // provider added after this app build was released (e.g.
+            // glm-5.3-flash): the settings page sees them via the /models
+            // cache while this path flags them as delisted.
+            // Try both cache keys because useDynamicModels stores under
+            // (providerType, providerKey) and providerKey === providerType
+            // for built-in providers.
+            const dynamic = [
+              ...(getCachedModels(providerType, providerType) ?? []),
+              ...(getCachedModels(providerType) ?? []),
+            ]
+            const staticIds = new Set(allModels.map((m) => m.id.toLowerCase()))
+            const authoritativeIds = [
+              ...allModels.map((m) => m.id),
+              ...dynamic
+                .map((m) => m.id)
+                .filter((id) => !staticIds.has(id.toLowerCase())),
+            ]
+
+            // Merged list is authoritative for seen bookkeeping (a pinned id
+            // that's absent from static + dynamic lists is effectively delisted).
+            get().markPinnedModelsSeen(providerType, authoritativeIds)
 
             results.push({
               providerType,
               displayName: localizedProviderDisplayName(providerType, meta.displayName),
               models,
               providerKey: providerType,
-              authoritativeIds: allModels.map((m) => m.id),
+              authoritativeIds,
             })
           }
         }
