@@ -1,5 +1,5 @@
 // Adapt selectors and ordering from upstream xiaohongshu/publish.go at a5c8f779.
-// Rod/CDP input is replaced with browser DOM input; every requested setting is verified.
+// Browser DOM input adapts the current tab; observed values are reported separately.
 import { visible, clean } from './xiaohongshu-page'
 import type { PublishRequest } from './xiaohongshu-publish-policy'
 
@@ -35,19 +35,11 @@ export function imageUploadInput(firstImage: boolean): HTMLInputElement | null {
 export function disabled(el: HTMLElement): boolean {
   return el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('disabled') || el.getAttribute('submit-disabled') === 'true'
 }
-export function clickable(el: HTMLElement): HTMLElement {
-  if (!rendered(el) || disabled(el)) throw new Error('Control is hidden or disabled.')
+export async function click(el: HTMLElement, deadline = Date.now() + 15000) {
   el.scrollIntoView({ block: 'center' })
-  const rect = el.getBoundingClientRect()
-  const hit = document.elementFromPoint(rect.left + rect.width * .65, rect.top + rect.height / 2)
-  if (!hit || !(hit === el || el.contains(hit))) throw new Error('Control is obscured; close the website overlay manually.')
-  if (el.shadowRoot) {
-    const inner = el.shadowRoot.elementFromPoint(rect.left + rect.width * .65, rect.top + rect.height / 2)
-    if (inner instanceof HTMLElement && !disabled(inner)) return inner
-  }
-  return el
+  await until(() => rendered(el) && !disabled(el), deadline, 'Control did not become enabled and visible.')
+  el.click()
 }
-export function click(el: HTMLElement) { clickable(el).click() }
 export async function until(check: () => boolean, deadline: number, message: string) {
   while (Date.now() < deadline) { if (check()) return; await delay() }
   throw new Error(message)
@@ -108,15 +100,6 @@ export function checked(el: HTMLElement): boolean | null {
   if (el.querySelector('.d-checkbox-simulator.checked') || el.classList.contains('checked')) return true
   return null
 }
-async function setSwitch(el: HTMLElement, want: boolean, deadline: number) {
-  const state = checked(el)
-  if (state === null) throw new Error('Switch state unavailable; requested setting cannot be verified.')
-  if (state !== want) click(el)
-  await until(() => checked(el) === want, deadline, 'Switch selection not verified.')
-}
-export function challenge(): boolean {
-  return elements('.captcha-container, .captcha-modal, .verify-container, .verify-dialog, .login-container, .login-modal').length > 0 || /\/login(?:\/|$)/.test(location.pathname)
-}
 export function lengthError(): string | null {
   return elements('div.title-container div.max_suffix, div.edit-container div.length-error').map((el) => clean(el.innerText)).filter(Boolean).join('; ') || null
 }
@@ -157,30 +140,53 @@ export async function imageTab(deadline: number) {
     })
     return selected !== undefined
   }, deadline, 'Upload image tab unavailable after waiting for the creator page.')
-  click(selected!)
+  // Upstream checks tab obstruction, dismisses d-popover and retries this action.
+  while (Date.now() < deadline) {
+    const tab = selected!
+    tab.scrollIntoView({ block: 'center' })
+    const rect = tab.getBoundingClientRect()
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+    if (hit === tab || (hit && tab.contains(hit))) { await click(tab, deadline); break }
+    await dismissPopCover()
+    await delay(200)
+    if (Date.now() >= deadline) throw new Error('Upload image tab remained obscured after dismissing the overlay.')
+  }
   // Upstream waits one second after selecting the image tab so its Vue form
   // replaces the default video input before the first file is supplied.
   await delay(1000)
   await until(() => document.querySelector('input.upload-input[type="file"]') !== null, deadline, 'Image upload input did not appear.')
 }
+async function dismissPopCover() {
+  const popover = () => document.querySelector('div.d-popover')
+  const active = document.activeElement ?? document.body
+  active.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }))
+  active.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }))
+  await delay(200)
+  if (!popover()) return
+  // DOM dispatch is the available adaptation of upstream's empty-position click.
+  const target = document.elementFromPoint(380 + Math.random() * 100, 20 + Math.random() * 60)
+  if (target instanceof HTMLElement) target.click()
+  await delay(200)
+  popover()?.remove()
+}
 export async function configureForm(request: PublishRequest, deadline: number) {
   const title = first('div.d-input input') as HTMLInputElement
   input(title, request.title)
-  await until(() => title.value === request.title, deadline, 'Title did not retain the requested text.')
+  const titleError = elements('div.title-container div.max_suffix').map((el) => clean(el.innerText)).filter(Boolean).join('; ')
+  if (titleError) throw new Error(`Website length validation: ${titleError}`)
   let body: HTMLElement | undefined
   await until(() => {
     try { body = editor(); return true } catch { return false }
   }, Math.min(deadline, Date.now() + 10000), 'Body editor unavailable after waiting for the website.')
   const contentEditor = body!
   writeEditor(contentEditor, request.content)
-  await until(() => editorText(contentEditor) === request.content, deadline, 'Body did not retain exact text and newlines.')
   const guide = elements('.feature-guide__btn')
   if (guide.length) {
     // Upstream treats closing the optional feature guide as best effort.
-    try { click(guide[0]) } catch { /* Continue with the upstream title click. */ }
+    try { await click(guide[0], deadline) } catch { /* Continue with the upstream title click. */ }
   }
   // Port waitAndClickTitleInput instead of substituting focus/blur.
-  await delay(1000); click(title)
+  await delay(1000); await click(title, deadline)
   const topicResults: Array<{ requested: string; selected: string | null; method: string }> = []
   if (request.tags.length) writeEditor(contentEditor, '\n\n', true)
   for (const tag of request.tags) {
@@ -189,10 +195,8 @@ export async function configureForm(request: PublishRequest, deadline: number) {
     const suggestions = elements('#creator-editor-topic-container .item')
     if (suggestions.length) {
       const selected = clean(suggestions[0].innerText)
-      const before = contentEditor.innerHTML
-      click(suggestions[0]); await delay(500)
-      if (contentEditor.innerHTML === before) throw new Error('Topic selection was not observed in the editor.')
-      topicResults.push({ requested: tag, selected, method: 'first_suggestion' })
+      await click(suggestions[0], deadline); await delay(500)
+      topicResults.push({ requested: tag, selected, method: 'first_suggestion_clicked' })
     } else {
       writeEditor(contentEditor, ' ', true)
       topicResults.push({ requested: tag, selected: null, method: 'plain_text_fallback' })
@@ -202,44 +206,56 @@ export async function configureForm(request: PublishRequest, deadline: number) {
   const schedule = elements('.post-time-wrapper .d-switch')
   if (request.schedule_at && !schedule.length) throw new Error('Scheduled publishing switch unavailable.')
   if (request.schedule_at) {
-    await setSwitch(schedule[0], true, deadline); await delay(800)
-    // The creator date field is China local time, independent of the device timezone.
-    const date = new Date(Date.parse(request.schedule_at) + 8 * 3600000).toISOString().slice(0, 16).replace('T', ' ')
+    await click(schedule[0], deadline); await delay(800)
+    // Match Go t.Format: retain the wall-clock time in the supplied RFC3339 zone.
+    const date = request.schedule_at.slice(0, 16).replace('T', ' ')
     const dateInput = first('.date-picker-container input') as HTMLInputElement
     input(dateInput, date)
-    await until(() => dateInput.value === date, deadline, 'Scheduled date/time did not verify.')
+    await delay(500)
   }
   if (request.visibility !== '公开可见') {
-    click(first('div.permission-card-wrapper div.d-select-content')); await delay(500)
+    await click(first('div.permission-card-wrapper div.d-select-content'), deadline); await delay(500)
     const opts = elements('div.d-options-wrapper div.d-grid-item div.custom-option').filter((el) => clean(el.innerText).includes(request.visibility))
     if (!opts.length) throw new Error('Requested visibility unavailable.')
-    click(opts[0])
-    await until(() => permission()?.includes(request.visibility) === true, deadline, 'Requested visibility did not verify.')
+    await click(opts[0], deadline); await delay(200)
   }
   const original = originalSwitch()
+  const warnings: string[] = []
   if (!original && request.is_original) throw new Error('Original declaration unavailable.')
   if (request.is_original && original && checked(original) !== true) {
-    if (checked(original) === null) throw new Error('Original declaration state unknown.')
-    click(original); await delay(800)
-    if (request.is_original) {
-      const footers = elements('div.footer').filter((el) => /原创声明须知|声明原创/.test(clean(el.innerText)))
-      if (footers.length) {
-        const footer = footers.find((el) => clean(el.innerText).includes('声明原创')) ?? footers[0]
-        const box = first('div.d-checkbox', footer)
-        await setSwitch(box, true, deadline)
-        click(first('button.custom-button', footer))
-      }
-    }
-    await until(() => checked(original) === request.is_original, deadline, 'Original declaration did not verify.')
+    await click(original, deadline); await delay(500)
+    await confirmOriginalDeclaration(deadline, warnings)
   }
-  const productResults = await bindProducts(request.products, deadline)
-  if (title.value !== request.title || !editorText(contentEditor).startsWith(request.content)) throw new Error('Text changed while configuring options.')
-  if (challenge() || lengthError()) throw new Error('Website validation or authentication requires user action.')
+  const productResults = await bindProducts(request.products, deadline, warnings)
+  if (lengthError()) throw new Error(`Website length validation: ${lengthError()}`)
   return { topics: topicResults, products: productResults, visibility: request.visibility, is_original: request.is_original, schedule_at: request.schedule_at, dropped_tags: request.dropped_tags,
-    observed_options: { visibility: permission(), is_original: original ? checked(original) : null, scheduled: schedule.length ? checked(schedule[0]) : null } }
+    observed_text: { title: title.value, content: editorText(contentEditor), length_unit: 'utf16_code_units' }, warnings,
+    observed_options: { visibility: permission(), is_original: original ? checked(original) : null, scheduled: schedule.length ? checked(schedule[0]) : null,
+      scheduled_at: (elements('.date-picker-container input')[0] as HTMLInputElement | undefined)?.value ?? null } }
 }
-async function bindProducts(products: string[], deadline: number) {
-  const results: Array<{ keyword: string; selected: string }> = []
+async function confirmOriginalDeclaration(deadline: number, warnings: string[]) {
+  const footer = (text: string) => elements('div.footer').find((el) => clean(el.innerText).includes(text))
+  const checkNotice = async (root: HTMLElement) => {
+    const box = first('div.d-checkbox', root)
+    if (checked(box) !== true) await click(box, deadline)
+  }
+  await delay(800)
+  const notice = footer('原创声明须知')
+  if (!notice) warnings.push('Original declaration notice footer was not found.')
+  else { try { await checkNotice(notice) } catch (caught) { warnings.push(caught instanceof Error ? caught.message : 'Original notice checkbox action failed.') } }
+  await delay(500)
+  const declaration = footer('声明原创')
+  if (!declaration) throw new Error('Original declaration confirmation footer unavailable.')
+  const button = first('button.custom-button', declaration)
+  if (disabled(button)) {
+    try { await checkNotice(declaration) } catch (caught) { warnings.push(caught instanceof Error ? caught.message : 'Original notice retry failed.') }
+    await delay(300)
+    if (disabled(button)) throw new Error('Original declaration confirmation button remains disabled.')
+  }
+  await click(button, deadline); await delay(300)
+}
+async function bindProducts(products: string[], deadline: number, warnings: string[]) {
+  const results: Array<{ keyword: string; selected: string; observed_checked: boolean | null }> = []
   const failures: Array<{ keyword: string; message: string }> = []
   if (!products.length) return results
   const spans = elements('span.d-text').filter((el) => clean(el.innerText) === '添加商品')
@@ -253,8 +269,8 @@ async function bindProducts(products: string[], deadline: number) {
     if (trigger) break
   }
   if (!trigger) throw new Error('Add product control unavailable.')
-  click(trigger)
-  await until(() => elements('.multi-goods-selector-modal').length > 0, deadline, 'Product modal did not open.')
+  await click(trigger, deadline)
+  await until(() => elements('.multi-goods-selector-modal').length > 0, Math.min(deadline, Date.now() + 15000), 'Product modal did not open.')
   const modal = first('.multi-goods-selector-modal')
   for (const keyword of products) {
     try {
@@ -267,8 +283,8 @@ async function bindProducts(products: string[], deadline: number) {
         Math.min(deadline, Date.now() + 10000), 'Product search results did not become available.')
       const card = elements('.goods-list-normal .good-card-container', modal)[0]
       const box = first('.d-checkbox', card)
-      await setSwitch(box, true, deadline)
-      results.push({ keyword, selected: clean(card.innerText).slice(0, 400) })
+      if (checked(box) !== true) { await click(box, deadline); await delay(800 + Math.random() * 700) }
+      results.push({ keyword, selected: clean(card.innerText).slice(0, 400), observed_checked: checked(box) })
     } catch (caught) {
       failures.push({ keyword, message: caught instanceof Error ? caught.message : 'Product selection failed.' })
     }
@@ -277,26 +293,19 @@ async function bindProducts(products: string[], deadline: number) {
       break
     }
   }
-  const save = elements('.goods-selected-footer button', modal)[0] ?? elements('.goods-selected-footer .d-button--primary', modal)[0]
-  if (!save) throw new Error('Product save control unavailable.')
-  click(save)
-  await until(() => !rendered(modal), deadline, 'Product modal did not close; binding not verified.')
+  // Port the upstream save fallback and warning-only close timeout.
+  let saved = false
+  for (const selector of ['.goods-selected-footer button', '.goods-selected-footer .d-button--primary']) {
+    const save = elements(selector, modal)[0]
+    if (!save) continue
+    try { await click(save, deadline); saved = true; break }
+    catch (caught) { warnings.push(caught instanceof Error ? caught.message : 'Product save click failed.') }
+  }
+  if (!saved) warnings.push('Product save control was unavailable or could not be clicked.')
+  try { await until(() => !rendered(modal), Math.min(deadline, Date.now() + 5000), 'Product modal did not close; binding was not verified.') }
+  catch (caught) { warnings.push(caught instanceof Error ? caught.message : 'Product modal close timeout.') }
   // Upstream attempts the remaining keywords and saves before reporting failures.
   if (failures.length) throw new Error(`Product selection failed: ${JSON.stringify(failures)}`)
   // Preserve the selected identities for the visible review. Saving alone is not publication.
   return results
-}
-export function publishButton(): HTMLElement {
-  const widgets = elements('xhs-publish-btn').filter((el) => el.getAttribute('is-publish') !== 'false')
-  if (widgets.length) return widgets[0]
-  return first('.publish-page-publish-btn button.bg-red')
-}
-export function successEvidence(): { signal: string; text: string; url: string } | null {
-  // Unlike upstream's URL-only test, require an explicit rendered success message.
-  // No guessed success-page classes: inspect actual visible leaf text as evidence.
-  const messages = elements('body *').filter((el) => el.children.length === 0)
-    .filter((el) => !el.closest('[contenteditable], input, textarea, .img-preview-area, .multi-goods-selector-modal'))
-    .filter((el) => /^(?:笔记)?(?:发布成功|定时发布设置成功|定时发布成功)(?:[！!\s]|$)/.test(clean(el.innerText)))
-  if (!messages.length) return null
-  return { signal: 'explicit_publish_success_message', text: clean(messages[0].innerText).slice(0, 200), url: location.origin + location.pathname }
 }

@@ -64,12 +64,13 @@ export function imageMime(bytes: Uint8Array): string | null {
   if (bytes.length >= 4 && bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 1 && bytes[3] === 0) return 'image/vnd.microsoft.icon'
   return null
 }
-export function imagePayload(bytes: Uint8Array, name: string): ImagePayload {
+export function imagePayload(bytes: Uint8Array, name: string, requireImage = true): ImagePayload {
   if (!bytes.length || bytes.length > MAX_IMAGE_BYTES) throw new Error('Image exceeds the Chrome JSON/base64 transport capacity; no image was silently resized or omitted.')
-  const mime = imageMime(bytes)
-  if (!mime) throw new Error('File bytes are not a recognized image format.')
+  // Upstream detects remote downloads, while local files are supplied directly.
+  const mime = imageMime(bytes) ?? ''
+  if (requireImage && !mime) throw new Error('File bytes are not a recognized image format.')
   let binary = ''
   for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768))
   const ext = ({ 'image/jpeg': 'jpg', 'image/tiff': 'tif', 'image/x-canon-cr2': 'cr2', 'image/vnd.ms-photo': 'jxr', 'image/vnd.adobe.photoshop': 'psd', 'image/vnd.microsoft.icon': 'ico', 'image/vnd.dwg': 'dwg' } as Record<string, string>)[mime] ?? mime.split('/')[1]
-  return { name: name.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(0, 100) || `image.${ext}`, mime, base64: btoa(binary) }
+  return { name: name || `image.${ext}`, mime, base64: btoa(binary) }
 }

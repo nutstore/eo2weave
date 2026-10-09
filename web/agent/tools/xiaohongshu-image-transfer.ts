@@ -16,5 +16,5 @@ export async function prepareXiaohongshuImage(args: Record<string, unknown>, con
   if (typeof file.content === 'string') throw new Error('Expected binary image bytes.')
   const bytes = file.content instanceof Blob ? new Uint8Array(await file.content.arrayBuffer()) : file.content instanceof Uint8Array ? file.content : new Uint8Array(file.content)
   if (context.abortSignal?.aborted) throw new Error('Image transfer aborted.')
-  return { ...args, _eo2_image: imagePayload(bytes, target.path.split('/').pop() || 'image') }
+  return { ...args, _eo2_image: imagePayload(bytes, target.path.split('/').pop() || 'image', false) }
 }
