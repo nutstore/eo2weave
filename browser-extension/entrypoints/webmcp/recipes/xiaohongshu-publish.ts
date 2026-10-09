@@ -1,5 +1,5 @@
 import { HOST, error, result, navigation } from './xiaohongshu-page'
-import { CREATOR_HOST, PUBLISH_URL, publishRequest, MAX_IMAGE_BYTES } from './xiaohongshu-publish-policy'
+import { CREATOR_HOST, PUBLISH_URL, publishRequest, updatePublishRequest, PUBLISH_FORM_FIELDS, MAX_IMAGE_BYTES } from './xiaohongshu-publish-policy'
 import type { PublishRequest, ImagePayload } from './xiaohongshu-publish-policy'
 import { takeXiaohongshuImage } from './xiaohongshu-publish-transfer'
 import { imageTab, imageUploadInput, delay, previews, elements, configureForm, until } from './xiaohongshu-publish-dom'
@@ -113,8 +113,12 @@ export const xiaohongshuPublishTools: Record<string, (args: Record<string, unkno
       }
       if (args.action === 'configure') {
         if (journal.uploaded < journal.request.images.length || previews().length < (journal.existing_previews ?? 0) + journal.request.images.length) return failed('CONFIGURATION_NOT_READY', 'Wait for the requested image previews before filling the form.', journal)
+        const updatedFields = PUBLISH_FORM_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(args, field))
+        const fields = journal.phase === 'ready' && updatedFields.length ? new Set(updatedFields) : undefined
+        journal.request = updatePublishRequest(journal.request, args)
+        journal.review = null
         journal.phase = 'configuring'; save(journal)
-        journal.review = await configureForm(journal.request, deadline)
+        journal.review = await configureForm(journal.request, deadline, fields)
         journal.phase = 'ready'; save(journal)
         return result('ok', summary(journal))
       }

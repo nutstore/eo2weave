@@ -1,7 +1,7 @@
 // Adapt selectors and ordering from upstream xiaohongshu/publish.go at a5c8f779.
 // Browser DOM input adapts the current tab; observed values are reported separately.
 import { visible, clean } from './xiaohongshu-page'
-import type { PublishRequest } from './xiaohongshu-publish-policy'
+import type { PublishRequest, PublishFormField } from './xiaohongshu-publish-policy'
 
 export const delay = (ms = 250) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 export function rendered(el: Element | null): el is HTMLElement {
@@ -169,27 +169,35 @@ async function dismissPopCover() {
   await delay(200)
   popover()?.remove()
 }
-export async function configureForm(request: PublishRequest, deadline: number) {
+export async function configureForm(request: PublishRequest, deadline: number, fields?: ReadonlySet<PublishFormField>) {
+  const apply = (field: PublishFormField) => !fields || fields.has(field)
   const title = first('div.d-input input') as HTMLInputElement
-  input(title, request.title)
-  const titleError = elements('div.title-container div.max_suffix').map((el) => clean(el.innerText)).filter(Boolean).join('; ')
-  if (titleError) throw new Error(`Website length validation: ${titleError}`)
+  if (apply('title')) {
+    input(title, request.title)
+    const titleError = elements('div.title-container div.max_suffix').map((el) => clean(el.innerText)).filter(Boolean).join('; ')
+    if (titleError) throw new Error(`Website length validation: ${titleError}`)
+  }
   let body: HTMLElement | undefined
   await until(() => {
     try { body = editor(); return true } catch { return false }
   }, Math.min(deadline, Date.now() + 10000), 'Body editor unavailable after waiting for the website.')
   const contentEditor = body!
-  writeEditor(contentEditor, request.content)
-  const guide = elements('.feature-guide__btn')
-  if (guide.length) {
-    // Upstream treats closing the optional feature guide as best effort.
-    try { await click(guide[0], deadline) } catch { /* Continue with the upstream title click. */ }
+  // Updating body or topics rebuilds the topic-bearing editor from the requested
+  // body. A visibility-only update leaves the current text and topics untouched.
+  const writeBody = apply('content') || apply('tags')
+  if (writeBody) {
+    writeEditor(contentEditor, request.content)
+    const guide = elements('.feature-guide__btn')
+    if (guide.length) {
+      // Upstream treats closing the optional feature guide as best effort.
+      try { await click(guide[0], deadline) } catch { /* Continue with the upstream title click. */ }
+    }
+    // Port waitAndClickTitleInput instead of substituting focus/blur.
+    await delay(1000); await click(title, deadline)
   }
-  // Port waitAndClickTitleInput instead of substituting focus/blur.
-  await delay(1000); await click(title, deadline)
   const topicResults: Array<{ requested: string; selected: string | null; method: string }> = []
-  if (request.tags.length) writeEditor(contentEditor, '\n\n', true)
-  for (const tag of request.tags) {
+  if (writeBody && request.tags.length) writeEditor(contentEditor, '\n\n', true)
+  for (const tag of writeBody ? request.tags : []) {
     if (Date.now() >= deadline) throw new Error('Topic configuration exceeded call budget.')
     writeEditor(contentEditor, '#', true); await delay(200); writeEditor(contentEditor, tag, true); await delay(1000)
     const suggestions = elements('#creator-editor-topic-container .item')
@@ -204,8 +212,8 @@ export async function configureForm(request: PublishRequest, deadline: number) {
   }
   if (lengthError()) throw new Error(`Website length validation: ${lengthError()}`)
   const schedule = elements('.post-time-wrapper .d-switch')
-  if (request.schedule_at && !schedule.length) throw new Error('Scheduled publishing switch unavailable.')
-  if (request.schedule_at) {
+  if (apply('schedule_at') && request.schedule_at && !schedule.length) throw new Error('Scheduled publishing switch unavailable.')
+  if (apply('schedule_at') && request.schedule_at) {
     await click(schedule[0], deadline); await delay(800)
     // Match Go t.Format: retain the wall-clock time in the supplied RFC3339 zone.
     const date = request.schedule_at.slice(0, 16).replace('T', ' ')
@@ -213,7 +221,7 @@ export async function configureForm(request: PublishRequest, deadline: number) {
     input(dateInput, date)
     await delay(500)
   }
-  if (request.visibility !== '公开可见') {
+  if (apply('visibility') && request.visibility !== '公开可见') {
     await click(first('div.permission-card-wrapper div.d-select-content'), deadline); await delay(500)
     const opts = elements('div.d-options-wrapper div.d-grid-item div.custom-option').filter((el) => clean(el.innerText).includes(request.visibility))
     if (!opts.length) throw new Error('Requested visibility unavailable.')
@@ -221,12 +229,12 @@ export async function configureForm(request: PublishRequest, deadline: number) {
   }
   const original = originalSwitch()
   const warnings: string[] = []
-  if (!original && request.is_original) throw new Error('Original declaration unavailable.')
-  if (request.is_original && original && checked(original) !== true) {
+  if (apply('is_original') && !original && request.is_original) throw new Error('Original declaration unavailable.')
+  if (apply('is_original') && request.is_original && original && checked(original) !== true) {
     await click(original, deadline); await delay(500)
     await confirmOriginalDeclaration(deadline, warnings)
   }
-  const productResults = await bindProducts(request.products, deadline, warnings)
+  const productResults = apply('products') ? await bindProducts(request.products, deadline, warnings) : []
   if (lengthError()) throw new Error(`Website length validation: ${lengthError()}`)
   return { topics: topicResults, products: productResults, visibility: request.visibility, is_original: request.is_original, schedule_at: request.schedule_at, dropped_tags: request.dropped_tags,
     observed_text: { title: title.value, content: editorText(contentEditor), length_unit: 'utf16_code_units' }, warnings,

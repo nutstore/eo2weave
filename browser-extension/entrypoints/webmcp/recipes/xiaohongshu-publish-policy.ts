@@ -10,6 +10,17 @@ export interface PublishRequest {
   title: string; content: string; images: string[]; tags: string[]; dropped_tags: number
   schedule_at: string | null; is_original: boolean; visibility: string; products: string[]
 }
+export const PUBLISH_FORM_FIELDS = ['title', 'content', 'tags', 'schedule_at', 'is_original', 'visibility', 'products'] as const
+export type PublishFormField = typeof PUBLISH_FORM_FIELDS[number]
+export function updatePublishRequest(request: PublishRequest, args: Record<string, unknown>): PublishRequest {
+  const updates = Object.fromEntries(PUBLISH_FORM_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(args, field)).map((field) => [field, args[field]]))
+  // Validate new parameters with the upstream rules. An unchanged scheduled time
+  // was validated when prepared, so changing visibility must not revalidate its range.
+  const updated = publishRequest({ ...request, ...updates, schedule_at: 'schedule_at' in updates ? updates.schedule_at : undefined })
+  if (!('schedule_at' in updates)) updated.schedule_at = request.schedule_at
+  if (!('tags' in updates)) updated.dropped_tags = request.dropped_tags
+  return updated
+}
 export function titleLength(title: string): number {
   let length = 0
   for (let i = 0; i < title.length; i++) length += title.charCodeAt(i) > 127 ? 2 : 1
