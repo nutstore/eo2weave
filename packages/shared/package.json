@@ -27,6 +27,7 @@
   "dependencies": {
     "@creatorweave/quickjs-runtime": "workspace:*",
     "@babel/parser": "7.28.5",
-    "@cfworker/json-schema": "^4.1.1"
+    "@cfworker/json-schema": "^4.1.1",
+    "@creatorweave/behavior-tree": "workspace:*"
   }
 }

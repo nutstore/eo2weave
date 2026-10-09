@@ -25,6 +25,12 @@ export interface WorkflowContract {
   outputSchema: JsonSchema
 }
 
+/** Static structure only; executable callbacks stay inside the guest VM. */
+export type WorkflowTreeDescriptor =
+  | { type: 'sequence' | 'selector'; children: WorkflowTreeDescriptor[] }
+  | { type: 'action' | 'condition'; id: string }
+  | { type: 'wait'; id: string; intervalMs: number; timeoutMs?: number }
+
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -92,44 +98,88 @@ function jsonLiteral(node: Node): unknown {
   throw new Error('Schemas must be JSON literals, without expressions or references to variables')
 }
 
-export function parseWorkflow(source: string): { expression: string; contracts: WorkflowContract[] } {
+/** Validate the declarative tree without executing any user functions. */
+export function parseWorkflow(source: string): { expression: string; contract: WorkflowContract; tree: WorkflowTreeDescriptor } {
   if (typeof source !== 'string' || source.length > 256_000) throw new Error('Tool source must be at most 256000 characters')
   const ast = parse(source, { sourceType: 'module', createImportExpressions: true })
   const statement = ast.program.body[0]
-  if (ast.program.body.length !== 1 || statement?.type !== 'ExportDefaultDeclaration' || statement.declaration.type !== 'ArrayExpression')
-    throw new Error('Tool source must contain only export default [{ description, inputSchema, outputSchema, inspect, run }, ...]')
-  const array = statement.declaration
-  if (array.elements.length === 0) throw new Error('Workflow must contain at least one step')
-  const contracts = array.elements.map((step, index): WorkflowContract => {
-    const label = `Step ${index + 1}`
-    if (step?.type !== 'ObjectExpression') throw new Error(`${label} must be an object literal`)
-    const properties = new Map<string, typeof step.properties[number]>()
-    for (const prop of step.properties) {
-      if (prop.type === 'SpreadElement' || prop.computed) throw new Error(`${label}: use literal step properties`)
+  if (ast.program.body.length !== 1 || statement?.type !== 'ExportDefaultDeclaration' || statement.declaration.type !== 'ObjectExpression')
+    throw new Error('Tool source must contain only export default { inputSchema, outputSchema, tree, result }')
+  const definition = statement.declaration
+  const properties = (node: Node, allowed: string[], required: string[], label: string) => {
+    if (node.type !== 'ObjectExpression') throw new Error(`${label} must be an object literal`)
+    const result = new Map<string, typeof node.properties[number]>()
+    for (const prop of node.properties) {
+      if (prop.type === 'SpreadElement' || prop.computed || (prop.type === 'ObjectProperty' && prop.shorthand))
+        throw new Error(`${label}: use literal properties`)
       const key = prop.key.type === 'Identifier' ? prop.key.name : prop.key.type === 'StringLiteral' ? prop.key.value : ''
-      if (properties.has(key) || !['description', 'inputSchema', 'outputSchema', 'inspect', 'run'].includes(key)) throw new Error(`${label}: invalid or duplicate ${key}`)
-      properties.set(key, prop)
-      if (key === 'description') {
-        if (prop.type !== 'ObjectProperty' || prop.value.type !== 'StringLiteral' || !prop.value.value.trim()) throw new Error(`${label}: description must be a nonempty string`)
-      } else if (key === 'inspect' || key === 'run') {
-        if (prop.type === 'ObjectMethod' ? prop.kind !== 'method' || prop.generator :
-          !['ArrowFunctionExpression', 'FunctionExpression'].includes(prop.value.type) || ('generator' in prop.value && prop.value.generator))
-          throw new Error(`${label}: ${key} must be a function`)
+      if (!allowed.includes(key) || result.has(key)) throw new Error(`${label}: invalid or duplicate ${key}`)
+      result.set(key, prop)
+    }
+    for (const key of required) if (!result.has(key)) throw new Error(`${label}: ${key} is required`)
+    return result
+  }
+  const value = (props: ReturnType<typeof properties>, key: string): Node => {
+    const prop = props.get(key)
+    if (prop?.type !== 'ObjectProperty') throw new Error(`${key} must be a literal property`)
+    return prop.value
+  }
+  const callback = (props: ReturnType<typeof properties>, key: string) => {
+    const prop = props.get(key)
+    if (!prop || prop.type === 'SpreadElement' || (prop.type === 'ObjectMethod' ? prop.kind !== 'method' || prop.generator :
+      !['ArrowFunctionExpression', 'FunctionExpression'].includes(prop.value.type) || ('generator' in prop.value && prop.value.generator)))
+      throw new Error(`${key} must be a function`)
+  }
+  const tree = (node: Node, path: string): WorkflowTreeDescriptor => {
+    let descriptor: WorkflowTreeDescriptor
+    const props = properties(node, ['type', 'description', 'children', 'inspect', 'run', 'intervalMs', 'timeoutMs'], ['type'], path)
+    const type = jsonLiteral(value(props, 'type'))
+    let required: string[]
+    let optional: string[] = []
+    if (type === 'sequence' || type === 'selector') {
+      required = ['children']
+      const children = value(props, 'children')
+      if (children.type !== 'ArrayExpression') throw new Error(`${path}: children must be an array literal`)
+      descriptor = { type, children: children.elements.map((child, index) => {
+        if (!child || child.type === 'SpreadElement') throw new Error(`${path}: children must be nodes`)
+        return tree(child, `${path}.children[${index}]`)
+      }) }
+    } else if (type === 'action') {
+      required = ['run']
+      callback(props, 'run')
+      descriptor = { type, id: path }
+    } else if (type === 'condition' || type === 'wait') {
+      required = ['inspect']
+      callback(props, 'inspect')
+      descriptor = type === 'wait' ? { type, id: path, intervalMs: 0 } : { type, id: path }
+      if (type === 'wait') {
+        optional = ['intervalMs', 'timeoutMs']
+        for (const key of optional) if (props.has(key)) {
+          const duration = jsonLiteral(value(props, key))
+          if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0) throw new Error(`${path}: ${key} must be finite and nonnegative`)
+          if (descriptor.type === 'wait') {
+            if (key === 'intervalMs') descriptor.intervalMs = duration
+            else descriptor.timeoutMs = duration
+          }
+        }
       }
-    }
-    if (properties.size !== 5) throw new Error(`${label}: description, inputSchema, outputSchema, inspect and run are required`)
-    const schema = (key: 'inputSchema' | 'outputSchema'): JsonSchema => {
-      const property = properties.get(key)!
-      if (property.type !== 'ObjectProperty') throw new Error(`${label} ${key} must be a JSON schema literal`)
-      const value = jsonLiteral(property.value)
-      if (typeof value !== 'boolean' && !record(value)) throw new Error(`${label} ${key} must be a JSON schema`)
-      createSchemaValidator(value, `${label} ${key}`)
-      return value
-    }
-    return { inputSchema: schema('inputSchema'), outputSchema: schema('outputSchema') }
-  })
-  if (typeof contracts[0].inputSchema !== 'object' || contracts[0].inputSchema.type !== 'object')
-    throw new Error('First step inputSchema must be an object schema for WebMCP arguments')
+    } else throw new Error(`${path}: unknown node type ${String(type)}`)
+    for (const key of props.keys()) if (!['type', 'description', ...required, ...optional].includes(key)) throw new Error(`${path}: invalid ${key} for ${type}`)
+    if (props.has('description')) text(jsonLiteral(value(props, 'description')), `${path}.description`)
+    return descriptor
+  }
+  const props = properties(definition, ['inputSchema', 'outputSchema', 'tree', 'result'], ['inputSchema', 'outputSchema', 'tree', 'result'], 'Workflow')
+  const schema = (key: 'inputSchema' | 'outputSchema'): JsonSchema => {
+    const result = jsonLiteral(value(props, key))
+    if (typeof result !== 'boolean' && !record(result)) throw new Error(`${key} must be a JSON schema`)
+    createSchemaValidator(result, key)
+    return result
+  }
+  const contract = { inputSchema: schema('inputSchema'), outputSchema: schema('outputSchema') }
+  if (typeof contract.inputSchema !== 'object' || contract.inputSchema.type !== 'object')
+    throw new Error('Workflow inputSchema must be an object schema for WebMCP arguments')
+  const structure = tree(value(props, 'tree'), 'tree')
+  callback(props, 'result')
   const visit = (value: unknown): void => {
     if (!record(value)) return
     if (value.type === 'ImportExpression' || value.type === 'MetaProperty') throw new Error('Module imports and import.meta are unavailable')
@@ -139,8 +189,8 @@ export function parseWorkflow(source: string): { expression: string; contracts: 
       else visit(child)
     }
   }
-  visit(array)
-  return { expression: source.slice(array.start!, array.end!), contracts }
+  visit(definition)
+  return { expression: source.slice(definition.start!, definition.end!), contract, tree: structure }
 }
 
 export function validatePackage(manifest: unknown, sources: unknown, directoryId: string): WebMCPPackage {
