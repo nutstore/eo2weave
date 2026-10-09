@@ -73,14 +73,7 @@ export const xiaohongshuPublishTools: Record<string, (args: Record<string, unkno
         if (journal.phase === 'submitted') return failed('PUBLISH_RESULT_UNKNOWN', 'Submission was attempted, but publication is not verified. Navigation alone is not success. Inspect the creator website; never automatically resubmit.', journal)
         return result('ok', summary(journal))
       }
-      if (journal && journal.operation_id !== args.operation_id && journal.phase !== 'verified') {
-        const emptyUploadForm = document.querySelector('input.upload-input[type="file"]') && !previews().length && !elements('div.d-input input').some((el) => (el as HTMLInputElement).value) && !elements('[contenteditable="true"]').some((el) => editorText(el))
-        if (args.action === 'prepare' && !journal.submitted_at && emptyUploadForm) journal = null
-        else return failed('PUBLISH_OPERATION_UNRESOLVED', 'This tab has an unfinished publication. Before submission, clear the website draft to start another task. Uncertain submissions must not be repeated.', journal)
-      }
-      if (journal?.operation_id === args.operation_id && journal.submitted_at) {
-        return journal.phase === 'verified' ? result('ok', summary(journal)) : failed('PUBLISH_RESULT_UNKNOWN', 'This operation already attempted submission. Query status and verify manually; another click is prohibited.', journal)
-      }
+      if (journal?.operation_id === args.operation_id && journal.phase === 'verified') return result('ok', summary(journal))
       if (challenge()) return failed('CREATOR_ACTION_REQUIRED', 'The creator website requires sign-in or verification. Complete it manually; no login automation is added.', journal)
       if (location.pathname !== '/publish/publish') return failed('NOT_PUBLISH_PAGE', 'Open the upstream creator publish page in this same tab.', journal)
       const deadline = Date.now() + 45000
@@ -127,12 +120,13 @@ export const xiaohongshuPublishTools: Record<string, (args: Record<string, unkno
         return result('ok', { ...summary(journal), next_step: 'Review the visible form and returned options; submit only when the user requested this exact publication.' })
       }
       if (args.confirm !== true) return failed('CONFIRMATION_REQUIRED', 'submit requires confirm=true only for user-requested publication of the reviewed content.', journal)
-      if (journal.phase !== 'ready' || !journal.snapshot) return failed('PUBLICATION_NOT_READY', 'Configure and review this publication before submitting.', journal)
-      if (formSnapshot() !== journal.snapshot || lengthError()) return failed('DRAFT_CHANGED', 'The visible draft differs from the reviewed form or has validation errors. Publication was not submitted.', journal)
+      if (!['ready', 'submitted'].includes(journal.phase)) return failed('PUBLICATION_NOT_READY', 'Configure and review this publication before submitting.', journal)
+      if (lengthError()) return failed('PUBLISH_STEP_FAILED', `Website length validation: ${lengthError()}`, journal)
       if (journal.request.schedule_at) publishRequest({ ...journal.request, schedule_at: journal.request.schedule_at })
       const button = clickable(publishButton())
       if (successEvidence()) return failed('STALE_SUCCESS_EVIDENCE', 'A preexisting success message cannot verify a new publication.', journal)
-      // Persist before clicking. A page teardown or relay failure cannot authorize a second click.
+      // Keep attempt context across navigation; it does not lock out a later
+      // invocation confirmed by the user through EO2's existing authorization.
       journal.phase = 'submitted'; journal.submitted_at = new Date().toISOString(); save(journal)
       button.click()
       try { await until(() => { reconcile(journal!); return journal!.phase === 'verified' }, Date.now() + 15000, 'Publication outcome unknown.') }
