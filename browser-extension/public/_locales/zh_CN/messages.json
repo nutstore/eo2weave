@@ -15,7 +15,7 @@
   "webmcpGroupDisabled": { "message": "已禁用——该工具组将被拦截" },
   "extensionDescription": { "message": "为浏览器内 AI 助手提供网页搜索与内容抓取能力" },
   "popupSubtitle": { "message": "浏览器里的 AI 工作台" },
-  "openWorkbench": { "message": "打开工作台" },
+  "openSidePanel": { "message": "打开侧边栏" },
   "openWorkbenchHint": { "message": "在侧边栏中与 AI 对话、搜索网页、操作页面" },
   "capReady": { "message": "已就绪 · 支持搜索与网页读取" },
   "capInactive": { "message": "刷新本页后可读取页面" },

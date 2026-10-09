@@ -37,8 +37,8 @@
   "popupSubtitle": {
     "message": "Your AI workbench in the browser"
   },
-  "openWorkbench": {
-    "message": "Open workbench"
+  "openSidePanel": {
+    "message": "Open side panel"
   },
   "openWorkbenchHint": {
     "message": "Chat with AI, search the web, and act on pages — in the side panel"
