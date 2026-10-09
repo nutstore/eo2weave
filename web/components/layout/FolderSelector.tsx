@@ -163,9 +163,19 @@ export function FolderSelector() {
   const handleRestorePermission = useCallback(
     async (root: RootInfo) => {
       if (!activeProjectId || !root.persistedHandle) return
+      if (isSidePanel) {
+        // Re-grant in a top-level page; cross-origin panels cannot prompt.
+        const url = new URL(window.location.href)
+        url.hash = ''
+        url.search = `?projectId=${encodeURIComponent(activeProjectId)}`
+        url.pathname = '/folder-pick'
+        window.open(url.toString(), '_blank', 'noopener')
+        setActiveChip(null)
+        return
+      }
       try {
         const permission = await root.persistedHandle.requestPermission({ mode: 'readwrite' })
-        if (permission) {
+        if (permission === 'granted') {
           bindRuntimeDirectoryHandle(activeProjectId, root.name, root.persistedHandle)
           await loadRoots()
 
@@ -186,7 +196,7 @@ export function FolderSelector() {
         toast.error(t('projectRoots.permissionFailed'))
       }
     },
-    [activeProjectId, loadRoots, t]
+    [activeProjectId, isSidePanel, loadRoots, t]
   )
 
   const handleToggleReadOnly = useCallback(
