@@ -1,4 +1,4 @@
-export { executeQuickJs } from './runtime'
+export { executeQuickJs, withQuickJsSession, type QuickJsSession } from './runtime'
 export { preflight, preflightFailure, type Diagnostic } from './preflight'
 export {
   DEFAULT_LIMITS,

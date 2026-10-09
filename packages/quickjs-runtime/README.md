@@ -52,3 +52,47 @@ and application result envelopes belong to consumers. The web adapter in
 `web/runtime/quickjs/` owns its asset loading, Worker protocol, and watchdog.
 
 Run `pnpm test:run` and `pnpm typecheck` in this package independently of the web app.
+
+## Scoped sessions
+
+Use `withQuickJsSession` when a host orchestrator must call guest functions multiple
+times without copying guest state or restarting the VM:
+
+```ts
+import { withQuickJsSession, DEFAULT_LIMITS } from '@creatorweave/quickjs-runtime'
+
+const result = await withQuickJsSession(
+  wasm,
+  { filename: 'session.js', setup: '', limits: DEFAULT_LIMITS },
+  { globals: {}, functions: {} },
+  signal,
+  async session => {
+    await session.evaluate(`
+      const values = new Map();
+      globalThis.put = (key, value) => { values.set(key, value); return null; };
+      globalThis.read = key => values.get(key);
+    `);
+    await session.call('put', ['answer', 42]);
+    return session.call('read', ['answer']);
+  },
+);
+// { ok: true, value: 42 }
+```
+
+`evaluate` executes an async function body and returns JSON. Its local variables
+can survive through closures installed on guest globals. `call` invokes a named
+guest global with JSON arguments. Both reject on guest errors; the scoped API
+converts uncaught errors to the same structured failure as `executeQuickJs`.
+Each evaluation is preflighted. Await evaluations sequentially; overlapping calls
+are rejected. Await every guest host-call Promise as well.
+
+The callback owns orchestration. Use `session.signal` for host waits so that they
+observe cancellation and the shared wall-clock deadline. CPU and host-call budgets
+are cumulative across all evaluations, and the wall clock includes time between
+calls. Memory stays in one VM. Scope exit aborts unfinished host calls and destroys
+the VM even when the host callback throws. Escaped session references cannot be
+used after scope exit. The host callback must cooperate with cancellation; the
+runtime cannot forcibly terminate arbitrary host JavaScript.
+
+`executeQuickJs` uses this same implementation for a single evaluation. Neither API
+contains behavior-tree, workflow, browser, or application-specific logic.

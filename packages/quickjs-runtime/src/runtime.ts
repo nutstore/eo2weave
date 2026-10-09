@@ -7,17 +7,24 @@ import {
   type ExecutionResult,
   type RuntimeBindings,
   type RuntimeFailure,
+  type JsonValue,
 } from './types'
 
-/** Execute in a fresh VM using only caller-supplied WASM and explicit bindings. */
-export async function executeQuickJs(
+export interface QuickJsSession {
+  /** JSON-only evaluations share globals, closures and resource budgets. Await every call. */
+  evaluate(code: string, filename?: string): Promise<JsonValue>
+  call(name: string, args?: JsonValue[]): Promise<JsonValue>
+  readonly signal: AbortSignal
+}
+
+/** Own a VM for the duration of a host callback; always dispose it when the callback ends. */
+export async function withQuickJsSession(
   wasm: WebAssembly.Module,
-  request: ExecuteRequest,
+  request: Omit<ExecuteRequest, 'code'>,
   bindings: RuntimeBindings,
-  signal: AbortSignal
+  signal: AbortSignal,
+  use: (session: QuickJsSession) => Promise<JsonValue>,
 ): Promise<ExecutionResult> {
-  const invalid = preflightFailure(request.code)
-  if (invalid) return invalid
   const { limits } = request
   for (const value of Object.values(limits))
     if (!Number.isSafeInteger(value) || value <= 0)
@@ -38,12 +45,13 @@ export async function executeQuickJs(
   }
   const controller = new AbortController()
   const onAbort = () => controller.abort()
+  const timer = setTimeout(() => controller.abort(), limits.timeoutMs)
   signal.addEventListener('abort', onAbort, { once: true })
   const interruption = (): RuntimeFailure | null =>
-    controller.signal.aborted
-      ? { code: 'JS_CANCELED', message: 'Execution canceled' }
-      : Date.now() >= deadline
-        ? { code: 'JS_TIMEOUT', message: 'Execution timed out' }
+    Date.now() >= deadline
+      ? { code: 'JS_TIMEOUT', message: 'Execution timed out' }
+      : controller.signal.aborted
+        ? { code: 'JS_CANCELED', message: 'Execution canceled' }
         : remainingCpu <= 0
           ? { code: 'JS_CPU_LIMIT', message: 'CPU time limit exceeded' }
           : null
@@ -51,6 +59,7 @@ export async function executeQuickJs(
   let calls = 0
   const pending = new Set<Deferred>()
   let vm: QuickJS | null = null
+  let activeEvaluation: Promise<JsonValue> | undefined
   try {
     vm = await QuickJS.create({
       wasm,
@@ -155,60 +164,102 @@ export async function executeQuickJs(
       ).dispose()
     }
     if (request.setup) guest(() => runtime.evalCode(request.setup, 'setup.js')).dispose()
-    const result = guest(() =>
-      runtime.evalCode(
-        `${wrapCode(request.code)}.then(value => __qjsJson(value === undefined ? null : value))`,
-        request.filename
-      )
-    )
-    try {
-      for (;;) {
-        // The outer catch reports the specific interruption reason.
-        if (interruption()) throw new Error('Execution interrupted')
-        guest(() => runtime.executePendingJobs())
-        if (result.promiseState !== 0) break
-        await new Promise((resolve) => setTimeout(resolve, 0))
-      }
-      const settled = await runtime.resolvePromise(result)
-      if ('error' in settled) {
+    let evaluating = false
+    const runEvaluation: QuickJsSession['evaluate'] = async (code, filename = request.filename) => {
+      if (closed) throw new Error('QuickJS session is closed')
+      if (evaluating) throw new Error('Await the current QuickJS evaluation before starting another')
+      const interrupted = interruption()
+      if (interrupted) throw Object.assign(new Error(interrupted.message), interrupted)
+      const invalid = preflightFailure(code)
+      if (invalid && !invalid.ok) throw Object.assign(new Error(invalid.error.message), invalid.error)
+      evaluating = true
+      try {
+        const result = guest(() =>
+          runtime.evalCode(
+            `${wrapCode(code)}.then(value => __qjsJson(value === undefined ? null : value))`,
+            filename
+          )
+        )
         try {
-          const message = settled.error.getProp('message')
-          const code = settled.error.getProp('code')
-          try {
-            return {
-              ok: false,
-              error: {
-                code: String(runtime.dump(code) || 'JS_EXECUTION_FAILED'),
-                message: String(runtime.dump(message) || runtime.dump(settled.error)),
-              },
+          for (;;) {
+            // The outer catch reports the specific interruption reason.
+            if (interruption()) throw new Error('Execution interrupted')
+            guest(() => runtime.executePendingJobs())
+            if (result.promiseState !== 0) break
+            await new Promise((resolve) => setTimeout(resolve, 0))
+          }
+          const settled = await runtime.resolvePromise(result)
+          if ('error' in settled) {
+            try {
+              const message = settled.error.getProp('message')
+              const code = settled.error.getProp('code')
+              try {
+                throw Object.assign(new Error(String(runtime.dump(message) || runtime.dump(settled.error))), {
+                  code: String(runtime.dump(code) || 'JS_EXECUTION_FAILED'),
+                })
+              } finally {
+                message.dispose()
+                code.dispose()
+              }
+            } finally {
+              settled.error.dispose()
             }
+          }
+          try {
+            const text = runtime.dump(settled.value) as string
+            if (new TextEncoder().encode(text).byteLength > limits.maxTransferBytes)
+              throw new Error('Return value exceeds transfer limit')
+            return JSON.parse(text)
           } finally {
-            message.dispose()
-            code.dispose()
+            settled.value.dispose()
           }
         } finally {
-          settled.error.dispose()
+          result.dispose()
         }
-      }
-      try {
-        const text = runtime.dump(settled.value) as string
-        if (new TextEncoder().encode(text).byteLength > limits.maxTransferBytes)
-          throw new Error('Return value exceeds transfer limit')
-        return { ok: true, value: JSON.parse(text) }
-      } finally {
-        settled.value.dispose()
-      }
-    } finally {
-      result.dispose()
+      } finally { evaluating = false }
     }
+    const evaluate: QuickJsSession['evaluate'] = (code, filename) => {
+      if (activeEvaluation) return Promise.reject(new Error('Await the current QuickJS evaluation before starting another'))
+      const operation = runEvaluation(code, filename)
+      activeEvaluation = operation
+      // Attach both handlers immediately, including for accidentally unawaited evaluations.
+      void operation.then(
+        () => { if (activeEvaluation === operation) activeEvaluation = undefined },
+        () => { if (activeEvaluation === operation) activeEvaluation = undefined },
+      )
+      return operation
+    }
+    const value = await use({
+      evaluate,
+      call: async (name, args = []) => evaluate(`return await globalThis[${JSON.stringify(name)}](...JSON.parse(${JSON.stringify(jsonText(args, limits.maxTransferBytes))}))`),
+      signal: controller.signal,
+    })
+    const interrupted = interruption()
+    if (interrupted) return { ok: false, error: interrupted }
+    return { ok: true, value: JSON.parse(jsonText(value, limits.maxTransferBytes)) }
   } catch (error) {
     return { ok: false, error: interruption() ?? failure(error) }
   } finally {
     closed = true
+    clearTimeout(timer)
     controller.abort()
+    // Let an unawaited evaluation observe cancellation before freeing its VM.
+    await activeEvaluation?.catch(() => undefined)
     signal.removeEventListener('abort', onAbort)
     for (const deferred of pending) deferred.handle.dispose()
     pending.clear()
     vm?.dispose()
   }
+}
+
+/** Execute in a fresh VM using only caller-supplied WASM and explicit bindings. */
+export async function executeQuickJs(
+  wasm: WebAssembly.Module,
+  request: ExecuteRequest,
+  bindings: RuntimeBindings,
+  signal: AbortSignal,
+): Promise<ExecutionResult> {
+  const invalid = preflightFailure(request.code)
+  if (invalid) return invalid
+  return withQuickJsSession(wasm, request, bindings, signal, session => session.evaluate(request.code))
 }
