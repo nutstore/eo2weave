@@ -6,6 +6,7 @@ import type { SearchItem, StateFeed } from './xiaohongshu-page'
 import { readCardCover } from './xiaohongshu-media'
 import { fieldRecord, readCardFields } from './xiaohongshu-fields'
 import { readProfileFields } from './xiaohongshu-profile-fields'
+import { readFeedFields, readListWindow } from './xiaohongshu-feed-fields'
 
 const PROFILE_PATH = /^\/user\/profile\/([a-zA-Z0-9_-]{8,80})\/?$/
 const EMPTY_SELECTORS = '.feeds-empty, .note-list-empty, .empty-notes, .empty-state, .empty-container, .no-note, .no-content, .feeds-container .empty, .note-list .empty'
@@ -70,16 +71,7 @@ function loadedCardReferences(kind: 'feed' | 'profile'): StateFeed[] {
     if (feed.modelType && feed.modelType !== 'note') return []
     // State can repair access parameters for an exact visible card ID only.
     const noteCard = fieldRecord(feed.noteCard)
-    return [{
-      id: feed.id,
-      xsecToken: typeof feed.xsecToken === 'string' ? feed.xsecToken : undefined,
-      noteCard: noteCard ? {
-        cover: noteCard?.cover,
-        user: noteCard?.user as NonNullable<StateFeed['noteCard']>['user'],
-        interactInfo: noteCard?.interactInfo as NonNullable<StateFeed['noteCard']>['interactInfo'],
-        video: noteCard?.video,
-      } : undefined,
-    }]
+    return [{ ...feed, noteCard: noteCard ?? undefined } as StateFeed]
   })
 }
 
@@ -98,9 +90,11 @@ function visibleCards(kind: 'feed' | 'profile'): ProfileCard[] {
       author_profile_url: Array.from(card.querySelectorAll<HTMLAnchorElement>('a[href]')).filter(visible)
         .map((link) => normalizedProfileUrl(link.href)).find((url) => url !== null) ?? null,
       note_url: resolved.url,
-      note_type: Array.from(card.querySelectorAll('video, .play-icon, .video-icon')).some(visible) ? 'video' : null,
+      note_type: typeof resolved.feed?.noteCard?.type === 'string' ? resolved.feed.noteCard.type
+        : Array.from(card.querySelectorAll('video, .play-icon, .video-icon')).some(visible) ? 'video' : null,
       cover: readCardCover(card, resolved.feed?.noteCard?.cover),
       ...readCardFields(resolved.feed?.noteCard),
+      ...readFeedFields(resolved.feed, resolved.id),
       visible_metrics: { likes_text: metricText(card, '.like-wrapper .count, .like-wrapper .count-num, .like-count') },
       source: 'dom',
     })
@@ -232,12 +226,8 @@ export const xiaohongshuProfileTools: Record<string, (args: Record<string, unkno
     if (failure) return failure
     const items = visibleCards('feed')
     return result('ok', {
-      items: items.slice(0, limit),
-      loaded_count: items.length,
-      returned_count: Math.min(items.length, limit),
+      ...readListWindow(items, limit),
       is_empty: readiness === 'empty',
-      partial: items.length > limit,
-      results_scope: 'currently_loaded',
     })
   },
 
@@ -290,12 +280,8 @@ export const xiaohongshuProfileTools: Record<string, (args: Record<string, unkno
         likes_and_favorites_text: profileMetric(root, ['获赞与收藏']),
       },
       profile_tab: selectedProfileTab(),
-      items: items.slice(0, limit),
-      loaded_count: items.length,
-      returned_count: Math.min(items.length, limit),
+      ...readListWindow(items, limit),
       is_empty: readiness === 'empty',
-      partial: items.length > limit,
-      results_scope: 'currently_loaded',
       profile_scope: 'visible_dom',
       ...readProfileFields(initialState(), { profileId: id, nickname, redIdText }),
     })

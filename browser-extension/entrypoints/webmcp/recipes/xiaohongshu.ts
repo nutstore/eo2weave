@@ -1,12 +1,14 @@
 import type { WebMCPRecipe } from './types'
 
+const FEED_FIELDS_DESCRIPTION = ' Each item includes feed with upstream id/modelType/xsecToken/noteCard/index, only for an exact rendered note ID match; inspect feed_scope and feed_partial. feed.noteCard preserves state type/displayTitle/user/interactInfo/cover/video.capa separately from DOM summaries. Missing fields are null, explicit empty strings are retained. item.index is the return position; feed.index is the original state index or null, never inferred. loaded_count_scope identifies the counted subset, and return_truncated only indicates the limit excluded items, not that all site results were loaded. Summarize IDs, fields and URL/token presence without repeating signed URLs, access tokens or the full feed objects.'
+
 export const xiaohongshuRecipe: WebMCPRecipe = {
   id: 'xiaohongshu',
   hostname: 'www.xiaohongshu.com',
   displayName: '小红书 — Xiaohongshu',
   description: 'Search and filter notes, read loaded comments, home feeds and profiles, and manage sign-in in your current Xiaohongshu tab.',
   category: 'social',
-  version: '0.2.10',
+  version: '0.2.11',
   glyph: '📕',
   tools: [
     {
@@ -30,7 +32,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     {
       name: 'xhs_list_search_results',
       title: 'Read search results',
-      description: 'Read currently loaded search cards, cover images and exact-ID matched page-state user, interactInfo and video.capa fields. fields_scope identifies the state source. liked/collected are current account states; null means unknown, not false. visible_metrics are webpage counts and may differ from state counts. Missing fields are null. An empty list means the loaded page has no matching notes; it is not a timeout.',
+      description: 'Read currently loaded search cards, cover images and exact-ID matched page-state user, interactInfo and video.capa fields. fields_scope identifies the state source. liked/collected are current account states; null means unknown, not false. visible_metrics are webpage counts and may differ from state counts. Missing fields are null. An empty list means the loaded page has no matching notes; it is not a timeout.' + FEED_FIELDS_DESCRIPTION,
       inputSchema: {
         type: 'object',
         properties: {
@@ -103,7 +105,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_list_feeds', title: 'Read home feed cards',
-      description: 'Read rendered home cards, cover images, complete source links and exact-ID matched page-state user, interactInfo and video.capa fields. Inspect fields_scope; liked/collected null means unknown, not false. State counts may differ from visible_metrics. Does not fetch an entire recommendation feed. Call xhs_open_note with a returned note_url to read a note.',
+      description: 'Read rendered home cards, cover images, complete source links and exact-ID matched page-state user, interactInfo and video.capa fields. Inspect fields_scope; liked/collected null means unknown, not false. State counts may differ from visible_metrics. Does not fetch an entire recommendation feed. Call xhs_open_note with a returned note_url to read a note.' + FEED_FIELDS_DESCRIPTION,
       inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum returned cards (default 10)' } } },
     },
     {
@@ -113,7 +115,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     },
     {
       name: 'xhs_read_profile', title: 'Read the open profile',
-      description: 'Read visible profile information, displayed counts and loaded cards of the selected tab. Also return upstream userBasicInfo (source user.userPageData.basicInfo: gender, ipLocation, desc, imageb, nickname, images, redId) and interactions (type/name/count string entries). Inspect profile_fields_scope, profile_state_match, profile_match_basis and profile_fields_partial: these state fields require a matching profile ID or matching visible redId plus nickname. Unknown state fields remain null; empty strings and gender=0 are retained, not guessed. Numeric gender is not translated to a label; counts remain original strings. Keep visible_metrics separate from interactions; rounding or update timing can differ. Cards include cover and exact-ID matched page-state user, interactInfo and video.capa. Inspect card fields_scope; liked/collected null means unknown, not false. Pending tab results cannot be read as the new tab. Summarize fields and URL presence; do not repeat complete signed image URLs or all cards.',
+      description: 'Read visible profile information, displayed counts and loaded cards of the selected tab. Also return upstream userBasicInfo (source user.userPageData.basicInfo: gender, ipLocation, desc, imageb, nickname, images, redId) and interactions (type/name/count string entries). Inspect profile_fields_scope, profile_state_match, profile_match_basis and profile_fields_partial: these state fields require a matching profile ID or matching visible redId plus nickname. Unknown state fields remain null; empty strings and gender=0 are retained, not guessed. Numeric gender is not translated to a label; counts remain original strings. Keep visible_metrics separate from interactions; rounding or update timing can differ. Cards include cover and exact-ID matched page-state user, interactInfo and video.capa. Inspect card fields_scope; liked/collected null means unknown, not false. Pending tab results cannot be read as the new tab. Summarize fields and URL presence; do not repeat complete signed image URLs or all cards.' + FEED_FIELDS_DESCRIPTION,
       inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum returned cards (default 10)' } } },
     },
     {

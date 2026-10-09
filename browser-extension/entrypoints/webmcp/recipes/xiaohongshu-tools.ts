@@ -8,6 +8,7 @@ import { xiaohongshuFilterTools, waitForFilterResults } from './xiaohongshu-filt
 import { xiaohongshuCommentTools } from './xiaohongshu-comments'
 import { xiaohongshuProfileTools } from './xiaohongshu-profile'
 import { xiaohongshuSessionTools } from './xiaohongshu-session'
+import { readListWindow } from './xiaohongshu-feed-fields'
 
 export const xiaohongshuToolImplementations: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
   ...xiaohongshuFilterTools,
@@ -46,10 +47,8 @@ export const xiaohongshuToolImplementations: Record<string, (args: Record<string
     const items = searchItems()
     return result('ok', {
       keyword: new URLSearchParams(location.search).get('keyword'),
-      items: items.slice(0, limit),
+      ...readListWindow(items, limit),
       is_empty: items.length === 0,
-      partial: items.length > limit,
-      results_scope: 'currently_loaded',
     })
   },
 

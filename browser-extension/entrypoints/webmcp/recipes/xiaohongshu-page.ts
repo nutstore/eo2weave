@@ -1,6 +1,7 @@
 import { readCardCover, readNoteImages, readNoteVideo } from './xiaohongshu-media'
 import type { CoverInfo } from './xiaohongshu-media'
 import { fieldText, readUser, readInteractInfo, readCardFields } from './xiaohongshu-fields'
+import { readFeedFields } from './xiaohongshu-feed-fields'
 import { xiaohongshuRecipe } from './xiaohongshu'
 
 type PageKind = 'home' | 'search' | 'note' | 'profile' | 'login' | 'unavailable' | 'unknown'
@@ -19,6 +20,7 @@ interface ToolResult {
 
 interface StateFeed {
   id?: string
+  index?: number
   modelType?: string
   xsecToken?: string
   noteCard?: {
@@ -233,7 +235,7 @@ function metricText(root: ParentNode, selectors: string): string | null {
   return text && /\d/.test(text) ? text : null
 }
 
-interface SearchItem extends ReturnType<typeof readCardFields> {
+type SearchItem = ReturnType<typeof readCardFields> & ReturnType<typeof readFeedFields> & {
   index: number
   title: string | null
   author: string | null
@@ -248,12 +250,15 @@ function domSearchItems(): SearchItem[] {
   const cards = searchCards()
   const feeds = loadedSearchFeeds() ?? []
   const items: SearchItem[] = []
+  const seen = new Set<string>()
   for (const card of cards) {
     const resolved = resolveCardNote(card, feeds)
+    if (resolved.id && seen.has(resolved.id)) continue
     const title = textAt(card, '.title, .note-title, a.title', 300)
     const matched = resolved.feed
     const noteUrl = resolved.url
     if (!title && !noteUrl) continue
+    if (resolved.id) seen.add(resolved.id)
     items.push({
       index: items.length,
       title: title ?? limited(matched?.noteCard?.displayTitle, 300),
@@ -262,6 +267,7 @@ function domSearchItems(): SearchItem[] {
       note_type: matched?.noteCard?.type ?? null,
       cover: readCardCover(card, matched?.noteCard?.cover),
       ...readCardFields(matched?.noteCard),
+      ...readFeedFields(matched, resolved.id),
       visible_metrics: { likes_text: metricText(card, '.like-wrapper .count, .like-wrapper, .like-count') },
       source: 'dom',
     })
@@ -285,6 +291,7 @@ function correlatedStateItems(): SearchItem[] {
       cover: null,
       // Title-only correlation is insufficient for attaching an author's or interaction state.
       ...readCardFields(undefined),
+      ...readFeedFields(undefined, undefined),
       visible_metrics: { likes_text: null },
       source: 'page_state_correlated_with_dom',
     })
