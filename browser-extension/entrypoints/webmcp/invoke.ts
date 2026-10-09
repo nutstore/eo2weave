@@ -17,6 +17,7 @@ import type {
 } from './types'
 import { runWebMCPPageProbe } from './page-api'
 import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
+import { prepareRemoteXiaohongshuImage } from './xiaohongshu-image-transfer'
 
 // Relay-channel invoke timeout. Longer than the old executeScript path
 // (which serialized the whole probe func) because tools may legitimately
@@ -391,6 +392,11 @@ export async function invokeWebMCPTool(
 
   try {
     // Relay channel first (static content scripts, mcp-b style). The legacy
+    const isXhsPublish = hostname === 'creator.xiaohongshu.com' && toolName === 'xhs_publish_content'
+    const invokeArgs = isXhsPublish ? await prepareRemoteXiaohongshuImage(request.args || {}) : request.args || {}
+    if (isXhsPublish && new TextEncoder().encode(JSON.stringify({ type: WEBMCP_INVOKE_IN_TAB_TYPE, toolName, args: invokeArgs })).length >= 64 * 1024 * 1024) {
+      return { ok: false, hostname, toolName, fullToolName: request.fullToolName, tabId, errorCode: 'IMAGE_TRANSFER_TOO_LARGE', error: 'Image payload exceeds Chrome 64 MiB message capacity.' }
+    }
     // executeScript probe only runs when the tab has no relay receiver
     // (opened before the extension (re)loaded).
     let result: {
@@ -399,10 +405,10 @@ export async function invokeWebMCPTool(
       apiMode?: WebMCPApiMode
       errorCode?: string
       error?: string
-    } = await invokeViaRelay(tabId, toolName, request.args || {})
+    } = await invokeViaRelay(tabId, toolName, invokeArgs)
 
     if (
-      !result.ok &&
+      !isXhsPublish && !result.ok &&
       (result.errorCode === 'RELAY_UNREACHABLE' || result.errorCode === 'RELAY_NO_RESPONSE')
     ) {
       const results = await chrome.scripting.executeScript({

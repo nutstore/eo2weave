@@ -21,6 +21,7 @@
 // The relay validates events (parseAgentEvent) before forwarding.
 // ============================================================
 
+import { stageXiaohongshuImage, discardXiaohongshuImage } from './webmcp/recipes/xiaohongshu-publish-transfer'
 import {
   CW_WEBMCP_AGENT_MARKER,
   buildAgentEnvelope,
@@ -203,7 +204,8 @@ export default defineContentScript({
 
         void (async () => {
           try {
-            const result = await api!.executeToolByName(command.toolName, command.args || {})
+            const publicArgs = command.toolName === 'xhs_publish_content' ? stageXiaohongshuImage(command.args || {}) : command.args || {}
+            const result = await api!.executeToolByName(command.toolName, publicArgs)
             const normalized =
               result === null ||
               result === undefined ||
@@ -236,6 +238,10 @@ export default defineContentScript({
             // page" instead of a red error. The `result` field carries the
             // marker so callers can branch on it without parsing strings.
             if (message.includes('Tool execution cancelled, since tool definition was updated')) {
+              if (command.toolName === 'xhs_publish_content') {
+                respond({ ok: false, errorCode: 'PUBLISH_RESULT_UNKNOWN', error: 'Publication invocation was interrupted by a page change. Rediscover this tab and query status with the same operation_id; never automatically resubmit.', apiMode: api!.mode })
+                return
+              }
               respond({
                 ok: true,
                 result: {
@@ -252,6 +258,8 @@ export default defineContentScript({
               error: message,
               apiMode: api!.mode,
             })
+          } finally {
+            if (command.toolName === 'xhs_publish_content') discardXiaohongshuImage(command.args || {})
           }
         })()
       }

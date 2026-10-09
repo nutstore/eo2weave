@@ -5,7 +5,7 @@ import { readFeedFields } from './xiaohongshu-feed-fields'
 import { readNoteText } from './xiaohongshu-note-text'
 import { xiaohongshuRecipe } from './xiaohongshu'
 
-type PageKind = 'home' | 'search' | 'note' | 'profile' | 'login' | 'unavailable' | 'unknown'
+type PageKind = 'home' | 'search' | 'note' | 'profile' | 'login' | 'unavailable' | 'creator' | 'unknown'
 type LoginState = 'logged_in' | 'logged_out' | 'unknown'
 
 interface ToolResult {
@@ -83,6 +83,7 @@ function isUnavailablePage(): boolean {
 }
 
 function pageKind(): PageKind {
+  if (location.hostname === 'creator.xiaohongshu.com') return 'creator'
   if (location.hostname !== HOST) return 'unknown'
   if (isUnavailablePage()) return 'unavailable'
   if (NOTE_PATH.test(location.pathname)) return 'note'

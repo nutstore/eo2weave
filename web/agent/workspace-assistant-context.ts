@@ -428,7 +428,7 @@ async function readWebmcpToolsForHost(
  */
 export async function capturePageContext(): Promise<PageContextSnapshot | null> {
   if (!isSidePanelMode()) return null
-  const hostname = getSidePanelHostname()
+  let hostname = getSidePanelHostname()
   try {
     const upstream = await fetchSidePanelContext()
     // Generic over the expected field type so per-field casts live at the call
@@ -443,6 +443,13 @@ export async function capturePageContext(): Promise<PageContextSnapshot | null> 
     // fast path so it lists only THIS tab's tool group (same-hostname tabs
     // in different apps expose disjoint toolsets).
     const boundTabId = pick<number>('tabId')
+    const liveUrl = pick<string>('url')
+    if (liveUrl && hostname && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(hostname)) {
+      try {
+        const liveHost = new URL(liveUrl).hostname
+        if (['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(liveHost)) hostname = liveHost
+      } catch { /* Keep the existing routing hostname if the URL is invalid. */ }
+    }
     try {
       const { setSidePanelBoundTabId } = await import('./external-tool-bridge')
       setSidePanelBoundTabId(typeof boundTabId === 'number' ? boundTabId : null)

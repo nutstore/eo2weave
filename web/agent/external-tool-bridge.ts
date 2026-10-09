@@ -1038,7 +1038,7 @@ async function executeWebMCPTool(
   if (validationError) return validationError
 
   const preferredTabId = store.getPreferredTabIdForTool(toolInfo.groupKey, toolInfo.fullName)
-  const boundXiaohongshuTab = isSidePanelMode() && toolInfo.hostname === 'www.xiaohongshu.com'
+  const boundXiaohongshuTab = isSidePanelMode() && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(toolInfo.hostname)
   const binding = boundXiaohongshuTab ? getSidePanelBindingId() : null
   if (boundXiaohongshuTab && !binding) {
     return toolErrorJson('call_tool', 'BOUND_TAB_UNAVAILABLE', 'The Xiaohongshu side-panel tab binding is unavailable.', {
@@ -1047,10 +1047,19 @@ async function executeWebMCPTool(
   }
 
   try {
+    let invokeArgs = toolArgs
+    if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_content') {
+      const { prepareXiaohongshuImage } = await import('./tools/xiaohongshu-image-transfer')
+      try { invokeArgs = await prepareXiaohongshuImage(toolArgs, context as unknown as import('./tools/tool-types').ToolContext) }
+      catch (error) { return toolErrorJson('call_tool', 'IMAGE_TRANSFER_FAILED', error instanceof Error ? error.message : 'Image transfer failed; no image was silently skipped.', { retryable: false }) }
+      if (new TextEncoder().encode(JSON.stringify(invokeArgs)).length >= 64 * 1024 * 1024 - 4096) {
+        return toolErrorJson('call_tool', 'IMAGE_TRANSFER_TOO_LARGE', 'Image payload and bridge envelope exceed Chrome 64 MiB message capacity.', { retryable: false })
+      }
+    }
     const response = await bridge.webMCPInvoke({
       groupKey: toolInfo.groupKey,
       fullToolName: toolInfo.fullName,
-      args: toolArgs,
+      args: invokeArgs,
       preferredTabId,
       ...(binding ? { binding } : {}),
     })
@@ -1068,7 +1077,7 @@ async function executeWebMCPTool(
         response.errorCode || 'WEBMCP_INVOKE_FAILED',
         errorMessage,
         {
-          retryable: true,
+          retryable: toolInfo.name !== 'xhs_publish_content',
           details: {
             fullToolName: tool.fullName,
             tabId: response.tabId,
@@ -1158,7 +1167,7 @@ async function executeWebMCPTool(
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return toolErrorJson('call_tool', 'WEBMCP_INVOKE_FAILED', message, { retryable: true })
+    return toolErrorJson('call_tool', 'WEBMCP_INVOKE_FAILED', message, { retryable: toolInfo.name !== 'xhs_publish_content' })
   }
 }
 
@@ -1246,7 +1255,7 @@ export function collectSidePanelPageTools(): WebMCPRegisteredToolLike[] {
       .getEnabledTools()
       .filter(
         (t) =>
-          t.hostname === hostname &&
+          (t.hostname === hostname || (_sidePanelBoundTabId !== null && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(hostname) && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(t.hostname))) &&
           (_sidePanelBoundTabId === null ||
             store.getGroupByKey(t.groupKey)?.tabs.some((tab) => tab.tabId === _sidePanelBoundTabId) === true),
       )
@@ -1288,8 +1297,9 @@ export const getPageToolsExecutor: ToolExecutor = async (args) => {
       message: 'Not in side-panel mode — there is no bound upstream page. Use search_tools instead.',
     })
   }
-  const hostname = getSidePanelHostname()
   const tools = collectSidePanelPageTools()
+  const hosts = [...new Set(tools.map((tool) => tool.hostname))]
+  const hostname = hosts.length === 1 ? hosts[0] : getSidePanelHostname()
   if (tools.length === 0) {
     return toolOkJson('get_page_tools', {
       hostname,

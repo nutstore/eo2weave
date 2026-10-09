@@ -807,7 +807,8 @@ export default defineContentScript({
         preferredTabId?: number
         binding?: string
       }) {
-        return sendToBridge('webmcp_invoke_tool', payload || {});
+        const isXhsPublish = String(payload?.fullToolName || '').endsWith('xhs_publish_content');
+        return sendToBridge('webmcp_invoke_tool', payload || {}, isXhsPublish ? 100000 : undefined);
       },
 
       /**

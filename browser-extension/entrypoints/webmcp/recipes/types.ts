@@ -31,6 +31,8 @@ export interface WebMCPRecipe {
   id: string
   /** Exact hostname the recipe activates on (no wildcard for v1). */
   hostname: string
+  /** Additional exact hosts sharing the same user-enabled recipe. */
+  additionalHostnames?: string[]
   /** Optional path prefixes scoping the recipe to specific app views on
    *  that hostname — one host can run several apps (jmail.world ships a
    *  Gmail-style archive at / and an iMessage view at /messages).

@@ -33,7 +33,7 @@ function pathMatches(recipe: WebMCPRecipe, pathname: string): boolean {
 
 /** All recipes for a hostname (may be several: one host, several apps). */
 export function findRecipesForHostname(hostname: string): WebMCPRecipe[] {
-  return recipes.filter((r) => r.hostname === hostname)
+  return recipes.filter((r) => r.hostname === hostname || r.additionalHostnames?.includes(hostname))
 }
 
 /** The single recipe active at a location, or undefined. */
