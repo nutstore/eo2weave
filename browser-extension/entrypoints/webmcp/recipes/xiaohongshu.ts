@@ -9,12 +9,12 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Read Xiaohongshu notes and profiles, and prepare image notes in your current creator-platform tab. Final publishing is deferred.',
   category: 'social',
-  version: '0.3.5',
+  version: '0.3.6',
   glyph: '📕',
   tools: [
     {
       name: 'xhs_publish_content', title: '准备小红书图文', readOnlyHint: false,
-      description: '在当前标签页准备小红书图文，参考原仓库 publish_content 的字段和操作顺序。目前只上传图片、填写标题正文、添加话题和设置选项，最终发布暂缓，不执行 submit，不通过其他页面工具点击发布或暂存离开。步骤：open 打开创作页面后重新获取工具；prepare 提供 operation_id、title、content、images 和选项；upload 按顺序逐张传入同一个 operation_id、image_index 和原图片来源；configure 首次填写完整页面，也可直接传入新的标题、正文、话题或选项；已经准备好时只改本次提供的字段，未提供的保持原值，不重复上传图片；status 查询准备进度。准备完成后停下来请用户查看网页，明确报告尚未发布，也未主动保存草稿。图片支持 HTTP/HTTPS 地址、已授权工作区相对路径、vfs://workspace 和 vfs://assets；本地图片由 EO2 读取传递，Agent 不传入图片字节。已有页面内容不自动清空，已有图片数量另行报告；相同图片列表可通过 prepare 更新文字和选项，不重复上传已完成图片。UPLOAD_PENDING 时查询 status 等待预览。话题沿用前十项、首个建议及无建议时空格回退；商品沿用首个搜索结果，需要账号支持。选项返回请求值及实际观察值，未知报告 null，不冒充已设置成功。schedule_at 沿用带时区日期和一小时至十四天的初始范围。登录操作继续由用户完成，不新增登录工具。报告不输出完整图片签名地址、token 或图片字节。',
+      description: '在当前标签页准备小红书图文，参考原仓库 publish_content 的字段和操作顺序。目前只上传图片、填写标题正文、添加话题和设置选项，最终发布暂缓，不执行 submit，不通过其他页面工具点击发布或暂存离开。步骤：open 打开创作页面后重新获取工具；prepare 提供 operation_id、title、content、images 和选项；upload 按顺序逐张传入同一个 operation_id、image_index 和原图片来源；configure 首次填写完整页面，也可直接传入新的标题、正文、话题或选项；修改已准备内容时只改本次提供的字段，局部修改失败后重试保留原修改范围，未提供的保持原值，不重复上传图片；status 查询准备进度。准备完成后停下来请用户查看网页，明确报告尚未发布，也未主动保存草稿。图片支持 HTTP/HTTPS 地址、已授权工作区相对路径、vfs://workspace 和 vfs://assets；本地图片由 EO2 读取传递，Agent 不传入图片字节。已有页面内容不自动清空，已有图片数量另行报告；相同图片列表可通过 prepare 更新文字和选项，不重复上传已完成图片。UPLOAD_PENDING 时查询 status 等待预览。话题沿用前十项、首个建议及无建议时空格回退；商品沿用首个搜索结果，需要账号支持。选项返回请求值及实际观察值，未知报告 null，不冒充已设置成功。schedule_at 沿用带时区日期和一小时至十四天的初始范围。登录操作继续由用户完成，不新增登录工具。报告不输出完整图片签名地址、token 或图片字节。',
       inputSchema: { type: 'object', properties: {
         action: { type: 'string', enum: ['open', 'prepare', 'upload', 'configure', 'status'] },
         operation_id: { type: 'string', description: 'Associate the preparation steps; reuse when updating the same image list.' },

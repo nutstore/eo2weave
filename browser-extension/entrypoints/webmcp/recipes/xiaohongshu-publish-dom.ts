@@ -44,6 +44,40 @@ export async function until(check: () => boolean, deadline: number, message: str
   while (Date.now() < deadline) { if (check()) return; await delay() }
   throw new Error(message)
 }
+function visibilityControlVisible(el: HTMLElement): boolean {
+  if (!visible(el)) return false
+  // Port humanize.Visible for this control, without the publish-tab exclusions.
+  let opacity = 1
+  for (let node: HTMLElement | null = el; node; node = node.parentElement) {
+    const style = getComputedStyle(node)
+    if (style.display === 'none' || style.visibility === 'hidden') return false
+    const value = Number.parseFloat(style.opacity)
+    if (!Number.isNaN(value)) opacity *= value
+  }
+  return opacity >= 0.1
+}
+async function clickVisibilityControl(el: HTMLElement, deadline: number) {
+  el.scrollIntoView({ block: 'center' })
+  await until(() => visibilityControlVisible(el) && !disabled(el), deadline, 'Visibility control did not become enabled and visible.')
+  // Current-tab DOM input remains an adaptation of the upstream mouse input.
+  el.click()
+}
+async function setVisibility(visibility: string, deadline: number) {
+  if (visibility === '公开可见') return
+  let dropdown: HTMLElement | null = null
+  await until(() => !!(dropdown = document.querySelector<HTMLElement>('div.permission-card-wrapper div.d-select-content')),
+    deadline, 'Visibility dropdown unavailable after waiting for the website.')
+  await clickVisibilityControl(dropdown!, deadline); await delay(500)
+  // Upstream enumerates every matching option, then waits to click the first
+  // text match. Do not filter out a hidden or non-focusable option beforehand.
+  const options = document.querySelectorAll<HTMLElement>('div.d-options-wrapper div.d-grid-item div.custom-option')
+  for (const option of options) {
+    if (!clean(option.innerText).includes(visibility)) continue
+    await clickVisibilityControl(option, deadline); await delay(200)
+    return
+  }
+  throw new Error('Requested visibility unavailable.')
+}
 export function input(el: HTMLInputElement, value: string) {
   if (el.disabled || el.readOnly) throw new Error('Input is disabled or read-only.')
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
@@ -104,7 +138,7 @@ export function lengthError(): string | null {
   return elements('div.title-container div.max_suffix, div.edit-container div.length-error').map((el) => clean(el.innerText)).filter(Boolean).join('; ') || null
 }
 function permission(): string | null {
-  const control = elements('div.permission-card-wrapper div.d-select-content')[0]
+  const control = Array.from(document.querySelectorAll<HTMLElement>('div.permission-card-wrapper div.d-select-content')).find(visibilityControlVisible)
   return control ? clean(control.innerText) : null
 }
 function originalSwitch(): HTMLElement | null {
@@ -221,12 +255,7 @@ export async function configureForm(request: PublishRequest, deadline: number, f
     input(dateInput, date)
     await delay(500)
   }
-  if (apply('visibility') && request.visibility !== '公开可见') {
-    await click(first('div.permission-card-wrapper div.d-select-content'), deadline); await delay(500)
-    const opts = elements('div.d-options-wrapper div.d-grid-item div.custom-option').filter((el) => clean(el.innerText).includes(request.visibility))
-    if (!opts.length) throw new Error('Requested visibility unavailable.')
-    await click(opts[0], deadline); await delay(200)
-  }
+  if (apply('visibility')) await setVisibility(request.visibility, deadline)
   const original = originalSwitch()
   const warnings: string[] = []
   if (apply('is_original') && !original && request.is_original) throw new Error('Original declaration unavailable.')

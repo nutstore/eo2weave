@@ -1,6 +1,6 @@
 import { HOST, error, result, navigation } from './xiaohongshu-page'
 import { CREATOR_HOST, PUBLISH_URL, publishRequest, updatePublishRequest, PUBLISH_FORM_FIELDS, MAX_IMAGE_BYTES } from './xiaohongshu-publish-policy'
-import type { PublishRequest, ImagePayload } from './xiaohongshu-publish-policy'
+import type { PublishRequest, PublishFormField, ImagePayload } from './xiaohongshu-publish-policy'
 import { takeXiaohongshuImage } from './xiaohongshu-publish-transfer'
 import { imageTab, imageUploadInput, delay, previews, elements, configureForm, until } from './xiaohongshu-publish-dom'
 
@@ -10,6 +10,7 @@ interface Journal {
   operation_id: string; request: PublishRequest; phase: Phase; uploaded: number; existing_previews?: number
   pending_index: number | null; snapshot: string | null; review: unknown
   submitted_at: string | null; evidence: unknown
+  configure_fields?: PublishFormField[] | null
 }
 let busy = false
 function load(): Journal | null {
@@ -87,6 +88,7 @@ export const xiaohongshuPublishTools: Record<string, (args: Record<string, unkno
           journal = { operation_id: args.operation_id, request, phase: 'prepared', uploaded: 0, existing_previews: previews().length,
             pending_index: null, snapshot: null, review: null, submitted_at: null, evidence: null }
         }
+        delete journal.configure_fields
         save(journal)
         return result('ok', summary(journal))
       }
@@ -114,11 +116,19 @@ export const xiaohongshuPublishTools: Record<string, (args: Record<string, unkno
       if (args.action === 'configure') {
         if (journal.uploaded < journal.request.images.length || previews().length < (journal.existing_previews ?? 0) + journal.request.images.length) return failed('CONFIGURATION_NOT_READY', 'Wait for the requested image previews before filling the form.', journal)
         const updatedFields = PUBLISH_FORM_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(args, field))
-        const fields = journal.phase === 'ready' && updatedFields.length ? new Set(updatedFields) : undefined
+        let fields: Set<PublishFormField> | undefined
+        if (journal.phase === 'configuring' && Array.isArray(journal.configure_fields)) {
+          // A failed partial update retains its scope, including a retry without new arguments.
+          fields = new Set([...journal.configure_fields, ...updatedFields])
+        } else if ((journal.phase === 'ready' || (journal.phase === 'configuring' && journal.configure_fields === undefined)) && updatedFields.length) {
+          fields = new Set(updatedFields)
+        }
         journal.request = updatePublishRequest(journal.request, args)
         journal.review = null
+        journal.configure_fields = fields ? [...fields] : null
         journal.phase = 'configuring'; save(journal)
         journal.review = await configureForm(journal.request, deadline, fields)
+        delete journal.configure_fields
         journal.phase = 'ready'; save(journal)
         return result('ok', summary(journal))
       }
