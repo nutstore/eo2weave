@@ -9,12 +9,12 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Read Xiaohongshu notes and profiles, and prepare image or video notes in your current creator-platform tab. Final publishing is deferred.',
   category: 'social',
-  version: '0.4.0',
+  version: '0.4.1',
   glyph: '📕',
   tools: [
     {
       name: 'xhs_publish_video', title: '准备小红书视频', readOnlyHint: false,
-      description: '参照原仓库 publish_with_video，在当前标签页准备单个本地视频，最终发布暂缓，不点击发布或暂存离开。open 打开创作页面后重新发现工具；prepare 提供 operation_id、title、content、video 和选项并选择上传视频；upload 用同一 operation_id 和 video 传入文件；status 查询处理进度；处理完成后 configure 填写文稿、话题、定时、可见范围和商品。video 使用知知已授权工作区相对路径、vfs://workspace 或 vfs://assets，不支持远程视频地址，不传文件字节。EO2 内部分块传递完整文件，不压缩、转码或截断，不需要 Agent 分块调用。处理完成按上游发布按钮可用状态判断，这不等于发布成功。VIDEO_PROCESSING_PENDING 时继续查询 status，保留已交给网页的文件。文稿和选项使用已有 CDP 输入；逐字填写会需要等待。准备好后只核对网页，明确尚未发布。后续 configure 可只修改本次提供的字段，局部失败重试保留修改范围，不重新上传视频。话题沿用前十项和首个建议；定时沿用初始一小时至十四天范围；商品需要账号支持。返回请求设置和网页观察值，未知标 null。上游视频没有原创声明或自选封面参数，本工具不增加这些能力，也不增加视频理解、音频转写或登录工具。报告不输出文件字节或账号 token。',
+      description: '参照原仓库 publish_with_video，在当前标签页准备单个本地视频，最终发布暂缓，不点击发布或暂存离开。open 打开创作页面后重新发现工具；prepare 提供 operation_id、title、content、video 和选项并选择上传视频；upload 用同一 operation_id 和 video 传入文件；status 查询处理进度；处理完成后 configure 填写文稿、话题、定时、可见范围和商品。video 使用知知已授权工作区相对路径、vfs://workspace 或 vfs://assets，不支持远程视频地址，不传文件字节。EO2 内部分块传递完整文件，不压缩、转码或截断，不需要 Agent 分块调用。处理完成按上游发布按钮可用状态判断，这不等于发布成功。VIDEO_PROCESSING_PENDING 时继续查询 status，保留已交给网页的文件。若明确再次调用 upload，则重新传入并供给同一来源文件，不会被旧供给记录跳过；supplied_to_page 和 file 只表示历史供给，不等于网站已接受。文稿和选项使用已有 CDP 输入；逐字填写会需要等待。准备好后只核对网页，明确尚未发布。后续 configure 可只修改本次提供的字段，局部失败重试保留修改范围，不重新上传视频。视频话题按传入列表逐项处理，沿用上游首个建议；定时沿用初始一小时至十四天范围；商品需要账号支持。返回请求设置和网页观察值，未知标 null。上游视频没有原创声明或自选封面参数，本工具不增加这些能力，也不增加视频理解、音频转写或登录工具。报告不输出文件字节或账号 token。',
       inputSchema: { type: 'object', properties: {
         action: { type: 'string', enum: ['open', 'prepare', 'upload', 'configure', 'status'] },
         operation_id: { type: 'string', description: 'Associate the preparation steps for this video.' },

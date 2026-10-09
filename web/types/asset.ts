@@ -76,6 +76,7 @@ const MIME_MAP: Record<string, string> = {
   ogg: 'audio/ogg',
   // Video
   mp4: 'video/mp4',
+  mov: 'video/quicktime',
   webm: 'video/webm',
   // Archive
   zip: 'application/zip',

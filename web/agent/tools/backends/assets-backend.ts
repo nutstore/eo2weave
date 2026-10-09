@@ -10,6 +10,7 @@
 
 import { getWorkspaceManager } from '@/opfs'
 import { getFileContentType } from '@/opfs/utils/opfs-utils'
+import { inferMimeType as inferAssetMimeType } from '@/types/asset'
 import type { VfsBackend, VfsReadResult, VfsReadOptions, VfsDirEntry, VfsListOptions } from '../vfs-backend'
 
 function inferMimeType(path: string): string {
@@ -27,7 +28,7 @@ function inferMimeType(path: string): string {
     nol: 'application/zip',
     zip: 'application/zip',
   }
-  return map[ext] ?? 'application/octet-stream'
+  return map[ext] ?? inferAssetMimeType(path)
 }
 
 /**

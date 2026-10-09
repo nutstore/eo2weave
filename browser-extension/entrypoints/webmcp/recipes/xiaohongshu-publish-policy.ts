@@ -48,14 +48,15 @@ export function publishFormRequest(args: Record<string, unknown>): PublishFormRe
     const delta = Date.parse(schedule) - Date.now()
     if (!Number.isFinite(delta) || delta < 3600000 || delta > 14 * 86400000) throw new Error('schedule_at must be 1 hour to 14 days ahead.')
   }
-  return { title: args.title, content: args.content, tags: tags.slice(0, 10), dropped_tags: Math.max(0, tags.length - 10), schedule_at: schedule as string | null, visibility: String(visibility), products: strings(args.products ?? [], 'products') }
+  return { title: args.title, content: args.content, tags, dropped_tags: 0, schedule_at: schedule as string | null, visibility: String(visibility), products: strings(args.products ?? [], 'products') }
 }
 export function publishRequest(args: Record<string, unknown>): PublishRequest {
   const form = publishFormRequest(args)
   const images = strings(args.images, 'images')
   if (!images.length) throw new Error('At least one image is required.')
   if (args.is_original !== undefined && typeof args.is_original !== 'boolean') throw new Error('is_original must be boolean.')
-  return { ...form, images, is_original: args.is_original === true }
+  // Upstream truncates tags in Publish (images), not PublishVideo.
+  return { ...form, tags: form.tags.slice(0, 10), dropped_tags: Math.max(0, form.tags.length - 10), images, is_original: args.is_original === true }
 }
 // Port the upstream h2non/filetype v1.1.3 image signatures; site acceptance stays unknown.
 export function imageMime(bytes: Uint8Array): string | null {

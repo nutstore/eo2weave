@@ -27,7 +27,7 @@ export async function invokeXiaohongshuVideo(request: WebMCPInvokeRequest, conte
   }
   try {
     checkAbort()
-    await frame({ kind: 'start', name: target.path.split('/').pop() || 'video', mime: file.mimeType || blob.type, size: blob.size })
+    await frame({ kind: 'start', name: target.path.split('/').pop() || 'video', mime: blob.type || file.mimeType || '', size: blob.size })
     for (let offset = 0, index = 0; offset < blob.size; offset += XHS_VIDEO_CHUNK_BYTES, index++) {
       checkAbort()
       const bytes = new Uint8Array(await blob.slice(offset, offset + XHS_VIDEO_CHUNK_BYTES).arrayBuffer())

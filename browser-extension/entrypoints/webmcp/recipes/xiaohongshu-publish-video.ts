@@ -100,14 +100,16 @@ export const xiaohongshuVideoPublishTools: Record<string, (args: Record<string, 
       if (!journal || journal.operation_id !== args.operation_id) return failed('OPERATION_NOT_FOUND', 'Prepare this video operation first.', journal)
       if (args.action === 'upload') {
         if (args.video !== journal.request.video) return failed('VIDEO_ARGUMENT_MISMATCH', 'Use the prepared video source.', journal)
-        if (journal.supplied_to_page) return result('ok', summary(journal))
+        // Every explicit upload follows upstream SetFiles. The supply record
+        // is historical; it does not establish that the website accepted it.
         const file = takeXiaohongshuVideo(args)
         if (!file) return failed('VIDEO_TRANSFER_UNAVAILABLE', 'EO2 must transfer the authorized local file before upload.', journal)
         const upload = videoUploadInput()
         if (!upload) return failed('UPLOAD_INPUT_UNAVAILABLE', 'Video upload input unavailable.', journal)
         const transfer = new DataTransfer(); transfer.items.add(file)
         upload.files = transfer.files
-        journal.phase = 'processing'; journal.supplied_to_page = true; journal.file = { name: file.name, size: file.size, mime: file.type || null }; save(journal)
+        journal.phase = 'processing'; journal.supplied_to_page = true; journal.file = { name: file.name, size: file.size, mime: file.type || null }
+        journal.review = null; delete journal.configure_fields; save(journal)
         upload.dispatchEvent(new Event('change', { bubbles: true }))
         // Upstream waits in one-second intervals, with a five-minute page context
         // around its ten-minute button waiter. EO2 can continue via status.
