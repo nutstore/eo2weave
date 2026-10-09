@@ -794,12 +794,8 @@ export default defineContentScript({
         return typed
       },
 
-      /**
-       * Sync validated OPFS package snapshots to the extension.
-       */
-      async webMCPSetPackages(packages: unknown[]) {
-        return sendToBridge('webmcp_set_packages', { packages });
-      },
+      /** Live workspace-bound QuickJS adapter protocol is available. */
+      supportsAdapterWorkflows: true,
 
       /** Discover WebMCP tools across tabs in the current window. */
       async webMCPDiscover(options?: { force?: boolean }) {

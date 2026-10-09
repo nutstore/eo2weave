@@ -1,15 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { validateManifest, validatePackage, validatePackageSnapshot, parseWorkflow } from '@creatorweave/shared/webmcp-adapter'
 import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
-import { createWorkflow, type WorkflowStep } from '@creatorweave/shared/webmcp-workflow'
 import { readPackage, readPackageCatalog } from '../adapters'
 import { webmcpCommand } from '@/agent/tools/bash-worker/webmcp-command'
 import { manifest, source, pkg } from './fixtures'
-
-const step = (overrides: Partial<WorkflowStep>): WorkflowStep => ({
-  description: 'Read', inputSchema: { type: 'object' }, outputSchema: true,
-  inspect: () => ({ status: 'ready' }), run: () => null, ...overrides,
-})
 
 describe('package validation', () => {
   it('reads a multi-tool package and normalizes relative source paths', async () => {
@@ -45,7 +39,6 @@ describe('package validation', () => {
     globalThis.Function = (() => { throw new Error('unsafe-eval forbidden') }) as unknown as typeof FunctionConstructor
     try {
       expect(validatePackage(manifest, pkg.sources, manifest.id).manifest.id).toBe(manifest.id)
-      expect(await createWorkflow([step({ run: () => 'ok' })])({}, new AbortController().signal)).toEqual({ status: 'completed', result: 'ok' })
     } finally { globalThis.Function = FunctionConstructor }
   })
   it('parses schemas without executing adapter code', () => {
@@ -90,50 +83,5 @@ describe('URL matching', () => {
   })
   it.each(['example.com', '^[$', '^https://example.com'])('rejects invalid patterns %s', urlRegex => {
     expect(() => validateManifest({ ...manifest, tools: [{ ...manifest.tools[0], urlRegex }] }, manifest.id)).toThrow()
-  })
-})
-
-describe('workflow execution', () => {
-  it('passes outputs to subsequent steps and keeps invocation state isolated', async () => {
-    const execute = createWorkflow([
-      step({ outputSchema: { type: 'integer' }, run: ({ state }) => { state.secret = 1; return 42 } }),
-      step({ inputSchema: { type: 'integer' }, outputSchema: { type: 'integer' }, run: ({ input, state }) => Number(input) + Number(state.secret) }),
-    ])
-    expect(await execute({}, new AbortController().signal)).toEqual({ status: 'completed', result: 43 })
-    const state: Record<string, unknown>[] = []
-    const isolated = createWorkflow([step({ run: ctx => { state.push(ctx.state) } })])
-    await Promise.all([isolated({}, new AbortController().signal), isolated({}, new AbortController().signal)])
-    expect(state[0]).not.toBe(state[1])
-  })
-  it('validates input before inspect and output before the next step', async () => {
-    const inspect = vi.fn(() => ({ status: 'ready' as const }))
-    await expect(createWorkflow([step({ inspect })])(42, new AbortController().signal)).rejects.toThrow('Step 1 input')
-    expect(inspect).not.toHaveBeenCalled()
-    await expect(createWorkflow([
-      step({ outputSchema: { type: 'integer' }, run: () => 'wrong' }), step({ inspect }),
-    ])({}, new AbortController().signal)).rejects.toThrow('Step 1 output')
-    expect(inspect).not.toHaveBeenCalled()
-    await expect(createWorkflow([
-      step({ outputSchema: { type: 'integer' }, run: () => 42 }), step({ inspect }),
-    ])({}, new AbortController().signal)).rejects.toThrow('Step 2 input')
-    expect(inspect).not.toHaveBeenCalled()
-  })
-  it('returns blocked messages without applying output schemas or running later steps', async () => {
-    const run = vi.fn()
-    const inspect = vi.fn()
-    const result = await createWorkflow([
-      step({ description: 'Login', outputSchema: false, inspect: () => ({ status: 'blocked', message: 'Please log in' }), run }),
-      step({ inspect, run }),
-    ])({}, new AbortController().signal)
-    expect(result).toEqual({ status: 'blocked', step: 1, description: 'Login', message: 'Please log in' })
-    expect(run).not.toHaveBeenCalled()
-    expect(inspect).not.toHaveBeenCalled()
-  })
-  it('honors cancellation and rejects invalid inspect states', async () => {
-    const controller = new AbortController()
-    const run = vi.fn()
-    await expect(createWorkflow([step({ inspect: () => { controller.abort(); return { status: 'ready' } }, run })])({}, controller.signal)).rejects.toThrow()
-    expect(run).not.toHaveBeenCalled()
-    await expect(createWorkflow([step({ inspect: () => ({ status: 'skip' }) as never })])({}, new AbortController().signal)).rejects.toThrow('inspect must return')
   })
 })

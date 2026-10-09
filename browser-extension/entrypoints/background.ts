@@ -1,12 +1,10 @@
-import { serializeError as serializeBrowserError } from '../lib/bash-commands/browser/errors'
-import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
-import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 // ============================================================
 // Background Service Worker
 // ============================================================
-
-import { validatePackageSnapshot } from '@creatorweave/shared/webmcp-adapter'
-import { WEBMCP_PACKAGES_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter-storage'
+import { installAdapterBackground } from './webmcp/adapter-background'
+import { serializeError as serializeBrowserError } from '../lib/bash-commands/browser/errors'
+import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
+import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow } from './webmcp/discovery'
 import { invokeWebMCPTool } from './webmcp/invoke'
 import {
@@ -1476,7 +1474,13 @@ export default defineBackground(() => {
     })
   }
 
+  installAdapterBackground(
+    sender => sender.id === chrome.runtime.id && isTrustedCreatorWeaveSenderUrl(sender.url || ''),
+    resolveBoundSidePanelTab,
+  )
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (typeof message?.type === 'string' && message.type.startsWith('webmcp_adapter_')) return false
     // The dedicated bridge listener (registered above) owns these types —
     // answering here would race it and close the channel early.
     if (['browser_command', 'browser_command_ping', 'browser_command_cancel'].includes(message?.type)) return false
@@ -2019,21 +2023,6 @@ export default defineBackground(() => {
               errorCode: 'CAPTURE_FAILED',
               error: err?.message || String(err),
             })
-          }
-          return
-        }
-
-        if (message.type === 'webmcp_set_packages') {
-          if (!isTrustedCreatorWeaveSenderUrl(_sender?.url ?? '')) {
-            sendResponse({ ok: false, error: 'Untrusted adapter source' })
-            return
-          }
-          try {
-            const packages = validatePackageSnapshot(message.packages)
-            await chrome.storage.local.set({ [WEBMCP_PACKAGES_STORAGE_KEY]: packages })
-            sendResponse({ ok: true, error: '' })
-          } catch (error) {
-            sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) })
           }
           return
         }

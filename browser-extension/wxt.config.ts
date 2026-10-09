@@ -33,6 +33,10 @@ export default defineConfig({
   // WXT copies public assets AFTER vite's closeBundle, so build-specific
   // locale changes run here (after everything is on disk).
   hooks: {
+    'build:before': async () => {
+      const { copyQuickJs } = await import('./scripts/copy-quickjs.mjs')
+      await copyQuickJs()
+    },
     'build:done': (wxt) => {
       const isDevBuild = wxt.config.mode === 'development';
       if (!isDevBuild && CODEX_OAUTH) return;
@@ -229,6 +233,7 @@ export default defineConfig({
   // loads apart. Without this, both builds share the same pinned extension
   // key → same extension ID → two identically-named entries.
   manifest: (env) => ({
+    content_security_policy: { extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'" },
     name: env.mode === 'development' ? '__MSG_extensionNameDev__' : '__MSG_extensionName__',
     description: '__MSG_extensionDescription__',
     default_locale: 'en',

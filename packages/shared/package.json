@@ -9,9 +9,11 @@
     ".": "./src/index.ts",
     "./webmcp-adapter": "./src/webmcp-adapter.ts",
     "./webmcp-workflow": "./src/webmcp-workflow.ts",
-    "./webmcp-adapter-storage": "./src/webmcp-adapter-storage.ts",
     "./webmcp-url": "./src/webmcp-url.ts",
-    "./js-ast": "./src/js-ast.ts"
+    "./js-ast": "./src/js-ast.ts",
+    "./webmcp-adapter-protocol": "./src/webmcp-adapter-protocol.ts",
+    "./webmcp-schema": "./src/webmcp-schema.ts",
+    "./code-tool-bindings": "./src/code-tool-bindings.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

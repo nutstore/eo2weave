@@ -15,6 +15,8 @@
 // NOTE: no longer consulted in the relay — streaming type gating is driven by
 // STREAMING_MESSAGE_TYPES; the background rejects codex_* messages itself
 // when the feature flag is off (CODEX_OAUTH_ENABLED checks).
+import { installAdapterHostRelay } from './webmcp/adapter-host-relay'
+
 declare const __CW_CODEX_OAUTH__: boolean;
 void (__CW_CODEX_OAUTH__ as boolean | undefined);
 
@@ -23,6 +25,7 @@ export default defineContentScript({
   runAt: 'document_idle',
 
   main() {
+    installAdapterHostRelay()
     function normalizeRelayError(err: unknown): { errorCode: string; error: string } {
       const message = err instanceof Error ? err.message : String(err || 'Unknown extension error')
       if (message.toLowerCase().includes('extension context invalidated')) {
@@ -63,7 +66,6 @@ export default defineContentScript({
       // WebMCP tool discovery / invocation (host authorization enforced
       // inside the background handlers)
       'webmcp_discover_tools',
-      'webmcp_set_packages',
       'webmcp_invoke_tool',
       'webmcp_get_host_authorization',
       'webmcp_recipe_get_status',

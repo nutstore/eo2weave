@@ -98,7 +98,7 @@ export interface WebMCPRelayRecipeDeactivateCommand {
 }
 
 export type WebMCPRelayCommandToAgent =
-  | { kind: 'packages-sync'; packages: unknown[] }
+  | { kind: 'adapters-sync'; tools: unknown[] }
   | WebMCPRelayPingCommand
   | WebMCPRelayInvokeCommand
   | WebMCPRelayRecipeActivateCommand
@@ -175,7 +175,7 @@ export function parseRelayCommand(data: unknown): WebMCPRelayCommandToAgent | nu
   const command = data as Record<string, unknown>
   if (command[CW_WEBMCP_AGENT_MARKER] !== true) return null
 
-  if (command.kind === 'packages-sync' && Array.isArray(command.packages)) return { kind: 'packages-sync', packages: command.packages }
+  if (command.kind === 'adapters-sync' && Array.isArray(command.tools)) return { kind: 'adapters-sync', tools: command.tools }
 
   if (command.kind === 'ping') return { kind: 'ping' }
 

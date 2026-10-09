@@ -247,6 +247,16 @@ for await (const chunk of stream) {
 stream.cancel(); // Abort early if needed
 ```
 
+## OPFS WebMCP adapters
+
+Adapter source runs in a fresh QuickJS VM in the background service worker. A target page receives only tool metadata and an opaque registration ID; its registered WebMCP callback forwards arguments through the isolated content script and returns the SW result. It never compiles the workflow or receives its source.
+
+`packages/quickjs-runtime` remains host-independent: it knows only JavaScript execution, JSON bindings and resource limits. The business-layer `packages/shared/src/code-tool-bindings.ts` defines the `tools` API shared with `run_code`. Extension modules own workflow orchestration, schema validation, target authorization and reverse RPC. The Web workspace host invokes the existing tool-invocation pipeline, retaining argument validation, mode checks and policy hooks.
+
+The workspace publishes packages over a live bidirectional port. A workflow binds to that host session, workspace and target document. An explicitly bound side panel takes precedence; ambiguous unbound hosts are unavailable. Keep the workspace host open and WebMCP enabled. Page tools retain their side-panel requirement. Disconnect, workspace switch, package replacement, target navigation and cancellation abort in-flight work; already-started side effects are not rolled back. SW restarts reconnect through the next publication cycle without replaying executions.
+
+Workflows currently have a 55-second deadline, a 1-second guest CPU budget and a global limit of eight executions. An already-running route rejects another invocation, preventing recursive adapter cycles. Different routes execute independently. Browser builds package the pinned QuickJS WASM through the WXT build hook; extension CSP permits WASM compilation without JavaScript `eval`.
+
 ## Agent Bridge (MCP) — WebMCP tools for Codex / Claude Code / Cursor
 
 Expose the browser's discovered WebMCP tools to **out-of-browser MCP clients** (Codex CLI, Claude Code, Cursor, …) over standard **MCP stdio**. The extension popup has an **Agent bridge (MCP)** switch (default off); when on, it spawns the Rust native host as a loopback daemon, and the same `cw-native-host` binary doubles as the MCP stdio server your CLI spawns.

@@ -53,8 +53,12 @@ function parseJson(raw: string): Record<string, unknown> | null {
 }
 
 /** Mode checks, argument validation, hooks, timeout and post-processing shared by direct and nested calls. */
+export type ToolInvocationInput = Pick<BuildAgentToolsInput,
+  'toolRegistry' | 'mode' | 'callbacks' | 'beforeToolCall' | 'afterToolCall' |
+  'getAbortSignal' | 'toolExecutionTimeout' | 'toolTimeoutExemptions' | 'onElicitationDetected'>
+
 export async function invokeTool(
-  input: BuildAgentToolsInput,
+  input: ToolInvocationInput,
   call: ToolInvocation
 ): Promise<InvocationOutcome> {
   const { toolName, toolCallId, args } = call

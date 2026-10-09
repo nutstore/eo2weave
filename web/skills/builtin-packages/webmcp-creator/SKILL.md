@@ -1,23 +1,23 @@
 ---
 name: cw-webmcp-creator
 description: Create and debug WebMCP packages that expose website actions as tools through inspect/run workflows. Use when a website needs reusable WebMCP tools or an existing package needs repair.
-version: 2.0.0
+version: 1.1.0
 ---
 
 # WebMCP creator
 
-Create packages in the origin-wide OPFS WebMCP directory. The app reads package manifests and syncs valid packages to the extension. Tools register on pages whose complete URL matches their urlRegex. Existing discovery and authorization apply to these tools.
+Create packages in the origin-wide OPFS WebMCP directory. The app reads package manifests and syncs valid packages to the extension. Tools register forwarding proxies on pages whose complete URL matches their urlRegex. The extension service worker runs each workflow in a fresh QuickJS VM; source code is never sent to the target page. Keep the CreatorWeave workspace host open: tool calls are routed back to that bound workspace through a bidirectional bridge. Existing discovery and authorization apply to these tools.
 
 ## Package files
 
 ```text
 /webmcp/com.example.tools/
   manifest.json
-  read-title.js
+  read-page.js
   search.js
 ```
 
-These are bash paths. File tools use `vfs://webmcp/com.example.tools/manifest.json` and `vfs://webmcp/com.example.tools/read-title.js`. Each immediate directory is a package. Its directory name must equal its manifest id.
+These are bash paths. File tools use `vfs://webmcp/com.example.tools/manifest.json` and `vfs://webmcp/com.example.tools/read-page.js`. Each immediate directory is a package. Its directory name must equal its manifest id.
 
 Every manifest field and every tool field below is required:
 
@@ -28,10 +28,10 @@ Every manifest field and every tool field below is required:
   "description": "Example website tools",
   "tools": [
     {
-      "name": "read-title",
-      "description": "Read the title of an article page.",
+      "name": "read-page",
+      "description": "Read a snapshot of an article page.",
       "urlRegex": "^https://example\\.com/articles(?:/[^?#]*)?(?:\\?[^#]*)?(?:#.*)?$",
-      "path": "./read-title.js"
+      "path": "./read-page.js"
     }
   ]
 }
@@ -51,12 +51,12 @@ Use actual page URLs to check positive and negative cases. Include a different p
 
 Each tool file contains one default export of a nonempty literal array. Every step has exactly five required fields: description, inputSchema, outputSchema, inspect and run. Schemas use JSON literals; expressions, variables and getters are unavailable in schemas. There are no imports, SDK modules, named exports or top-level helper declarations. Helpers can be declared inside step functions.
 
-Example `read-title.js`:
+Example `read-page.js`:
 
 ```js
 export default [
   {
-    description: 'Read the article title',
+    description: 'Read the article page',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -64,17 +64,20 @@ export default [
     },
     outputSchema: {
       type: 'object',
-      properties: { title: { type: 'string' }, url: { type: 'string' } },
-      required: ['title', 'url'],
+      properties: { text: { type: 'string' }, url: { type: 'string' } },
+      required: ['text', 'url'],
       additionalProperties: false
     },
-    inspect({ input, state, signal }) {
-      return document.title.trim()
+    async inspect({ state }) {
+      // page_snapshot requires a side-panel host bound to this target tab.
+      const snapshot = await tools.page_snapshot({ maxNodes: 1000 });
+      state.text = snapshot.tree_text;
+      return state.text
         ? { status: 'ready' }
-        : { status: 'blocked', message: 'The article title is not loaded yet. Wait and invoke the tool again.' };
+        : { status: 'blocked', message: 'The article is not loaded yet. Wait and invoke the tool again.' };
     },
-    run({ input, state, signal }) {
-      return { title: document.title, url: location.href };
+    run({ state, target }) {
+      return { text: state.text, url: target.url };
     }
   }
 ];
@@ -82,7 +85,7 @@ export default [
 
 Schemas use JSON Schema Draft-07. Local $ref references within a schema are supported; external schemas are not fetched. Recognized format keywords are validated. The first inputSchema must explicitly have type: object, because it supplies the WebMCP tool argument schema. Later schemas can describe any JSON value, including primitives, arrays and null; boolean schemas are also supported.
 
-Every invocation starts with `{ input: <tool arguments>, state: {}, signal }`. Each step's input is validated before inspect. Functions can be async and run in the target page with DOM/browser APIs. State is shared across steps of one invocation; concurrent calls have independent state.
+Every invocation starts with `{ input: <tool arguments>, state: {}, target: { tabId, url } }`. Each step's input is validated before inspect. Functions run in QuickJS in the extension service worker, so there is no direct DOM, `window`, `fetch`, timers, native AbortSignal or persistent global state. The `tools.*` calls are host capabilities routed back to the open CreatorWeave workspace; they are not APIs implemented inside QuickJS. Use `await tools.name(args)` or `await invokeTool(name, args)` with the same schemas and result values as `run_code`. A tool is available when the workspace host exposes it in the current agent mode. The host owns cancellation. State is shared across steps of one invocation. If `run_code` is available, it can be called like any other tool; its own nested tool list excludes `run_code` to prevent self-recursion.
 
 inspect must return one of:
 
@@ -91,7 +94,7 @@ inspect must return one of:
 
 Undefined run returns become null before output validation. Invalid input/output, invalid inspect states and exceptions fail the call. Completion returns `{ status: 'completed', result: <last step output> }`. There is no implicit retry, skip, recovery, resume or backtracking. A later invocation starts from step one; avoid repeating irreversible actions after a subsequent step blocks.
 
-Keep inspect observational and put actions in run. After a DOM action, await a bounded condition for the expected change before returning. Full page navigation destroys the workflow: return a useful navigation result and invoke a tool on the destination page later. State does not survive navigation. Respect signal in long asynchronous operations; it is aborted when the tool is replaced or withdrawn.
+Keep inspect observational and put actions in run. Use the injected tools to observe the result of page actions before returning. Full page navigation destroys the workflow: return a useful navigation result and invoke a tool on the destination page later. State does not survive navigation. Await every tool call: pending calls are canceled on completion, withdrawal, host disconnect, workspace switch or target navigation. Calls may already have side effects. Workflows have a 55-second wall-clock limit and a 1-second guest CPU budget; calls to an already-running adapter route are rejected to prevent recursion. Different routes can execute concurrently with independent state.
 
 ## Create, validate and verify
 
@@ -107,4 +110,4 @@ Relative package directories resolve from the bash working directory. Exit code 
 
 While the app is open and WebMCP is enabled, changes sync approximately every three seconds. Any invalid or missing referenced source withdraws the whole package. Deleting a tool from the manifest withdraws it; deleting a package directory withdraws all its tools. Unreferenced files are ignored. Disabling WebMCP syncs an empty package snapshot. The extension retains the latest snapshot for future tab loads.
 
-Reload the updated extension and refresh target tabs opened before that version. Page CSP may prohibit dynamic JavaScript compilation; format validation cannot detect this. Inspect the target page console for `[WebMCP adapters] Injection failed` and the app console for sync/validation diagnostics. Do not disable a site's CSP to make a package work.
+Reload the updated extension and refresh both CreatorWeave and target tabs opened before that version. Page CSP does not compile workflow code. Keep a workspace selected and WebMCP enabled in the host. Page tools require a side panel bound to the target; other tools keep their normal prerequisites. An explicitly bound side-panel host takes priority; multiple otherwise matching hosts make a tool unavailable rather than selecting an arbitrary workspace. Inspect the target page console for `[WebMCP adapters] Injection failed` and the app console for sync/validation diagnostics.

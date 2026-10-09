@@ -17,6 +17,9 @@ importers:
 
   browser-extension:
     dependencies:
+      '@creatorweave/quickjs-runtime':
+        specifier: workspace:*
+        version: link:../packages/quickjs-runtime
       '@creatorweave/shared':
         specifier: workspace:*
         version: link:../packages/shared

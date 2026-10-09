@@ -1,3 +1,4 @@
+import { TOOL_BINDINGS_SETUP } from '@creatorweave/shared/code-tool-bindings'
 import { executeCode } from '@/runtime/quickjs/client'
 import { DEFAULT_LIMITS, type JsonValue } from '@creatorweave/quickjs-runtime'
 import { toolErrorJson, toolOkJson, isToolEnvelopeV2 } from '@/agent/tools/tool-envelope'
@@ -81,11 +82,7 @@ export const runCodeExecutor: ToolExecutor = async (args, context) => {
       code,
       filename: 'run_code.js',
       limits: DEFAULT_LIMITS,
-      setup: `
-      globalThis.tools = Object.freeze(Object.fromEntries(toolNames.map(name => [name, args => invokeTool(name, args)])));
-      const formatLog = value => { if (typeof value === 'string') return value; try { return JSON.stringify(value) ?? String(value); } catch { return String(value); } };
-      globalThis.console = Object.freeze(Object.fromEntries(['log', 'info', 'warn', 'error'].map(name => [name, (...args) => { void writeLog(args.map(formatLog).join(' ')); }])));
-    `,
+      setup: TOOL_BINDINGS_SETUP,
     },
     {
       globals: { toolNames: tools.names },

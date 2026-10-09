@@ -20,9 +20,7 @@
 // cannot forge a report about a different tab.
 // ============================================================
 
-import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
-import type { WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
-import { WEBMCP_PACKAGES_STORAGE_KEY } from '@creatorweave/shared/webmcp-adapter-storage'
+import { ADAPTER_PAGE_MARKER } from '@creatorweave/shared/webmcp-adapter-protocol'
 import {
   WEBMCP_INVOKE_IN_TAB_TYPE,
   WEBMCP_INVOKE_RELAY_TIMEOUT_MS,
@@ -53,26 +51,32 @@ export default defineContentScript({
   main() {
     const invokeWaiters = new Map<string, InvokeWaiter>()
 
+    let catalogGeneration = 0
     const syncAdapters = async () => {
-      const stored = await chrome.storage.local.get(WEBMCP_PACKAGES_STORAGE_KEY)
-      const snapshot: WebMCPPackage[] = Array.isArray(stored[WEBMCP_PACKAGES_STORAGE_KEY]) ? stored[WEBMCP_PACKAGES_STORAGE_KEY] : []
-      // Send only matching tool metadata and code into this page's MAIN world.
-      const packages = snapshot.flatMap(pkg => {
-        const tools = pkg.manifest.tools.filter(tool => matchesToolUrl(tool.urlRegex, location.href))
-        if (!tools.length) return []
-        return [{
-          manifest: { ...pkg.manifest, tools },
-          sources: Object.fromEntries(tools.map(tool => [tool.path, pkg.sources[tool.path]])),
-        }]
-      })
-      window.postMessage(buildRelayEnvelope({ kind: 'packages-sync', packages }), location.origin)
+      const generation = ++catalogGeneration
+      let tools: unknown[] = []
+      try {
+        const result = await chrome.runtime.sendMessage({ type: 'webmcp_adapter_catalog' })
+        if (result?.ok) tools = result.tools
+      } catch { /* Withdraw proxies when the extension context is unavailable. */ }
+      if (generation !== catalogGeneration) return
+      window.postMessage(buildRelayEnvelope({ kind: 'adapters-sync', tools }), location.origin)
     }
-    const refreshAdapters = () => { void syncAdapters().catch(error => console.warn('[WebMCP adapters]', error)) }
+    const refreshAdapters = () => { void syncAdapters().catch(() => {}) }
     refreshAdapters()
-    // MAIN and ISOLATED scripts have no guaranteed startup order.
     setTimeout(refreshAdapters, 1500)
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes[WEBMCP_PACKAGES_STORAGE_KEY]) refreshAdapters()
+    // Re-discover live hosts after a service-worker restart.
+    setInterval(refreshAdapters, 15000)
+    window.addEventListener('message', event => {
+      const data = event.data
+      if (event.source !== window || data?.[ADAPTER_PAGE_MARKER] !== true || typeof data.requestId !== 'string') return
+      if (data.kind === 'cancel') {
+        void chrome.runtime.sendMessage({ type: 'webmcp_adapter_cancel', requestId: data.requestId }).catch(() => {})
+      } else if (data.kind === 'invoke') {
+        void chrome.runtime.sendMessage({ type: 'webmcp_adapter_invoke', requestId: data.requestId, routeId: data.routeId, args: data.args })
+          .catch(error => ({ ok: false, error: { message: String(error) } }))
+          .then(response => window.postMessage({ [ADAPTER_PAGE_MARKER]: true, kind: 'result', requestId: data.requestId, response }, location.origin))
+      }
     })
 
     // ── Recipe activation (consent-gated) ──
@@ -187,6 +191,7 @@ export default defineContentScript({
 
     // ── Upstream: background → page agent ──
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message?.type === 'webmcp_adapter_changed') { refreshAdapters(); return false }
       if (message?.type === WEBMCP_INVOKE_IN_TAB_TYPE) {
         const requestId = `cw_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
         const timeoutId = window.setTimeout(() => {
