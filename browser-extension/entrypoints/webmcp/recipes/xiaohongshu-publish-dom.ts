@@ -18,10 +18,19 @@ export function rendered(el: Element | null): el is HTMLElement {
 export function elements(selector: string, root: ParentNode = document): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(selector)).filter(rendered)
 }
-export function one(selector: string, root: ParentNode = document): HTMLElement {
-  const found = elements(selector, root)
-  if (found.length !== 1) throw new Error(`Expected one visible ${selector}; found ${found.length}.`)
-  return found[0]
+export function first(selector: string, root: ParentNode = document): HTMLElement {
+  const found = elements(selector, root)[0]
+  if (!found) throw new Error(`Visible control unavailable: ${selector}.`)
+  return found
+}
+export function imageUploadInput(firstImage: boolean): HTMLInputElement | null {
+  // Port findImageUploadInput; hidden inputs remain valid upload targets.
+  if (firstImage) return document.querySelector<HTMLInputElement>('input.upload-input[type="file"]')
+  const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'))
+  return inputs.find((el) => {
+    const accept = el.accept.toLowerCase()
+    return accept.includes('image/') || ['.jpg', '.jpeg', '.png', '.webp', '.heic'].some((ext) => accept.includes(ext))
+  }) ?? inputs[0] ?? null
 }
 export function disabled(el: HTMLElement): boolean {
   return el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('disabled') || el.getAttribute('submit-disabled') === 'true'
@@ -53,14 +62,17 @@ export function input(el: HTMLInputElement, value: string) {
   el.blur()
 }
 export function editor(): HTMLElement {
-  for (const selector of ['div[role="textbox"][contenteditable="true"]', 'div.tiptap[contenteditable="true"]', 'div.ql-editor[contenteditable="true"]']) {
+  for (const selector of ['div[role="textbox"][contenteditable="true"]', 'div.tiptap[contenteditable="true"]', 'div.ql-editor']) {
     const found = elements(selector)
-    if (found.length) return one(selector)
+    if (found.length) return found[0]
   }
   const placeholders = elements('p[data-placeholder]').filter((el) => el.getAttribute('data-placeholder')?.includes('输入正文描述'))
-  const parents = [...new Set(placeholders.map((el) => el.closest<HTMLElement>('[role="textbox"][contenteditable="true"]')).filter(rendered))]
-  if (parents.length !== 1) throw new Error('Body editor unavailable or ambiguous.')
-  return parents[0]
+  // Port findTextboxParent's five-parent search without adding editable attributes.
+  let parent = placeholders[0]?.parentElement ?? null
+  for (let depth = 0; parent && depth < 5; depth++, parent = parent.parentElement) {
+    if (parent.getAttribute('role') === 'textbox') return parent
+  }
+  throw new Error('Body editor unavailable.')
 }
 export function editorText(el: HTMLElement): string {
   // Tiptap paragraph boundaries and explicit hard breaks must preserve body newlines.
@@ -84,7 +96,10 @@ function writeEditor(el: HTMLElement, text: string, append = false) {
   if (!document.execCommand('insertText', false, text)) throw new Error('Website editor rejected DOM input; fill it manually and report the limitation.')
   el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
 }
-export function previews(): HTMLElement[] { return elements('.img-preview-area .pr') }
+export function previews(): HTMLElement[] {
+  // Upstream counts all preview nodes, not only visible preview nodes.
+  return Array.from(document.querySelectorAll<HTMLElement>('.img-preview-area .pr'))
+}
 export function checked(el: HTMLElement): boolean | null {
   const box = el.matches('input[type="checkbox"]') ? el as HTMLInputElement : el.querySelector<HTMLInputElement>('input[type="checkbox"]')
   if (box) return box.checked
@@ -105,14 +120,20 @@ export function challenge(): boolean {
 export function lengthError(): string | null {
   return elements('div.title-container div.max_suffix, div.edit-container div.length-error').map((el) => clean(el.innerText)).filter(Boolean).join('; ') || null
 }
-function permission(): string { return clean(one('div.permission-card-wrapper div.d-select-content').innerText) }
+function permission(): string | null {
+  const control = elements('div.permission-card-wrapper div.d-select-content')[0]
+  return control ? clean(control.innerText) : null
+}
 function originalSwitch(): HTMLElement | null {
   const cards = elements('div.custom-switch-card').filter((el) => clean(el.innerText).includes('原创声明'))
-  const switches = cards.length === 1 ? elements('div.d-switch', cards[0]) : []
-  return switches.length === 1 ? switches[0] : null
+  for (const card of cards) {
+    const control = elements('div.d-switch', card)[0]
+    if (control) return control
+  }
+  return null
 }
 export function formSnapshot(): string {
-  const title = one('div.d-input input') as HTMLInputElement
+  const title = first('div.d-input input') as HTMLInputElement
   const body = editor()
   const schedule = elements('.post-time-wrapper .d-switch')[0]
   const original = originalSwitch()
@@ -143,107 +164,132 @@ export async function imageTab(deadline: number) {
   await until(() => document.querySelector('input.upload-input[type="file"]') !== null, deadline, 'Image upload input did not appear.')
 }
 export async function configureForm(request: PublishRequest, deadline: number) {
-  const title = one('div.d-input input') as HTMLInputElement
+  const title = first('div.d-input input') as HTMLInputElement
   input(title, request.title)
   await until(() => title.value === request.title, deadline, 'Title did not retain the requested text.')
-  const body = editor()
-  writeEditor(body, request.content)
-  await until(() => editorText(body) === request.content, deadline, 'Body did not retain exact text and newlines.')
+  let body: HTMLElement | undefined
+  await until(() => {
+    try { body = editor(); return true } catch { return false }
+  }, Math.min(deadline, Date.now() + 10000), 'Body editor unavailable after waiting for the website.')
+  const contentEditor = body!
+  writeEditor(contentEditor, request.content)
+  await until(() => editorText(contentEditor) === request.content, deadline, 'Body did not retain exact text and newlines.')
   const guide = elements('.feature-guide__btn')
-  if (guide.length === 1) click(guide[0])
-  title.focus(); title.blur()
+  if (guide.length) {
+    // Upstream treats closing the optional feature guide as best effort.
+    try { click(guide[0]) } catch { /* Continue with the upstream title click. */ }
+  }
+  // Port waitAndClickTitleInput instead of substituting focus/blur.
+  await delay(1000); click(title)
   const topicResults: Array<{ requested: string; selected: string | null; method: string }> = []
-  if (request.tags.length) writeEditor(body, '\n\n', true)
+  if (request.tags.length) writeEditor(contentEditor, '\n\n', true)
   for (const tag of request.tags) {
     if (Date.now() >= deadline) throw new Error('Topic configuration exceeded call budget.')
-    writeEditor(body, '#', true); await delay(200); writeEditor(body, tag, true); await delay(1000)
+    writeEditor(contentEditor, '#', true); await delay(200); writeEditor(contentEditor, tag, true); await delay(1000)
     const suggestions = elements('#creator-editor-topic-container .item')
     if (suggestions.length) {
       const selected = clean(suggestions[0].innerText)
-      const before = body.innerHTML
+      const before = contentEditor.innerHTML
       click(suggestions[0]); await delay(500)
-      if (body.innerHTML === before || !editorText(body).includes(tag)) throw new Error('Topic selection was not observed in the editor.')
+      if (contentEditor.innerHTML === before) throw new Error('Topic selection was not observed in the editor.')
       topicResults.push({ requested: tag, selected, method: 'first_suggestion' })
     } else {
-      writeEditor(body, ' ', true)
+      writeEditor(contentEditor, ' ', true)
       topicResults.push({ requested: tag, selected: null, method: 'plain_text_fallback' })
     }
   }
   if (lengthError()) throw new Error(`Website length validation: ${lengthError()}`)
   const schedule = elements('.post-time-wrapper .d-switch')
-  if (schedule.length === 1) await setSwitch(schedule[0], request.schedule_at !== null, deadline)
-  else if (request.schedule_at) throw new Error('Scheduled publishing switch unavailable.')
+  if (request.schedule_at && !schedule.length) throw new Error('Scheduled publishing switch unavailable.')
   if (request.schedule_at) {
+    await setSwitch(schedule[0], true, deadline); await delay(800)
     // The creator date field is China local time, independent of the device timezone.
     const date = new Date(Date.parse(request.schedule_at) + 8 * 3600000).toISOString().slice(0, 16).replace('T', ' ')
-    const dateInput = one('.date-picker-container input') as HTMLInputElement
+    const dateInput = first('.date-picker-container input') as HTMLInputElement
     input(dateInput, date)
     await until(() => dateInput.value === date, deadline, 'Scheduled date/time did not verify.')
   }
-  if (!permission().includes(request.visibility)) {
-    click(one('div.permission-card-wrapper div.d-select-content')); await delay(500)
+  if (request.visibility !== '公开可见') {
+    click(first('div.permission-card-wrapper div.d-select-content')); await delay(500)
     const opts = elements('div.d-options-wrapper div.d-grid-item div.custom-option').filter((el) => clean(el.innerText).includes(request.visibility))
-    if (opts.length !== 1) throw new Error('Requested visibility unavailable or ambiguous.')
+    if (!opts.length) throw new Error('Requested visibility unavailable.')
     click(opts[0])
-    await until(() => permission().includes(request.visibility), deadline, 'Requested visibility did not verify.')
+    await until(() => permission()?.includes(request.visibility) === true, deadline, 'Requested visibility did not verify.')
   }
   const original = originalSwitch()
   if (!original && request.is_original) throw new Error('Original declaration unavailable.')
-  if (original && checked(original) !== request.is_original) {
+  if (request.is_original && original && checked(original) !== true) {
     if (checked(original) === null) throw new Error('Original declaration state unknown.')
     click(original); await delay(800)
     if (request.is_original) {
       const footers = elements('div.footer').filter((el) => /原创声明须知|声明原创/.test(clean(el.innerText)))
       if (footers.length) {
         const footer = footers.find((el) => clean(el.innerText).includes('声明原创')) ?? footers[0]
-        const box = one('div.d-checkbox', footer)
+        const box = first('div.d-checkbox', footer)
         await setSwitch(box, true, deadline)
-        click(one('button.custom-button', footer))
+        click(first('button.custom-button', footer))
       }
     }
     await until(() => checked(original) === request.is_original, deadline, 'Original declaration did not verify.')
   }
   const productResults = await bindProducts(request.products, deadline)
-  if (title.value !== request.title || !editorText(body).startsWith(request.content)) throw new Error('Text changed while configuring options.')
+  if (title.value !== request.title || !editorText(contentEditor).startsWith(request.content)) throw new Error('Text changed while configuring options.')
   if (challenge() || lengthError()) throw new Error('Website validation or authentication requires user action.')
-  return { topics: topicResults, products: productResults, visibility: request.visibility, is_original: request.is_original, schedule_at: request.schedule_at, dropped_tags: request.dropped_tags }
+  return { topics: topicResults, products: productResults, visibility: request.visibility, is_original: request.is_original, schedule_at: request.schedule_at, dropped_tags: request.dropped_tags,
+    observed_options: { visibility: permission(), is_original: original ? checked(original) : null, scheduled: schedule.length ? checked(schedule[0]) : null } }
 }
 async function bindProducts(products: string[], deadline: number) {
   const results: Array<{ keyword: string; selected: string }> = []
+  const failures: Array<{ keyword: string; message: string }> = []
   if (!products.length) return results
   const spans = elements('span.d-text').filter((el) => clean(el.innerText) === '添加商品')
-  if (spans.length !== 1) throw new Error('Add product unavailable; account product capability may be missing.')
-  const trigger = spans[0].closest<HTMLElement>('button, .d-button')
+  if (!spans.length) throw new Error('Add product unavailable; account product capability may be missing.')
+  let trigger: HTMLElement | null = null
+  for (const span of spans) {
+    let parent = span.parentElement
+    for (let depth = 0; parent && depth < 5; depth++, parent = parent.parentElement) {
+      if (parent.tagName === 'BUTTON' || parent.className.includes('d-button')) { trigger = parent; break }
+    }
+    if (trigger) break
+  }
   if (!trigger) throw new Error('Add product control unavailable.')
   click(trigger)
-  await until(() => elements('.multi-goods-selector-modal').length === 1, deadline, 'Product modal did not open.')
-  const modal = one('.multi-goods-selector-modal')
+  await until(() => elements('.multi-goods-selector-modal').length > 0, deadline, 'Product modal did not open.')
+  const modal = first('.multi-goods-selector-modal')
   for (const keyword of products) {
-    const search = one('input[placeholder="搜索商品ID 或 商品名称"]', modal) as HTMLInputElement
+    try {
+      const search = first('input[placeholder="搜索商品ID 或 商品名称"]', modal) as HTMLInputElement
       input(search, keyword)
       search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }))
       search.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }))
       await delay(1000)
       await until(() => !elements('.goods-list-loading', modal).length && elements('.goods-list-normal .good-card-container', modal).length > 0,
         Math.min(deadline, Date.now() + 10000), 'Product search results did not become available.')
-    const card = elements('.goods-list-normal .good-card-container', modal)[0]
-    const box = one('.d-checkbox', card)
-    await setSwitch(box, true, deadline)
-    results.push({ keyword, selected: clean(card.innerText).slice(0, 400) })
+      const card = elements('.goods-list-normal .good-card-container', modal)[0]
+      const box = first('.d-checkbox', card)
+      await setSwitch(box, true, deadline)
+      results.push({ keyword, selected: clean(card.innerText).slice(0, 400) })
+    } catch (caught) {
+      failures.push({ keyword, message: caught instanceof Error ? caught.message : 'Product selection failed.' })
+    }
+    if (Date.now() >= deadline) {
+      failures.push({ keyword, message: 'Product configuration exceeded the page call budget.' })
+      break
+    }
   }
-  const saves = elements('.goods-selected-footer button, .goods-selected-footer .d-button--primary', modal)
-  const unique = saves.filter((el) => !saves.some((parent) => parent !== el && parent.contains(el)))
-  if (unique.length !== 1) throw new Error('Product save control unavailable or ambiguous.')
-  click(unique[0])
+  const save = elements('.goods-selected-footer button', modal)[0] ?? elements('.goods-selected-footer .d-button--primary', modal)[0]
+  if (!save) throw new Error('Product save control unavailable.')
+  click(save)
   await until(() => !rendered(modal), deadline, 'Product modal did not close; binding not verified.')
+  // Upstream attempts the remaining keywords and saves before reporting failures.
+  if (failures.length) throw new Error(`Product selection failed: ${JSON.stringify(failures)}`)
   // Preserve the selected identities for the visible review. Saving alone is not publication.
   return results
 }
 export function publishButton(): HTMLElement {
   const widgets = elements('xhs-publish-btn').filter((el) => el.getAttribute('is-publish') !== 'false')
-  if (widgets.length === 1) return widgets[0]
-  if (widgets.length > 1) throw new Error('Publish widget ambiguous.')
-  return one('.publish-page-publish-btn button.bg-red')
+  if (widgets.length) return widgets[0]
+  return first('.publish-page-publish-btn button.bg-red')
 }
 export function successEvidence(): { signal: string; text: string; url: string } | null {
   // Unlike upstream's URL-only test, require an explicit rendered success message.

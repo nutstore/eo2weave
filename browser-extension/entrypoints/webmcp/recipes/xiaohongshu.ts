@@ -9,7 +9,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Read Xiaohongshu notes and profiles, and publish image notes through the creator platform in your current tab.',
   category: 'social',
-  version: '0.3.1',
+  version: '0.3.2',
   glyph: '📕',
   tools: [
     {
@@ -21,11 +21,11 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
         title: { type: 'string', description: 'Upstream weighted title length <=20; preserved verbatim.' },
         content: { type: 'string', description: 'Full body with line breaks; put topics in tags.' },
         images: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 }, description: 'Ordered image sources, required for prepare.' },
-        tags: { type: 'array', items: { type: 'string', minLength: 1 } },
+        tags: { type: 'array', items: { type: 'string' } },
         schedule_at: { type: 'string', description: 'RFC3339 timestamp with timezone, 1 hour to 14 days ahead.' },
         is_original: { type: 'boolean' },
-        visibility: { type: 'string', enum: ['公开可见', '仅自己可见', '仅互关好友可见'] },
-        products: { type: 'array', items: { type: 'string', minLength: 1 } },
+        visibility: { type: 'string', enum: ['', '公开可见', '仅自己可见', '仅互关好友可见'] },
+        products: { type: 'array', items: { type: 'string' } },
         image_index: { type: 'integer', minimum: 0 },
         image: { type: 'string', description: 'Exact source at image_index in prepare.images.' },
         confirm: { type: 'boolean', const: true },

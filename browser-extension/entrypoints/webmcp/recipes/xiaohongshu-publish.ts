@@ -2,7 +2,7 @@ import { HOST, error, result, navigation } from './xiaohongshu-page'
 import { CREATOR_HOST, PUBLISH_URL, publishRequest, imageMime, MAX_IMAGE_BYTES } from './xiaohongshu-publish-policy'
 import type { PublishRequest, ImagePayload } from './xiaohongshu-publish-policy'
 import { takeXiaohongshuImage } from './xiaohongshu-publish-transfer'
-import { imageTab, previews, elements, editorText, configureForm, formSnapshot, publishButton, clickable, challenge, lengthError, until, successEvidence } from './xiaohongshu-publish-dom'
+import { imageTab, imageUploadInput, delay, previews, elements, editorText, configureForm, formSnapshot, publishButton, clickable, challenge, lengthError, until, successEvidence } from './xiaohongshu-publish-dom'
 
 const JOURNAL_KEY = 'eo2_xhs_image_publish_v1'
 type Phase = 'prepared' | 'upload_pending' | 'uploaded' | 'configuring' | 'ready' | 'submitted' | 'verified'
@@ -19,7 +19,8 @@ function load(): Journal | null {
 function save(journal: Journal) { sessionStorage.setItem(JOURNAL_KEY, JSON.stringify(journal)) }
 function summary(journal: Journal) {
   return { operation_id: journal.operation_id, phase: journal.phase, image_count: journal.request.images.length,
-    uploaded_count: journal.uploaded, rendered_preview_count: previews().length, pending_image_index: journal.pending_index,
+    uploaded_count: journal.uploaded, rendered_preview_count: elements('.img-preview-area .pr').length,
+    dom_preview_count: previews().length, pending_image_index: journal.pending_index,
     title: journal.request.title, content_length: journal.request.content.length, review: journal.review,
     submit_attempted: journal.submitted_at !== null, published_verified: journal.phase === 'verified' && !journal.request.schedule_at,
     scheduled_submission_verified: journal.phase === 'verified' && journal.request.schedule_at !== null,
@@ -30,7 +31,7 @@ function failed(code: string, message: string, journal: Journal | null) {
   return { ...error(code, message), data: journal ? summary(journal) : { submit_attempted: false, automatic_retry_allowed: false } }
 }
 function reconcile(journal: Journal) {
-  if (journal.phase === 'upload_pending' && journal.pending_index !== null && previews().length === journal.pending_index + 1) {
+  if (journal.phase === 'upload_pending' && journal.pending_index !== null && previews().length >= journal.pending_index + 1) {
     journal.uploaded = journal.pending_index + 1; journal.pending_index = null
     journal.phase = journal.uploaded === journal.request.images.length ? 'uploaded' : 'prepared'
     save(journal)
@@ -102,24 +103,24 @@ export const xiaohongshuPublishTools: Record<string, (args: Record<string, unkno
         if (!Number.isInteger(index) || Number(index) < 0 || Number(index) >= journal.request.images.length || args.image !== journal.request.images[Number(index)]) return failed('IMAGE_ARGUMENT_MISMATCH', 'image_index and image must match the original ordered image list.', journal)
         if (Number(index) < journal.uploaded) return result('ok', summary(journal))
         if (journal.phase === 'upload_pending') return failed('UPLOAD_PENDING', 'An image was already supplied to the website. Query status to observe its preview; do not upload it again automatically.', journal)
-        if (journal.phase !== 'prepared' || index !== journal.uploaded || previews().length !== journal.uploaded) return failed('UPLOAD_STATE_MISMATCH', 'Upload images in order; current previews must match the acknowledged count.', journal)
+        if (journal.phase !== 'prepared' || index !== journal.uploaded || previews().length < journal.uploaded) return failed('UPLOAD_STATE_MISMATCH', 'Upload images in order; current previews must reach the acknowledged count.', journal)
         const file = filePayload(takeXiaohongshuImage(args))
-        // Use upstream image input selection; never fall back to an unrelated video input.
-        const candidates = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'))
-          .filter((el) => !el.disabled && (journal!.uploaded === 0 ? el.matches('.upload-input') : /image\/|\.(?:jpe?g|png|webp|heic)/i.test(el.accept)))
-        if (candidates.length !== 1) return failed('UPLOAD_INPUT_UNAVAILABLE', 'Image upload input unavailable or ambiguous.', journal)
+        const uploadInput = imageUploadInput(journal.uploaded === 0)
+        if (!uploadInput) return failed('UPLOAD_INPUT_UNAVAILABLE', 'Image upload input unavailable.', journal)
         const transfer = new DataTransfer(); transfer.items.add(file)
         journal.phase = 'upload_pending'; journal.pending_index = Number(index); save(journal)
-        candidates[0].files = transfer.files
-        candidates[0].dispatchEvent(new Event('change', { bubbles: true }))
-        try { await until(() => previews().length === Number(index) + 1, Date.now() + 20000, 'Image preview not observed within this call.') }
+        uploadInput.files = transfer.files
+        uploadInput.dispatchEvent(new Event('change', { bubbles: true }))
+        try { await until(() => previews().length >= Number(index) + 1, Date.now() + 20000, 'Image preview not observed within this call.') }
         catch { return failed('UPLOAD_PENDING', 'File was supplied but its preview is not yet verified. Query status before continuing; do not automatically re-upload.', journal) }
         reconcile(journal)
+        // Upstream waits for the form to settle after every observed preview.
+        await delay(1000)
         return result('ok', summary(journal))
       }
       if (args.action === 'configure') {
         if (journal.phase === 'ready') return result('ok', summary(journal))
-        if (!['uploaded', 'configuring'].includes(journal.phase) || previews().length !== journal.request.images.length) return failed('CONFIGURATION_NOT_READY', 'All ordered image previews must be observed before filling the form. A partial configuration requires manual review before explicitly retrying configure.', journal)
+        if (!['uploaded', 'configuring'].includes(journal.phase) || previews().length < journal.request.images.length) return failed('CONFIGURATION_NOT_READY', 'Image preview count must reach the requested count before filling the form. A partial configuration requires manual review before explicitly retrying configure.', journal)
         journal.phase = 'configuring'; save(journal)
         journal.review = await configureForm(journal.request, deadline)
         journal.snapshot = formSnapshot(); journal.phase = 'ready'; save(journal)
@@ -127,7 +128,7 @@ export const xiaohongshuPublishTools: Record<string, (args: Record<string, unkno
       }
       if (args.confirm !== true) return failed('CONFIRMATION_REQUIRED', 'submit requires confirm=true only for user-requested publication of the reviewed content.', journal)
       if (journal.phase !== 'ready' || !journal.snapshot) return failed('PUBLICATION_NOT_READY', 'Configure and review this publication before submitting.', journal)
-      if (formSnapshot() !== journal.snapshot || previews().length !== journal.request.images.length || lengthError()) return failed('DRAFT_CHANGED', 'The visible draft differs from the reviewed form or has validation errors. Publication was not submitted.', journal)
+      if (formSnapshot() !== journal.snapshot || lengthError()) return failed('DRAFT_CHANGED', 'The visible draft differs from the reviewed form or has validation errors. Publication was not submitted.', journal)
       if (journal.request.schedule_at) publishRequest({ ...journal.request, schedule_at: journal.request.schedule_at })
       const button = clickable(publishButton())
       if (successEvidence()) return failed('STALE_SUCCESS_EVIDENCE', 'A preexisting success message cannot verify a new publication.', journal)

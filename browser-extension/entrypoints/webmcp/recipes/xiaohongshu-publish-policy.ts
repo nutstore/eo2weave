@@ -16,17 +16,16 @@ export function titleLength(title: string): number {
   return Math.ceil(length / 2)
 }
 export function publishRequest(args: Record<string, unknown>): PublishRequest {
-  if (typeof args.title !== 'string' || !args.title.trim() || titleLength(args.title) > 20) throw new Error('Title must be nonempty and have upstream weighted length <=20.')
+  if (typeof args.title !== 'string' || titleLength(args.title) > 20) throw new Error('Title must be a string with upstream weighted length <=20.')
   if (typeof args.content !== 'string') throw new Error('content must be a string.')
   const strings = (value: unknown, name: string): string[] => {
-    if (!Array.isArray(value) || value.some((v) => typeof v !== 'string' || !v.trim())) throw new Error(`${name} must be an array of nonempty strings.`)
+    if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) throw new Error(`${name} must be an array of strings.`)
     return value as string[]
   }
   const images = strings(args.images, 'images')
   if (!images.length) throw new Error('At least one image is required.')
   const tags = strings(args.tags ?? [], 'tags').map((tag) => tag.replace(/^#+/, ''))
-  if (tags.some((tag) => !tag.trim())) throw new Error('Empty topic after removing #.')
-  const visibility = args.visibility ?? '公开可见'
+  const visibility = args.visibility === '' || args.visibility === undefined ? '公开可见' : args.visibility
   if (!['公开可见', '仅自己可见', '仅互关好友可见'].includes(String(visibility))) throw new Error('Unsupported visibility.')
   if (args.is_original !== undefined && typeof args.is_original !== 'boolean') throw new Error('is_original must be boolean.')
   const schedule = args.schedule_at === undefined || args.schedule_at === '' ? null : args.schedule_at
