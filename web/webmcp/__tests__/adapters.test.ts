@@ -43,8 +43,8 @@ describe('package validation', () => {
   })
   it('parses schemas without executing adapter code', () => {
     const parsed = parseWorkflow(source.replace("return 'title'", 'throw new Error("executed")'))
-    expect(parsed.contracts[0].inputSchema).toEqual({ type: 'object' })
-    expect(parsed.expression).toMatch(/^\[/)
+    expect(parsed.contract.inputSchema).toEqual({ type: 'object' })
+    expect(parsed.expression).toMatch(/^\{/)
   })
   it.each([
     `export default []`, source + '; alert("executed")',
@@ -55,6 +55,37 @@ describe('package validation', () => {
     source.replace('inspect()', 'get inspect()'),
   ])('rejects invalid workflow contracts: %s', code => {
     expect(() => validatePackage(manifest, { 'read-title.js': code }, manifest.id)).toThrow()
+  })
+  it('extracts nested tree structure and wait timing without executing callbacks', () => {
+    const code = source.replace("{ type: 'condition', inspect() { return true } }", `{
+      type: 'selector', children: [
+        {type:'condition', inspect() { throw new Error('not executed') }},
+        {type:'sequence', children: [
+          {type:'action', run() { return 'success' }},
+          {type:'wait', intervalMs:100, timeoutMs:2000, inspect() { return true }}
+        ]}
+      ]
+    }`)
+    expect(parseWorkflow(code).tree).toEqual({type:'selector', children:[
+      {type:'condition',id:'tree.children[0]'},
+      {type:'sequence',children:[
+        {type:'action',id:'tree.children[1].children[0]'},
+        {type:'wait',id:'tree.children[1].children[1]',intervalMs:100,timeoutMs:2000}
+      ]}
+    ]})
+  })
+  it.each([
+    "{type:'parallel',children:[]}",
+    "{type:'sequence'}",
+    "{type:'selector',children:[null]}",
+    "{type:'action',run:42}",
+    "{type:'condition',inspect(){return true},run(){return 'success'}}",
+    "{type:'wait',timeoutMs:-1,inspect(){return true}}",
+    "{type:'wait',intervalMs:Infinity,inspect(){return true}}",
+    "{type:'wait',get inspect(){return () => true}}",
+    "{type:'action',async *run(){yield 'success'}}",
+  ])('rejects malformed nodes before publishing: %s', node => {
+    expect(() => parseWorkflow(source.replace("{ type: 'condition', inspect() { return true } }", node))).toThrow()
   })
   it('supports local schema refs and rejects unresolved external refs', () => {
     expect(() => parseWorkflow(source.replace("outputSchema: { type: 'string' }", "outputSchema: { $ref: '#/definitions/value', definitions: { value: {type:'string'} } }"))).not.toThrow()

@@ -32,7 +32,7 @@ function setup() {
 }
 beforeEach(() => {
   vi.resetAllMocks()
-  runner.mockResolvedValue({ ok: true, value: { status: 'completed', result: 1 } })
+  runner.mockResolvedValue({ ok: true, value: { status: 'success', result: 1 } })
 })
 describe('adapter SW authority and routing', () => {
   it('publishes metadata only and executes source from the SW catalog', async () => {

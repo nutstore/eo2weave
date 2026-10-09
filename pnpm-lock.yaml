@@ -17,6 +17,9 @@ importers:
 
   browser-extension:
     dependencies:
+      '@creatorweave/behavior-tree':
+        specifier: workspace:*
+        version: link:../packages/behavior-tree
       '@creatorweave/quickjs-runtime':
         specifier: workspace:*
         version: link:../packages/quickjs-runtime
@@ -126,6 +129,9 @@ importers:
       '@cfworker/json-schema':
         specifier: ^4.1.1
         version: 4.1.1
+      '@creatorweave/behavior-tree':
+        specifier: workspace:*
+        version: link:../behavior-tree
       '@creatorweave/quickjs-runtime':
         specifier: workspace:*
         version: link:../quickjs-runtime

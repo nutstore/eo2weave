@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAdapterInjector } from '../../../browser-extension/entrypoints/webmcp/adapter-injector'
 import { manifest } from './fixtures'
 const descriptor = { routeId: 'route-1', name: 'com.example.tools.read-title', description: 'Read title', urlRegex: manifest.tools[0].urlRegex, inputSchema: { type: 'object' } }
-const invoke = vi.fn(async () => ({ status: 'completed', result: 'title' }))
+const invoke = vi.fn(async () => ({ status: 'success', result: 'title' }))
 
 vi.mock('../../../browser-extension/entrypoints/webmcp/register-tools', () => ({ registerPageTools: vi.fn(async () => {}) }))
 import { registerPageTools } from '../../../browser-extension/entrypoints/webmcp/register-tools'
@@ -21,7 +21,7 @@ describe('package injection', () => {
     const [tools] = vi.mocked(registerPageTools).mock.calls[0]
     expect(tools[0].name).toBe('com.example.tools.read-title')
     expect(tools[0].inputSchema).toEqual({ type: 'object' })
-    expect(await tools[0].execute({})).toEqual({ status: 'completed', result: 'title' })
+    expect(await tools[0].execute({})).toEqual({ status: 'success', result: 'title' })
     expect(invoke).toHaveBeenCalledWith(descriptor, {}, expect.any(AbortSignal))
     href = 'https://example.com/other'
     expect(() => tools[0].execute({})).toThrow('no longer matches')
@@ -52,8 +52,8 @@ describe('package injection', () => {
     await sync([])
     expect(registration.signal.aborted).toBe(true)
     expect(executionSignal.aborted).toBe(false)
-    complete({ status: 'completed', result: 'destination title' })
-    await expect(result).resolves.toEqual({ status: 'completed', result: 'destination title' })
+    complete({ status: 'success', result: 'destination title' })
+    await expect(result).resolves.toEqual({ status: 'success', result: 'destination title' })
   })
   it('serializes overlapping updates and retries failed registrations', async () => {
     const sync = createAdapterInjector(() => 'https://example.com/articles', invoke)

@@ -23,7 +23,8 @@
     "@creatorweave/shared": "workspace:*",
     "@mcp-b/webmcp-polyfill": "6.0.0",
     "@mozilla/readability": "^0.5.0",
-    "turndown": "^7.2.0"
+    "turndown": "^7.2.0",
+    "@creatorweave/behavior-tree": "workspace:*"
   },
   "devDependencies": {
     "@types/chrome": "0.0.280",

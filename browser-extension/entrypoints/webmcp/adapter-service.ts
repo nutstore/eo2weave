@@ -135,7 +135,7 @@ export function createAdapterService(deps: Dependencies) {
             host.routes = packages.flatMap(pkg => pkg.manifest.tools.map(tool => ({
               source: pkg.sources[tool.path],
               descriptor: { routeId: crypto.randomUUID(), name: `${pkg.manifest.id}.${tool.name}`, description: tool.description, urlRegex: tool.urlRegex,
-                inputSchema: parseWorkflow(pkg.sources[tool.path]).contracts[0].inputSchema as Record<string, unknown> },
+                inputSchema: parseWorkflow(pkg.sources[tool.path]).contract.inputSchema as Record<string, unknown> },
             })))
             host.snapshot = snapshot
             deps.changed()
