@@ -33,23 +33,35 @@ export interface ExecuteRequest {
 }
 
 export interface RuntimeBindings {
+  /** Copied into a fresh VM for each execution; native host objects are rejected. */
   globals: Record<string, JsonValue>
+  /** JSON-only asynchronous calls; the signal is aborted when execution ends. */
   functions: Record<string, (args: JsonValue[], signal: AbortSignal) => Promise<JsonValue>>
 }
 
 export interface RuntimeFailure {
-  toolName?: string
   code: string
   message: string
+  /** Caller-owned, lossless JSON error metadata. */
+  [key: string]: JsonValue
 }
 
 export type ExecutionResult = { ok: true; value: JsonValue } | { ok: false; error: RuntimeFailure }
 
 export function failure(error: unknown): RuntimeFailure {
+  const metadata: Record<string, JsonValue> = Object.create(null)
+  if (error && typeof error === 'object') {
+    for (const [key, value] of Object.entries(error)) {
+      if (key === 'code' || key === 'message') continue
+      try {
+        metadata[key] = JSON.parse(jsonText(value, Infinity))
+      } catch {
+        // Preserve JSON metadata without allowing native objects to cross the boundary.
+      }
+    }
+  }
   return {
-    ...(error && typeof error === 'object' && 'toolName' in error
-      ? { toolName: String(error.toolName) }
-      : {}),
+    ...metadata,
     code:
       error && typeof error === 'object' && 'code' in error
         ? String(error.code)

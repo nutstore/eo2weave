@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { executeQuickJs } from '@/runtime/quickjs/runtime'
+import { executeQuickJs } from '@creatorweave/quickjs-runtime'
 import { runCodeDefinition, runCodeExecutor } from '@/agent/tools/run-code.tool'
 import { buildAgentTools, type BuildAgentToolsInput } from '@/agent/loop/build-agent-tools'
 import type { ToolDefinition, ToolExecutor } from '@/agent/tools/tool-types'
@@ -9,7 +9,11 @@ import type { ToolDefinition, ToolExecutor } from '@/agent/tools/tool-types'
 let wasm: WebAssembly.Module
 vi.mock('@/runtime/quickjs/client', () => ({ executeCode: (...args: Parameters<typeof import('@/runtime/quickjs/client').executeCode>) => executeQuickJs(wasm, ...args) }))
 vi.mock('@/store/workspace-preferences.store', () => ({ getCurrentWorkspaceAgentMode: () => 'act' }))
-beforeAll(async () => { wasm = await WebAssembly.compile(await readFile(createRequire(import.meta.url).resolve('quickjs-wasi/quickjs.wasm'))) })
+beforeAll(async () => {
+  const require = createRequire(import.meta.url)
+  const runtimeRequire = createRequire(require.resolve('@creatorweave/quickjs-runtime/package.json'))
+  wasm = await WebAssembly.compile(await readFile(runtimeRequire.resolve('quickjs-wasi/quickjs.wasm')))
+})
 
 function setup(executor: ToolExecutor, mode: 'act' | 'plan' = 'act') {
   const read: ToolDefinition = { type: 'function', function: { name: 'read', description: 'read', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } }

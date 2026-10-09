@@ -1,11 +1,11 @@
-import { preflightFailure } from '@/runtime/quickjs/preflight'
 import {
+  preflightFailure,
   failure,
   jsonText,
   type ExecuteRequest,
   type ExecutionResult,
   type RuntimeBindings,
-} from '@/runtime/quickjs/types'
+} from '@creatorweave/quickjs-runtime'
 import type { WorkerRequest, WorkerResponse } from '@/runtime/quickjs/protocol'
 
 let modulePromise: Promise<WebAssembly.Module> | null = null

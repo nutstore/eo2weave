@@ -1,5 +1,5 @@
 import { executeCode } from '@/runtime/quickjs/client'
-import { DEFAULT_LIMITS, type JsonValue } from '@/runtime/quickjs/types'
+import { DEFAULT_LIMITS, type JsonValue } from '@creatorweave/quickjs-runtime'
 import { toolErrorJson, toolOkJson, isToolEnvelopeV2 } from '@/agent/tools/tool-envelope'
 import type { ToolDefinition, ToolExecutor, ToolPromptDoc } from '@/agent/tools/tool-types'
 import type { ContextPart, DeferredContext } from '@/agent/deferred-context'

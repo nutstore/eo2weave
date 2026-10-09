@@ -1,5 +1,5 @@
 import { QuickJS, type Deferred } from 'quickjs-wasi'
-import { preflightFailure, wrapCode } from '@/runtime/quickjs/preflight'
+import { preflightFailure, wrapCode } from './preflight'
 import {
   failure,
   jsonText,
@@ -7,8 +7,9 @@ import {
   type ExecutionResult,
   type RuntimeBindings,
   type RuntimeFailure,
-} from '@/runtime/quickjs/types'
+} from './types'
 
+/** Execute in a fresh VM using only caller-supplied WASM and explicit bindings. */
 export async function executeQuickJs(
   wasm: WebAssembly.Module,
   request: ExecuteRequest,
@@ -21,7 +22,8 @@ export async function executeQuickJs(
   for (const value of Object.values(limits))
     if (!Number.isSafeInteger(value) || value <= 0)
       throw new Error('Execution limits must be positive integers')
-  signal.throwIfAborted()
+  if (signal.aborted)
+    return { ok: false, error: { code: 'JS_CANCELED', message: 'Execution canceled' } }
   const deadline = Date.now() + limits.timeoutMs
   let remainingCpu = limits.cpuTimeMs
   let cpuDeadline = Infinity

@@ -2,7 +2,7 @@ import type {
   ExecuteRequest,
   ExecutionResult,
   JsonValue,
-} from '@/runtime/quickjs/types'
+} from '@creatorweave/quickjs-runtime'
 
 export type WorkerRequest =
   | {

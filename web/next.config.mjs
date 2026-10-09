@@ -76,6 +76,7 @@ const nextConfig = {
   transpilePackages: [
     '@creatorweave/config',
     '@creatorweave/i18n',
+    '@creatorweave/quickjs-runtime',
     '@creatorweave/shared',
     '@creatorweave/skills-system',
     '@creatorweave/ui',

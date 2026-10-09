@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { executeCode } from '../client'
-import { DEFAULT_LIMITS } from '../types'
+import { DEFAULT_LIMITS } from '@creatorweave/quickjs-runtime'
 
 class WorkerMock {
   static instances: WorkerMock[] = []

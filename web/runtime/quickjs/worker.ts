@@ -1,6 +1,5 @@
 /// <reference lib="webworker" />
-import { executeQuickJs } from '@/runtime/quickjs/runtime'
-import { failure, type ExecutionResult, type JsonValue } from '@/runtime/quickjs/types'
+import { executeQuickJs, failure, type ExecutionResult, type JsonValue } from '@creatorweave/quickjs-runtime'
 import type { WorkerRequest, WorkerResponse } from '@/runtime/quickjs/protocol'
 
 declare const self: DedicatedWorkerGlobalScope
