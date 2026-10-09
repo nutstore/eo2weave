@@ -8,7 +8,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   displayName: '小红书 — Xiaohongshu',
   description: 'Search and filter notes, read loaded comments, home feeds and profiles, and manage sign-in in your current Xiaohongshu tab.',
   category: 'social',
-  version: '0.2.11',
+  version: '0.2.12',
   glyph: '📕',
   tools: [
     {
@@ -55,7 +55,7 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
     {
       name: 'xhs_read_current_note',
       title: 'Read the open note',
-      description: 'Read title, author, text, type, visible counts, loaded comments, imageList and video from the open note. Exact current-note state also supplies user, interactInfo, time, ipLocation and xsecToken; inspect fields_scope. liked/collected are current account states, null means unknown; state counts may differ from visible_metrics and time is returned unchanged. Video preserves all available encoding/quality streams and existing subtitle URLs from mediaV2; capability/meta duration is seconds and stream duration is milliseconds. Inspect image_list_scope/image_list_partial and video_scope/video_partial/subtitles_scope. URLs may expire and are not downloaded, transcribed or interpreted. Missing fields are null; null subtitles means unavailable, not proven absent. Keep raw results in tool history and summarize media in short tables instead of repeating every URL. NOTE_UNAVAILABLE includes site error details; do not infer an account restriction or risk-control cause from this error alone.',
+      description: 'Read title, author, text, type, visible counts, loaded comments, imageList and video from the open note. title and body (upstream desc) preserve full strings and line breaks from exact current-note state, including explicit empty strings. Inspect title/body _scope, _complete, _truncated, _length and _returned_length; lengths are UTF-16 code units. DOM-only fallback retains 500/8000 limits and reports actual clipping; complete=null means the website may hide or collapse text, not proven complete. Do not call the entire note complete based on these text flags alone. Exact current-note state also supplies user, interactInfo, time, ipLocation and xsecToken; inspect fields_scope. liked/collected are current account states, null means unknown; state counts may differ from visible_metrics and time is returned unchanged. Video preserves all available encoding/quality streams and existing subtitle URLs from mediaV2; capability/meta duration is seconds and stream duration is milliseconds. Inspect image_list_scope/image_list_partial and video_scope/video_partial/subtitles_scope. URLs may expire and are not downloaded, transcribed or interpreted. Missing fields are null; null subtitles means unavailable, not proven absent. Keep full text and raw media in tool history and produce a brief summary, not the full returned body or every URL. NOTE_UNAVAILABLE includes site error details; do not infer an account restriction or risk-control cause from this error alone.',
       inputSchema: { type: 'object', properties: {} },
     },
     {

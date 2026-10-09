@@ -2,6 +2,7 @@ import { readCardCover, readNoteImages, readNoteVideo } from './xiaohongshu-medi
 import type { CoverInfo } from './xiaohongshu-media'
 import { fieldText, readUser, readInteractInfo, readCardFields } from './xiaohongshu-fields'
 import { readFeedFields } from './xiaohongshu-feed-fields'
+import { readNoteText } from './xiaohongshu-note-text'
 import { xiaohongshuRecipe } from './xiaohongshu'
 
 type PageKind = 'home' | 'search' | 'note' | 'profile' | 'login' | 'unavailable' | 'unknown'
@@ -337,10 +338,13 @@ async function waitForNote(): Promise<'ready' | 'unavailable' | 'login' | 'timeo
     if (loginState() === 'logged_out') return 'login'
     const stateNote = loadedStateNote()
     const renderedText = document.body.innerText
+    const mediaRoot = document.querySelector('#noteContainer, .note-container, .note-detail, .note-scroller')
+    const renderedMedia = !!mediaRoot && Array.from(mediaRoot.querySelectorAll('video, .note-slider-img, .swiper-slide img')).some(visible)
     if (
       textAt(document, '#detail-title, .note-content .title, .note-scroller .title') ||
       visibleStateValue(stateNote?.title, renderedText, 500) ||
-      visibleStateValue(stateNote?.desc, renderedText, 1000)
+      visibleStateValue(stateNote?.desc, renderedText, 1000) ||
+      (stateNote && renderedMedia && (Array.isArray(stateNote.imageList) || !!stateNote.video))
     ) return 'ready'
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
@@ -367,10 +371,9 @@ function readNote(): Record<string, unknown> {
   const state = loadedStateNote()
   const container = document.querySelector<HTMLElement>('.note-scroller, .note-detail, .note-content')
   const area = visible(container) ? container.innerText : document.body.innerText
-  const body = textAt(document, '#detail-desc, .note-content .desc, .note-scroller .desc', 8000)
-    ?? visibleStateValue(state?.desc, area, 8000)
-  const title = textAt(document, '#detail-title, .note-content .title, .note-scroller .title', 500)
-    ?? visibleStateValue(state?.title, area, 500)
+  const noteText = readNoteText(state, currentNoteId(),
+    textAt(document, '#detail-title, .note-content .title, .note-scroller .title', Number.MAX_SAFE_INTEGER),
+    textAt(document, '#detail-desc, .note-content .desc, .note-scroller .desc', Number.MAX_SAFE_INTEGER))
   const stateAuthor = state?.user?.nickname ?? state?.user?.nickName
   const author = textAt(document, '.author-container .username, .author-container .name, .note-scroller .user-name', 120)
     ?? visibleStateValue(stateAuthor, area, 120)
@@ -394,10 +397,9 @@ function readNote(): Record<string, unknown> {
   return {
     note_url: location.href,
     note_id: currentNoteId(),
-    title,
+    ...noteText,
     author,
     author_profile_url: authorProfileUrl,
-    body,
     published_at: publishedAt,
     note_type: noteType,
     user: readUser(state?.user),

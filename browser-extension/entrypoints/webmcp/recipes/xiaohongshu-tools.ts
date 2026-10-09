@@ -96,7 +96,8 @@ export const xiaohongshuToolImplementations: Record<string, (args: Record<string
     if (readiness === 'login') return error('LOGIN_REQUIRED', 'Sign in on the current Xiaohongshu tab first.')
     if (readiness === 'timeout') return error('PAGE_TIMEOUT', 'The note did not reach a recognizable loaded state.')
     const data = readNote()
-    if (!data.title && !data.body) return error('NOTE_UNAVAILABLE', 'The note loaded, but no visible title or body could be read.')
+    const hasImages = Array.isArray(data.imageList) && data.imageList.length > 0
+    if (!data.title && !data.body && !hasImages && !data.video) return error('NOTE_UNAVAILABLE', 'The note loaded, but no readable title, body or note media could be obtained.')
     return result('ok', data)
   },
 }
