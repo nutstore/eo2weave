@@ -6,9 +6,12 @@ import type { PublishRequest } from './xiaohongshu-publish-policy'
 export const delay = (ms = 250) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 export function rendered(el: Element | null): el is HTMLElement {
   if (!visible(el)) return false
+  // Port upstream isElementVisible exclusions for duplicated hidden controls.
+  if (el.tabIndex === -1 && el.hasAttribute('tabindex') && !el.classList.contains('active')) return false
   for (let p: HTMLElement | null = el; p; p = p.parentElement) {
     const style = getComputedStyle(p)
-    if (p.hidden || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false
+    if (p.hidden || p.getAttribute('aria-hidden') === 'true' || style.display === 'none' || style.visibility === 'hidden'
+      || style.opacity === '0' || Number(style.opacity) === 0.00001 || style.left === '-9999px' || style.top === '-9999px') return false
   }
   return true
 }
@@ -122,9 +125,21 @@ export function formSnapshot(): string {
 }
 export async function imageTab(deadline: number) {
   if (previews().length || elements('div.d-input input').length) return
-  const tab = elements('div.creator-tab').filter((el) => clean(el.innerText) === '上传图文')
-  if (tab.length !== 1) throw new Error('Upload image tab unavailable or ambiguous.')
-  click(tab[0])
+  let selected: HTMLElement | undefined
+  // Upstream getTabElement chooses the first visible matching tab, not a
+  // unique text match. Off-screen probe copies must not count as controls.
+  await until(() => {
+    selected = elements('div.creator-tab').find((el) => {
+      if (clean(el.innerText) !== '上传图文') return false
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0
+    })
+    return selected !== undefined
+  }, deadline, 'Upload image tab unavailable after waiting for the creator page.')
+  click(selected!)
+  // Upstream waits one second after selecting the image tab so its Vue form
+  // replaces the default video input before the first file is supplied.
+  await delay(1000)
   await until(() => document.querySelector('input.upload-input[type="file"]') !== null, deadline, 'Image upload input did not appear.')
 }
 export async function configureForm(request: PublishRequest, deadline: number) {

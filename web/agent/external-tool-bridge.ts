@@ -23,7 +23,7 @@ import { getMCPManager } from '@/mcp/mcp-manager'
 import { useWebMCPStore } from '@/webmcp/store'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
 import { consumeAndSavePluginDownload } from '@/webmcp/plugin-download'
-import { isSidePanelMode, getSidePanelHostname, getSidePanelBindingId } from './workspace-assistant-context'
+import { isSidePanelMode, getSidePanelHostname, getSidePanelBindingId, capturePageContext } from './workspace-assistant-context'
 
 // Zod validation (for WebMCP)
 import { z } from 'zod'
@@ -1297,15 +1297,34 @@ export const getPageToolsExecutor: ToolExecutor = async (args) => {
       message: 'Not in side-panel mode — there is no bound upstream page. Use search_tools instead.',
     })
   }
-  const tools = collectSidePanelPageTools()
+  let tools = collectSidePanelPageTools()
+  let liveHostname = getSidePanelHostname()
+  if (liveHostname && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(liveHostname)) {
+    // Publishing navigates across hosts in the same bound tab. An explicit
+    // rediscovery must not return the pre-navigation catalog during its TTL.
+    const snapshot = await capturePageContext()
+    liveHostname = snapshot?.hostname ?? liveHostname
+    try {
+      const { discoverWebMCPCatalog } = await import('@/webmcp/manager')
+      await discoverWebMCPCatalog(true)
+    } catch {
+      return toolOkJson('get_page_tools', {
+        hostname: liveHostname, count: 0, tools: [],
+        message: 'Current bound-page tool discovery failed. Wait for the page to load and call get_page_tools again; do not reuse pre-navigation call names.',
+      })
+    }
+    tools = collectSidePanelPageTools().filter((tool) => tool.hostname === liveHostname)
+  }
   const hosts = [...new Set(tools.map((tool) => tool.hostname))]
-  const hostname = hosts.length === 1 ? hosts[0] : getSidePanelHostname()
+  const hostname = hosts.length === 1 ? hosts[0] : liveHostname
   if (tools.length === 0) {
     return toolOkJson('get_page_tools', {
       hostname,
       count: 0,
       tools: [],
-      message: `The current page (${hostname || 'unknown'}) exposes no WebMCP tools. Use search_tools for MCP/other-site tools, or the page tools (web_fetch etc.).`,
+      message: hostname && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(hostname)
+        ? `The bound page (${hostname}) has not exposed its current WebMCP tools. Wait for it to finish loading and call get_page_tools again; do not reuse pre-navigation call names.`
+        : `The current page (${hostname || 'unknown'}) exposes no WebMCP tools. Use search_tools for MCP/other-site tools, or the page tools (web_fetch etc.).`,
     })
   }
 
