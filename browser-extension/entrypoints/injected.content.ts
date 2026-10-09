@@ -808,7 +808,8 @@ export default defineContentScript({
         binding?: string
       }) {
         const isXhsPublish = String(payload?.fullToolName || '').endsWith('xhs_publish_content');
-        return sendToBridge('webmcp_invoke_tool', payload || {}, isXhsPublish ? 100000 : undefined);
+        // Upstream's 300-second operation context plus the existing relay/bridge margins.
+        return sendToBridge('webmcp_invoke_tool', payload || {}, isXhsPublish ? 395000 : undefined);
       },
 
       /**

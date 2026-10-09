@@ -18,6 +18,8 @@ import type {
 import { runWebMCPPageProbe } from './page-api'
 import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
 import { prepareRemoteXiaohongshuImage } from './xiaohongshu-image-transfer'
+import { getXhsCdpInput } from './xiaohongshu-cdp-input'
+import { XHS_OPERATION_TIMEOUT_MS } from './xiaohongshu-input-protocol'
 
 // Relay-channel invoke timeout. Longer than the old executeScript path
 // (which serialized the whole probe func) because tools may legitimately
@@ -83,13 +85,14 @@ async function invokeViaRelay(
       resolve(value)
     }
 
+    const timeoutMs = toolName === 'xhs_publish_content' ? XHS_OPERATION_TIMEOUT_MS + INVOKE_RELAY_TIMEOUT_MS : INVOKE_RELAY_TIMEOUT_MS
     const timeout = setTimeout(() => {
       finish({
         ok: false,
         errorCode: 'RELAY_TIMEOUT',
-        error: `WebMCP relay invoke timed out after ${INVOKE_RELAY_TIMEOUT_MS}ms`,
+        error: `WebMCP relay invoke timed out after ${timeoutMs}ms`,
       })
-    }, INVOKE_RELAY_TIMEOUT_MS)
+    }, timeoutMs)
 
     try {
       chrome.tabs.sendMessage(
@@ -390,10 +393,17 @@ export async function invokeWebMCPTool(
     }
   }
 
+  let inputSession: string | undefined
   try {
     // Relay channel first (static content scripts, mcp-b style). The legacy
     const isXhsPublish = hostname === 'creator.xiaohongshu.com' && toolName === 'xhs_publish_content'
-    const invokeArgs = isXhsPublish ? await prepareRemoteXiaohongshuImage(request.args || {}) : request.args || {}
+    const invokeArgs = isXhsPublish ? { ...await prepareRemoteXiaohongshuImage(request.args || {}) } : request.args || {}
+    // The existing invocation gates and bound-tab routing have already passed.
+    // Only the preparation actions that use browser input attach the debugger.
+    if (isXhsPublish && ['prepare', 'configure'].includes(String(invokeArgs.action))) {
+      inputSession = await getXhsCdpInput().open(tabId)
+      invokeArgs._eo2_input_session = inputSession
+    }
     if (isXhsPublish && new TextEncoder().encode(JSON.stringify({ type: WEBMCP_INVOKE_IN_TAB_TYPE, toolName, args: invokeArgs })).length >= 64 * 1024 * 1024) {
       return { ok: false, hostname, toolName, fullToolName: request.fullToolName, tabId, errorCode: 'IMAGE_TRANSFER_TOO_LARGE', error: 'Image payload exceeds Chrome 64 MiB message capacity.' }
     }
@@ -471,5 +481,7 @@ export async function invokeWebMCPTool(
       errorCode: 'INVOKE_FAILED',
       error: typeof error?.message === 'string' ? error.message : String(error),
     }
+  } finally {
+    if (inputSession) await getXhsCdpInput().close(inputSession).catch(() => {})
   }
 }

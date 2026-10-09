@@ -22,6 +22,7 @@
 // ============================================================
 
 import { stageXiaohongshuImage, discardXiaohongshuImage } from './webmcp/recipes/xiaohongshu-publish-transfer'
+import { withXhsInputSession } from './webmcp/recipes/xiaohongshu-publish-input'
 import {
   CW_WEBMCP_AGENT_MARKER,
   buildAgentEnvelope,
@@ -204,8 +205,10 @@ export default defineContentScript({
 
         void (async () => {
           try {
-            const publicArgs = command.toolName === 'xhs_publish_content' ? stageXiaohongshuImage(command.args || {}) : command.args || {}
-            const result = await api!.executeToolByName(command.toolName, publicArgs)
+            const { _eo2_input_session, ...inputArgs } = command.args || {}
+            const publicArgs = command.toolName === 'xhs_publish_content' ? stageXiaohongshuImage(inputArgs) : command.args || {}
+            const execute = () => api!.executeToolByName(command.toolName, publicArgs)
+            const result = command.toolName === 'xhs_publish_content' ? await withXhsInputSession(_eo2_input_session, execute) : await execute()
             const normalized =
               result === null ||
               result === undefined ||

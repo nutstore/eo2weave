@@ -1,7 +1,8 @@
 // Adapt selectors and ordering from upstream xiaohongshu/publish.go at a5c8f779.
-// Browser DOM input adapts the current tab; observed values are reported separately.
+// Input uses the upstream-style CDP driver in the current tab; observations stay separate.
 import { visible, clean } from './xiaohongshu-page'
 import type { PublishRequest, PublishFormField } from './xiaohongshu-publish-policy'
+import { clickWithCdp, typeWithCdp, pressWithCdp, clickPointWithCdp } from './xiaohongshu-publish-input'
 
 export const delay = (ms = 250) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 export function rendered(el: Element | null): el is HTMLElement {
@@ -35,10 +36,8 @@ export function imageUploadInput(firstImage: boolean): HTMLInputElement | null {
 export function disabled(el: HTMLElement): boolean {
   return el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('disabled') || el.getAttribute('submit-disabled') === 'true'
 }
-export async function click(el: HTMLElement, deadline = Date.now() + 15000) {
-  el.scrollIntoView({ block: 'center' })
-  await until(() => rendered(el) && !disabled(el), deadline, 'Control did not become enabled and visible.')
-  el.click()
+export async function click(el: HTMLElement, _deadline = Date.now() + 15000) {
+  await clickWithCdp(el)
 }
 export async function until(check: () => boolean, deadline: number, message: string) {
   while (Date.now() < deadline) { if (check()) return; await delay() }
@@ -57,10 +56,7 @@ function visibilityControlVisible(el: HTMLElement): boolean {
   return opacity >= 0.1
 }
 async function clickVisibilityControl(el: HTMLElement, deadline: number) {
-  el.scrollIntoView({ block: 'center' })
-  await until(() => visibilityControlVisible(el) && !disabled(el), deadline, 'Visibility control did not become enabled and visible.')
-  // Current-tab DOM input remains an adaptation of the upstream mouse input.
-  el.click()
+  await click(el, deadline)
 }
 async function setVisibility(visibility: string, deadline: number) {
   if (visibility === '公开可见') return
@@ -78,14 +74,8 @@ async function setVisibility(visibility: string, deadline: number) {
   }
   throw new Error('Requested visibility unavailable.')
 }
-export function input(el: HTMLInputElement, value: string) {
-  if (el.disabled || el.readOnly) throw new Error('Input is disabled or read-only.')
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-  if (!setter) throw new Error('Native input setter unavailable.')
-  el.focus(); setter.call(el, value)
-  el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }))
-  el.dispatchEvent(new Event('change', { bubbles: true }))
-  el.blur()
+export async function input(el: HTMLInputElement, value: string) {
+  await typeWithCdp(el, value)
 }
 export function editor(): HTMLElement {
   for (const selector of ['div[role="textbox"][contenteditable="true"]', 'div.tiptap[contenteditable="true"]', 'div.ql-editor']) {
@@ -111,16 +101,8 @@ export function editorText(el: HTMLElement): string {
   return blocks.length && blocks.every((block) => ['P', 'DIV'].includes(block.tagName))
     ? blocks.map((block) => block.childNodes.length === 1 && block.firstChild instanceof HTMLBRElement ? '' : walk(block)).join('\n') : walk(el)
 }
-function writeEditor(el: HTMLElement, text: string, append = false) {
-  el.focus()
-  const selection = window.getSelection()
-  const range = document.createRange()
-  range.selectNodeContents(el)
-  if (append) range.collapse(false)
-  selection?.removeAllRanges(); selection?.addRange(range)
-  // execCommand uses the editor's input pipeline and supports Tiptap/Quill.
-  if (!document.execCommand('insertText', false, text)) throw new Error('Website editor rejected DOM input; fill it manually and report the limitation.')
-  el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
+async function writeEditor(el: HTMLElement, text: string, append = false) {
+  await typeWithCdp(el, text, append)
 }
 export function previews(): HTMLElement[] {
   // Upstream counts all preview nodes, not only visible preview nodes.
@@ -192,14 +174,10 @@ export async function imageTab(deadline: number) {
 }
 async function dismissPopCover() {
   const popover = () => document.querySelector('div.d-popover')
-  const active = document.activeElement ?? document.body
-  active.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }))
-  active.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }))
+  await pressWithCdp('Escape')
   await delay(200)
   if (!popover()) return
-  // DOM dispatch is the available adaptation of upstream's empty-position click.
-  const target = document.elementFromPoint(380 + Math.random() * 100, 20 + Math.random() * 60)
-  if (target instanceof HTMLElement) target.click()
+  await clickPointWithCdp(380 + Math.random() * 100, 20 + Math.random() * 60)
   await delay(200)
   popover()?.remove()
 }
@@ -207,7 +185,7 @@ export async function configureForm(request: PublishRequest, deadline: number, f
   const apply = (field: PublishFormField) => !fields || fields.has(field)
   const title = first('div.d-input input') as HTMLInputElement
   if (apply('title')) {
-    input(title, request.title)
+    await input(title, request.title)
     const titleError = elements('div.title-container div.max_suffix').map((el) => clean(el.innerText)).filter(Boolean).join('; ')
     if (titleError) throw new Error(`Website length validation: ${titleError}`)
   }
@@ -220,7 +198,7 @@ export async function configureForm(request: PublishRequest, deadline: number, f
   // body. A visibility-only update leaves the current text and topics untouched.
   const writeBody = apply('content') || apply('tags')
   if (writeBody) {
-    writeEditor(contentEditor, request.content)
+    await writeEditor(contentEditor, request.content)
     const guide = elements('.feature-guide__btn')
     if (guide.length) {
       // Upstream treats closing the optional feature guide as best effort.
@@ -230,17 +208,23 @@ export async function configureForm(request: PublishRequest, deadline: number, f
     await delay(1000); await click(title, deadline)
   }
   const topicResults: Array<{ requested: string; selected: string | null; method: string }> = []
-  if (writeBody && request.tags.length) writeEditor(contentEditor, '\n\n', true)
+  if (writeBody && request.tags.length) {
+    // Port inputTags' editor focus, 20 ArrowDown keys and two Enter keys.
+    await delay(1000)
+    for (let i = 0; i < 20; i++) { await pressWithCdp('ArrowDown', contentEditor); await delay(10) }
+    await pressWithCdp('Enter', contentEditor); await pressWithCdp('Enter', contentEditor)
+    await delay(1000)
+  }
   for (const tag of writeBody ? request.tags : []) {
     if (Date.now() >= deadline) throw new Error('Topic configuration exceeded call budget.')
-    writeEditor(contentEditor, '#', true); await delay(200); writeEditor(contentEditor, tag, true); await delay(1000)
+    await writeEditor(contentEditor, '#', true); await delay(200); await writeEditor(contentEditor, tag, true); await delay(1000)
     const suggestions = elements('#creator-editor-topic-container .item')
     if (suggestions.length) {
       const selected = clean(suggestions[0].innerText)
       await click(suggestions[0], deadline); await delay(500)
       topicResults.push({ requested: tag, selected, method: 'first_suggestion_clicked' })
     } else {
-      writeEditor(contentEditor, ' ', true)
+      await writeEditor(contentEditor, ' ', true)
       topicResults.push({ requested: tag, selected: null, method: 'plain_text_fallback' })
     }
   }
@@ -252,7 +236,7 @@ export async function configureForm(request: PublishRequest, deadline: number, f
     // Match Go t.Format: retain the wall-clock time in the supplied RFC3339 zone.
     const date = request.schedule_at.slice(0, 16).replace('T', ' ')
     const dateInput = first('.date-picker-container input') as HTMLInputElement
-    input(dateInput, date)
+    await input(dateInput, date)
     await delay(500)
   }
   if (apply('visibility')) await setVisibility(request.visibility, deadline)
@@ -312,9 +296,8 @@ async function bindProducts(products: string[], deadline: number, warnings: stri
   for (const keyword of products) {
     try {
       const search = first('input[placeholder="搜索商品ID 或 商品名称"]', modal) as HTMLInputElement
-      input(search, keyword)
-      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }))
-      search.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }))
+      await input(search, keyword)
+      await pressWithCdp('Enter')
       await delay(1000)
       await until(() => !elements('.goods-list-loading', modal).length && elements('.goods-list-normal .good-card-container', modal).length > 0,
         Math.min(deadline, Date.now() + 10000), 'Product search results did not become available.')

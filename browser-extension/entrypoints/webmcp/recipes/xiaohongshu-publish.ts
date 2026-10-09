@@ -3,6 +3,7 @@ import { CREATOR_HOST, PUBLISH_URL, publishRequest, updatePublishRequest, PUBLIS
 import type { PublishRequest, PublishFormField, ImagePayload } from './xiaohongshu-publish-policy'
 import { takeXiaohongshuImage } from './xiaohongshu-publish-transfer'
 import { imageTab, imageUploadInput, delay, previews, elements, configureForm, until } from './xiaohongshu-publish-dom'
+import { XHS_OPERATION_TIMEOUT_MS } from '../xiaohongshu-input-protocol'
 
 const JOURNAL_KEY = 'eo2_xhs_image_publish_v1'
 type Phase = 'prepared' | 'upload_pending' | 'uploaded' | 'configuring' | 'ready' | 'submitted' | 'verified'
@@ -72,7 +73,7 @@ export const xiaohongshuPublishTools: Record<string, (args: Record<string, unkno
         return result('ok', summary(journal))
       }
       if (location.pathname !== '/publish/publish') return failed('NOT_PUBLISH_PAGE', 'Open the upstream creator publish page in this same tab.', journal)
-      const deadline = Date.now() + 45000
+      const deadline = Date.now() + XHS_OPERATION_TIMEOUT_MS
       if (args.action === 'prepare') {
         const request = publishRequest(args)
         await imageTab(Math.min(deadline, Date.now() + 15000))
