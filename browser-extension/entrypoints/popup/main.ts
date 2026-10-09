@@ -3,7 +3,6 @@
 declare const __CW_CODEX_OAUTH__: boolean;
 
 import { getCwWebappBaseUrl, CW_WEBAPP_APP_PATH } from '../../lib/webapp-origins';
-import { shouldUseGlobalSidePanel } from '../../lib/side-panel-env';
 
 function t(key: string, substitutions?: string | string[]): string {
   return chrome.i18n.getMessage(key as any, substitutions) || key;
@@ -50,7 +49,7 @@ try { document.getElementById('version')!.textContent = 'v' + chrome.runtime.get
   // (cw_side_panel_register_binding): storage writes settle in ~ms while the
   // panel web app resolves the binding much later, so the race is negligible.
   //
-  // EXCEPTION (Edge global panel): if the panel is ALREADY open, opening must
+  // EXCEPTION (global panel): if the panel is ALREADY open, opening must
   // be a no-op — rebinding + swapping the setOptions path would NAVIGATE the
   // panel's web app and wipe its conversation state. The state probe below is
   // a background round-trip, but open() is only called when the panel is
@@ -82,7 +81,7 @@ try { document.getElementById('version')!.textContent = 'v' + chrome.runtime.get
     refreshPanelState();
 
   btn.addEventListener('click', function () {
-    // Edge global panel already open → do NOTHING: keep the existing panel,
+    // Global panel already open → do NOTHING: keep the existing panel,
     // its binding and its conversation state intact. (No open() call — the
     // panel is open; no setOptions — a path swap would navigate it.)
     //
@@ -126,44 +125,25 @@ try { document.getElementById('version')!.textContent = 'v' + chrome.runtime.get
     //    browser-process calls in order, and open() stays on the gesture
     //    call stack instead of inside a promise callback.
     //
-    //    Edge uses a WINDOW-scoped panel: per-tab panels are force-closed on
-    //    tab switch and never restored there (w3c/webextensions#588,
-    //    microsoft/MicrosoftEdge-Extensions#142). Content still follows the
-    //    opening tab via the binding registered above.
-    if (shouldUseGlobalSidePanel()) {
-      chrome.sidePanel.setOptions({
-        path: cwBase + CW_WEBAPP_APP_PATH + '?' + params.toString(),
-        enabled: true,
-      }).catch(function (err: any) {
-        // eslint-disable-next-line no-console
-        console.warn('[EO2Weave popup] sidePanel.setOptions failed:', err);
-      });
-      // OpenOptions requires tabId or windowId (typed union). activeTab is
-      // cached at popup load and always carries windowId; the { tabId }
-      // fallback is purely defensive and should not happen in practice.
-      var openArgs: chrome.sidePanel.OpenOptions =
-        activeTab && typeof activeTab.windowId === 'number'
-          ? { windowId: activeTab.windowId }
-          : { tabId: tabId };
-      chrome.sidePanel.open(openArgs).then(function () {
-        window.close();
-      }).catch(function (err: any) {
-        // eslint-disable-next-line no-console
-        console.warn('[EO2Weave popup] side panel open failed:', err);
-      });
-      return;
-    }
+    //    WINDOW-scoped global panel (all Chromium browsers): per-tab panels
+    //    are force-closed on tab switch in Edge and dismiss on switch in
+    //    Chrome. Content still follows the opening tab via the binding
+    //    registered above.
     chrome.sidePanel.setOptions({
-      tabId: tabId,
-      // Use a normal query for the Next.js App Router. A fragment launch URL
-      // (`/#/?…`) races the root-page redirect during initial hydration.
       path: cwBase + CW_WEBAPP_APP_PATH + '?' + params.toString(),
       enabled: true,
     }).catch(function (err: any) {
       // eslint-disable-next-line no-console
       console.warn('[EO2Weave popup] sidePanel.setOptions failed:', err);
     });
-    chrome.sidePanel.open({ tabId: tabId }).then(function () {
+    // OpenOptions requires tabId or windowId (typed union). activeTab is
+    // cached at popup load and always carries windowId; the { tabId }
+    // fallback is purely defensive and should not happen in practice.
+    var openArgs: chrome.sidePanel.OpenOptions =
+      activeTab && typeof activeTab.windowId === 'number'
+        ? { windowId: activeTab.windowId }
+        : { tabId: tabId };
+    chrome.sidePanel.open(openArgs).then(function () {
       window.close();
     }).catch(function (err: any) {
       // eslint-disable-next-line no-console

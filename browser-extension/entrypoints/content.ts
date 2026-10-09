@@ -71,7 +71,7 @@ export default defineContentScript({
       'requestPageBodyText',
       'runBoundPageAction',
       'captureBoundTab',
-      // Edge settle protocol (extension-page sender gated in background)
+      // Settle protocol (extension-page sender gated in background)
       'cw_side_panel_settle',
       'cw_side_panel_get_launch_metadata',
     ])

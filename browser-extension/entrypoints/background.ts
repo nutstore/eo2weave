@@ -25,7 +25,6 @@ import {
 } from '@creatorweave/shared'
 import { SidePanelBindingStore, type SidePanelBinding } from '../lib/side-panel-binding-store'
 import { getCwWebappBaseUrl, CW_WEBAPP_APP_PATH } from '../lib/webapp-origins'
-import { shouldUseGlobalSidePanel } from '../lib/side-panel-env'
 
 // Config
 const CONFIG = {
@@ -1092,19 +1091,6 @@ export default defineBackground(() => {
     }
   })
 
-  // Track which tabs have the side panel open. Used by the toggle
-  // handler to decide open vs close — MUST be synchronous (async
-  // getOptions would break the user gesture call stack for open()).
-  // Cleaned up on tab close. Best-effort: Chrome has no onClosed event
-  // for the X button, so a manual close via X may leave a stale entry
-  // (harmless — next click closes, then the one after opens).
-  const _sidePanelTabs = new Set<number>()
-
-  // Edge gets a WINDOW-scoped side panel (see lib/side-panel-env.ts for the
-  // background rationale). Evaluated once at SW startup; the UA does not
-  // change while the SW is alive.
-  const _useGlobalSidePanel = shouldUseGlobalSidePanel()
-
   // Global-mode open state (one panel per window). Backed by
   // chrome.storage.session so it SURVIVES MV3 service-worker restarts — a
   // plain in-memory flag forgot the state when Edge recycled the SW, the
@@ -1124,7 +1110,7 @@ export default defineBackground(() => {
     void chrome.storage.session.set({ [GLOBAL_PANEL_OPEN_KEY]: open }).catch(() => {})
   }
 
-  // ── Edge settle protocol ──────────────────────────────────────────
+  // ── Settle protocol ─────────────────────────────────────────────
   // Edge (#222) reloads the side-panel document whenever its live URL
   // differs from the URL registered via setOptions. The web app MUST end up
   // on /projects/:projectId, so we let IT decide the final URL and re-register
@@ -1158,7 +1144,6 @@ export default defineBackground(() => {
   }
 
   void (async () => {
-    if (!_useGlobalSidePanel) return
     try {
       const stored = await chrome.storage.session.get(PANEL_SETTLE_STATE_KEY)
       const raw = stored[PANEL_SETTLE_STATE_KEY]
@@ -1169,10 +1154,6 @@ export default defineBackground(() => {
   })()
 
   void (async () => {
-    if (!_useGlobalSidePanel) {
-      _resolveHydration!()
-      return
-    }
     try {
       const stored = await chrome.storage.session.get(GLOBAL_PANEL_OPEN_KEY)
       _globalPanelOpenState.open = stored[GLOBAL_PANEL_OPEN_KEY] === true
@@ -1188,24 +1169,15 @@ export default defineBackground(() => {
       typeof (chrome.sidePanel as any).onOpened?.addListener !== 'function' ||
       typeof (chrome.sidePanel as any).onClosed?.addListener !== 'function'
     ) return
-    ;(chrome.sidePanel as any).onOpened.addListener((info: { tabId?: number; windowId?: number }) => {
-      if (typeof info.tabId === 'number') {
-        _sidePanelTabs.add(info.tabId)
-      } else {
-        setGlobalPanelOpen(true)
-      }
+    ;(chrome.sidePanel as any).onOpened.addListener(() => {
+      setGlobalPanelOpen(true)
     })
-    ;(chrome.sidePanel as any).onClosed.addListener((info: { tabId?: number; windowId?: number }) => {
-      if (typeof info.tabId === 'number') {
-        _sidePanelTabs.delete(info.tabId)
-      } else {
-        setGlobalPanelOpen(false)
-      }
+    ;(chrome.sidePanel as any).onClosed.addListener(() => {
+      setGlobalPanelOpen(false)
     })
   })()
 
   chrome.tabs.onRemoved.addListener((tabId) => {
-    _sidePanelTabs.delete(tabId)
     // Tab closed → its WebMCP registry entry is stale; drop it so the
     // popup/discover snapshot never lists tools from dead tabs.
     unregisterTab(tabId).catch(() => {})
@@ -1426,55 +1398,39 @@ export default defineBackground(() => {
     console.log('[CreatorWeave][bg] opening side panel', {
       tabId,
       windowId,
-      global: _useGlobalSidePanel,
       pageUrl,
       cwUrl,
     })
 
-    if (_useGlobalSidePanel) {
-      // New panel session: reset the settle state so the web app's pending
-      // hostname routes to its project once storage boots.
-      _panelSettleState = {
-        bindingId,
-        hostname: (() => {
-          try { return new URL(pageUrl).hostname } catch { return null }
-        })(),
-        settledPath: null,
-      }
-      persistPanelSettleState()
-
-      // Edge: per-tab panels are force-closed on tab switch and never
-      // restored (w3c/webextensions#588, MicrosoftEdge-Extensions#142), so
-      // enable the panel window-wide instead. Content keeps following the
-      // opening tab via the binding store.
-      chrome.sidePanel.setOptions({
-        path: cwUrl,
-        enabled: true,
-      })
-      // OpenOptions requires tabId or windowId (typed union). Tab-originated
-      // clicks always carry windowId; the { tabId } fallback is purely
-      // defensive and should not happen in practice.
-      const openArgs: chrome.sidePanel.OpenOptions =
-        typeof windowId === 'number' ? { windowId } : { tabId }
-      chrome.sidePanel.open(openArgs).then(() => {
-        setGlobalPanelOpen(true)
-      }).catch((err: any) => {
-        console.warn('[CreatorWeave] Side panel open failed:', err)
-      })
-      return
+    // New panel session: reset the settle state so the web app's pending
+    // hostname routes to its project once storage boots.
+    _panelSettleState = {
+      bindingId,
+      hostname: (() => {
+        try { return new URL(pageUrl).hostname } catch { return null }
+      })(),
+      settledPath: null,
     }
+    persistPanelSettleState()
 
+    // Window-scoped global panel: enable window-wide, then open. Per-tab
+    // panels are force-closed on tab switch in Edge and give inconsistent
+    // UX in Chrome (the panel dismisses on switch and "follow the active
+    // tab" reading is unusable).
     // setOptions must run BEFORE open; do NOT await (preserves user gesture).
     // Pattern from Chrome's official sample + the user-gesture thread:
     // https://groups.google.com/a/chromium.org/g/chromium-extensions/c/S2bR12jOCKA
     chrome.sidePanel.setOptions({
-      tabId,
       path: cwUrl,
       enabled: true,
     })
-
-    chrome.sidePanel.open({ tabId }).then(() => {
-      _sidePanelTabs.add(tabId)
+    // OpenOptions requires tabId or windowId (typed union). Tab-originated
+    // clicks always carry windowId; the { tabId } fallback is purely
+    // defensive and should not happen in practice.
+    const openArgs: chrome.sidePanel.OpenOptions =
+      typeof windowId === 'number' ? { windowId } : { tabId }
+    chrome.sidePanel.open(openArgs).then(() => {
+      setGlobalPanelOpen(true)
     }).catch((err: any) => {
       console.warn('[CreatorWeave] Side panel open failed:', err)
     })
@@ -1527,7 +1483,10 @@ export default defineBackground(() => {
     // (side panel / popup) and defined for content-script relays (any web
     // page). A web page must NOT be able to rewrite our panel registration.
     if (message.type === 'cw_side_panel_settle') {
-      if (_sender.tab !== undefined || !_useGlobalSidePanel) {
+      // SECURITY: sender.tab is undefined for extension-page documents
+      // (side panel / popup) and defined for content-script relays (any web
+      // page). A web page must NOT be able to rewrite our panel registration.
+      if (_sender.tab !== undefined) {
         sendResponse({ ok: false, error: 'settle is only available to the side-panel document' })
         return false
       }
@@ -1556,14 +1515,15 @@ export default defineBackground(() => {
       return false
     }
 
-    // ── Edge settle protocol: metadata recovery ──
+    // ── Settle protocol: metadata recovery ──
     // After a reload triggered by the settle's own setOptions (or any other
     // navigation), the web app boots on a clean URL without ?binding=&origin
     // and asks for its launch metadata back. Answer ONLY to the panel
     // document (sender.tab undefined); if the settled binding still exists
     // we rebind to it so WebMCP/page-context flows keep working.
     if (message.type === 'cw_side_panel_get_launch_metadata') {
-      if (_sender.tab !== undefined || !_useGlobalSidePanel) {
+      // SECURITY: see cw_side_panel_settle above — panel document only.
+      if (_sender.tab !== undefined) {
         sendResponse({ ok: false })
         return false
       }
@@ -1591,7 +1551,7 @@ export default defineBackground(() => {
 
     if (message.type === 'cw_side_panel_get_state') {
       const respond = () => {
-        sendResponse({ ok: true, global: _useGlobalSidePanel, globalOpen: _globalPanelOpenState.open })
+        sendResponse({ ok: true, global: true, globalOpen: _globalPanelOpenState.open })
       }
       if (_globalPanelOpenState.hydrated) {
         respond()
@@ -1613,57 +1573,32 @@ export default defineBackground(() => {
       // setOptions path swap would reload the panel's web app and wipe its
       // conversation state. Closing keeps it simple — the next click re-opens
       // bound to the then-current tab.
-      if (_useGlobalSidePanel) {
-        // Decision data: the in-memory flag is FRESH once startup hydration
-        // completed AND the onOpened/onClosed listeners keep it accurate, so
-        // the common case decides SYNCHRONOUSLY — preserving the user-gesture
-        // call stack for open() (an unconditional async read risked breaking
-        // the gesture hop). Only the rare SW-cold-start race (message arrives
-        // before hydration finishes) awaits the hydration promise; that read
-        // is ~ms and stays inside the transient-activation window.
-        const decide = (open: boolean): void => {
-          if (open) {
-            chrome.sidePanel.setOptions({ enabled: false })
-            setGlobalPanelOpen(false)
-            // eslint-disable-next-line no-console
-            console.log('[CreatorWeave][bg] side panel closed (toggle)', { tabId, global: true })
-            return
-          }
-          openSidePanelForTab(
-            tabId,
-            typeof message.url === 'string' ? message.url : '',
-            typeof _sender?.tab?.windowId === 'number' ? _sender.tab.windowId : undefined,
-          )
+      // Decision data: the in-memory flag is FRESH once startup hydration
+      // completed AND the onOpened/onClosed listeners keep it accurate, so
+      // the common case decides SYNCHRONOUSLY — preserving the user-gesture
+      // call stack for open() (an unconditional async read risked breaking
+      // the gesture hop). Only the rare SW-cold-start race (message arrives
+      // before hydration finishes) awaits the hydration promise; that read
+      // is ~ms and stays inside the transient-activation window.
+      const decide = (open: boolean): void => {
+        if (open) {
+          chrome.sidePanel.setOptions({ enabled: false })
+          setGlobalPanelOpen(false)
+          // eslint-disable-next-line no-console
+          console.log('[CreatorWeave][bg] side panel closed (toggle)', { tabId })
+          return
         }
-        if (_globalPanelOpenState.hydrated) {
-          decide(_globalPanelOpenState.open)
-        } else {
-          _hydration.then(() => decide(_globalPanelOpenState.open))
-        }
-        return false
+        openSidePanelForTab(
+          tabId,
+          typeof message.url === 'string' ? message.url : '',
+          typeof _sender?.tab?.windowId === 'number' ? _sender.tab.windowId : undefined,
+        )
       }
-
-      // ── Toggle close (Chrome per-tab) ──
-      // Check _sidePanelTabs synchronously to preserve the user gesture
-      // call stack. This is a best-effort local Set — it can desync if
-      // the user closes the panel via Chrome's built-in X (there's no
-      // onClosed event). But trading occasional desync for reliable
-      // open() is the right call: a failed close is a no-op, while a
-      // failed open loses the side panel entirely.
-      if (_sidePanelTabs.has(tabId)) {
-        chrome.sidePanel.setOptions({ tabId, enabled: false })
-        _sidePanelTabs.delete(tabId)
-        // eslint-disable-next-line no-console
-        console.log('[CreatorWeave][bg] side panel closed (toggle)', { tabId, global: false })
-        return false
+      if (_globalPanelOpenState.hydrated) {
+        decide(_globalPanelOpenState.open)
+      } else {
+        _hydration.then(() => decide(_globalPanelOpenState.open))
       }
-
-      // ── Toggle open ──
-      openSidePanelForTab(
-        tabId,
-        typeof message.url === 'string' ? message.url : '',
-        typeof _sender?.tab?.windowId === 'number' ? _sender.tab.windowId : undefined,
-      )
       return false
     }
 
@@ -1673,8 +1608,8 @@ export default defineBackground(() => {
     // the popup → background message hop (it does for the floating button's
     // content-script click → background hop, which is the documented special
     // case this listener was built for). The popup still needs the binding
-    // registered here (storage) and the tab marked as panel-open so the
-    // floating button's toggle semantics stay correct.
+    // registered here (storage) and the panel session initialized (settle
+    // state) so the floating button's toggle semantics stay correct.
     // Fire-and-forget from the popup: storage.local writes settle in ~ms,
     // while the panel's web app resolves the binding much later (at the
     // first page-context pull), so the race window is negligible.
@@ -1686,20 +1621,17 @@ export default defineBackground(() => {
         return false
       }
       rememberSidePanelBinding(bindingId, tabId)
-      _sidePanelTabs.add(tabId)
-      // Edge settle protocol: the popup opens the panel directly, so this is
+      // Settle protocol: the popup opens the panel directly, so this is
       // where the panel session starts — reset settle state exactly like the
       // floating-button path does in openSidePanelForTab.
-      if (_useGlobalSidePanel) {
-        _panelSettleState = {
-          bindingId,
-          hostname: (() => {
-            try { return new URL(String(message.origin || '')).hostname } catch { return null }
-          })(),
-          settledPath: null,
-        }
-        persistPanelSettleState()
+      _panelSettleState = {
+        bindingId,
+        hostname: (() => {
+          try { return new URL(String(message.origin || '')).hostname } catch { return null }
+        })(),
+        settledPath: null,
       }
+      persistPanelSettleState()
       sendResponse({ ok: true })
       return false
     }
