@@ -10,6 +10,7 @@ import { xiaohongshuProfileTools } from './xiaohongshu-profile'
 import { xiaohongshuSessionTools } from './xiaohongshu-session'
 import { readListWindow } from './xiaohongshu-feed-fields'
 import { xiaohongshuPublishTools } from './xiaohongshu-publish'
+import { xiaohongshuVideoPublishTools } from './xiaohongshu-publish-video'
 
 export const xiaohongshuToolImplementations: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
   ...xiaohongshuFilterTools,
@@ -17,6 +18,7 @@ export const xiaohongshuToolImplementations: Record<string, (args: Record<string
   ...xiaohongshuProfileTools,
   ...xiaohongshuSessionTools,
   ...xiaohongshuPublishTools,
+  ...xiaohongshuVideoPublishTools,
   async xhs_check_login() {
     if (location.hostname !== HOST) return error('UNSUPPORTED_PAGE', 'Not on a supported Xiaohongshu page.')
     return result('ok', { login_state: loginState() })

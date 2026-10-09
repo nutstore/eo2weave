@@ -28,7 +28,7 @@ import {
   buildRelayEnvelope,
   parseAgentEvent,
 } from './webmcp/relay-protocol'
-import { XHS_INPUT_RESPONSE, XHS_OPERATION_TIMEOUT_MS, isXhsInputRequest } from './webmcp/xiaohongshu-input-protocol'
+import { XHS_INPUT_RESPONSE, XHS_OPERATION_TIMEOUT_MS, isXhsInputRequest, isXhsPreparationTool } from './webmcp/xiaohongshu-input-protocol'
 import { ENABLED_RECIPES_STORAGE_KEY, findRecipeForLocation, findRecipesForHostname } from './webmcp/recipes'
 
 type InvokeWaiter = {
@@ -175,10 +175,10 @@ export default defineContentScript({
     // ── Upstream: background → page agent ──
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.type === WEBMCP_INVOKE_IN_TAB_TYPE) {
-        const inputSession = message.toolName === 'xhs_publish_content' && typeof message.args?._eo2_input_session === 'string' ? message.args._eo2_input_session : undefined
+        const inputSession = isXhsPreparationTool(message.toolName) && typeof message.args?._eo2_input_session === 'string' ? message.args._eo2_input_session : undefined
         if (inputSession) inputSessions.add(inputSession)
         const finish = (response: unknown) => { if (inputSession) inputSessions.delete(inputSession); sendResponse(response) }
-        const timeoutMs = message.toolName === 'xhs_publish_content' ? XHS_OPERATION_TIMEOUT_MS + WEBMCP_INVOKE_RELAY_TIMEOUT_MS : WEBMCP_INVOKE_RELAY_TIMEOUT_MS
+        const timeoutMs = isXhsPreparationTool(message.toolName) ? XHS_OPERATION_TIMEOUT_MS + WEBMCP_INVOKE_RELAY_TIMEOUT_MS : WEBMCP_INVOKE_RELAY_TIMEOUT_MS
         const requestId = `cw_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
         const timeoutId = window.setTimeout(() => {
           const waiter = invokeWaiters.get(requestId)

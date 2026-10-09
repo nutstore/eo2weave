@@ -3,6 +3,12 @@ export const XHS_INPUT_MESSAGE = 'cw_xhs_cdp_input'
 export const XHS_INPUT_SLOT = 'eo2.xhs.cdp-input'
 export const XHS_INPUT_RESPONSE = 'cw_xhs_cdp_input_response'
 export const XHS_OPERATION_TIMEOUT_MS = 300_000 // Upstream Publish uses a 300-second context.
+export const isXhsPreparationTool = (name: string) => name === 'xhs_publish_content' || name === 'xhs_publish_video'
+// Port humanize/provider.go's bounded log-normal timings for shared input.
+export function sampleInputTiming(mu: number, sigma: number, min: number, max: number): number {
+  const normal = Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random())
+  return Math.max(min, Math.min(max, Math.exp(mu + sigma * normal) * 1000))
+}
 export type XhsInputOperation =
   | { kind: 'click'; element: string }
   | { kind: 'type'; element: string; text: string; append: boolean }

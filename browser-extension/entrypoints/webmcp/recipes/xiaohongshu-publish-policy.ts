@@ -6,10 +6,11 @@ export const PUBLISH_URL = `https://${CREATOR_HOST}/publish/publish?source=offic
 // The complete envelope is also checked before sending, including its metadata.
 export const MAX_IMAGE_BYTES = 48 * 1024 * 1024
 export interface ImagePayload { name: string; mime: string; base64: string }
-export interface PublishRequest {
-  title: string; content: string; images: string[]; tags: string[]; dropped_tags: number
-  schedule_at: string | null; is_original: boolean; visibility: string; products: string[]
+export interface PublishFormRequest {
+  title: string; content: string; tags: string[]; dropped_tags: number
+  schedule_at: string | null; visibility: string; products: string[]
 }
+export interface PublishRequest extends PublishFormRequest { images: string[]; is_original: boolean }
 export const PUBLISH_FORM_FIELDS = ['title', 'content', 'tags', 'schedule_at', 'is_original', 'visibility', 'products'] as const
 export type PublishFormField = typeof PUBLISH_FORM_FIELDS[number]
 export function updatePublishRequest(request: PublishRequest, args: Record<string, unknown>): PublishRequest {
@@ -26,19 +27,16 @@ export function titleLength(title: string): number {
   for (let i = 0; i < title.length; i++) length += title.charCodeAt(i) > 127 ? 2 : 1
   return Math.ceil(length / 2)
 }
-export function publishRequest(args: Record<string, unknown>): PublishRequest {
+function strings(value: unknown, name: string): string[] {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) throw new Error(`${name} must be an array of strings.`)
+  return value as string[]
+}
+export function publishFormRequest(args: Record<string, unknown>): PublishFormRequest {
   if (typeof args.title !== 'string' || titleLength(args.title) > 20) throw new Error('Title must be a string with upstream weighted length <=20.')
   if (typeof args.content !== 'string') throw new Error('content must be a string.')
-  const strings = (value: unknown, name: string): string[] => {
-    if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) throw new Error(`${name} must be an array of strings.`)
-    return value as string[]
-  }
-  const images = strings(args.images, 'images')
-  if (!images.length) throw new Error('At least one image is required.')
   const tags = strings(args.tags ?? [], 'tags').map((tag) => tag.replace(/^#+/, ''))
   const visibility = args.visibility === '' || args.visibility === undefined ? '公开可见' : args.visibility
   if (!['公开可见', '仅自己可见', '仅互关好友可见'].includes(String(visibility))) throw new Error('Unsupported visibility.')
-  if (args.is_original !== undefined && typeof args.is_original !== 'boolean') throw new Error('is_original must be boolean.')
   const schedule = args.schedule_at === undefined || args.schedule_at === '' ? null : args.schedule_at
   if (schedule !== null) {
     if (typeof schedule !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(schedule)) throw new Error('schedule_at must be RFC3339 with timezone.')
@@ -50,7 +48,14 @@ export function publishRequest(args: Record<string, unknown>): PublishRequest {
     const delta = Date.parse(schedule) - Date.now()
     if (!Number.isFinite(delta) || delta < 3600000 || delta > 14 * 86400000) throw new Error('schedule_at must be 1 hour to 14 days ahead.')
   }
-  return { title: args.title, content: args.content, images, tags: tags.slice(0, 10), dropped_tags: Math.max(0, tags.length - 10), schedule_at: schedule as string | null, is_original: args.is_original === true, visibility: String(visibility), products: strings(args.products ?? [], 'products') }
+  return { title: args.title, content: args.content, tags: tags.slice(0, 10), dropped_tags: Math.max(0, tags.length - 10), schedule_at: schedule as string | null, visibility: String(visibility), products: strings(args.products ?? [], 'products') }
+}
+export function publishRequest(args: Record<string, unknown>): PublishRequest {
+  const form = publishFormRequest(args)
+  const images = strings(args.images, 'images')
+  if (!images.length) throw new Error('At least one image is required.')
+  if (args.is_original !== undefined && typeof args.is_original !== 'boolean') throw new Error('is_original must be boolean.')
+  return { ...form, images, is_original: args.is_original === true }
 }
 // Port the upstream h2non/filetype v1.1.3 image signatures; site acceptance stays unknown.
 export function imageMime(bytes: Uint8Array): string | null {

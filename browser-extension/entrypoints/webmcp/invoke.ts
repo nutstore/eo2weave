@@ -19,7 +19,7 @@ import { runWebMCPPageProbe } from './page-api'
 import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
 import { prepareRemoteXiaohongshuImage } from './xiaohongshu-image-transfer'
 import { getXhsCdpInput } from './xiaohongshu-cdp-input'
-import { XHS_OPERATION_TIMEOUT_MS } from './xiaohongshu-input-protocol'
+import { XHS_OPERATION_TIMEOUT_MS, isXhsPreparationTool } from './xiaohongshu-input-protocol'
 
 // Relay-channel invoke timeout. Longer than the old executeScript path
 // (which serialized the whole probe func) because tools may legitimately
@@ -85,7 +85,7 @@ async function invokeViaRelay(
       resolve(value)
     }
 
-    const timeoutMs = toolName === 'xhs_publish_content' ? XHS_OPERATION_TIMEOUT_MS + INVOKE_RELAY_TIMEOUT_MS : INVOKE_RELAY_TIMEOUT_MS
+    const timeoutMs = isXhsPreparationTool(toolName) ? XHS_OPERATION_TIMEOUT_MS + INVOKE_RELAY_TIMEOUT_MS : INVOKE_RELAY_TIMEOUT_MS
     const timeout = setTimeout(() => {
       finish({
         ok: false,
@@ -396,7 +396,7 @@ export async function invokeWebMCPTool(
   let inputSession: string | undefined
   try {
     // Relay channel first (static content scripts, mcp-b style). The legacy
-    const isXhsPublish = hostname === 'creator.xiaohongshu.com' && toolName === 'xhs_publish_content'
+    const isXhsPublish = hostname === 'creator.xiaohongshu.com' && isXhsPreparationTool(toolName)
     const invokeArgs = isXhsPublish ? { ...await prepareRemoteXiaohongshuImage(request.args || {}) } : request.args || {}
     // The existing invocation gates and bound-tab routing have already passed.
     // Only the preparation actions that use browser input attach the debugger.
@@ -405,7 +405,7 @@ export async function invokeWebMCPTool(
       invokeArgs._eo2_input_session = inputSession
     }
     if (isXhsPublish && new TextEncoder().encode(JSON.stringify({ type: WEBMCP_INVOKE_IN_TAB_TYPE, toolName, args: invokeArgs })).length >= 64 * 1024 * 1024) {
-      return { ok: false, hostname, toolName, fullToolName: request.fullToolName, tabId, errorCode: 'IMAGE_TRANSFER_TOO_LARGE', error: 'Image payload exceeds Chrome 64 MiB message capacity.' }
+      return { ok: false, hostname, toolName, fullToolName: request.fullToolName, tabId, errorCode: toolName === 'xhs_publish_video' ? 'VIDEO_MESSAGE_TOO_LARGE' : 'IMAGE_TRANSFER_TOO_LARGE', error: 'File transfer message exceeds Chrome 64 MiB message capacity.' }
     }
     // executeScript probe only runs when the tab has no relay receiver
     // (opened before the extension (re)loaded).

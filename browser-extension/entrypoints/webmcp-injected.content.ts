@@ -23,6 +23,8 @@
 
 import { stageXiaohongshuImage, discardXiaohongshuImage } from './webmcp/recipes/xiaohongshu-publish-transfer'
 import { withXhsInputSession } from './webmcp/recipes/xiaohongshu-publish-input'
+import { isXhsPreparationTool } from './webmcp/xiaohongshu-input-protocol'
+import { receiveXiaohongshuVideoFrame, stageXiaohongshuVideoInvocation, discardXiaohongshuVideo } from './webmcp/recipes/xiaohongshu-publish-video-transfer'
 import {
   CW_WEBMCP_AGENT_MARKER,
   buildAgentEnvelope,
@@ -205,10 +207,14 @@ export default defineContentScript({
 
         void (async () => {
           try {
+            if (command.toolName === 'xhs_publish_video' && command.args?._eo2_video_frame !== undefined) {
+              respond({ ok: true, result: receiveXiaohongshuVideoFrame(command.args), apiMode: api!.mode })
+              return
+            }
             const { _eo2_input_session, ...inputArgs } = command.args || {}
-            const publicArgs = command.toolName === 'xhs_publish_content' ? stageXiaohongshuImage(inputArgs) : command.args || {}
+            const publicArgs = command.toolName === 'xhs_publish_content' ? stageXiaohongshuImage(inputArgs) : command.toolName === 'xhs_publish_video' ? stageXiaohongshuVideoInvocation(inputArgs) : command.args || {}
             const execute = () => api!.executeToolByName(command.toolName, publicArgs)
-            const result = command.toolName === 'xhs_publish_content' ? await withXhsInputSession(_eo2_input_session, execute) : await execute()
+            const result = isXhsPreparationTool(command.toolName) ? await withXhsInputSession(_eo2_input_session, execute) : await execute()
             const normalized =
               result === null ||
               result === undefined ||
@@ -241,6 +247,10 @@ export default defineContentScript({
             // page" instead of a red error. The `result` field carries the
             // marker so callers can branch on it without parsing strings.
             if (message.includes('Tool execution cancelled, since tool definition was updated')) {
+              if (command.toolName === 'xhs_publish_video') {
+                respond({ ok: false, errorCode: 'VIDEO_PREPARATION_INTERRUPTED', error: 'Video preparation was interrupted by a page change. Rediscover this tab and inspect the preparation status.', apiMode: api!.mode })
+                return
+              }
               if (command.toolName === 'xhs_publish_content') {
                 respond({ ok: false, errorCode: 'PUBLISH_RESULT_UNKNOWN', error: 'Publication invocation was interrupted by a page change. Rediscover this tab and query status with the same operation_id; never automatically resubmit.', apiMode: api!.mode })
                 return
@@ -263,6 +273,7 @@ export default defineContentScript({
             })
           } finally {
             if (command.toolName === 'xhs_publish_content') discardXiaohongshuImage(command.args || {})
+            if (command.toolName === 'xhs_publish_video') discardXiaohongshuVideo(command.args || {})
           }
         })()
       }

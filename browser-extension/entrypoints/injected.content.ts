@@ -807,7 +807,7 @@ export default defineContentScript({
         preferredTabId?: number
         binding?: string
       }) {
-        const isXhsPublish = String(payload?.fullToolName || '').endsWith('xhs_publish_content');
+        const isXhsPublish = /xhs_publish_(?:content|video)$/.test(String(payload?.fullToolName || ''));
         // Upstream's 300-second operation context plus the existing relay/bridge margins.
         return sendToBridge('webmcp_invoke_tool', payload || {}, isXhsPublish ? 395000 : undefined);
       },

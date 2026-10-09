@@ -1,4 +1,4 @@
-import { XHS_INPUT_SLOT, XHS_OPERATION_TIMEOUT_MS, isXhsInputRequest } from './xiaohongshu-input-protocol'
+import { XHS_INPUT_SLOT, XHS_OPERATION_TIMEOUT_MS, isXhsInputRequest, sampleInputTiming as timing } from './xiaohongshu-input-protocol'
 import type { XhsInputRequest, XhsInputOperation } from './xiaohongshu-input-protocol'
 
 interface DebuggerApi {
@@ -12,11 +12,6 @@ interface Session { tabId: number; deadline: number; pointer: Point; queue: Prom
 interface Geometry { left: number; right: number; top: number; bottom: number; x: number; y: number }
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
-// Port humanize/provider.go's bounded log-normal timings, not a new site rule.
-function timing(mu: number, sigma: number, min: number, max: number): number {
-  const normal = Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random())
-  return Math.max(min, Math.min(max, Math.exp(mu + sigma * normal) * 1000))
-}
 const stateFunction = `function() {
   let opacity = 1;
   for (let node = this; node && node.nodeType === 1; node = node.parentElement) {

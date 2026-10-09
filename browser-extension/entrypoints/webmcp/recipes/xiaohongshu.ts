@@ -7,11 +7,26 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   hostname: 'www.xiaohongshu.com',
   additionalHostnames: ['creator.xiaohongshu.com'],
   displayName: '小红书 — Xiaohongshu',
-  description: 'Read Xiaohongshu notes and profiles, and prepare image notes in your current creator-platform tab. Final publishing is deferred.',
+  description: 'Read Xiaohongshu notes and profiles, and prepare image or video notes in your current creator-platform tab. Final publishing is deferred.',
   category: 'social',
-  version: '0.3.7',
+  version: '0.4.0',
   glyph: '📕',
   tools: [
+    {
+      name: 'xhs_publish_video', title: '准备小红书视频', readOnlyHint: false,
+      description: '参照原仓库 publish_with_video，在当前标签页准备单个本地视频，最终发布暂缓，不点击发布或暂存离开。open 打开创作页面后重新发现工具；prepare 提供 operation_id、title、content、video 和选项并选择上传视频；upload 用同一 operation_id 和 video 传入文件；status 查询处理进度；处理完成后 configure 填写文稿、话题、定时、可见范围和商品。video 使用知知已授权工作区相对路径、vfs://workspace 或 vfs://assets，不支持远程视频地址，不传文件字节。EO2 内部分块传递完整文件，不压缩、转码或截断，不需要 Agent 分块调用。处理完成按上游发布按钮可用状态判断，这不等于发布成功。VIDEO_PROCESSING_PENDING 时继续查询 status，保留已交给网页的文件。文稿和选项使用已有 CDP 输入；逐字填写会需要等待。准备好后只核对网页，明确尚未发布。后续 configure 可只修改本次提供的字段，局部失败重试保留修改范围，不重新上传视频。话题沿用前十项和首个建议；定时沿用初始一小时至十四天范围；商品需要账号支持。返回请求设置和网页观察值，未知标 null。上游视频没有原创声明或自选封面参数，本工具不增加这些能力，也不增加视频理解、音频转写或登录工具。报告不输出文件字节或账号 token。',
+      inputSchema: { type: 'object', properties: {
+        action: { type: 'string', enum: ['open', 'prepare', 'upload', 'configure', 'status'] },
+        operation_id: { type: 'string', description: 'Associate the preparation steps for this video.' },
+        title: { type: 'string', description: 'Upstream weighted title length <=20.' },
+        content: { type: 'string', description: 'Full body with line breaks; put topics in tags.' },
+        video: { type: 'string', description: 'Single authorized local video source, required for prepare/upload.' },
+        tags: { type: 'array', items: { type: 'string' } },
+        schedule_at: { type: 'string', description: 'RFC3339 with timezone, initially 1 hour to 14 days ahead.' },
+        visibility: { type: 'string', enum: ['', '公开可见', '仅自己可见', '仅互关好友可见'] },
+        products: { type: 'array', items: { type: 'string' } },
+      }, required: ['action'] },
+    },
     {
       name: 'xhs_publish_content', title: '准备小红书图文', readOnlyHint: false,
       description: '在当前标签页准备小红书图文，参考原仓库 publish_content 的字段和操作顺序。目前只上传图片、填写标题正文、添加话题和设置选项，最终发布暂缓，不执行 submit，不通过其他页面工具点击发布或暂存离开。步骤：open 打开创作页面后重新获取工具；prepare 提供 operation_id、title、content、images 和选项；upload 按顺序逐张传入同一个 operation_id、image_index 和原图片来源；configure 首次填写完整页面，也可直接传入新的标题、正文、话题或选项；修改已准备内容时只改本次提供的字段，局部修改失败后重试保留原修改范围，未提供的保持原值，不重复上传图片；status 查询准备进度。准备完成后停下来请用户查看网页，明确报告尚未发布，也未主动保存草稿。图片支持 HTTP/HTTPS 地址、已授权工作区相对路径、vfs://workspace 和 vfs://assets；本地图片由 EO2 读取传递，Agent 不传入图片字节。已有页面内容不自动清空，已有图片数量另行报告；相同图片列表可通过 prepare 更新文字和选项，不重复上传已完成图片。UPLOAD_PENDING 时查询 status 等待预览。话题沿用前十项、首个建议及无建议时空格回退；商品沿用首个搜索结果，需要账号支持。选项返回请求值及实际观察值，未知报告 null，不冒充已设置成功。schedule_at 沿用带时区日期和一小时至十四天的初始范围。登录操作继续由用户完成，不新增登录工具。报告不输出完整图片签名地址、token 或图片字节。',

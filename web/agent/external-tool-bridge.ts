@@ -1056,13 +1056,19 @@ async function executeWebMCPTool(
         return toolErrorJson('call_tool', 'IMAGE_TRANSFER_TOO_LARGE', 'Image payload and bridge envelope exceed Chrome 64 MiB message capacity.', { retryable: false })
       }
     }
-    const response = await bridge.webMCPInvoke({
+    const invokeRequest = {
       groupKey: toolInfo.groupKey,
       fullToolName: toolInfo.fullName,
       args: invokeArgs,
       preferredTabId,
       ...(binding ? { binding } : {}),
-    })
+    }
+    let response: import('@/webmcp/types').WebMCPInvokeResponse
+    if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_video') {
+      const { invokeXiaohongshuVideo } = await import('./tools/xiaohongshu-video-transfer')
+      try { response = await invokeXiaohongshuVideo(invokeRequest, context as unknown as import('./tools/tool-types').ToolContext, (request) => bridge.webMCPInvoke(request)) }
+      catch (error) { return toolErrorJson('call_tool', 'VIDEO_TRANSFER_FAILED', error instanceof Error ? error.message : 'Video file transfer failed.', { retryable: false }) }
+    } else response = await bridge.webMCPInvoke(invokeRequest)
 
     if (!response.ok) {
       const errorMessage = response.error

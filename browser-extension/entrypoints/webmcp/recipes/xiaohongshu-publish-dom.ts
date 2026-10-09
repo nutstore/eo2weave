@@ -1,7 +1,8 @@
 // Adapt selectors and ordering from upstream xiaohongshu/publish.go at a5c8f779.
 // Input uses the upstream-style CDP driver in the current tab; observations stay separate.
 import { visible, clean } from './xiaohongshu-page'
-import type { PublishRequest, PublishFormField } from './xiaohongshu-publish-policy'
+import type { PublishFormRequest, PublishFormField } from './xiaohongshu-publish-policy'
+import { sampleInputTiming } from '../xiaohongshu-input-protocol'
 import { clickWithCdp, typeWithCdp, pressWithCdp, clickPointWithCdp } from './xiaohongshu-publish-input'
 
 export const delay = (ms = 250) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -145,17 +146,20 @@ export function formSnapshot(): string {
 }
 export async function imageTab(deadline: number) {
   if (previews().length || elements('div.d-input input').length) return
+  await selectPublishTab('上传图文', deadline)
+}
+export async function selectPublishTab(label: string, deadline: number) {
   let selected: HTMLElement | undefined
   // Upstream getTabElement chooses the first visible matching tab, not a
   // unique text match. Off-screen probe copies must not count as controls.
   await until(() => {
     selected = elements('div.creator-tab').find((el) => {
-      if (clean(el.innerText) !== '上传图文') return false
+      if (clean(el.innerText) !== label) return false
       const rect = el.getBoundingClientRect()
       return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0
     })
     return selected !== undefined
-  }, deadline, 'Upload image tab unavailable after waiting for the creator page.')
+  }, deadline, `Publish tab ${label} unavailable after waiting for the creator page.`)
   // Upstream checks tab obstruction, dismisses d-popover and retries this action.
   while (Date.now() < deadline) {
     const tab = selected!
@@ -165,12 +169,13 @@ export async function imageTab(deadline: number) {
     if (hit === tab || (hit && tab.contains(hit))) { await click(tab, deadline); break }
     await dismissPopCover()
     await delay(200)
-    if (Date.now() >= deadline) throw new Error('Upload image tab remained obscured after dismissing the overlay.')
+    if (Date.now() >= deadline) throw new Error(`Publish tab ${label} remained obscured after dismissing the overlay.`)
   }
   // Upstream waits one second after selecting the image tab so its Vue form
   // replaces the default video input before the first file is supplied.
   await delay(1000)
-  await until(() => document.querySelector('input.upload-input[type="file"]') !== null, deadline, 'Image upload input did not appear.')
+  const inputSelector = label === '上传视频' ? '.upload-input, input[type="file"]' : 'input.upload-input[type="file"]'
+  await until(() => document.querySelector(inputSelector) !== null, deadline, 'Upload input did not appear.')
 }
 async function dismissPopCover() {
   const popover = () => document.querySelector('div.d-popover')
@@ -181,13 +186,14 @@ async function dismissPopCover() {
   await delay(200)
   popover()?.remove()
 }
-export async function configureForm(request: PublishRequest, deadline: number, fields?: ReadonlySet<PublishFormField>) {
+export async function configureForm(request: PublishFormRequest & { is_original?: boolean }, deadline: number, fields?: ReadonlySet<PublishFormField>, kind: 'image' | 'video' = 'image') {
   const apply = (field: PublishFormField) => !fields || fields.has(field)
   const title = first('div.d-input input') as HTMLInputElement
   if (apply('title')) {
     await input(title, request.title)
     const titleError = elements('div.title-container div.max_suffix').map((el) => clean(el.innerText)).filter(Boolean).join('; ')
-    if (titleError) throw new Error(`Website length validation: ${titleError}`)
+    if (kind === 'image' && titleError) throw new Error(`Website length validation: ${titleError}`)
+    if (kind === 'video') await delay(sampleInputTiming(-0.51, 0.40, 200, 3000))
   }
   let body: HTMLElement | undefined
   await until(() => {
@@ -200,7 +206,7 @@ export async function configureForm(request: PublishRequest, deadline: number, f
   if (writeBody) {
     await writeEditor(contentEditor, request.content)
     const guide = elements('.feature-guide__btn')
-    if (guide.length) {
+    if (kind === 'image' && guide.length) {
       // Upstream treats closing the optional feature guide as best effort.
       try { await click(guide[0], deadline) } catch { /* Continue with the upstream title click. */ }
     }
@@ -228,7 +234,8 @@ export async function configureForm(request: PublishRequest, deadline: number, f
       topicResults.push({ requested: tag, selected: null, method: 'plain_text_fallback' })
     }
   }
-  if (lengthError()) throw new Error(`Website length validation: ${lengthError()}`)
+  if (kind === 'image' && lengthError()) throw new Error(`Website length validation: ${lengthError()}`)
+  if (kind === 'video' && writeBody) await delay(sampleInputTiming(-0.51, 0.40, 200, 3000))
   const schedule = elements('.post-time-wrapper .d-switch')
   if (apply('schedule_at') && request.schedule_at && !schedule.length) throw new Error('Scheduled publishing switch unavailable.')
   if (apply('schedule_at') && request.schedule_at) {
@@ -248,7 +255,7 @@ export async function configureForm(request: PublishRequest, deadline: number, f
     await confirmOriginalDeclaration(deadline, warnings)
   }
   const productResults = apply('products') ? await bindProducts(request.products, deadline, warnings) : []
-  if (lengthError()) throw new Error(`Website length validation: ${lengthError()}`)
+  if (kind === 'image' && lengthError()) throw new Error(`Website length validation: ${lengthError()}`)
   return { topics: topicResults, products: productResults, visibility: request.visibility, is_original: request.is_original, schedule_at: request.schedule_at, dropped_tags: request.dropped_tags,
     observed_text: { title: title.value, content: editorText(contentEditor), length_unit: 'utf16_code_units' }, warnings,
     observed_options: { visibility: permission(), is_original: original ? checked(original) : null, scheduled: schedule.length ? checked(schedule[0]) : null,
