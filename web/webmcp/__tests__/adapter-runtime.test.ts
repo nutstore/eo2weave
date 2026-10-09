@@ -27,8 +27,8 @@ describe('SW adapter QuickJS workflow', () => {
     expect(await execute(workflow("return await invokeTool('missing', {})"))).toMatchObject({ ok: false, error: { message: expect.stringContaining('Tool unavailable') } })
   })
   it('invokes run_code when the workspace host exposes it', async () => {
-    const invoke = vi.fn(async () => 5)
-    const result = await executeAdapterWorkflow(wasm, workflow("return await tools.run_code({purpose: 'Compose tools', code: 'return 5'})"), {}, ['read', 'run_code'], invoke, new AbortController().signal)
+    const invoke = vi.fn(async () => ({ok:true, value:5, output:[{type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'}]}))
+    const result = await executeAdapterWorkflow(wasm, workflow("const result = await tools.run_code({purpose: 'Compose tools', code: 'return 5'}); if(!result.ok) throw new Error(result.error.message); return result.value"), {}, ['read', 'run_code'], invoke, new AbortController().signal)
     expect(result).toEqual({ ok: true, value: { status: 'completed', result: 5 } })
     expect(invoke).toHaveBeenCalledWith(['run_code', { purpose: 'Compose tools', code: 'return 5' }], expect.any(AbortSignal))
   })
@@ -75,4 +75,16 @@ it('executes under a host CSP that forbids JavaScript Function compilation', asy
   try {
     expect(await execute(workflow('return 8'))).toEqual({ ok: true, value: { status: 'completed', result: 8 } })
   } finally { globalThis.Function = original }
+})
+
+it('validates exactly the returned workflow JSON and does not bubble nested output', async () => {
+  const invoke = vi.fn(async () => ({ok:true,value:5,output:[{type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'}]}))
+  const source = workflow("const result = await tools.run_code({purpose:'test',code:'image(...);return 5'}); return {count:result.value}")
+    .replace("outputSchema: { type: 'number' }", "outputSchema: {type:'object',properties:{count:{type:'number'}},required:['count'],additionalProperties:false}")
+  const result = await executeAdapterWorkflow(wasm,source,{},['run_code'],invoke,new AbortController().signal)
+  expect(result).toEqual({ok:true,value:{status:'completed',result:{count:5}}})
+  expect(JSON.stringify(result)).not.toContain('image')
+  const invalid = source.replace('return {count:result.value}', 'return result')
+  expect(await executeAdapterWorkflow(wasm,invalid,{},['run_code'],invoke,new AbortController().signal))
+    .toMatchObject({ok:false,error:{message:expect.stringContaining('Step 1 output')}})
 })

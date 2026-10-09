@@ -149,3 +149,23 @@ describe('generic QuickJS runtime', () => {
     expect(preflight('return "import(hi)"')).toEqual([])
   })
 })
+
+it('streams invocation-local JSON synchronously before failure without consuming host calls', async () => {
+  const events: unknown[] = []
+  const result = await executeQuickJs(wasm, {
+    code:'emitEvent({value:1}); emitEvent({value:2}); throw new Error("failed")',filename:'events.js',setup:'',limits:{...DEFAULT_LIMITS,maxHostCalls:1},
+  },{globals:{},functions:{},onEvent:value=>events.push(value)},new AbortController().signal)
+  expect(result).toMatchObject({ok:false,error:{message:'failed'}})
+  expect(events).toEqual([{value:1},{value:2}])
+})
+it('keeps event sinks isolated and rejects lossy events or sink errors', async () => {
+  const streams: unknown[][] = [[],[]]
+  await Promise.all(streams.map((events,index)=>run(`emitEvent(${index}); return null`,{globals:{},functions:{},onEvent:value=>events.push(value)})))
+  expect(streams).toEqual([[0],[1]])
+  for(const code of ['emitEvent(undefined)','emitEvent({value:Infinity})','emitEvent(new Date())'])
+    expect(await run(code,{globals:{},functions:{},onEvent:()=>{throw new Error('must not run')}})).toMatchObject({ok:false,error:{message:expect.stringContaining('JSON')}})
+  expect(await run('emitEvent(1)',{globals:{},functions:{},onEvent:()=>{throw Object.assign(new Error('full'),{code:'OUTPUT_LIMIT'})}}))
+    .toMatchObject({ok:false,error:{code:'OUTPUT_LIMIT'}})
+  expect(await run('return 1',{globals:{emitEvent:1},functions:{},onEvent:()=>{}})).toMatchObject({ok:false})
+  expect(await run('return typeof emitEvent')).toEqual({ok:true,value:'undefined'})
+})

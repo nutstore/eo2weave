@@ -40,6 +40,39 @@ describe('external tool bridge error isolation', () => {
     })
   })
 
+  it('preserves mixed media, resource blocks and structuredContent for code callers', async () => {
+    const image = {type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'}
+    const resource = {type:'resource_link',uri:'https://example.com/report',name:'report'}
+    const result = {content:[{type:'text',text:'caption'},image,resource],structuredContent:{count:2}}
+    mocks.getMCPManager.mockReturnValue({getAllTools:()=>new Map([['server',[{name:'picture',inputSchema}]]]),executeTool:vi.fn().mockResolvedValue(result)})
+    const response = JSON.parse(await callToolExecutor({full_tool_name:'server:picture'},toolContext))
+    expect(response.data.content).toEqual(result.content)
+    expect(response.data.structuredContent).toEqual({count:2})
+    expect(response.contentParts).toEqual([...result.content.slice(0,2), {type:'text',text:'{"count":2}'}])
+    expect(response.data.text).toBe('caption')
+  })
+  it('preserves pure images and wraps untrusted text without changing image bytes', async () => {
+    const image = {type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'}
+    const executeTool = vi.fn().mockResolvedValueOnce({content:[image]}).mockResolvedValueOnce({content:[{type:'text',text:'external caption'},image]})
+    mocks.getMCPManager.mockReturnValue({getAllTools:()=>new Map([['server',[{name:'picture',inputSchema,annotations:{untrustedContentHint:true}}]]]),executeTool})
+    const pure = JSON.parse(await callToolExecutor({full_tool_name:'server:picture'},toolContext))
+    expect(pure.data.content).toEqual([image])
+    const mixed = JSON.parse(await callToolExecutor({full_tool_name:'server:picture'},toolContext))
+    expect(mixed.data.content[0].text).toContain('<untrusted_external_content')
+    expect(mixed.data.content[1]).toEqual(image)
+  })
+  it('keeps untrusted WebMCP JSON machine-readable and wraps only its Agent presentation', async () => {
+    const value = {status:'completed',result:{ok:true,value:1,output:[{type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'}]}}
+    const webTool = {name:'picture',fullName:'picture',groupKey:'example_com',hostname:'example.com',description:'',inputSchema,toolsetSignature:'signature',apiMode:'navigatorModelContext' as const,representativeTabId:1,annotations:{untrustedContentHint:true}}
+    mocks.getMCPManager.mockReturnValue({getAllTools:()=>new Map()})
+    mocks.getWebMCPState.mockReturnValue({getEnabledTools:()=>[webTool],getPreferredTabIdForTool:()=>1,recordToolInvocation:vi.fn()})
+    mocks.getWebMCPBridge.mockReturnValue({webMCPInvoke:vi.fn().mockResolvedValue({ok:true,result:value,hostname:'example.com',toolName:'picture'})})
+    const response = JSON.parse(await callToolExecutor({full_tool_name:'example_com_picture'},toolContext))
+    expect(response.data.result).toEqual(value)
+    expect(response.contentParts).toHaveLength(1)
+    expect(response.contentParts[0].type).toBe('text')
+    expect(response.contentParts[0].text).toContain('<untrusted_external_content')
+  })
   it('wraps error text returned by an untrusted MCP tool', async () => {
     const tools = new Map([[
       'untrusted-server',

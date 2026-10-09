@@ -2,8 +2,8 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { createWorkspaceToolHost } from '../workspace-tool-host'
 const mocks = vi.hoisted(() => ({ workspaceId: 'workspace-a', projectId: 'project-a', invoke: vi.fn(), directory: vi.fn(), mode: 'act' as 'act' | 'plan' }))
 vi.mock('@/store/agents.store', () => ({ useAgentsStore: { getState: () => ({ activeAgentId: 'default' }) } }))
-vi.mock('@/agent/tool-registry', () => ({ getToolRegistry: () => ({ getToolDefinitionsForMode: () => ['read', 'run_code', ...(mocks.mode === 'act' ? ['write'] : [])].map(name => ({ function: { name } })) }) }))
-vi.mock('@/agent/tool-invocation', () => ({ invokeTool: mocks.invoke }))
+vi.mock('@/agent/tool-registry', () => ({ getToolRegistry: () => ({ getToolDefinitionsForMode: () => ['read', 'run_code', 'ask_user_question', 'switch_agent_mode', 'spawn_subagent', 'search_conversations', 'unknown_future_tool', ...(mocks.mode === 'act' ? ['write'] : [])].map(name => ({ function: { name } })) }) }))
+vi.mock('@/services/tool-invocation', () => ({ invokeTool: mocks.invoke }))
 vi.mock('@/agent/tools/tool-utils', () => ({ resolveWorkspaceDirectoryHandle: mocks.directory }))
 vi.mock('@/store/workspace.store', () => ({ useWorkspaceStore: { getState: () => ({ activeWorkspaceId: mocks.workspaceId, isLoading: false }) } }))
 vi.mock('@/store/project.store', () => ({ useProjectStore: { getState: () => ({ activeProjectId: mocks.projectId }) } }))
@@ -49,4 +49,16 @@ it('preserves tool failures as rejected calls with code and toolName', async () 
   const host = createWorkspaceToolHost()!
   mocks.invoke.mockResolvedValue({ isError: true, presentation: { content: 'denied', details: { parsed: { version: 2, ok: false, tool: 'write', error: { code: 'DENIED', message: 'denied' } } } } })
   await expect(host.invoke('write', {}, 'call', new AbortController().signal, 'run')).rejects.toMatchObject({ code: 'DENIED', toolName: 'write' })
+})
+
+it('returns image execution output as JSON and does not install Agent observations', async () => {
+  const host = createWorkspaceToolHost()!
+  const value = {ok:false,error:{code:'TEST_FAILURE',message:'failed'},output:[{type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'}]}
+  mocks.invoke.mockResolvedValue({value,isError:false})
+  expect(await host.invoke('run_code',{},'call',new AbortController().signal,'run')).toEqual(value)
+  const input = mocks.invoke.mock.calls[0][0]
+  expect(input).not.toHaveProperty('onResult')
+  expect(input).not.toHaveProperty('callbacks')
+  expect(input.allowedToolNames()).toEqual(host.names())
+  await expect(host.invoke('ask_user_question',{},'call',new AbortController().signal,'run')).rejects.toThrow('unavailable')
 })

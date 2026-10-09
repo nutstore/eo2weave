@@ -37,6 +37,8 @@ export interface RuntimeBindings {
   globals: Record<string, JsonValue>
   /** JSON-only asynchronous calls; the signal is aborted when execution ends. */
   functions: Record<string, (args: JsonValue[], signal: AbortSignal) => Promise<JsonValue>>
+  /** Invocation-local JSON events. They are execution output, not host tool calls. */
+  onEvent?: (value: JsonValue) => void
 }
 
 export interface RuntimeFailure {

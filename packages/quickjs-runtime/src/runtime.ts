@@ -68,7 +68,7 @@ export async function executeQuickJs(
       }
     }
     for (const [name, value] of Object.entries(bindings.globals)) {
-      if (name.startsWith('__qjs') || Object.hasOwn(bindings.functions, name))
+      if (name.startsWith('__qjs') || (bindings.onEvent && name === 'emitEvent') || Object.hasOwn(bindings.functions, name))
         throw new Error(`Binding name collision: ${name}`)
       set(name, JSON.parse(jsonText(value, limits.maxTransferBytes)))
     }
@@ -125,8 +125,27 @@ export async function executeQuickJs(
       });
     `)
     ).dispose()
+    if (bindings.onEvent) {
+      const eventBridge = runtime.newFunction('__qjsEvent', (valueHandle) => {
+        try {
+          if (closed || controller.signal.aborted) throw new Error('Execution canceled')
+          const value = JSON.parse(runtime.dump(valueHandle) as string)
+          jsonText(value, limits.maxTransferBytes)
+          bindings.onEvent!(value)
+          return runtime.newString('{"ok":true}')
+        } catch (error) {
+          return runtime.newString(jsonText({ ok: false, error: failure(error) }, limits.maxTransferBytes))
+        }
+      })
+      runtime.setProp(runtime.global, '__qjsEvent', eventBridge)
+      eventBridge.dispose()
+      guest(() => runtime.evalCode(`globalThis.emitEvent = value => {
+        const reply = JSON.parse(__qjsEvent(__qjsJson(value)));
+        if (!reply.ok) throw Object.assign(new Error(reply.error.message), reply.error);
+      };`)).dispose()
+    }
     for (const name of Object.keys(bindings.functions)) {
-      if (name.startsWith('__qjs')) throw new Error(`Reserved binding: ${name}`)
+      if (name.startsWith('__qjs') || (bindings.onEvent && name === 'emitEvent')) throw new Error(`Reserved binding: ${name}`)
       guest(() =>
         runtime.evalCode(`globalThis[${JSON.stringify(name)}] = async (...args) => {
         const reply = JSON.parse(await __qjsHost(${JSON.stringify(name)}, __qjsJson(args)));

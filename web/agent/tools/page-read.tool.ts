@@ -308,12 +308,10 @@ export const pageScreenshotExecutor: ToolExecutor = async (args) => {
     'page_screenshot',
     {
       format: result.format || format,
-      width: undefined as number | undefined,
-      height: undefined as number | undefined,
+      image: { type: 'image', data: base64Data!, mimeType: mimeType! },
     },
     {
-      // Text-only payload keeps the original (text-only) flow available
-      // as a fallback. The actual image goes via contentParts.
+      // Direct Agent presentation; code callers receive data.image explicitly.
       contentParts: [
         {
           type: 'image',

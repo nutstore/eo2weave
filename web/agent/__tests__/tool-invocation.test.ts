@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { invokeTool } from '@/agent/tool-invocation'
-import type { BuildAgentToolsInput } from '@/agent/loop/build-agent-tools'
+import { invokeTool } from '@/services/tool-invocation'
+import type { ToolInvocationInput } from '@/services/tool-invocation'
 import type { ToolContext } from '@/agent/tools/tool-types'
 
 vi.mock('@/store/workspace-preferences.store', () => ({ getCurrentWorkspaceAgentMode: () => 'act' }))
@@ -12,7 +12,7 @@ function input(execute: (name: string, args: unknown, context: ToolContext) => P
     toolRegistry: {
       getToolDefinitionsForMode: () => [{ function: { name: 'read' } }], execute,
     },
-  } as unknown as BuildAgentToolsInput
+  } as unknown as ToolInvocationInput
 }
 
 describe('shared tool invocation', () => {
@@ -21,7 +21,6 @@ describe('shared tool invocation', () => {
     const config = input(async (_name, _args, context) => {
       contexts.push(context)
       await Promise.resolve()
-      context.deferContext!([{ type: 'text', text: context.currentToolCallId! }])
       return JSON.stringify({ ok: true, version: 2, tool: 'read', data: { text: 'x'.repeat(100000) } })
     })
     const context = { directoryHandle: null }
@@ -30,20 +29,29 @@ describe('shared tool invocation', () => {
     })))
     expect(contexts[0]).not.toBe(contexts[1])
     expect(context).toEqual({ directoryHandle: null })
-    expect(results.map(r => r.deferred[0].sourceCallId)).toEqual(['a', 'b'])
+    expect(contexts.map(c=>c.currentToolCallId)).toEqual(['a','b'])
+    expect(contexts.every(c=>!Object.hasOwn(c,'deferContext'))).toBe(true)
     expect(results[0].value).toEqual({ text: 'x'.repeat(100000) })
   })
 
-  it('preserves emitted context on failure and ignores late emissions', async () => {
-    let emit: NonNullable<ToolContext['deferContext']> = () => {}
-    const config = input(async (_name, _args, context) => {
-      emit = context.deferContext!
-      emit([{ type: 'text', text: 'before failure' }])
-      throw new Error('failed')
+  it('reports ordinary tool failures without fabricating context output', async () => {
+    const config = input(async () => { throw new Error('failed') })
+    await expect(invokeTool(config, {toolName:'read',toolCallId:'a',args:{},context:{directoryHandle:null}})).rejects.toThrow('failed')
+  })
+  it('rechecks caller capabilities for nested invocation', async () => {
+    let names = ['run_code','read']
+    const execute = vi.fn(async (name, _args, context: ToolContext) => {
+      if(name === 'run_code') {
+        expect(context.codeTools!.names).toEqual(['read'])
+        names = ['run_code']
+        await context.codeTools!.invoke({toolName:'read',toolCallId:'nested',args:{},signal:new AbortController().signal})
+      }
+      return '{}'
     })
-    const result = await invokeTool(config, { toolName: 'read', toolCallId: 'a', args: {}, context: { directoryHandle: null } })
-    emit([{ type: 'text', text: 'late' }])
-    expect(result.isError).toBe(true)
-    expect(result.deferred).toHaveLength(1)
+    const config = input(execute)
+    config.toolRegistry.getToolDefinitionsForMode = () => ['read','run_code','ask_user_question'].map(name=>({type:'function',function:{name,description:'',parameters:{type:'object',properties:{}}}}))
+    config.allowedToolNames = () => names
+    await expect(invokeTool(config, {toolName:'run_code',toolCallId:'a',args:{},context:{directoryHandle:null}})).rejects.toThrow('Tool unavailable: read')
+    expect(execute).toHaveBeenCalledTimes(1)
   })
 })

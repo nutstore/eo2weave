@@ -13,7 +13,8 @@
     "./js-ast": "./src/js-ast.ts",
     "./webmcp-adapter-protocol": "./src/webmcp-adapter-protocol.ts",
     "./webmcp-schema": "./src/webmcp-schema.ts",
-    "./code-tool-bindings": "./src/code-tool-bindings.ts"
+    "./code-tool-bindings": "./src/code-tool-bindings.ts",
+    "./code-output": "./src/code-output.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
@@ -24,6 +25,7 @@
     "typescript": "^5.7.2"
   },
   "dependencies": {
+    "@creatorweave/quickjs-runtime": "workspace:*",
     "@babel/parser": "7.28.5",
     "@cfworker/json-schema": "^4.1.1"
   }

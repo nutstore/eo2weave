@@ -320,10 +320,7 @@ export function piToInternalMessage(message: PiAgentMessage): Message | null {
       content: text,
       ...(imageParts.length > 0
         ? {
-            contentParts: [
-              ...imageParts,
-              ...(text ? [{ type: 'text' as const, text }] : []),
-            ],
+            contentParts: structuredClone(message.content),
           }
         : {}),
     })

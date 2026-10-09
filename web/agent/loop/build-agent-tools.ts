@@ -1,6 +1,8 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import type { AgentMode } from '../agent-mode'
-import { invokeTool } from '@/agent/tool-invocation'
+import { invokeTool } from '@/services/tool-invocation'
+import { projectToolOutput } from './tool-result-output'
+import type { ChangeDetectionResult } from '@/opfs/types/opfs-types'
 import { RUN_CODE_TOOL, stripRunCodeTrace } from '@/agent/tools/run-code.tool'
 import type { ContextManager } from '../context-manager'
 import type { PiAIProvider } from '../llm/pi-ai-provider'
@@ -9,7 +11,7 @@ import type { ToolRegistry } from '../tool-registry'
 import type { ToolContext } from '../tools/tool-types'
 import { isToolEnvelopeV2 } from '../tools/tool-envelope'
 import type { AgentCallbacks, AgentLoopConfig } from './types'
-import { coerceToolArgs, truncateLargeToolResult } from './tool-execution'
+import { coerceToolArgs, normalizeToolResult, truncateLargeToolResult } from './tool-execution'
 
 /** Extract real token usage from the most recent assistant message's usage field. */
 function extractLastAssistantUsage(messages: Message[]): number | undefined {
@@ -68,13 +70,12 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
         const originalToolContext = input.getToolContext()
         const isRunCode = toolDef.function.name === RUN_CODE_TOOL
 
-        // Truncate oversized results before normalizeToolResult.
+        // Truncate model-facing text after separating image bytes from presentation.
         // If the result exceeds the context budget, write it to an assets file
         // and return the file path so the Agent can use a subagent to summarize it.
-        const prepareResult = (raw: string) =>
+        const truncateText = (raw: string) =>
           truncateLargeToolResult({
-            // run_code call traces are UI-only (kept in displayContent), never model context.
-            rawResult: isRunCode ? stripRunCodeTrace(raw) : raw,
+            rawResult: raw,
             toolName: toolDef.function.name,
             args,
             toolCallId,
@@ -121,7 +122,27 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
               : undefined,
           })
 
-        const outcome = await invokeTool(input, {
+        const outcome = await invokeTool({
+          ...input,
+          onResult: async (call, result) => {
+            // These observations belong to this Agent, not the shared executor or WebMCP.
+            let parsed: Record<string, unknown>
+            try { parsed = JSON.parse(result.raw) } catch { return }
+            const elicitation = parsed?._elicitation as { mode: 'binary'; message: string; toolName: string; args: Record<string, unknown>; serverId: string } | undefined
+            if (elicitation?.mode === 'binary' && input.callbacks?.onElicitation) {
+              input.callbacks.onElicitation({ ...elicitation, toolCallId: call.toolCallId })
+              input.onElicitationDetected?.()
+            }
+            if (call.toolName === 'run_python' && parsed?.fileChanges) {
+              try {
+                const { useConversationContextStore } = await import('@/store/conversation-context.store')
+                useConversationContextStore.getState().addChanges(parsed.fileChanges as ChangeDetectionResult)
+              } catch (error) {
+                console.warn('[AgentLoop] Failed to record run_python file changes:', error)
+              }
+            }
+          },
+        }, {
           toolName: toolDef.function.name,
           toolCallId,
           args,
@@ -129,46 +150,39 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
             ...originalToolContext,
             contextUsage: { usedTokens: realUsedTokens ?? 0, maxTokens: maxContextTokens - reserveTokens },
           },
-          prepareResult,
+          prepareResult: isRunCode ? stripRunCodeTrace : undefined,
         })
 
-        let finalContent = outcome.presentation.content
         const finalDetails = outcome.presentation.details
-        let finalIsError = outcome.presentation.isError
-
-        if (finalIsError) {
-          // If the error is already wrapped in a ToolEnvelopeV2 (e.g. from MCP tools),
-          // return the raw envelope JSON as-is so the LLM receives structured error data.
-          // Only throw for non-envelope errors (legacy/internal tools).
-          if (isToolEnvelopeV2(finalDetails.parsed)) {
-            finalContent = outcome.prepared
-            finalIsError = false
-          } else if (outcome.deferred.length === 0) {
-            throw new Error(
-              finalContent.replace(/^Error(?:\s*\[[^\]]+\])?:\s*/i, '') || 'Tool execution failed'
-            )
-          }
+        let finalContent = outcome.presentation.content
+        if (outcome.presentation.isError) {
+          if (isToolEnvelopeV2(finalDetails.parsed)) finalContent = outcome.prepared
+          else throw new Error(finalContent.replace(/^Error(?:\s*\[[^\]]+\])?:\s*/i, '') || 'Tool execution failed')
         }
-
-        const deferredParts = outcome.deferred.flatMap((event) => event.content)
+        // Hooks may replace the presentation. Honor that replacement without reviving old output.
+        const replaced = outcome.presentation.content !== normalizeToolResult(outcome.prepared).content
+        const projected = replaced
+          ? { text: finalContent, output: [], isError: false }
+          : projectToolOutput(toolDef.function.name, finalDetails.parsed, finalContent)
+        const supportsVision = input.provider.getModel?.().input?.includes('image') ?? false
+        const content = projected.text ? [{ type: 'text' as const, text: projected.text }] : []
+        const parts = []
+        for (const part of projected.output) {
+          if (part.type === 'text') parts.push(part)
+          else if (supportsVision) parts.push(part)
+          else parts.push({ type: 'text' as const, text: '[Image output omitted: this model does not accept images. Use ocr explicitly for text recognition.]' })
+        }
+        const assembled = [...content, ...parts]
+        const modelText = assembled.filter(p => p.type === 'text').map(p => p.text).join('\n')
+        const boundedText = modelText ? await truncateText(modelText) : modelText
         return {
-          content: (() => {
-            // If the envelope carried multimodal contentParts (e.g. a
-            // screenshot from page_screenshot), the text-only envelope.json
-            // string is meaningless to the model. Lift the parts out so the
-            // downstream fetcher can emit image_url content parts.
-            const parsed = finalDetails.parsed as
-              | { contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> }
-              | undefined
-            if (parsed && Array.isArray(parsed.contentParts) && parsed.contentParts.length > 0) {
-              return [...parsed.contentParts, ...deferredParts]
-            }
-            return [{ type: 'text' as const, text: finalContent }, ...deferredParts]
-          })(),
+          content: boundedText === modelText ? assembled : [
+            { type: 'text' as const, text: boundedText }, ...assembled.filter(p => p.type === 'image'),
+          ],
           details: {
             ...finalDetails,
-            ...(outcome.deferred.length ? { deferred: outcome.deferred } : {}),
-            ...(isRunCode ? { displayContent: outcome.raw } : {}),
+            ...(projected.isError ? { executionError: true } : {}),
+            ...(isRunCode || toolDef.function.name === 'read_image' ? { displayContent: outcome.raw } : {}),
           },
         }
       } catch (toolError) {

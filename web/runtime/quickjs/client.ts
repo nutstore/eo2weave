@@ -74,6 +74,16 @@ export async function executeCode(
         finish(message.result)
         return
       }
+      if (message.type === 'event') {
+        try {
+          if (!bindings.onEvent) throw new Error('Execution events unavailable')
+          jsonText(message.value, request.limits.maxTransferBytes)
+          bindings.onEvent(message.value)
+        } catch (error) {
+          finish({ ok: false, error: failure(error) })
+        }
+        return
+      }
       let result: ExecutionResult
       try {
         if (!Object.hasOwn(bindings.functions, message.name))
@@ -97,6 +107,7 @@ export async function executeCode(
               wasm,
               globals: bindings.globals,
               functions: Object.keys(bindings.functions),
+              events: !!bindings.onEvent,
             } satisfies WorkerRequest)
         })
         .catch((error) => finish({ ok: false, error: failure(error) }))

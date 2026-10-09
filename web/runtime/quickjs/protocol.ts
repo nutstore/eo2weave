@@ -11,9 +11,11 @@ export type WorkerRequest =
       wasm: WebAssembly.Module
       globals: Record<string, JsonValue>
       functions: string[]
+      events: boolean
     }
   | { type: 'reply'; id: number; result: ExecutionResult }
 
 export type WorkerResponse =
   | { type: 'invoke'; id: number; name: string; args: JsonValue[] }
+  | { type: 'event'; value: JsonValue }
   | { type: 'result'; result: ExecutionResult }

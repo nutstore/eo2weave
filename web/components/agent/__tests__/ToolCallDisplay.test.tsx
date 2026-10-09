@@ -21,6 +21,31 @@ vi.mock('../SubagentDetailPanel', () => ({
 }))
 
 describe('ToolCallDisplay', () => {
+  it('renders explicit run_code output images and retains text on script failure', () => {
+    const toolCall: ToolCall = {id:'code',type:'function',function:{name:'run_code',arguments:JSON.stringify({purpose:'Inspect image',code:'image(...); throw new Error("failed")'})}}
+    const result = JSON.stringify({ok:true,tool:'run_code',version:2,data:{ok:false,error:{code:'FAILED',message:'failed'},output:[{type:'text',text:'before failure'},{type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'}]}})
+    const {container} = render(<ToolCallDisplay toolCall={toolCall} result={result} />)
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.getByRole('img',{name:'Inspect image'})).toHaveAttribute('src','data:image/png;base64,iVBORw0KGgo=')
+    expect(screen.getByText('before failure')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('iVBORw0KGgo=')
+    expect(container.querySelector('.lucide-circle-x')).not.toBeNull()
+  })
+  it('previews direct read_image JSON without displaying image bytes as text', () => {
+    const toolCall: ToolCall = {id:'image',type:'function',function:{name:'read_image',arguments:JSON.stringify({path:'chart.png'})}}
+    const result = JSON.stringify({ok:true,tool:'read_image',version:2,data:{type:'image',data:'iVBORw0KGgo=',mimeType:'image/png',width:1,height:1}})
+    const {container} = render(<ToolCallDisplay toolCall={toolCall} result={result} />)
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.getByRole('img',{name:'chart.png'})).toBeInTheDocument()
+    expect(container.textContent).not.toContain('iVBORw0KGgo=')
+  })
+  it('shows run_code success when a failed child was handled by the program', () => {
+    const toolCall: ToolCall = {id:'code',type:'function',function:{name:'run_code',arguments:JSON.stringify({purpose:'Recover'})}}
+    const result = JSON.stringify({ok:true,tool:'run_code',version:2,data:{ok:true,value:1,output:[]},meta:{calls:[{id:'child',name:'read',status:'failed',args:{},result:'{"error":"handled"}'}]}})
+    const {container} = render(<ToolCallDisplay toolCall={toolCall} result={result} />)
+    expect(container.querySelector('.lucide-circle-x')).toBeNull()
+    expect(container.querySelector('svg.text-green-500')).not.toBeNull()
+  })
   it('renders subagent result content as markdown', () => {
     const toolCall: ToolCall = {
       id: 'tc-1',

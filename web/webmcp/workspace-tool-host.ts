@@ -1,7 +1,7 @@
 import { useAgentsStore } from '@/store/agents.store'
 import type { ReadFileStateEntry } from '@/agent/tools/tool-types'
 import { getToolRegistry } from '@/agent/tool-registry'
-import { invokeTool } from '@/agent/tool-invocation'
+import { invokeTool } from '@/services/tool-invocation'
 import { createToolPolicyHooks } from '@/agent/tool-policy'
 import { isToolEnvelopeV2 } from '@/agent/tools/tool-envelope'
 import { resolveWorkspaceDirectoryHandle } from '@/agent/tools/tool-utils'
@@ -9,6 +9,7 @@ import { getCurrentWorkspaceAgentMode } from '@/store/workspace-preferences.stor
 import { useWorkspaceStore } from '@/store/workspace.store'
 import { useProjectStore } from '@/store/project.store'
 import { getSidePanelBindingId } from '@/agent/workspace-assistant-context'
+import { isPublicWorkspaceTool } from '@/services/tool-capabilities'
 import type { AdapterToolHost } from './adapter-host'
 import type { JsonValue } from '@creatorweave/quickjs-runtime'
 
@@ -22,7 +23,7 @@ export function createWorkspaceToolHost(): AdapterToolHost | null {
   const valid = () => useWorkspaceStore.getState().activeWorkspaceId === workspaceId &&
     useProjectStore.getState().activeProjectId === projectId && !useWorkspaceStore.getState().isLoading && getSidePanelBindingId() === binding
   const names = () => valid() ? registry.getToolDefinitionsForMode(getCurrentWorkspaceAgentMode())
-    .map(tool => tool.function.name) : []
+    .map(tool => tool.function.name).filter(isPublicWorkspaceTool) : []
   const executions = new Map<string, { readFileState: Map<string, ReadFileStateEntry>; currentAgentId: string }>()
   return {
     workspaceId, binding, names,
@@ -41,7 +42,7 @@ export function createWorkspaceToolHost(): AdapterToolHost | null {
       }
       const mode = getCurrentWorkspaceAgentMode()
       const outcome = await invokeTool({
-        toolRegistry: registry, mode, ...createToolPolicyHooks(),
+        toolRegistry: registry, mode, allowedToolNames: names, ...createToolPolicyHooks(),
         getAbortSignal: () => signal, toolExecutionTimeout: 55_000, toolTimeoutExemptions: new Set(),
       }, {
         toolName, toolCallId, args,

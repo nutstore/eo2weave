@@ -36,7 +36,10 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     const result = await executeQuickJs(
       message.wasm,
       message.request,
-      { globals: message.globals, functions },
+      {
+        globals: message.globals, functions,
+        ...(message.events ? { onEvent: (value: JsonValue) => send({ type: 'event', value }) } : {}),
+      },
       new AbortController().signal
     )
     send({ type: 'result', result })
