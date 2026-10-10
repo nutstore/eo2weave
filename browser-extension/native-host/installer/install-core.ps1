@@ -19,6 +19,8 @@ param(
 )
 
 $CwsExtensionId = "canpcddlognjbengiodekfbbfnjafeml"
+# Edge Add-ons listing ID — always allowed in addition to $ExtensionId.
+$EdgeExtensionId = "hnndljbngdmcldojkaedhpehlghkljdm"
 
 $ErrorActionPreference = "Stop"
 
@@ -45,7 +47,8 @@ $manifest = @{
     type = "stdio"
     allowed_origins = @(
         "chrome-extension://$ExtensionId/",
-        "chrome-extension://$CwsExtensionId/"
+        "chrome-extension://$CwsExtensionId/",
+        "chrome-extension://$EdgeExtensionId/"
     )
 } | ConvertTo-Json -Depth 3
 Set-Content -Path $ManifestPath -Value $manifest -Encoding UTF8

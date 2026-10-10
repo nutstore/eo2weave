@@ -25,8 +25,10 @@ $ErrorActionPreference = "Stop"
 # Extension IDs allowed to talk to the native host:
 #   kdnnh... : unpacked/dev loads (extension manifest pins a stable public key)
 #   canpc... : Chrome Web Store listing (store-generated ID — see wxt.config.ts)
+#   hnnd...  : Edge Add-ons listing
 $ExtensionId = "kdnnhmagmghdhfinoipgbcddnpmffbkp"
 $CwsExtensionId = "canpcddlognjbengiodekfbbfnjafeml"
+$EdgeExtensionId = "hnndljbngdmcldojkaedhpehlghkljdm"
 $HostName = "com.creatorweave.nativehost"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -67,7 +69,8 @@ $manifest = @{
     type = "stdio"
     allowed_origins = @(
         "chrome-extension://$ExtensionId/",
-        "chrome-extension://$CwsExtensionId/"
+        "chrome-extension://$CwsExtensionId/",
+        "chrome-extension://$EdgeExtensionId/"
     )
 } | ConvertTo-Json -Depth 3
 

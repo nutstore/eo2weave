@@ -7,8 +7,10 @@ set -e
 # Extension IDs allowed to talk to the native host:
 #   kdnnh... : unpacked/dev loads (extension manifest pins a stable public key)
 #   canpc... : Chrome Web Store listing (store-generated ID — see wxt.config.ts)
+#   hnnd...  : Edge Add-ons listing
 EXTENSION_ID="kdnnhmagmghdhfinoipgbcddnpmffbkp"
 CWS_EXTENSION_ID="canpcddlognjbengiodekfbbfnjafeml"
+EDGE_EXTENSION_ID="hnndljbngdmcldojkaedhpehlghkljdm"
 HOST_NAME="com.creatorweave.nativehost"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -32,7 +34,7 @@ cat > "$MANIFEST_PATH" << EOF
   "description": "CreatorWeave Native Host — disk file I/O",
   "path": "$BINARY_PATH",
   "type": "stdio",
-  "allowed_origins": ["chrome-extension://$EXTENSION_ID/", "chrome-extension://$CWS_EXTENSION_ID/"]
+  "allowed_origins": ["chrome-extension://$EXTENSION_ID/", "chrome-extension://$CWS_EXTENSION_ID/", "chrome-extension://$EDGE_EXTENSION_ID/"]
 }
 EOF
 
