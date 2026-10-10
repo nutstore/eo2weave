@@ -1,14 +1,14 @@
 import { XHS_INPUT_MESSAGE, XHS_INPUT_RESPONSE, XHS_INPUT_SLOT, XHS_OPERATION_TIMEOUT_MS } from '../xiaohongshu-input-protocol'
 import type { XhsInputOperation } from '../xiaohongshu-input-protocol'
 
-interface InputContext { session: string; elements: Map<string, HTMLElement> }
+interface InputContext { session: string; elements: Map<string, HTMLElement>; timeoutMs: number }
 const slot = Symbol.for(XHS_INPUT_SLOT)
 type InputWindow = Window & { [slot]?: InputContext }
 
-export async function withXhsInputSession<T>(session: unknown, run: () => Promise<T>): Promise<T> {
+export async function withXhsInputSession<T>(session: unknown, run: () => Promise<T>, timeoutMs = XHS_OPERATION_TIMEOUT_MS): Promise<T> {
   if (typeof session !== 'string') return run()
   const target = window as InputWindow, previous = target[slot]
-  target[slot] = { session, elements: new Map() }
+  target[slot] = { session, elements: new Map(), timeoutMs }
   try { return await run() } finally {
     if (previous) target[slot] = previous
     else delete target[slot]
@@ -29,7 +29,7 @@ async function send(operation: XhsInputOperation, element?: HTMLElement): Promis
         if (data.ok) resolve()
         else reject(new Error(typeof data.error === 'string' ? data.error : 'CDP input failed.'))
       }
-      const timeout = setTimeout(() => { cleanup(); reject(new Error('CDP input response timed out.')) }, XHS_OPERATION_TIMEOUT_MS)
+      const timeout = setTimeout(() => { cleanup(); reject(new Error('CDP input response timed out.')) }, context.timeoutMs)
       window.addEventListener('message', receive)
       window.postMessage({ type: XHS_INPUT_MESSAGE, session: context.session, requestId, operation }, location.origin)
     })
@@ -37,5 +37,7 @@ async function send(operation: XhsInputOperation, element?: HTMLElement): Promis
 }
 export const clickWithCdp = (element: HTMLElement) => send({ kind: 'click', element: '' }, element)
 export const typeWithCdp = (element: HTMLElement, text: string, append = false) => send({ kind: 'type', element: '', text, append }, element)
+// Upstream humanize.Type focuses without replacing or repositioning the selection.
+export const insertWithCdp = (element: HTMLElement, text: string) => send({ kind: 'type', element: '', text, append: false, preserveSelection: true }, element)
 export const pressWithCdp = (key: 'Enter' | 'Escape' | 'ArrowDown', element?: HTMLElement) => send({ kind: 'key', key, ...(element ? { element: '' } : {}) }, element)
 export const clickPointWithCdp = (x: number, y: number) => send({ kind: 'click-point', x, y })

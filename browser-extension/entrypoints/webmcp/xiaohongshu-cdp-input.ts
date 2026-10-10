@@ -8,7 +8,7 @@ interface DebuggerApi {
   onDetach?: { addListener(listener: (source: { tabId?: number }) => void): void }
 }
 interface Point { x: number; y: number }
-interface Session { tabId: number; deadline: number; pointer: Point; queue: Promise<unknown>; active: boolean }
+interface Session { tabId: number; hostname: string; timeoutMs: number; deadline: number; pointer: Point; queue: Promise<unknown>; active: boolean }
 interface Geometry { left: number; right: number; top: number; bottom: number; x: number; y: number }
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -31,7 +31,7 @@ export function createXhsCdpInput(api: DebuggerApi) {
   })
   const command = async (session: Session, method: string, params?: object): Promise<any> => {
     if (!session.active) throw new Error('CDP input invocation has ended or detached.')
-    if (Date.now() >= session.deadline) throw new Error('Upstream 300-second input context expired.')
+    if (Date.now() >= session.deadline) throw new Error(`Upstream ${session.timeoutMs / 1000}-second input context expired.`)
     return api.sendCommand({ tabId: session.tabId }, method, params)
   }
   const call = async (session: Session, objectId: string, functionDeclaration: string, args: unknown[] = []) => {
@@ -131,14 +131,15 @@ export function createXhsCdpInput(api: DebuggerApi) {
       if (op.kind === 'type') {
         // Rod Focus and SelectAllText also use element-bound evaluation. Selection
         // replacement/end positioning adapts EO2's existing editing workflow.
-        await call(session, objectId, `function(append) {
+        if (op.preserveSelection) await call(session, objectId, 'function() { this.focus(); }')
+        else await call(session, objectId, `function(append) {
           this.focus();
           if (typeof this.select === 'function') { if (append) this.setSelectionRange(this.value.length, this.value.length); else this.select(); }
           else { const range = document.createRange(); range.selectNodeContents(this); if (append) range.collapse(false);
             const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); }
         }`, [op.append])
         await waitState(session, objectId, 'enabled'); await waitState(session, objectId, 'writable')
-        if (!op.text && !op.append) await key(session, 'Backspace')
+        if (!op.text && !op.append && !op.preserveSelection) await key(session, 'Backspace')
         for (const character of op.text) {
           await command(session, 'Input.insertText', { text: character })
           await sleep(timing(-2.12, 0.50, 30, 400))
@@ -181,10 +182,10 @@ export function createXhsCdpInput(api: DebuggerApi) {
     } finally { await api.sendCommand({ tabId: session.tabId }, 'Runtime.releaseObject', { objectId }).catch(() => {}) }
   }
   return {
-    async open(tabId: number): Promise<string> {
+    async open(tabId: number, options = { hostname: 'creator.xiaohongshu.com', timeoutMs: XHS_OPERATION_TIMEOUT_MS }): Promise<string> {
       await api.attach({ tabId }, '1.3')
       const token = crypto.randomUUID()
-      sessions.set(token, { tabId, deadline: Date.now() + XHS_OPERATION_TIMEOUT_MS, pointer: { x: 0, y: 0 }, queue: Promise.resolve(), active: true })
+      sessions.set(token, { tabId, ...options, deadline: Date.now() + options.timeoutMs, pointer: { x: 0, y: 0 }, queue: Promise.resolve(), active: true })
       return token
     },
     async close(token: string): Promise<void> {
@@ -197,7 +198,7 @@ export function createXhsCdpInput(api: DebuggerApi) {
     async handle(value: unknown, sender: { tab?: { id?: number }; frameId?: number; url?: string }) {
       if (!isXhsInputRequest(value)) throw new Error('Invalid internal CDP input request.')
       const request: XhsInputRequest = value, session = sessions.get(request.session)
-      if (!session || sender.tab?.id !== session.tabId || sender.frameId !== 0 || new URL(sender.url || 'about:blank').hostname !== 'creator.xiaohongshu.com') throw new Error('No authorized input invocation for this tab.')
+      if (!session || sender.tab?.id !== session.tabId || sender.frameId !== 0 || new URL(sender.url || 'about:blank').hostname !== session.hostname) throw new Error('No authorized input invocation for this tab.')
       const result = session.queue.then(() => input(session, request.operation))
       session.queue = result.catch(() => {})
       await result

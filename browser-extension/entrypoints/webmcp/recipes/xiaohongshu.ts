@@ -7,11 +7,20 @@ export const xiaohongshuRecipe: WebMCPRecipe = {
   hostname: 'www.xiaohongshu.com',
   additionalHostnames: ['creator.xiaohongshu.com'],
   displayName: '小红书 — Xiaohongshu',
-  description: 'Read Xiaohongshu notes and profiles, and prepare image or video notes in your current creator-platform tab. Final publishing is deferred.',
+  description: 'Read Xiaohongshu notes and profiles, post comments in your current tab, and prepare image or video notes in your creator-platform tab. Final note publishing is deferred.',
   category: 'social',
-  version: '0.4.1',
+  version: '0.5.0',
   glyph: '📕',
   tools: [
+    {
+      name: 'xhs_post_comment_to_feed', title: '发表评论', readOnlyHint: false,
+      description: '参照上游 post_comment_to_feed，在当前已登录的小红书主站标签页发表评论，沿用项目现有写工具确认。feed_id、xsec_token 从已读取的笔记或列表获取，content 保留原文，不增加字数限制。若目标笔记尚未打开，返回 navigated，仅开始导航、未提交评论；重新发现工具并读取核对目标后，用相同参数再次调用。当前目标已打开时直接执行上游输入入口→逐字输入→发送→原地核实；不新增 prepare/submit 流程或操作记录。沿用上游第一个匹配控件和 humanize CDP 输入，不清空或重定位已有输入选择。提交后按上游每 300ms、最多 4s 检查第一个 .comments-container 的 innerText 是否包含完整 content，不刷新或滚动核实。status=ok / success=true 仅表示上游文本出现核实通过；检查 text_present_before_submit、success_scope 和 verification_limitations，已有同文、子串或回复也可能命中，不能据此证明新评论 ID 或作者，相关字段为 null。未出现返回 COMMENT_NOT_CONFIRMED，点击和输入不算成功；提交状态未知或未确认时先查看网页，不自动重发。此工具会真实发送评论；不执行回复、点赞、收藏、最终笔记发布或暂存。报告 recipe_version、目标 ID、提交状态和核实边界，不输出完整签名地址或 token。',
+      inputSchema: { type: 'object', properties: {
+        feed_id: { type: 'string', description: 'Upstream note ID from a feed or the open note.' },
+        xsec_token: { type: 'string', description: 'Upstream access token from the same note; used when opening its target URL.' },
+        content: { type: 'string', description: 'Comment text, preserved verbatim. This tool sends it to the website.' },
+      }, required: ['feed_id', 'xsec_token', 'content'] },
+    },
     {
       name: 'xhs_publish_video', title: '准备小红书视频', readOnlyHint: false,
       description: '参照原仓库 publish_with_video，在当前标签页准备单个本地视频，最终发布暂缓，不点击发布或暂存离开。open 打开创作页面后重新发现工具；prepare 提供 operation_id、title、content、video 和选项并选择上传视频；upload 用同一 operation_id 和 video 传入文件；status 查询处理进度；处理完成后 configure 填写文稿、话题、定时、可见范围和商品。video 使用知知已授权工作区相对路径、vfs://workspace 或 vfs://assets，不支持远程视频地址，不传文件字节。EO2 内部分块传递完整文件，不压缩、转码或截断，不需要 Agent 分块调用。处理完成按上游发布按钮可用状态判断，这不等于发布成功。VIDEO_PROCESSING_PENDING 时继续查询 status，保留已交给网页的文件。若明确再次调用 upload，则重新传入并供给同一来源文件，不会被旧供给记录跳过；supplied_to_page 和 file 只表示历史供给，不等于网站已接受。文稿和选项使用已有 CDP 输入；逐字填写会需要等待。准备好后只核对网页，明确尚未发布。后续 configure 可只修改本次提供的字段，局部失败重试保留修改范围，不重新上传视频。视频话题按传入列表逐项处理，沿用上游首个建议；定时沿用初始一小时至十四天范围；商品需要账号支持。返回请求设置和网页观察值，未知标 null。上游视频没有原创声明或自选封面参数，本工具不增加这些能力，也不增加视频理解、音频转写或登录工具。报告不输出文件字节或账号 token。',

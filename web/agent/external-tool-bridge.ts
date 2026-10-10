@@ -1083,7 +1083,7 @@ async function executeWebMCPTool(
         response.errorCode || 'WEBMCP_INVOKE_FAILED',
         errorMessage,
         {
-          retryable: toolInfo.name !== 'xhs_publish_content',
+          retryable: !['xhs_publish_content', 'xhs_post_comment_to_feed'].includes(toolInfo.name),
           details: {
             fullToolName: tool.fullName,
             tabId: response.tabId,
@@ -1173,7 +1173,7 @@ async function executeWebMCPTool(
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return toolErrorJson('call_tool', 'WEBMCP_INVOKE_FAILED', message, { retryable: toolInfo.name !== 'xhs_publish_content' })
+    return toolErrorJson('call_tool', 'WEBMCP_INVOKE_FAILED', message, { retryable: !['xhs_publish_content', 'xhs_post_comment_to_feed'].includes(toolInfo.name) })
   }
 }
 

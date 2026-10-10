@@ -23,7 +23,7 @@
 
 import { stageXiaohongshuImage, discardXiaohongshuImage } from './webmcp/recipes/xiaohongshu-publish-transfer'
 import { withXhsInputSession } from './webmcp/recipes/xiaohongshu-publish-input'
-import { isXhsPreparationTool } from './webmcp/xiaohongshu-input-protocol'
+import { isXhsInputTool, xhsInputTimeout } from './webmcp/xiaohongshu-input-protocol'
 import { receiveXiaohongshuVideoFrame, stageXiaohongshuVideoInvocation, discardXiaohongshuVideo } from './webmcp/recipes/xiaohongshu-publish-video-transfer'
 import {
   CW_WEBMCP_AGENT_MARKER,
@@ -212,9 +212,9 @@ export default defineContentScript({
               return
             }
             const { _eo2_input_session, ...inputArgs } = command.args || {}
-            const publicArgs = command.toolName === 'xhs_publish_content' ? stageXiaohongshuImage(inputArgs) : command.toolName === 'xhs_publish_video' ? stageXiaohongshuVideoInvocation(inputArgs) : command.args || {}
+            const publicArgs = command.toolName === 'xhs_publish_content' ? stageXiaohongshuImage(inputArgs) : command.toolName === 'xhs_publish_video' ? stageXiaohongshuVideoInvocation(inputArgs) : isXhsInputTool(command.toolName) ? inputArgs : command.args || {}
             const execute = () => api!.executeToolByName(command.toolName, publicArgs)
-            const result = isXhsPreparationTool(command.toolName) ? await withXhsInputSession(_eo2_input_session, execute) : await execute()
+            const result = isXhsInputTool(command.toolName) ? await withXhsInputSession(_eo2_input_session, execute, xhsInputTimeout(command.toolName)) : await execute()
             const normalized =
               result === null ||
               result === undefined ||

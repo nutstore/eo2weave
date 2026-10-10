@@ -19,7 +19,7 @@ import { runWebMCPPageProbe } from './page-api'
 import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
 import { prepareRemoteXiaohongshuImage } from './xiaohongshu-image-transfer'
 import { getXhsCdpInput } from './xiaohongshu-cdp-input'
-import { XHS_OPERATION_TIMEOUT_MS, isXhsPreparationTool } from './xiaohongshu-input-protocol'
+import { isXhsPreparationTool, isXhsInputTool, xhsInputTimeout } from './xiaohongshu-input-protocol'
 
 // Relay-channel invoke timeout. Longer than the old executeScript path
 // (which serialized the whole probe func) because tools may legitimately
@@ -85,7 +85,7 @@ async function invokeViaRelay(
       resolve(value)
     }
 
-    const timeoutMs = isXhsPreparationTool(toolName) ? XHS_OPERATION_TIMEOUT_MS + INVOKE_RELAY_TIMEOUT_MS : INVOKE_RELAY_TIMEOUT_MS
+    const timeoutMs = isXhsInputTool(toolName) ? xhsInputTimeout(toolName) + INVOKE_RELAY_TIMEOUT_MS : INVOKE_RELAY_TIMEOUT_MS
     const timeout = setTimeout(() => {
       finish({
         ok: false,
@@ -397,11 +397,14 @@ export async function invokeWebMCPTool(
   try {
     // Relay channel first (static content scripts, mcp-b style). The legacy
     const isXhsPublish = hostname === 'creator.xiaohongshu.com' && isXhsPreparationTool(toolName)
-    const invokeArgs = isXhsPublish ? { ...await prepareRemoteXiaohongshuImage(request.args || {}) } : request.args || {}
+    const isXhsComment = hostname === 'www.xiaohongshu.com' && toolName === 'xhs_post_comment_to_feed'
+    const invokeArgs = isXhsPublish ? { ...await prepareRemoteXiaohongshuImage(request.args || {}) } : { ...request.args || {} }
     // The existing invocation gates and bound-tab routing have already passed.
-    // Only the preparation actions that use browser input attach the debugger.
-    if (isXhsPublish && ['prepare', 'configure'].includes(String(invokeArgs.action))) {
-      inputSession = await getXhsCdpInput().open(tabId)
+    // Attach only for the authorized actions that use browser input.
+    if (isXhsComment || (isXhsPublish && ['prepare', 'configure'].includes(String(invokeArgs.action)))) {
+      inputSession = isXhsComment
+        ? await getXhsCdpInput().open(tabId, { hostname, timeoutMs: xhsInputTimeout(toolName) })
+        : await getXhsCdpInput().open(tabId)
       invokeArgs._eo2_input_session = inputSession
     }
     if (isXhsPublish && new TextEncoder().encode(JSON.stringify({ type: WEBMCP_INVOKE_IN_TAB_TYPE, toolName, args: invokeArgs })).length >= 64 * 1024 * 1024) {
@@ -418,7 +421,7 @@ export async function invokeWebMCPTool(
     } = await invokeViaRelay(tabId, toolName, invokeArgs)
 
     if (
-      !isXhsPublish && !result.ok &&
+      !isXhsPublish && !isXhsComment && !result.ok &&
       (result.errorCode === 'RELAY_UNREACHABLE' || result.errorCode === 'RELAY_NO_RESPONSE')
     ) {
       const results = await chrome.scripting.executeScript({
