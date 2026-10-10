@@ -141,6 +141,9 @@ export const extension = {
   // Settings — Version display
   settingsVersionTitle: "Version",
   settingsLatestVersion: "Latest available",
+  settingsBundledVersion: "Bundled ZIP version",
+  settingsUpdateChannel: "Update channel",
+  settingsStoreAutoUpdates: "Managed automatically by the browser store",
   settingsCurrentVersion: "Currently installed",
   settingsUpdateAvailable: "Update available",
   settingsNewerThanWeb: "Newer than web",

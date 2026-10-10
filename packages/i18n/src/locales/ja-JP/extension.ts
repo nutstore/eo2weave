@@ -141,6 +141,9 @@ export const extension = {
   // 設定 — バージョン表示
   settingsVersionTitle: "バージョン",
   settingsLatestVersion: "最新版",
+  settingsBundledVersion: "同梱 ZIP バージョン",
+  settingsUpdateChannel: "更新チャネル",
+  settingsStoreAutoUpdates: "ブラウザストアによって自動更新されます",
   settingsCurrentVersion: "現在インストール済み",
   settingsUpdateAvailable: "更新あり",
   settingsNewerThanWeb: "ウェブ版より新しい",

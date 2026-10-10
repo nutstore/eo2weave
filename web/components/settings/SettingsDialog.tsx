@@ -321,17 +321,26 @@ function NotificationsSection() {
 
 function ExtensionSettingsPanel() {
   const t = useT()
-  const { checkStatus, openInstallGuide } = useExtensionStore()
+  const checkStatus = useExtensionStore((s) => s.checkStatus)
+  const openInstallGuide = useExtensionStore((s) => s.openInstallGuide)
+  const currentStatus = useExtensionStore((s) => s.status)
+  const extensionVersion = useExtensionStore((s) => s.extensionVersion)
+  const extensionDistribution = useExtensionStore((s) => s.extensionDistribution)
+  const outdated = useExtensionStore((s) => s.outdated)
+  const newerThanWeb = useExtensionStore((s) => s.newerThanWeb)
   // Mobile browsers cannot install extensions — hide the install actions and
   // show the desktop-only notice instead (status/version info stays visible).
   const isMobileDevice = isMobileDeviceForExtension()
 
-  // Refresh status when this panel renders
-  const currentStatus = checkStatus()
+  useEffect(() => {
+    checkStatus()
+  }, [checkStatus])
+
   const isInstalled = currentStatus === 'installed'
-  const extensionVersion = useExtensionStore((s) => s.extensionVersion)
-  const outdated = useExtensionStore((s) => s.outdated)
-  const newerThanWeb = useExtensionStore((s) => s.newerThanWeb)
+  const isStoreDistribution =
+    extensionDistribution === 'chrome_web_store' || extensionDistribution === 'edge_addons'
+  const hasBundledComparison =
+    extensionDistribution === 'self_hosted' || extensionDistribution === 'manual'
   const latestVersion = EXTENSION_LATEST_VERSION
 
   return (
@@ -373,11 +382,17 @@ function ExtensionSettingsPanel() {
           {t('extension.settingsVersionTitle')}
         </h4>
         <div className="space-y-1.5">
-          {/* Latest available version */}
-          <div className="flex items-center justify-between rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800">
-            <span className="text-sm text-secondary text-neutral-300 text-neutral-300 dark:text-neutral-300">{t('extension.settingsLatestVersion')}</span>
-            <span className="font-mono text-sm font-medium text-secondary dark:text-foreground">{latestVersion}</span>
-          </div>
+          {isStoreDistribution ? (
+            <div className="flex items-center justify-between rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800">
+              <span className="text-sm text-secondary text-neutral-300 text-neutral-300 dark:text-neutral-300">{t('extension.settingsUpdateChannel')}</span>
+              <span className="text-sm font-medium text-secondary dark:text-foreground">{t('extension.settingsStoreAutoUpdates')}</span>
+            </div>
+          ) : hasBundledComparison ? (
+            <div className="flex items-center justify-between rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800">
+              <span className="text-sm text-secondary text-neutral-300 text-neutral-300 dark:text-neutral-300">{t('extension.settingsBundledVersion')}</span>
+              <span className="font-mono text-sm font-medium text-secondary dark:text-foreground">{latestVersion}</span>
+            </div>
+          ) : null}
           {/* Currently installed version */}
           <div className={`flex items-center justify-between rounded-lg border px-3 py-2 ${
             isInstalled && outdated

@@ -481,9 +481,17 @@ export default defineContentScript({
       ready: true,
 
       /**
-       * Get the installed extension version.
+       * Get the installed extension version and distribution metadata.
+       * Older backgrounds may return only the version field.
        */
-      async getVersion() {
+      async getVersion(): Promise<{
+        ok?: boolean;
+        version?: string;
+        extensionId?: string;
+        installType?: string;
+        distribution?: string;
+        error?: string;
+      }> {
         return sendToBridge('extension_get_version', {});
       },
 

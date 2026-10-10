@@ -25,6 +25,10 @@ import {
 } from '@creatorweave/shared'
 import { SidePanelBindingStore, type SidePanelBinding } from '../lib/side-panel-binding-store'
 import { getCwWebappBaseUrl, CW_WEBAPP_APP_PATH } from '../lib/webapp-origins'
+import {
+  classifyExtensionDistribution,
+  type ExtensionInstallType,
+} from '../extension-distribution'
 
 // Config
 const CONFIG = {
@@ -1641,7 +1645,32 @@ export default defineBackground(() => {
         if (message.type === 'extension_get_version') {
           try {
             const manifest = chrome.runtime.getManifest()
-            sendResponse({ ok: true, version: manifest.version })
+            const extensionId = chrome.runtime.id
+            let installType: ExtensionInstallType = 'unknown'
+            try {
+              // getSelf is read-only. Some Chromium builds expose it without
+              // the broad management permission; failure degrades safely.
+              const self = await chrome.management.getSelf()
+              const reportedInstallType = self?.installType
+              if (
+                reportedInstallType === 'admin' ||
+                reportedInstallType === 'development' ||
+                reportedInstallType === 'normal' ||
+                reportedInstallType === 'sideload' ||
+                reportedInstallType === 'other'
+              ) {
+                installType = reportedInstallType
+              }
+            } catch {
+              // Keep version detection compatible when management is unavailable.
+            }
+            sendResponse({
+              ok: true,
+              version: manifest.version,
+              extensionId,
+              installType,
+              distribution: classifyExtensionDistribution(extensionId, installType),
+            })
           } catch (err: any) {
             sendResponse({ ok: false, error: err?.message || String(err) })
           }

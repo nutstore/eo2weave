@@ -1,9 +1,9 @@
 /**
  * ExtensionOutdatedBanner — top banners for installed extensions:
  *
- *   outdated     → installed < latest. Warning banner offering BOTH update
- *                  channels (store first — one click + auto-updates; zip as
- *                  the fallback for networks that can't reach the store).
+ *   outdated     → a manual/self-hosted install is older than the bundled ZIP.
+ *                  Store-managed installs are intentionally excluded until
+ *                  channel-specific published version metadata exists.
  *
  * An installed version newer than this web build is intentionally ignored:
  * the extension store may still be reviewing that version, so the web build
@@ -11,15 +11,11 @@
  */
 
 import { useState, useEffect } from 'react'
-import { AlertTriangle, Store, Download, X } from 'lucide-react'
+import { AlertTriangle, Download, X } from 'lucide-react'
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { APP_BUILD_ID, EXTENSION_LATEST_VERSION } from '@/app-build'
-import {
-  getPreferredStoreUrl,
-  isEdgeBrowser,
-  isMobileDeviceForExtension,
-} from '@/lib/extension-distribution'
+import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 
 export function ExtensionOutdatedBanner() {
   const t = useT()
@@ -61,19 +57,6 @@ export function ExtensionOutdatedBanner() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {/* Store first — one-click install + auto-updates. On Edge the
-              button targets the Edge Add-ons listing; the fixed label is
-              "Update from Store", with an Edge-specific title tooltip. */}
-          <button
-            type="button"
-            onClick={() => window.open(getPreferredStoreUrl(), '_blank')}
-            title={isEdgeBrowser() ? t('extension.storeButtonEdgeTitle') : undefined}
-            className="flex items-center gap-1.5 rounded-md bg-warning px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-warning-500 focus:outline-none focus:ring-2 focus:ring-warning focus:ring-offset-2"
-          >
-            <Store className="h-3.5 w-3.5" />
-            {t('extension.outdatedBannerStoreAction')}
-          </button>
-          {/* Zip fallback for networks that can't reach the store */}
           <button
             type="button"
             onClick={() => window.open(`/chrome-extension.zip?v=${APP_BUILD_ID}`, '_blank')}

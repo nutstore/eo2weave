@@ -17,6 +17,22 @@ import {
 } from '@/agent/providers/types'
 
 export type ExtensionStatus = 'checking' | 'installed' | 'not_installed' | 'error'
+export type ExtensionInstallType = 'admin' | 'development' | 'normal' | 'sideload' | 'other' | 'unknown'
+export type ExtensionDistribution =
+  | 'chrome_web_store'
+  | 'edge_addons'
+  | 'self_hosted'
+  | 'manual'
+  | 'enterprise'
+  | 'development'
+  | 'unknown'
+
+export interface ExtensionMetadata {
+  version: string
+  extensionId: string | null
+  installType: ExtensionInstallType
+  distribution: ExtensionDistribution
+}
 
 const BANNER_DISMISS_DURATION_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 const OUTDATED_BANNER_DISMISS_DURATION_MS = 3 * 24 * 60 * 60 * 1000 // 3 days
@@ -33,6 +49,7 @@ const CODEX_OAUTH_PROVIDER_ID = 'codex-oauth'
  * DB-adjacent work. Reuse the same in-flight promise for all callers.
  */
 let codexRegisterPromise: Promise<void> | null = null
+let extensionMetadataPromise: Promise<ExtensionMetadata | null> | null = null
 
 /** Virtual API key for codex-oauth (real token is in the extension) */
 export const CODEX_OAUTH_API_KEY = '__codex_oauth_extension_bridge__'
@@ -53,7 +70,13 @@ function compareVersions(a: string, b: string): number {
 
 /** Minimal view of the extension bridge used by this store. */
 interface ExtensionWebBridge {
-  getVersion?: () => Promise<{ ok?: boolean; version?: string }>
+  getVersion?: () => Promise<{
+    ok?: boolean
+    version?: string
+    extensionId?: string
+    installType?: string
+    distribution?: string
+  }>
   codexGetStatus?: () => Promise<{
     ok?: boolean
     data?: {
@@ -67,16 +90,65 @@ function getWebBridge(): ExtensionWebBridge | undefined {
   return (window as unknown as { __agentWeb?: ExtensionWebBridge }).__agentWeb
 }
 
-/** Fetch installed extension version via the bridge API. */
-async function fetchInstalledVersion(): Promise<string | null> {
-  try {
-    const bridge = getWebBridge()
-    if (!bridge?.getVersion) return null
-    const resp = await bridge.getVersion()
-    return resp?.ok && resp?.version ? resp.version : null
-  } catch {
-    return null
+const INSTALL_TYPES = new Set<ExtensionInstallType>([
+  'admin',
+  'development',
+  'normal',
+  'sideload',
+  'other',
+  'unknown',
+])
+const DISTRIBUTIONS = new Set<ExtensionDistribution>([
+  'chrome_web_store',
+  'edge_addons',
+  'self_hosted',
+  'manual',
+  'enterprise',
+  'development',
+  'unknown',
+])
+
+function normalizeExtensionMetadata(resp: Awaited<ReturnType<NonNullable<ExtensionWebBridge['getVersion']>>>): ExtensionMetadata | null {
+  if (!resp?.ok || typeof resp.version !== 'string' || !resp.version) return null
+  const installType = INSTALL_TYPES.has(resp.installType as ExtensionInstallType)
+    ? resp.installType as ExtensionInstallType
+    : 'unknown'
+  const distribution = DISTRIBUTIONS.has(resp.distribution as ExtensionDistribution)
+    ? resp.distribution as ExtensionDistribution
+    : installType === 'sideload'
+      ? 'manual'
+      : installType === 'admin'
+        ? 'enterprise'
+        : installType === 'development'
+          ? 'development'
+          : 'unknown'
+  return {
+    version: resp.version,
+    extensionId: typeof resp.extensionId === 'string' && resp.extensionId ? resp.extensionId : null,
+    installType,
+    distribution,
   }
+}
+
+/** Fetch extension metadata once for concurrent status checks. */
+async function fetchExtensionMetadata(): Promise<ExtensionMetadata | null> {
+  if (extensionMetadataPromise) return extensionMetadataPromise
+  extensionMetadataPromise = (async () => {
+    try {
+      const bridge = getWebBridge()
+      if (!bridge?.getVersion) return null
+      return normalizeExtensionMetadata(await bridge.getVersion())
+    } catch {
+      return null
+    } finally {
+      extensionMetadataPromise = null
+    }
+  })()
+  return extensionMetadataPromise
+}
+
+function supportsBundledVersionComparison(distribution: ExtensionDistribution): boolean {
+  return distribution === 'self_hosted' || distribution === 'manual'
 }
 
 /**
@@ -142,6 +214,10 @@ interface ExtensionState {
   codexOAuthRegistered: boolean
   /** Installed extension version, or null if not installed/unknown */
   extensionVersion: string | null
+  /** Runtime extension identity and install-channel metadata. */
+  extensionId: string | null
+  extensionInstallType: ExtensionInstallType
+  extensionDistribution: ExtensionDistribution
   /** Whether the installed extension is older than the latest */
   outdated: boolean
   /**
@@ -196,6 +272,9 @@ export const useExtensionStore = create<ExtensionState>()(
       lastCheckAt: null as number | null,
       codexOAuthRegistered: false,
       extensionVersion: null as string | null,
+      extensionId: null as string | null,
+      extensionInstallType: 'unknown' as ExtensionInstallType,
+      extensionDistribution: 'unknown' as ExtensionDistribution,
       outdated: false,
       newerThanWeb: false,
 
@@ -224,15 +303,21 @@ export const useExtensionStore = create<ExtensionState>()(
         // Fire-and-forget: register codex-oauth + check version when extension is installed
         if (newStatus === 'installed') {
           get().ensureCodexRegistered().catch(() => {})
-          // Fetch version and compare with latest
-          fetchInstalledVersion().then((version) => {
-            if (!version) return
+          // Store listings update independently. Until a channel-specific
+          // published version exists, only manual/self-hosted installs can be
+          // compared with the bundled ZIP version from this web build.
+          fetchExtensionMetadata().then((metadata) => {
+            if (!metadata) return
             const latestVersion = EXTENSION_LATEST_VERSION
-            const cmp = compareVersions(version, latestVersion)
+            const comparable = supportsBundledVersionComparison(metadata.distribution)
+            const cmp = comparable ? compareVersions(metadata.version, latestVersion) : 0
             set({
-              extensionVersion: version,
-              outdated: cmp < 0,
-              newerThanWeb: latestVersion !== '0.0.0' && cmp > 0,
+              extensionVersion: metadata.version,
+              extensionId: metadata.extensionId,
+              extensionInstallType: metadata.installType,
+              extensionDistribution: metadata.distribution,
+              outdated: comparable && latestVersion !== '0.0.0' && cmp < 0,
+              newerThanWeb: comparable && latestVersion !== '0.0.0' && cmp > 0,
             })
           }).catch(() => {})
         } else {
@@ -242,11 +327,26 @@ export const useExtensionStore = create<ExtensionState>()(
           // forever waiting for codex to register.
           if (get().codexOAuthRegistered) {
             unregisterCodexOAuthProvider()
-            set({ codexOAuthRegistered: false, extensionVersion: null, outdated: false, newerThanWeb: false })
+            set({
+              codexOAuthRegistered: false,
+              extensionVersion: null,
+              extensionId: null,
+              extensionInstallType: 'unknown',
+              extensionDistribution: 'unknown',
+              outdated: false,
+              newerThanWeb: false,
+            })
           } else if (get().extensionVersion !== null) {
-            // Codex never registered but version state may linger from an
+            // Codex never registered but extension metadata may linger from an
             // earlier tick (e.g. the extension was disabled mid-session).
-            set({ extensionVersion: null, outdated: false, newerThanWeb: false })
+            set({
+              extensionVersion: null,
+              extensionId: null,
+              extensionInstallType: 'unknown',
+              extensionDistribution: 'unknown',
+              outdated: false,
+              newerThanWeb: false,
+            })
           }
           // Flush deferred checkHasApiKey — the caller is asking "definitively,
           // is there a codex API key or not?" and we've done our best to find

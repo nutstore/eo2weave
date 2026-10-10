@@ -141,6 +141,9 @@ export const extension = {
   // 설정 — 버전 표시
   settingsVersionTitle: "버전",
   settingsLatestVersion: "최신 버전",
+  settingsBundledVersion: "번들 ZIP 버전",
+  settingsUpdateChannel: "업데이트 채널",
+  settingsStoreAutoUpdates: "브라우저 스토어에서 자동으로 업데이트됨",
   settingsCurrentVersion: "현재 설치됨",
   settingsUpdateAvailable: "업데이트 있음",
   settingsNewerThanWeb: "웹 버전보다 최신",

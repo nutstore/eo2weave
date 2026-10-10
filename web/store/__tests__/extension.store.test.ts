@@ -40,6 +40,12 @@ vi.mock('@/store/settings.store', () => ({
 }))
 
 import { CODEX_OAUTH_API_KEY, useExtensionStore } from '../extension.store'
+import {
+  CHROME_WEB_STORE_EXTENSION_ID,
+  EDGE_ADDONS_EXTENSION_ID,
+  SELF_HOSTED_EXTENSION_ID,
+  classifyExtensionDistribution,
+} from '../../../browser-extension/extension-distribution'
 
 describe('extension store', () => {
   beforeEach(() => {
@@ -85,19 +91,41 @@ describe('extension store', () => {
   })
 })
 
+describe('extension distribution classification', () => {
+  it('uses extension IDs for official and self-hosted channels', () => {
+    expect(classifyExtensionDistribution(CHROME_WEB_STORE_EXTENSION_ID, 'normal')).toBe('chrome_web_store')
+    expect(classifyExtensionDistribution(EDGE_ADDONS_EXTENSION_ID, 'normal')).toBe('edge_addons')
+    expect(classifyExtensionDistribution(SELF_HOSTED_EXTENSION_ID, 'development')).toBe('development')
+    expect(classifyExtensionDistribution(CHROME_WEB_STORE_EXTENSION_ID, 'admin')).toBe('enterprise')
+  })
+
+  it('falls back to installType without guessing an unknown store', () => {
+    expect(classifyExtensionDistribution('unrecognized', 'sideload')).toBe('manual')
+    expect(classifyExtensionDistribution('unrecognized', 'admin')).toBe('enterprise')
+    expect(classifyExtensionDistribution('unrecognized', 'development')).toBe('development')
+    expect(classifyExtensionDistribution('unrecognized', 'normal')).toBe('unknown')
+  })
+})
+
 describe('extension version comparison', () => {
-  /** Stub the bridge with a fixed reported version and run checkStatus. */
-  async function checkWithVersion(version: string) {
+  /** Stub the bridge with fixed metadata and run checkStatus. */
+  async function checkWithVersion(
+    version: string,
+    metadata: Record<string, string> = { installType: 'sideload', distribution: 'manual' },
+  ) {
     Object.defineProperty(window, '__agentWeb', {
       configurable: true,
       value: {
         codexGetStatus: vi.fn(async () => ({ ok: true, data: { authorized: false } })),
-        getVersion: vi.fn(async () => ({ ok: true, version })),
+        getVersion: vi.fn(async () => ({ ok: true, version, ...metadata })),
       },
     })
     useExtensionStore.setState({
       codexOAuthRegistered: false,
       extensionVersion: null,
+      extensionId: null,
+      extensionInstallType: 'unknown',
+      extensionDistribution: 'unknown',
       outdated: false,
       newerThanWeb: false,
     })
@@ -109,11 +137,24 @@ describe('extension version comparison', () => {
     })
   }
 
-  it('flags outdated when the installed version is older than latest', async () => {
+  it('flags a manual install outdated when it is older than the bundled ZIP', async () => {
     await checkWithVersion('0.9.0')
     const s = useExtensionStore.getState()
     expect(s.outdated).toBe(true)
     expect(s.newerThanWeb).toBe(false)
+  })
+
+  it('does not treat legacy version-only responses as a proven update channel', async () => {
+    await checkWithVersion('0.9.0', {})
+    const s = useExtensionStore.getState()
+    expect(s.extensionVersion).toBe('0.9.0')
+    expect(s.extensionDistribution).toBe('unknown')
+    expect(s.outdated).toBe(false)
+  })
+
+  it.each(['chrome_web_store', 'edge_addons'])('does not compare %s with the bundled ZIP version', async (distribution) => {
+    await checkWithVersion('0.9.0', { installType: 'normal', distribution })
+    expect(useExtensionStore.getState().outdated).toBe(false)
   })
 
   it('flags neither when the installed version equals latest', async () => {
@@ -132,8 +173,7 @@ describe('extension version comparison', () => {
 
   it('never flags newerThanWeb while latest is the 0.0.0 dev sentinel', async () => {
     // The web app reports 0.0.0 when NEXT_PUBLIC_EXTENSION_LATEST_VERSION is
-    // unset (dev builds). A store-installed extension is always newer than
-    // that — treating it as "newer than web" would show the banner forever.
+    // unset. Even comparable manual installs must not be compared with it.
     vi.resetModules()
     vi.doMock('@/app-build', () => ({
       APP_BUILD_ID: 'test-build',
@@ -147,7 +187,12 @@ describe('extension version comparison', () => {
         configurable: true,
         value: {
           codexGetStatus: vi.fn(async () => ({ ok: true, data: { authorized: false } })),
-          getVersion: vi.fn(async () => ({ ok: true, version: '9.9.9' })),
+          getVersion: vi.fn(async () => ({
+            ok: true,
+            version: '9.9.9',
+            installType: 'sideload',
+            distribution: 'manual',
+          })),
         },
       })
 
@@ -161,5 +206,28 @@ describe('extension version comparison', () => {
       vi.doUnmock('@/app-build')
       vi.resetModules()
     }
+  })
+
+  it('deduplicates overlapping metadata queries', async () => {
+    let resolveVersion!: (value: { ok: true; version: string; installType: string; distribution: string }) => void
+    const getVersion = vi.fn(() => new Promise((resolve) => { resolveVersion = resolve }))
+    Object.defineProperty(window, '__agentWeb', {
+      configurable: true,
+      value: {
+        codexGetStatus: vi.fn(async () => ({ ok: true, data: { authorized: false } })),
+        getVersion,
+      },
+    })
+    useExtensionStore.setState({ extensionVersion: null })
+
+    useExtensionStore.getState().checkStatus()
+    useExtensionStore.getState().checkStatus()
+    expect(getVersion).toHaveBeenCalledTimes(1)
+
+    resolveVersion({ ok: true, version: '1.0.0', installType: 'sideload', distribution: 'manual' })
+    await vi.waitFor(() => {
+      expect(useExtensionStore.getState().extensionVersion).toBe('1.0.0')
+    })
+    expect(getVersion).toHaveBeenCalledTimes(1)
   })
 })

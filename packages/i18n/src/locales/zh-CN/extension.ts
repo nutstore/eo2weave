@@ -141,6 +141,9 @@ export const extension = {
   // Settings — 版本显示
   settingsVersionTitle: "版本",
   settingsLatestVersion: "最新版本",
+  settingsBundledVersion: "内置 ZIP 版本",
+  settingsUpdateChannel: "更新渠道",
+  settingsStoreAutoUpdates: "由浏览器商店自动管理更新",
   settingsCurrentVersion: "当前安装",
   settingsUpdateAvailable: "有更新",
   settingsNewerThanWeb: "新于网页版",
