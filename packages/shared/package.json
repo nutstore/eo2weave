@@ -6,13 +6,29 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./webmcp-adapter": "./src/webmcp-adapter.ts",
+    "./webmcp-workflow": "./src/webmcp-workflow.ts",
+    "./webmcp-url": "./src/webmcp-url.ts",
+    "./js-ast": "./src/js-ast.ts",
+    "./webmcp-adapter-protocol": "./src/webmcp-adapter-protocol.ts",
+    "./webmcp-schema": "./src/webmcp-schema.ts",
+    "./code-tool-bindings": "./src/code-tool-bindings.ts",
+    "./code-output": "./src/code-output.ts",
+    "./webmcp-adapter-files": "./src/webmcp-adapter-files.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@babel/types": "7.29.0",
     "@creatorweave/config": "workspace:*",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@creatorweave/quickjs-runtime": "workspace:*",
+    "@babel/parser": "7.28.5",
+    "@cfworker/json-schema": "^4.1.1",
+    "@creatorweave/behavior-tree": "workspace:*"
   }
 }

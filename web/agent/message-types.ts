@@ -5,6 +5,7 @@
 
 import type { AssetMeta } from '@/types/asset'
 import type { FlowInstance } from '@/agent/flow/types'
+import type { DeferredContext } from '@/agent/deferred-context'
 import { parseThinkTags } from './think-tags'
 
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool'
@@ -18,8 +19,6 @@ export interface GeneratedImage {
 }
 
 export interface ToolCall {
-  /** UI correlation for a tool invoked inside run_code. */
-  parentToolCallId?: string
   id: string
   type: 'function'
   function: {
@@ -65,7 +64,7 @@ export interface MessageUsage {
 export interface Message {
   /** UI-only tool trace; excluded from model conversion. */
   displayContent?: string
-  deferredContext?: import('@/agent/deferred-context').DeferredContext[]
+  deferredContext?: DeferredContext[]
   id: string
   role: MessageRole
   content: string | null

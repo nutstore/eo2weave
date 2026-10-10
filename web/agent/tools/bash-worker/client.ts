@@ -7,22 +7,26 @@
  * 3. Enforce wall-clock timeout via `worker.terminate()` (the ONLY way to
  *    truly interrupt a CPU-bound bash interpreter — Promise.race can't).
  * 4. Wire VFS RPC: listen for worker `vfs` requests, dispatch to
- *    `handleVfsRpc` / `handleAgentRpc`, send back `vfs-result`.
+ *    `handleVfsRpc`, send back `vfs-result`.
  * 5. Support AbortSignal (user "stop") — also via terminate.
  *
  * After terminate, the worker is destroyed; the next exec call recreates it.
  */
+
+import { bashCommandRegistry, type ExternalBashCommand } from '@/agent/bash-commands/registry'
 
 import type {
   ToWorkerMessage,
   FromWorkerMessage,
   WorkerExecRequest,
   WorkerExecResponse,
+  CommandRpcRequest,
+  CommandRpcResponse,
   VfsRpcRequest,
   VfsRpcResponse,
   WorkerInitMessage,
 } from './protocol'
-import { handleVfsRpc, handleAgentRpc, type VfsRpcHandlerConfig } from './vfs-rpc-handler'
+import { handleVfsRpc, type VfsRpcHandlerConfig } from './vfs-rpc-handler'
 import { ToolTimeoutError } from '../tool-utils'
 import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from '../agent-file-protection'
 
@@ -75,6 +79,7 @@ let activeHandlerConfig: VfsRpcHandlerConfig | null = null
 /** Pending exec — only one at a time (bash tool calls are serialized by agent loop). */
 let pendingExec: {
   requestId: number
+  commands: Map<string, ExternalBashCommand>
   resolve: (resp: BashExecResult) => void
   reject: (err: Error) => void
 } | null = null
@@ -102,12 +107,16 @@ function ensureWorker(handlerConfig: VfsRpcHandlerConfig): Worker {
   // Create the module worker through a statically analyzable URL so Next's
   // webpack build emits worker.ts and its dependencies as a separate chunk.
   worker = createBashWorker()
+  const createdWorker = worker
 
   worker.onmessage = (e: MessageEvent<FromWorkerMessage>) => {
+    if (worker !== createdWorker) return
     const msg = e.data
     if (!msg) return
     if (msg.type === 'exec-result') {
       handleExecResponse(msg)
+    } else if (msg.type === 'command') {
+      void handleCommandRequest(msg, createdWorker)
     } else if (msg.type === 'vfs') {
       // Read from the module-level mutable variable, NOT the closure capture.
       // This ensures the latest handlerConfig (updated on each exec) is used.
@@ -118,6 +127,7 @@ function ensureWorker(handlerConfig: VfsRpcHandlerConfig): Worker {
   }
 
   worker.onerror = (e) => {
+    notifyExternalCancellation()
     console.error('[bash-worker] error:', e.message)
     if (pendingExec) {
       pendingExec.reject(new Error(`bash worker error: ${e.message}`))
@@ -159,11 +169,13 @@ export async function bashExec(opts: BashExecOptions, handlerConfig: VfsRpcHandl
   const requestId = ++requestIdCounter
 
   const execPromise = new Promise<BashExecResult>((resolve, reject) => {
-    pendingExec = { requestId, resolve, reject }
+    const commands = opts.readOnly ? new Map<string, ExternalBashCommand>() : bashCommandRegistry.snapshot()
+    pendingExec = { requestId, commands, resolve, reject }
     const req: WorkerExecRequest = {
       type: 'exec',
       requestId,
       command: opts.command,
+      externalCommands: Array.from(commands.keys()),
       cwd: opts.cwd,
       rootNames: opts.rootNames,
       readOnly: opts.readOnly,
@@ -182,13 +194,15 @@ export async function bashExec(opts: BashExecOptions, handlerConfig: VfsRpcHandl
 
   // Abort: also terminate.
   const onAbort = () => {
+    const pending = pendingExec
     terminateWorker()
-    if (pendingExec && pendingExec.requestId === requestId) {
-      pendingExec.reject(new Error('bash execution aborted'))
+    if (pending && pending.requestId === requestId) {
+      pending.reject(new Error('bash execution aborted'))
       pendingExec = null
     }
   }
   opts.abortSignal?.addEventListener('abort', onAbort, { once: true })
+  if (opts.abortSignal?.aborted) onAbort()
 
   try {
     return await Promise.race([execPromise, timeoutPromise])
@@ -225,6 +239,8 @@ function handleExecResponse(msg: WorkerExecResponse): void {
   if (msg.requestId !== pendingExec.requestId) return
 
   const { resolve, reject } = pendingExec
+  // Dispose any background shell jobs that outlive this execution.
+  notifyExternalCancellation()
   pendingExec = null
 
   if (!msg.ok) {
@@ -246,13 +262,35 @@ function handleExecResponse(msg: WorkerExecResponse): void {
   })
 }
 
+async function handleCommandRequest(req: CommandRpcRequest, originWorker: Worker): Promise<void> {
+  const execution = pendingExec
+  if (!execution || execution.requestId !== req.requestId) return
+  const resp: CommandRpcResponse = {
+    type: 'command-result', rpcId: req.rpcId,
+    result: { stdout: '', stderr: `${req.name}: command unavailable\n`, exitCode: 127 },
+  }
+  try {
+    const command = execution.commands.get(req.name)
+    if (command && await bashCommandRegistry.checkAlive(command)) {
+      if (worker !== originWorker || pendingExec !== execution) return
+      const result = await command.invoke({ args: req.input.args, stdin: req.input.stdin })
+      if (!result || typeof result.stdout !== 'string' || typeof result.stderr !== 'string' ||
+          !Number.isInteger(result.exitCode) || result.exitCode < 0 || result.exitCode > 255) {
+        throw new TypeError('invoke must return { stdout: string, stderr: string, exitCode: 0..255 }')
+      }
+      resp.result = { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode }
+    }
+  } catch (error) {
+    resp.result = { stdout: '', stderr: `${req.name}: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 }
+  }
+  // Plugins may honor the cancellation event; still reject every late result.
+  if (worker === originWorker && pendingExec === execution) originWorker.postMessage(resp)
+}
+
 async function handleVfsRequest(req: VfsRpcRequest, config: VfsRpcHandlerConfig): Promise<void> {
   let resp: VfsRpcResponse
   try {
-    resp =
-      req.backend === 'agent'
-        ? await handleAgentRpc(req, config)
-        : await handleVfsRpc(req, config)
+    resp = await handleVfsRpc(req, config)
   } catch (err) {
     // Should not happen (handlers catch internally), but guard against surprises
     resp = {
@@ -272,7 +310,13 @@ async function handleVfsRequest(req: VfsRpcRequest, config: VfsRpcHandlerConfig)
 // Cleanup
 // ---------------------------------------------------------------------------
 
+/** Lifecycle notification only; command business inputs remain args/stdin. */
+function notifyExternalCancellation(): void {
+  if (pendingExec && typeof window !== 'undefined') window.dispatchEvent(new Event('creatorweave:bash-cancel'))
+}
+
 function terminateWorker(): void {
+  notifyExternalCancellation()
   if (worker) {
     worker.terminate()
     worker = null

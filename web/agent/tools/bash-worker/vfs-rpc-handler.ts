@@ -10,7 +10,7 @@
  * - Pending-change tracking + UI refresh callbacks
  *
  * The handler is stateless across requests — each RPC carries enough info
- * (backend type + path) to construct the right backend instance on the fly.
+ * (canonical VFS paths) to resolve the backend through the shared resolver.
  */
 
 import type { VfsRpcRequest, VfsRpcResponse } from './protocol'
@@ -18,12 +18,9 @@ import type {
   VfsBackend,
   VfsReadResult,
 } from '../vfs-backend'
-import { WorkspaceBackend } from '../backends/workspace-backend'
-import { AssetsBackend } from '../backends/assets-backend'
-import { WebMcpBackend } from '../backends/webmcp-backend'
-import { AgentBackend } from '../backends/agent-backend'
+import { resolveVfsTarget, type ResolvedVfsTarget } from '../vfs-resolver'
+import type { ToolContext } from '../tool-types'
 import {
-  isProtectedAgentCoreFile,
   SUBAGENT_PERMISSION_DENIED,
 } from '../agent-file-protection'
 import {
@@ -67,42 +64,42 @@ export async function handleVfsRpc(
   const { rpcId } = req
 
   try {
-    // agent backend is routed to handleAgentRpc by the client; if it reaches
-    // here, reject early (see guard below).
-
-    // Plan-mode read-only enforcement (defense-in-depth; worker also checks)
-    if (config.readOnly && isWriteMethod(req.method) && req.backend !== 'agent') {
-      return {
-        type: 'vfs-result',
-        rpcId,
-        ok: false,
-        error: `bash: ${req.path}: ${req.method} blocked (read-only mode)`,
+    if ((req.method === 'cp' || req.method === 'mv') && typeof req.dest !== 'string') throw new Error('EINVAL: missing destination')
+    const context: ToolContext = {
+      workspaceId: config.workspaceId, projectId: config.projectId,
+      currentAgentId: config.currentAgentId, directoryHandle: config.directoryHandle ?? null,
+      isSubagent: config.restrictAgentCoreFiles, onWorkspacePathsChanged: config.onWorkspacePathsChanged,
+    }
+    const canonical = (path: string) => {
+      // /agents in bash denotes the acting agent, preserving the existing shell view.
+      if (path === 'vfs://agents/' || path.startsWith('vfs://agents/')) {
+        if (!config.currentAgentId) throw new Error('No active project/agent for agent namespace')
+        return `vfs://agents/${config.currentAgentId}/${path.slice('vfs://agents/'.length)}`
       }
+      return path
     }
-
-    // agent backend requires async ProjectManager resolution and is handled
-    // exclusively by handleAgentRpc. If we get here, it's a routing error.
-    if (req.backend === 'agent') {
-      return {
-        type: 'vfs-result',
-        rpcId,
-        ok: false,
-        error: `agent backend must be routed through handleAgentRpc`,
-      }
+    const sourcePath = canonical(req.path)
+    if (config.readOnly && isWriteMethod(req.method) && !sourcePath.startsWith('vfs://agents/')) {
+      throw new Error(`bash: ${req.path}: ${req.method} blocked (read-only mode)`)
     }
-
-    const result = await dispatch(req, resolveBackend(req.backend, config))
-
-    // Notify UI on workspace mutations
-    if (isWriteMethod(req.method) && req.backend === 'workspace' && config.onWorkspacePathsChanged) {
-      config.onWorkspacePathsChanged([req.path])
+    const action = req.method === 'cp' ? 'read' :
+      req.method === 'rm' || req.method === 'mv' ? 'delete' : isWriteMethod(req.method) ? 'write' :
+      (req.method.startsWith('readdir') ? 'list' : 'read')
+    const source = await resolveVfsTarget(sourcePath, context, action, { allowEmptyPath: true })
+    const destination = req.dest === undefined ? undefined : await resolveVfsTarget(canonical(req.dest), context, 'write', { allowEmptyPath: true })
+    if (config.readOnly && destination && destination.kind !== 'agent') throw new Error('Destination is read-only')
+    if (req.method === 'cp' && req.recursive && destination && sameFilesystem(source, destination) &&
+      (!source.path || destination.path === source.path || destination.path.startsWith(`${source.path}/`))) {
+      throw new Error('EINVAL: cannot recursively copy a path into itself')
     }
+    const result = await dispatch({ ...req, path: source.path, dest: destination?.path }, source.backend, destination?.backend)
 
     return { type: 'vfs-result', rpcId, ok: true, result }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const rawMessage = err instanceof Error ? err.message : String(err)
+    const code = (err as { code?: unknown } | null)?.code
+    const message = typeof code === 'string' && !rawMessage.startsWith(`${code}:`) ? `${code}: ${rawMessage}` : rawMessage
     const permissionDenied =
-      req.backend === 'agent' &&
       (message.startsWith(`${SUBAGENT_PERMISSION_DENIED}:`) ||
         message.startsWith('EACCES: delegated subagent'))
     return {
@@ -114,28 +111,13 @@ export async function handleVfsRpc(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Backend resolution
-// ---------------------------------------------------------------------------
-
-function resolveBackend(backend: VfsRpcRequest['backend'], config: VfsRpcHandlerConfig): VfsBackend {
-  // NOTE: 'agent' is handled separately via handleAgentRpc (needs async
-  // ProjectManager resolution). This function only handles workspace/assets.
-  switch (backend) {
-    case 'workspace':
-      return new WorkspaceBackend(
-        config.workspaceId,
-        config.directoryHandle ?? null,
-        config.projectId,
-        config.onWorkspacePathsChanged,
-      )
-    case 'assets':
-      return new AssetsBackend(config.workspaceId)
-    case 'webmcp':
-      return new WebMcpBackend()
-    default:
-      throw new Error(`Backend '${backend}' requires async resolution — use handleAgentRpc`)
+function sameFilesystem(source: ResolvedVfsTarget, destination: ResolvedVfsTarget): boolean {
+  if (source.kind !== destination.kind) return false
+  if (source.kind === 'external' && destination.kind === 'external') return source.mountName === destination.mountName
+  if (source.kind === 'agent' && destination.kind === 'agent') {
+    return source.projectId === destination.projectId && source.agentId === destination.agentId
   }
+  return true
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +138,7 @@ function isWriteMethod(method: VfsRpcRequest['method']): boolean {
 async function dispatch(
   req: VfsRpcRequest,
   backend: VfsBackend,
+  destination: VfsBackend = backend,
 ): Promise<VfsRpcResponse['result']> {
   switch (req.method) {
     case 'readFile': {
@@ -183,15 +166,14 @@ async function dispatch(
       let existing: string
       try {
         const result = await backend.readFile(req.path, { encoding })
-        existing = await decodeToString(result)
-      } catch {
+        existing = encoding === 'binary' ? await decodeToLatin1(result) : await decodeToString(result)
+      } catch (error) {
+        const e = error as { code?: string; name?: string; message?: string }
+        if (e.code !== 'ENOENT' && e.name !== 'NotFoundError' && !/ENOENT|not found|no such file/i.test(e.message ?? '')) throw error
         existing = ''
       }
       const toAppend = req.content ?? ''
-      const content =
-        encoding === 'binary'
-          ? mergeLatin1(existing, toAppend)
-          : existing + toAppend
+      const content = decodeWriteContent(existing + toAppend, encoding)
       await backend.writeFile(req.path, content)
       return undefined
     }
@@ -223,17 +205,25 @@ async function dispatch(
     }
 
     case 'mkdir': {
-      // VfsBackend auto-creates dirs on writeFile; mkdir is a no-op (matches VfsBridgeFs)
+      if (!backend.mkdir) throw new Error('ENOTSUP: backend cannot create directories')
+      await backend.mkdir(req.path, { recursive: req.recursive })
       return undefined
     }
 
     case 'rm': {
       if (req.recursive && backend.deleteDir) {
-        try {
-          await backend.deleteDir(req.path)
-          return undefined
-        } catch {
-          // might be a file, fall through
+        if (backend.stat) {
+          if ((await backend.stat(req.path)).kind === 'directory') {
+            await backend.deleteDir(req.path)
+            return undefined
+          }
+        } else {
+          try {
+            await backend.deleteDir(req.path)
+            return undefined
+          } catch {
+            // Legacy backends without stat may interpret this path as a file.
+          }
         }
       }
       await backend.deleteFile(req.path)
@@ -245,20 +235,15 @@ async function dispatch(
       // If recursive, handle directory copy; otherwise single file.
       const dest = req.dest!
       if (req.recursive) {
-        // Check if source is a directory
-        try {
-          const s = await statPath(backend, req.path)
-          if (s.isDirectory) {
-            await copyDirRecursive(backend, req.path, dest)
-            return undefined
-          }
-        } catch {
-          // statPath failed — fall through to file copy
+        const s = await statPath(backend, req.path)
+        if (s.isDirectory) {
+          await copyDirRecursive(backend, req.path, dest, destination)
+          return undefined
         }
       }
       // Single file copy — preserve binary by passing content as-is
       const srcResult = await backend.readFile(req.path)
-      await backend.writeFile(dest, toWritableContent(srcResult.content))
+      await destination.writeFile(dest, toWritableContent(srcResult.content))
       return undefined
     }
 
@@ -266,59 +251,13 @@ async function dispatch(
       // cp + rm (non-atomic, same as VfsBridgeFs)
       const srcResult = await backend.readFile(req.path)
       const dest = req.dest!
-      await backend.writeFile(dest, toWritableContent(srcResult.content))
+      await destination.writeFile(dest, toWritableContent(srcResult.content))
       await backend.deleteFile(req.path)
       return undefined
     }
 
     default:
       throw new Error(`Unknown VFS method: ${req.method}`)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Agent namespace async resolution
-// ---------------------------------------------------------------------------
-
-/**
- * Agent namespace needs ProjectManager → AgentManager (async). We re-dispatch
- * agent requests through this path so the common workspace/assets path stays
- * synchronous-lean.
- *
- * Called by the client when `req.backend === 'agent'`.
- */
-export async function handleAgentRpc(
-  req: VfsRpcRequest,
-  config: VfsRpcHandlerConfig,
-): Promise<VfsRpcResponse> {
-  const { rpcId } = req
-
-  try {
-    assertAgentAccess(req.path, config)
-
-    if (!config.projectId || !config.currentAgentId) {
-      throw new Error('No active project/agent for agent namespace')
-    }
-
-    const { ProjectManager } = await import('@/opfs')
-    const projectManager = await ProjectManager.create()
-    const project = await projectManager.getProject(config.projectId)
-    if (!project) throw new Error(`Project not found: ${config.projectId}`)
-
-    const backend = new AgentBackend(project.agentManager, config.currentAgentId)
-    const result = await dispatch(req, backend)
-    return { type: 'vfs-result', rpcId, ok: true, result }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    const permissionDenied =
-      message.startsWith(`${SUBAGENT_PERMISSION_DENIED}:`) ||
-      message.startsWith('EACCES: delegated subagent')
-    return {
-      type: 'vfs-result',
-      rpcId,
-      ok: false,
-      error: permissionDenied ? `${SUBAGENT_PERMISSION_DENIED}: ${message}` : message,
-    }
   }
 }
 
@@ -347,6 +286,12 @@ async function statPath(backend: VfsBackend, path: string): Promise<{
   size: number
   mtime: number
 }> {
+  if (backend.stat) {
+    const stat = await backend.stat(path)
+    return { isFile: stat.kind === 'file', isDirectory: stat.kind === 'directory',
+      isSymbolicLink: false, mode: stat.kind === 'file' ? STAT_FILE_MODE : STAT_DIR_MODE,
+      size: stat.size ?? 0, mtime: stat.mtime ?? 0 }
+  }
   // Empty path = workspace root = directory
   if (!path) {
     return { isFile: false, isDirectory: true, isSymbolicLink: false, mode: STAT_DIR_MODE, size: 0, mtime: Date.now() }
@@ -403,16 +348,17 @@ async function statPath(backend: VfsBackend, path: string): Promise<{
  * Recursively copy a directory's contents from src to dest.
  * Mirrors VfsBridgeFs.cpVfsDir: list entries, copy files recursively.
  */
-async function copyDirRecursive(backend: VfsBackend, srcPath: string, destPath: string): Promise<void> {
+async function copyDirRecursive(backend: VfsBackend, srcPath: string, destPath: string, destination: VfsBackend = backend): Promise<void> {
+  await destination.mkdir?.(destPath, { recursive: true })
   const entries = await backend.listDir(srcPath)
   for (const entry of entries) {
     const childSrc = srcPath ? `${srcPath}/${entry.name}` : entry.name
     const childDest = destPath ? `${destPath}/${entry.name}` : entry.name
     if (entry.kind === 'file') {
       const result = await backend.readFile(childSrc)
-      await backend.writeFile(childDest, toWritableContent(result.content))
+      await destination.writeFile(childDest, toWritableContent(result.content))
     } else if (entry.kind === 'directory') {
-      await copyDirRecursive(backend, childSrc, childDest)
+      await copyDirRecursive(backend, childSrc, childDest, destination)
     }
   }
 }
@@ -421,14 +367,6 @@ async function copyDirRecursive(backend: VfsBackend, srcPath: string, destPath: 
 // Permission checks
 // ---------------------------------------------------------------------------
 
-function assertAgentAccess(path: string, config: VfsRpcHandlerConfig): void {
-  if (!config.restrictAgentCoreFiles) return
-  if (isProtectedAgentCoreFile(path)) {
-    throw new Error(`EACCES: delegated subagent cannot access protected agent path '${path}'`)
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Content encoding helpers
 // ---------------------------------------------------------------------------
 
@@ -466,9 +404,4 @@ function decodeWriteContent(content: string, encoding?: 'text' | 'binary'): stri
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
   }
   return content
-}
-
-/** Merge two latin1-shaped strings (for appendFile binary). */
-function mergeLatin1(a: string, b: string): string {
-  return a + b
 }

@@ -19,7 +19,6 @@
 import type {
   VfsRpcRequest,
   VfsRpcResponse,
-  VfsRpcBackend,
   VfsRpcMethod,
 } from './protocol'
 import {
@@ -30,17 +29,15 @@ import {
   DEFAULT_DIR_MODE,
   WORKSPACE_MOUNT,
   ASSETS_MOUNT,
-  WEBMCP_MOUNT,
+
   AGENTS_MOUNT,
   normalizeAbsolutePath,
   dirnameOf as dirname,
   isSystemPath,
-  isAssetsPath,
-  isWebmcpPath,
+
   isAgentsPath,
   toWorkspaceRelative,
-  toAssetsRelative,
-  toWebmcpRelative,
+
   toAgentsRelative,
   normalizeWriteEncoding,
   latin1StringToBytes,
@@ -103,7 +100,8 @@ export class WorkerVfsBridgeFs {
     this.ensureSysDir('/etc')
     this.ensureSysDir(WORKSPACE_MOUNT)
     if (hasAssets) this.ensureSysDir(ASSETS_MOUNT)
-    this.ensureSysDir(WEBMCP_MOUNT)
+    this.ensureSysDir('/external')
+    this.ensureSysDir('/skills')
     if (hasAgent) this.ensureSysDir(AGENTS_MOUNT)
 
     // /dev/null — black hole
@@ -125,7 +123,7 @@ export class WorkerVfsBridgeFs {
   // ==========================================================================
 
   private async rpcCall(
-    backend: VfsRpcBackend,
+    backend: string,
     method: VfsRpcMethod,
     payload: Partial<VfsRpcRequest> = {},
   ): Promise<VfsRpcResponse> {
@@ -133,10 +131,10 @@ export class WorkerVfsBridgeFs {
     return this.rpc({
       type: 'vfs',
       rpcId: 0, // placeholder — overwritten by rpcInvoker
-      backend,
       method,
-      path: '',
       ...payload,
+      path: `${backend}/${payload.path ?? ''}`,
+      ...(payload.dest === undefined ? {} : { dest: `${backend}/${payload.dest}` }),
     })
   }
 
@@ -258,9 +256,7 @@ export class WorkerVfsBridgeFs {
       return
     }
 
-    // For workspace/assets/agent: read existing + write combined (atomic-ish).
-    // Simpler to do on main thread side, but append semantics differ per
-    // backend. We replicate VfsBridgeFs logic: read existing, concat, write.
+    // The host implements append using the resolved backend's file semantics.
     const { backend, relPath } = this.route(path)
 
     // Read-only guard (Plan mode) — same as writeFile
@@ -270,18 +266,6 @@ export class WorkerVfsBridgeFs {
 
     const encoding = normalizeWriteEncoding(options)
 
-    let existingContent: string
-    try {
-      const readResp = await this.rpcCall(
-        backend,
-        encoding === 'binary' ? 'readFileBuffer' : 'readFile',
-        { path: relPath },
-      )
-      existingContent = readResp.ok ? (readResp.result as string) : ''
-    } catch {
-      existingContent = ''
-    }
-
     const appendStr =
       typeof content === 'string'
         ? content
@@ -289,9 +273,9 @@ export class WorkerVfsBridgeFs {
           ? bytesToLatin1String(content)
           : utf8Decode(content)
 
-    const resp = await this.rpcCall(backend, 'writeFile', {
+    const resp = await this.rpcCall(backend, 'appendFile', {
       path: relPath,
-      content: existingContent + appendStr,
+      content: appendStr,
       encoding,
     })
     if (!resp.ok) throw new Error(resp.error ?? `appendFile failed: '${path}'`)
@@ -355,8 +339,10 @@ export class WorkerVfsBridgeFs {
       this.ensureSysDir(normalized)
       return
     }
-    // Workspace/assets/agent: backends auto-create dirs on writeFile, mkdir is a no-op.
-    // (matches VfsBridgeFs behavior)
+    if (this.readOnly) throw new Error(`bash: ${path}: mkdir blocked (read-only mode)`)
+    const { backend, relPath } = this.route(normalized)
+    const resp = await this.rpcCall(backend, 'mkdir', { path: relPath, recursive: _options?.recursive })
+    if (!resp.ok) throw new Error(resp.error ?? `mkdir failed: '${path}'`)
   }
 
   async readdir(path: string): Promise<string[]> {
@@ -411,7 +397,9 @@ export class WorkerVfsBridgeFs {
       recursive: options?.recursive,
       force: options?.force,
     })
-    if (!resp.ok && !options?.force) throw new Error(resp.error ?? `ENOENT: no such file or directory, rm '${path}'`)
+    if (!resp.ok && !(options?.force && /ENOENT|not found|no such file/i.test(resp.error ?? ''))) {
+      throw new Error(resp.error ?? `rm failed: '${path}'`)
+    }
   }
 
   async cp(src: string, dest: string, options?: { recursive?: boolean }): Promise<void> {
@@ -447,9 +435,8 @@ export class WorkerVfsBridgeFs {
       })
       if (!resp.ok) throw new Error(resp.error ?? `cp: cannot stat '${src}': No such file or directory`)
     } else {
-      // Cross-backend copy (e.g. /workspace → /assets): the handler's cp
-      // only operates on a single backend, so we must do read+write
-      // ourselves. Each call routes to the correct backend independently.
+      // Cross-mount copy retains the existing binary channel. Each request
+      // resolves and authorizes its canonical path independently.
       //
       // readOnly guard: same as writeFile — the direct rpcCall('writeFile')
       // below bypasses writeFile()'s own check, so we enforce it here.
@@ -481,12 +468,13 @@ export class WorkerVfsBridgeFs {
    * List src entries via RPC, then copy each one to dest (routing independently).
    */
   private async cpCrossBackend(
-    srcRoute: { backend: VfsRpcBackend; relPath: string },
-    destRoute: { backend: VfsRpcBackend; relPath: string },
+    srcRoute: { backend: string; relPath: string },
+    destRoute: { backend: string; relPath: string },
   ): Promise<void> {
     // Stat source to determine if it's a directory
     const statResp = await this.rpcCall(srcRoute.backend, 'stat', { path: srcRoute.relPath })
-    if (!statResp.ok || !(statResp.result as { isDirectory: boolean })?.isDirectory) {
+    if (!statResp.ok) throw new Error(statResp.error ?? `cp: cannot stat '${srcRoute.relPath}'`)
+    if (!(statResp.result as { isDirectory: boolean })?.isDirectory) {
       // Not a directory — fall back to single-file copy (binary channel;
       // see cp() for why a readFile text roundtrip corrupts binary files)
       const readResp = await this.rpcCall(srcRoute.backend, 'readFileBuffer', { path: srcRoute.relPath })
@@ -500,7 +488,9 @@ export class WorkerVfsBridgeFs {
       return
     }
 
-    // List directory entries and copy recursively
+    const mkdirResp = await this.rpcCall(destRoute.backend, 'mkdir', { path: destRoute.relPath, recursive: true })
+    if (!mkdirResp.ok) throw new Error(mkdirResp.error ?? `cp: cannot create '${destRoute.relPath}'`)
+    // List directory entries and copy recursively, including empty directories.
     const listResp = await this.rpcCall(srcRoute.backend, 'readdirWithFileTypes', { path: srcRoute.relPath })
     if (!listResp.ok) throw new Error(`cp: cannot read directory '${srcRoute.relPath}'`)
     const entries = listResp.result as DirentEntry[]
@@ -511,13 +501,13 @@ export class WorkerVfsBridgeFs {
         // Binary channel — see cp() for why a readFile text roundtrip
         // corrupts binary files
         const readResp = await this.rpcCall(srcRoute.backend, 'readFileBuffer', { path: childSrcRel })
-        if (readResp.ok) {
-          await this.rpcCall(destRoute.backend, 'writeFile', {
+        if (!readResp.ok) throw new Error(readResp.error ?? `cp: cannot read '${childSrcRel}'`)
+        const writeResp = await this.rpcCall(destRoute.backend, 'writeFile', {
             path: childDestRel,
             content: readResp.result as string,
             encoding: 'binary',
-          })
-        }
+        })
+        if (!writeResp.ok) throw new Error(writeResp.error ?? `cp: cannot write '${childDestRel}'`)
       } else if (entry.isDirectory) {
         await this.cpCrossBackend(
           { backend: srcRoute.backend, relPath: childSrcRel },
@@ -604,24 +594,19 @@ export class WorkerVfsBridgeFs {
   // ==========================================================================
 
   /** Route an absolute path to its backend + relative path. */
-  private route(absPath: string): { backend: VfsRpcBackend; relPath: string } {
+  private route(absPath: string): { backend: string; relPath: string } {
     const normalized = normalizeAbsolutePath(absPath)
 
-    if (isAssetsPath(normalized)) {
-      this.assertAgentPathAllowed(normalized)
-      return { backend: 'assets', relPath: toAssetsRelative(normalized) }
+    this.assertAgentPathAllowed(normalized)
+    const [namespace, ...parts] = normalized.split('/').filter(Boolean)
+    // Shell mount names are path syntax, not storage implementation labels.
+    if (['assets', 'skills', 'external', 'agents'].includes(namespace)) {
+      if (namespace === 'external' && parts.length > 0) {
+        return { backend: `vfs://external/${parts[0]}`, relPath: parts.slice(1).join('/') }
+      }
+      return { backend: `vfs://${namespace}`, relPath: parts.join('/') }
     }
-
-    if (isWebmcpPath(normalized)) {
-      return { backend: 'webmcp', relPath: toWebmcpRelative(normalized) }
-    }
-
-    if (isAgentsPath(normalized)) {
-      this.assertAgentPathAllowed(normalized)
-      return { backend: 'agent', relPath: toAgentsRelative(normalized) }
-    }
-
-    return { backend: 'workspace', relPath: toWorkspaceRelative(normalized) }
+    return { backend: 'vfs://workspace', relPath: toWorkspaceRelative(normalized) }
   }
 
   private isWorkspacePath(normalized: string): boolean {
@@ -632,7 +617,7 @@ export class WorkerVfsBridgeFs {
   }
 
   private assertAgentPathAllowed(path: string, options?: { denyRoot?: boolean }): void {
-    if (!this.restrictAgentCoreFiles) return
+    if (!this.restrictAgentCoreFiles || !isAgentsPath(path)) return
     const relativePath = toAgentsRelative(path)
     if ((options?.denyRoot && !relativePath) || isProtectedAgentCoreFile(relativePath)) {
       throw new Error(`EACCES: delegated subagent cannot access protected agent path '${path}'`)

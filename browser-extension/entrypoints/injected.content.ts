@@ -9,8 +9,11 @@
 // not in the background service worker.
 // ============================================================
 
+import { installWebMcpProvider } from './webmcp/provider'
+import { isTrustedCreatorWeaveSenderUrl } from '@creatorweave/shared'
 import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
+import { installBrowserCommand } from '../lib/bash-commands/browser/provider'
 
 // Build-time Codex OAuth feature flag (see wxt.config.ts). Store builds
 // (CW_CODEX_OAUTH=0) fold the guards below and treeshake the bridge names.
@@ -793,9 +796,10 @@ export default defineContentScript({
         return typed
       },
 
-      /**
-       * Discover WebMCP tools across tabs in current browser window.
-       */
+      /** Live workspace-bound QuickJS adapter protocol is available. */
+      supportsAdapterWorkflows: true,
+
+      /** Discover WebMCP tools across tabs in the current window. */
       async webMCPDiscover(options?: { force?: boolean }) {
         // Only `force` is honored from pages. includeDisabled is a popup-only
         // escape hatch — a page must never see disabled (unauthorized) tools,
@@ -1092,8 +1096,14 @@ export default defineContentScript({
       },
     };
 
+    const disposeBrowserCommand = installBrowserCommand(sendToBridge)
+    const disposeProvider = isTrustedCreatorWeaveSenderUrl(location.href)
+      ? installWebMcpProvider(sendToBridge) : () => {}
+
     ;(window as any).__agentWebBridgeState = {
       dispose() {
+        disposeBrowserCommand()
+        disposeProvider()
         window.removeEventListener('message', onBridgeMessage)
         window.removeEventListener('message', onScheduleTrigger)
         for (const [id, pending] of _pending) {

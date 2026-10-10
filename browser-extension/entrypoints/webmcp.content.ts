@@ -20,6 +20,7 @@
 // cannot forge a report about a different tab.
 // ============================================================
 
+import { ADAPTER_PAGE_MARKER } from '@creatorweave/shared/webmcp-adapter-protocol'
 import {
   WEBMCP_INVOKE_IN_TAB_TYPE,
   WEBMCP_INVOKE_RELAY_TIMEOUT_MS,
@@ -49,6 +50,34 @@ export default defineContentScript({
 
   main() {
     const invokeWaiters = new Map<string, InvokeWaiter>()
+
+    let catalogGeneration = 0
+    const syncAdapters = async () => {
+      const generation = ++catalogGeneration
+      let tools: unknown[] = []
+      try {
+        const result = await chrome.runtime.sendMessage({ type: 'webmcp_adapter_catalog' })
+        if (result?.ok) tools = result.tools
+      } catch { /* Withdraw proxies when the extension context is unavailable. */ }
+      if (generation !== catalogGeneration) return
+      window.postMessage(buildRelayEnvelope({ kind: 'adapters-sync', tools }), location.origin)
+    }
+    const refreshAdapters = () => { void syncAdapters().catch(() => {}) }
+    refreshAdapters()
+    setTimeout(refreshAdapters, 1500)
+    // Re-discover live hosts after a service-worker restart.
+    setInterval(refreshAdapters, 15000)
+    window.addEventListener('message', event => {
+      const data = event.data
+      if (event.source !== window || data?.[ADAPTER_PAGE_MARKER] !== true || typeof data.requestId !== 'string') return
+      if (data.kind === 'cancel') {
+        void chrome.runtime.sendMessage({ type: 'webmcp_adapter_cancel', requestId: data.requestId }).catch(() => {})
+      } else if (data.kind === 'invoke') {
+        void chrome.runtime.sendMessage({ type: 'webmcp_adapter_invoke', requestId: data.requestId, routeId: data.routeId, args: data.args })
+          .catch(error => ({ ok: false, error: { message: String(error) } }))
+          .then(response => window.postMessage({ [ADAPTER_PAGE_MARKER]: true, kind: 'result', requestId: data.requestId, response }, location.origin))
+      }
+    })
 
     // ── Recipe activation (consent-gated) ──
     // storage.local holds the user's enabled-recipe map. When a
@@ -109,13 +138,15 @@ export default defineContentScript({
     // calls ITS OWN (MAIN-world) history object, invisible to this
     // ISOLATED world. `location`, however, IS synchronized across
     // worlds, so a light poll + popstate catches every route change.
-    let lastPath = location.pathname
+    let lastUrl = location.href
     const onRouteChange = () => {
-      if (location.pathname === lastPath) return
-      lastPath = location.pathname
+      if (location.href === lastUrl) return
+      lastUrl = location.href
+      refreshAdapters()
       void syncRecipeState()
     }
     window.addEventListener('popstate', onRouteChange)
+    window.addEventListener('hashchange', onRouteChange)
     window.setInterval(onRouteChange, 1000)
 
     // ── Downstream: page agent → background ──
@@ -160,6 +191,7 @@ export default defineContentScript({
 
     // ── Upstream: background → page agent ──
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message?.type === 'webmcp_adapter_changed') { refreshAdapters(); return false }
       if (message?.type === WEBMCP_INVOKE_IN_TAB_TYPE) {
         const requestId = `cw_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
         const timeoutId = window.setTimeout(() => {

@@ -1,22 +1,21 @@
+import type { BashCommandInput, BashCommandResult } from '@/agent/bash-commands/registry'
+
 /**
  * bash-worker protocol — message types between main thread and bash worker.
  *
- * Two channels:
+ * Three channels:
  * 1. Main → Worker: exec requests (run a command)
  * 2. Worker → Main: VFS RPC requests (file IO during command execution)
+ * 3. Worker → Main: external command invocation (args and UTF-8 stdin only)
  *
  * All messages carry an ID for correlating async responses. Binary content
  * is represented as latin1-shaped strings (each JS char's low byte = one
- * file byte), matching VfsBridgeFs / just-bash's internal encoding. This
- * avoids structured-clone overhead for ArrayBuffers.
+ * file byte), preserving VfsBridgeFs / just-bash's existing internal encoding.
  */
 
 // ---------------------------------------------------------------------------
 // Shared types (mirrors VfsBackend / VfsBridgeFs surfaces, serialized)
 // ---------------------------------------------------------------------------
-
-/** Which VFS backend a file operation targets. */
-export type VfsRpcBackend = 'workspace' | 'assets' | 'agent' | 'webmcp'
 
 /** File operation method names (subset of VfsBridgeFs / VfsBackend). */
 export type VfsRpcMethod =
@@ -56,8 +55,8 @@ export interface VfsRpcDirent {
 export interface VfsRpcRequest {
   type: 'vfs'
   rpcId: number
-  backend: VfsRpcBackend
   method: VfsRpcMethod
+  /** Canonical vfs:// path; resolution and authorization belong to the host. */
   path: string
   /** Destination path for cp/mv. */
   dest?: string
@@ -106,6 +105,7 @@ export interface WorkerExecRequest {
   type: 'exec'
   requestId: number
   command: string
+  externalCommands?: string[]
   cwd?: string
   rootNames: string[]
   /** Plan mode: block all writes. */
@@ -135,7 +135,21 @@ export interface WorkerExecResponse {
 // ---------------------------------------------------------------------------
 
 /** Messages sent FROM main thread TO worker. */
-export type ToWorkerMessage = WorkerInitMessage | WorkerExecRequest | VfsRpcResponse
+export interface CommandRpcRequest {
+  type: 'command'
+  requestId: number
+  rpcId: number
+  name: string
+  input: BashCommandInput
+}
+
+export interface CommandRpcResponse {
+  type: 'command-result'
+  rpcId: number
+  result: BashCommandResult
+}
+
+export type ToWorkerMessage = WorkerInitMessage | WorkerExecRequest | VfsRpcResponse | CommandRpcResponse
 
 /** Messages sent FROM worker TO main thread. */
-export type FromWorkerMessage = WorkerExecResponse | VfsRpcRequest
+export type FromWorkerMessage = WorkerExecResponse | VfsRpcRequest | CommandRpcRequest

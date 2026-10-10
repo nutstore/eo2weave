@@ -33,6 +33,10 @@ export default defineConfig({
   // WXT copies public assets AFTER vite's closeBundle, so locale stripping
   // runs in WXT's own `build:done` hook (after everything is on disk).
   hooks: {
+    'build:before': async () => {
+      const { copyQuickJs } = await import('./scripts/copy-quickjs.mjs')
+      await copyQuickJs()
+    },
     'build:done': (wxt) => {
       if (CODEX_OAUTH) return;
       const fs = require('fs') as typeof import('fs');
@@ -218,6 +222,7 @@ export default defineConfig({
   // loads apart. Without this, both builds share the same pinned extension
   // key → same extension ID → two identically-named entries.
   manifest: (env) => ({
+    content_security_policy: { extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'" },
     name: env.mode === 'development' ? '__MSG_extensionNameDev__' : '__MSG_extensionName__',
     description: '__MSG_extensionDescription__',
     default_locale: 'en',
@@ -236,7 +241,7 @@ export default defineConfig({
     ...(IS_STORE_BUILD
       ? {}
       : { key: process.env.CREATORWEAVE_CHROMIUM_EXTENSION_KEY || DEFAULT_CHROMIUM_EXTENSION_KEY }),
-    permissions: ['scripting', 'tabs', 'storage', 'alarms', 'notifications', 'sidePanel', 'nativeMessaging'],
+    permissions: ['debugger', 'scripting', 'tabs', 'storage', 'alarms', 'notifications', 'sidePanel', 'nativeMessaging'],
     host_permissions: ['<all_urls>'],
     // No global side_panel config — side panel is only enabled per-tab
     // via setOptions({ tabId }) when user clicks the workspace assistant button.

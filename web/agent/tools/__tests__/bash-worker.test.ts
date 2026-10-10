@@ -15,7 +15,7 @@ function makeMockRpc(
     calls.push(req)
     const handler = handlers[req.method]
     if (handler) {
-      const result = handler(req)
+      const result = handler({ ...req, path: req.path.split('/').slice(req.path.startsWith('vfs://external/') ? 4 : 3).join('/') })
       return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result }
     }
     return { type: 'vfs-result', rpcId: req.rpcId, ok: false, error: `no mock for ${req.method}` }
@@ -37,31 +37,33 @@ function makeMockRpc(
 //                   otherwise UTF-8-encodes the string
 
 function makeRoundTripRpc(
-  stores: Partial<Record<VfsRpcRequest['backend'], Map<string, Uint8Array>>>,
+  stores: Partial<Record<string, Map<string, Uint8Array>>>,
 ) {
   const decoder = new TextDecoder() // non-fatal: invalid bytes → U+FFFD (like decodeToString)
   const calls: VfsRpcRequest[] = []
   const invoker = async (req: VfsRpcRequest): Promise<VfsRpcResponse> => {
     calls.push(req)
-    const store = stores[req.backend]
+    const namespace = req.path.split('/')[2]
+    const path = req.path.split('/').slice(3).join('/')
+    const store = stores[namespace]
     if (!store) {
-      return { type: 'vfs-result', rpcId: req.rpcId, ok: false, error: `no store for ${req.backend}` }
+      return { type: 'vfs-result', rpcId: req.rpcId, ok: false, error: `no store for ${namespace}` }
     }
     switch (req.method) {
       case 'readFile': {
-        const bytes = store.get(req.path)
+        const bytes = store.get(path)
         if (!bytes) return { type: 'vfs-result', rpcId: req.rpcId, ok: false, error: 'ENOENT' }
         return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result: decoder.decode(bytes) }
       }
       case 'readFileBuffer': {
-        const bytes = store.get(req.path)
+        const bytes = store.get(path)
         if (!bytes) return { type: 'vfs-result', rpcId: req.rpcId, ok: false, error: 'ENOENT' }
         return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result: bytesToLatin1String(bytes) }
       }
       case 'writeFile': {
         const content = req.content ?? ''
         store.set(
-          req.path,
+          path,
           req.encoding === 'binary'
             ? latin1StringToBytes(content)
             : new TextEncoder().encode(content),
@@ -69,7 +71,7 @@ function makeRoundTripRpc(
         return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result: undefined }
       }
       case 'stat': {
-        const isFile = store.has(req.path)
+        const isFile = store.has(path)
         return {
           type: 'vfs-result',
           rpcId: req.rpcId,
@@ -79,13 +81,13 @@ function makeRoundTripRpc(
             isDirectory: !isFile,
             isSymbolicLink: false,
             mode: 0o644,
-            size: isFile ? store.get(req.path)!.length : 0,
+            size: isFile ? store.get(path)!.length : 0,
             mtime: Date.now(),
           },
         }
       }
       case 'readdirWithFileTypes': {
-        const prefix = req.path ? `${req.path}/` : ''
+        const prefix = path ? `${path}/` : ''
         const names = new Set<string>()
         for (const key of store.keys()) {
           if (!key.startsWith(prefix)) continue
@@ -99,9 +101,10 @@ function makeRoundTripRpc(
         return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result: entries }
       }
       case 'rm': {
-        store.delete(req.path)
+        store.delete(path)
         return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result: undefined }
       }
+      case 'mkdir': return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result: undefined }
       default:
         return { type: 'vfs-result', rpcId: req.rpcId, ok: false, error: `no mock for ${req.method}` }
     }
@@ -173,8 +176,8 @@ describe('WorkerVfsBridgeFs', () => {
 
     const content = await fs.readFile('/workspace/myroot/src/app.ts')
     expect(content).toBe('content of myroot/src/app.ts')
-    expect(calls[0].backend).toBe('workspace')
-    expect(calls[0].path).toBe('myroot/src/app.ts')
+    expect(calls[0].path).toMatch(/^vfs:\/\/workspace\//)
+    expect(calls[0].path).toBe('vfs://workspace/myroot/src/app.ts')
   })
 
   it('lists workspace root names from readdir', async () => {
@@ -200,8 +203,8 @@ describe('WorkerVfsBridgeFs', () => {
     })
 
     await fs.writeFile('/workspace/root/file.txt', 'hello')
-    expect(calls[0].backend).toBe('workspace')
-    expect(calls[0].path).toBe('root/file.txt')
+    expect(calls[0].path).toMatch(/^vfs:\/\/workspace\//)
+    expect(calls[0].path).toBe('vfs://workspace/root/file.txt')
     expect(calls[0].content).toBe('hello')
     expect(calls[0].encoding).toBe('text')
   })
@@ -221,8 +224,8 @@ describe('WorkerVfsBridgeFs', () => {
 
     const content = await fs.readFile('/assets/data.csv')
     expect(content).toBe('asset:data.csv')
-    expect(calls[0].backend).toBe('assets')
-    expect(calls[0].path).toBe('data.csv')
+    expect(calls[0].path).toMatch(/^vfs:\/\/assets\//)
+    expect(calls[0].path).toBe('vfs://assets/data.csv')
   })
 
   // -------------------------------------------------------------------------
@@ -240,7 +243,7 @@ describe('WorkerVfsBridgeFs', () => {
 
     const content = await fs.readFile('/agents/IDENTITY.md')
     expect(content).toBe('agent:IDENTITY.md')
-    expect(calls[0].backend).toBe('agent')
+    expect(calls[0].path).toMatch(/^vfs:\/\/agents\//)
   })
 
   it('routes WebMCP files to the WebMCP backend', async () => {
@@ -250,9 +253,9 @@ describe('WorkerVfsBridgeFs', () => {
       restrictAgentCoreFiles: false,
     })
 
-    expect(await fs.readFile('/webmcp/reports/result.txt')).toBe('webmcp:reports/result.txt')
-    expect(calls[0].backend).toBe('webmcp')
-    expect(calls[0].path).toBe('reports/result.txt')
+    expect(await fs.readFile('/external/webmcp/reports/result.txt')).toBe('webmcp:reports/result.txt')
+    expect(calls[0].path).toMatch(/^vfs:\/\/external\/webmcp\//)
+    expect(calls[0].path).toBe('vfs://external/webmcp/reports/result.txt')
   })
 
   it('blocks subagent access to protected core files', async () => {
@@ -343,7 +346,7 @@ describe('WorkerVfsBridgeFs', () => {
     })
 
     await fs.readFile('/workspace/root/sub/../app.ts')
-    expect(calls[0].path).toBe('root/app.ts')
+    expect(calls[0].path).toBe('vfs://workspace/root/app.ts')
   })
 
   // -------------------------------------------------------------------------
@@ -377,8 +380,8 @@ describe('WorkerVfsBridgeFs', () => {
 
     await fs.cp('/workspace/root/src', '/workspace/root/dest', { recursive: true })
     expect(calls[0].method).toBe('cp')
-    expect(calls[0].path).toBe('root/src')
-    expect(calls[0].dest).toBe('root/dest')
+    expect(calls[0].path).toBe('vfs://workspace/root/src')
+    expect(calls[0].dest).toBe('vfs://workspace/root/dest')
     expect(calls[0].recursive).toBe(true)
   })
 
@@ -404,11 +407,11 @@ describe('WorkerVfsBridgeFs', () => {
     const readCall = calls.find(c => c.method === 'readFileBuffer')
     const writeCall = calls.find(c => c.method === 'writeFile')
     expect(readCall).toBeDefined()
-    expect(readCall!.backend).toBe('workspace')
-    expect(readCall!.path).toBe('root/src.txt')
+    expect(readCall!.path).toMatch(/^vfs:\/\/workspace\//)
+    expect(readCall!.path).toBe('vfs://workspace/root/src.txt')
     expect(writeCall).toBeDefined()
-    expect(writeCall!.backend).toBe('assets')
-    expect(writeCall!.path).toBe('backup.txt')
+    expect(writeCall!.path).toMatch(/^vfs:\/\/assets\//)
+    expect(writeCall!.path).toBe('vfs://assets/backup.txt')
     expect(writeCall!.encoding).toBe('binary')
     expect(writeCall!.content).toBe('file:root/src.txt')
 
@@ -523,12 +526,13 @@ describe('WorkerVfsBridgeFs', () => {
       const stores = makeStores()
       const decoder = new TextDecoder()
       const oldStyleInvoker = async (req: VfsRpcRequest): Promise<VfsRpcResponse> => {
-        const store = stores[req.backend as 'assets' | 'workspace']!
+        const store = stores[req.path.split('/')[2] as 'assets' | 'workspace']!
+        const path = req.path.split('/').slice(3).join('/')
         if (req.method === 'readFile') {
-          return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result: decoder.decode(store.get(req.path)!) }
+          return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result: decoder.decode(store.get(path)!) }
         }
         if (req.method === 'writeFile') {
-          store.set(req.path, new TextEncoder().encode(req.content ?? ''))
+          store.set(path, new TextEncoder().encode(req.content ?? ''))
           return { type: 'vfs-result', rpcId: req.rpcId, ok: true, result: undefined }
         }
         return { type: 'vfs-result', rpcId: req.rpcId, ok: false, error: 'unexpected' }
@@ -536,11 +540,11 @@ describe('WorkerVfsBridgeFs', () => {
 
       // Old path: text read + text write
       const readResp = await oldStyleInvoker({
-        type: 'vfs', rpcId: 1, backend: 'assets', method: 'readFile', path: 'images/featured.jpg',
+        type: 'vfs', rpcId: 1, method: 'readFile', path: 'vfs://assets/images/featured.jpg',
       })
       await oldStyleInvoker({
-        type: 'vfs', rpcId: 2, backend: 'workspace', method: 'writeFile',
-        path: 'root/corrupted.jpg', content: readResp.result as string,
+        type: 'vfs', rpcId: 2, method: 'writeFile',
+        path: 'vfs://workspace/root/corrupted.jpg', content: readResp.result as string,
       })
 
       const corrupted = stores.workspace.get('root/corrupted.jpg')!

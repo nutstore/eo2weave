@@ -6,7 +6,7 @@ import { WorkspaceBackend } from './backends/workspace-backend'
 import { AgentBackend } from './backends/agent-backend'
 import { AssetsBackend } from './backends/assets-backend'
 import { SkillsBackend } from './backends/skills-backend'
-import { WebMcpBackend } from './backends/webmcp-backend'
+import { ProviderBackend, ProvidersRootBackend } from './backends/provider-backend'
 import { isProtectedAgentCoreFile } from './agent-file-protection'
 
 export { isProtectedAgentCoreFile } from './agent-file-protection'
@@ -40,16 +40,17 @@ export interface SkillsTarget {
   backend: VfsBackend
 }
 
-export interface WebMcpTarget {
-  kind: 'webmcp'
+export interface ExternalTarget {
+  kind: 'external'
+  mountName: string
   path: string
   backend: VfsBackend
 }
 
-export type ResolvedVfsTarget = WorkspaceTarget | AgentTarget | AssetsTarget | SkillsTarget | WebMcpTarget
+export type ResolvedVfsTarget = WorkspaceTarget | AgentTarget | AssetsTarget | SkillsTarget | ExternalTarget
 
 interface ParsedPath {
-  namespace: 'workspace' | 'agents' | 'assets' | 'skills' | 'webmcp'
+  namespace: 'workspace' | 'agents' | 'assets' | 'skills' | 'external'
   path: string
   agentId?: string
 }
@@ -156,9 +157,9 @@ function parseVfsPath(
     }
   }
 
-  if (namespace === 'webmcp') {
+  if (namespace === 'external') {
     return {
-      namespace: 'webmcp',
+      namespace: 'external',
       path: normalizeRelativePath(parts.slice(1).join('/'), { allowEmpty: allowEmptyPath }),
     }
   }
@@ -220,12 +221,14 @@ export async function resolveVfsTarget(
     }
   }
 
-  if (parsed.namespace === 'webmcp') {
-    return {
-      kind: 'webmcp',
-      path: parsed.path,
-      backend: new WebMcpBackend(),
+  if (parsed.namespace === 'external') {
+    const [mountName, ...parts] = parsed.path.split('/').filter(Boolean)
+    if (!mountName) {
+      if (action !== 'list') throw new Error('External root can only be listed')
+      return { kind: 'external', mountName: '', path: '', backend: new ProvidersRootBackend() }
     }
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(mountName)) throw new Error('Invalid external mount name')
+    return { kind: 'external', mountName, path: parts.join('/'), backend: new ProviderBackend(mountName) }
   }
 
   if (parsed.namespace === 'workspace') {

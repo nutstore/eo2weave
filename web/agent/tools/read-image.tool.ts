@@ -1,15 +1,7 @@
-/**
- * Read Image Tool — prepares an image for the next conversation turn.
- *
- * Unlike OCR, this tool does not return image content through a tool result.
- * It creates a queued user-message handoff so OpenAI-compatible providers
- * receive the image in a normal user message on the following turn.
- */
-
 import type { ToolContext, ToolDefinition, ToolExecutor, ToolPromptDoc } from './tool-types'
 import { resolveVfsTarget } from './vfs-resolver'
 import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from './agent-file-protection'
-import { fileToBase64, isOcrCompatibleImage, performOcr } from '@/services/ocr.service'
+import { fileToBase64, isOcrCompatibleImage } from '@/services/ocr.service'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
 import { toolErrorJson, toolOkJson } from './tool-envelope'
@@ -74,7 +66,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number):
   })
 }
 
-async function normalizeImage(file: File): Promise<File> {
+async function normalizeImage(file: File): Promise<{ file: File; width: number; height: number }> {
   if (typeof createImageBitmap !== 'function') {
     throw new ReadImagePreparationError('invalid_image', translateReadImage('browserUnsupported'))
   }
@@ -103,7 +95,7 @@ async function normalizeImage(file: File): Promise<File> {
     const width = Math.max(1, Math.round(bitmap.width * scale))
     const height = Math.max(1, Math.round(bitmap.height * scale))
     const needsReencode = scale < 1 || file.size > MAX_NORMALIZED_BYTES || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)
-    if (!needsReencode) return file
+    if (!needsReencode) return { file, width, height }
 
     const canvas = document.createElement('canvas')
     canvas.width = width
@@ -117,7 +109,7 @@ async function normalizeImage(file: File): Promise<File> {
     for (const quality of [0.9, 0.75, 0.6]) {
       const blob = await canvasToBlob(canvas, 'image/webp', quality)
       if (blob.size <= MAX_NORMALIZED_BYTES) {
-        return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.webp', { type: 'image/webp' })
+        return { file: new File([blob], file.name.replace(/\.[^.]+$/, '') + '.webp', { type: 'image/webp' }), width, height }
       }
     }
     throw new ReadImagePreparationError(
@@ -135,8 +127,7 @@ export const readImageDefinition: ToolDefinition = {
     name: 'read_image',
     description:
       'Read an image file from the authorized workspace or assets directory. ' +
-      'This tool prepares a new visible user message containing the image for the next model turn. ' +
-      'After calling it, do not call more tools: answer directly in the next turn using the image or OCR text. ' +
+      'Returns portable image bytes and dimensions. In run_code, use image(result) to emit it explicitly. ' +
       'Supports PNG, JPEG, WebP, BMP, and GIF images.',
     parameters: {
       type: 'object',
@@ -159,14 +150,6 @@ export const readImageExecutor: ToolExecutor = async (
 ): Promise<string> => {
   const path = typeof args.path === 'string' ? args.path : undefined
   if (!path) return toolErrorJson('read_image', 'invalid_arguments', 'path is required')
-
-  if (!context.onReadImageSuccess) {
-    return toolErrorJson(
-      'read_image',
-      'handoff_unavailable',
-      translateReadImage('handoffUnavailable'),
-    )
-  }
 
   try {
     const target = await resolveVfsTarget(path, context, 'read')
@@ -200,67 +183,12 @@ export const readImageExecutor: ToolExecutor = async (
     }
 
     const sourceFile = new File([bytes], target.path.split('/').pop() || 'image.png', { type: mimeType })
-    const file = await normalizeImage(sourceFile)
-    const normalizedMimeType = file.type
-    const visiblePath = displayPath(target.path)
-    const model = context.provider?.getModel()
-    const supportsVision = model?.input?.includes('image') ?? false
-    const prefix = translateReadImage('sourceContext', { path: visiblePath })
-
-    let content = prefix
-    let contentParts: NonNullable<Parameters<NonNullable<ToolContext['onReadImageSuccess']>>[0]['contentParts']>
-    let imageData: string | undefined
-    let ocrStatus: 'not_needed' | 'done' | 'empty' | 'failed' | 'timeout' = 'not_needed'
-
-    if (supportsVision) {
-      const base64 = await fileToBase64(file)
-      contentParts = [
-        { type: 'text', text: prefix },
-        { type: 'image', data: base64, mimeType: normalizedMimeType },
-      ]
-    } else {
-      const ocr = await performOcr(file)
-      imageData = ocr.base64Data
-      ocrStatus = ocr.status === 'done' && ocr.text
-        ? 'done'
-        : ocr.status === 'done'
-          ? 'empty'
-          : ocr.status === 'timeout'
-            ? 'timeout'
-            : 'failed'
-      const ocrText = ocr.text.trim()
-      const fallback = ocrText
-        ? translateReadImage('ocrResult', { ocrText })
-        : translateReadImage('ocrUnavailable')
-      content = `${prefix}\n\n${fallback}`
-      contentParts = [{ type: 'text', text: content }]
-    }
-
-    const queued = context.onReadImageSuccess({
-      content,
-      contentParts,
-      readImage: {
-        path: visiblePath,
-        mimeType: normalizedMimeType,
-        ...(imageData ? { imageData } : {}),
-        toolCallId: context.currentToolCallId,
-        ocrStatus,
-      },
-    })
-    if (!queued) {
-      return toolErrorJson(
-        'read_image',
-        'handoff_unavailable',
-        translateReadImage('handoffUnavailable'),
-        { retryable: true },
-      )
-    }
-
+    context.abortSignal?.throwIfAborted()
+    const { file, width, height } = await normalizeImage(sourceFile)
+    const data = await fileToBase64(file)
+    context.abortSignal?.throwIfAborted()
     return toolOkJson('read_image', {
-      path: visiblePath,
-      mimeType: normalizedMimeType,
-      mode: supportsVision ? 'vision' : 'ocr',
-      message: translateReadImage('handoffQueued'),
+      type: 'image', path: displayPath(target.path), data, mimeType: file.type, width, height,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -280,6 +208,6 @@ export const readImageExecutor: ToolExecutor = async (
 export const readImagePromptDoc: ToolPromptDoc = {
   category: 'file-ops',
   lines: [
-    '- `read_image(path)` - Read an authorized image into a visible follow-up user message. This ends the current tool flow; answer directly in the next turn from the image or OCR text.',
+    '- `read_image(path)` - Read an authorized image as portable JSON. Direct Agent calls display it; inside run_code call `image(result)` explicitly. Use `ocr` separately for text recognition.',
   ],
 }

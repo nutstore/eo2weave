@@ -1,5 +1,7 @@
 'use client'
 
+import { installBashCommandAPI } from '@/agent/bash-commands/public-api'
+
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast, Toaster } from 'sonner'
 import { UnsupportedBrowser } from '@/components/UnsupportedBrowser'
@@ -39,6 +41,7 @@ import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
  * `window` at module scope.
  */
 export function AppBootstrap({ children }: { children?: React.ReactNode }) {
+  useEffect(() => { installBashCommandAPI() }, [])
   const [isRuntimeSupported, setIsRuntimeSupported] = useState(true)
   const [isStorageReady, setIsStorageReady] = useState(false)
   const [loadingProgress, setLoadingProgress] = useState<number | undefined>(undefined)
@@ -58,6 +61,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   useEffect(() => {
     let disposed = false
     let stopWebMCPSyncLoop: (() => void) | null = null
+    let stopWorkspaceToolHost: (() => void) | null = null
 
     // Install Codex bridge fetch wrapper once at app startup.
     // This wraps globalThis.fetch to intercept chatgpt.com requests
@@ -72,13 +76,24 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       stopWebMCPSyncLoop = startWebMCPSyncLoop()
     })
 
+    import('@/webmcp/workspace-tool-connection').then(({ startWorkspaceToolHost }) => {
+      if (!disposed) stopWorkspaceToolHost = startWorkspaceToolHost()
+    })
+
+    let stopProviders: (() => void) | undefined
+    import('@/vfs/provider-registry').then(({ startProviderDiscovery }) => {
+      if (!disposed) stopProviders = startProviderDiscovery()
+    })
+
     const initial = setTimeout(extensionCheckStatus, 1000)
     const interval = setInterval(extensionCheckStatus, 5000)
     return () => {
       disposed = true
       clearTimeout(initial)
       clearInterval(interval)
+      stopProviders?.()
       if (stopWebMCPSyncLoop) stopWebMCPSyncLoop()
+      if (stopWorkspaceToolHost) stopWorkspaceToolHost()
     }
   }, [extensionCheckStatus])
 

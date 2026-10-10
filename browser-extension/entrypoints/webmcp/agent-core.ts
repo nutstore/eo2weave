@@ -10,8 +10,8 @@
 //      content script inside). It must remain DEPENDENCY-FREE:
 //      executeScript serializes `func` into the page without
 //      any module imports. Both call sites therefore keep
-//      inlined copies of this resolution ladder (document →
-//      navigator → testing); keep them semantically in sync.
+//      inlined copies of the document.modelContext access; keep them
+//      semantically in sync.
 //
 // This module is only imported by the static content script.
 // ============================================================
@@ -62,28 +62,7 @@ export function normalizeAgentTools(tools: unknown): WebMCPAgentToolMeta[] {
     }))
 }
 
-/**
- * Invoke without retrying: current/native contexts accept objects, while
- * legacy v4 polyfills identify themselves and require serialized input.
- */
-function callExecuteTool(
-  modelContext: any,
-  targetTool: any,
-  args: Record<string, unknown>,
-): Promise<unknown> {
-  const input =
-    modelContext?.__isWebMCPPolyfill === true
-      ? JSON.stringify(args || {})
-      : args || {}
-  return modelContext.executeTool(targetTool, input)
-}
-
-/**
- * Resolve the page's WebMCP surface:
- *   1. document.modelContext  (native or provided by @mcp-b/webmcp-polyfill)
- *   2. navigator.modelContext (earlier experimental shipping)
- *   3. navigator.modelContextTesting (test shim)
- */
+/** Resolve the current document.modelContext WebMCP API. */
 export function resolveAgentApi(): ResolvedAgentApi | null {
   const createImperativeApi = (modelContext: any, mode: WebMCPApiMode) => {
     if (
@@ -94,6 +73,14 @@ export function resolveAgentApi(): ResolvedAgentApi | null {
     ) {
       return null
     }
+
+    // The v6 polyfill accepts an object. Chromium's native ModelContext
+    // currently accepts serialized JSON; select its boundary before execution.
+    const ModelContext = (globalThis as any).ModelContext
+    const usesNativeInput =
+      typeof ModelContext === 'function' &&
+      modelContext instanceof ModelContext &&
+      Function.prototype.toString.call(ModelContext).includes('[native code]')
 
     return {
       mode,
@@ -123,32 +110,11 @@ export function resolveAgentApi(): ResolvedAgentApi | null {
         if (!targetTool) {
           throw new Error(`Tool not found in tab: ${toolName}`)
         }
-        return callExecuteTool(modelContext, targetTool, args || {})
+        // Keep application arguments in the v6 object format.
+        return modelContext.executeTool(targetTool, usesNativeInput ? JSON.stringify(args || {}) : args || {})
       },
     }
   }
 
-  const documentApi = createImperativeApi((document as any)?.modelContext, 'documentModelContext')
-  if (documentApi) return documentApi
-
-  const navigatorApi = createImperativeApi((navigator as any)?.modelContext, 'navigatorModelContext')
-  if (navigatorApi) return navigatorApi
-
-  const testing = (navigator as any)?.modelContextTesting
-  if (
-    testing?.listTools &&
-    typeof testing.listTools === 'function' &&
-    testing?.executeTool &&
-    typeof testing.executeTool === 'function'
-  ) {
-    return {
-      mode: 'modelContextTesting',
-      onToolsChanged: () => () => {},
-      getTools: async () => normalizeAgentTools(await testing.listTools()),
-      executeToolByName: async (toolName: string, args: Record<string, unknown>) =>
-        testing.executeTool(toolName, JSON.stringify(args || {})),
-    }
-  }
-
-  return null
+  return createImperativeApi((document as any)?.modelContext, 'documentModelContext')
 }

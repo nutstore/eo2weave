@@ -20,7 +20,9 @@
 // per activation.
 // ============================================================
 
-import { installWebMCP } from '@mcp-b/webmcp-polyfill'
+import { registerPageTools } from './webmcp/register-tools'
+import { invokeAdapterFromPage } from './webmcp/adapter-page-client'
+import { createAdapterInjector } from './webmcp/adapter-injector'
 import { CW_WEBMCP_AGENT_MARKER, parseRelayCommand } from './webmcp/relay-protocol'
 import { findRecipeForLocation } from './webmcp/recipes'
 import { jmailToolImplementations } from './webmcp/recipes/jmail-tools'
@@ -63,44 +65,24 @@ export default defineContentScript({
       const impl = implementations[recipe.id]
       if (!impl) return
 
-      // Install only when WebMCP is missing; installWebMCP() also preserves
-      // an existing native implementation.
-      if (!(document as any).modelContext) {
-        installWebMCP()
-      }
-      const ctx = (document as any).modelContext
-      if (!ctx?.registerTool) {
-        console.warn('[cw recipe] modelContext unavailable after polyfill init')
-        return
-      }
-
       unregisterCurrent()
       const controller = new AbortController()
       activeController = controller
       activeRecipeId = recipe.id
 
-      let registered = 0
-      for (const tool of recipe.tools) {
-        const execute = impl[tool.name]
-        if (!execute) continue
-        try {
-          await ctx.registerTool(
-            {
-              name: tool.name,
-              description: tool.description,
-              inputSchema: tool.inputSchema,
-              annotations: { readOnlyHint: true },
-              execute: (args: Record<string, unknown>) => execute(args),
-            },
-            { signal: controller.signal }
-          )
-          registered++
-        } catch (err) {
-          console.warn(`[cw recipe] registerTool(${tool.name}) failed:`, err)
-        }
-      }
-      console.info(`[cw recipe] ${recipe.id}: ${registered}/${recipe.tools.length} tools registered`)
+      await registerPageTools(recipe.tools.filter(tool => impl[tool.name]).map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        annotations: { readOnlyHint: true },
+        execute: (args: Record<string, unknown>) => impl[tool.name](args),
+      })), controller).catch(error => {
+        activeRecipeId = null
+        console.warn(`[cw recipe] ${recipe.id}: registration failed`, error)
+      })
     }
+
+    const syncAdapters = createAdapterInjector(() => location.href, invokeAdapterFromPage)
 
     window.addEventListener('message', (event) => {
       if (event.source !== window) return
@@ -110,7 +92,9 @@ export default defineContentScript({
       const command = parseRelayCommand(data)
       if (!command) return
 
-      if (command.kind === 'recipe-activate') {
+      if (command.kind === 'adapters-sync') {
+        void syncAdapters(command.tools).catch(error => console.warn('[WebMCP adapters] Injection failed:', error))
+      } else if (command.kind === 'recipe-activate') {
         // Idempotent: same-app SPA route changes re-run the bridge's
         // syncRecipeState and re-send activate for the SAME recipe.
         // Re-registering would abort + re-register every tool, and the

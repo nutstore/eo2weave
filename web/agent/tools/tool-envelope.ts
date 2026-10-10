@@ -7,7 +7,8 @@ export interface ToolEnvelopeSuccess<T = unknown> {
    * Optional multimodal content parts (text + image). When present, the
    * agent loop renders the tool result as a multimodal message instead of
    * a flat text block. Used by page_screenshot to deliver images to
-   * vision-capable models.
+   * vision-capable models. Nested code calls receive data only; this field
+   * never forwards context through an enclosing execution automatically.
    */
   contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
   meta?: Record<string, unknown>

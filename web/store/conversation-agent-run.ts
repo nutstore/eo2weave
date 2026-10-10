@@ -637,17 +637,6 @@ export async function runAgentImpl(
               }
               pendingDelegation = payload
             },
-            onReadImageSuccess: (payload) => {
-              // Queue before the tool returns. shouldYieldForQueue then ends the
-              // current loop only after its normal tool-result record is committed.
-              if (!isCurrentRun()) return false
-              return useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
-                text: payload.content,
-                contentParts: payload.contentParts,
-                readImageHandoff: payload.readImage,
-                enqueuedAt: Date.now(),
-              }).enqueued
-            },
           },
           maxIterations,
           initialConvertCallCount: conv.compressionConvertCallCount ?? 0,

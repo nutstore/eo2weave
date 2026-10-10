@@ -1,3 +1,4 @@
+import { isOutputPart } from '@creatorweave/shared/code-output'
 /**
  * Unified External Tool Bridge
  *
@@ -926,7 +927,8 @@ async function executeMCPTool(
 
     if (result && typeof result === 'object') {
       const mcpResult = result as {
-        content?: Array<{ type: string; text?: string }>
+        content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>
+        structuredContent?: unknown
         isError?: boolean
       }
 
@@ -952,33 +954,26 @@ async function executeMCPTool(
         )
       }
 
-      if (Array.isArray(mcpResult.content)) {
-        const textParts = mcpResult.content
-          .filter(item => item.type === 'text' && item.text)
-          .map(item => item.text)
-
-        if (textParts.length > 0) {
-          return toolOkJson('call_tool', {
-            text: wrapUntrustedContent(textParts.join('\n\n'), {
-              untrusted,
-              sourceId: serverId,
-              toolName: tool.fullName,
-            }),
-            fullToolName: tool.fullName,
-            untrusted,
-          })
-        }
-      }
-
+      // Preserve protocol data for code callers, including mixed text/images and structuredContent.
+      const content = Array.isArray(mcpResult.content) ? mcpResult.content.map(part => part.type === 'text'
+        ? { ...part, text: String(wrapUntrustedContent(part.text ?? '', { untrusted, sourceId: serverId, toolName: tool.fullName })) }
+        : part) : undefined
+      const text = content?.filter(part => part.type === 'text').map(part => part.text).join('\n\n')
+      const presentation = content?.filter(isOutputPart) ?? []
+      if (mcpResult.structuredContent !== undefined) presentation.push({
+        type: 'text', text: String(wrapUntrustedContent(JSON.stringify(mcpResult.structuredContent), { untrusted, sourceId: serverId, toolName: tool.fullName })),
+      })
+      if (!presentation.length) presentation.push({
+        type: 'text', text: String(wrapUntrustedContent(JSON.stringify(mcpResult), { untrusted, sourceId: serverId, toolName: tool.fullName })),
+      })
       return toolOkJson('call_tool', {
-        result: wrapUntrustedContent(result, {
-          untrusted,
-          sourceId: serverId,
-          toolName: tool.fullName,
-        }),
+        ...(text ? { text } : {}),
+        ...mcpResult,
+        ...(content ? { content } : {}),
+        ...(mcpResult.structuredContent !== undefined ? { structuredContent: mcpResult.structuredContent } : {}),
         fullToolName: tool.fullName,
         untrusted,
-      })
+      }, { contentParts: presentation })
     }
 
     return toolOkJson('call_tool', {
@@ -1110,11 +1105,7 @@ async function executeWebMCPTool(
         } catch { /* ignore: best-effort refresh, asset save already succeeded */ }
 
         return toolOkJson('call_tool', {
-          result: wrapUntrustedContent(saveResult.patchedResult, {
-            untrusted,
-            sourceId,
-            toolName: tool.fullName,
-          }),
+          result: saveResult.patchedResult,
           fullToolName: tool.fullName,
           hostname: response.hostname,
           tabId: response.tabId,
@@ -1127,7 +1118,7 @@ async function executeWebMCPTool(
             size: saveResult.size,
             mimeType: saveResult.mimeType,
           },
-        })
+        }, untrusted ? { contentParts: [{ type: 'text', text: String(wrapUntrustedContent(saveResult.patchedResult, { untrusted, sourceId, toolName: tool.fullName })) }] } : undefined)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         return toolErrorJson('call_tool', 'WEBMCP_PLUGIN_DOWNLOAD_FAILED', message, {
@@ -1137,17 +1128,13 @@ async function executeWebMCPTool(
     }
 
     return toolOkJson('call_tool', {
-      result: wrapUntrustedContent(response.result, {
-        untrusted,
-        sourceId,
-        toolName: tool.fullName,
-      }),
+      result: response.result,
       fullToolName: tool.fullName,
       hostname: response.hostname,
       tabId: response.tabId,
       apiMode: response.apiMode,
       untrusted,
-    })
+    }, untrusted ? { contentParts: [{ type: 'text', text: String(wrapUntrustedContent(response.result, { untrusted, sourceId, toolName: tool.fullName })) }] } : undefined)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return toolErrorJson('call_tool', 'WEBMCP_INVOKE_FAILED', message, { retryable: true })

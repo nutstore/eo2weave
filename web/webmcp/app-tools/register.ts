@@ -3,9 +3,8 @@
  * (`document.modelContext`), making EO2Weave operable by agents as an ordinary
  * set of WebMCP tools.
  *
- * - Uses @mcp-b/webmcp-polyfill (side-effect import installs
- *   document.modelContext on browsers without the native API; no-op on
- *   Chrome 140+ where the native API exists).
+ * - Explicitly initializes document.modelContext before loading registration
+ *   dependencies, preserving the browser's native API when available.
  * - Idempotent: safe to call multiple times (tracks registration state).
  * - Wires the real store/service dependencies into handlers once.
  */
@@ -13,7 +12,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // document.modelContext is a runtime-injected API (native Chrome 140+ or the
 // @mcp-b polyfill) — its shape can't be imported statically, hence the casts.
-import '@mcp-b/webmcp-polyfill'
+import { installWebMCP } from '@mcp-b/webmcp-polyfill'
 import { APP_TOOLS } from './schemas'
 import { buildToolExecutors, initAppToolDeps } from './handlers'
 
@@ -31,6 +30,9 @@ export async function registerAppTools(): Promise<void> {
   registerPromise = (async () => {
     // Browser-only guard (SSR / non-browser test envs)
     if (typeof document === 'undefined' || typeof window === 'undefined') return
+
+    // Initialize before asynchronous dependency loading or tool registration.
+    installWebMCP()
 
     const { useConversationStore } = await import('@/store/conversation.store')
     const { useSettingsStore } = await import('@/store/settings.store')

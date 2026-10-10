@@ -151,7 +151,7 @@ const resp = await window.__agentWeb.webMCPInvoke({
 // → { ok, result, tabId, hostname, errorCode?, error? }
 ```
 
-Under the hood: `webMCPInvoke` → background authorization gates (host + group; disabled tools are refused before any page script runs) → routing (`preferredTabId` → last successful route → any tab in the group) → relayed into the source tab → the page agent executes `executeTool(descriptor, JSON.stringify(args))` → result returns the same way.
+Under the hood: `webMCPInvoke` → background authorization gates (host + group; disabled tools are refused before any page script runs) → routing (`preferredTabId` → last successful route → any tab in the group) → relayed into the source tab → the page agent uses the v6 `executeTool(descriptor, args)` object API (serializing only at the native Chromium boundary) → result returns the same way.
 
 **Error codes worth handling:**
 
@@ -187,7 +187,8 @@ Why the discovery response is a **flat list** (not host→group→tools): every 
 ### Debugging tips
 
 - Check discovery: open the extension popup — your site's hostname and tool groups should appear within ~2s of registration.
-- Test shim: `navigator.modelContextTesting` is also detected (listTools/executeTool), useful for pages that can't install the real API.
+- Pages expose tools through `document.modelContext`; invocation serializes arguments once as JSON, matching the Chromium WebMCP API.
+- The extension initializes the current WebMCP polyfill at `document_start`, before site scripts register tools. After reloading the extension, reload existing tabs to initialize the page API again.
 - The registry is per-tab: navigate away or unregister tools and the tab disappears from the catalog automatically.
 
 ## Bridge API Reference
@@ -246,6 +247,16 @@ for await (const chunk of stream) {
 }
 stream.cancel(); // Abort early if needed
 ```
+
+## OPFS WebMCP adapters
+
+Adapter source runs in a fresh QuickJS VM in the background service worker. A target page receives only tool metadata and an opaque registration ID; its registered WebMCP callback forwards arguments through the isolated content script and returns the SW result. It never compiles the workflow or receives its source.
+
+`packages/quickjs-runtime` remains host-independent: it knows only JavaScript execution, JSON bindings and resource limits. The business-layer `packages/shared/src/code-tool-bindings.ts` defines the `tools` API shared with `run_code`. Extension modules own workflow orchestration, schema validation, target authorization and reverse RPC. The Web workspace host invokes the existing tool-invocation pipeline, retaining argument validation, mode checks and policy hooks.
+
+The workspace publishes packages over a live bidirectional port. A workflow binds to that host session, workspace and target document. An explicitly bound side panel takes precedence; ambiguous unbound hosts are unavailable. Keep the workspace host open and WebMCP enabled. Page tools retain their side-panel requirement. Disconnect, workspace switch, package replacement, target navigation and cancellation abort in-flight work; already-started side effects are not rolled back. SW restarts reconnect through the next publication cycle without replaying executions.
+
+Workflows currently have a 55-second deadline, a 1-second guest CPU budget and a global limit of eight executions. An already-running route rejects another invocation, preventing recursive adapter cycles. Different routes execute independently. Browser builds package the pinned QuickJS WASM through the WXT build hook; extension CSP permits WASM compilation without JavaScript `eval`.
 
 ## Agent Bridge (MCP) — WebMCP tools for Codex / Claude Code / Cursor
 

@@ -1,7 +1,10 @@
 // ============================================================
 // Background Service Worker
 // ============================================================
-
+import { installAdapterBackground } from './webmcp/adapter-background'
+import { serializeError as serializeBrowserError } from '../lib/bash-commands/browser/errors'
+import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
+import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow } from './webmcp/discovery'
 import { invokeWebMCPTool } from './webmcp/invoke'
 import {
@@ -970,6 +973,37 @@ CODEX = {
 // ============================================================
 
 export default defineBackground(() => {
+  installBrowserLifecycle()
+  const browserTasks = new Map<string, AbortController>()
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!['browser_command', 'browser_command_ping', 'browser_command_cancel'].includes(message?.type)) return false
+    if (!isTrustedCreatorWeaveSenderUrl(sender.url) || sender.id !== chrome.runtime.id) {
+      sendResponse({ ok: false, error: 'Browser commands require a trusted CreatorWeave page' })
+      return false
+    }
+    if (message.type === 'browser_command_ping') { sendResponse({ ok: true }); return false }
+    const owner = `${sender.tab?.id ?? 'panel'}:${sender.documentId ?? sender.url}:${sender.frameId ?? 0}`
+    if (typeof message.requestId !== 'string' || message.requestId.length > 100) {
+      sendResponse({ ok: false, error: { message: 'Missing browser request ID' } }); return false
+    }
+    const key = `${owner}:${message.requestId}`
+    if (message.type === 'browser_command_cancel') {
+      browserTasks.get(key)?.abort(new Error('Browser command canceled'))
+      sendResponse({ ok: true }); return false
+    }
+    if (browserTasks.has(key)) { sendResponse({ ok: false, error: { message: 'Duplicate browser request ID' } }); return false }
+    const controller = new AbortController()
+    browserTasks.set(key, controller)
+    // Revalidate at the privileged boundary; page messages are untrusted.
+    Promise.resolve().then(async () => {
+      const raw = message.request
+      if (!raw || typeof raw.command !== 'string' || !Array.isArray(raw.positionals) || !raw.options || typeof raw.options !== 'object') throw new Error('Invalid browser command request')
+      const args = [raw.command, ...Object.entries(raw.options).map(([key, value]) => value === true ? `--${key}` : `--${key}=${value}`), '--', ...raw.positionals]
+      const request = parseBrowserCommand({ args, stdin: raw.stdin })
+      return runBrowserRequest(owner, request, controller.signal)
+    }).then(result => sendResponse({ ok: true, result }), error => sendResponse({ ok: false, error: serializeBrowserError(error) })).finally(() => browserTasks.delete(key))
+    return true
+  })
   if (!CODEX_OAUTH_ENABLED) {
     // Store build: Codex OAuth stripped. Alarm listener below still registers
     // the non-Codex branches (schedule triggers), so keep going — only the
@@ -1440,9 +1474,16 @@ export default defineBackground(() => {
     })
   }
 
+  installAdapterBackground(
+    sender => sender.id === chrome.runtime.id && isTrustedCreatorWeaveSenderUrl(sender.url || ''),
+    resolveBoundSidePanelTab,
+  )
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === 'webmcp_provider_call' || (typeof message?.type === 'string' && message.type.startsWith('webmcp_adapter_'))) return false
     // The dedicated bridge listener (registered above) owns these types —
     // answering here would race it and close the channel early.
+    if (['browser_command', 'browser_command_ping', 'browser_command_cancel'].includes(message?.type)) return false
     if (message?.type === 'webmcp_bridge_get_status' || message?.type === 'webmcp_bridge_set_enabled') {
       return false
     }

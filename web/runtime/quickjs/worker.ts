@@ -1,6 +1,5 @@
 /// <reference lib="webworker" />
-import { executeQuickJs } from '@/runtime/quickjs/runtime'
-import { failure, type ExecutionResult, type JsonValue } from '@/runtime/quickjs/types'
+import { executeQuickJs, failure, type ExecutionResult, type JsonValue } from '@creatorweave/quickjs-runtime'
 import type { WorkerRequest, WorkerResponse } from '@/runtime/quickjs/protocol'
 
 declare const self: DedicatedWorkerGlobalScope
@@ -37,7 +36,10 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     const result = await executeQuickJs(
       message.wasm,
       message.request,
-      { globals: message.globals, functions },
+      {
+        globals: message.globals, functions,
+        ...(message.events ? { onEvent: (value: JsonValue) => send({ type: 'event', value }) } : {}),
+      },
       new AbortController().signal
     )
     send({ type: 'result', result })

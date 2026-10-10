@@ -15,6 +15,9 @@
 /// <reference lib="webworker" />
 
 import { WorkerVfsBridgeFs, type VfsRpcInvoker } from './worker-vfs-bridge'
+import { createProxyCommand } from './proxy-command'
+import type { BashCommandResult } from '@/agent/bash-commands/registry'
+import { webmcpCommand } from './webmcp-command'
 import type {
   ToWorkerMessage,
   FromWorkerMessage,
@@ -92,6 +95,7 @@ const pendingVfsRpc = new Map<
 >()
 
 let rpcCounter = 0
+const pendingCommandRpc = new Map<number, (result: BashCommandResult) => void>()
 
 /** RPC invoker wired to postMessage + pending map. */
 const rpcInvoker: VfsRpcInvoker = (request: VfsRpcRequest) => {
@@ -125,6 +129,13 @@ self.onmessage = async (e: MessageEvent<ToWorkerMessage>) => {
       case 'exec':
         await handleExec(msg)
         return
+
+      case 'command-result': {
+        const resolve = pendingCommandRpc.get(msg.rpcId)
+        pendingCommandRpc.delete(msg.rpcId)
+        resolve?.(msg.result)
+        return
+      }
 
       case 'vfs-result':
         handleVfsResult(msg)
@@ -161,8 +172,20 @@ async function handleExec(req: WorkerExecRequest): Promise<void> {
 
   const defaultCwd = rootNames.length > 0 ? `/workspace/${rootNames[0]}` : '/workspace'
 
+  const customCommands = new Map([[webmcpCommand.name, webmcpCommand]])
+  for (const name of req.readOnly ? [] : req.externalCommands ?? []) {
+    customCommands.set(name, createProxyCommand(name, (name, input) => {
+      const rpcId = ++rpcCounter
+      return new Promise(resolve => {
+        pendingCommandRpc.set(rpcId, resolve)
+        postToMain({ type: 'command', requestId, rpcId, name, input })
+      })
+    }))
+  }
+
   const bash: BashInstance = new BashClass({
     fs: bridgeFs as any,
+    customCommands: Array.from(customCommands.values()),
     cwd: cwd || defaultCwd,
     executionLimits: {
       maxCommandCount: 5000,

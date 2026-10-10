@@ -1,7 +1,9 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
-import { type AgentMode } from '../agent-mode'
-import { projectTools } from '@/agent/tool-projection'
-import { invokeTool } from '@/agent/tool-invocation'
+import type { AgentMode } from '../agent-mode'
+import { invokeTool } from '@/services/tool-invocation'
+import { projectToolOutput } from './tool-result-output'
+import type { ChangeDetectionResult } from '@/opfs/types/opfs-types'
+import { RUN_CODE_TOOL, stripRunCodeTrace } from '@/agent/tools/run-code.tool'
 import type { ContextManager } from '../context-manager'
 import type { PiAIProvider } from '../llm/pi-ai-provider'
 import type { Message, ToolCall } from '../message-types'
@@ -9,11 +11,7 @@ import type { ToolRegistry } from '../tool-registry'
 import type { ToolContext } from '../tools/tool-types'
 import { isToolEnvelopeV2 } from '../tools/tool-envelope'
 import type { AgentCallbacks, AgentLoopConfig } from './types'
-import {
-  coerceToolArgs,
-  normalizeToolResult,
-  truncateLargeToolResult,
-} from './tool-execution'
+import { coerceToolArgs, normalizeToolResult, truncateLargeToolResult } from './tool-execution'
 
 /** Extract real token usage from the most recent assistant message's usage field. */
 function extractLastAssistantUsage(messages: Message[]): number | undefined {
@@ -35,7 +33,6 @@ export interface BuildAgentToolsInput {
   getAllMessages: () => Message[]
   getAbortSignal: () => AbortSignal | undefined
   getToolContext: () => ToolContext
-  setToolContext: (context: ToolContext) => void
   provider: PiAIProvider
   contextManager: ContextManager
   toolExecutionTimeout: number
@@ -44,7 +41,7 @@ export interface BuildAgentToolsInput {
 }
 
 export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
-  return projectTools(input.toolRegistry.getToolDefinitionsForMode(input.mode)).modelTools.map((toolDef) => ({
+  return input.toolRegistry.getToolDefinitionsForMode(input.mode).map((toolDef) => ({
     name: toolDef.function.name,
     label: toolDef.function.name,
     description: toolDef.function.description || '',
@@ -70,11 +67,82 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
         // Heuristic estimates are intentionally low (see token-counter.ts) and unreliable
         // for budget calculation — without real data, truncation is skipped entirely.
         const realUsedTokens = extractLastAssistantUsage(input.getAllMessages())
-
-        // 在调用工具前更新 toolContext 的 contextUsage
         const originalToolContext = input.getToolContext()
+        const isRunCode = toolDef.function.name === RUN_CODE_TOOL
 
-        const outcome = await invokeTool(input, {
+        // Truncate model-facing text after separating image bytes from presentation.
+        // If the result exceeds the context budget, write it to an assets file
+        // and return the file path so the Agent can use a subagent to summarize it.
+        const truncateText = (raw: string) =>
+          truncateLargeToolResult({
+            rawResult: raw,
+            toolName: toolDef.function.name,
+            args,
+            toolCallId,
+            workspaceId: originalToolContext.workspaceId ?? undefined,
+            existingTokens: realUsedTokens,
+            maxContextTokens,
+            reserveTokens,
+            estimateTextTokens: (text) =>
+              input.provider.estimateTokens([
+                {
+                  role: 'assistant',
+                  content: text,
+                },
+              ]),
+            writeToAssets: originalToolContext.workspaceId
+              ? async (content, toolName, metadata) => {
+                  try {
+                    const { AssetsBackend } = await import('../tools/backends/assets-backend')
+                    const backend = new AssetsBackend(originalToolContext.workspaceId!)
+                    const safeName = (metadata?.toolName ?? toolName).replace(/[^a-zA-Z0-9_-]/g, '_')
+                    const ts = metadata?.timestamp ?? Date.now()
+                    // Write raw data file (parseable JSON for front-end renderers)
+                    const assetFileName = `overflow_${safeName}_${ts}.txt`
+                    await backend.writeFile(assetFileName, content)
+                    // Write companion metadata file for debugging (tool name, args, token budget)
+                    try {
+                      const metaFileName = `overflow_${safeName}_${ts}.meta.json`
+                      await backend.writeFile(metaFileName, JSON.stringify({
+                        toolName: metadata.toolName,
+                        toolCallId: metadata.toolCallId ?? null,
+                        timestamp: metadata.timestamp,
+                        estimatedTokens: metadata.estimatedTokens,
+                        availableTokens: metadata.availableTokens,
+                        workspaceId: metadata.workspaceId ?? null,
+                        args: metadata.args,
+                      }, null, 2))
+                    } catch { /* non-critical — metadata is best-effort */ }
+                    return assetFileName
+                  } catch (err) {
+                    console.error('[AgentLoop] Failed to write overflow to assets:', err)
+                    return null
+                  }
+                }
+              : undefined,
+          })
+
+        const outcome = await invokeTool({
+          ...input,
+          onResult: async (call, result) => {
+            // These observations belong to this Agent, not the shared executor or WebMCP.
+            let parsed: Record<string, unknown>
+            try { parsed = JSON.parse(result.raw) } catch { return }
+            const elicitation = parsed?._elicitation as { mode: 'binary'; message: string; toolName: string; args: Record<string, unknown>; serverId: string } | undefined
+            if (elicitation?.mode === 'binary' && input.callbacks?.onElicitation) {
+              input.callbacks.onElicitation({ ...elicitation, toolCallId: call.toolCallId })
+              input.onElicitationDetected?.()
+            }
+            if (call.toolName === 'run_python' && parsed?.fileChanges) {
+              try {
+                const { useConversationContextStore } = await import('@/store/conversation-context.store')
+                useConversationContextStore.getState().addChanges(parsed.fileChanges as ChangeDetectionResult)
+              } catch (error) {
+                console.warn('[AgentLoop] Failed to record run_python file changes:', error)
+              }
+            }
+          },
+        }, {
           toolName: toolDef.function.name,
           toolCallId,
           args,
@@ -82,102 +150,40 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
             ...originalToolContext,
             contextUsage: { usedTokens: realUsedTokens ?? 0, maxTokens: maxContextTokens - reserveTokens },
           },
-        })
-        let rawResult = outcome.raw
-        const displayContent = toolDef.function.name === 'run_code' ? rawResult : undefined
-        if (displayContent) {
-          const parsed = JSON.parse(rawResult)
-          // Child traces belong to the UI, never to the model's tool response.
-          const { meta, ...response } = parsed
-          rawResult = JSON.stringify({ ...response, ...(meta?.logs ? { logs: meta.logs } : {}) })
-        }
-
-        // Truncate oversized results before normalizeToolResult.
-        // If the result exceeds the context budget, write it to an assets file
-        // and return the file path so the Agent can use a subagent to summarize it.
-        rawResult = await truncateLargeToolResult({
-          rawResult,
-          toolName: toolDef.function.name,
-          args,
-          toolCallId,
-          workspaceId: originalToolContext.workspaceId ?? undefined,
-          existingTokens: realUsedTokens,
-          maxContextTokens,
-          reserveTokens,
-          estimateTextTokens: (text) =>
-            input.provider.estimateTokens([
-              {
-                role: 'assistant',
-                content: text,
-              },
-            ]),
-          writeToAssets: originalToolContext.workspaceId
-            ? async (content, toolName, metadata) => {
-                try {
-                  const { AssetsBackend } = await import('../tools/backends/assets-backend')
-                  const backend = new AssetsBackend(originalToolContext.workspaceId!)
-                  const safeName = (metadata?.toolName ?? toolName).replace(/[^a-zA-Z0-9_-]/g, '_')
-                  const ts = metadata?.timestamp ?? Date.now()
-                  // Write raw data file (parseable JSON for front-end renderers)
-                  const assetFileName = `overflow_${safeName}_${ts}.txt`
-                  await backend.writeFile(assetFileName, content)
-                  // Write companion metadata file for debugging (tool name, args, token budget)
-                  try {
-                    const metaFileName = `overflow_${safeName}_${ts}.meta.json`
-                    await backend.writeFile(metaFileName, JSON.stringify({
-                      toolName: metadata.toolName,
-                      toolCallId: metadata.toolCallId ?? null,
-                      timestamp: metadata.timestamp,
-                      estimatedTokens: metadata.estimatedTokens,
-                      availableTokens: metadata.availableTokens,
-                      workspaceId: metadata.workspaceId ?? null,
-                      args: metadata.args,
-                    }, null, 2))
-                  } catch { /* non-critical — metadata is best-effort */ }
-                  return assetFileName
-                } catch (err) {
-                  console.error('[AgentLoop] Failed to write overflow to assets:', err)
-                  return null
-                }
-              }
-            : undefined,
+          prepareResult: isRunCode ? stripRunCodeTrace : undefined,
         })
 
-        const normalized = rawResult === outcome.raw ? outcome.presentation : normalizeToolResult(rawResult)
-
-        let finalContent = normalized.content
-        let finalDetails = normalized.details
-        let finalIsError = normalized.isError
-
-        if (finalIsError) {
-          // If the error is already wrapped in a ToolEnvelopeV2 (e.g. from MCP tools),
-          // return the raw envelope JSON as-is so the LLM receives structured error data.
-          // Only throw for non-envelope errors (legacy/internal tools).
-          if (isToolEnvelopeV2(finalDetails.parsed)) {
-            finalContent = rawResult
-            finalIsError = false
-          } else if (outcome.deferred.length === 0) {
-            throw new Error(
-              finalContent.replace(/^Error(?:\s*\[[^\]]+\])?:\s*/i, '') || 'Tool execution failed'
-            )
-          }
+        const finalDetails = outcome.presentation.details
+        let finalContent = outcome.presentation.content
+        if (outcome.presentation.isError) {
+          if (isToolEnvelopeV2(finalDetails.parsed)) finalContent = outcome.prepared
+          else throw new Error(finalContent.replace(/^Error(?:\s*\[[^\]]+\])?:\s*/i, '') || 'Tool execution failed')
         }
-
+        // Hooks may replace the presentation. Honor that replacement without reviving old output.
+        const replaced = outcome.presentation.content !== normalizeToolResult(outcome.prepared).content
+        const projected = replaced
+          ? { text: finalContent, output: [], isError: false }
+          : projectToolOutput(toolDef.function.name, finalDetails.parsed, finalContent)
+        const supportsVision = input.provider.getModel?.().input?.includes('image') ?? false
+        const content = projected.text ? [{ type: 'text' as const, text: projected.text }] : []
+        const parts = []
+        for (const part of projected.output) {
+          if (part.type === 'text') parts.push(part)
+          else if (supportsVision) parts.push(part)
+          else parts.push({ type: 'text' as const, text: '[Image output omitted: this model does not accept images. Use ocr explicitly for text recognition.]' })
+        }
+        const assembled = [...content, ...parts]
+        const modelText = assembled.filter(p => p.type === 'text').map(p => p.text).join('\n')
+        const boundedText = modelText ? await truncateText(modelText) : modelText
         return {
-          content: (() => {
-            // If the envelope carried multimodal contentParts (e.g. a
-            // screenshot from page_screenshot), the text-only envelope.json
-            // string is meaningless to the model. Lift the parts out so the
-            // downstream fetcher can emit image_url content parts.
-            const parsed = finalDetails.parsed as
-              | { contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> }
-              | undefined
-            if (parsed && Array.isArray(parsed.contentParts) && parsed.contentParts.length > 0) {
-              return [...parsed.contentParts, ...outcome.deferred.flatMap(event => event.content)]
-            }
-            return [{ type: 'text' as const, text: finalContent }, ...outcome.deferred.flatMap(event => event.content)]
-          })(),
-          details: { ...finalDetails, deferred: outcome.deferred, displayContent },
+          content: boundedText === modelText ? assembled : [
+            { type: 'text' as const, text: boundedText }, ...assembled.filter(p => p.type === 'image'),
+          ],
+          details: {
+            ...finalDetails,
+            ...(projected.isError ? { executionError: true } : {}),
+            ...(isRunCode || toolDef.function.name === 'read_image' ? { displayContent: outcome.raw } : {}),
+          },
         }
       } catch (toolError) {
         if (toolError instanceof Error && toolError.message.includes('timed out')) {

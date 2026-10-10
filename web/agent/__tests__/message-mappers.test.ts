@@ -18,6 +18,18 @@ describe('message-mappers', () => {
     expect(JSON.stringify(wire)).not.toContain('PRIVATE_TRACE')
     expect(JSON.stringify(wire)).toContain('final result')
   })
+  it('preserves interleaved text and images exactly through persistence and replay', () => {
+    const content = [
+      {type:'text',text:'first'}, {type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'},
+      {type:'text',text:'second'}, {type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'},
+    ]
+    const mapped = piToInternalMessage({role:'toolResult',toolCallId:'parent',toolName:'run_code',content,isError:false,timestamp:1} as never)!
+    expect(mapped.contentParts).toEqual(content)
+    const messages: Message[] = [{id:'a',role:'assistant',content:null,timestamp:0,toolCalls:[{id:'parent',type:'function',function:{name:'run_code',arguments:'{}'}}]},mapped]
+    const wire = internalToPiMessages(messages,{api:'openai',provider:'openai',id:'test-model',input:['text','image']} as never,'')
+    expect(wire[1]).toMatchObject({role:'toolResult',content})
+    expect(JSON.stringify(wire).match(/iVBORw0KGgo=/g)).toHaveLength(2)
+  })
   it('parseToolArgs returns invalid marker for malformed JSON', () => {
     expect(parseToolArgs('{bad-json')).toEqual({ __invalid_arguments: true })
   })

@@ -1,3 +1,4 @@
+import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 /**
  * Tool Registry - manages tool registration, lookup, and execution.
  *
@@ -21,8 +22,14 @@ const TOOL_ALIASES: Record<string, string> = {
   sync: 'sync-to-opfs', // renamed in PR-3 (tool authorization redesign)
 }
 
+// Import run_code tool
+import {
+  RUN_CODE_TOOL,
+  runCodeDefinition,
+  runCodeExecutor,
+  runCodePromptDoc,
+} from './tools/run-code.tool'
 // Import read tool
-import { runCodeDefinition, runCodeExecutor, runCodePromptDoc } from '@/agent/tools/run-code.tool'
 import { readDefinition, readExecutor, readPromptDoc } from './tools/read.tool'
 // Import write tool
 import { writeDefinition, writeExecutor, writePromptDoc } from './tools/write.tool'
@@ -324,7 +331,7 @@ export class ToolRegistry {
   /** Get all tool definitions (for LLM API), respecting feature flags */
   getToolDefinitions(): ToolDefinition[] {
     return this.filterByFeatureFlags(
-      Array.from(this.tools.values()).map((entry) => entry.definition),
+      Array.from(this.tools.values()).map((entry) => this.withBashCommands(entry.definition)),
     )
   }
 
@@ -334,7 +341,7 @@ export class ToolRegistry {
    * In 'act' mode, all tools are returned.
    */
   getToolDefinitionsForMode(mode: AgentMode): ToolDefinition[] {
-    let definitions = Array.from(this.tools.values()).map((entry) => entry.definition)
+    let definitions = Array.from(this.tools.values()).map((entry) => this.withBashCommands(entry.definition, mode))
 
     // Filter by feature flags first
     definitions = this.filterByFeatureFlags(definitions)
@@ -345,6 +352,19 @@ export class ToolRegistry {
 
     // Plan mode: filter to read-only tools only
     return definitions.filter(tool => isToolAllowedInMode(tool.function.name, mode))
+  }
+
+  private withBashCommands(definition: ToolDefinition, mode: AgentMode = 'act'): ToolDefinition {
+    if (definition.function.name !== 'bash' || mode !== 'act') return definition
+    const manual = bashCommandRegistry.describe()
+    if (!manual) return definition
+    return {
+      ...definition,
+      function: {
+        ...definition.function,
+        description: `${definition.function.description}\n\nAdditional registered bash commands (these override same-name commands):\n${manual}`,
+      },
+    }
   }
 
   /** Filter out tools disabled by feature flags (e.g. batch_spawn) */
@@ -389,7 +409,8 @@ export class ToolRegistry {
     }
 
     try {
-      if (name === 'run_code') return await entry.executor(args, context)
+      // run_code may have side effects; never auto-retry the whole program.
+      if (name === RUN_CODE_TOOL) return await entry.executor(args, context)
       // Use auto-retry for transient errors
       return await withAutoRetry(async () => entry.executor(args, context))
     } catch (error) {

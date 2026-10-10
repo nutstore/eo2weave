@@ -1,11 +1,11 @@
-import { preflight } from '@/runtime/quickjs/preflight'
 import {
+  preflightFailure,
   failure,
   jsonText,
   type ExecuteRequest,
   type ExecutionResult,
   type RuntimeBindings,
-} from '@/runtime/quickjs/types'
+} from '@creatorweave/quickjs-runtime'
 import type { WorkerRequest, WorkerResponse } from '@/runtime/quickjs/protocol'
 
 let modulePromise: Promise<WebAssembly.Module> | null = null
@@ -28,17 +28,8 @@ export async function executeCode(
   bindings: RuntimeBindings,
   signal: AbortSignal
 ): Promise<ExecutionResult> {
-  const diagnostics = preflight(request.code)
-  if (diagnostics.length)
-    return {
-      ok: false,
-      error: {
-        code: 'JS_PREFLIGHT_FAILED',
-        message: diagnostics
-          .map((d) => `${d.message} at ${d.line}:${d.column}\n${d.frame}`)
-          .join('\n'),
-      },
-    }
+  const invalid = preflightFailure(request.code)
+  if (invalid) return invalid
   if (signal.aborted)
     return { ok: false, error: { code: 'JS_CANCELED', message: 'Execution canceled' } }
   const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
@@ -83,11 +74,20 @@ export async function executeCode(
         finish(message.result)
         return
       }
+      if (message.type === 'event') {
+        try {
+          if (!bindings.onEvent) throw new Error('Execution events unavailable')
+          jsonText(message.value, request.limits.maxTransferBytes)
+          bindings.onEvent(message.value)
+        } catch (error) {
+          finish({ ok: false, error: failure(error) })
+        }
+        return
+      }
       let result: ExecutionResult
       try {
         if (!Object.hasOwn(bindings.functions, message.name))
           throw new Error(`Unknown host function: ${message.name}`)
-        jsonText(message.args, request.limits.maxTransferBytes)
         const value = await bindings.functions[message.name]!(message.args, controller.signal)
         result = { ok: true, value: JSON.parse(jsonText(value, request.limits.maxTransferBytes)) }
       } catch (error) {
@@ -107,6 +107,7 @@ export async function executeCode(
               wasm,
               globals: bindings.globals,
               functions: Object.keys(bindings.functions),
+              events: !!bindings.onEvent,
             } satisfies WorkerRequest)
         })
         .catch((error) => finish({ ok: false, error: failure(error) }))

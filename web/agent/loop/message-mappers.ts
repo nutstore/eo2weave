@@ -1,6 +1,7 @@
 import type { AgentMessage as PiAgentMessage } from '@earendil-works/pi-agent-core'
 import type { Api, Message as PiMessage, Model } from '@earendil-works/pi-ai'
 import { createAssistantMessage, createToolMessage, type Message, type ToolCall } from '../message-types'
+import type { DeferredContext } from '../deferred-context'
 import { createUsageSnapshot } from '../usage-cost'
 import { renderPageContextBlock } from '../workspace-assistant-context'
 import { ensureToolCallResults } from './tool-call-results'
@@ -319,14 +320,11 @@ export function piToInternalMessage(message: PiAgentMessage): Message | null {
       content: text,
       ...(imageParts.length > 0
         ? {
-            contentParts: [
-              ...imageParts,
-              ...(text ? [{ type: 'text' as const, text }] : []),
-            ],
+            contentParts: structuredClone(message.content),
           }
         : {}),
     })
-    const details = message.details as { displayContent?: string; deferred?: import('@/agent/deferred-context').DeferredContext[] } | undefined
+    const details = message.details as { displayContent?: string; deferred?: DeferredContext[] } | undefined
     tool.displayContent = details?.displayContent
     tool.deferredContext = details?.deferred
     tool.timestamp = message.timestamp || tool.timestamp || now

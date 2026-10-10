@@ -1,3 +1,4 @@
+import { isCodeRunResult } from '@creatorweave/shared/code-output'
 /**
  * ToolCallDisplay - renders tool call details with tool-specific views.
  *
@@ -30,6 +31,7 @@ import type { ToolRenderCtx } from './tool-renderers/types'
 
 // Side-effect imports: each file calls registerRenderer() on load
 import './tool-renderers/RunCodeRenderer'
+import './tool-renderers/ReadImageRenderer'
 import './tool-renderers/FileReadRenderer'
 import './tool-renderers/FileEditRenderer'
 import './tool-renderers/SearchRenderer'
@@ -180,7 +182,8 @@ function buildCtx(props: ToolCallDisplayProps): ToolRenderCtx {
     ? true
     : result ? result.includes('"error"') : false
   const hasExplicitFailure = parsedResult?.success === false
-  const isError = hasToolError || hasExplicitFailure
+  const isError = toolCall.function.name === 'run_code' && isCodeRunResult(parsedResult?.data)
+    ? !parsedResult.data.ok : hasToolError || hasExplicitFailure
   const isStreaming = streamingArgs !== undefined && !result
 
   return {

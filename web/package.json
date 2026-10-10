@@ -31,13 +31,14 @@
     "@babel/parser": "7.28.5",
     "@creatorweave/config": "workspace:*",
     "@creatorweave/i18n": "workspace:*",
+    "@creatorweave/quickjs-runtime": "workspace:*",
     "@creatorweave/shared": "workspace:*",
     "@creatorweave/skills-system": "workspace:*",
     "@creatorweave/ui": "workspace:*",
     "@earendil-works/pi-agent-core": "^0.78.0",
     "@earendil-works/pi-ai": "^0.78.0",
     "@iconify/react": "^6.0.2",
-    "@mcp-b/webmcp-polyfill": "4.0.0",
+    "@mcp-b/webmcp-polyfill": "6.0.0",
     "@mertdeveci55/univer-import-export": "^0.2.1",
     "@monaco-editor/react": "^4.7.0",
     "@mozilla/readability": "^0.6.0",
@@ -84,7 +85,6 @@
     "pako": "^2.1.0",
     "pdfjs-dist": "^4.10.38",
     "pyodide": "^0.29.3",
-    "quickjs-wasi": "3.6.1",
     "react": "^18.3.1",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^18.3.1",
@@ -108,7 +108,8 @@
     "xlsx": "^0.18.5",
     "zod": "^4.4.3",
     "zod-from-json-schema": "^0.5.2",
-    "zustand": "^4.5.5"
+    "zustand": "^4.5.5",
+    "@creatorweave/fs-provider": "workspace:*"
   },
   "devDependencies": {
     "@eslint/js": "8",
