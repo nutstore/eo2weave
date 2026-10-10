@@ -156,9 +156,6 @@ export const extension = {
   outdatedBannerZipAction: "パッケージをダウンロード",
 
   // ウェブ版より新しいバナー
-  newerBannerTitle: "拡張機能は最新です",
-  newerBannerDescription: "拡張機能 v{current} はこのウェブビルド (v{web}) より新しいです。そのままご利用いただけます — 更新して再同期してください。",
-  newerBannerRefreshAction: "ページを更新",
 
   // モバイル通知
   mobileNotice: "ブラウザ拡張機能はデスクトップでのみ利用できます。お使いのパソコンの Chrome または Edge でこのページを開いてインストールしてください。",

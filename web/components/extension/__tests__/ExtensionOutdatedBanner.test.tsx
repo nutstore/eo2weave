@@ -51,8 +51,8 @@ describe('ExtensionOutdatedBanner', () => {
     setStore({ extensionVersion: '0.9.0', outdated: true })
     render(<ExtensionOutdatedBanner />)
     await waitFor(() => {
-      // The warning banner uses the AlertTriangle icon + outdated copy.
-      expect(document.querySelector('.bg-warning')).not.toBeNull()
+      // The warning banner container carries the warning gradient styling.
+      expect(document.querySelector('[class*="from-warning-50"]')).not.toBeNull()
     })
   })
 

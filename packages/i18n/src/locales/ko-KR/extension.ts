@@ -156,9 +156,6 @@ export const extension = {
   outdatedBannerZipAction: "패키지 다운로드",
 
   // 웹 버전보다 최신 배너
-  newerBannerTitle: "확장 프로그램이 최신입니다",
-  newerBannerDescription: "확장 프로그램 v{current}은(는) 이 웹 빌드 (v{web})보다 최신입니다. 그대로 사용하셔도 됩니다 — 새로고침하여 재동기화하세요.",
-  newerBannerRefreshAction: "페이지 새로고침",
 
   // 모바일 알림
   mobileNotice: "브라우저 확장 프로그램은 데스크톱에서만 사용할 수 있습니다. PC의 Chrome 또는 Edge로 이 페이지를 열어 설치해 주세요.",

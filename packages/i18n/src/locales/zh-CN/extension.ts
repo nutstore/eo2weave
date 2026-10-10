@@ -156,9 +156,6 @@ export const extension = {
   outdatedBannerZipAction: "下载安装包",
 
   // 插件版本高于网页端提示横幅
-  newerBannerTitle: "插件已是最新",
-  newerBannerDescription: "插件版本 (v{current}) 比当前网页版本 (v{web}) 还新，功能一切正常，刷新页面即可同步。",
-  newerBannerRefreshAction: "刷新页面",
 
   // Mobile notice
   mobileNotice: "浏览器扩展仅支持桌面端，请在电脑上的 Chrome 或 Edge 浏览器中打开本页面进行安装。",

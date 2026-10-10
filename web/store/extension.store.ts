@@ -236,8 +236,6 @@ interface ExtensionState {
   guideMethod: GuideMethod | null
   /** When the outdated banner was last dismissed */
   outdatedBannerDismissedAt: number | null
-  /** When the "extension newer than web" banner was last dismissed */
-  newerBannerDismissedAt: number | null
 
   // --- Actions ---
   checkStatus: () => ExtensionStatus
@@ -253,8 +251,6 @@ interface ExtensionState {
   shouldShowOutdatedBanner: () => boolean
   dismissOutdatedBanner: () => void
   /** Whether the informational "extension newer than web" banner should show */
-  shouldShowNewerBanner: () => boolean
-  dismissNewerBanner: () => void
   openInstallGuide: () => void
   closeInstallGuide: () => void
   goToStep: (step: number) => void
@@ -284,7 +280,6 @@ export const useExtensionStore = create<ExtensionState>()(
       installGuideOpen: false,
       guideMethod: null as GuideMethod | null,
       outdatedBannerDismissedAt: null as number | null,
-      newerBannerDismissedAt: null as number | null,
 
       // Actions
       checkStatus: () => {
@@ -532,20 +527,6 @@ export const useExtensionStore = create<ExtensionState>()(
         set({ outdatedBannerDismissedAt: Date.now() })
       },
 
-      shouldShowNewerBanner: () => {
-        const { status, newerThanWeb, newerBannerDismissedAt } = get()
-        if (status !== 'installed' || !newerThanWeb) return false
-        if (newerBannerDismissedAt) {
-          const elapsed = Date.now() - newerBannerDismissedAt
-          if (elapsed < OUTDATED_BANNER_DISMISS_DURATION_MS) return false
-        }
-        return true
-      },
-
-      dismissNewerBanner: () => {
-        set({ newerBannerDismissedAt: Date.now() })
-      },
-
       setStatus: (status: ExtensionStatus) => {
         set({ status })
       },
@@ -559,7 +540,6 @@ export const useExtensionStore = create<ExtensionState>()(
         installGuideStep: state.installGuideStep,
         guideMethod: state.guideMethod,
         outdatedBannerDismissedAt: state.outdatedBannerDismissedAt,
-        newerBannerDismissedAt: state.newerBannerDismissedAt,
       }),
     },
   ),
