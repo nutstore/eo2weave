@@ -4,7 +4,7 @@ import type { FromWorkerMessage, ToWorkerMessage, WorkerExecRequest } from '@/ag
 import { bashCommandRegistry } from './registry'
 
 vi.mock('@/agent/tools/bash-worker/vfs-rpc-handler', () => ({
-  handleVfsRpc: vi.fn(), handleAgentRpc: vi.fn(),
+  handleVfsRpc: vi.fn(),
 }))
 
 class MockWorker {

@@ -1,7 +1,9 @@
+import type { FsStat } from '@creatorweave/fs-provider'
+
 /**
  * Known backend label strings for type-safe comparisons.
  */
-export type BackendLabel = 'workspace' | 'agent' | 'assets' | 'skills' | 'webmcp'
+export type BackendLabel = 'workspace' | 'agent' | 'assets' | 'skills' | 'provider'
 
 /**
  * VFS Backend — Adapter interface for unified file I/O across storage backends.
@@ -19,6 +21,7 @@ export interface VfsDirEntry {
   path: string
   kind: 'file' | 'directory'
   size?: number
+  mtime?: number
 }
 
 /** Options for readFile */
@@ -77,6 +80,11 @@ export interface VfsBackend {
    * Used by tools for backend-specific logic (pending tracking, staleness checks, etc.)
    */
   readonly label: BackendLabel
+
+  /** Metadata without reading file contents. */
+  stat?(path: string): Promise<FsStat>
+  /** Create an empty directory; writes may also create parents. */
+  mkdir?(path: string, options?: { recursive?: boolean }): Promise<void>
 
   /**
    * Read a file's content.

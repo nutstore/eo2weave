@@ -18,8 +18,8 @@ export function getReadStateKey(target: ResolvedVfsTarget): string {
   if (target.kind === 'skills') {
     return `skills:${target.path}`
   }
-  if (target.kind === 'webmcp') {
-    return `webmcp:${target.path}`
+  if (target.kind === 'external') {
+    return `external:${target.mountName}:${target.path}`
   }
   // assets
   return `assets:${target.path}`

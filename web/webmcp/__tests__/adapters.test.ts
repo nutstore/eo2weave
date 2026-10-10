@@ -9,9 +9,9 @@ describe('package validation', () => {
   it('reads a multi-tool package and normalizes relative source paths', async () => {
     const metadata = { ...manifest, tools: [manifest.tools[0], { ...manifest.tools[0], name: 'other', path: './nested/other.js' }] }
     const readFile = vi.fn(async (path: string) => path.endsWith('.json') ? JSON.stringify(metadata) : source)
-    const result = await readPackage({ readFile }, '/webmcp/com.example.tools/')
+    const result = await readPackage({ readFile }, '/external/webmcp/com.example.tools/')
     expect(result.manifest.tools).toHaveLength(2)
-    expect(readFile).toHaveBeenCalledWith('/webmcp/com.example.tools/nested/other.js')
+    expect(readFile).toHaveBeenCalledWith('/external/webmcp/com.example.tools/nested/other.js')
     expect(result.sources['nested/other.js']).toBe(source)
   })
   it.each(['../escape.js', '/absolute.js', './nested/../../escape.js', 'nested\\file.js', 'x.ts'])('rejects unsafe source paths %s', path => {
@@ -92,8 +92,8 @@ describe('package validation', () => {
     expect(() => parseWorkflow(source.replace("outputSchema: { type: 'string' }", "outputSchema: { $ref: 'https://remote.test/schema' }"))).toThrow()
   })
   it('provides package validation errors and shell exit codes', async () => {
-    const context = { cwd: '/webmcp', fs: { resolvePath: (_: string, p: string) => p, readFile: async (p: string) => p.endsWith('.json') ? JSON.stringify(manifest) : source } }
-    const result = await webmcpCommand.execute(['validate', '/webmcp/com.example.tools'], context as never)
+    const context = { cwd: '/external/webmcp', fs: { resolvePath: (_: string, p: string) => p, readFile: async (p: string) => p.endsWith('.json') ? JSON.stringify(manifest) : source } }
+    const result = await webmcpCommand.execute(['validate', '/external/webmcp/com.example.tools'], context as never)
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('com.example.tools@1.0.0')
     expect((await webmcpCommand.execute([], context as never)).exitCode).toBe(2)

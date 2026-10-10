@@ -78,6 +78,7 @@ const nextConfig = {
     '@creatorweave/i18n',
     '@creatorweave/quickjs-runtime',
     '@creatorweave/shared',
+    '@creatorweave/fs-provider',
     '@creatorweave/skills-system',
     '@creatorweave/ui',
   ],

@@ -31,7 +31,7 @@ export const writeDefinition: ToolDefinition = {
   function: {
     name: 'write',
     description:
-      'Write content to a single file. Creates directories if needed. Returns confirmation. Supports workspace relative paths and vfs://workspace/..., vfs://agents/{id}/..., or vfs://webmcp/....',
+      'Write content to a single file. Creates directories if needed. Returns confirmation. Supports workspace relative paths and vfs://workspace/..., vfs://agents/{id}/..., or vfs://external/{name}/....',
     parameters: {
       type: 'object',
       properties: {
@@ -269,7 +269,7 @@ export const writePromptDoc: ToolPromptDoc = {
   category: 'file-ops',
   section: '### File Operations',
   lines: [
-    '- `write(path, content)` - Create new files or completely replace a file (supports `vfs://workspace/...`, `vfs://agents/{id}/...`, `vfs://webmcp/...`)',
+    '- `write(path, content)` - Create new files or completely replace a file (supports `vfs://workspace/...`, `vfs://agents/{id}/...`, `vfs://external/{name}/...`)',
   ],
 }
 

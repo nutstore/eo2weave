@@ -1,3 +1,5 @@
+import { fromFileSystemHandle } from '@creatorweave/fs-provider/file-system-handle'
+
 /**
  * AgentBackend — VfsBackend adapter for agent namespace files.
  *
@@ -25,6 +27,18 @@ export class AgentBackend implements VfsBackend {
     private agentManager: AgentManager,
     private agentId: string,
   ) {}
+
+  async stat(path: string) {
+    const root = await this.getDirectoryHandle()
+    if (!root) throw new Error('ENOENT: directory unavailable')
+    return fromFileSystemHandle(root).stat(path)
+  }
+
+  async mkdir(path: string, options?: { recursive?: boolean }) {
+    const root = await this.getDirectoryHandle()
+    if (!root) throw new Error('ENOENT: directory unavailable')
+    await fromFileSystemHandle(root).mkdir(path, options)
+  }
 
   async readFile(path: string, options?: VfsReadOptions): Promise<VfsReadResult> {
     const content = await this.agentManager.readPath(this.agentId, path)

@@ -63,7 +63,7 @@ describe('external tool bridge error isolation', () => {
   })
   it('keeps untrusted WebMCP JSON machine-readable and wraps only its Agent presentation', async () => {
     const value = {status:'completed',result:{ok:true,value:1,output:[{type:'image',data:'iVBORw0KGgo=',mimeType:'image/png'}]}}
-    const webTool = {name:'picture',fullName:'picture',groupKey:'example_com',hostname:'example.com',description:'',inputSchema,toolsetSignature:'signature',apiMode:'navigatorModelContext' as const,representativeTabId:1,annotations:{untrustedContentHint:true}}
+    const webTool = {name:'picture',fullName:'picture',groupKey:'example_com',hostname:'example.com',description:'',inputSchema,toolsetSignature:'signature',apiMode:'documentModelContext' as const,representativeTabId:1,annotations:{untrustedContentHint:true}}
     mocks.getMCPManager.mockReturnValue({getAllTools:()=>new Map()})
     mocks.getWebMCPState.mockReturnValue({getEnabledTools:()=>[webTool],getPreferredTabIdForTool:()=>1,recordToolInvocation:vi.fn()})
     mocks.getWebMCPBridge.mockReturnValue({webMCPInvoke:vi.fn().mockResolvedValue({ok:true,result:value,hostname:'example.com',toolName:'picture'})})
@@ -107,7 +107,7 @@ describe('external tool bridge error isolation', () => {
       description: '',
       inputSchema,
       toolsetSignature: 'signature',
-      apiMode: 'navigatorModelContext' as const,
+      apiMode: 'documentModelContext' as const,
       representativeTabId: 1,
       annotations: { untrustedContentHint: true },
     }
@@ -145,7 +145,7 @@ describe('external tool bridge error isolation', () => {
       description: '',
       inputSchema,
       toolsetSignature: 'signature',
-      apiMode: 'navigatorModelContext' as const,
+      apiMode: 'documentModelContext' as const,
       representativeTabId: 1,
     }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
@@ -181,7 +181,7 @@ describe('external tool bridge error isolation', () => {
       description: '',
       inputSchema,
       toolsetSignature: 'signature',
-      apiMode: 'navigatorModelContext' as const,
+      apiMode: 'documentModelContext' as const,
       representativeTabId: 1,
       annotations: { untrustedContentHint: true },
     }

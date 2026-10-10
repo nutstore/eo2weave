@@ -20,6 +20,9 @@ importers:
       '@creatorweave/behavior-tree':
         specifier: workspace:*
         version: link:../packages/behavior-tree
+      '@creatorweave/fs-provider':
+        specifier: workspace:*
+        version: link:../packages/fs-provider
       '@creatorweave/quickjs-runtime':
         specifier: workspace:*
         version: link:../packages/quickjs-runtime
@@ -90,6 +93,12 @@ importers:
         version: 18.3.18
       typescript:
         specifier: ^5.3.3
+        version: 5.7.3
+
+  packages/fs-provider:
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
         version: 5.7.3
 
   packages/i18n:
@@ -314,6 +323,9 @@ importers:
       '@creatorweave/config':
         specifier: workspace:*
         version: link:../packages/config
+      '@creatorweave/fs-provider':
+        specifier: workspace:*
+        version: link:../packages/fs-provider
       '@creatorweave/i18n':
         specifier: workspace:*
         version: link:../packages/i18n
@@ -339,8 +351,8 @@ importers:
         specifier: ^6.0.2
         version: 6.0.2(react@18.3.1)
       '@mcp-b/webmcp-polyfill':
-        specifier: 4.0.0
-        version: 4.0.0
+        specifier: 6.0.0
+        version: 6.0.0
       '@mertdeveci55/univer-import-export':
         specifier: ^0.2.1
         version: 0.2.1(@univerjs/core@0.22.1(react@18.3.1)(rxjs@7.8.2))
@@ -1327,16 +1339,9 @@ packages:
   '@kurkle/color@0.3.4':
     resolution: {integrity: sha512-M5UknZPHRu3DEDWoipU6sE8PdkZ6Z/S+v4dD+Ke8IaNlpdSQah50lz1KtcFBa2vsdOnwbbnxJwVM4wty6udA5w==}
 
-  '@mcp-b/webmcp-polyfill@4.0.0':
-    resolution: {integrity: sha512-7M6WS3IcxaIEhidbS9N7wrrGjtJf474Vi4Fn1hGkFkmYFT5EoFw/kS/4CSdUR/KmlInO1kyluHRY6t3avMQfFw==}
-    engines: {node: '>=18'}
-
   '@mcp-b/webmcp-polyfill@6.0.0':
     resolution: {integrity: sha512-Z1wYbaYjwEM1FjxHFyw1oRgDAuLCjcQYeAOHtNNlqZ3n1aVA44Ci0kQrnpi7gySZbeiva2zMEU8XO6EG5MS8FA==}
     engines: {node: '>=20'}
-
-  '@mcp-b/webmcp-types@4.0.0':
-    resolution: {integrity: sha512-CUBBmiut1UBsiD3FAF6xrLKeKAuJkzd6/BlL1C/uo8sVpwY42NW4mls9rLcTxmLF/8Cj5/ZOwJiLzXl/T3GIQg==}
 
   '@mdx-js/react@3.1.1':
     resolution: {integrity: sha512-f++rKLQgUVYDAtECQ6fn/is15GkEH9+nZPM3MS0RcxVqoTfawHvDlSCH7JbMhAM6uJ32v3eXLvLmLvjGu7PTQw==}
@@ -2393,9 +2398,6 @@ packages:
   '@sqlite.org/sqlite-wasm@3.51.2-build6':
     resolution: {integrity: sha512-5ibsgipkqcLINZ5qNSp5KfrtL6KwiNVtwBksNO6zhTghhLmEf3/u1sPoAkgH5RzuLpMw7zi50IWgkZ0WhfqpaA==}
     engines: {node: '>=22'}
-
-  '@standard-schema/spec@1.1.0':
-    resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
   '@storybook/addon-actions@8.6.14':
     resolution: {integrity: sha512-mDQxylxGGCQSK7tJPkD144J8jWh9IU9ziJMHfB84PKpI/V5ZgqMDnpr2bssTrUaGDqU5e1/z8KcRF+Melhs9pQ==}
@@ -8792,17 +8794,9 @@ snapshots:
 
   '@kurkle/color@0.3.4': {}
 
-  '@mcp-b/webmcp-polyfill@4.0.0':
-    dependencies:
-      '@cfworker/json-schema': 4.1.1
-      '@mcp-b/webmcp-types': 4.0.0
-      '@standard-schema/spec': 1.1.0
-
   '@mcp-b/webmcp-polyfill@6.0.0':
     dependencies:
       webmcp-types: 0.1.9
-
-  '@mcp-b/webmcp-types@4.0.0': {}
 
   '@mdx-js/react@3.1.1(@types/react@18.3.18)(react@18.3.1)':
     dependencies:
@@ -9844,8 +9838,6 @@ snapshots:
       tslib: 2.8.1
 
   '@sqlite.org/sqlite-wasm@3.51.2-build6': {}
-
-  '@standard-schema/spec@1.1.0': {}
 
   '@storybook/addon-actions@8.6.14(storybook@8.6.14(prettier@3.8.1))':
     dependencies:

@@ -1,7 +1,4 @@
-export type WebMCPApiMode =
-  | 'documentModelContext'
-  | 'navigatorModelContext'
-  | 'modelContextTesting'
+export type WebMCPApiMode = 'documentModelContext'
 
 export interface WebMCPDiscoveredTool {
   name: string

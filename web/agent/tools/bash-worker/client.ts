@@ -7,7 +7,7 @@
  * 3. Enforce wall-clock timeout via `worker.terminate()` (the ONLY way to
  *    truly interrupt a CPU-bound bash interpreter — Promise.race can't).
  * 4. Wire VFS RPC: listen for worker `vfs` requests, dispatch to
- *    `handleVfsRpc` / `handleAgentRpc`, send back `vfs-result`.
+ *    `handleVfsRpc`, send back `vfs-result`.
  * 5. Support AbortSignal (user "stop") — also via terminate.
  *
  * After terminate, the worker is destroyed; the next exec call recreates it.
@@ -26,7 +26,7 @@ import type {
   VfsRpcResponse,
   WorkerInitMessage,
 } from './protocol'
-import { handleVfsRpc, handleAgentRpc, type VfsRpcHandlerConfig } from './vfs-rpc-handler'
+import { handleVfsRpc, type VfsRpcHandlerConfig } from './vfs-rpc-handler'
 import { ToolTimeoutError } from '../tool-utils'
 import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from '../agent-file-protection'
 
@@ -290,10 +290,7 @@ async function handleCommandRequest(req: CommandRpcRequest, originWorker: Worker
 async function handleVfsRequest(req: VfsRpcRequest, config: VfsRpcHandlerConfig): Promise<void> {
   let resp: VfsRpcResponse
   try {
-    resp =
-      req.backend === 'agent'
-        ? await handleAgentRpc(req, config)
-        : await handleVfsRpc(req, config)
+    resp = await handleVfsRpc(req, config)
   } catch (err) {
     // Should not happen (handlers catch internally), but guard against surprises
     resp = {

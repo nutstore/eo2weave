@@ -9,6 +9,8 @@
 // not in the background service worker.
 // ============================================================
 
+import { installWebMcpProvider } from './webmcp/provider'
+import { isTrustedCreatorWeaveSenderUrl } from '@creatorweave/shared'
 import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
 import { installBrowserCommand } from '../lib/bash-commands/browser/provider'
@@ -1095,10 +1097,13 @@ export default defineContentScript({
     };
 
     const disposeBrowserCommand = installBrowserCommand(sendToBridge)
+    const disposeProvider = isTrustedCreatorWeaveSenderUrl(location.href)
+      ? installWebMcpProvider(sendToBridge) : () => {}
 
     ;(window as any).__agentWebBridgeState = {
       dispose() {
         disposeBrowserCommand()
+        disposeProvider()
         window.removeEventListener('message', onBridgeMessage)
         window.removeEventListener('message', onScheduleTrigger)
         for (const [id, pending] of _pending) {

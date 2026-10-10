@@ -73,23 +73,6 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
       }))
   }
 
-  const getDocumentModelContext = () => (document as any)?.modelContext
-  const getNavigatorModelContext = () => (navigator as any)?.modelContext
-  const getTestingModelContext = () => (navigator as any)?.modelContextTesting
-
-  // Choose before invocation so side-effecting legacy tools are never retried.
-  const callExecuteTool = (
-    modelContext: any,
-    targetTool: any,
-    args: Record<string, unknown>,
-  ): Promise<unknown> => {
-    const input =
-      modelContext?.__isWebMCPPolyfill === true
-        ? JSON.stringify(args || {})
-        : args || {}
-    return modelContext.executeTool(targetTool, input)
-  }
-
   const resolveApi = (): {
     mode: WebMCPApiMode
     getTools: () => Promise<WebMCPToolMeta[]>
@@ -108,6 +91,14 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
         return null
       }
 
+      // The v6 polyfill accepts an object. Chromium's native ModelContext
+      // currently accepts serialized JSON; select its boundary before execution.
+      const ModelContext = (globalThis as any).ModelContext
+      const usesNativeInput =
+        typeof ModelContext === 'function' &&
+        modelContext instanceof ModelContext &&
+        Function.prototype.toString.call(ModelContext).includes('[native code]')
+
       return {
         mode,
         getTools: async () => normalizeTools(await modelContext.getTools()),
@@ -121,33 +112,13 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
             throw new Error(`Tool not found in tab: ${toolName}`)
           }
 
-          return callExecuteTool(modelContext, targetTool, args || {})
+          // Keep this dependency-free probe in sync with agent-core.ts.
+          return modelContext.executeTool(targetTool, usesNativeInput ? JSON.stringify(args || {}) : args || {})
         },
       }
     }
 
-    const documentApi = createImperativeApi(getDocumentModelContext(), 'documentModelContext')
-    if (documentApi) return documentApi
-
-    const navigatorApi = createImperativeApi(getNavigatorModelContext(), 'navigatorModelContext')
-    if (navigatorApi) return navigatorApi
-
-    const testingApi = getTestingModelContext()
-    if (
-      testingApi?.listTools &&
-      typeof testingApi.listTools === 'function' &&
-      testingApi?.executeTool &&
-      typeof testingApi.executeTool === 'function'
-    ) {
-      return {
-        mode: 'modelContextTesting',
-        getTools: async () => normalizeTools(await testingApi.listTools()),
-        executeToolByName: async (toolName: string, args: Record<string, unknown>) =>
-          testingApi.executeTool(toolName, JSON.stringify(args || {})),
-      }
-    }
-
-    return null
+    return createImperativeApi((document as any)?.modelContext, 'documentModelContext')
   }
 
   return (async () => {

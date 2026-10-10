@@ -4,7 +4,7 @@
 // mcp-b style push discovery (docs.mcp-b.ai/packages/webmcp-extension):
 // instead of the popup scanning every tab on demand (5s-per-tab
 // executeScript probe), this agent runs permanently in each page,
-// resolves document/navigator.modelContext, and pushes a `ready`
+// resolves document.modelContext, and pushes a `ready`
 // snapshot + `snapshot` updates to the ISOLATED-world relay
 // (webmcp.content.ts) whenever the toolset changes — via the page
 // API's toolchange event when available, plus a conservative

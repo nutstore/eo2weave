@@ -13,7 +13,7 @@ export function installAdapterHostRelay() {
       if (sessionId === data.sessionId) { port?.disconnect(); port = undefined; sessionId = undefined }
       return
     }
-    if (message.kind === 'publish' && sessionId !== data.sessionId) {
+    if (message.kind === 'attach' && sessionId !== data.sessionId) {
       port?.disconnect()
       sessionId = data.sessionId
       const id = sessionId!

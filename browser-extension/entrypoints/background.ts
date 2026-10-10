@@ -1480,7 +1480,7 @@ export default defineBackground(() => {
   )
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (typeof message?.type === 'string' && message.type.startsWith('webmcp_adapter_')) return false
+    if (message?.type === 'webmcp_provider_call' || (typeof message?.type === 'string' && message.type.startsWith('webmcp_adapter_'))) return false
     // The dedicated bridge listener (registered above) owns these types —
     // answering here would race it and close the channel early.
     if (['browser_command', 'browser_command_ping', 'browser_command_cancel'].includes(message?.type)) return false

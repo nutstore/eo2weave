@@ -10,16 +10,12 @@ import type { BashCommandInput, BashCommandResult } from '@/agent/bash-commands/
  *
  * All messages carry an ID for correlating async responses. Binary content
  * is represented as latin1-shaped strings (each JS char's low byte = one
- * file byte), matching VfsBridgeFs / just-bash's internal encoding. This
- * avoids structured-clone overhead for ArrayBuffers.
+ * file byte), preserving VfsBridgeFs / just-bash's existing internal encoding.
  */
 
 // ---------------------------------------------------------------------------
 // Shared types (mirrors VfsBackend / VfsBridgeFs surfaces, serialized)
 // ---------------------------------------------------------------------------
-
-/** Which VFS backend a file operation targets. */
-export type VfsRpcBackend = 'workspace' | 'assets' | 'agent' | 'webmcp'
 
 /** File operation method names (subset of VfsBridgeFs / VfsBackend). */
 export type VfsRpcMethod =
@@ -59,8 +55,8 @@ export interface VfsRpcDirent {
 export interface VfsRpcRequest {
   type: 'vfs'
   rpcId: number
-  backend: VfsRpcBackend
   method: VfsRpcMethod
+  /** Canonical vfs:// path; resolution and authorization belong to the host. */
   path: string
   /** Destination path for cp/mv. */
   dest?: string

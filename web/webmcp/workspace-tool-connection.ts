@@ -1,17 +1,13 @@
-import { WebMcpBackend } from '@/agent/tools/backends/webmcp-backend'
 import { useSettingsStore } from '@/store/settings.store'
 import { useWorkspaceStore } from '@/store/workspace.store'
 import { useProjectStore } from '@/store/project.store'
-import { readPackageCatalog } from './adapters'
 import { connectAdapterHost } from './adapter-host'
 import { createWorkspaceToolHost } from './workspace-tool-host'
 
-/** Publish OPFS adapters through a live, workspace-bound bidirectional connection. */
-export function startWebMCPAdapterSync(): () => void {
-  const backend = new WebMcpBackend()
+/** Expose workspace tools. Adapter files and catalog lifecycle belong to the extension. */
+export function startWorkspaceToolHost(): () => void {
   let stopped = false
   let previous = ''
-  let previousErrors = ''
   let timer: ReturnType<typeof setTimeout> | null = null
   let connection: ReturnType<typeof connectAdapterHost> | null = null
   let bindingKey = ''
@@ -51,23 +47,10 @@ export function startWebMCPAdapterSync(): () => void {
       }
       const currentConnection = connection
       const currentEpoch = epoch
-      const catalog = await readPackageCatalog({
-        async directories() {
-          return (await backend.listDir('')).filter(entry => entry.kind === 'directory').map(entry => entry.name)
-        },
-        async readFile(path) {
-          const result = await backend.readFile(path, { encoding: 'text' })
-          if (typeof result.content !== 'string') throw new Error(`Expected text: ${path}`)
-          return result.content
-        },
-      })
       if (stopped || epoch !== currentEpoch) return
-      const errors = catalog.errors.join('\n')
-      if (errors !== previousErrors && errors) console.warn('[WebMCP adapters]', errors)
-      previousErrors = errors
-      const snapshot = JSON.stringify([catalog.packages, host.names()])
+      const snapshot = JSON.stringify(host.names())
       if (snapshot === previous) return
-      await currentConnection.publish(catalog.packages)
+      await currentConnection.attach()
       if (!stopped && epoch === currentEpoch) previous = snapshot
     } catch (error) {
       if (!stopped) console.warn('[WebMCP adapters] Sync failed:', error)

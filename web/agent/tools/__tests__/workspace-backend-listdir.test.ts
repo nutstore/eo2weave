@@ -206,3 +206,53 @@ describe('WorkspaceBackend.listDir — native-host fallback (Phase 1b)', () => {
     expect(entries).toEqual([])
   })
 })
+
+describe('WorkspaceBackend metadata and staged directories', () => {
+  beforeEach(() => { vi.resetAllMocks(); setupActiveWorkspace() })
+
+  it('stats large native files without reading content or listing the parent', async () => {
+    const { workspace } = createWorkspaceMock({ rootId: 'scope', backend: 'native-host', relativePath: 'big.bin' })
+    const stat = vi.fn(async () => ({ isFile: true, size: 100_000_000, mtime: 123 }))
+    Object.assign(workspace.diskExec, { stat })
+    getWorkspaceManagerMock.mockResolvedValue({ getWorkspace: async () => workspace })
+    const backend = new WorkspaceBackend('ws-test', null, 'project-test')
+    const read = vi.spyOn(backend, 'readFile')
+    expect(await backend.stat('root/big.bin')).toEqual({ kind: 'file', size: 100_000_000, mtime: 123 })
+    expect(stat).toHaveBeenCalledWith('scope', 'big.bin')
+    expect(read).not.toHaveBeenCalled()
+    expect(workspace.diskExec.listDir).not.toHaveBeenCalled()
+  })
+
+  it('makes staged empty directories visible without modifying native disk', async () => {
+    const makeDir = (name: string): FileSystemDirectoryHandle => {
+      const children = new Map<string, FileSystemDirectoryHandle>()
+      return {
+        name, kind: 'directory',
+        async getDirectoryHandle(child: string, options?: { create?: boolean }) {
+          if (!children.has(child)) {
+            if (!options?.create) throw new DOMException('Missing', 'NotFoundError')
+            children.set(child, makeDir(child))
+          }
+          return children.get(child)!
+        },
+        async getFileHandle(child: string) {
+          throw new DOMException('Not a file', children.has(child) ? 'TypeMismatchError' : 'NotFoundError')
+        },
+        async *entries() { yield* children.entries() },
+      } as unknown as FileSystemDirectoryHandle
+    }
+    const root = makeDir('files')
+    const { workspace } = createWorkspaceMock({ rootId: 'scope', backend: 'native-host', relativePath: '' })
+    Object.assign(workspace, { getFilesDir: async () => root })
+    getWorkspaceManagerMock.mockResolvedValue({ getWorkspace: async () => workspace })
+    const changed = vi.fn()
+    const backend = new WorkspaceBackend('ws-test', null, 'project-test', changed)
+    await backend.mkdir('empty/child', { recursive: true })
+    expect(await backend.listDir('')).toContainEqual({ name: 'empty', path: 'empty', kind: 'directory' })
+    expect(await backend.listDir('empty')).toContainEqual({ name: 'child', path: 'empty/child', kind: 'directory' })
+    expect(changed).toHaveBeenCalledWith(['empty/child'])
+    await expect(backend.mkdir('empty')).rejects.toThrow('EEXIST')
+    workspace.resolvePath.mockResolvedValue({ readOnly: true })
+    await expect(backend.mkdir('denied')).rejects.toThrow('EROFS')
+  })
+})

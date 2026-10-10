@@ -151,7 +151,7 @@ const resp = await window.__agentWeb.webMCPInvoke({
 // → { ok, result, tabId, hostname, errorCode?, error? }
 ```
 
-Under the hood: `webMCPInvoke` → background authorization gates (host + group; disabled tools are refused before any page script runs) → routing (`preferredTabId` → last successful route → any tab in the group) → relayed into the source tab → the page agent executes `executeTool(descriptor, JSON.stringify(args))` → result returns the same way.
+Under the hood: `webMCPInvoke` → background authorization gates (host + group; disabled tools are refused before any page script runs) → routing (`preferredTabId` → last successful route → any tab in the group) → relayed into the source tab → the page agent uses the v6 `executeTool(descriptor, args)` object API (serializing only at the native Chromium boundary) → result returns the same way.
 
 **Error codes worth handling:**
 
@@ -187,7 +187,8 @@ Why the discovery response is a **flat list** (not host→group→tools): every 
 ### Debugging tips
 
 - Check discovery: open the extension popup — your site's hostname and tool groups should appear within ~2s of registration.
-- Test shim: `navigator.modelContextTesting` is also detected (listTools/executeTool), useful for pages that can't install the real API.
+- Pages expose tools through `document.modelContext`; invocation serializes arguments once as JSON, matching the Chromium WebMCP API.
+- The extension initializes the current WebMCP polyfill at `document_start`, before site scripts register tools. After reloading the extension, reload existing tabs to initialize the page API again.
 - The registry is per-tab: navigate away or unregister tools and the tab disappears from the catalog automatically.
 
 ## Bridge API Reference

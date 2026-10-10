@@ -1,5 +1,5 @@
 import { failure, jsonText, type ExecutionResult, type JsonValue } from '@creatorweave/quickjs-runtime'
-import { parseWorkflow, validatePackageSnapshot } from '@creatorweave/shared/webmcp-adapter'
+import { parseWorkflow, validatePackageSnapshot, type WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
 import { ADAPTER_HOST_PORT, ADAPTER_TIMEOUT_MS, ADAPTER_TRANSFER_BYTES, isRecord, type AdapterDescriptor } from '@creatorweave/shared/webmcp-adapter-protocol'
 import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
 import { executeAdapterWorkflow } from './adapter-runtime'
@@ -28,6 +28,7 @@ interface Dependencies {
   trusted(sender: chrome.runtime.MessageSender): boolean
   resolveBinding(senderUrl: string, binding: unknown): Promise<number | null>
   changed(): void
+  readPackages(): Promise<WebMCPPackage[]>
 }
 
 /** Bound WASM loading as well as VM execution to explicit cancellation. */
@@ -90,7 +91,38 @@ export function createAdapterService(deps: Dependencies) {
     if (typeof sender.tab?.id !== 'number' || !sender.documentId || sender.frameId !== 0 || !sender.url) throw new Error('Invalid adapter document')
     return { tabId: sender.tab.id, documentId: sender.documentId, url: sender.url }
   }
+  const updateRoutes = (host: Host, packages: WebMCPPackage[]) => {
+    const snapshot = JSON.stringify(packages)
+    if (snapshot === host.snapshot) return
+    for (const execution of executions.values()) if (execution.host === host) execution.controller.abort()
+    host.routes = packages.flatMap(pkg => pkg.manifest.tools.map(tool => ({
+      source: pkg.sources[tool.path],
+      descriptor: { routeId: crypto.randomUUID(), name: `${pkg.manifest.id}.${tool.name}`, description: tool.description, urlRegex: tool.urlRegex,
+        inputSchema: parseWorkflow(pkg.sources[tool.path]).contract.inputSchema as Record<string, unknown> },
+    })))
+    host.snapshot = snapshot
+    deps.changed()
+  }
+  let catalogQueue = Promise.resolve()
+  // Attachment and refresh must share ordering: a slow attachment snapshot
+  // must never resurrect routes withdrawn by a newer storage mutation.
+  const catalogTask = (work: () => Promise<void>): Promise<void> => {
+    const task = catalogQueue.catch(() => {}).then(work)
+    catalogQueue = task
+    return task
+  }
   return {
+    refresh(): Promise<void> {
+      return catalogTask(async () => {
+        try {
+          const packages = validatePackageSnapshot(await deps.readPackages())
+          for (const host of hosts) updateRoutes(host, packages)
+        } catch (error) {
+          for (const host of hosts) updateRoutes(host, [])
+          throw error
+        }
+      })
+    },
     connect(port: chrome.runtime.Port) {
       if (port.name !== ADAPTER_HOST_PORT) return
       if (!port.sender || !deps.trusted(port.sender)) { port.disconnect(); return }
@@ -114,12 +146,12 @@ export function createAdapterService(deps: Dependencies) {
           return
         }
         if (message.kind === 'ping') { port.postMessage({ kind: 'pong' }); return }
-        if (message.kind !== 'publish') return
-        queue = queue.then(async () => {
+        if (message.kind !== 'attach') return
+        queue = queue.then(() => catalogTask(async () => {
           jsonText(message, ADAPTER_TRANSFER_BYTES)
           if (typeof message.workspaceId !== 'string' || !message.workspaceId || typeof message.sessionId !== 'string' || !message.sessionId ||
             !Array.isArray(message.toolNames) || message.toolNames.length > 1000 || !message.toolNames.every(name => typeof name === 'string' && name.length < 256)) throw new Error('Invalid adapter host')
-          const packages = validatePackageSnapshot(message.packages)
+          const packages = validatePackageSnapshot(await deps.readPackages())
           const targetTabId = message.binding == null ? null : await deps.resolveBinding(port.sender!.url || '', message.binding)
           if (message.binding != null && targetTabId === null) throw new Error('Invalid host target binding')
           if (closed) return
@@ -129,19 +161,9 @@ export function createAdapterService(deps: Dependencies) {
             hosts.add(host)
           }
           host.toolNames = message.toolNames as string[]
-          const snapshot = JSON.stringify(packages)
-          if (snapshot !== host.snapshot) {
-            for (const execution of executions.values()) if (execution.host === host) execution.controller.abort()
-            host.routes = packages.flatMap(pkg => pkg.manifest.tools.map(tool => ({
-              source: pkg.sources[tool.path],
-              descriptor: { routeId: crypto.randomUUID(), name: `${pkg.manifest.id}.${tool.name}`, description: tool.description, urlRegex: tool.urlRegex,
-                inputSchema: parseWorkflow(pkg.sources[tool.path]).contract.inputSchema as Record<string, unknown> },
-            })))
-            host.snapshot = snapshot
-            deps.changed()
-          }
-          send(host, { kind: 'published', requestId: message.requestId })
-        }).catch(error => {
+          updateRoutes(host, packages)
+          send(host, { kind: 'attached', requestId: message.requestId })
+        })).catch(error => {
           try { port.postMessage({ kind: 'error', requestId: message.requestId, error: failure(error) }) } finally {
             closed = true
             if (host) cancelHost(host)

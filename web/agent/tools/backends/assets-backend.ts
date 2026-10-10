@@ -1,3 +1,5 @@
+import { fromFileSystemHandle } from '@creatorweave/fs-provider/file-system-handle'
+
 /**
  * AssetsBackend — VfsBackend adapter for the assets/ directory.
  *
@@ -77,6 +79,18 @@ export class AssetsBackend implements VfsBackend {
 
   constructor(workspaceId?: string | null) {
     this.workspaceId = workspaceId ?? null
+  }
+
+  async stat(path: string) {
+    const root = await this.getDirectoryHandle()
+    if (!root) throw new Error('ENOENT: directory unavailable')
+    return fromFileSystemHandle(root).stat(path)
+  }
+
+  async mkdir(path: string, options?: { recursive?: boolean }) {
+    const root = await this.getDirectoryHandle()
+    if (!root) throw new Error('ENOENT: directory unavailable')
+    await fromFileSystemHandle(root).mkdir(path, options)
   }
 
   async readFile(path: string, options?: VfsReadOptions): Promise<VfsReadResult> {

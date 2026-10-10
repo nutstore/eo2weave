@@ -86,9 +86,10 @@ export function getResolvedPathForLoopGuard(target: Awaited<ReturnType<typeof im
   if (target.kind === 'skills') {
     return `vfs://skills/${target.path}`
   }
-  if (target.kind === 'assets' || target.kind === 'webmcp') {
+  if (target.kind === 'assets') {
     return `vfs://${target.kind}/${target.path}`
   }
+  if (target.kind === 'external') return `vfs://external/${target.mountName}/${target.path}`
   return `vfs://agents/${target.agentId}/${target.path}`
 }
 

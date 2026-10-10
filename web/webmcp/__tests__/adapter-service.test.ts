@@ -19,20 +19,51 @@ function fakePort() {
 }
 function setup() {
   const loadWasm = vi.fn(async () => ({} as WebAssembly.Module))
-  const service = createAdapterService({ loadWasm, trusted: s => s.url === 'https://trusted.test', resolveBinding: async () => 8, changed: vi.fn() })
+  const readPackages = vi.fn(async () => [pkg])
+  const service = createAdapterService({ readPackages, loadWasm, trusted: s => s.url === 'https://trusted.test', resolveBinding: async () => 8, changed: vi.fn() })
   const connect = async (binding: string | null = null) => {
     const host = fakePort()
     service.connect(host.port)
-    host.send({ kind: 'publish', requestId: 'publish', workspaceId: 'workspace-a', sessionId: crypto.randomUUID(), binding, toolNames: ['read', 'run_code'], packages: [pkg] })
-    await vi.waitFor(() => expect(host.postMessage).toHaveBeenCalledWith({ kind: 'published', requestId: 'publish' }))
+    host.send({ kind: 'attach', requestId: 'publish', workspaceId: 'workspace-a', sessionId: crypto.randomUUID(), binding, toolNames: ['read', 'run_code'], packages: [{ source: 'untrusted page snapshot' }] })
+    await vi.waitFor(() => expect(host.postMessage).toHaveBeenCalledWith({ kind: 'attached', requestId: 'publish' }))
     return host
   }
   const request = (requestId = 'page-request') => ({ requestId, routeId: service.catalog(sender)[0].routeId, args: {} })
-  return { service, connect, request, loadWasm }
+  return { service, connect, request, loadWasm, readPackages }
 }
 beforeEach(() => {
   vi.resetAllMocks()
   runner.mockResolvedValue({ ok: true, value: { status: 'success', result: 1 } })
+})
+
+it('withdraws changed or unavailable extension packages and rejects stale routes', async () => {
+  const { service, connect, request, readPackages } = setup()
+  await connect()
+  const old = request()
+  readPackages.mockResolvedValueOnce([])
+  await service.refresh()
+  expect(service.catalog(sender)).toEqual([])
+  expect(await service.invoke(sender, old)).toMatchObject({ ok: false })
+  await service.refresh()
+  expect(service.catalog(sender)).toHaveLength(1)
+  expect(service.catalog(sender)[0].routeId).not.toBe(old.routeId)
+  readPackages.mockRejectedValueOnce(new Error('storage unavailable'))
+  await expect(service.refresh()).rejects.toThrow('storage unavailable')
+  expect(service.catalog(sender)).toEqual([])
+})
+
+it('does not resurrect a stale attachment catalog after a newer refresh', async () => {
+  const { service, connect, readPackages } = setup()
+  let resolve!: (value: typeof pkg[]) => void
+  readPackages.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+  const connection = connect()
+  await vi.waitFor(() => expect(readPackages).toHaveBeenCalledOnce())
+  readPackages.mockResolvedValueOnce([])
+  const refresh = service.refresh()
+  resolve([pkg])
+  await connection
+  await refresh
+  expect(service.catalog(sender)).toEqual([])
 })
 describe('adapter SW authority and routing', () => {
   it('publishes metadata only and executes source from the SW catalog', async () => {

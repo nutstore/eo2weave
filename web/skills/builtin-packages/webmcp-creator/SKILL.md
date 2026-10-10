@@ -6,18 +6,18 @@ version: 2.0.0
 
 # WebMCP creator
 
-Create packages in the origin-wide OPFS WebMCP directory. The app reads package manifests and syncs valid packages to the extension. Tools register forwarding proxies on pages whose complete URL matches their urlRegex. The extension service worker schedules each behavior tree in TypeScript and runs its user callbacks in one fresh QuickJS session; source code is never sent to the target page. Keep the CreatorWeave workspace host open: tool calls are routed back to that bound workspace through a bidirectional bridge. URL matching controls page registration and triggering. Once triggered, condition/wait inspect functions decide readiness and action run functions report their outcome; the adapter runtime does not gate execution on the initiating page URL, document lifetime, host authorization or tool-group authorization. Host tools retain their own availability and permission rules.
+Create packages in the extension-owned OPFS WebMCP directory, mounted as vfs://external/webmcp. The extension reads and validates package manifests locally; the app accesses files through the provider and supplies a connected workspace tool host. Tools register forwarding proxies on pages whose complete URL matches their urlRegex. The extension service worker schedules each behavior tree in TypeScript and runs its user callbacks in one fresh QuickJS session; source code is never sent to the target page. Keep the CreatorWeave workspace host open: tool calls are routed back to that bound workspace through a bidirectional bridge. URL matching controls page registration and triggering. Once triggered, condition/wait inspect functions decide readiness and action run functions report their outcome; the adapter runtime does not gate execution on the initiating page URL, document lifetime, host authorization or tool-group authorization. Host tools retain their own availability and permission rules.
 
 ## Package files
 
 ```text
-/webmcp/com.example.tools/
+/external/webmcp/com.example.tools/
   manifest.json
   read-page.js
   search.js
 ```
 
-These are bash paths. File tools use `vfs://webmcp/com.example.tools/manifest.json` and `vfs://webmcp/com.example.tools/read-page.js`. Each immediate directory is a package. Its directory name must equal its manifest id.
+These are bash paths. File tools use `vfs://external/webmcp/com.example.tools/manifest.json` and `vfs://external/webmcp/com.example.tools/read-page.js`. Each immediate directory is a package. Its directory name must equal its manifest id.
 
 Every manifest field and every tool field below is required:
 
@@ -109,11 +109,11 @@ Inspect the actual target page using available page tools before choosing select
 Write the manifest and all referenced tool files, then run:
 
 ```bash
-webmcp validate /webmcp/com.example.tools
+webmcp validate /external/webmcp/com.example.tools
 ```
 
 Relative package directories resolve from the bash working directory. Exit code 0 means the entire package passed, 1 reports an invalid or unreadable package, and 2 indicates incorrect usage. Validation checks required fields, package identity, tool names, source paths, URL regexes, JS structure and workflow schemas and tree nodes without executing adapter functions. It cannot prove selectors, runtime data, regex intent or site behavior. Fix diagnostics and rerun; verify success, fallback, waiting and failure cases on the intended page. Invoke mutating tools only within the user's requested scope.
 
-While the app is open and WebMCP is enabled, changes sync approximately every three seconds. Any invalid or missing referenced source withdraws the whole package. Deleting a tool from the manifest withdraws it; deleting a package directory withdraws all its tools. Unreferenced files are ignored. Disabling WebMCP syncs an empty package snapshot. The extension retains the latest snapshot for future tab loads.
+Successful writes and removals refresh the extension catalog immediately. Any invalid or missing referenced source withdraws the whole package. Deleting a tool from the manifest withdraws it; deleting a package directory withdraws all its tools. Unreferenced files are ignored. Disabling WebMCP disconnects the workspace host and withdraws its routes. Package files remain in extension storage for the next connection.
 
-Reload the updated extension and refresh both CreatorWeave and target tabs opened before that version. Page CSP does not compile workflow code. Keep a workspace selected and WebMCP enabled in the host. Page tools require a side panel bound to the target; other tools keep their normal prerequisites. An explicitly bound side-panel host takes priority; multiple otherwise matching hosts make a tool unavailable rather than selecting an arbitrary workspace. Inspect the target page console for `[WebMCP adapters] Injection failed` and the app console for sync/validation diagnostics.
+Reload the updated extension and refresh both CreatorWeave and target tabs opened before that version. Page CSP does not compile workflow code. Keep a workspace selected and WebMCP enabled in the host. Page tools require a side panel bound to the target; other tools keep their normal prerequisites. An explicitly bound side-panel host takes priority; multiple otherwise matching hosts make a tool unavailable rather than selecting an arbitrary workspace. Inspect the target page console for `[WebMCP adapters] Injection failed` and the extension service worker console for catalog/validation diagnostics.

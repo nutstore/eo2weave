@@ -1,5 +1,4 @@
 import { ADAPTER_HOST_MARKER, ADAPTER_TIMEOUT_MS, ADAPTER_TRANSFER_BYTES, isRecord } from '@creatorweave/shared/webmcp-adapter-protocol'
-import type { WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
 import { failure, jsonText, type JsonValue } from '@creatorweave/quickjs-runtime'
 
 export interface AdapterToolHost {
@@ -41,7 +40,7 @@ export function connectAdapterHost(host: AdapterToolHost, disconnected: () => vo
     if (event.source !== window || data?.[ADAPTER_HOST_MARKER] !== true || data.direction !== 'to-web' || data.sessionId !== sessionId || !isRecord(data.message) || closed) return
     const message = data.message
     if (message.kind === 'disconnected' || message.kind === 'error') { stop(); disconnected(); return }
-    if (message.kind === 'published' && typeof message.requestId === 'string') {
+    if (message.kind === 'attached' && typeof message.requestId === 'string') {
       const pending = publications.get(message.requestId)
       if (pending) { clearTimeout(pending.timer); publications.delete(message.requestId); pending.resolve() }
       return
@@ -78,13 +77,13 @@ export function connectAdapterHost(host: AdapterToolHost, disconnected: () => vo
   const heartbeat = setInterval(() => send({ kind: 'ping' }), 20_000)
   return {
     stop,
-    publish(packages: WebMCPPackage[]): Promise<void> {
+    attach(): Promise<void> {
       if (closed) return Promise.reject(new Error('Adapter host disconnected'))
       const requestId = crypto.randomUUID()
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => { publications.delete(requestId); reject(new Error('Adapter publication timed out')); stop(); disconnected() }, 10_000)
         publications.set(requestId, { resolve, reject, timer })
-        try { send({ kind: 'publish', requestId, sessionId, workspaceId: host.workspaceId, binding: host.binding, toolNames: host.names(), packages }) }
+        try { send({ kind: 'attach', requestId, sessionId, workspaceId: host.workspaceId, binding: host.binding, toolNames: host.names() }) }
         catch (error) { clearTimeout(timer); publications.delete(requestId); reject(error) }
       })
     },

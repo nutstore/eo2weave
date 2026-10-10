@@ -13,6 +13,8 @@ import type { VfsBackend, VfsReadResult, VfsReadOptions, VfsDirEntry, VfsListOpt
 import { resolveNativeDirectoryHandle } from '../tool-utils'
 import type { ReadPolicy } from '@/opfs/types/opfs-types'
 import { getWorkspaceManager } from '@/opfs'
+import { fromFileSystemHandle } from '@creatorweave/fs-provider/file-system-handle'
+import { FsError } from '@creatorweave/fs-provider'
 
 function inferMimeType(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -40,6 +42,39 @@ export class WorkspaceBackend implements VfsBackend {
     private projectId?: string | null,
     private onWorkspacePathsChanged?: (paths: readonly string[]) => void,
   ) {}
+
+  async stat(path: string) {
+    if (!path) return { kind: 'directory' as const }
+    const { workspace } = await this.getWorkspaceForBackend()
+    const changes = workspace?.getPendingChanges?.() ?? useOPFSStore.getState().getPendingChanges()
+    const pending = changes.find((change: { path: string; type: string }) => change.path === path ||
+      (change.type === 'delete' && path.startsWith(`${change.path}/`)))
+    if (pending?.type === 'delete') throw new FsError('ENOENT', path)
+    if (workspace) {
+      if (!pending) {
+        const resolved = await workspace.resolvePath(path, this.projectId)
+        if (resolved.rootId) {
+          const stat = await workspace.diskExec.stat(resolved.rootId, resolved.relativePath)
+          if (stat) return { kind: stat.isFile ? 'file' as const : 'directory' as const, size: stat.size, mtime: stat.mtime }
+        }
+      }
+      return fromFileSystemHandle(await workspace.getFilesDir()).stat(path)
+    }
+    const handle = await this.resolveDirHandle()
+    if (handle) return fromFileSystemHandle(handle).stat(path)
+    throw new FsError('ENOENT', path)
+  }
+
+  async mkdir(path: string, options?: { recursive?: boolean }) {
+    const { workspace } = await this.getWorkspaceForBackend()
+    if (!workspace) throw new Error('ENOENT: workspace unavailable')
+    const resolved = await workspace.resolvePath(path, this.projectId)
+    if (resolved.readOnly) throw new FsError('EROFS', path)
+    // Empty directories live in the workspace staging tree. Native directory
+    // creation is not part of the file-only apply pipeline.
+    await fromFileSystemHandle(await workspace.getFilesDir()).mkdir(path, options)
+    this.onWorkspacePathsChanged?.([path])
+  }
 
   async readFile(path: string, options?: VfsReadOptions): Promise<VfsReadResult> {
     const { readFile } = useOPFSStore.getState()
@@ -438,6 +473,26 @@ export class WorkspaceBackend implements VfsBackend {
             opfsExtraPaths.add(childPath)
           }
         }
+      }
+    }
+
+    // Physical OPFS directories can be empty and therefore have no cached file
+    // or pending-file record. Include them in the staging view used by bash.
+    if (workspace) {
+      try {
+        const files = await workspace.getFilesDir()
+        let dir = files
+        for (const part of path.split('/').filter(Boolean)) dir = await dir.getDirectoryHandle(part)
+        const physical: VfsDirEntry[] = []
+        await this._listDirRecursive(dir, path, physical, recursive ? maxDepth : 1, 1)
+        for (const entry of physical) {
+          if (entry.kind !== 'directory' || nativePathSet.has(entry.path) || opfsExtraPaths.has(entry.path)) continue
+          if (pendingChanges.some(change => change.type === 'delete' && (change.path === entry.path || entry.path.startsWith(`${change.path}/`)))) continue
+          opfsExtraEntries.push(entry)
+          opfsExtraPaths.add(entry.path)
+        }
+      } catch {
+        // The path may exist only on native disk.
       }
     }
 

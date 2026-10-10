@@ -65,16 +65,16 @@ describe('vfs-resolver', () => {
   })
 
   it('resolves the WebMCP namespace without a workspace', async () => {
-    const result = await resolveVfsTarget('vfs://webmcp/reports/result.txt', makeContext({ workspaceId: null }), 'write')
-    expect(result.kind).toBe('webmcp')
+    const result = await resolveVfsTarget('vfs://external/webmcp/reports/result.txt', makeContext({ workspaceId: null }), 'write')
+    expect(result.kind).toBe('external')
     expect(result.path).toBe('reports/result.txt')
-    expect(result.backend.label).toBe('webmcp')
+    expect(result.backend.label).toBe('provider')
 
-    const root = await resolveVfsTarget('vfs://webmcp/', makeContext(), 'list', { allowEmptyPath: true })
-    expect(root.kind).toBe('webmcp')
+    const root = await resolveVfsTarget('vfs://external/webmcp/', makeContext(), 'list', { allowEmptyPath: true })
+    expect(root.kind).toBe('external')
     expect(root.path).toBe('')
 
-    await expect(resolveVfsTarget('vfs://webmcp/../agents/default/SOUL.md', makeContext(), 'read'))
+    await expect(resolveVfsTarget('vfs://external/webmcp/../agents/default/SOUL.md', makeContext(), 'read'))
       .rejects.toThrow('Path cannot include')
   })
 
