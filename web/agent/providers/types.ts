@@ -29,6 +29,19 @@ export interface ModelInfo {
   contextWindow?: number
   description?: string
   /**
+   * Input modalities reported by the provider's /models endpoint
+   * (e.g. DeepSeek returns `input_modalities: ["text", "image"]`).
+   * Present only when the API publishes it; drives vision-capability
+   * resolution with higher fidelity than the `capabilities` keyword list.
+   */
+  inputModalities?: string[]
+  /**
+   * True when `name`/`contextWindow`/`inputModalities` came directly from
+   * the provider API rather than local heuristics. Used to prefer API
+   * metadata over static-table guesses when merging.
+   */
+  metadataFromApi?: boolean
+  /**
    * Per-token USD pricing as strings, sourced from the provider's
    * `/models` endpoint (e.g. OpenRouter). Multiply by 1e6 to get
    * USD per 1M tokens. Fields are absent when the provider doesn't
@@ -361,17 +374,17 @@ export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
     displayName: 'DeepSeek',
     website: 'https://platform.deepseek.com',
     models: [
+      // Minimal fallback skeleton only — authoritative metadata (names,
+      // context windows, vision) comes from the live /models endpoint.
       {
-        id: 'deepseek-v4-flash',
-        name: 'DeepSeek V4 Flash',
-        capabilities: ['code', 'writing', 'reasoning', 'fast'],
-        contextWindow: 1048576,
+        id: 'deepseek-flash',
+        name: 'DeepSeek V4.1 Flash',
+        capabilities: ['fast'],
       },
       {
         id: 'deepseek-v4-pro',
         name: 'DeepSeek V4 Pro',
         capabilities: ['code', 'writing', 'reasoning'],
-        contextWindow: 1048576,
       },
     ],
   },

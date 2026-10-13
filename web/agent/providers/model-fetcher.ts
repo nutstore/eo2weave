@@ -98,8 +98,14 @@ async function fetchOpenAICompatibleModels(
     id: string
     owned_by?: string
     created?: number
+    // OpenAI-legacy / OpenRouter: snake_case context fields
     context_length?: number
     top_provider?: { context_length?: number }
+    // DeepSeek (2026+): rich metadata format
+    name?: string
+    context_window?: number
+    input_modalities?: string[]
+    output_modalities?: string[]
     pricing?: {
       prompt?: string
       completion?: string
@@ -117,11 +123,20 @@ async function fetchOpenAICompatibleModels(
   return rawModels
     .filter((m) => m.id && typeof m.id === 'string')
     .map((m) => {
-      // OpenRouter provides top_provider.context_length which reflects the
-      // actual usable context (may be smaller than the model's theoretical
-      // context_length due to provider-side limits). Prefer it when available.
-      const effectiveContext = m.top_provider?.context_length ?? m.context_length
-      return parseModelInfo(m.id, effectiveContext, m.pricing)
+      // Context window resolution (first non-null wins):
+      // 1. DeepSeek-style `context_window`
+      // 2. OpenRouter's `top_provider.context_length` (actual usable context,
+      //    may be smaller than the model's theoretical limit)
+      // 3. OpenAI-legacy `context_length`
+      const effectiveContext = m.context_window ?? m.top_provider?.context_length ?? m.context_length
+      const hasApiMetadata = Boolean(
+        m.context_window != null || m.input_modalities || m.name
+      )
+      return parseModelInfo(m.id, effectiveContext, m.pricing, {
+        apiName: m.name,
+        apiInputModalities: m.input_modalities,
+        metadataFromApi: hasApiMetadata,
+      })
     })
     .sort((a, b) => {
       // Sort: put more capable/recent models first
@@ -275,20 +290,38 @@ export async function fetchModelsForProvider(
 /**
  * Parse a raw model ID string into a ModelInfo object.
  *
- * When the API provides `context_length` (e.g. OpenRouter), it is used as the
- * primary source. Otherwise, falls back to the static guess registry.
- * Pricing is also passed through when present.
+ * Metadata resolution order (API-provided values win over local guesses):
+ * - Display name: API `name` field → formatModelName(id)
+ * - Context window: API `context_window`/`context_length` → guessContextWindow(id)
+ * - Capabilities: API `input_modalities` (image → vision) merged with
+ *   guessCapabilities(id) keyword heuristics
  */
 function parseModelInfo(
   modelId: string,
   apiContextLength?: number,
-  pricing?: ModelInfo['pricing']
+  pricing?: ModelInfo['pricing'],
+  apiMeta?: {
+    apiName?: string
+    apiInputModalities?: string[]
+    metadataFromApi?: boolean
+  }
 ): ModelInfo {
   const info: ModelInfo = {
     id: modelId,
-    name: formatModelName(modelId),
+    name: apiMeta?.apiName || formatModelName(modelId),
     capabilities: guessCapabilities(modelId),
     contextWindow: apiContextLength ?? guessContextWindow(modelId),
+  }
+  if (apiMeta?.apiInputModalities?.length) {
+    info.inputModalities = apiMeta.apiInputModalities
+    // Translate input modalities into capability tags so existing UI
+    // (vision eye icon etc.) picks them up without further changes.
+    if (apiMeta.apiInputModalities.includes('image') && !info.capabilities.includes('vision')) {
+      info.capabilities = [...info.capabilities, 'vision']
+    }
+  }
+  if (apiMeta?.metadataFromApi) {
+    info.metadataFromApi = true
   }
   if (pricing && Object.keys(pricing).length > 0) {
     info.pricing = pricing

@@ -24,10 +24,18 @@ interface CachedModels {
   error?: string
 }
 
-// ─── Config ──────────────────────────────────────────────────────────────────
+// ─── Config ────────────────────────────────────────────────────────────
 
 /** localStorage key prefix */
 const STORAGE_PREFIX = 'cw-models:'
+
+/**
+ * Cache freshness window. Stale entries are still served immediately
+ * (stale-while-revalidate) so the UI never blocks, but callers can detect
+ * staleness via `isCacheStale()` / `getCachedModelsResult()` and re-fetch
+ * in the background.
+ */
+export const MODELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h
 
 // ─── Cache storage ───────────────────────────────────────────────────────────
 
@@ -135,6 +143,16 @@ export function getCachedModelsResult(
 }
 
 /**
+ * Whether a cached entry is older than MODELS_CACHE_TTL_MS.
+ * Missing entry counts as stale (nothing cached = needs fetch).
+ */
+export function isCacheStale(providerType: LLMProviderType, providerKey?: string): boolean {
+  const entry = getCachedModelsResult(providerType, providerKey)
+  if (!entry) return true
+  return Date.now() - entry.fetchedAt > MODELS_CACHE_TTL_MS
+}
+
+/**
  * Store fetched models in both memory and localStorage.
  * Only persists dynamic (API-fetched) results.
  */
@@ -159,6 +177,33 @@ export function setCachedModels(
   // Notify listeners that models have been updated
   // (e.g. image gen tool may need to register/unregister)
   notifyModelsUpdated()
+}
+
+/**
+ * Look up a single model's cached ModelInfo entry (case-insensitive id match)
+ * from the dynamic model cache. Returns the API-parsed entry (which may carry
+ * `inputModalities`, `metadataFromApi`, etc.) or null when not cached.
+ */
+export function findCachedModelInfo(
+  providerType: LLMProviderType,
+  modelId: string,
+  providerKey?: string
+): ModelInfo | null {
+  const keysToTry: Array<{ pt: LLMProviderType; pk?: string }> = [
+    { pt: providerType, pk: providerKey },
+    { pt: providerType },
+  ]
+  if (providerKey !== providerType) {
+    keysToTry.push({ pt: providerType, pk: providerType })
+  }
+  const lowerModelId = modelId.toLowerCase()
+  for (const { pt, pk } of keysToTry) {
+    const models = getCachedModels(pt, pk)
+    if (!models) continue
+    const hit = models.find((m) => m.id.toLowerCase() === lowerModelId)
+    if (hit) return hit
+  }
+  return null
 }
 
 /**

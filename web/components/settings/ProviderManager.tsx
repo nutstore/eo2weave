@@ -240,18 +240,33 @@ function ProviderCard({
       return result
     }
 
-    // Static models first (have capability info)
-    const staticModels = getModelsForProvider(providerType)
-    for (const m of staticModels) {
+    // Dynamic models (from /models API) FIRST — they carry authoritative
+    // provider metadata (name, context_window, input_modalities/vision).
+    for (const m of dynamicModels) {
       if (!seen.has(m.id)) {
         seen.add(m.id)
         result.push(m)
       }
     }
 
-    // Then dynamic models (from /models API)
-    for (const m of dynamicModels) {
-      if (!seen.has(m.id)) {
+    // Static skeleton second: fills gaps when the API fetch failed, and is
+    // enriched/overwritten whenever a dynamic entry with the same id exists.
+    // Static entries NEVER overwrite dynamic ones — API data wins.
+    const staticModels = getModelsForProvider(providerType)
+    for (const m of staticModels) {
+      const existingIdx = result.findIndex((r) => r.id === m.id)
+      if (existingIdx >= 0) {
+        // Merge: keep API metadata, only adopt static capability tags the API
+        // didn't provide (dynamic entries lack them only when the API didn't
+        // return input_modalities AND guessCapabilities found nothing).
+        const apiEntry = result[existingIdx]
+        result[existingIdx] = {
+          ...apiEntry,
+          capabilities: apiEntry.capabilities.length > 0
+            ? apiEntry.capabilities
+            : m.capabilities,
+        }
+      } else if (!seen.has(m.id)) {
         seen.add(m.id)
         result.push(m)
       }

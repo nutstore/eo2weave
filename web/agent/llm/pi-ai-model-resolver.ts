@@ -2,7 +2,7 @@ import { getModel } from '@earendil-works/pi-ai'
 import type { Api, KnownProvider, Model } from '@earendil-works/pi-ai'
 import type { LLMProviderType } from '@/agent/providers/types'
 import { isChineseProviderType, isPotentiallyDynamicProviderType, getModelsForProvider } from '@/agent/providers/types'
-import { getModelContextWindow } from '@/agent/providers/model-store'
+import { getModelContextWindow, findCachedModelInfo } from '@/agent/providers/model-store'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
 import { CW_OPENAI_FETCH_API } from './pi-ai-custom-openai-fetch'
 import { normalizeBaseUrl } from './pi-ai-url-utils'
@@ -99,6 +99,17 @@ function lookupContextWindow(providerType: LLMProviderType, modelName: string): 
  * that doesn't support it causes the entire API request to fail.
  */
 function resolveInputModalities(modelName: string, providerType?: LLMProviderType): Array<'text' | 'image'> {
+  // 1. Dynamic model cache first: DeepSeek (2026+) and other providers return
+  //    `input_modalities` directly from their /models endpoint. This is the
+  //    freshest, provider-authoritative source.
+  if (providerType) {
+    const cached = findCachedModelInfo(providerType, modelName)
+    if (cached?.inputModalities?.length) {
+      return cached.inputModalities.includes('image') ? ['text', 'image'] : ['text']
+    }
+    if (cached?.capabilities?.includes('vision')) return ['text', 'image']
+  }
+  // 2. OpenRouter snapshot
   const modalities = getOpenRouterInputModalities(modelName)
   if (modalities && modalities.includes('image')) {
     return ['text', 'image']
@@ -222,12 +233,11 @@ function createOpenAICompatibleFallback(
     provider: providerType,
     baseUrl: normalizeBaseUrl(baseUrl),
     reasoning: true,
-    // Resolve vision capability from the OpenRouter snapshot. If the model is
-    // known to support image input (per authoritative metadata), declare it;
-    // otherwise fall back to text-only. Sending image_url to a model that
-    // doesn't support it causes the entire API request to fail, so the
-    // conservative default (['text']) is used when the model is unknown.
-    input: resolveInputModalities(modelName),
+    // Resolve vision capability. Pass providerType so the dynamic model cache
+    // (DeepSeek input_modalities etc.) and registry capabilities are consulted,
+    // not just the OpenRouter snapshot. Conservative text-only default when
+    // unknown — sending image_url to an unsupported model fails the request.
+    input: resolveInputModalities(modelName, providerType),
     cost: {
       input: 0,
       output: 0,

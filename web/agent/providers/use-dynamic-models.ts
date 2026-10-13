@@ -16,6 +16,7 @@ import {
   getCachedModels,
   getCachedModelsResult,
   setCachedModels,
+  isCacheStale,
 } from '@/agent/providers/model-store'
 
 interface DynamicModelsState {
@@ -105,6 +106,20 @@ export function useDynamicModels(
     }
     setError(null)
     setLoading(false)
+  }, [providerType, providerKey])
+
+  // Stale-while-revalidate: if a cached list is older than the TTL, silently
+  // re-fetch in the background so metadata (names, modalities, context windows)
+  // eventually catches up with provider-side changes. Cached data is still
+  // shown immediately, so this never blocks the UI.
+  useEffect(() => {
+    if (!isCacheStale(providerType, providerKey)) return
+    // Only auto-fetch when we have credentials for non-custom providers
+    // (fetchModelsForProvider already handles the keyless-custom case).
+    const key = providerKey ?? undefined
+    if (!key && providerType !== 'custom') return
+    void doFetch(key)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerType, providerKey])
 
   return {
