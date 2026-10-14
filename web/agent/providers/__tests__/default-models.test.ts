@@ -4,12 +4,15 @@ import { PROVIDER_META } from '../types'
 
 describe('getDefaultPinnedModels', () => {
   it('returns curated defaults as-is when no catalog is given (blind seed)', () => {
+    expect(getDefaultPinnedModels('deepseek')).toEqual(['deepseek-flash'])
     expect(getDefaultPinnedModels('glm')).toEqual(['glm-5.3-flash'])
     expect(getDefaultPinnedModels('llm-gateway')).toEqual(['deepseek-v4.1-flash'])
     expect(getDefaultPinnedModels('codex-oauth')).toEqual([])
   })
 
   it('intersects with the live catalog and drops out-of-curation ids', () => {
+    // DeepSeek default exists in both the fallback and served lists → kept
+    expect(getDefaultPinnedModels('deepseek', ['deepseek-flash', 'deepseek-v4-pro'])).toEqual(['deepseek-flash'])
     // glm default exists in the served list → kept
     expect(getDefaultPinnedModels('glm', ['glm-5.3-flash', 'glm-5.1'])).toEqual(['glm-5.3-flash'])
     // glm default NOT served anymore → nothing seeded
@@ -51,6 +54,9 @@ describe('getDefaultPinnedModels', () => {
     // snapshots — that's fine: those providers refresh from /models at key
     // save, and getDefaultPinnedModels intersects, so a not-yet-served id is
     // simply skipped. Assert the guard works end-to-end from the static list.
+    const deepseekServed = PROVIDER_META.deepseek.models.map((m) => m.id)
+    expect(getDefaultPinnedModels('deepseek', deepseekServed)).toEqual(['deepseek-flash'])
+
     const glmServed = PROVIDER_META.glm.models.map((m) => m.id)
     // Static snapshot predates 5.3 → blind data would pin nothing wrong.
     expect(getDefaultPinnedModels('glm', glmServed)).toEqual(

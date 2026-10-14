@@ -39,7 +39,7 @@ export const DEFAULT_PINNED_MODELS: Partial<Record<string, readonly string[]>> =
   // OpenRouter: dynamic catalog — see module docblock.
 
   // ── Chinese ──
-  deepseek: ['deepseek-v4-flash'],
+  deepseek: ['deepseek-flash'],
   glm: ['glm-5.3-flash'],
   'glm-coding': ['glm-5.3-flash'],
   kimi: ['moonshot-v1-32k'],
