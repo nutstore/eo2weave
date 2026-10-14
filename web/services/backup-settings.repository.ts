@@ -117,4 +117,3 @@ class BackupSettingsRepository {
 }
 
 export const backupSettingsRepo = new BackupSettingsRepository()
-export { RECORD_ID as BACKUP_SETTINGS_RECORD_ID }

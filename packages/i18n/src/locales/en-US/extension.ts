@@ -9,8 +9,6 @@ export const extension = {
   // Install Guide Dialog
   guideTitle: "Install eo2weave Browser Extension",
   guideSubtitle: "Connect your AI assistant to the internet",
-  guideAlreadyInstalled: "Already installed?",
-  verifyInstallLink: "Refresh Page",
   estimatedTime: "Estimated time: 3-5 minutes",
   prerequisite: "You'll need: Chrome or Edge browser",
 
@@ -47,7 +45,6 @@ export const extension = {
   // Edge Add-ons flow (Edge browser users)
   edgeStepStoreOpen: "Open Edge Add-ons",
   edgeStepStoreInstall: "Get",
-  edgeStoreOpenDesc: "The extension is published on Edge Add-ons — installing takes one click and updates are automatic.",
   edgeStoreOpenButton: "Open Edge Add-ons",
   edgeStoreOpenHint: "The store page opens in a new tab. Click “Get” there, then come back and click Next.",
   edgeStoreInstallDesc: "Complete the installation on the Edge Add-ons page",
@@ -63,11 +60,8 @@ export const extension = {
   stepInstall: "Install",
   stepRefresh: "Refresh",
 
-  stepIntroDesc: "Learn what this extension can do",
   stepDownloadDesc: "Download the extension package",
-  stepExtractDesc: "Extract the downloaded file",
   stepInstallDesc: "Load the extension in your browser",
-  stepRefreshDesc: "Refresh the page to activate",
 
   // Download step
   downloadButton: "Download Extension Package",
@@ -82,8 +76,6 @@ export const extension = {
 
   // Install step
   installStepA: "Open the extensions page",
-  installStepAChrome: "Chrome: Type chrome://extensions in the address bar",
-  installStepAEdge: "Edge: Type edge://extensions in the address bar",
   installCopyLink: "Copy link",
   installStepB: "Enable \"Developer mode\" toggle (top right)",
   installStepC: "Click \"Load unpacked\"",
@@ -91,15 +83,6 @@ export const extension = {
   installSuccessHint: "You should see \"EO2Weave\" appear in the extensions list",
 
   // Verify step (kept for backwards compat)
-  verifyTitle: "Refresh the Page",
-  verifyChecking: "Detecting extension status...",
-  verifySuccess: "Extension is ready!",
-  verifyFailed: "Extension not detected",
-  verifyRetry: "Retry",
-  verifyTroubleshootTitle: "Troubleshooting",
-  verifyTroubleshoot1: "Make sure the extension is enabled in chrome://extensions",
-  verifyTroubleshoot2: "Try refreshing this page and checking again",
-  verifyTroubleshoot3: "Confirm you selected the correct extracted folder",
 
   // Refresh step
   refreshTitle: "Final Step: Refresh the Page",
@@ -109,8 +92,6 @@ export const extension = {
   refreshPageLink: "Refresh Page",
 
   // Success
-  successTitle: "Installation Successful!",
-  successDescription: "Your AI assistant can now search the internet. Try asking \"What's in the news today?\"",
 
   // Navigation
   nextStep: "Next",
@@ -140,7 +121,6 @@ export const extension = {
 
   // Settings — Version display
   settingsVersionTitle: "Version",
-  settingsLatestVersion: "Latest available",
   settingsBundledVersion: "Bundled ZIP version",
   settingsUpdateChannel: "Update channel",
   settingsStoreAutoUpdates: "Managed automatically by the browser store",
@@ -151,8 +131,6 @@ export const extension = {
   // Outdated banner
   outdatedBannerTitle: "Extension Update Available",
   outdatedBannerDescription: "Your extension (v{current}) is outdated. Latest: v{latest}",
-  outdatedBannerStoreAction: "Update from Store",
-  storeButtonEdgeTitle: "Opens the Edge Add-ons listing",
   outdatedBannerZipAction: "Download Package",
 
   // Newer-than-web banner

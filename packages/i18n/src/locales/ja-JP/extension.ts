@@ -9,8 +9,6 @@ export const extension = {
   // インストールガイドダイアログ
   guideTitle: "eo2weave ブラウザ拡張機能のインストール",
   guideSubtitle: "AI アシスタントをインターネットに接続",
-  guideAlreadyInstalled: "すでにインストール済みですか？",
-  verifyInstallLink: "ページを更新",
   estimatedTime: "所要時間の目安：3〜5 分",
   prerequisite: "必要なもの：Chrome または Edge ブラウザ",
 
@@ -47,7 +45,6 @@ export const extension = {
   // Edge アドオンのフロー（Edge ブラウザユーザー向け）
   edgeStepStoreOpen: "Edge アドオンを開く",
   edgeStepStoreInstall: "取得",
-  edgeStoreOpenDesc: "拡張機能は Edge アドオンで公開されています。ワンクリックでインストールでき、更新は自動です。",
   edgeStoreOpenButton: "Edge アドオンを開く",
   edgeStoreOpenHint: "ストアのページが新しいタブで開きます。「取得」をクリックしてから、このページに戻り「次へ」をクリックしてください。",
   edgeStoreInstallDesc: "Edge アドオンのページでインストールを完了してください",
@@ -63,11 +60,8 @@ export const extension = {
   stepInstall: "インストール",
   stepRefresh: "更新",
 
-  stepIntroDesc: "この拡張機能でできることを知る",
   stepDownloadDesc: "拡張機能のパッケージをダウンロード",
-  stepExtractDesc: "ダウンロードしたファイルを解凍",
   stepInstallDesc: "ブラウザに拡張機能を読み込む",
-  stepRefreshDesc: "ページを更新して有効化",
 
   // ダウンロードステップ
   downloadButton: "拡張機能パッケージをダウンロード",
@@ -82,8 +76,6 @@ export const extension = {
 
   // インストールステップ
   installStepA: "拡張機能の管理ページを開く",
-  installStepAChrome: "Chrome：アドレスバーに chrome://extensions と入力",
-  installStepAEdge: "Edge：アドレスバーに edge://extensions と入力",
   installCopyLink: "リンクをコピー",
   installStepB: "右上の「デベロッパーモード」をオンにする",
   installStepC: "「パッケージ化されていない拡張機能を読み込む」をクリック",
@@ -91,15 +83,6 @@ export const extension = {
   installSuccessHint: "拡張機能の一覧に「EO2Weave」が表示されればインストール成功です",
 
   // 確認ステップ（後方互換のため維持）
-  verifyTitle: "ページを更新",
-  verifyChecking: "拡張機能の状態を確認中...",
-  verifySuccess: "拡張機能の準備ができました！",
-  verifyFailed: "拡張機能が検出されません",
-  verifyRetry: "再試行",
-  verifyTroubleshootTitle: "トラブルシューティング",
-  verifyTroubleshoot1: "chrome://extensions で拡張機能が有効になっているか確認してください",
-  verifyTroubleshoot2: "このページを更新して再確認してください",
-  verifyTroubleshoot3: "正しい解凍フォルダを選択したか確認してください",
 
   // 更新ステップ
   refreshTitle: "最後のステップ：ページを更新",
@@ -109,8 +92,6 @@ export const extension = {
   refreshPageLink: "ページを更新",
 
   // 成功
-  successTitle: "インストール完了！",
-  successDescription: "AI アシスタントがインターネットを検索できるようになりました。「今日のニュースは？」と聞いてみてください。",
 
   // ナビゲーション
   nextStep: "次へ",
@@ -140,7 +121,6 @@ export const extension = {
 
   // 設定 — バージョン表示
   settingsVersionTitle: "バージョン",
-  settingsLatestVersion: "最新版",
   settingsBundledVersion: "同梱 ZIP バージョン",
   settingsUpdateChannel: "更新チャネル",
   settingsStoreAutoUpdates: "ブラウザストアによって自動更新されます",
@@ -151,8 +131,6 @@ export const extension = {
   // 期限切れバナー
   outdatedBannerTitle: "拡張機能の更新があります",
   outdatedBannerDescription: "お使いの拡張機能 (v{current}) は古いです。最新版：v{latest}",
-  outdatedBannerStoreAction: "ストアで更新",
-  storeButtonEdgeTitle: "Edge アドオンのページを開きます",
   outdatedBannerZipAction: "パッケージをダウンロード",
 
   // ウェブ版より新しいバナー

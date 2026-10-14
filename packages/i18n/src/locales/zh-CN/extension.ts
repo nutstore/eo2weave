@@ -9,8 +9,6 @@ export const extension = {
   // Install Guide Dialog
   guideTitle: "安装 怡氧知知 浏览器扩展",
   guideSubtitle: "让你的 AI 助手连接互联网",
-  guideAlreadyInstalled: "已安装插件？",
-  verifyInstallLink: "刷新页面",
   estimatedTime: "预计安装时间：3-5 分钟",
   prerequisite: "你需要准备：Chrome 或 Edge 浏览器",
 
@@ -47,7 +45,6 @@ export const extension = {
   // Edge 加载项流程（Edge 浏览器用户）
   edgeStepStoreOpen: "打开 Edge 加载项",
   edgeStepStoreInstall: "获取",
-  edgeStoreOpenDesc: "插件已发布到 Edge 加载项商店，一键安装，自动更新。",
   edgeStoreOpenButton: "打开 Edge 加载项",
   edgeStoreOpenHint: "商店页面会在新标签页打开，点击“获取”，然后回到本页点击“下一步”。",
   edgeStoreInstallDesc: "在 Edge 加载项页面完成安装",
@@ -63,11 +60,8 @@ export const extension = {
   stepInstall: "安装到浏览器",
   stepRefresh: "刷新页面",
 
-  stepIntroDesc: "了解这个插件能为你做什么",
   stepDownloadDesc: "下载插件压缩包",
-  stepExtractDesc: "解压下载的文件",
   stepInstallDesc: "在浏览器中加载插件",
-  stepRefreshDesc: "刷新页面使插件生效",
 
   // Download step
   downloadButton: "下载插件包",
@@ -82,8 +76,6 @@ export const extension = {
 
   // Install step
   installStepA: "打开扩展管理页面",
-  installStepAChrome: "Chrome：地址栏输入 chrome://extensions",
-  installStepAEdge: "Edge：地址栏输入 edge://extensions",
   installCopyLink: "复制链接",
   installStepB: "打开右上角「开发者模式」开关",
   installStepC: "点击「加载已解压的扩展程序」",
@@ -91,15 +83,6 @@ export const extension = {
   installSuccessHint: "看到扩展列表中出现 \"怡氧知知\" 即安装成功",
 
   // Verify step (kept for backwards compat)
-  verifyTitle: "刷新页面",
-  verifyChecking: "正在检测插件状态...",
-  verifySuccess: "插件已就绪！",
-  verifyFailed: "未检测到插件",
-  verifyRetry: "重新检测",
-  verifyTroubleshootTitle: "故障排查",
-  verifyTroubleshoot1: "确认插件已在 chrome://extensions 中启用",
-  verifyTroubleshoot2: "刷新当前页面后重试",
-  verifyTroubleshoot3: "确认选择了正确的解压文件夹",
 
   // Refresh step
   refreshTitle: "最后一步：刷新页面",
@@ -109,8 +92,6 @@ export const extension = {
   refreshPageLink: "刷新页面",
 
   // Success
-  successTitle: "安装成功！",
-  successDescription: "你的 AI 助手现在可以搜索互联网了。试试问它\"今天的新闻有什么？\"",
 
   // Navigation
   nextStep: "下一步",
@@ -140,7 +121,6 @@ export const extension = {
 
   // Settings — 版本显示
   settingsVersionTitle: "版本",
-  settingsLatestVersion: "最新版本",
   settingsBundledVersion: "内置 ZIP 版本",
   settingsUpdateChannel: "更新渠道",
   settingsStoreAutoUpdates: "由浏览器商店自动管理更新",
@@ -151,8 +131,6 @@ export const extension = {
   // 过期提示横幅
   outdatedBannerTitle: "插件有新版本",
   outdatedBannerDescription: "你的插件版本 (v{current}) 已过期，最新版本为 v{latest}",
-  outdatedBannerStoreAction: "到商店更新",
-  storeButtonEdgeTitle: "将在 Edge 加载项打开",
   outdatedBannerZipAction: "下载安装包",
 
   // 插件版本高于网页端提示横幅

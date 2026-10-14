@@ -9,8 +9,6 @@ export const extension = {
   // 설치 가이드 다이얼로그
   guideTitle: "eo2weave 브라우저 확장 프로그램 설치",
   guideSubtitle: "AI 어시스턴트를 인터넷에 연결하세요",
-  guideAlreadyInstalled: "이미 설치하셨나요?",
-  verifyInstallLink: "페이지 새로고침",
   estimatedTime: "예상 소요 시간: 3-5분",
   prerequisite: "준비물: Chrome 또는 Edge 브라우저",
 
@@ -47,7 +45,6 @@ export const extension = {
   // Edge 추가 기능 플로우 (Edge 브라우저 사용자)
   edgeStepStoreOpen: "Edge 추가 기능 열기",
   edgeStepStoreInstall: "가져오기",
-  edgeStoreOpenDesc: "확장 프로그램은 Edge 추가 기능에 게시되어 있습니다. 클릭 한 번으로 설치되며 업데이트는 자동입니다.",
   edgeStoreOpenButton: "Edge 추가 기능 열기",
   edgeStoreOpenHint: "스토어 페이지가 새 탭에서 열립니다. \"가져오기\"를 클릭한 뒤 이 페이지로 돌아와 \"다음\"을 클릭하세요.",
   edgeStoreInstallDesc: "Edge 추가 기능 페이지에서 설치를 완료하세요",
@@ -63,11 +60,8 @@ export const extension = {
   stepInstall: "설치",
   stepRefresh: "새로고침",
 
-  stepIntroDesc: "이 확장 프로그램으로 할 수 있는 일 알아보기",
   stepDownloadDesc: "확장 프로그램 패키지 다운로드",
-  stepExtractDesc: "다운로드한 파일 압축 풀기",
   stepInstallDesc: "브라우저에 확장 프로그램 로드",
-  stepRefreshDesc: "페이지를 새로고침하여 활성화",
 
   // 다운로드 단계
   downloadButton: "확장 프로그램 패키지 다운로드",
@@ -82,8 +76,6 @@ export const extension = {
 
   // 설치 단계
   installStepA: "확장 프로그램 관리 페이지 열기",
-  installStepAChrome: "Chrome: 주소창에 chrome://extensions 입력",
-  installStepAEdge: "Edge: 주소창에 edge://extensions 입력",
   installCopyLink: "링크 복사",
   installStepB: "오른쪽 상단의 \"개발자 모드\" 스위치 켜기",
   installStepC: "\"압축해제된 확장 프로그램을 로드합니다\" 클릭",
@@ -91,15 +83,6 @@ export const extension = {
   installSuccessHint: "확장 프로그램 목록에 \"EO2Weave\"가 나타나면 설치 성공입니다",
 
   // 확인 단계 (하위 호환을 위해 유지)
-  verifyTitle: "페이지 새로고침",
-  verifyChecking: "확장 프로그램 상태 확인 중...",
-  verifySuccess: "확장 프로그램이 준비되었습니다!",
-  verifyFailed: "확장 프로그램이 감지되지 않았습니다",
-  verifyRetry: "다시 시도",
-  verifyTroubleshootTitle: "문제 해결",
-  verifyTroubleshoot1: "chrome://extensions에서 확장 프로그램이 사용 중지되지 않았는지 확인하세요",
-  verifyTroubleshoot2: "이 페이지를 새로고침한 후 다시 확인하세요",
-  verifyTroubleshoot3: "올바른 압축 해제 폴더를 선택했는지 확인하세요",
 
   // 새로고침 단계
   refreshTitle: "마지막 단계: 페이지 새로고침",
@@ -109,8 +92,6 @@ export const extension = {
   refreshPageLink: "페이지 새로고침",
 
   // 성공
-  successTitle: "설치 완료!",
-  successDescription: "AI 어시스턴트가 이제 인터넷을 검색할 수 있습니다. \"오늘 뉴스 뭐 있어?\"라고 물어보세요.",
 
   // 내비게이션
   nextStep: "다음",
@@ -140,7 +121,6 @@ export const extension = {
 
   // 설정 — 버전 표시
   settingsVersionTitle: "버전",
-  settingsLatestVersion: "최신 버전",
   settingsBundledVersion: "번들 ZIP 버전",
   settingsUpdateChannel: "업데이트 채널",
   settingsStoreAutoUpdates: "브라우저 스토어에서 자동으로 업데이트됨",
@@ -151,8 +131,6 @@ export const extension = {
   // 만료 배너
   outdatedBannerTitle: "확장 프로그램 업데이트 있음",
   outdatedBannerDescription: "설치된 확장 프로그램 (v{current})이 오래되었습니다. 최신 버전: v{latest}",
-  outdatedBannerStoreAction: "스토어에서 업데이트",
-  storeButtonEdgeTitle: "Edge 추가 기능 페이지를 엽니다",
   outdatedBannerZipAction: "패키지 다운로드",
 
   // 웹 버전보다 최신 배너
