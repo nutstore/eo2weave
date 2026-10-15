@@ -346,22 +346,22 @@ class FolderAccessRepository {
   /**
    * Park a handle picked in the standalone folder-pick tab.
    *
-   * The pick tab may open before the user has entered a specific project
-   * (e.g. from the root route), so there is no projectId to file the record
-   * under. The handle is parked under a well-known compound key; the panel
-   * adopts it into the active project on the broadcast and deletes the
-   * parked entry immediately.
+   * Pending entries never share a mounted root's key. A unique handoff ID
+   * prevents simultaneous pick tabs from overwriting each other's handles.
+   * A null project is adopted into the active project on the root route.
    */
-  async saveParkedHandle(handle: FileSystemDirectoryHandle): Promise<void> {
+  async saveParkedHandle(handle: FileSystemDirectoryHandle, projectId: string | null): Promise<string> {
     const db = await this.ensureDB()
-    const PARKED_KEY = '__folder-pick:parked'
+    const pickId = crypto.randomUUID()
+    const parkedKey = `__folder-pick:pending:${pickId}`
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite')
       const store = tx.objectStore(STORE_NAME)
       const request = store.put({
-        _compoundKey: PARKED_KEY,
+        _compoundKey: parkedKey,
         projectId: '',
+        pickedProjectId: projectId,
         rootName: handle.name,
         folderName: handle.name,
         persistedHandle: handle,
@@ -369,7 +369,9 @@ class FolderAccessRepository {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       })
-      request.onsuccess = () => resolve()
+      tx.oncomplete = () => resolve(pickId)
+      tx.onabort = () => reject(tx.error ?? new Error('Folder handoff storage aborted'))
+      tx.onerror = () => reject(tx.error)
       request.onerror = () => reject(request.error)
     })
   }
@@ -378,19 +380,24 @@ class FolderAccessRepository {
    * Take (load + delete) the parked handle written by the folder-pick tab.
    * Returns null when nothing is parked.
    */
-  async takeParkedHandle(): Promise<FileSystemDirectoryHandle | null> {
+  async takeParkedHandle(pickId: string, projectId: string | null, name: string): Promise<FileSystemDirectoryHandle | null> {
     const db = await this.ensureDB()
-    const PARKED_KEY = '__folder-pick:parked'
+    const parkedKey = `__folder-pick:pending:${pickId}`
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite')
       const store = tx.objectStore(STORE_NAME)
-      const getRequest = store.get(PARKED_KEY)
+      let handle: FileSystemDirectoryHandle | null = null
+      const getRequest = store.get(parkedKey)
       getRequest.onsuccess = () => {
         const raw = getRequest.result as any
-        store.delete(PARKED_KEY)
-        resolve(raw?.persistedHandle ?? null)
+        if (raw?.pickedProjectId !== projectId || raw?.rootName !== name || raw?.persistedHandle?.name !== name) return
+        handle = raw.persistedHandle
+        store.delete(parkedKey)
       }
+      tx.oncomplete = () => resolve(handle)
+      tx.onabort = () => reject(tx.error ?? new Error('Folder handoff consumption aborted'))
+      tx.onerror = () => reject(tx.error)
       getRequest.onerror = () => reject(getRequest.error)
     })
   }

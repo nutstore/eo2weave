@@ -22,7 +22,8 @@ const PICK_CHANNEL = 'creatorweave-folder-pick'
  * user successfully selects a folder — indistinguishable from a cancel).
  * A full tab is the reliable context, so the side panel opens this page,
  * the user picks here, and the handle flows back over IndexedDB +
- * BroadcastChannel; this tab then closes itself.
+ * BroadcastChannel. Keep this top-level tab open while the panel uses the
+ * handle: closing the last top-level page can revoke the temporary grant.
  */
 function FolderPickView() {
   const t = useT()
@@ -31,40 +32,36 @@ function FolderPickView() {
   const [state, setState] = useState<'idle' | 'picking' | 'failed' | 'done'>('idle')
   const [errorName, setErrorName] = useState<string | null>(null)
 
-  const notifyPanelAndClose = useCallback(
+  const notifyPanel = useCallback(
     async (handle: FileSystemDirectoryHandle, name: string) => {
+      // A picker result alone does not prove that directory reads are allowed.
+      // Read one entry without enumerating or retaining the whole directory.
+      for await (const _entry of handle.entries()) {
+        void _entry
+        break
+      }
+      let pickId: string
       try {
         // Stash the handle so the panel can adopt it after the broadcast.
         // sessionStorage can't hold FileSystemHandles; IndexedDB can.
         const { folderAccessRepo } = await import('@/services/folder-access.repository')
-        if (projectId) {
-          await folderAccessRepo.save({
-            projectId,
-            rootName: name,
-            folderName: name,
-            handle,
-            persistedHandle: handle,
-            status: 'ready',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          })
-        } else {
-          // No project context (root page) — park the handle under a
-          // well-known key; the panel adopts it into the active project.
-          await folderAccessRepo.saveParkedHandle(handle)
-        }
+        // Never overwrite a mounted root before the panel checks identity.
+        pickId = await folderAccessRepo.saveParkedHandle(handle, projectId)
       } catch (error) {
         console.error('[FolderPick] Failed to persist handle:', error)
+        throw error
       }
       try {
         const channel = new BroadcastChannel(PICK_CHANNEL)
-        channel.postMessage({ type: 'folder-picked', name })
-        channel.close()
+        try {
+          channel.postMessage({ type: 'folder-picked', name, pickId, projectId })
+        } finally {
+          channel.close()
+        }
       } catch (error) {
         console.error('[FolderPick] Broadcast failed:', error)
+        throw error
       }
-      // Give the panel a beat to receive the message before the tab closes.
-      setTimeout(() => window.close(), 300)
     },
     [projectId]
   )
@@ -81,14 +78,14 @@ function FolderPickView() {
         setErrorName(null)
         return
       }
+      await notifyPanel(handle, handle.name)
       setState('done')
-      await notifyPanelAndClose(handle, handle.name)
     } catch (error) {
       console.error('[FolderPick] picker failed:', error)
       setErrorName(error instanceof Error ? `${error.name}: ${error.message}` : String(error))
       setState('failed')
     }
-  }, [notifyPanelAndClose])
+  }, [notifyPanel])
 
   // No auto-pick on mount: showDirectoryPicker requires a transient user
   // gesture, and the activation from the panel's button click does NOT

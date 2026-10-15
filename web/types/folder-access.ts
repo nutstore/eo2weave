@@ -150,10 +150,11 @@ export interface FolderAccessStore extends FolderAccessActions {
   /**
    * Adopt a handle picked in the standalone folder-pick tab. `name` comes
    * from the BroadcastChannel message; the handle itself is read from the
-   * parked IndexedDB entry (project-scoped) or the parked slot (no project).
+   * isolated pending IndexedDB entry. Project and directory identity are
+   * checked before a mounted root's persisted handle can be replaced.
    * Returns false when the handle is missing or the root already exists.
    */
-  adoptPickedRoot: (name: string) => Promise<boolean>
+  adoptPickedRoot: (name: string, pickId: string, pickedProjectId: string | null) => Promise<boolean>
   /** Add a root through the explicitly selected Native Host picker. */
   /** Add a root through the explicitly selected Native Host picker. `projectIdOverride` binds the new root to a specific project (e.g. the conversation's project for exec in-flow authorization); defaults to the active project. */
   addNativeHostRoot: (projectIdOverride?: string) => Promise<boolean>

@@ -1028,20 +1028,14 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       return true
     },
 
-    adoptPickedRoot: async (name: string) => {
+    adoptPickedRoot: async (name: string, pickId: string, pickedProjectId: string | null) => {
       const projectId = get().activeProjectId
-      if (!projectId) return false
+      if (!projectId || !pickId || (pickedProjectId !== null && pickedProjectId !== projectId)) return false
 
-      // The pick tab filed the record under this project when it knew the
-      // projectId, otherwise it parked the handle in the shared slot.
+      // Consume only this handoff; mounted-root records remain untouched.
       let handle: FileSystemDirectoryHandle | null = null
       try {
-        const record = await folderAccessRepo.findByProjectAndRoot(projectId, name)
-        if (record?.persistedHandle) {
-          handle = record.persistedHandle
-        } else {
-          handle = await folderAccessRepo.takeParkedHandle()
-        }
+        handle = await folderAccessRepo.takeParkedHandle(pickId, pickedProjectId, name)
       } catch (error) {
         console.error('[FolderAccessStore] adoptPickedRoot: failed to load picked handle:', error)
       }
@@ -1052,20 +1046,34 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
 
       const rootName = handle.name
 
-      // Duplicate check — same contract as addRoot. Without this, a re-pick
-      // of an already-mounted folder fails on createRoot's UNIQUE constraint
-      // with the generic "add failed" message instead of the accurate one.
+      // Re-picking the same directory restores its grant without creating
+      // a duplicate root. A matching name alone cannot authorize replacement.
       const existingRoots = await getProjectRootRepository().findByProject(projectId)
-      if (existingRoots.some((r) => r.name === rootName)) {
-        toast.error(i18nText('projectRoots.rootAlreadyExists', `A folder named "${rootName}" already exists`, { name: rootName }))
-        return false
+      const existingRoot = existingRoots.find((r) => r.name === rootName)
+      if (existingRoot) {
+        const runtimeRoot = get().roots.find((r) => r.id === existingRoot.id)
+        const previousHandle = runtimeRoot?.handle ?? runtimeRoot?.persistedHandle
+          ?? getRuntimeHandlesForProject(projectId).get(rootName)
+          ?? (await folderAccessRepo.findByProjectAndRoot(projectId, rootName))?.persistedHandle
+        let sameDirectory = false
+        if (previousHandle && (existingRoot.backend ?? 'fsaccess') === 'fsaccess') {
+          try {
+            sameDirectory = await previousHandle.isSameEntry(handle)
+          } catch { /* Cannot establish directory identity; do not replace it. */ }
+        }
+        if (!sameDirectory) {
+          toast.error(i18nText('projectRoots.rootAlreadyExists', `A folder named "${rootName}" already exists`, { name: rootName }))
+          return false
+        }
       }
+
+      if (get().activeProjectId !== projectId) return false
 
       // Same ordering contract as addRoot: SQLite row first, then bind the
       // runtime handle and persist, so a failed create never leaves an
       // orphaned handle.
       try {
-        await getProjectRootRepository().createRoot({ projectId, name: rootName })
+        if (!existingRoot) await getProjectRootRepository().createRoot({ projectId, name: rootName })
       } catch (createError) {
         console.error('[FolderAccessStore] adoptPickedRoot: createRoot failed:', createError)
         toast.error(i18nText('projectRoots.addRootFailed', `Failed to add folder "${rootName}"`, { name: rootName }))
@@ -1101,7 +1109,9 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
 
       get().clearFilePaths()
 
-      toast.success(i18nText('projectRoots.rootAdded', `Added folder "${rootName}"`, { name: rootName }))
+      toast.success(existingRoot
+        ? i18nText('projectRoots.permissionRestored', 'Folder permission restored')
+        : i18nText('projectRoots.rootAdded', `Added folder "${rootName}"`, { name: rootName }))
       return true
     },
 

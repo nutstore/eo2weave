@@ -104,14 +104,15 @@ export function FolderSelector() {
       return
     }
     channel.onmessage = (event: MessageEvent) => {
-      const data = event.data as { type?: string; name?: string } | null
-      if (data?.type !== 'folder-picked' || !data.name) return
-      void adoptPickedRoot(data.name)
+      const data = event.data as { type?: string; name?: string; pickId?: string; projectId?: string | null } | null
+      if (data?.type !== 'folder-picked' || !data.name || !data.pickId) return
+      if (data.projectId !== null && data.projectId !== activeProjectId) return
+      void adoptPickedRoot(data.name, data.pickId, data.projectId ?? null)
     }
     return () => {
       channel?.close()
     }
-  }, [isSidePanel, adoptPickedRoot])
+  }, [isSidePanel, activeProjectId, adoptPickedRoot])
 
   const handleAddRoot = useCallback(async () => {
     if (!canPickDirectory || isAdding) return
@@ -163,9 +164,19 @@ export function FolderSelector() {
   const handleRestorePermission = useCallback(
     async (root: RootInfo) => {
       if (!activeProjectId || !root.persistedHandle) return
+      if (isSidePanel) {
+        // Re-grant in a top-level page; cross-origin panels cannot prompt.
+        const url = new URL(window.location.href)
+        url.hash = ''
+        url.search = `?projectId=${encodeURIComponent(activeProjectId)}`
+        url.pathname = '/folder-pick'
+        window.open(url.toString(), '_blank', 'noopener')
+        setActiveChip(null)
+        return
+      }
       try {
         const permission = await root.persistedHandle.requestPermission({ mode: 'readwrite' })
-        if (permission) {
+        if (permission === 'granted') {
           bindRuntimeDirectoryHandle(activeProjectId, root.name, root.persistedHandle)
           await loadRoots()
 
@@ -186,7 +197,7 @@ export function FolderSelector() {
         toast.error(t('projectRoots.permissionFailed'))
       }
     },
-    [activeProjectId, loadRoots, t]
+    [activeProjectId, isSidePanel, loadRoots, t]
   )
 
   const handleToggleReadOnly = useCallback(
