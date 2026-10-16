@@ -13,6 +13,7 @@ import type { VfsBackend, VfsReadResult, VfsReadOptions, VfsDirEntry, VfsListOpt
 import { resolveNativeDirectoryHandle } from '../tool-utils'
 import type { ReadPolicy } from '@/opfs/types/opfs-types'
 import { getWorkspaceManager } from '@/opfs'
+import { inferMimeType as inferAssetMimeType } from '@/types/asset'
 
 function inferMimeType(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -28,7 +29,7 @@ function inferMimeType(path: string): string {
     xml: 'text/xml', csv: 'text/csv', pdf: 'application/pdf',
     wasm: 'application/wasm', nol: 'application/zip', zip: 'application/zip',
   }
-  return map[ext] ?? 'application/octet-stream'
+  return map[ext] ?? inferAssetMimeType(path)
 }
 
 export class WorkspaceBackend implements VfsBackend {
@@ -53,6 +54,8 @@ export class WorkspaceBackend implements VfsBackend {
 
     let content: string | Uint8Array | ArrayBuffer | Blob = result.content
     const { metadata, source } = result
+    const mimeType = content instanceof Blob && content.type ? content.type
+      : metadata.contentType === 'binary' ? inferMimeType(path) : metadata.contentType
 
     // VfsReadOptions.encoding is part of the public backend contract used by
     // just-bash bridge and other tools. WorkspaceRuntime currently auto-detects
@@ -79,7 +82,7 @@ export class WorkspaceBackend implements VfsBackend {
     return {
       content,
       size: metadata.size,
-      mimeType: metadata.contentType === 'binary' ? inferMimeType(path) : metadata.contentType,
+      mimeType,
       source: source === 'opfs' ? 'opfs' : 'native',
       mtime: metadata.mtime,
     }

@@ -26,6 +26,7 @@ import { findRecipeForLocation } from './webmcp/recipes'
 import { jmailToolImplementations } from './webmcp/recipes/jmail-tools'
 import { jmessageToolImplementations } from './webmcp/recipes/jmessage-tools'
 import { doubanToolImplementations } from './webmcp/recipes/douban-movie-tools'
+import { xiaohongshuToolImplementations } from './webmcp/recipes/xiaohongshu-tools'
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -41,6 +42,7 @@ export default defineContentScript({
       'jmessage-world': jmessageToolImplementations,
       'douban-movie': doubanToolImplementations,
       'douban-search': doubanToolImplementations,
+      'xiaohongshu': xiaohongshuToolImplementations,
     }
 
     let activeRecipeId: string | null = null
@@ -89,7 +91,10 @@ export default defineContentScript({
               name: tool.name,
               description: tool.description,
               inputSchema: tool.inputSchema,
-              annotations: { readOnlyHint: true },
+              annotations: {
+                readOnlyHint: tool.readOnlyHint ?? true,
+                untrustedContentHint: recipe.id === 'xiaohongshu',
+              },
               execute: (args: Record<string, unknown>) => execute(args),
             },
             { signal: controller.signal }

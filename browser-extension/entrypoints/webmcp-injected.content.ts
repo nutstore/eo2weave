@@ -21,6 +21,10 @@
 // The relay validates events (parseAgentEvent) before forwarding.
 // ============================================================
 
+import { stageXiaohongshuImage, discardXiaohongshuImage } from './webmcp/recipes/xiaohongshu-publish-transfer'
+import { withXhsInputSession } from './webmcp/recipes/xiaohongshu-publish-input'
+import { isXhsInputTool, xhsInputTimeout } from './webmcp/xiaohongshu-input-protocol'
+import { receiveXiaohongshuVideoFrame, stageXiaohongshuVideoInvocation, discardXiaohongshuVideo } from './webmcp/recipes/xiaohongshu-publish-video-transfer'
 import {
   CW_WEBMCP_AGENT_MARKER,
   buildAgentEnvelope,
@@ -203,7 +207,14 @@ export default defineContentScript({
 
         void (async () => {
           try {
-            const result = await api!.executeToolByName(command.toolName, command.args || {})
+            if (command.toolName === 'xhs_publish_video' && command.args?._eo2_video_frame !== undefined) {
+              respond({ ok: true, result: receiveXiaohongshuVideoFrame(command.args), apiMode: api!.mode })
+              return
+            }
+            const { _eo2_input_session, ...inputArgs } = command.args || {}
+            const publicArgs = command.toolName === 'xhs_publish_content' ? stageXiaohongshuImage(inputArgs) : command.toolName === 'xhs_publish_video' ? stageXiaohongshuVideoInvocation(inputArgs) : isXhsInputTool(command.toolName) ? inputArgs : command.args || {}
+            const execute = () => api!.executeToolByName(command.toolName, publicArgs)
+            const result = isXhsInputTool(command.toolName) ? await withXhsInputSession(_eo2_input_session, execute, xhsInputTimeout(command.toolName)) : await execute()
             const normalized =
               result === null ||
               result === undefined ||
@@ -236,6 +247,18 @@ export default defineContentScript({
             // page" instead of a red error. The `result` field carries the
             // marker so callers can branch on it without parsing strings.
             if (message.includes('Tool execution cancelled, since tool definition was updated')) {
+              if (command.toolName === 'xhs_like_feed') {
+                respond({ ok: false, errorCode: 'LIKE_RESULT_UNKNOWN', error: 'Like invocation was interrupted by a page change. Rediscover this tab and inspect its state before retrying; no automatic repeat occurs.', apiMode: api!.mode })
+                return
+              }
+              if (command.toolName === 'xhs_publish_video') {
+                respond({ ok: false, errorCode: 'VIDEO_PREPARATION_INTERRUPTED', error: 'Video preparation was interrupted by a page change. Rediscover this tab and inspect the preparation status.', apiMode: api!.mode })
+                return
+              }
+              if (command.toolName === 'xhs_publish_content') {
+                respond({ ok: false, errorCode: 'PUBLISH_RESULT_UNKNOWN', error: 'Publication invocation was interrupted by a page change. Rediscover this tab and query status with the same operation_id; never automatically resubmit.', apiMode: api!.mode })
+                return
+              }
               respond({
                 ok: true,
                 result: {
@@ -252,6 +275,9 @@ export default defineContentScript({
               error: message,
               apiMode: api!.mode,
             })
+          } finally {
+            if (command.toolName === 'xhs_publish_content') discardXiaohongshuImage(command.args || {})
+            if (command.toolName === 'xhs_publish_video') discardXiaohongshuVideo(command.args || {})
           }
         })()
       }

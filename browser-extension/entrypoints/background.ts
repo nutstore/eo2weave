@@ -4,6 +4,8 @@
 
 import { discoverWebMCPToolsInCurrentWindow } from './webmcp/discovery'
 import { invokeWebMCPTool } from './webmcp/invoke'
+import { getXhsCdpInput } from './webmcp/xiaohongshu-cdp-input'
+import { XHS_INPUT_MESSAGE } from './webmcp/xiaohongshu-input-protocol'
 import {
   getHostAuthorizationMap,
   getGroupAuthorizationMap,
@@ -1329,6 +1331,10 @@ export default defineBackground(() => {
   void webmcpNativeBridge.resumeIfEnabled()
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === XHS_INPUT_MESSAGE) {
+      void Promise.resolve().then(() => getXhsCdpInput().handle(message, _sender)).then(sendResponse).catch((error: Error) => sendResponse({ ok: false, error: error.message }))
+      return true
+    }
     // Only claim OUR message types — an unconditional `return true` would
     // keep the sendResponse channel open for unrelated messages and race
     // the main listener above.
@@ -1443,7 +1449,7 @@ export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // The dedicated bridge listener (registered above) owns these types —
     // answering here would race it and close the channel early.
-    if (message?.type === 'webmcp_bridge_get_status' || message?.type === 'webmcp_bridge_set_enabled') {
+    if (message?.type === 'webmcp_bridge_get_status' || message?.type === 'webmcp_bridge_set_enabled' || message?.type === XHS_INPUT_MESSAGE) {
       return false
     }
 
@@ -2246,7 +2252,22 @@ export default defineBackground(() => {
         }
 
         if (message.type === 'webmcp_invoke_tool') {
-          sendResponse(await invokeWebMCPTool(message));
+          const request = {
+            groupKey: message.groupKey,
+            fullToolName: message.fullToolName,
+            args: message.args,
+            preferredTabId: message.preferredTabId,
+          }
+          if (message.binding !== undefined) {
+            const requiredTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
+            if (requiredTabId === null) {
+              sendResponse({ ok: false, errorCode: 'BOUND_TAB_UNAVAILABLE', error: 'The side-panel tab binding is invalid or unavailable.' })
+              return
+            }
+            sendResponse(await invokeWebMCPTool({ ...request, requiredTabId }))
+            return
+          }
+          sendResponse(await invokeWebMCPTool(request));
           return;
         }
 

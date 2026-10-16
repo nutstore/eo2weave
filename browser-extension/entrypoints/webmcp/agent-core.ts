@@ -63,8 +63,9 @@ export function normalizeAgentTools(tools: unknown): WebMCPAgentToolMeta[] {
 }
 
 /**
- * Invoke without retrying: current/native contexts accept objects, while
- * legacy v4 polyfills identify themselves and require serialized input.
+ * Select the argument contract before invoking; never retry a write.
+ * Legacy Chromium exposes serialized schemas and expects JSON input, as
+ * does the marked v4 polyfill. Current contexts expose object schemas.
  */
 function callExecuteTool(
   modelContext: any,
@@ -72,7 +73,7 @@ function callExecuteTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   const input =
-    modelContext?.__isWebMCPPolyfill === true
+    modelContext?.__isWebMCPPolyfill === true || typeof targetTool?.inputSchema === 'string'
       ? JSON.stringify(args || {})
       : args || {}
   return modelContext.executeTool(targetTool, input)

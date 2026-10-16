@@ -39,6 +39,8 @@ export interface WebMCPInvokeRequest {
   fullToolName: string
   args?: Record<string, unknown>
   preferredTabId?: number
+  /** Resolved by the background from a trusted side-panel binding. */
+  requiredTabId?: number
 }
 
 export interface WebMCPPluginDownloadPlan {

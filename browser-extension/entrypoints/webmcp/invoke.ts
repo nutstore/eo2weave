@@ -17,6 +17,9 @@ import type {
 } from './types'
 import { runWebMCPPageProbe } from './page-api'
 import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
+import { prepareRemoteXiaohongshuImage } from './xiaohongshu-image-transfer'
+import { getXhsCdpInput } from './xiaohongshu-cdp-input'
+import { isXhsPreparationTool, isXhsMainSiteInputTool, isXhsInputTool, xhsInputTimeout } from './xiaohongshu-input-protocol'
 
 // Relay-channel invoke timeout. Longer than the old executeScript path
 // (which serialized the whole probe func) because tools may legitimately
@@ -82,13 +85,14 @@ async function invokeViaRelay(
       resolve(value)
     }
 
+    const timeoutMs = isXhsInputTool(toolName) ? xhsInputTimeout(toolName) + INVOKE_RELAY_TIMEOUT_MS : INVOKE_RELAY_TIMEOUT_MS
     const timeout = setTimeout(() => {
       finish({
         ok: false,
         errorCode: 'RELAY_TIMEOUT',
-        error: `WebMCP relay invoke timed out after ${INVOKE_RELAY_TIMEOUT_MS}ms`,
+        error: `WebMCP relay invoke timed out after ${timeoutMs}ms`,
       })
-    }, INVOKE_RELAY_TIMEOUT_MS)
+    }, timeoutMs)
 
     try {
       chrome.tabs.sendMessage(
@@ -201,6 +205,11 @@ async function pickTargetTabId(
   hostname: string,
   request: WebMCPInvokeRequest,
 ): Promise<number | null> {
+  if (typeof request.requiredTabId === 'number') {
+    return (await tabMatchesGroup(request.requiredTabId, groupKey, hostname))
+      ? request.requiredTabId
+      : null
+  }
   if (
     typeof request.preferredTabId === 'number' &&
     (await tabMatchesGroup(request.preferredTabId, groupKey, hostname))
@@ -377,13 +386,30 @@ export async function invokeWebMCPTool(
       hostname,
       toolName,
       fullToolName: request.fullToolName,
-      errorCode: 'TOOL_TARGET_NOT_FOUND',
-      error: `No open tab found for WebMCP group: ${groupKey}`,
+      errorCode: typeof request.requiredTabId === 'number' ? 'BOUND_TAB_UNAVAILABLE' : 'TOOL_TARGET_NOT_FOUND',
+      error: typeof request.requiredTabId === 'number'
+        ? 'The bound tab no longer exposes this WebMCP tool group'
+        : `No open tab found for WebMCP group: ${groupKey}`,
     }
   }
 
+  let inputSession: string | undefined
   try {
     // Relay channel first (static content scripts, mcp-b style). The legacy
+    const isXhsPublish = hostname === 'creator.xiaohongshu.com' && isXhsPreparationTool(toolName)
+    const isXhsMainInput = hostname === 'www.xiaohongshu.com' && isXhsMainSiteInputTool(toolName)
+    const invokeArgs = isXhsPublish ? { ...await prepareRemoteXiaohongshuImage(request.args || {}) } : { ...request.args || {} }
+    // The existing invocation gates and bound-tab routing have already passed.
+    // Attach only for the authorized actions that use browser input.
+    if (isXhsMainInput || (isXhsPublish && ['prepare', 'configure'].includes(String(invokeArgs.action)))) {
+      inputSession = isXhsMainInput
+        ? await getXhsCdpInput().open(tabId, { hostname, timeoutMs: xhsInputTimeout(toolName) })
+        : await getXhsCdpInput().open(tabId)
+      invokeArgs._eo2_input_session = inputSession
+    }
+    if (isXhsPublish && new TextEncoder().encode(JSON.stringify({ type: WEBMCP_INVOKE_IN_TAB_TYPE, toolName, args: invokeArgs })).length >= 64 * 1024 * 1024) {
+      return { ok: false, hostname, toolName, fullToolName: request.fullToolName, tabId, errorCode: toolName === 'xhs_publish_video' ? 'VIDEO_MESSAGE_TOO_LARGE' : 'IMAGE_TRANSFER_TOO_LARGE', error: 'File transfer message exceeds Chrome 64 MiB message capacity.' }
+    }
     // executeScript probe only runs when the tab has no relay receiver
     // (opened before the extension (re)loaded).
     let result: {
@@ -392,10 +418,10 @@ export async function invokeWebMCPTool(
       apiMode?: WebMCPApiMode
       errorCode?: string
       error?: string
-    } = await invokeViaRelay(tabId, toolName, request.args || {})
+    } = await invokeViaRelay(tabId, toolName, invokeArgs)
 
     if (
-      !result.ok &&
+      !isXhsPublish && !isXhsMainInput && !result.ok &&
       (result.errorCode === 'RELAY_UNREACHABLE' || result.errorCode === 'RELAY_NO_RESPONSE')
     ) {
       const results = await chrome.scripting.executeScript({
@@ -458,5 +484,7 @@ export async function invokeWebMCPTool(
       errorCode: 'INVOKE_FAILED',
       error: typeof error?.message === 'string' ? error.message : String(error),
     }
+  } finally {
+    if (inputSession) await getXhsCdpInput().close(inputSession).catch(() => {})
   }
 }

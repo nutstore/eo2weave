@@ -77,14 +77,15 @@ export function runWebMCPPageProbe(request: PageProbeRequest): Promise<DiscoverP
   const getNavigatorModelContext = () => (navigator as any)?.modelContext
   const getTestingModelContext = () => (navigator as any)?.modelContextTesting
 
-  // Choose before invocation so side-effecting legacy tools are never retried.
+  // Match agent-core: legacy Chromium has serialized schemas and JSON input;
+  // current contexts have object schemas. Never retry a side-effecting tool.
   const callExecuteTool = (
     modelContext: any,
     targetTool: any,
     args: Record<string, unknown>,
   ): Promise<unknown> => {
     const input =
-      modelContext?.__isWebMCPPolyfill === true
+      modelContext?.__isWebMCPPolyfill === true || typeof targetTool?.inputSchema === 'string'
         ? JSON.stringify(args || {})
         : args || {}
     return modelContext.executeTool(targetTool, input)

@@ -23,7 +23,7 @@ import { getMCPManager } from '@/mcp/mcp-manager'
 import { useWebMCPStore } from '@/webmcp/store'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
 import { consumeAndSavePluginDownload } from '@/webmcp/plugin-download'
-import { isSidePanelMode, getSidePanelHostname } from './workspace-assistant-context'
+import { isSidePanelMode, getSidePanelHostname, getSidePanelBindingId, capturePageContext } from './workspace-assistant-context'
 
 // Zod validation (for WebMCP)
 import { z } from 'zod'
@@ -1038,14 +1038,37 @@ async function executeWebMCPTool(
   if (validationError) return validationError
 
   const preferredTabId = store.getPreferredTabIdForTool(toolInfo.groupKey, toolInfo.fullName)
+  const boundXiaohongshuTab = isSidePanelMode() && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(toolInfo.hostname)
+  const binding = boundXiaohongshuTab ? getSidePanelBindingId() : null
+  if (boundXiaohongshuTab && !binding) {
+    return toolErrorJson('call_tool', 'BOUND_TAB_UNAVAILABLE', 'The Xiaohongshu side-panel tab binding is unavailable.', {
+      retryable: true,
+    })
+  }
 
   try {
-    const response = await bridge.webMCPInvoke({
+    let invokeArgs = toolArgs
+    if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_content') {
+      const { prepareXiaohongshuImage } = await import('./tools/xiaohongshu-image-transfer')
+      try { invokeArgs = await prepareXiaohongshuImage(toolArgs, context as unknown as import('./tools/tool-types').ToolContext) }
+      catch (error) { return toolErrorJson('call_tool', 'IMAGE_TRANSFER_FAILED', error instanceof Error ? error.message : 'Image transfer failed; no image was silently skipped.', { retryable: false }) }
+      if (new TextEncoder().encode(JSON.stringify(invokeArgs)).length >= 64 * 1024 * 1024 - 4096) {
+        return toolErrorJson('call_tool', 'IMAGE_TRANSFER_TOO_LARGE', 'Image payload and bridge envelope exceed Chrome 64 MiB message capacity.', { retryable: false })
+      }
+    }
+    const invokeRequest = {
       groupKey: toolInfo.groupKey,
       fullToolName: toolInfo.fullName,
-      args: toolArgs,
+      args: invokeArgs,
       preferredTabId,
-    })
+      ...(binding ? { binding } : {}),
+    }
+    let response: import('@/webmcp/types').WebMCPInvokeResponse
+    if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_video') {
+      const { invokeXiaohongshuVideo } = await import('./tools/xiaohongshu-video-transfer')
+      try { response = await invokeXiaohongshuVideo(invokeRequest, context as unknown as import('./tools/tool-types').ToolContext, (request) => bridge.webMCPInvoke(request)) }
+      catch (error) { return toolErrorJson('call_tool', 'VIDEO_TRANSFER_FAILED', error instanceof Error ? error.message : 'Video file transfer failed.', { retryable: false }) }
+    } else response = await bridge.webMCPInvoke(invokeRequest)
 
     if (!response.ok) {
       const errorMessage = response.error
@@ -1060,7 +1083,7 @@ async function executeWebMCPTool(
         response.errorCode || 'WEBMCP_INVOKE_FAILED',
         errorMessage,
         {
-          retryable: true,
+          retryable: !['xhs_publish_content', 'xhs_publish_video', 'xhs_post_comment_to_feed', 'xhs_reply_comment_in_feed', 'xhs_like_feed'].includes(toolInfo.name),
           details: {
             fullToolName: tool.fullName,
             tabId: response.tabId,
@@ -1150,7 +1173,7 @@ async function executeWebMCPTool(
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return toolErrorJson('call_tool', 'WEBMCP_INVOKE_FAILED', message, { retryable: true })
+    return toolErrorJson('call_tool', 'WEBMCP_INVOKE_FAILED', message, { retryable: !['xhs_publish_content', 'xhs_publish_video', 'xhs_post_comment_to_feed', 'xhs_reply_comment_in_feed', 'xhs_like_feed'].includes(toolInfo.name) })
   }
 }
 
@@ -1238,8 +1261,9 @@ export function collectSidePanelPageTools(): WebMCPRegisteredToolLike[] {
       .getEnabledTools()
       .filter(
         (t) =>
-          t.hostname === hostname &&
-          (_sidePanelBoundTabId === null || t.representativeTabId === _sidePanelBoundTabId),
+          (t.hostname === hostname || (_sidePanelBoundTabId !== null && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(hostname) && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(t.hostname))) &&
+          (_sidePanelBoundTabId === null ||
+            store.getGroupByKey(t.groupKey)?.tabs.some((tab) => tab.tabId === _sidePanelBoundTabId) === true),
       )
   } catch {
     return []
@@ -1279,14 +1303,34 @@ export const getPageToolsExecutor: ToolExecutor = async (args) => {
       message: 'Not in side-panel mode — there is no bound upstream page. Use search_tools instead.',
     })
   }
-  const hostname = getSidePanelHostname()
-  const tools = collectSidePanelPageTools()
+  let tools = collectSidePanelPageTools()
+  let liveHostname = getSidePanelHostname()
+  if (liveHostname && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(liveHostname)) {
+    // Publishing navigates across hosts in the same bound tab. An explicit
+    // rediscovery must not return the pre-navigation catalog during its TTL.
+    const snapshot = await capturePageContext()
+    liveHostname = snapshot?.hostname ?? liveHostname
+    try {
+      const { discoverWebMCPCatalog } = await import('@/webmcp/manager')
+      await discoverWebMCPCatalog(true)
+    } catch {
+      return toolOkJson('get_page_tools', {
+        hostname: liveHostname, count: 0, tools: [],
+        message: 'Current bound-page tool discovery failed. Wait for the page to load and call get_page_tools again; do not reuse pre-navigation call names.',
+      })
+    }
+    tools = collectSidePanelPageTools().filter((tool) => tool.hostname === liveHostname)
+  }
+  const hosts = [...new Set(tools.map((tool) => tool.hostname))]
+  const hostname = hosts.length === 1 ? hosts[0] : liveHostname
   if (tools.length === 0) {
     return toolOkJson('get_page_tools', {
       hostname,
       count: 0,
       tools: [],
-      message: `The current page (${hostname || 'unknown'}) exposes no WebMCP tools. Use search_tools for MCP/other-site tools, or the page tools (web_fetch etc.).`,
+      message: hostname && ['www.xiaohongshu.com', 'creator.xiaohongshu.com'].includes(hostname)
+        ? `The bound page (${hostname}) has not exposed its current WebMCP tools. Wait for it to finish loading and call get_page_tools again; do not reuse pre-navigation call names.`
+        : `The current page (${hostname || 'unknown'}) exposes no WebMCP tools. Use search_tools for MCP/other-site tools, or the page tools (web_fetch etc.).`,
     })
   }
 
