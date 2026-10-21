@@ -124,6 +124,14 @@ describe('SW behavior tree with guest callbacks', () => {
     const results = await Promise.all([1, 2].map(value => executeAdapterWorkflow(wasm, source, {value}, vi.fn(), new AbortController().signal, {tabId:10,url:'https://example.com'})))
     expect(results.map(result => result.ok && result.value)).toEqual([{status:'success',result:11},{status:'success',result:12}])
   })
+  it('forwards explicit tab activation to browser.click', async () => {
+    const invoke = vi.fn(async () => ({ clicked: true }))
+    const source = run("await browser.click('#save', undefined, {tab: target.tabId, activate: true}); state.value = 1")
+    expect(await execute(source, invoke)).toEqual({ok:true,value:{status:'success',result:1}})
+    expect(invoke).toHaveBeenCalledWith(expect.objectContaining({
+      command: 'click', positionals: ['#save'], options: {tab: '1', activate: true},
+    }), expect.any(AbortSignal))
+  })
   it('allows a reentrant WebMCP call through browser.webmcp', async () => {
     const invoke = vi.fn(async () => ({tabId: 1, url: 'https://example.com', hostname: 'example.com', groupKey: 'group', tools: []}))
     const source = run("const result = await browser.webmcp.list({tab: target.tabId}); state.value = result.tools.length")

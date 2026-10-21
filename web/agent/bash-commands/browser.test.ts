@@ -32,6 +32,9 @@ describe('composable browser commands', () => {
     expect(() => parseBrowserCommand(input(['type']))).toThrow('Invalid arguments')
     expect(parseBrowserCommand(input(['type', '#name', '--', '--value']))).toMatchObject({ positionals: ['#name', '--value'] })
     expect(parseBrowserCommand(input(['tab-new', '--background']))).toMatchObject({ options: { background: true } })
+    expect(parseBrowserCommand(input(['click', '#save', '--activate']))).toMatchObject({ options: { activate: true } })
+    expect(() => parseBrowserCommand(input(['click', '#save', '--activate=true']))).toThrow('takes no value')
+    expect(() => parseBrowserCommand(input(['fill', '#save', 'value', '--activate']))).toThrow('Unknown option')
     expect(() => parseBrowserCommand(input(['fill', '#name', 'value', '--submit']))).toThrow()
     expect(() => parseBrowserCommand(input(['goto', 'https://example.com', '--wait-until=networkidle']))).toThrow('--wait-until')
   })
@@ -135,6 +138,51 @@ describe('WebMCP browser runtime', () => {
     await vi.advanceTimersByTimeAsync(10)
     await stopped
     expect(signal?.aborted).toBe(true)
+  })
+})
+
+describe('browser foreground guard', () => {
+  it('rejects click on a background tab before attaching the debugger', async () => {
+    const get = vi.fn(async (tabId: number) => ({ id: tabId, windowId: 1, active: false, url: 'https://example.com', title: 'Example' }))
+    const attach = vi.fn()
+    const sendCommand = vi.fn()
+    vi.stubGlobal('chrome', {
+      tabs: { get },
+      debugger: { attach, sendCommand, onDetach: { addListener: vi.fn() } },
+      runtime: {},
+    })
+
+    const running = runBrowserRequest('owner', parseBrowserCommand(input(['click', '#save', '--tab=10'])))
+    await expect(running).rejects.toMatchObject({
+      name: 'BrowserError',
+      message: expect.stringMatching(/click.*tab.*foreground/i),
+      details: { tabId: 10, windowId: 1 },
+    })
+    expect(get).toHaveBeenCalledWith(10)
+    expect(attach).not.toHaveBeenCalled()
+    expect(sendCommand).not.toHaveBeenCalled()
+  })
+  it('activates a background click target when requested', async () => {
+    const get = vi.fn(async (tabId: number) => ({ id: tabId, windowId: 1, active: false, url: 'https://example.com', title: 'Example' }))
+    const update = vi.fn(async (tabId: number) => ({ id: tabId, windowId: 1, active: true, url: 'https://example.com', title: 'Example' }))
+    const sendCommand = vi.fn()
+    const runtime: { lastError?: { message: string } } = {}
+    const attach = vi.fn((_target: unknown, _version: string, done: () => void) => {
+      runtime.lastError = { message: 'debugger unavailable' }
+      done()
+      delete runtime.lastError
+    })
+    vi.stubGlobal('chrome', {
+      tabs: { get, update },
+      debugger: { attach, sendCommand, onDetach: { addListener: vi.fn() } },
+      runtime,
+    })
+
+    const running = runBrowserRequest('owner', parseBrowserCommand(input(['click', '#save', '--tab=10', '--activate'])))
+    await expect(running).rejects.toThrow('debugger unavailable')
+    expect(update).toHaveBeenCalledWith(10, { active: true })
+    expect(attach).toHaveBeenCalled()
+    expect(sendCommand).not.toHaveBeenCalled()
   })
 })
 

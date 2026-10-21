@@ -18,7 +18,7 @@ const commands: Record<string, { min: number; max: number; options?: string[] }>
   close: { min: 0, max: 0 }, 'tab-list': { min: 0, max: 0 },
   'tab-new': { min: 0, max: 1, options: ['background', 'wait-until'] }, 'tab-select': { min: 1, max: 1 },
   'tab-close': { min: 0, max: 1 }, snapshot: { min: 0, max: 1, options: ['boxes'] },
-  click: { min: 1, max: 2 }, dblclick: { min: 1, max: 2 },
+  click: { min: 1, max: 2, options: ['activate'] }, dblclick: { min: 1, max: 2 },
   fill: { min: 1, max: 2 }, type: { min: 1, max: 2 },
   press: { min: 1, max: 1 }, keydown: { min: 1, max: 1 }, keyup: { min: 1, max: 1 },
   hover: { min: 1, max: 1 }, select: { min: 2, max: 20 },
@@ -32,14 +32,14 @@ const commands: Record<string, { min: number; max: number; options?: string[] }>
   'dialog-accept': { min: 0, max: 1 }, 'dialog-dismiss': { min: 0, max: 0 },
   detach: { min: 0, max: 0 },
 }
-const flags = new Set(['background', 'boxes', 'full-page', 'help'])
+const flags = new Set(['activate', 'background', 'boxes', 'full-page', 'help'])
 
 export const browserManual = `browser <command> [arguments] [--tab=<id>] [--timeout=<ms>]
 Browser primitives for Bash composition. Every non-empty stdout/stderr is one JSON value. Success: result on stdout, exit 0. Failure: {error:{name,message,details?}} on stderr, exit 1. No --json. Use -- before positional text starting with --.
 Tabs: tab-list -> {tabs:[{tabId,url,title,active,windowId,selected}]}; tab-new [url] [--background] (alias open); tab-select <id>; tab-close [id] (alias close). IDs are stable Chrome IDs, not indices. Selection is remembered per workspace page. --tab overrides it for one call.
 Navigation: goto <url>, reload, go-back, go-forward. --wait-until=load|domcontentloaded|commit (default load). Operations return their own result; compose snapshot or screenshot afterward when needed.
 snapshot [ref|css] [--boxes] -> {tabId,url,title,snapshotId,tree,nodes}. Nodes have ref, role, name, parentElementId, childElementIds, locators and semantic properties. Use jq for search/filtering/depth/formatting, Bash redirection to save. Refs target exact observed DOM nodes; detached/expired refs fail. Capture again after navigation. CSS must match exactly one element, including open shadow roots.
-click <ref|css> [left|right|middle], dblclick <ref|css> [button], hover <ref|css>, drag <start> <end>. Targeted actions wait for visibility, stability and required actionability up to the deadline.
+click <ref|css> [left|right|middle] [--activate], dblclick <ref|css> [button], hover <ref|css>, drag <start> <end>. click requires the target tab to be active; use --activate to bring a background tab to the foreground automatically, or run tab-select first. Targeted actions wait for visibility, stability and required actionability up to the deadline.
 fill <ref|css> [text] replaces; type <ref|css> [text] appends. Omitted text reads UTF-8 stdin, including empty input. select <ref|css> <value>..., check <ref|css>, uncheck <ref|css>.
 press <key>, keydown <key>, keyup <key>: Enter, Tab, Escape, ControlOrMeta+A, etc. mousemove <x> <y>, mousedown [button], mouseup [button], mousewheel <dx> <dy>.
 eval [function] [ref|css]: function source defaults to stdin; optional element is passed as its argument. Page globals, native fetch and async functions work; no Node or tools proxy. Returns {tabId,logs,result}; logs is an ordered array of {level,args}, and result preserves JSON types. Undefined becomes null; non-JSON values are serialized safely. Exceptions fail with {tabId,logs,exception} in error.details. Use eval for DOM/text reads, calculations and asynchronous page conditions. Compose browser commands in Bash.
