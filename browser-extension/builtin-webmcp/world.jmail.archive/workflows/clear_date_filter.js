@@ -3,147 +3,134 @@ export default {
     type: "object",
     properties: {},
   },
-  outputSchema: true,
+  outputSchema: {
+    type: "object",
+    definitions: {
+      email_row: {
+        type: "object",
+        properties: {
+          index: { type: "integer", minimum: 0 },
+          sender: { type: "string" },
+          subject: { type: "string" },
+          date: { type: "string" },
+          preview: { type: "string" },
+          doc_id: { type: ["string", "null"] },
+          selector: { type: ["string", "null"] },
+          interactive: { type: "boolean" },
+        },
+        required: [
+          "index",
+          "sender",
+          "subject",
+          "date",
+          "preview",
+          "doc_id",
+          "selector",
+          "interactive",
+        ],
+        additionalProperties: false,
+      },
+    },
+    properties: {
+      cleared: { type: "boolean" },
+      url: { type: "string" },
+      total: { type: ["string", "null"] },
+      latest: {
+        type: "array",
+        items: { $ref: "#/definitions/email_row" },
+      },
+    },
+    required: ["cleared", "url", "total", "latest"],
+    additionalProperties: false,
+  },
   tree: {
     type: "sequence",
     children: [
       {
         type: "wait",
+        description: "Inspect the date filter",
         intervalMs: 250,
         timeoutMs: 15000,
-        async inspect({ input, state, target, packageRoot }) {
-          const source = `() => {
-const args = __INPUT__;
-if (location.origin !== 'https://jmail.world' || document.readyState === 'loading') return null;
-const el=document.querySelector('button[aria-label="Filter by date range"]');
-return el && Object.keys(el).some(key => key.startsWith('__reactProps$')) ? {active:el.classList.contains('date-filter-active') || /[?&](after|before)=/.test(location.search)} : null;
-}`.replace("__INPUT__", () => JSON.stringify(input));
-          const output = await tools.bash({
-            command:
-              "browser eval --tab=" +
-              target.tabId +
-              " -- " +
-              "'" +
-              source.replace(/'/g, "'\"'\"'") +
-              "'",
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (!value) return false;
-          state.active = value.active;
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.read_page",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          state.active = page.date_filter.active;
           return true;
         },
       },
       {
         type: "action",
-        async run({ input, state, target, packageRoot }) {
-          if (state.active) {
-            const action = await tools.bash({
-              command:
-                "browser click --tab=" +
-                target.tabId +
-                " -- " +
-                "'" +
-                'button[aria-label="Filter by date range"]'.replace(
-                  /'/g,
-                  "'\"'\"'",
-                ) +
-                "'",
+        description: "Open the active date filter",
+        async run({ input, state, target }) {
+          if (state.active)
+            await browser.click('button[aria-label="Filter by date range"]', undefined, {
+              tab: target.tabId,
+              activate: true,
               timeout: 15000,
             });
-            if (action.truncated)
-              throw new Error("Browser output was truncated");
-            if (action.exitCode !== 0) throw new Error(action.stderr);
-          }
           return "success";
         },
       },
       {
         type: "wait",
+        description: "Wait for the clear control",
         intervalMs: 250,
         timeoutMs: 15000,
-        async inspect({ input, state, target, packageRoot }) {
-          const source = `() => {
-const args = __INPUT__;
-if (location.origin !== 'https://jmail.world' || document.readyState === 'loading') return null;
-if(!args.active) return true;
-const el=document.querySelector('.date-filter-clear'); return !!el && !!el.getClientRects().length;
-}`.replace("__INPUT__", () => JSON.stringify({ active: state.active }));
-          const output = await tools.bash({
-            command:
-              "browser eval --tab=" +
-              target.tabId +
-              " -- " +
-              "'" +
-              source.replace(/'/g, "'\"'\"'") +
-              "'",
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          return value === true;
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.read_page",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          return !state.active || page.date_filter.can_clear;
         },
       },
       {
         type: "action",
-        async run({ input, state, target, packageRoot }) {
-          if (state.active) {
-            const action = await tools.bash({
-              command:
-                "browser click --tab=" +
-                target.tabId +
-                " -- " +
-                "'" +
-                ".date-filter-clear".replace(/'/g, "'\"'\"'") +
-                "'",
+        description: "Clear the date filter once",
+        async run({ input, state, target }) {
+          if (state.active)
+            await browser.click(".date-filter-clear", undefined, {
+              tab: target.tabId,
+              activate: true,
               timeout: 15000,
             });
-            if (action.truncated)
-              throw new Error("Browser output was truncated");
-            if (action.exitCode !== 0) throw new Error(action.stderr);
-          }
           return "success";
         },
       },
       {
         type: "wait",
+        description: "Wait for the unfiltered results",
         intervalMs: 250,
         timeoutMs: 15000,
-        async inspect({ input, state, target, packageRoot }) {
-          const source = `() => {
-const args = __INPUT__;
-if (location.origin !== 'https://jmail.world' || document.readyState === 'loading') return null;
-if(!args.active) return {cleared:false,note:'No date filter is currently active.'};
-if(/[?&](after|before)=/.test(location.search)) return null;
-const rows=readRows(5); if(!rows.length && readTotalCount() !== '0') return null;
-return {cleared:true,url:location.pathname+location.search,page_title:document.title,total:readTotalCount(),latest:rows,note:'Date filter cleared; full inbox restored. (On a thread page, call go_home first.)'};
-}`.replace("__INPUT__", () => JSON.stringify({ active: state.active }));
-          const output = await tools.bash({
-            command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "() => {
-$reader
-return ($page_source)();
-}"`,
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (!value) return false;
-          state.result = value;
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.read_page",
+            { limit: 5 },
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          if (state.active && (page.date_filter.active || !page.results_ready)) return false;
+          state.result = {
+            cleared: state.active,
+            url: page.route,
+            total: page.total,
+            latest: page.results,
+          };
           return true;
         },
       },

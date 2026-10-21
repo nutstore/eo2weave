@@ -4,8 +4,14 @@
   "description": "Browse and read the iMessage-style text conversations from the Epstein archive (15 conversations, e.g. Steve Bannon with 3,356 messages).",
   "tools": [
     {
+      "name": "read_page",
+      "description": "Read a single structured snapshot of the current page, including readiness and available data. Read-only; never navigates or interacts. Other tools compose this reader through browser.webmcp.exec.",
+      "urlRegex": "^https://jmail\\.world(?:/messages(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/read_page.js"
+    },
+    {
       "name": "search_messages",
-      "description": "Full-text search across ALL iMessage messages (not just conversation titles) using the JMessage search box. Returns matching messages with person, date, snippet and the conversation slug \u2014 use open_conversation with the slug to read the context around a hit.",
+      "description": "Full-text search across ALL iMessage messages (not just conversation titles) using the JMessage search box. Returns matching messages with person, date, snippet and the conversation slug — use open_conversation with the slug to read the context around a hit.",
       "urlRegex": "^https://jmail\\.world(?:/messages(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
       "path": "workflows/search_messages.js"
     },
@@ -17,7 +23,7 @@
     },
     {
       "name": "open_conversation",
-      "description": "Open a conversation by person slug (from list_conversations, e.g. steve-bannon) and return its visible messages (sender, text, time). JMessage renders the newest messages first; use scroll_to older/next_pages as needed.",
+      "description": "Open a conversation by person slug from list_conversations and return its visible messages. Messages render newest first; use load_older_messages for earlier history.",
       "urlRegex": "^https://jmail\\.world(?:/messages(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
       "path": "workflows/open_conversation.js"
     },
@@ -29,19 +35,19 @@
     },
     {
       "name": "open_search_result",
-      "description": "Open the Nth row (0-based) from the last search_messages result list by clicking it, then return the conversation (person, slug, message count, visible messages). The site clears the search box automatically. The conversation renders from the NEWEST message \u2014 the hit may be older, so use load_older_messages to page back toward it.",
+      "description": "Open the Nth row (0-based) from the last search_messages result list by clicking it, then return the conversation (person, slug, message count, visible messages). The site clears the search box automatically. The conversation renders from the NEWEST message — the hit may be older, so use load_older_messages to page back toward it.",
       "urlRegex": "^https://jmail\\.world(?:/messages(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
       "path": "workflows/open_search_result.js"
     },
     {
       "name": "open_email_archive",
-      "description": "Switch from JMessage to the jmail.world Gmail-style EMAIL archive app (/) \u2014 a different app on the same site with its own toolset (search_emails, open_thread, \u2026). After it runs, the system prompt's <current_page_webmcp> list swaps to the archive tools. Use open_conversation_list to stay inside JMessage.",
+      "description": "Switch from JMessage to the jmail.world Gmail-style EMAIL archive app (/) — a different app on the same site with its own toolset (search_emails, open_thread, …). After it runs, the system prompt's <current_page_webmcp> list swaps to the archive tools. Use open_conversation_list to stay inside JMessage.",
       "urlRegex": "^https://jmail\\.world(?:/messages(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
       "path": "workflows/open_email_archive.js"
     },
     {
       "name": "open_conversation_list",
-      "description": "Navigate back to the JMessage conversation list (/messages) from any JMessage view \u2014 closes the open conversation WITHOUT leaving the app (also clears any active search). This is the JMessage home, NOT the jmail.world email archive homepage (/). Clicks the dock's JMessage icon behind the scenes; never uses the page's \"Close jMessage\" button (that exits the whole app to /).",
+      "description": "Navigate back to the JMessage conversation list (/messages) from any JMessage view — closes the open conversation WITHOUT leaving the app (also clears any active search). This is the JMessage home, NOT the jmail.world email archive homepage (/). Clicks the dock's JMessage icon behind the scenes; never uses the page's \"Close jMessage\" button (that exits the whole app to /).",
       "urlRegex": "^https://jmail\\.world(?:/messages(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
       "path": "workflows/open_conversation_list.js"
     },

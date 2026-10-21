@@ -14,101 +14,124 @@ export default {
     },
     required: ["list_id"],
   },
-  outputSchema: true,
+  outputSchema: {
+    type: "object",
+    properties: {
+      navigated: { const: true },
+      url: { type: "string" },
+      list_id: { type: "string" },
+      title: { type: "string" },
+      description: { type: "string" },
+      start: { type: "integer", minimum: 0 },
+      count: { type: "integer", minimum: 0 },
+      results: {
+        type: "array",
+        items: { $ref: "#/definitions/subjectListRow" },
+      },
+      next_start: { type: ["integer", "null"], minimum: 0 },
+    },
+    required: [],
+    oneOf: [
+      {
+        type: "object",
+        properties: {
+          navigated: { const: true },
+          url: { type: "string" },
+        },
+        required: ["navigated", "url"],
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        properties: {
+          list_id: { type: "string" },
+          title: { type: "string" },
+          description: { type: "string" },
+          start: { type: "integer", minimum: 0 },
+          count: { type: "integer", minimum: 0 },
+          results: {
+            type: "array",
+            items: { $ref: "#/definitions/subjectListRow" },
+          },
+          next_start: { type: ["integer", "null"], minimum: 0 },
+        },
+        required: ["list_id", "title", "description", "start", "count", "results", "next_start"],
+        additionalProperties: false,
+      },
+    ],
+    definitions: {
+      subjectListRow: {
+        type: "object",
+        properties: {
+          rank: { type: "integer", minimum: 1 },
+          title: { type: "string" },
+          rating: { type: "string" },
+          url: { type: "string" },
+          subject_id: { type: "string" },
+          detail: { type: "string" },
+        },
+        required: ["rank", "title", "rating", "url", "subject_id"],
+        additionalProperties: false,
+      },
+    },
+    additionalProperties: false,
+  },
   tree: {
     type: "sequence",
     children: [
       {
-        type: "wait",
-        intervalMs: 200,
-        timeoutMs: 10000,
-        async inspect({ input, target }) {
-          const source =
-            `() => (location.origin === 'https://movie.douban.com') && document.readyState !== 'loading' && !!document.body`.replace(
-              "__INPUT__",
-              () => JSON.stringify(input),
-            );
-          const output = await tools.bash({
-            command:
-              "browser eval --tab=" +
-              target.tabId +
-              " -- " +
-              "'" +
-              source.replace(/'/g, "'\"'\"'") +
-              "'",
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          return value === true;
+        type: "action",
+        description: "Open the requested doulist page",
+        async run({ input, state, target }) {
+          const id = String(input.list_id).trim();
+          if (!/^\d+$/.test(id)) throw new Error("list_id must be numeric");
+          state.id = id;
+          state.start = Number(input.start) || 0;
+          if (!Number.isInteger(state.start)) throw new Error("start must be an integer");
+          state.navigation = await browser.goto(
+            "https://movie.douban.com/doulist/" + id + "/?start=" + state.start,
+            { tab: target.tabId, "wait-until": "domcontentloaded", timeout: 15000 },
+          );
+          return "success";
         },
       },
       {
-        type: "action",
-        async run({ input, state, target, packageRoot }) {
-          const source = `async () => {
-function softNavigate(url, note) {
-    // Return a plan; the SW action performs and awaits browser navigation.
-    return { navigated: true, url, note };
-}
-
-const args = __INPUT__;
-const raw = String(args.list_id || args.url || '').trim();
-const id = raw.match(/(\\d{3,})/)?.[1];
-if (!id)
-    throw new Error('list_id is required (numeric doulist id, e.g. 240962)');
-const start = Math.max(0, Number(args?.start) || 0);
-if (!/\\/doulist\\//.test(location.pathname)) {
-    return softNavigate(\`https://movie.douban.com/doulist/\${id}/?start=\${start}\`, 'Navigating to the doulist page. Call get_doulist with the same list_id/start again in a few seconds to read it.');
-}
-const title = cleanText(document.querySelector('#content h1')?.textContent);
-const desc = cleanText(document.querySelector('.doulist-note, #content .intro')?.textContent);
-const rows = readSubjectListRows(25, '#content');
-return {
-    list_id: id,
-    title,
-    description: desc || undefined,
-    start,
-    count: rows.length,
-    results: rows,
-    next_start: rows.length === 25 ? start + 25 : null,
-};
-}`.replace("__INPUT__", () => JSON.stringify(input));
-          const output = await tools.bash({
-            command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "async () => {
-$reader
-return await ($page_source)();
-}"`,
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (value && typeof value.error === "string")
-            throw new Error(value.error);
-          if (value?.navigated === true && typeof value.url === "string") {
-            const url = "'" + value.url.replace(/'/g, "'\"'\"'") + "'";
-            const navigation = await tools.bash({
-              command:
-                "browser goto --tab=" +
-                target.tabId +
-                " --wait-until=domcontentloaded -- " +
-                url,
-              timeout: 15000,
-            });
-            if (navigation.exitCode !== 0) throw new Error(navigation.stderr);
+        type: "wait",
+        description: "Read the requested doulist",
+        intervalMs: 250,
+        timeoutMs: 15000,
+        async inspect({ input, state, target }) {
+          // Douban may redirect legacy links to pages outside this package's URL scope.
+          if (!state.navigation.url.startsWith("https://movie.douban.com/")) {
+            state.result = { navigated: true, url: state.navigation.url };
+            return true;
           }
-          state.result = value;
-          return "success";
+          const response = await browser.webmcp.exec(
+            "com.douban.movie.read_page",
+            { limit: 25 },
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          if (
+            page.kind !== "doulist" ||
+            page.path !== "/doulist/" + state.id + "/" ||
+            page.start !== state.start ||
+            !page.results_ready
+          )
+            return false;
+          state.result = {
+            list_id: state.id,
+            title: page.title,
+            description: page.description,
+            start: state.start,
+            count: page.results.length,
+            results: page.results,
+            next_start: page.results.length === 25 ? state.start + 25 : null,
+          };
+          return true;
         },
       },
     ],

@@ -3,53 +3,87 @@ export default {
     type: "object",
     properties: {},
   },
-  outputSchema: true,
+  outputSchema: {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    type: "object",
+    definitions: {
+      message: {
+        type: "object",
+        properties: {
+          text: { type: "string", minLength: 1, maxLength: 4000 },
+          time: { type: ["string", "null"] },
+        },
+        required: ["text", "time"],
+        additionalProperties: false,
+      },
+      conversation: {
+        type: "object",
+        properties: {
+          kind: { const: "conversation" },
+          url: { type: "string", minLength: 1 },
+          person: { type: "string", minLength: 1 },
+          slug: { type: "string", minLength: 1 },
+          message_count: { type: ["integer", "null"], minimum: 0 },
+          visible_messages: {
+            type: "array",
+            items: { $ref: "#/definitions/message" },
+          },
+        },
+        required: ["kind", "url", "person", "slug", "message_count", "visible_messages"],
+        additionalProperties: false,
+      },
+      notOpen: {
+        type: "object",
+        properties: {
+          kind: { const: "not_open" },
+          on_messages_view: { const: false },
+          note: { const: "Open a conversation first." },
+        },
+        required: ["kind", "on_messages_view", "note"],
+        additionalProperties: false,
+      },
+    },
+    properties: {
+      kind: { enum: ["conversation", "not_open"] },
+      url: { type: "string", minLength: 1 },
+      person: { type: "string", minLength: 1 },
+      slug: { type: "string", minLength: 1 },
+      message_count: { type: ["integer", "null"], minimum: 0 },
+      visible_messages: {
+        type: "array",
+        items: { $ref: "#/definitions/message" },
+      },
+      on_messages_view: { const: false },
+      note: { const: "Open a conversation first." },
+    },
+    required: ["kind"],
+    additionalProperties: false,
+    oneOf: [
+      { $ref: "#/definitions/conversation" },
+      { $ref: "#/definitions/notOpen" },
+    ],
+  },
   tree: {
     type: "wait",
-    intervalMs: 200,
-    timeoutMs: 10000,
-    async inspect({ input, state, target, packageRoot }) {
-      const source = `async () => {
-if (!(location.origin === 'https://jmail.world' && location.pathname.startsWith('/messages')) || document.readyState === 'loading' || !document.body) return {ready: false};
-
-const args = __INPUT__;
-return {ready: true, result: await (async () => {
-const slug = currentSlug();
-if (!slug) {
-    return {
-        on_messages_view: false,
-        note: 'Not on a JMessage conversation view. Call list_conversations first.',
-    };
-}
-const meta = readConversationMeta();
-return {
-    url: location.pathname,
-    person: meta?.name || slug,
-    slug,
-    message_count: meta?.messageCount ?? null,
-    visible_messages: readVisibleBubbles(),
-};
-})()};
-}`.replace("__INPUT__", () => JSON.stringify(input));
-      const output = await tools.bash({
-        command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "async () => {
-$reader
-return await ($page_source)();
-}"`,
-        timeout: 15000,
-      });
-      if (output.truncated) throw new Error("Browser output was truncated");
-      if (output.exitCode !== 0) throw new Error(output.stderr);
-      const page = JSON.parse(output.stdout);
-      if (page.tabId !== target.tabId)
-        throw new Error("Browser returned another tab");
-      const value = page.result;
-      if (!value.ready) return false;
-      if (value.result && typeof value.result.error === "string")
-        throw new Error(value.result.error);
-      state.result = value.result;
+    description: "Read the current conversation",
+    intervalMs: 250,
+    timeoutMs: 15000,
+    async inspect({ input, state, target }) {
+      const response = await browser.webmcp.exec(
+        "world.jmail.messages.read_page",
+        {},
+        { tab: target.tabId, timeout: 15000 },
+      );
+      if (response.result.status !== "success") throw new Error("Page reader did not succeed");
+      const page = response.result.result;
+      if (!page.ready) return false;
+      state.result = page.conversation
+        ? { ...page.conversation, kind: "conversation" }
+        : {
+            kind: "not_open",
+            on_messages_view: false,
+            note: "Open a conversation first.",
+          };
       return true;
     },
   },

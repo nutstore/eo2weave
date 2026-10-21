@@ -10,88 +10,59 @@ export default {
     },
     required: ["index"],
   },
-  outputSchema: true,
+  outputSchema: {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    type: "object",
+    properties: {
+      navigated: { type: "boolean", const: true },
+      url: { type: "string", minLength: 1 },
+      title: { type: "string", minLength: 1 },
+    },
+    required: ["navigated", "url", "title"],
+    additionalProperties: false,
+  },
   tree: {
     type: "sequence",
     children: [
       {
         type: "wait",
-        intervalMs: 200,
-        timeoutMs: 10000,
-        async inspect({ input, target }) {
-          const source =
-            `() => (location.origin === 'https://search.douban.com') && document.readyState !== 'loading' && !!document.body`.replace(
-              "__INPUT__",
-              () => JSON.stringify(input),
-            );
-          const output = await tools.bash({
-            command:
-              "browser eval --tab=" +
-              target.tabId +
-              " -- " +
-              "'" +
-              source.replace(/'/g, "'\"'\"'") +
-              "'",
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          return value === true;
+        description: "Read the ordered results",
+        intervalMs: 250,
+        timeoutMs: 15000,
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "com.douban.search.read_page",
+            { limit: 25 },
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          if (page.kind !== "search" || !page.results_ready) return false;
+          const index = Number(input.index);
+          if (!Number.isInteger(index) || index < 0)
+            throw new Error("index must be a non-negative integer");
+          const row = page.results[index];
+          if (!row?.url) throw new Error("No result row at index " + index);
+          state.selection = row;
+          return true;
         },
       },
       {
         type: "action",
-        async run({ input, state, target, packageRoot }) {
-          const source = `async () => {
-function softNavigate(url, note) {
-    // Return a plan; the SW action performs and awaits browser navigation.
-    return { navigated: true, url, note };
-}
-
-const args = __INPUT__;
-const index = Number(args.index);
-if (!Number.isInteger(index) || index < 0)
-    throw new Error('index must be a non-negative integer');
-const rows = readSearchResults(25);
-const row = rows[index];
-if (!row?.url)
-    throw new Error(\`No result row at index \${index} (0-based; found \${rows.length} rows)\`);
-return softNavigate(row.url, \`Opening "\${row.title}". Call get_current_view in a few seconds to read the movie details.\`);
-}`.replace("__INPUT__", () => JSON.stringify(input));
-          const output = await tools.bash({
-            command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "async () => {
-$reader
-return await ($page_source)();
-}"`,
+        description: "Open the selected result",
+        async run({ input, state, target }) {
+          await browser.goto(state.selection.url, {
+            tab: target.tabId,
+            "wait-until": "domcontentloaded",
             timeout: 15000,
           });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (value && typeof value.error === "string")
-            throw new Error(value.error);
-          if (value?.navigated === true && typeof value.url === "string") {
-            const url = "'" + value.url.replace(/'/g, "'\"'\"'") + "'";
-            const navigation = await tools.bash({
-              command:
-                "browser goto --tab=" +
-                target.tabId +
-                " --wait-until=domcontentloaded -- " +
-                url,
-              timeout: 15000,
-            });
-            if (navigation.exitCode !== 0) throw new Error(navigation.stderr);
-          }
-          state.result = value;
+          state.result = {
+            navigated: true,
+            url: state.selection.url,
+            title: state.selection.title,
+          };
           return "success";
         },
       },

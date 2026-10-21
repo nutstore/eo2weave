@@ -18,105 +18,96 @@ export default {
     required: ["query"],
   },
   outputSchema: {
+    $schema: "http://json-schema.org/draft-07/schema#",
     type: "object",
-    properties: {
-      query: { type: "string" },
-      count: { type: "integer", minimum: 0 },
-      results: { type: "array", items: { type: "object" } },
+    definitions: {
+      result: {
+        type: "object",
+        properties: {
+          index: { type: "integer", minimum: 0 },
+          selector: { type: "string", pattern: "^body > " },
+          interactive: { type: "boolean" },
+          person: { type: "string", minLength: 1 },
+          date: { type: "string", pattern: "\\b\\d{2}\\/\\d{2}\\/\\d{2}\\b" },
+          snippet: { type: "string", minLength: 1, maxLength: 300 },
+          slug: { type: "string" },
+        },
+        required: ["index", "selector", "interactive", "person", "date", "snippet", "slug"],
+        additionalProperties: false,
+      },
     },
-    required: ["query", "count", "results"],
-    additionalProperties: true,
+    properties: {
+      query: { type: "string", minLength: 1 },
+      total_matches: { type: ["integer", "null"], minimum: 0 },
+      count: { type: "integer", minimum: 0, maximum: 25 },
+      results: {
+        type: "array",
+        items: { $ref: "#/definitions/result" },
+        maxItems: 25,
+      },
+    },
+    required: ["query", "total_matches", "count", "results"],
+    additionalProperties: false,
   },
   tree: {
-    type: "action",
-    async run({ input, state, target, packageRoot }) {
-      // Running actions observe again; the submitted flag prevents repeated writes.
-      state.deadline ??= Date.now() + 10000;
-      if (Date.now() > state.deadline)
-        throw new Error("Search timed out waiting for matching results");
-      if (Date.now() < (state.nextReadAt || 0)) return "running";
-      state.nextReadAt = Date.now() + 250;
-      const query =
-        input.query.trim() +
-        (input.tags ? " " + String(input.tags).trim() : "");
-      const source = `() => {
-const args = __INPUT__;
-if (!args.__submitted && location.origin !== 'https://jmail.world') return {pageReady:false};
-if (document.readyState === 'loading' || !document.body) return {pageReady:false};
-const control=document.querySelector('input[placeholder="Search"]');
-if (!control || !Object.keys(control).some(key => key.startsWith('__reactProps$'))) return {pageReady:false};
-
-function readSearchResultCount() {
-    const input = findSearchInput();
-    if (!input || !input.value.trim())
-        return null;
-    const root = document.querySelector('main') || document.body;
-    const m = (root.innerText || '').match(/MESSAGES\\s*(\\d+)/i);
-    return m ? Number(m[1]) : null;
-}
-
-const query = String(args.query || '').trim();
-const rows = readSearchResultRows(Math.max(1, Math.min(25, Number(args.limit) || 10)));
-const total = readSearchResultCount();
-const empty = total === 0;
-const correctQuery = document.querySelector("input[placeholder=\\"Search\\"]")?.value === query;
-const matching = rows.some(row => JSON.stringify(row).toLowerCase().includes(query.toLowerCase()));
-const searchInputCount = Array.from(document.querySelectorAll("input[placeholder=\\"Search\\"]")).filter(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden').length;
-return {searchInputCount, ready: correctQuery && (matching || empty), result: {query, total_matches: total, count: rows.length, results: rows}};
-}`.replace("__INPUT__", () =>
-        JSON.stringify({ ...input, __submitted: !!state.submitted }),
-      );
-      const output = await tools.bash({
-        command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "async () => {
-$reader
-return await ($page_source)();
-}"`,
-        timeout: 15000,
-      });
-      if (output.truncated) throw new Error("Browser output was truncated");
-      if (output.exitCode !== 0) {
-        if (
-          /execution context was destroyed|cannot find context with specified id|cannot find default execution context/i.test(
-            output.stderr,
-          )
-        )
-          return "running";
-        throw new Error(output.stderr);
-      }
-      const page = JSON.parse(output.stdout);
-      if (page.tabId !== target.tabId)
-        throw new Error("Browser returned another tab");
-      const observed = page.result;
-      if (observed.pageReady === false) return "running";
-      if (observed.ready) {
-        state.result = observed.result;
-        return "success";
-      }
-      if (!state.submitted) {
-        if (observed.searchInputCount > 1)
-          throw new Error("Search input is ambiguous");
-        let command;
-        if (observed.searchInputCount === 0) return "running";
-        {
-          const text = "'" + query.replace(/'/g, "'\"'\"'") + "'";
-          command =
-            "browser fill --tab=" +
-            target.tabId +
-            " -- " +
-            "'input[placeholder=\"Search\"]'" +
-            " " +
-            text;
-        }
-        const action = await tools.bash({ command, timeout: 15000 });
-        if (action.exitCode !== 0) throw new Error(action.stderr);
-        if (action.truncated) throw new Error("Browser output was truncated");
-        state.submitted = true;
-        state.deadline = Date.now() + 20000;
-      }
-      return "running";
-    },
+    type: "sequence",
+    children: [
+      {
+        type: "wait",
+        description: "Wait for the message search control",
+        intervalMs: 250,
+        timeoutMs: 15000,
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.messages.read_page",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          return page.search_ready;
+        },
+      },
+      {
+        type: "action",
+        description: "Search all messages",
+        async run({ input, state, target }) {
+          state.query = input.query.trim();
+          await browser.fill('input[placeholder="Search"]', state.query, {
+            tab: target.tabId,
+            timeout: 15000,
+          });
+          return "success";
+        },
+      },
+      {
+        type: "wait",
+        description: "Wait for search results for this query",
+        intervalMs: 250,
+        timeoutMs: 15000,
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.messages.read_page",
+            { limit: input.limit || 10, query: state.query },
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          if (page.search.query !== state.query || !page.search.results_ready) return false;
+          state.result = {
+            query: state.query,
+            total_matches: page.search.total_matches,
+            count: page.search.count,
+            results: page.search.results,
+          };
+          return true;
+        },
+      },
+    ],
   },
   result({ state }) {
     return state.result;

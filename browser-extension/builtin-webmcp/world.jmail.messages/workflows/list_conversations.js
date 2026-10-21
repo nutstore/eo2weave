@@ -10,66 +10,83 @@ export default {
       },
     },
   },
-  outputSchema: true,
-  tree: {
-    type: "action",
-    async run({ input, state, target, packageRoot }) {
-      state.deadline ??= Date.now() + 15000;
-      if (Date.now() > state.deadline)
-        throw new Error("Conversation list did not become ready");
-      if (Date.now() < (state.nextReadAt || 0)) return "running";
-      state.nextReadAt = Date.now() + 250;
-      const source = `() => {
-const args = __INPUT__;
-if (location.origin !== 'https://jmail.world' || document.readyState === 'loading') return null;
-const rows=readConversationRows(Math.max(1,Math.min(50,Number(args.limit)||15)));
-const el=document.querySelector('.jmail-dock a[href="/messages"], a[href="/messages"]');
-return {rows, canNavigate: !!el && Object.keys(el).some(key => key.startsWith('__reactProps$'))};
-}`.replace("__INPUT__", () => JSON.stringify(input));
-      const output = await tools.bash({
-        command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "() => {
-$reader
-return ($page_source)();
-}"`,
-        timeout: 15000,
-      });
-      if (output.truncated) throw new Error("Browser output was truncated");
-      if (output.exitCode !== 0) throw new Error(output.stderr);
-      const page = JSON.parse(output.stdout);
-      if (page.tabId !== target.tabId)
-        throw new Error("Browser returned another tab");
-      const value = page.result;
-      if (!value) return "running";
-      if (value.rows.length) {
-        state.result = {
-          count: value.rows.length,
-          conversations: value.rows,
-          hint: "Use open_conversation with a slug to read the messages.",
-        };
-        return "success";
-      }
-      if (!state.navigated && value.canNavigate) {
-        const action = await tools.bash({
-          command:
-            "browser click --tab=" +
-            target.tabId +
-            " -- " +
-            "'" +
-            ' .jmail-dock a[href="/messages"], a[href="/messages"]'.replace(
-              /'/g,
-              "'\"'\"'",
-            ) +
-            "'",
-          timeout: 15000,
-        });
-        if (action.truncated) throw new Error("Browser output was truncated");
-        if (action.exitCode !== 0) throw new Error(action.stderr);
-        state.navigated = true;
-      }
-      return "running";
+  outputSchema: {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    type: "object",
+    definitions: {
+      conversation: {
+        type: "object",
+        properties: {
+          slug: { type: "string", minLength: 1 },
+          name: { type: "string", minLength: 1 },
+          last_message: { type: "string", maxLength: 200 },
+          selector: { type: "string", pattern: "^body > " },
+          interactive: { type: "boolean" },
+          date: { type: "string", pattern: "\\b\\d{2}\\/\\d{2}\\/\\d{2}\\b" },
+        },
+        required: ["slug", "name", "last_message", "selector", "interactive", "date"],
+        additionalProperties: false,
+      },
     },
+    properties: {
+      count: { type: "integer", minimum: 1 },
+      conversations: {
+        type: "array",
+        items: { $ref: "#/definitions/conversation" },
+        minItems: 1,
+      },
+    },
+    required: ["count", "conversations"],
+    additionalProperties: false,
+  },
+  tree: {
+    type: "sequence",
+    children: [
+      {
+        type: "action",
+        description: "Restore the conversation list when search has replaced it",
+        async run({ target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.messages.read_page",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (page.ready && !page.conversations.length)
+            await browser.goto(page.navigation || "https://jmail.world/messages", {
+              tab: target.tabId,
+              "wait-until": "domcontentloaded",
+              timeout: 15000,
+            });
+          return "success";
+        },
+      },
+      {
+        type: "wait",
+        description: "Read the visible conversation list",
+        intervalMs: 250,
+        timeoutMs: 15000,
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.messages.read_page",
+            { limit: input.limit || 15 },
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          if (!page.conversations.length) return false;
+          state.result = {
+            count: page.conversations.length,
+            conversations: page.conversations,
+          };
+          return true;
+        },
+      },
+    ],
   },
   result({ state }) {
     return state.result;

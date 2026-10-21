@@ -10,102 +10,97 @@ export default {
     },
     required: ["index"],
   },
-  outputSchema: true,
+  outputSchema: {
+    type: "object",
+    definitions: {
+      structured: {
+        type: "object",
+        properties: {
+          headline: { type: "string" },
+          author: { type: "string" },
+          datePublished: { type: "string" },
+          description: { type: "string" },
+        },
+        minProperties: 1,
+        additionalProperties: false,
+      },
+    },
+    properties: {
+      url: { type: "string" },
+      doc_id: { type: ["string", "null"] },
+      page_title: { type: "string" },
+      text: { type: "string" },
+      structured: {
+        anyOf: [{ $ref: "#/definitions/structured" }, { type: "null" }],
+      },
+    },
+    required: ["url", "doc_id", "page_title", "text", "structured"],
+    additionalProperties: false,
+  },
   tree: {
     type: "sequence",
     children: [
       {
         type: "wait",
+        description: "Select an email from the current results",
         intervalMs: 250,
         timeoutMs: 15000,
-        async inspect({ input, state, target, packageRoot }) {
-          const source = `() => {
-const args = __INPUT__;
-if (location.origin !== 'https://jmail.world' || document.readyState === 'loading') return null;
-const index=Number(args.index);
-if(!Number.isInteger(index)||index<0) throw new Error('index must be a non-negative integer');
-const rows=findRowElements(); if(!rows.length) return null;
-if(!rows[index]) throw new Error('No result row at index '+index+' (0-based; found '+rows.length+' rows)');
-const el=rows[index]; return Object.keys(el).some(key => key.startsWith('__reactProps$')) ? true : null;
-}`.replace("__INPUT__", () => JSON.stringify(input));
-          const output = await tools.bash({
-            command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "() => {
-$reader
-return ($page_source)();
-}"`,
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          return value === true;
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.read_page",
+            { limit: 100 },
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          const index = Number(input.index);
+          if (!Number.isInteger(index) || index < 0)
+            throw new Error("index must be a non-negative integer");
+          if (!page.results_ready) return false;
+          const row = page.results.find((row) => row.index === index);
+          if (!row) throw new Error("No result row at index " + index);
+          if (!row.interactive) return false;
+          state.selector = row.selector;
+          state.docId = row.doc_id;
+          return true;
         },
       },
       {
         type: "action",
-        async run({ input, state, target, packageRoot }) {
-          const source = `() => {
-const args = __INPUT__;
-const row=findRowElements()[Number(args.index)];
-if(!row) throw new Error('The result row disappeared before opening');
-const parsed=parseRow(row,Number(args.index));
-const leaves=Array.from(row.querySelectorAll('div')).filter(el => !el.children.length && (el.innerText||'').trim());
-const exact=parsed?.subject && leaves.find(el => el.innerText.trim() === parsed.subject);
-const longest=leaves.sort((a,b)=>b.innerText.trim().length-a.innerText.trim().length)[0];
-(exact || (parsed?.subject && longest) || row).click();
-return true;
-}`.replace("__INPUT__", () => JSON.stringify(input));
-          const output = await tools.bash({
-            command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "() => {
-$reader
-return ($page_source)();
-}"`,
+        description: "Open the selected email",
+        async run({ input, state, target }) {
+          await browser.click(state.selector, undefined, {
+            tab: target.tabId,
+            activate: true,
             timeout: 15000,
           });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
           return "success";
         },
       },
       {
         type: "wait",
+        description: "Wait for the selected thread",
         intervalMs: 250,
         timeoutMs: 15000,
-        async inspect({ input, state, target, packageRoot }) {
-          const source = `() => {
-const args = __INPUT__;
-if (location.origin !== 'https://jmail.world' || document.readyState === 'loading') return null;
-if(!location.pathname.startsWith('/thread/')) return null;
-const view=readThreadView(); return view.text?.trim() ? view : null;
-}`.replace("__INPUT__", () => JSON.stringify(input));
-          const output = await tools.bash({
-            command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "() => {
-$reader
-return ($page_source)();
-}"`,
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (!value) return false;
-          state.result = value;
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.read_page",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          if (
+            page.kind !== "thread" ||
+            (state.docId && page.thread.doc_id !== state.docId) ||
+            !page.thread.text.trim()
+          )
+            return false;
+          state.result = page.thread;
           return true;
         },
       },

@@ -18,157 +18,185 @@ export default {
       },
     },
   },
-  outputSchema: true,
+  outputSchema: {
+    type: "object",
+    definitions: {
+      email_row: {
+        type: "object",
+        properties: {
+          index: { type: "integer", minimum: 0 },
+          sender: { type: "string" },
+          subject: { type: "string" },
+          date: { type: "string" },
+          preview: { type: "string" },
+          doc_id: { type: ["string", "null"] },
+          selector: { type: ["string", "null"] },
+          interactive: { type: "boolean" },
+        },
+        required: [
+          "index",
+          "sender",
+          "subject",
+          "date",
+          "preview",
+          "doc_id",
+          "selector",
+          "interactive",
+        ],
+        additionalProperties: false,
+      },
+    },
+    properties: {
+      url: { type: "string" },
+      page_title: { type: "string" },
+      total: { type: ["string", "null"] },
+      count: { type: "integer", minimum: 0 },
+      results: {
+        type: "array",
+        items: { $ref: "#/definitions/email_row" },
+      },
+    },
+    required: ["url", "page_title", "total", "count", "results"],
+    additionalProperties: false,
+  },
   tree: {
     type: "sequence",
     children: [
       {
-        type: "wait",
-        intervalMs: 200,
-        timeoutMs: 10000,
-        async inspect({ input, target }) {
-          const source =
-            `() => (location.origin === 'https://jmail.world' && !location.pathname.startsWith('/messages')) && document.readyState !== 'loading' && !!document.body`.replace(
-              "__INPUT__",
-              () => JSON.stringify(input),
-            );
-          const output = await tools.bash({
-            command:
-              "browser eval --tab=" +
-              target.tabId +
-              " -- " +
-              "'" +
-              source.replace(/'/g, "'\"'\"'") +
-              "'",
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          return value === true;
+        type: "action",
+        description: "Validate the requested date range",
+        async run({ input, state, target }) {
+          state.after = (input.after || "").trim();
+          state.before = (input.before || "").trim();
+          if (!state.after && !state.before)
+            throw new Error("Provide after or before (YYYY-MM-DD)");
+          for (const date of [state.after, state.before])
+            if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date))
+              throw new Error("Dates must use YYYY-MM-DD");
+          if (state.after && state.before && state.after > state.before)
+            throw new Error("after must not be later than before");
+          return "success";
         },
       },
       {
         type: "action",
-        async run({ input, state, target, packageRoot }) {
-          const source = `async () => {
-function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
-}
-async function waitFor(fn, { timeoutMs = 8000, pollMs = 120 } = {}) {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-        const v = fn();
-        if (v != null)
-            return v;
-        if (Date.now() > deadline)
-            throw new Error('Timed out waiting for a page element to appear');
-        await sleep(pollMs);
-    }
-}
-
-const args = __INPUT__;
-const after = typeof args.after === 'string' ? args.after.trim() : '';
-const before = typeof args.before === 'string' ? args.before.trim() : '';
-const limit = Math.max(1, Math.min(25, Number(args.limit) || 10));
-if (!after && !before)
-    throw new Error('Provide at least one of after / before (YYYY-MM-DD)');
-const DATE_FMT = /^\\d{4}-\\d{2}-\\d{2}$/;
-if (after && !DATE_FMT.test(after))
-    throw new Error('after must be YYYY-MM-DD');
-if (before && !DATE_FMT.test(before))
-    throw new Error('before must be YYYY-MM-DD');
-const trigger = await waitFor(() => document.querySelector('button[aria-label="Filter by date range"]'), { timeoutMs: 8000 });
-trigger.click();
-let panel = await waitFor(() => document.querySelector('.date-filter-dropdown[data-state="open"]'), { timeoutMs: 5000 });
-if (trigger.classList.contains('date-filter-active') || location.search.includes('after=') || location.search.includes('before=')) {
-    const clear = panel.querySelector('.date-filter-clear');
-    if (clear) {
-        clear.click();
-        await sleep(500);
-        trigger.click();
-        panel = await waitFor(() => document.querySelector('.date-filter-dropdown[data-state="open"]'), { timeoutMs: 5000 });
-    }
-}
-const fillDate = (label, value) => {
-    const fields = Array.from(panel.querySelectorAll('.date-filter-field'));
-    const field = fields.find((f) => (f.innerText || '').toLowerCase().includes(label));
-    const input = field?.querySelector('input[type="date"]');
-    if (!input)
-        throw new Error(\`"\${label}" date input not found in the filter panel\`);
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-    if (setter)
-        setter.call(input, value);
-    else
-        input.value = value;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-};
-if (after)
-    fillDate('after', after);
-if (before)
-    fillDate('before', before);
-const apply = panel.querySelector('.date-filter-apply');
-if (!apply)
-    throw new Error('Apply button not found in the filter panel');
-apply.click();
-const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-const parseRowDate = (s) => {
-    const m = s.trim().match(/^([A-Za-z]{3}) (\\d{1,2}), (\\d{4})$/);
-    if (!m)
-        return NaN;
-    const mo = MONTHS.indexOf(m[1].toLowerCase());
-    return mo < 0 ? NaN : new Date(Number(m[3]), mo, Number(m[2])).getTime();
-};
-const afterTs = after ? new Date(after + 'T00:00:00').getTime() : -Infinity;
-const beforeTs = before ? new Date(before + 'T23:59:59').getTime() : Infinity;
-await waitFor(() => {
-    const hasParam = after
-        ? location.search.includes(\`after=\${after}\`)
-        : location.search.includes(\`before=\${before}\`);
-    if (!hasParam)
-        return null;
-    const rows = readRows(3);
-    if (rows.length === 0)
-        return readTotalCount() === '0' || /no emails found|no results found/i.test(document.querySelector('main')?.innerText || '') ? {} : null;
-    const first = parseRowDate(rows[0].date);
-    return Number.isFinite(first) && first >= afterTs && first <= beforeTs ? {} : null;
-}, { timeoutMs: 15000 });
-const rows = readRows(limit);
-return {
-    url: location.pathname + location.search,
-    page_title: document.title,
-    total: readTotalCount(),
-    count: rows.length,
-    results: rows,
-    note: rows.length === 0
-        ? 'No emails in this date range. Call go_home or filter_by_date with a wider range.'
-        : undefined,
-};
-}`.replace("__INPUT__", () => JSON.stringify(input));
-          const output = await tools.bash({
-            command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} --timeout=30000 "async () => {
-$reader
-return await ($page_source)();
-}"`,
-            timeout: 35000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (value && typeof value.error === "string")
-            throw new Error(value.error);
-
-          state.result = value;
+        description: "Clear an existing range through the public tool",
+        async run({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.clear_date_filter",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Could not clear the previous date filter");
           return "success";
+        },
+      },
+      {
+        type: "action",
+        description: "Open the date range controls",
+        async run({ input, state, target }) {
+          await browser.click('button[aria-label="Filter by date range"]', undefined, {
+            tab: target.tabId,
+            activate: true,
+            timeout: 15000,
+          });
+          return "success";
+        },
+      },
+      {
+        type: "wait",
+        description: "Locate the date fields",
+        intervalMs: 250,
+        timeoutMs: 15000,
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.read_page",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          if (
+            !page.date_filter.open ||
+            (state.after && !page.date_filter.after) ||
+            (state.before && !page.date_filter.before)
+          )
+            return false;
+          state.fields = page.date_filter;
+          return true;
+        },
+      },
+      {
+        type: "action",
+        description: "Fill and apply the requested range",
+        async run({ input, state, target }) {
+          // Native text insertion does not reliably edit Chromium date controls.
+          for (const [field, value] of [
+            [state.fields.after, state.after],
+            [state.fields.before, state.before],
+          ]) {
+            if (!value) continue;
+            const source =
+              '(element) => { const value=__VALUE__; const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(element,value); element.dispatchEvent(new Event("input",{bubbles:true})); element.dispatchEvent(new Event("change",{bubbles:true})); }'.replace(
+                "__VALUE__",
+                () => JSON.stringify(value),
+              );
+            await browser.evalElement(source, field, { tab: target.tabId, timeout: 15000 });
+          }
+          await browser.click(".date-filter-apply", undefined, {
+            tab: target.tabId,
+            activate: true,
+            timeout: 15000,
+          });
+          return "success";
+        },
+      },
+      {
+        type: "wait",
+        description: "Wait for the requested range and matching rows",
+        intervalMs: 250,
+        timeoutMs: 15000,
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.read_page",
+            { limit: input.limit || 10 },
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          const params = page.params;
+          if (
+            (state.after && params.after !== state.after) ||
+            (state.before && params.before !== state.before) ||
+            !page.results_ready
+          )
+            return false;
+          const withinRange = page.results.every((row) => {
+            const date = new Date(row.date);
+            if (!Number.isFinite(date.getTime())) return false;
+            const iso = [
+              date.getFullYear(),
+              String(date.getMonth() + 1).padStart(2, "0"),
+              String(date.getDate()).padStart(2, "0"),
+            ].join("-");
+            return (
+              (!state.after || iso >= state.after) && (!state.before || iso <= state.before)
+            );
+          });
+          if (!withinRange) return false;
+          state.result = {
+            url: page.route,
+            page_title: page.page_title,
+            total: page.total,
+            count: page.results.length,
+            results: page.results,
+          };
+          return true;
         },
       },
     ],

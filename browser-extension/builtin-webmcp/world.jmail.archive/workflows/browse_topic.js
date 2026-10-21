@@ -9,111 +9,158 @@ export default {
     },
     required: ["topic"],
   },
-  outputSchema: true,
+  outputSchema: {
+    type: "object",
+    definitions: {
+      structured: {
+        type: "object",
+        properties: {
+          headline: { type: "string" },
+          author: { type: "string" },
+          datePublished: { type: "string" },
+          description: { type: "string" },
+        },
+        minProperties: 1,
+        additionalProperties: false,
+      },
+      email_row: {
+        type: "object",
+        properties: {
+          index: { type: "integer", minimum: 0 },
+          sender: { type: "string" },
+          subject: { type: "string" },
+          date: { type: "string" },
+          preview: { type: "string" },
+          doc_id: { type: ["string", "null"] },
+          selector: { type: ["string", "null"] },
+          interactive: { type: "boolean" },
+        },
+        required: [
+          "index",
+          "sender",
+          "subject",
+          "date",
+          "preview",
+          "doc_id",
+          "selector",
+          "interactive",
+        ],
+        additionalProperties: false,
+      },
+      thread_view: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          doc_id: { type: ["string", "null"] },
+          page_title: { type: "string" },
+          text: { type: "string" },
+          structured: {
+            anyOf: [{ $ref: "#/definitions/structured" }, { type: "null" }],
+          },
+        },
+        required: ["url", "doc_id", "page_title", "text", "structured"],
+        additionalProperties: false,
+      },
+      list_view: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          page_title: { type: "string" },
+          total: { type: ["string", "null"] },
+          results: {
+            type: "array",
+            items: { $ref: "#/definitions/email_row" },
+          },
+        },
+        required: ["url", "page_title", "total", "results"],
+        additionalProperties: false,
+      },
+    },
+    properties: {
+      url: { type: "string" },
+      doc_id: { type: ["string", "null"] },
+      page_title: { type: "string" },
+      text: { type: "string" },
+      structured: {
+        anyOf: [{ $ref: "#/definitions/structured" }, { type: "null" }],
+      },
+      total: { type: ["string", "null"] },
+      results: {
+        type: "array",
+        items: { $ref: "#/definitions/email_row" },
+      },
+    },
+    required: ["url", "page_title"],
+    oneOf: [
+      { $ref: "#/definitions/thread_view" },
+      { $ref: "#/definitions/list_view" },
+    ],
+    additionalProperties: false,
+  },
   tree: {
     type: "sequence",
     children: [
       {
         type: "wait",
-        intervalMs: 200,
-        timeoutMs: 10000,
+        description: "Find the requested topic",
+        intervalMs: 250,
+        timeoutMs: 15000,
         async inspect({ input, state, target }) {
-          const source = `() => {
-if (location.origin !== 'https://jmail.world' || document.readyState === 'loading' || !document.body) return null;
-const args = __INPUT__;
-const slug = String(args.topic || '').trim();
-        if (!slug)
-            throw new Error('topic is required (slug from list_topics, e.g. damage-control)');
-const selector = \`a[href="/topic/\${CSS.escape(slug)}"]\`;
-const anchor = document.querySelector(selector);
-if (!anchor) throw new Error('No "' + \`topic:\${slug}\` + '" control on the current view (thread pager only exists on /thread/*, person/topic links on list views).');
-return {selector, path: (anchor.getAttribute('href') || '').split('?')[0]};
-}`
-            .replace("__INPUT__", () => JSON.stringify(input))
-            .replace("__STATE__", () => JSON.stringify(state));
-          const output = await tools.bash({
-            command:
-              "browser eval --tab=" +
-              target.tabId +
-              " -- " +
-              "'" +
-              source.replace(/'/g, "'\"'\"'") +
-              "'",
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) {
-            if (
-              /execution context was destroyed|cannot find context with specified id|cannot find default execution context/i.test(
-                output.stderr,
-              )
-            )
-              return false;
-            throw new Error(output.stderr);
-          }
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (!value) return false;
-          state.selector = value.selector;
-          state.path = value.path;
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.read_page",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          const slug = input.topic.trim();
+          const link = page.topics.find((link) => link.slug === slug);
+          if (!link) throw new Error("No topic link for " + slug);
+          state.path = link.path;
+          state.selector = link.selector;
           return true;
         },
       },
       {
         type: "action",
-        async run({ state, target }) {
-          const selector = "'" + state.selector.replace(/'/g, "'\"'\"'") + "'";
-          const output = await tools.bash({
-            command: "browser click --tab=" + target.tabId + " -- " + selector,
+        description: "Open the topic",
+        async run({ input, state, target }) {
+          await browser.click(state.selector, undefined, {
+            tab: target.tabId,
+            activate: true,
             timeout: 15000,
           });
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          state.readAfter = Date.now() + 2500;
           return "success";
         },
       },
       {
         type: "wait",
-        intervalMs: 200,
-        timeoutMs: 10000,
-        async inspect({ input, state, target, packageRoot }) {
-          const source = `() => {
-const state = __STATE__;
-if (!(location.pathname + location.search).startsWith(state.path)) return {ready: false};
-
-const rows = readRows(10);
-if (!rows.length && Date.now() < state.readAfter) return {ready: false};
-return {ready:true, result: rows.length ? {url: location.pathname + location.search, page_title: document.title, total: readTotalCount(), results: rows, hint: 'Rows listed. open_result to open one; next_thread/prev_thread to page through.'} : readThreadView()};
-}`
-            .replace("__INPUT__", () => JSON.stringify(input))
-            .replace("__STATE__", () => JSON.stringify(state));
-          const output = await tools.bash({
-            command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "async () => {
-$reader
-return await ($page_source)();
-}"`,
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) {
-            if (
-              /execution context was destroyed|cannot find context with specified id|cannot find default execution context/i.test(
-                output.stderr,
-              )
-            )
-              return false;
-            throw new Error(output.stderr);
-          }
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (!value.ready) return false;
-          state.result = value.result;
+        description: "Read the selected archive view",
+        intervalMs: 250,
+        timeoutMs: 15000,
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.archive.read_page",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          if (page.path !== state.path) return false;
+          if (page.kind !== "thread" && !page.results_ready) return false;
+          state.result =
+            page.kind === "thread"
+              ? page.thread
+              : {
+                  url: page.route,
+                  page_title: page.page_title,
+                  total: page.total,
+                  results: page.results,
+                };
           return true;
         },
       },

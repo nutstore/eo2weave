@@ -3,49 +3,44 @@ export default {
     type: "object",
     properties: {},
   },
-  outputSchema: true,
+  outputSchema: {
+    type: "object",
+    properties: {
+      count: { type: "integer", minimum: 0 },
+      people: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            slug: { type: "string" },
+            label: { type: "string" },
+          },
+          required: ["slug", "label"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["count", "people"],
+    additionalProperties: false,
+  },
   tree: {
     type: "wait",
-    intervalMs: 200,
-    timeoutMs: 10000,
-    async inspect({ input, state, target, packageRoot }) {
-      const source = `async () => {
-if (!(location.origin === 'https://jmail.world' && !location.pathname.startsWith('/messages')) || document.readyState === 'loading' || !document.body) return {ready: false};
-
-const args = __INPUT__;
-return {ready: true, result: await (async () => {
-const links = Array.from(document.querySelectorAll('nav a[href^="/person/"]'));
-const seen = new Set();
-const people = [];
-for (const a of links) {
-    const slug = (a.getAttribute('href') || '').replace(/^\\/person\\//, '');
-    if (!slug || slug === '' || seen.has(slug))
-        continue;
-    seen.add(slug);
-    people.push({ slug, label: filterIconNoise(a.innerText || '').trim() });
-}
-return { count: people.length, people };
-})()};
-}`.replace("__INPUT__", () => JSON.stringify(input));
-      const output = await tools.bash({
-        command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "async () => {
-$reader
-return await ($page_source)();
-}"`,
-        timeout: 15000,
-      });
-      if (output.truncated) throw new Error("Browser output was truncated");
-      if (output.exitCode !== 0) throw new Error(output.stderr);
-      const page = JSON.parse(output.stdout);
-      if (page.tabId !== target.tabId)
-        throw new Error("Browser returned another tab");
-      const value = page.result;
-      if (!value.ready) return false;
-      if (value.result && typeof value.result.error === "string")
-        throw new Error(value.result.error);
-      state.result = value.result;
+    description: "Read available people",
+    intervalMs: 250,
+    timeoutMs: 15000,
+    async inspect({ input, state, target }) {
+      const response = await browser.webmcp.exec(
+        "world.jmail.archive.read_page",
+        {},
+        { tab: target.tabId, timeout: 15000 },
+      );
+      if (response.result.status !== "success") throw new Error("Page reader did not succeed");
+      const page = response.result.result;
+      if (!page.ready) return false;
+      state.result = {
+        count: page.people.length,
+        people: page.people.map(({ slug, label }) => ({ slug, label })),
+      };
       return true;
     },
   },

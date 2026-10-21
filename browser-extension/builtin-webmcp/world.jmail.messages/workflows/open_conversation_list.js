@@ -3,92 +3,75 @@ export default {
     type: "object",
     properties: {},
   },
-  outputSchema: true,
+  outputSchema: {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    type: "object",
+    definitions: {
+      conversation: {
+        type: "object",
+        properties: {
+          slug: { type: "string", minLength: 1 },
+          name: { type: "string", minLength: 1 },
+          last_message: { type: "string", maxLength: 200 },
+          selector: { type: "string", pattern: "^body > " },
+          interactive: { type: "boolean" },
+          date: { type: "string", pattern: "\\b\\d{2}\\/\\d{2}\\/\\d{2}\\b" },
+        },
+        required: ["slug", "name", "last_message", "selector", "interactive", "date"],
+        additionalProperties: false,
+      },
+    },
+    properties: {
+      navigated: { const: true },
+      url: { const: "/messages" },
+      page_title: { type: "string" },
+      latest: {
+        type: "array",
+        items: { $ref: "#/definitions/conversation" },
+        minItems: 1,
+        maxItems: 5,
+      },
+    },
+    required: ["navigated", "url", "page_title", "latest"],
+    additionalProperties: false,
+  },
   tree: {
     type: "sequence",
     children: [
       {
-        type: "wait",
-        intervalMs: 250,
-        timeoutMs: 15000,
-        async inspect({ input, state, target, packageRoot }) {
-          const source = `() => {
-const args = __INPUT__;
-if (location.origin !== 'https://jmail.world' || document.readyState === 'loading') return null;
-const el=document.querySelector(".jmail-dock a[href=\\"/messages\\"]"); return el ? {href:el.href,already:location.pathname === "/messages"} : null;
-}`.replace("__INPUT__", () => JSON.stringify(input));
-          const output = await tools.bash({
-            command:
-              "browser eval --tab=" +
-              target.tabId +
-              " -- " +
-              "'" +
-              source.replace(/'/g, "'\"'\"'") +
-              "'",
+        type: "action",
+        description: "Open the conversation list",
+        async run({ input, state, target }) {
+          await browser.goto("https://jmail.world/messages", {
+            tab: target.tabId,
+            "wait-until": "domcontentloaded",
             timeout: 15000,
           });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (!value) return false;
-          state.navigation = value;
-          return true;
-        },
-      },
-      {
-        type: "action",
-        async run({ input, state, target, packageRoot }) {
-          // The dock can be outside the app viewport; follow its actual href explicitly.
-          if (!state.navigation.already) {
-            const url =
-              "'" + state.navigation.href.replace(/'/g, "'\"'\"'") + "'";
-            const action = await tools.bash({
-              command:
-                "browser goto --tab=" +
-                target.tabId +
-                " --wait-until=domcontentloaded -- " +
-                url,
-              timeout: 15000,
-            });
-            if (action.truncated)
-              throw new Error("Browser output was truncated");
-            if (action.exitCode !== 0) throw new Error(action.stderr);
-          }
           return "success";
         },
       },
       {
         type: "wait",
+        description: "Wait for the conversation list",
         intervalMs: 250,
         timeoutMs: 15000,
-        async inspect({ input, state, target, packageRoot }) {
-          const source = `() => {
-const args = __INPUT__;
-if (location.origin !== 'https://jmail.world' || document.readyState === 'loading') return null;
-if(location.pathname !== "/messages") return null;
-if(args.already) return {navigated:true,url:location.pathname,note:'Already on the conversation list.'};
-const rows=readConversationRows(5); return rows.length ? {navigated:true,url:location.pathname,page_title:document.title,latest:rows,hint:'Conversation list restored. Use open_conversation or search_messages to continue.'} : null;
-}`.replace("__INPUT__", () => JSON.stringify(state.navigation));
-          const output = await tools.bash({
-            command: `reader=$(cat '${packageRoot}readers/dom.js') || exit 1
-page_source='${source.replace(/'/g, "'\"'\"'")}'
-browser eval --tab=${target.tabId} "() => {
-$reader
-return ($page_source)();
-}"`,
-            timeout: 15000,
-          });
-          if (output.truncated) throw new Error("Browser output was truncated");
-          if (output.exitCode !== 0) throw new Error(output.stderr);
-          const page = JSON.parse(output.stdout);
-          if (page.tabId !== target.tabId)
-            throw new Error("Browser returned another tab");
-          const value = page.result;
-          if (!value) return false;
-          state.result = value;
+        async inspect({ input, state, target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.messages.read_page",
+            { limit: 5 },
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          if (!page.ready) return false;
+          if (page.path !== "/messages" || !page.conversations.length) return false;
+          state.result = {
+            navigated: true,
+            url: page.path,
+            page_title: page.page_title,
+            latest: page.conversations,
+          };
           return true;
         },
       },
