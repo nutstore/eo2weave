@@ -1,6 +1,4 @@
-/** JSON-only messages shared by the page proxy, extension and workspace host. */
-export const ADAPTER_HOST_PORT = 'cw_adapter_host'
-export const ADAPTER_HOST_MARKER = '__cwAdapterHost'
+/** JSON-only messages shared by the page proxy and extension. */
 export const ADAPTER_PAGE_MARKER = '__cwAdapterPage'
 export const ADAPTER_TIMEOUT_MS = 55_000
 export const ADAPTER_TRANSFER_BYTES = 8 * 1024 * 1024
@@ -23,7 +21,7 @@ export function parseDescriptors(value: unknown): AdapterDescriptor[] {
   return value.map(item => {
     if (!isRecord(item) || !['routeId', 'name', 'description', 'urlRegex'].every(key => typeof item[key] === 'string') || !isRecord(item.inputSchema))
       throw new Error('Invalid adapter descriptor')
-    if (names.has(item.name as string)) throw new Error('Ambiguous adapter host')
+    if (names.has(item.name as string)) throw new Error('Duplicate adapter tool name')
     names.add(item.name as string)
     return { routeId: item.routeId, name: item.name, description: item.description, urlRegex: item.urlRegex, inputSchema: item.inputSchema } as AdapterDescriptor
   })

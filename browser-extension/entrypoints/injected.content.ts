@@ -796,9 +796,6 @@ export default defineContentScript({
         return typed
       },
 
-      /** Live workspace-bound QuickJS adapter protocol is available. */
-      supportsAdapterWorkflows: true,
-
       /** Discover WebMCP tools across tabs in the current window. */
       async webMCPDiscover(options?: { force?: boolean }) {
         // Only `force` is honored from pages. includeDisabled is a popup-only

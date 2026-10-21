@@ -56,7 +56,6 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   useEffect(() => {
     let disposed = false
     let stopWebMCPSyncLoop: (() => void) | null = null
-    let stopWorkspaceToolHost: (() => void) | null = null
 
     // Install Codex bridge fetch wrapper once at app startup.
     // This wraps globalThis.fetch to intercept chatgpt.com requests
@@ -69,10 +68,6 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     import('@/webmcp').then(({ startWebMCPSyncLoop }) => {
       if (disposed) return
       stopWebMCPSyncLoop = startWebMCPSyncLoop()
-    })
-
-    import('@/webmcp/workspace-tool-connection').then(({ startWorkspaceToolHost }) => {
-      if (!disposed) stopWorkspaceToolHost = startWorkspaceToolHost()
     })
 
     let stopProviderSkills: (() => void) | undefined
@@ -94,7 +89,6 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       stopProviders?.()
       stopProviderSkills?.()
       if (stopWebMCPSyncLoop) stopWebMCPSyncLoop()
-      if (stopWorkspaceToolHost) stopWorkspaceToolHost()
     }
   }, [extensionCheckStatus])
 

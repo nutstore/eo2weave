@@ -1,6 +1,6 @@
 import { isTrustedCreatorWeaveSenderUrl } from '@creatorweave/shared'
 import { BrowserError } from './errors'
-import { browserManual, invokeBrowserCommand, type CommandInput } from './command'
+import { browserManual, browserRequestTimeout, invokeBrowserCommand, type CommandInput } from './command'
 
 type Bridge = (type: string, payload: Record<string, unknown>, timeout?: number) => Promise<any>
 type PageAPI = { bash?: { registerCommand(command: {
@@ -13,9 +13,13 @@ export function installBrowserCommand(send: Bridge): () => void {
   if (!isTrustedCreatorWeaveSenderUrl(location.href)) return () => {}
   let unregister: (() => void) | undefined
   let disposed = false
-  const pending = new Set<string>()
-  const cancel = () => {
-    for (const requestId of pending) void send('browser_command_cancel', { requestId }, 2000).catch(() => {})
+  const pending = new Map<string, CommandInput>()
+  const cancel = (event?: Event) => {
+    const inputs = (event as CustomEvent<{ inputs?: CommandInput[] }> | undefined)?.detail?.inputs
+    for (const [requestId, input] of pending) {
+      if (inputs && !inputs.includes(input)) continue
+      void send('browser_command_cancel', { requestId }, 2000).catch(() => {})
+    }
   }
   window.addEventListener('creatorweave:bash-cancel', cancel)
   window.addEventListener('pagehide', cancel)
@@ -35,9 +39,9 @@ export function installBrowserCommand(send: Bridge): () => void {
         return invokeBrowserCommand(input, async request => {
           if (disposed) throw new Error('Browser extension provider disposed')
           const requestId = crypto.randomUUID()
-          pending.add(requestId)
+          pending.set(requestId, input)
           try {
-            const response = await send('browser_command', { requestId, request }, 35000)
+            const response = await send('browser_command', { requestId, request }, Math.max(35000, browserRequestTimeout(request) + 5000))
             if (!response?.ok) throw new BrowserError(
               typeof response?.error === 'string' ? response.error : response?.error?.message ?? 'Browser extension unavailable',
               response?.error?.details,

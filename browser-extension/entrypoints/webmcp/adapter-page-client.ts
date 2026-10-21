@@ -1,6 +1,6 @@
 import { ADAPTER_PAGE_MARKER, ADAPTER_TIMEOUT_MS, type AdapterDescriptor } from '@creatorweave/shared/webmcp-adapter-protocol'
 
-/** Independent request IDs permit reentrant Web host calls while a page call waits. */
+/** Independent request IDs permit reentrant extension calls while a page call waits. */
 export function invokeAdapterFromPage(tool: AdapterDescriptor, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
   signal.throwIfAborted()
   const requestId = crypto.randomUUID()

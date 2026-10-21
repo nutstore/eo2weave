@@ -1,202 +1,338 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAdapterService } from '../../../browser-extension/entrypoints/webmcp/adapter-service'
-import { ADAPTER_HOST_PORT } from '@creatorweave/shared/webmcp-adapter-protocol'
+import type { BrowserRequest } from '../../../browser-extension/lib/bash-commands/browser/command'
+import type { WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
 import { pkg } from './fixtures'
+
 const runner = vi.hoisted(() => vi.fn())
-vi.mock('../../../browser-extension/entrypoints/webmcp/adapter-runtime', () => ({ executeAdapterWorkflow: runner }))
-const sender = { tab: { id: 8 }, frameId: 0, documentId: 'doc-a', url: 'https://example.com/articles' } as chrome.runtime.MessageSender
-function fakePort() {
-  let listener: (message: unknown) => void = () => {}
-  let disconnect: () => void = () => {}
-  const postMessage = vi.fn()
-  const port = {
-    name: ADAPTER_HOST_PORT, sender: { url: 'https://trusted.test', id: 'extension' }, postMessage,
-    onMessage: { addListener: (fn: typeof listener) => { listener = fn } },
-    onDisconnect: { addListener: (fn: typeof disconnect) => { disconnect = fn } },
-    disconnect: () => disconnect(),
-  } as unknown as chrome.runtime.Port
-  return { port, postMessage, send: (message: unknown) => listener(message) }
+vi.mock('../../../browser-extension/entrypoints/webmcp/adapter-runtime', () => ({
+  executeAdapterWorkflow: runner,
+}))
+
+const sender = {
+  tab: { id: 8 },
+  frameId: 0,
+  documentId: 'doc-a',
+  url: 'https://example.com/articles',
+} as chrome.runtime.MessageSender
+
+function setup(packages: WebMCPPackage[] = [pkg]) {
+  const loadWasm = vi.fn(async () => ({}) as WebAssembly.Module)
+  const readPackages = vi.fn(async () => packages)
+  const runBrowser = vi.fn(
+    async (_owner: string, _request: BrowserRequest, _signal: AbortSignal): Promise<unknown> => ({
+      tabId: 8,
+    })
+  )
+  const changed = vi.fn()
+  const service = createAdapterService({ readPackages, loadWasm, runBrowser, changed })
+  const request = (requestId = 'page-request') => ({
+    requestId,
+    routeId: service.catalog(sender)[0].routeId,
+    args: {},
+  })
+  return { service, request, readPackages, runBrowser, changed }
 }
-function setup() {
-  const loadWasm = vi.fn(async () => ({} as WebAssembly.Module))
-  const readPackages = vi.fn(async (): Promise<Array<typeof pkg & { rootUri?: string }>> => [pkg])
-  const service = createAdapterService({ readPackages, loadWasm, trusted: s => s.url === 'https://trusted.test', resolveBinding: async () => 8, changed: vi.fn() })
-  const connect = async (binding: string | null = null) => {
-    const host = fakePort()
-    service.connect(host.port)
-    host.send({ kind: 'attach', requestId: 'publish', workspaceId: 'workspace-a', sessionId: crypto.randomUUID(), binding, toolNames: ['read', 'run_code'], packages: [{ source: 'untrusted page snapshot' }] })
-    await vi.waitFor(() => expect(host.postMessage).toHaveBeenCalledWith({ kind: 'attached', requestId: 'publish' }))
-    return host
-  }
-  const request = (requestId = 'page-request') => ({ requestId, routeId: service.catalog(sender)[0].routeId, args: {} })
-  return { service, connect, request, loadWasm, readPackages }
+const ready = async (service: ReturnType<typeof createAdapterService>) => {
+  await service.refresh()
+  return service
 }
+
 beforeEach(() => {
   vi.resetAllMocks()
   runner.mockResolvedValue({ ok: true, value: { status: 'success', result: 1 } })
 })
 afterEach(() => vi.unstubAllGlobals())
 
-it('passes the mounted package root to execution and rejects a mismatched VFS root', async () => {
-  const { service, connect, request, readPackages } = setup()
-  const rootUri = `vfs://external/builtin-webmcp/${pkg.manifest.id}/`
-  readPackages.mockResolvedValue([{ ...pkg, rootUri }])
-  await connect()
-  expect((await service.invoke(sender, request())).ok).toBe(true)
-  expect(runner.mock.calls[0][7]).toBe(rootUri)
-  readPackages.mockResolvedValue([{ ...pkg, rootUri: 'vfs://external/webmcp/another-package/' }])
-  await expect(service.refresh()).rejects.toThrow(/root/i)
-  expect(service.catalog(sender)).toEqual([])
-})
-
-it('uses Chrome document identity for workspace calls and leaves native tools on their existing path', async () => {
-  const { service, connect } = setup()
-  await connect()
-  const executeScript = vi.fn(async () => [{ frameId: 0, documentId: 'fresh-document', result: sender.url }])
-  vi.stubGlobal('chrome', { tabs: { get: vi.fn(async () => ({ id: 8, url: sender.url })) }, scripting: { executeScript } })
-  const name = service.catalog(sender)[0].name
-  expect(await service.invokeForTab(8, name, { value: 1 })).toMatchObject({ ok: true })
-  expect(runner.mock.calls[0][6]).toEqual({ tabId: 8, url: sender.url })
-  expect(await service.invokeForTab(8, 'native-tool', {})).toBeNull()
-  expect(executeScript).toHaveBeenCalledTimes(1)
-  executeScript.mockResolvedValueOnce([{ frameId: 0, documentId: 'navigated-document', result: 'https://other.test/' }])
-  expect(await service.invokeForTab(8, name, {})).toBeNull()
-  expect(runner).toHaveBeenCalledTimes(1)
-})
-
-it('withdraws changed or unavailable extension packages and rejects stale routes', async () => {
-  const { service, connect, request, readPackages } = setup()
-  await connect()
-  const old = request()
-  readPackages.mockResolvedValueOnce([])
-  await service.refresh()
-  expect(service.catalog(sender)).toEqual([])
-  expect(await service.invoke(sender, old)).toMatchObject({ ok: false })
-  await service.refresh()
-  expect(service.catalog(sender)).toHaveLength(1)
-  expect(service.catalog(sender)[0].routeId).not.toBe(old.routeId)
-  readPackages.mockRejectedValueOnce(new Error('storage unavailable'))
-  await expect(service.refresh()).rejects.toThrow('storage unavailable')
-  expect(service.catalog(sender)).toEqual([])
-})
-
-it('does not resurrect a stale attachment catalog after a newer refresh', async () => {
-  const { service, connect, readPackages } = setup()
-  let resolve!: (value: typeof pkg[]) => void
-  readPackages.mockImplementationOnce(() => new Promise(done => { resolve = done }))
-  const connection = connect()
-  await vi.waitFor(() => expect(readPackages).toHaveBeenCalledOnce())
-  readPackages.mockResolvedValueOnce([])
-  const refresh = service.refresh()
-  resolve([pkg])
-  await connection
-  await refresh
-  expect(service.catalog(sender)).toEqual([])
-})
-describe('adapter SW authority and routing', () => {
-  it('publishes metadata only and executes source from the SW catalog', async () => {
-    const { service, connect, request } = setup()
-    await connect()
-    expect(JSON.stringify(service.catalog(sender))).not.toContain('sources')
-    expect(JSON.stringify(service.catalog(sender))).not.toContain('inspect')
-    const result = await service.invoke(sender, { ...request(), source: 'malicious' })
-    expect(result.ok).toBe(true)
-    expect(runner.mock.calls[0][1]).toBe(pkg.sources['read-title.js'])
-    expect(runner.mock.calls[0][3]).toEqual(['read', 'run_code'])
+describe('extension-owned adapter catalog', () => {
+  it('publishes matching routes without a workspace host or page attachment', async () => {
+    const { service, changed } = setup()
+    expect(service.catalog(sender)).toEqual([])
+    await ready(service)
+    expect(service.catalog(sender)).toEqual([
+      expect.objectContaining({ name: 'com.example.tools.read-title' }),
+    ])
     expect(service.catalog({ ...sender, url: 'https://other.test' })).toEqual([])
+    expect(changed).toHaveBeenCalledOnce()
   })
-  it('fails closed for ambiguous hosts, prefers an explicitly bound host, and rejects stale IDs', async () => {
-    const { service, connect, request } = setup()
-    const first = await connect()
+
+  it('keeps route IDs stable while unchanged and replaces changed source', async () => {
+    const { service, request, readPackages } = setup()
+    await ready(service)
     const old = request()
-    await connect()
-    expect(service.catalog(sender)).toEqual([])
-    expect(await service.invoke(sender, old)).toMatchObject({ ok: false })
-    const bound = await connect('binding')
-    expect(service.catalog(sender)).toHaveLength(1)
+    await service.refresh()
+    expect(service.catalog(sender)[0].routeId).toBe(old.routeId)
+
+    readPackages.mockResolvedValueOnce([
+      {
+        ...pkg,
+        sources: { 'read-title.js': pkg.sources['read-title.js'].replace("'title'", "'changed'") },
+      },
+    ])
+    await service.refresh()
     expect(service.catalog(sender)[0].routeId).not.toBe(old.routeId)
-    bound.port.disconnect()
-    first.port.disconnect()
-    expect(service.catalog(sender)).toHaveLength(1)
+    expect(await service.invoke(sender, old)).toMatchObject({ ok: false })
   })
-  it('uses independent reverse RPC replies and rejects cross-host replies', async () => {
-    const { service, connect, request } = setup()
-    const host = await connect('binding')
-    const other = await connect()
-    runner.mockImplementation(async (_wasm, _source, _input, _names, invoke, signal) => ({ ok: true, value: await invoke(['read', { path: 'x' }], signal) }))
-    const result = service.invoke(sender, request())
-    await vi.waitFor(() => expect(host.postMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'invoke' })))
-    const call = host.postMessage.mock.calls.find(([message]) => message.kind === 'invoke')![0]
-    other.send({ kind: 'reply', callId: call.callId, result: { ok: true, value: 'wrong' } })
-    host.send({ kind: 'reply', callId: call.callId, result: { ok: true, value: 7 } })
-    expect(await result).toEqual({ ok: true, value: 7 })
-  })
-  it('does not let another document cancel, and disconnect aborts pending reverse RPCs', async () => {
-    const { service, connect, request } = setup()
-    const host = await connect()
-    let signal!: AbortSignal
-    runner.mockImplementation(async (_wasm, _source, _input, _names, invoke, callSignal) => {
-      signal = callSignal
-      return { ok: true, value: await invoke(['read', {}], callSignal) }
-    })
-    const result = service.invoke(sender, request())
-    await vi.waitFor(() => expect(host.postMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'invoke' })))
-    service.cancel({ ...sender, documentId: 'doc-other' }, 'page-request')
-    expect(signal.aborted).toBe(false)
-    host.port.disconnect()
-    expect(await result).toMatchObject({ ok: false })
-    expect(signal.aborted).toBe(true)
+
+  it('withdraws every route when catalog loading fails', async () => {
+    const { service, readPackages } = setup()
+    await ready(service)
+    readPackages.mockRejectedValueOnce(new Error('storage unavailable'))
+    await expect(service.refresh()).rejects.toThrow('storage unavailable')
     expect(service.catalog(sender)).toEqual([])
-  })
-  it('allows independent executions of the same workflow route', async () => {
-    const { service, connect, request } = setup()
-    await connect()
-    const complete: Array<(value: unknown) => void> = []
-    runner.mockImplementation(() => new Promise(resolve => complete.push(resolve)))
-    const first = service.invoke(sender, request('first'))
-    const second = service.invoke(sender, request('second'))
-    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(2))
-    expect(runner.mock.calls[0][5]).not.toBe(runner.mock.calls[1][5])
-    complete[0]({ ok: true, value: 1 })
-    complete[1]({ ok: true, value: 2 })
-    expect(await first).toEqual({ ok: true, value: 1 })
-    expect(await second).toEqual({ ok: true, value: 2 })
   })
 })
 
-it('cancels promptly even while WASM loading is still pending', async () => {
-  const { service, connect, request, loadWasm } = setup()
-  await connect()
-  loadWasm.mockImplementationOnce(() => new Promise(() => {}))
-  const result = service.invoke(sender, request())
-  service.cancel(sender, 'page-request')
+describe('extension-owned adapter execution', () => {
+  it('passes parsed browser requests directly to the WXT browser executor', async () => {
+    const { service, request, runBrowser } = setup()
+    await ready(service)
+    runner.mockImplementationOnce(async (_wasm, _source, _input, browser) => ({
+      ok: true,
+      value: await browser(
+        {
+          command: 'eval',
+          positionals: ['() => 5'],
+          options: { tab: '8' },
+          stdin: '',
+        },
+        new AbortController().signal
+      ),
+    }))
+
+    expect(await service.invoke(sender, request())).toEqual({ ok: true, value: { tabId: 8 } })
+    expect(runBrowser).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ command: 'eval', positionals: ['() => 5'], options: { tab: '8' } }),
+      expect.any(AbortSignal)
+    )
+    expect(JSON.stringify(runner.mock.calls[0].slice(0, 3))).not.toContain('rootUri')
+  })
+
+  it('does not serialize independent workflow executions', async () => {
+    const { service, request } = setup()
+    await ready(service)
+    const complete: Array<(value: unknown) => void> = []
+    runner.mockImplementation(() => new Promise((resolve) => complete.push(resolve)))
+    const calls = Array.from({ length: 12 }, (_, index) =>
+      service.invoke(sender, request(`request-${index}`))
+    )
+
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(12))
+    complete.forEach((finish, index) =>
+      finish({
+        ok: true,
+        value: { status: 'success', result: index },
+      })
+    )
+    await expect(Promise.all(calls)).resolves.toEqual(
+      Array.from({ length: 12 }, (_, index) => ({
+        ok: true,
+        value: { status: 'success', result: index },
+      }))
+    )
+  })
+
+  it('allows a nested WebMCP call to complete without a tab or execution lock', async () => {
+    const { service, request, runBrowser } = setup()
+    await ready(service)
+    runner.mockImplementationOnce(async (_wasm, _source, _input, browser) => ({
+      ok: true,
+      value: await browser(
+        {
+          command: 'webmcp',
+          positionals: ['exec', 'com.other.tool', '{}'],
+          options: { tab: '9' },
+          stdin: '',
+        },
+        new AbortController().signal
+      ),
+    }))
+
+    expect(await service.invoke(sender, request())).toMatchObject({ ok: true })
+    expect(runBrowser).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ command: 'webmcp', positionals: ['exec', 'com.other.tool', '{}'] }),
+      expect.any(AbortSignal)
+    )
+  })
+
+  it('re-enters through two nested WebMCP executions without serializing or deadlocking', async () => {
+    const workflow = (label: string) => `export default {
+      inputSchema: { type: 'object' }, outputSchema: { type: 'string' },
+      tree: { type: 'action', run() { return 'success' } },
+      result() { return '${label}' }
+    }`
+    const packageNamed = (id: string, label: string) => ({
+      manifest: {
+        ...pkg.manifest,
+        id,
+        tools: [
+          {
+            ...pkg.manifest.tools[0],
+            name: label,
+            path: `${label}.js`,
+          },
+        ],
+      },
+      sources: { [`${label}.js`]: workflow(label) },
+    })
+    const outer = packageNamed('com.example.outer', 'outer')
+    const inner = packageNamed('com.example.inner', 'inner')
+    const leaf = packageNamed('com.example.leaf', 'leaf')
+    const { service, runBrowser } = setup([outer, inner, leaf])
+    await ready(service)
+    const routes = new Map(service.catalog(sender).map((route) => [route.name, route]))
+    const requestFor = (name: string, requestId: string) => ({
+      requestId,
+      routeId: routes.get(name)!.routeId,
+      args: {},
+    })
+
+    runBrowser.mockImplementation(async (_owner, request) => {
+      expect(request).toMatchObject({
+        command: 'webmcp',
+        positionals: ['exec', expect.any(String), '{}'],
+      })
+      const nestedName = request.positionals[1]
+      return service.invoke(sender, requestFor(nestedName, `nested-${nestedName}`))
+    })
+    runner.mockImplementation(async (_wasm, source, _input, browser, signal) => {
+      if (source.includes("return 'outer'"))
+        return {
+          ok: true,
+          value: {
+            status: 'success',
+            result: await browser(
+              {
+                command: 'webmcp',
+                positionals: ['exec', 'com.example.inner.inner', '{}'],
+                options: { tab: '8' },
+                stdin: '',
+              },
+              signal
+            ),
+          },
+        }
+      if (source.includes("return 'inner'"))
+        return {
+          ok: true,
+          value: {
+            status: 'success',
+            result: await browser(
+              {
+                command: 'webmcp',
+                positionals: ['exec', 'com.example.leaf.leaf', '{}'],
+                options: { tab: '8' },
+                stdin: '',
+              },
+              signal
+            ),
+          },
+        }
+      return { ok: true, value: { status: 'success', result: 'leaf reached' } }
+    })
+
+    const result = await service.invoke(
+      sender,
+      requestFor('com.example.outer.outer', 'outer-request')
+    )
+    expect(result.ok).toBe(true)
+    expect(runner).toHaveBeenCalledTimes(3)
+    expect(runBrowser).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses Chrome document identity for direct tab invocations', async () => {
+    const { service } = setup()
+    await ready(service)
+    const executeScript = vi.fn(async () => [
+      { frameId: 0, documentId: 'fresh-document', result: sender.url },
+    ])
+    vi.stubGlobal('chrome', {
+      tabs: { get: vi.fn(async () => ({ id: 8, url: sender.url })) },
+      scripting: { executeScript },
+    })
+    const name = service.catalog(sender)[0].name
+    expect(await service.invokeForTab(8, name, { value: 1 })).toMatchObject({ ok: true })
+    expect(runner.mock.calls[0][5]).toEqual({ tabId: 8, url: sender.url })
+    expect(await service.invokeForTab(8, 'native-tool', {})).toBeNull()
+    executeScript.mockResolvedValueOnce([
+      {
+        frameId: 0,
+        documentId: 'navigated-document',
+        result: 'https://other.test/',
+      },
+    ])
+    expect(await service.invokeForTab(8, name, {})).toBeNull()
+  })
+
+  it('cancels only the matching document and does not cap concurrency', async () => {
+    const { service, request } = setup()
+    await ready(service)
+    let signal!: AbortSignal
+    runner.mockImplementationOnce(async (_wasm, _source, _input, _browser, callSignal) => {
+      signal = callSignal
+      return new Promise((_resolve, reject) => {
+        callSignal.addEventListener(
+          'abort',
+          () => reject(Object.assign(new Error('canceled'), { code: 'JS_CANCELED' })),
+          { once: true }
+        )
+      })
+    })
+    const running = service.invoke(sender, request())
+    await vi.waitFor(() => expect(signal).toBeDefined())
+    service.cancel({ ...sender, documentId: 'other-document' }, 'page-request')
+    expect(signal.aborted).toBe(false)
+    service.cancel(sender, 'page-request')
+    expect(await running).toMatchObject({ ok: false, error: { code: 'JS_CANCELED' } })
+  })
+
+  it('retains unaffected routes and aborts workflows only when their route is withdrawn', async () => {
+    const { service, request, readPackages } = setup()
+    const other = { ...pkg, manifest: { ...pkg.manifest, id: 'com.example.other' } }
+    readPackages.mockResolvedValue([pkg, other])
+    await ready(service)
+    const retained = request()
+    let signal!: AbortSignal
+    let finish!: () => void
+    runner.mockImplementationOnce(async (_wasm, _source, _args, _browser, currentSignal) => {
+      signal = currentSignal
+      await new Promise<void>((resolve) => {
+        finish = resolve
+      })
+      return { ok: true, value: { status: 'success', result: 1 } }
+    })
+    const running = service.invoke(sender, retained)
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    readPackages.mockResolvedValue([pkg])
+    await service.refresh()
+    expect(signal.aborted).toBe(false)
+    expect(service.catalog(sender)[0].routeId).toBe(retained.routeId)
+
+    readPackages.mockResolvedValue([])
+    await service.refresh()
+    expect(signal.aborted).toBe(true)
+    finish()
+    await running
+  })
+})
+
+it('cancels promptly while WASM loading is pending', async () => {
+  const loadWasm = vi.fn(() => new Promise<WebAssembly.Module>(() => {}))
+  const pending = createAdapterService({
+    loadWasm,
+    readPackages: async () => [pkg],
+    runBrowser: vi.fn(),
+    changed: vi.fn(),
+  })
+  await pending.refresh()
+  const result = pending.invoke(sender, {
+    requestId: 'page-request',
+    routeId: pending.catalog(sender)[0].routeId,
+    args: {},
+  })
+  pending.cancel(sender, 'page-request')
   expect(await result).toMatchObject({ ok: false, error: { code: 'JS_CANCELED' } })
   expect(runner).not.toHaveBeenCalled()
-})
-
-it('retains unaffected routes and running workflows when another package is disabled', async () => {
-  const { service, connect, request, readPackages } = setup()
-  const other = { ...pkg, manifest: { ...pkg.manifest, id: 'com.example.other' } }
-  readPackages.mockResolvedValue([pkg, other])
-  await connect()
-  const old = request()
-  let signal!: AbortSignal
-  let finish!: () => void
-  runner.mockImplementationOnce(async (_wasm, _source, _args, _names, _invoke, currentSignal) => {
-    signal = currentSignal
-    await new Promise<void>(resolve => { finish = resolve })
-    return { ok: true, value: { status: 'success', result: 1 } }
-  })
-  const running = service.invoke(sender, old)
-  await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
-  readPackages.mockResolvedValue([pkg])
-  await service.refresh()
-  expect(service.catalog(sender)).toHaveLength(1)
-  expect(service.catalog(sender)[0].routeId).toBe(old.routeId)
-  expect(signal.aborted).toBe(false)
-  readPackages.mockResolvedValue([])
-  await service.refresh()
-  expect(signal.aborted).toBe(true)
-  finish()
-  await running
 })

@@ -74,7 +74,11 @@ export default defineContentScript({
       } else if (data.kind === 'invoke') {
         void chrome.runtime.sendMessage({ type: 'webmcp_adapter_invoke', requestId: data.requestId, routeId: data.routeId, args: data.args })
           .catch(error => ({ ok: false, error: { message: String(error) } }))
-          .then(response => window.postMessage({ [ADAPTER_PAGE_MARKER]: true, kind: 'result', requestId: data.requestId, response }, location.origin))
+          .then(response => {
+            if (!response?.ok)
+              console.warn('[WebMCP adapters] Invocation failed:', response?.error ?? response)
+            window.postMessage({ [ADAPTER_PAGE_MARKER]: true, kind: 'result', requestId: data.requestId, response }, location.origin)
+          })
       }
     })
 

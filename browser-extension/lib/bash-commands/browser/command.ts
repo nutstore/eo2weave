@@ -8,6 +8,10 @@ export interface BrowserRequest {
   stdin: string
 }
 
+export function browserRequestTimeout(request: BrowserRequest): number {
+  return Number(request.options.timeout ?? (request.command === 'webmcp' && request.positionals[0] === 'exec' ? 60000 : 10000))
+}
+
 // Positionals deliberately follow Playwright CLI vocabulary; this is a separate API.
 const commands: Record<string, { min: number; max: number; options?: string[] }> = {
   help: { min: 0, max: 0 }, open: { min: 0, max: 1, options: ['background', 'wait-until'] }, goto: { min: 1, max: 1, options: ['wait-until'] },
@@ -20,6 +24,7 @@ const commands: Record<string, { min: number; max: number; options?: string[] }>
   hover: { min: 1, max: 1 }, select: { min: 2, max: 20 },
   check: { min: 1, max: 1 }, uncheck: { min: 1, max: 1 }, drag: { min: 2, max: 2 },
   eval: { min: 0, max: 2 },
+  webmcp: { min: 1, max: 3 },
   screenshot: { min: 0, max: 1, options: ['full-page', 'format', 'quality'] },
   'go-back': { min: 0, max: 0, options: ['wait-until'] }, 'go-forward': { min: 0, max: 0, options: ['wait-until'] }, reload: { min: 0, max: 0, options: ['wait-until'] },
   mousemove: { min: 2, max: 2 }, mousedown: { min: 0, max: 1 }, mouseup: { min: 0, max: 1 },
@@ -38,15 +43,18 @@ click <ref|css> [left|right|middle], dblclick <ref|css> [button], hover <ref|css
 fill <ref|css> [text] replaces; type <ref|css> [text] appends. Omitted text reads UTF-8 stdin, including empty input. select <ref|css> <value>..., check <ref|css>, uncheck <ref|css>.
 press <key>, keydown <key>, keyup <key>: Enter, Tab, Escape, ControlOrMeta+A, etc. mousemove <x> <y>, mousedown [button], mouseup [button], mousewheel <dx> <dy>.
 eval [function] [ref|css]: function source defaults to stdin; optional element is passed as its argument. Page globals, native fetch and async functions work; no Node or tools proxy. Returns {tabId,logs,result}; logs is an ordered array of {level,args}, and result preserves JSON types. Undefined becomes null; non-JSON values are serialized safely. Exceptions fail with {tabId,logs,exception} in error.details. Use eval for DOM/text reads, calculations and asynchronous page conditions. Compose browser commands in Bash.
+webmcp list -> {tabId,url,hostname,groupKey,tools:[{name,description,inputSchema,source}],pageProbeError?}. Live discovery of page tools and available extension adapters, scoped to the selected tab or --tab. webmcp exec <exact-name> [json-object] -> {tabId,url,name,source,result}; omitted arguments read stdin, or default to {}. Never falls back to another tab. Native page-tool host/group authorization still applies; extension adapters execute directly in the service worker. Inspect pageProbeError when discovery is incomplete. Cancellation does not undo native tool side effects.
 screenshot [ref|css] [--full-page] [--format=png|jpeg] [--quality=0..100] -> {tabId,mimeType,encoding:"base64",data}. No files or image blocks. Element and --full-page are mutually exclusive.
 dialog-accept [prompt], dialog-dismiss; detach releases debugger without closing the tab.
-Timeout is an overall deadline including queueing (default 10000ms, max 30000ms). Web stop cancels running extension tasks; already completed actions cannot be undone. Dialog commands can run while a page command is waiting on a dialog.
+Timeout is an overall deadline including queueing (default 10000ms, max 30000ms; webmcp exec defaults to and allows 60000ms). Web stop cancels running extension tasks; already completed actions cannot be undone. Dialog commands can run while a page command is waiting on a dialog.
 Examples:
 browser tab-list | jq '.tabs[] | select(.url | contains("example.com")) | .tabId'
 browser snapshot | jq '.nodes[] | select(.role == "button")'
 printf 'hello' | browser fill e12
 browser click e12 && browser snapshot
 browser eval '() => document.body.innerText' | jq -r '.result'
+browser webmcp list --tab=123 | jq '.tools[] | {name,source,inputSchema}'
+browser webmcp exec com.example.tools.search '{"query":"hello"}' --tab=123
 browser screenshot | jq -r '.data' > screenshot.base64`
 
 export function parseBrowserCommand({ args, stdin }: CommandInput): BrowserRequest {
@@ -77,6 +85,10 @@ export function parseBrowserCommand({ args, stdin }: CommandInput): BrowserReque
   const spec = commands[command]
   if (!spec) throw new Error(`Unknown browser command: ${command}. Use browser help.`)
   if (positionals.length < spec.min || positionals.length > spec.max) throw new Error(`Invalid arguments for ${command}. Use browser help.`)
+  if (command === 'webmcp' && !(
+    (positionals[0] === 'list' && positionals.length === 1) ||
+    (positionals[0] === 'exec' && positionals.length >= 2 && positionals[1].trim())
+  )) throw new Error('Use browser webmcp list or browser webmcp exec <exact-name> [json-object].')
   for (const key of Object.keys(options)) {
     if (!['tab', 'timeout', ...(spec.options ?? [])].includes(key)) throw new Error(`Unknown option --${key} for ${command}`)
   }
@@ -85,7 +97,8 @@ export function parseBrowserCommand({ args, stdin }: CommandInput): BrowserReque
       throw new Error(`--${key} must be a positive integer`)
     }
   }
-  if (Number(options.timeout ?? 10000) > 30000) throw new Error('--timeout must be at most 30000 ms')
+  const maxTimeout = command === 'webmcp' && positionals[0] === 'exec' ? 60000 : 30000
+  if (Number(options.timeout ?? 10000) > maxTimeout) throw new Error(`--timeout must be at most ${maxTimeout} ms`)
   if (options['wait-until'] !== undefined && !['load', 'domcontentloaded', 'commit'].includes(String(options['wait-until']))) throw new Error('--wait-until must be load, domcontentloaded or commit')
   return { command, positionals, options, stdin }
 }

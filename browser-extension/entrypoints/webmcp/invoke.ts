@@ -19,8 +19,8 @@ import { runWebMCPPageProbe } from './page-api'
 import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
 import type { ExecutionResult } from '@creatorweave/quickjs-runtime'
 
-let invokeAdapter: ((tabId: number, name: string, args: Record<string, unknown>) => Promise<ExecutionResult | null>) | undefined
-export function installWorkspaceAdapterInvoker(invoke: NonNullable<typeof invokeAdapter>) {
+let invokeAdapter: ((tabId: number, name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<ExecutionResult | null>) | undefined
+export function installAdapterInvoker(invoke: NonNullable<typeof invokeAdapter>) {
   invokeAdapter = invoke
 }
 
@@ -67,6 +67,7 @@ async function invokeViaRelay(
   tabId: number,
   toolName: string,
   args: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<{
   ok: boolean
   result?: unknown
@@ -74,8 +75,16 @@ async function invokeViaRelay(
   errorCode?: string
   error?: string
 }> {
-  return new Promise((resolve) => {
+  signal?.throwIfAborted()
+  return new Promise((resolve, reject) => {
     let settled = false
+    const abort = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', abort)
+      reject(signal?.reason ?? new Error('WebMCP invocation canceled'))
+    }
     const finish = (value: {
       ok: boolean
       result?: unknown
@@ -85,6 +94,8 @@ async function invokeViaRelay(
     }) => {
       if (settled) return
       settled = true
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', abort)
       resolve(value)
     }
 
@@ -96,6 +107,8 @@ async function invokeViaRelay(
       })
     }, INVOKE_RELAY_TIMEOUT_MS)
 
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) { abort(); return }
     try {
       chrome.tabs.sendMessage(
         tabId,
@@ -106,7 +119,7 @@ async function invokeViaRelay(
             // No receiver (tab without our content scripts) or channel closed.
             finish({
               ok: false,
-              errorCode: 'RELAY_UNREACHABLE',
+              errorCode: /receiving end does not exist/i.test(chrome.runtime.lastError.message || '') ? 'RELAY_UNREACHABLE' : 'RELAY_DISCONNECTED',
               error: chrome.runtime.lastError.message || 'relay unreachable',
             })
             return
@@ -133,6 +146,56 @@ async function invokeViaRelay(
       })
     }
   })
+}
+
+/** Exact-tab execution shared by routed calls and the browser command API.
+ * Cancellation stops waiting for native page tools; their side effects may finish.
+ */
+export async function executeWebMCPToolInTab(
+  tabId: number,
+  toolName: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+  adapterOnly = false,
+) {
+  signal?.throwIfAborted()
+  // Relay channel first (static content scripts, mcp-b style). The legacy
+  // executeScript probe only runs when the tab has no relay receiver
+  // (opened before the extension (re)loaded).
+  let result: {
+    ok: boolean
+    result?: unknown
+    apiMode?: WebMCPApiMode
+    errorCode?: string
+    error?: string
+  }
+  const adapter = await invokeAdapter?.(tabId, toolName, args, signal)
+  if (adapter) {
+    result = adapter.ok
+      ? { ok: true, result: adapter.value, apiMode: 'documentModelContext' }
+      : { ok: false, errorCode: adapter.error.code, error: adapter.error.message }
+  } else {
+    signal?.throwIfAborted()
+    if (adapterOnly) return { ok: false, errorCode: 'ADAPTER_UNAVAILABLE', error: 'Adapter registration is no longer available for this tab' }
+    result = await invokeViaRelay(tabId, toolName, args, signal)
+  }
+
+  if (
+    !result.ok &&
+    result.errorCode === 'RELAY_UNREACHABLE'
+  ) {
+    signal?.throwIfAborted()
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      args: [{ type: 'invoke', toolName, args }],
+      func: runWebMCPPageProbe,
+    })
+    result = (results?.[0]?.result as any) || { ok: false, errorCode: 'INVOKE_FAILED', error: 'Tool execution failed' }
+  }
+
+  signal?.throwIfAborted()
+  return result
 }
 
 function randomTransferId(): string {
@@ -207,11 +270,8 @@ async function pickTargetTabId(
   hostname: string,
   request: WebMCPInvokeRequest,
 ): Promise<number | null> {
-  if (
-    typeof request.preferredTabId === 'number' &&
-    (await tabMatchesGroup(request.preferredTabId, groupKey, hostname))
-  ) {
-    return request.preferredTabId
+  if (typeof request.preferredTabId === 'number') {
+    return await tabMatchesGroup(request.preferredTabId, groupKey, hostname) ? request.preferredTabId : null
   }
 
   // Run-scoped tools stick to the tab that started the run (M-3): the run
@@ -259,24 +319,21 @@ async function resolveRouteFromTabs(
   fullToolName: string
   toolsetSignature: string
 } | null> {
-  const candidateTabIds = [
-    ...getRecentTabsForGroup(request.groupKey).map((entry) => entry.tabId),
-  ]
+  const candidateTabIds = typeof request.preferredTabId === 'number'
+    ? [request.preferredTabId]
+    : getRecentTabsForGroup(request.groupKey).map((entry) => entry.tabId)
 
-  if (typeof request.preferredTabId === 'number' && !candidateTabIds.includes(request.preferredTabId)) {
-    candidateTabIds.unshift(request.preferredTabId)
-  }
-
-  const allTabs = await chrome.tabs.query({})
-  const additionalTabIds = allTabs
-    .filter((tab): tab is chrome.tabs.Tab & { id: number; url: string } => {
-      return typeof tab.id === 'number' && typeof tab.url === 'string'
-    })
-    .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
-    .map((tab) => tab.id)
-
-  for (const tabId of additionalTabIds) {
-    if (!candidateTabIds.includes(tabId)) candidateTabIds.push(tabId)
+  if (typeof request.preferredTabId !== 'number') {
+    const allTabs = await chrome.tabs.query({})
+    const additionalTabIds = allTabs
+      .filter((tab): tab is chrome.tabs.Tab & { id: number; url: string } => {
+        return typeof tab.id === 'number' && typeof tab.url === 'string'
+      })
+      .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
+      .map((tab) => tab.id)
+    for (const tabId of additionalTabIds) {
+      if (!candidateTabIds.includes(tabId)) candidateTabIds.push(tabId)
+    }
   }
 
   for (const tabId of candidateTabIds) {
@@ -389,35 +446,7 @@ export async function invokeWebMCPTool(
   }
 
   try {
-    // Relay channel first (static content scripts, mcp-b style). The legacy
-    // executeScript probe only runs when the tab has no relay receiver
-    // (opened before the extension (re)loaded).
-    let result: {
-      ok: boolean
-      result?: unknown
-      apiMode?: WebMCPApiMode
-      errorCode?: string
-      error?: string
-    }
-    const adapter = await invokeAdapter?.(tabId, toolName, request.args || {})
-    if (adapter) {
-      result = adapter.ok
-        ? { ok: true, result: adapter.value, apiMode: 'documentModelContext' }
-        : { ok: false, errorCode: adapter.error.code, error: adapter.error.message }
-    } else result = await invokeViaRelay(tabId, toolName, request.args || {})
-
-    if (
-      !result.ok &&
-      (result.errorCode === 'RELAY_UNREACHABLE' || result.errorCode === 'RELAY_NO_RESPONSE')
-    ) {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        world: 'MAIN',
-        args: [{ type: 'invoke', toolName, args: request.args || {} }],
-        func: runWebMCPPageProbe,
-      })
-      result = (results?.[0]?.result as any) || { ok: false, errorCode: 'INVOKE_FAILED', error: 'Tool execution failed' }
-    }
+    const result = await executeWebMCPToolInTab(tabId, toolName, request.args || {})
 
     if (!result.ok) {
       return {

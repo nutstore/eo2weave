@@ -14,15 +14,25 @@ const workflow = (tree: string, result = 'return state.value', outputSchema = "{
   tree: ${tree}, result({input, state, target}) { ${result} }
 }`
 const run = (body: string) => workflow(`{type: 'action', async run({input, state, target}) { ${body}; return 'success' }}`)
-const execute = (source: string, invoke = vi.fn(async () => 5), controller = new AbortController()) =>
-  executeAdapterWorkflow(wasm, source, {}, ['read'], invoke, controller.signal)
+const execute = (
+  source: string,
+  runBrowser = vi.fn(async () => 5 as any),
+  controller = new AbortController(),
+) => executeAdapterWorkflow(
+  wasm,
+  source,
+  {},
+  runBrowser,
+  controller.signal,
+  { tabId: 1, url: 'https://example.com' },
+)
 
 describe('SW behavior tree with guest callbacks', () => {
-  it('uses tools while keeping native APIs and the BT executor out of the VM', async () => {
-    const invoke = vi.fn(async () => 5)
-    const result = await execute(run("if ([typeof document, typeof fetch, typeof chrome, typeof createExecution].some(v => v !== 'undefined')) throw new Error('host leaked'); state.value = (await tools.read({path: 'x'})) + 1"), invoke)
+  it('exposes browser while keeping native APIs and the BT executor out of the VM', async () => {
+    const runBrowser = vi.fn(async () => 5)
+    const result = await execute(run("if ([typeof window, typeof document, typeof fetch, typeof XMLHttpRequest, typeof chrome, typeof process, typeof require, typeof setTimeout, typeof AbortSignal, typeof createExecution, typeof tools, typeof invokeTool, typeof packageRoot, typeof invoke, typeof command, typeof invokeBrowser, typeof writeLog].some(v => v !== 'undefined')) throw new Error('host leaked'); state.value = (await browser.eval('() => 5', {tab: target.tabId})) + 1"), runBrowser)
     expect(result).toEqual({ ok: true, value: { status: 'success', result: 6 } })
-    expect(invoke).toHaveBeenCalledWith(['read', { path: 'x' }], expect.any(AbortSignal))
+    expect(runBrowser).toHaveBeenCalledWith(expect.objectContaining({ command: 'eval', positionals: ['() => 5'], options: { tab: '1' } }), expect.any(AbortSignal))
   })
   it('shares guest business state without serializing it between nodes', async () => {
     const source = workflow(`{type: 'sequence', children: [
@@ -37,7 +47,7 @@ describe('SW behavior tree with guest callbacks', () => {
       {type:'selector', children:[
         {type:'condition', inspect() { return false }},
         {type:'sequence', children:[
-          {type:'action', async run({state}) { state.value = await tools.read({}); state.polls = 0; return 'success' }},
+          {type:'action', async run({state,target}) { state.value = await browser.eval('() => 5', {tab: target.tabId}); state.polls = 0; return 'success' }},
           {type:'wait', intervalMs: 1, inspect({state}) { return ++state.polls >= 3 }}
         ]}
       ]},
@@ -50,7 +60,7 @@ describe('SW behavior tree with guest callbacks', () => {
     const invoke = vi.fn(async () => 5)
     const source = workflow(`{type:'sequence', children:[
       {type:'condition', inspect() { return false }},
-      {type:'action', async run() { await tools.read({}); return 'success' }}
+      {type:'action', async run({target}) { await browser.eval('() => 5', {tab: target.tabId}); return 'success' }}
     ]}`, "throw new Error('must not run')")
     expect(await execute(source, invoke)).toEqual({ok:true, value:{status:'failure'}})
     expect(invoke).not.toHaveBeenCalled()
@@ -64,19 +74,19 @@ describe('SW behavior tree with guest callbacks', () => {
   })
   it('validates workflow input before any guest callback', async () => {
     const invoke = vi.fn(async () => 5)
-    expect(await executeAdapterWorkflow(wasm, run('state.value = await tools.read({})'), 42, ['read'], invoke, new AbortController().signal))
+    expect(await executeAdapterWorkflow(wasm, run("state.value = await browser.eval('() => 5', {tab: target.tabId})"), 42, invoke, new AbortController().signal))
       .toMatchObject({ok:false,error:{message:expect.stringContaining('Workflow input')}})
     expect(invoke).not.toHaveBeenCalled()
   })
   it('validates final output and rejects unavailable tools', async () => {
     expect(await execute(run("state.value = 'bad'"))).toMatchObject({ok:false,error:{message:expect.stringContaining('Workflow output')}})
-    expect(await execute(run("state.value = await invokeTool('missing', {})"))).toMatchObject({ok:false,error:{message:expect.stringContaining('Tool unavailable')}})
+    expect(await execute(run("state.value = await browser.exec('missing')"))).toMatchObject({ok:false,error:{message:expect.stringContaining('Unknown browser command')}})
   })
   it('does not mistake exceptions or malformed statuses for branch failure', async () => {
     for (const body of ["throw new Error('broken')", "return 'ready'", 'return undefined']) {
       const source = workflow(`{type:'selector',children:[
         {type:'action',run(){ ${body} }},
-        {type:'action',async run(){await tools.read({});return 'success'}}
+        {type:'action',async run({target}){await browser.eval('() => 5',{tab:target.tabId});return 'success'}}
       ]}`)
       const invoke = vi.fn(async () => 5)
       expect(await execute(source, invoke)).toMatchObject({ok:false})
@@ -87,12 +97,12 @@ describe('SW behavior tree with guest callbacks', () => {
   it('cancels in-flight guest tools and interrupts CPU loops', async () => {
     const controller = new AbortController()
     const invoke = vi.fn(async () => { controller.abort(); return 5 })
-    expect(await execute(run('state.value = await tools.read({})'), invoke, controller)).toMatchObject({ok:false,error:{code:'JS_CANCELED'}})
+    expect(await execute(run("state.value = await browser.eval('() => 5', {tab: target.tabId})"), invoke, controller)).toMatchObject({ok:false,error:{code:'JS_CANCELED'}})
     expect(await execute(run('while (true) {}'))).toMatchObject({ok:false,error:{code:'JS_CPU_LIMIT'}})
   })
   it('cancels between ticks and closes the session', async () => {
     const controller = new AbortController()
-    const promise = execute(workflow("{type:'wait',async inspect(){ await tools.read({}); return false }}"), vi.fn(async () => {
+    const promise = execute(workflow("{type:'wait',async inspect({target}){ await browser.eval('() => 5',{tab:target.tabId}); return false }}"), vi.fn(async () => {
       setTimeout(() => controller.abort(), 5)
       return 5
     }), controller)
@@ -111,14 +121,16 @@ describe('SW behavior tree with guest callbacks', () => {
   })
   it('preserves target/input and isolates simultaneous invocations', async () => {
     const source = run('state.value = input.value + target.tabId')
-    const results = await Promise.all([1, 2].map(value => executeAdapterWorkflow(wasm, source, {value}, [], vi.fn(), new AbortController().signal, {tabId:10,url:'https://example.com'})))
+    const results = await Promise.all([1, 2].map(value => executeAdapterWorkflow(wasm, source, {value}, vi.fn(), new AbortController().signal, {tabId:10,url:'https://example.com'})))
     expect(results.map(result => result.ok && result.value)).toEqual([{status:'success',result:11},{status:'success',result:12}])
   })
-  it('returns only the selected output when invoking nested run_code', async () => {
-    const invoke = vi.fn(async () => ({ok:true,value:5,output:[{type:'image',data:'abc',mimeType:'image/png'}]}))
-    const source = run("const result = await tools.run_code({purpose:'test',code:'return 5'}); state.value = result.value")
-    const result = await executeAdapterWorkflow(wasm, source, {}, ['run_code'], invoke, new AbortController().signal)
-    expect(result).toEqual({ok:true,value:{status:'success',result:5}})
-    expect(JSON.stringify(result)).not.toContain('image')
+  it('allows a reentrant WebMCP call through browser.webmcp', async () => {
+    const invoke = vi.fn(async () => ({tabId: 1, url: 'https://example.com', hostname: 'example.com', groupKey: 'group', tools: []}))
+    const source = run("const result = await browser.webmcp.list({tab: target.tabId}); state.value = result.tools.length")
+    const result = await executeAdapterWorkflow(wasm, source, {}, invoke, new AbortController().signal, {tabId:1,url:'https://example.com'})
+    expect(result).toEqual({ok:true,value:{status:'success',result:0}})
+    expect(invoke).toHaveBeenCalledWith(expect.objectContaining({
+      command: 'webmcp', positionals: ['list'], options: {tab: '1'},
+    }), expect.any(AbortSignal))
   })
 })

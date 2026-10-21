@@ -1,4 +1,4 @@
-import type { WebMCPApiMode, WebMCPDiscoverResponse, WebMCPDiscoveredTool } from './types'
+import type { WebMCPApiMode, WebMCPDiscoverResponse } from './types'
 import { buildWebMCPGroupKey } from './group-key'
 import { buildToolsetSignature } from './toolset-signature'
 import { buildSafeFullName } from './tool-name'

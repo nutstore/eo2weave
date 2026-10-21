@@ -6,14 +6,17 @@ import { getAdapterStorage } from './provider-storage'
 import { createProviderHandler } from './provider-handler'
 import { createAdapterService } from './adapter-service'
 import { isRecord } from '@creatorweave/shared/webmcp-adapter-protocol'
+import type { BrowserRequest } from '../../lib/bash-commands/browser/command'
 
-export function installAdapterBackground(
-  trusted: (sender: chrome.runtime.MessageSender) => boolean,
-  resolveBinding: (senderUrl: string, binding: unknown) => Promise<number | null>,
-) {
+interface AdapterBackgroundOptions {
+  runBrowser(owner: string, request: BrowserRequest, signal: AbortSignal): Promise<unknown>
+}
+
+export function installAdapterBackground({ runBrowser }: AdapterBackgroundOptions) {
   let wasm: Promise<WebAssembly.Module> | undefined
   const service = createAdapterService({
-    trusted, resolveBinding, readPackages: readEnabledWebMCPPackages,
+    readPackages: readEnabledWebMCPPackages,
+    runBrowser,
     loadWasm: () => wasm ??= fetch(chrome.runtime.getURL('/assets/quickjs/quickjs.wasm'))
       .then(async response => {
         if (!response.ok) throw new Error(`QuickJS WASM unavailable: ${response.status}`)
@@ -30,6 +33,7 @@ export function installAdapterBackground(
   const refresh = async () => {
     try { await service.refresh() } finally { notifyManagement() }
   }
+  void refresh().catch(error => console.warn('[WebMCP adapters] Catalog refresh failed:', error))
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes[BUILTIN_CONFIG_STORAGE_KEY]) {
       void refresh().catch(error => console.warn('[WebMCP adapters] Catalog refresh failed:', error))
@@ -39,11 +43,10 @@ export function installAdapterBackground(
   const builtinCall = createProviderHandler(getBuiltinStorage, refresh)
   const skillCall = createProviderHandler(getExtensionSkillStorage, async () => {})
   const manage = createPackageManagement(providerCall, refresh)
-  chrome.runtime.onConnect.addListener(port => service.connect(port))
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (!isRecord(message) || typeof message.type !== 'string') return false
     if (message.type === 'webmcp_provider_call') {
-      if (!trusted(sender)) { respond({ ok: false, code: 'EACCES', error: 'Untrusted storage caller' }); return false }
+      if (sender.id !== chrome.runtime.id) { respond({ ok: false, code: 'EACCES', error: 'Untrusted storage caller' }); return false }
       if (message.mount !== undefined && !['webmcp', 'builtin-webmcp', 'extension-skills'].includes(String(message.mount))) { respond({ ok: false, code: 'EINVAL', error: 'Unknown mount' }); return false }
       void (message.mount === 'extension-skills' ? skillCall : message.mount === 'builtin-webmcp' ? builtinCall : providerCall)(message).then(respond)
       return true

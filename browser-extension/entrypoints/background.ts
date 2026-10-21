@@ -6,7 +6,8 @@ import { serializeError as serializeBrowserError } from '../lib/bash-commands/br
 import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow } from './webmcp/discovery'
-import { invokeWebMCPTool, installWorkspaceAdapterInvoker } from './webmcp/invoke'
+import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
+import { createTabWebMCPApi } from './webmcp/tab-api'
 import {
   getHostAuthorizationMap,
   getGroupAuthorizationMap,
@@ -974,6 +975,15 @@ CODEX = {
 
 export default defineBackground(() => {
   installBrowserLifecycle()
+  let tabWebMCP: ReturnType<typeof createTabWebMCPApi> | undefined
+  const adapterService = installAdapterBackground({
+    runBrowser: (owner, request, signal) => {
+      if (!tabWebMCP) throw new Error('WebMCP browser API is unavailable')
+      return runBrowserRequest(owner, request, signal, tabWebMCP)
+    },
+  })
+  tabWebMCP = createTabWebMCPApi(adapterService)
+  installAdapterInvoker((tabId, name, args, signal) => adapterService.invokeForTab(tabId, name, args, signal))
   const browserTasks = new Map<string, AbortController>()
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!['browser_command', 'browser_command_ping', 'browser_command_cancel'].includes(message?.type)) return false
@@ -1000,7 +1010,7 @@ export default defineBackground(() => {
       if (!raw || typeof raw.command !== 'string' || !Array.isArray(raw.positionals) || !raw.options || typeof raw.options !== 'object') throw new Error('Invalid browser command request')
       const args = [raw.command, ...Object.entries(raw.options).map(([key, value]) => value === true ? `--${key}` : `--${key}=${value}`), '--', ...raw.positionals]
       const request = parseBrowserCommand({ args, stdin: raw.stdin })
-      return runBrowserRequest(owner, request, controller.signal)
+      return runBrowserRequest(owner, request, controller.signal, tabWebMCP)
     }).then(result => sendResponse({ ok: true, result }), error => sendResponse({ ok: false, error: serializeBrowserError(error) })).finally(() => browserTasks.delete(key))
     return true
   })
@@ -1473,12 +1483,6 @@ export default defineBackground(() => {
       console.warn('[CreatorWeave] Side panel open failed:', err)
     })
   }
-
-  const adapterService = installAdapterBackground(
-    sender => sender.id === chrome.runtime.id && isTrustedCreatorWeaveSenderUrl(sender.url || ''),
-    resolveBoundSidePanelTab,
-  )
-  installWorkspaceAdapterInvoker((tabId, name, args) => adapterService.invokeForTab(tabId, name, args))
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'webmcp_provider_call' || (typeof message?.type === 'string' && (message.type.startsWith('webmcp_adapter_') || message.type.startsWith('webmcp_packages_')))) return false

@@ -6,11 +6,21 @@ import { BrowserError } from '../../../browser-extension/lib/bash-commands/brows
 import { BrowserTask } from '../../../browser-extension/lib/bash-commands/browser/task'
 import { installBrowserCommand } from '../../../browser-extension/lib/bash-commands/browser/provider'
 import { createProxyCommand } from '../tools/bash-worker/proxy-command'
+import { runBrowserRequest } from '../../../browser-extension/lib/bash-commands/browser/runtime'
+import { withTabLock } from '../../../browser-extension/lib/bash-commands/browser/cdp'
+import type { TabWebMCPApi } from '../../../browser-extension/entrypoints/webmcp/tab-api'
 
 const input = (args: string[], stdin = '') => ({ args, stdin })
 afterEach(() => { delete window.creatorWeave; vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('composable browser commands', () => {
+  it('validates nested WebMCP commands and their longer execution deadline', () => {
+    expect(parseBrowserCommand(input(['webmcp', 'list', '--tab=10']))).toMatchObject({ command: 'webmcp', positionals: ['list'], options: { tab: '10' } })
+    expect(parseBrowserCommand(input(['webmcp', 'exec', 'exact.name', '{}', '--timeout=60000']))).toMatchObject({ positionals: ['exec', 'exact.name', '{}'] })
+    for (const args of [['webmcp'], ['webmcp', 'other'], ['webmcp', 'list', 'extra'], ['webmcp', 'exec']])
+      expect(() => parseBrowserCommand(input(args))).toThrow()
+    expect(() => parseBrowserCommand(input(['webmcp', 'list', '--timeout=60000']))).toThrow('30000')
+  })
   it.each(['find', 'text-content', 'cdp'])('does not expose redundant %s commands', async name => {
     const run = vi.fn()
     const result = await invokeBrowserCommand(input([name]), run)
@@ -46,6 +56,29 @@ describe('composable browser commands', () => {
 })
 
 describe('browser provider lifecycle', () => {
+  it('cancels only requests belonging to the shell whose lifecycle ended', async () => {
+    vi.stubGlobal('location', { href: 'http://localhost:5173/app' })
+    let command: any
+    const finish: Array<(value: unknown) => void> = []
+    const send = vi.fn((type: string) => type === 'browser_command'
+      ? new Promise(resolve => { finish.push(resolve) }) : Promise.resolve({ ok: true }))
+    window.creatorWeave = { bash: { registerCommand: value => { command = value; return () => {} } } }
+    const dispose = installBrowserCommand(send)
+    const outerInput = input(['webmcp', 'exec', 'com.example.focus', '--tab=10'])
+    const innerInput = input(['eval', '() => 1', '--tab=10'])
+    const outer = command.invoke(outerInput)
+    const inner = command.invoke(innerInput)
+    await vi.waitFor(() => expect(finish).toHaveLength(2))
+    const requests = send.mock.calls.filter(call => call[0] === 'browser_command') as unknown as Array<[string, { requestId: string }, number]>
+    expect(requests[0][2]).toBe(65000)
+    send.mockClear()
+    window.dispatchEvent(new CustomEvent('creatorweave:bash-cancel', { detail: { inputs: [innerInput] } }))
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send).toHaveBeenCalledWith('browser_command_cancel', { requestId: requests[1][1].requestId }, 2000)
+    finish.forEach(resolve => resolve({ ok: true, result: 1 }))
+    await Promise.all([outer, inner])
+    dispose()
+  })
   it('forwards page cancellation to exactly its pending extension requests', async () => {
     vi.stubGlobal('location', { href: 'http://localhost:5173/app' })
     let command: any, finish: (result: unknown) => void = () => {}
@@ -66,6 +99,42 @@ describe('browser provider lifecycle', () => {
     window.dispatchEvent(new Event('creatorweave:bash-cancel'))
     expect(send).not.toHaveBeenCalled()
     dispose(); expect(unregister).toHaveBeenCalled()
+  })
+})
+
+describe('WebMCP browser runtime', () => {
+  const api = (): TabWebMCPApi => ({ listForTab: vi.fn(async () => ({ tabId: 10, url: 'https://example.com', hostname: 'example.com', groupKey: 'group', tools: [] })), invokeForTab: vi.fn(async () => ({ tabId: 10, url: 'https://example.com', name: 'exact.name', source: 'page' as const, result: true })) })
+  it('uses the explicit tab without acquiring a debugger or the primitive tab lock', async () => {
+    const webmcp = api()
+    webmcp.invokeForTab = vi.fn(async (tabId, name, args) => withTabLock(tabId, async () => ({ tabId, url: 'https://example.com', name, source: 'adapter' as const, result: args })))
+    expect(await runBrowserRequest('owner', parseBrowserCommand(input(['webmcp', 'exec', 'exact.name', '--tab=10'], '{"query":"hello"}')), undefined, webmcp))
+      .toMatchObject({ tabId: 10, result: { query: 'hello' } })
+    expect(webmcp.invokeForTab).toHaveBeenCalledWith(10, 'exact.name', { query: 'hello' }, expect.any(AbortSignal))
+  })
+  it('supports selected tabs and default object arguments', async () => {
+    vi.stubGlobal('chrome', { storage: { session: { get: vi.fn(async () => ({ 'cw_browser_selected:owner': 12 })) } } })
+    const webmcp = api()
+    await runBrowserRequest('owner', parseBrowserCommand(input(['webmcp', 'list'])), undefined, webmcp)
+    expect(webmcp.listForTab).toHaveBeenCalledWith(12, expect.any(AbortSignal))
+    await runBrowserRequest('owner', parseBrowserCommand(input(['webmcp', 'exec', 'exact.name'])), undefined, webmcp)
+    expect(webmcp.invokeForTab).toHaveBeenCalledWith(12, 'exact.name', {}, expect.any(AbortSignal))
+  })
+  it.each(['[]', 'null', '1', '"string"', '{bad'])('rejects non-object JSON %s before execution', async json => {
+    const webmcp = api()
+    const request = parseBrowserCommand(input(['webmcp', 'exec', 'exact.name', json, '--tab=10']))
+    await expect(runBrowserRequest('owner', request, undefined, webmcp)).rejects.toThrow('JSON object')
+    expect(webmcp.invokeForTab).not.toHaveBeenCalled()
+  })
+  it('aborts a running API operation on deadline', async () => {
+    vi.useFakeTimers()
+    const webmcp = api()
+    let signal: AbortSignal | undefined
+    webmcp.invokeForTab = vi.fn(async (_tab, _name, _args, s) => { signal = s; return new Promise<never>(() => {}) })
+    const running = runBrowserRequest('owner', parseBrowserCommand(input(['webmcp', 'exec', 'exact.name', '--tab=10', '--timeout=10'])), undefined, webmcp)
+    const stopped = expect(running).rejects.toThrow('timed out')
+    await vi.advanceTimersByTimeAsync(10)
+    await stopped
+    expect(signal?.aborted).toBe(true)
   })
 })
 

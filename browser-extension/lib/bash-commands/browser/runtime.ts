@@ -1,12 +1,14 @@
-import { ensureAttached, sendCommand, detachDebugger, clearDebuggerState, withTabLock } from './cdp'
+import { ensureAttached, detachDebugger, clearDebuggerState, withTabLock } from './cdp'
 import { buildBrowserSnapshot, clearSnapshotsForTab } from './snapshot'
 import type { BrowserRequest } from './command'
+import { browserRequestTimeout } from './command'
 import { BrowserTask } from './task'
 import { actionable, withElement } from './target'
 import { keyboard, mouse, moveMouse, releaseInput, forgetInput } from './input'
 import { evaluatePage } from './evaluate'
 import { navigate } from './navigation'
 import { BrowserError } from './errors'
+import type { TabWebMCPApi } from '../../../entrypoints/webmcp/tab-api'
 
 const tabSummary = (tab: chrome.tabs.Tab) => ({ tabId: tab.id, url: tab.url ?? '', title: tab.title ?? '', active: tab.active, windowId: tab.windowId })
 const sessionKey = (owner: string) => `cw_browser_selected:${owner}`
@@ -152,8 +154,8 @@ async function runTab(task: BrowserTask, owner: string, request: BrowserRequest)
   })
 }
 
-export async function runBrowserRequest(owner: string, request: BrowserRequest, signal?: AbortSignal): Promise<unknown> {
-  const task = new BrowserTask(Number(request.options.timeout ?? 10000), signal)
+export async function runBrowserRequest(owner: string, request: BrowserRequest, signal?: AbortSignal, webmcp?: TabWebMCPApi): Promise<unknown> {
+  const task = new BrowserTask(browserRequestTimeout(request), signal)
   const { command, positionals: p, options: o } = request
   try {
     if (command === 'tab-list') {
@@ -174,6 +176,16 @@ export async function runBrowserRequest(owner: string, request: BrowserRequest, 
       if (!p[0]) return tabSummary(tab)
       request = { ...request, command: 'goto' }
     } else task.tabId = command === 'tab-close' && p[0] ? id(p[0]) : await task.wait(selectedTab(owner, request))
+    // Workflows can call browser primitives themselves. Do not hold the CDP tab lock.
+    if (command === 'webmcp') {
+      if (!webmcp) throw new Error('WebMCP browser API unavailable')
+      if (p[0] === 'list') return await task.wait(webmcp.listForTab(task.tabId!, task.signal))
+      let args: unknown
+      try { args = JSON.parse(p[2] ?? (request.stdin.trim() || '{}')) }
+      catch { throw new Error('WebMCP arguments must be a valid JSON object') }
+      if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('WebMCP arguments must be a JSON object')
+      return await task.wait(webmcp.invokeForTab(task.tabId!, p[1], args as Record<string, unknown>, task.signal))
+    }
     // Dialog responses must be able to unblock an in-flight page evaluation.
     if (command.startsWith('dialog-')) return await runTab(task, owner, request)
     return await task.wait(withTabLock(task.tabId!, async () => {

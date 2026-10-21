@@ -35,7 +35,6 @@ export interface WebMCPHostAuthorizationSnapshot {
 /** In-memory cache; storage.local is the source of truth. */
 let cached: WebMCPHostAuthorizationMap | null = null
 let cachedGroups: WebMCPHostAuthorizationMap | null = null
-let loadedAt = 0
 const listeners = new Set<(map: WebMCPHostAuthorizationMap) => void>()
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -93,7 +92,6 @@ async function ensureLoaded(force = false): Promise<WebMCPHostAuthorizationMap> 
   if (cached !== null && !force) return cached
   const map = await loadFromStorage()
   cached = map
-  loadedAt = Date.now()
   return map
 }
 
@@ -136,7 +134,6 @@ export async function setHostEnabled(hostname: string, enabled: boolean): Promis
   const map = await ensureLoaded()
   const next: WebMCPHostAuthorizationMap = { ...map, [normalized]: enabled }
   cached = next
-  loadedAt = Date.now()
   await persistMap(next)
   notifyListeners(next)
   return next
@@ -221,7 +218,6 @@ if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
     const hostChange = changes[STORAGE_KEY]
     if (hostChange) {
       cached = sanitizeMap(hostChange.newValue)
-      loadedAt = Date.now()
       notifyListeners(cached)
     }
     const groupChange = changes[GROUP_STORAGE_KEY]
