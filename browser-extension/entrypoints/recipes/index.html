@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Supported Sites — EO2Weave</title>
+  <title>WebMCP Packages — CreatorWeave</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     ::-webkit-scrollbar { width: 8px; }
@@ -61,6 +61,9 @@
     .toggle:checked::after { transform: translateX(17px); }
     .toggle:focus-visible { outline: 2px solid #0d9488; outline-offset: 2px; }
     .empty { color: #737373; font-size: 13px; padding: 12px 0; }
+    .source-path { font-size: 11px; color: #737373; overflow-wrap: anywhere; margin-top: 8px; }
+    .diagnostic, #pageError { color: #b91c1c; font-size: 12px; margin-top: 8px; overflow-wrap: anywhere; }
+    .toggle:disabled { cursor: not-allowed; }
     .note {
       font-size: 11px; color: #737373; margin-top: 20px; line-height: 1.6;
       border-top: 1px solid #e5e5e5; padding-top: 14px;
@@ -74,13 +77,13 @@
 <body>
   <div class="header">
     <div class="logo">e</div>
-    <h1 id="pageTitle">Supported Sites</h1>
+    <h1 id="pageTitle">WebMCP Packages</h1>
   </div>
   <p class="subtitle" id="pageSubtitle">
-    Enable WebMCP tool packs for sites that don't ship native agent tools.
-    Tools are injected only into sites you explicitly enable — nothing runs anywhere else.
+    Manage built-in and custom WebMCP workflow packages. Enable a package to expose its tools on matching pages.
   </p>
 
+  <p id="pageError" role="alert"></p>
   <div class="section-title" id="installedTitle">Enabled</div>
   <div id="installedList"></div>
 
@@ -88,10 +91,8 @@
   <div id="availableList"></div>
 
   <p class="note" id="pageNote">
-    How it works: enabling a recipe stores your choice locally. When you open that site,
-    the extension injects the WebMCP polyfill plus the recipe's tools, and your agent
-    discovers them like any native WebMCP site. You can turn a site off at any time —
-    tools are unregistered immediately.
+    Built-in packages are read-only at vfs://external/builtin-webmcp/. Custom packages are writable at vfs://external/webmcp/.
+    Missing activation defaults to disabled. Execution requires a connected workspace host.
   </p>
 
   <script type="module" src="./main.ts"></script>

@@ -248,7 +248,22 @@ for await (const chunk of stream) {
 stream.cancel(); // Abort early if needed
 ```
 
+## Permissions
+
+| Permission | Why it is needed |
+|---|---|
+| `debugger` | Used only by the `browser` bash command (`lib/bash-commands/browser/cdp.ts`) to attach the Chrome DevTools Protocol to a tab for `snapshot`, `eval`, input, navigation and dialog commands. It attaches on demand to tabs the agent targets and releases them on `browser detach` or when the debugger is detached. Chrome shows its standard "is debugging this browser" bar while attached. Screenshot capture (`captureBoundTab`) does not use it. |
+| `scripting`, `tabs` | Inject the bridge, discover WebMCP tools and read tab URLs/titles. |
+| `storage`, `alarms` | Settings, authorization state and scheduled tasks. |
+| `notifications`, `sidePanel` | User-facing notices and the workspace side panel. |
+| `nativeMessaging` | Agent Bridge to the native host. |
+| `<all_urls>` host access | Page tools and the WebMCP adapter run on any site the user authorizes. |
+
+Store submissions should justify `debugger` with the description above.
+
 ## OPFS WebMCP adapters
+
+See [WebMCP packages](../docs/development/webmcp-packages.md) for the package layout and authoring workflow.
 
 Adapter source runs in a fresh QuickJS VM in the background service worker. A target page receives only tool metadata and an opaque registration ID; its registered WebMCP callback forwards arguments through the isolated content script and returns the SW result. It never compiles the workflow or receives its source.
 

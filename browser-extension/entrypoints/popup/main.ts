@@ -1273,24 +1273,20 @@ document.getElementById('openGithub')!.addEventListener('click', function () {
   var sub = document.getElementById('sitesSubtitle');
   if (!btn || !sub) return;
 
-  // Recipes metadata is tiny; import from the shared module.
-  import('../webmcp/recipes').then(function (mod) {
-    var total = mod.recipes.length;
-    function refresh() {
-      chrome.storage.local.get(mod.ENABLED_RECIPES_STORAGE_KEY, function (stored) {
-        var enabled = stored && stored[mod.ENABLED_RECIPES_STORAGE_KEY];
-        var count = enabled && typeof enabled === 'object' ? Object.keys(enabled).length : 0;
-        sub.textContent = chrome.i18n.getMessage('recipesCount', [String(count), String(total)])
-          || (count + ' / ' + total + ' enabled');
-      });
+  import('../webmcp/package-client').then(function (client) {
+    async function refresh() {
+      try {
+        var entries = await client.listManagedPackages();
+        var count = entries.filter(entry => entry.activation === 'enabled' && !entry.diagnostics.length).length;
+        sub!.textContent = chrome.i18n.getMessage('recipesCount', [String(count), String(entries.length)])
+          || (count + ' / ' + entries.length + ' enabled');
+      } catch { sub!.textContent = '—'; }
     }
-    refresh();
-    chrome.storage.onChanged.addListener(function (changes, area) {
-      if (area === 'local' && changes[mod.ENABLED_RECIPES_STORAGE_KEY]) refresh();
+    void refresh();
+    chrome.runtime.onMessage.addListener(function (message) {
+      if (message?.type === 'webmcp_packages_changed') void refresh();
     });
-  }).catch(function () {
-    // metadata import failed — keep the entry but show a dash
-  });
+  }).catch(function () {});
 
   btn.addEventListener('click', function () {
     chrome.tabs.create({ url: chrome.runtime.getURL('/recipes.html') });

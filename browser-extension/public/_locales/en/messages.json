@@ -398,5 +398,26 @@
         "content": "$2"
       }
     }
+  },
+  "webmcpPackagesTitle": {
+    "message": "WebMCP Packages"
+  },
+  "webmcpPackagesSubtitle": {
+    "message": "Manage built-in and custom WebMCP workflow packages. Enable a package to expose its tools on matching pages."
+  },
+  "webmcpPackagesNote": {
+    "message": "Both sources use manifest.json, config.json and workflow files. Built-in packages are mounted read-only at vfs://external/builtin-webmcp/. Custom packages are writable at vfs://external/webmcp/. Missing activation defaults to disabled. Execution requires a connected workspace host and available page tools."
+  },
+  "webmcpSourceBuiltin": {
+    "message": "Built-in · read-only"
+  },
+  "webmcpSourceUser": {
+    "message": "Custom · OPFS"
+  },
+  "webmcpPackageInvalid": {
+    "message": "Unavailable"
+  },
+  "webmcpPackageActivation": {
+    "message": "Enable package"
   }
 }

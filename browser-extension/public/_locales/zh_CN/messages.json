@@ -119,5 +119,26 @@
       "state": { "content": "$1" },
       "version": { "content": "$2" }
     }
+  },
+  "webmcpPackagesTitle": {
+    "message": "WebMCP 包"
+  },
+  "webmcpPackagesSubtitle": {
+    "message": "管理内建和自定义 WebMCP 工作流包。启用后，工具会注册到 URL 匹配的页面。"
+  },
+  "webmcpPackagesNote": {
+    "message": "两类包均使用 manifest.json、config.json 和工作流文件。内建包只读挂载于 vfs://external/builtin-webmcp/，自定义包可读写挂载于 vfs://external/webmcp/。activation 缺省时禁用。执行需要连接工作区 host，并具备所需页面工具。"
+  },
+  "webmcpSourceBuiltin": {
+    "message": "内建 · 只读"
+  },
+  "webmcpSourceUser": {
+    "message": "自定义 · OPFS"
+  },
+  "webmcpPackageInvalid": {
+    "message": "不可用"
+  },
+  "webmcpPackageActivation": {
+    "message": "启用包"
   }
 }

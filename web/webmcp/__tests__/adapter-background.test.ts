@@ -31,6 +31,14 @@ it('does not inject page authorization gates into workflow execution', () => {
   expect(dependencies).not.toHaveProperty('authorize')
 })
 
+it('blocks Web callers from the internal package configuration API', () => {
+  const listener = onMessage.mock.calls[0][0]
+  const respond = vi.fn()
+  const accepted = listener({ type: 'webmcp_packages_set_config', mount: 'builtin-webmcp', directory: 'world.jmail.archive', config: { activation: 'enabled' } }, { id: 'test', url: 'https://trusted-workspace.test' }, respond)
+  expect(accepted).toBe(false)
+  expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, code: 'EACCES' }))
+})
+
 it('routes the extension skill mount through the background transport', async () => {
   const listener = onMessage.mock.calls[0][0]
   const result = await new Promise<Record<string, unknown>>(resolve => {

@@ -1,126 +1,94 @@
-// ============================================================
-// Supported Sites management page — toggle recipes on/off.
-// Writes storage.local; the ISOLATED bridge in open tabs reacts
-// via storage.onChanged and activates/deactivates instantly.
-// ============================================================
-
-import { recipes } from '../webmcp/recipes'
-import { ENABLED_RECIPES_STORAGE_KEY } from '../webmcp/recipes/types'
+import { listManagedPackages, setManagedPackageConfig, type ManagedWebMCPPackage } from '../webmcp/package-client'
 
 function t(key: string, substitutions?: string | string[]): string {
   return chrome.i18n.getMessage(key as any, substitutions) || key
 }
+const errorDisplay = document.getElementById('pageError')!
+function showError(error: unknown) { errorDisplay.textContent = error instanceof Error ? error.message : String(error) }
+for (const [id, key] of [['pageTitle', 'webmcpPackagesTitle'], ['pageSubtitle', 'webmcpPackagesSubtitle'], ['pageNote', 'webmcpPackagesNote']])
+  document.getElementById(id)!.textContent = t(key)
 
-async function getEnabled(): Promise<Record<string, { enabledAt: number }>> {
-  try {
-    const stored = await chrome.storage.local.get(ENABLED_RECIPES_STORAGE_KEY)
-    return (stored?.[ENABLED_RECIPES_STORAGE_KEY] || {}) as Record<string, { enabledAt: number }>
-  } catch {
-    return {}
-  }
-}
-
-async function setRecipeEnabled(recipeId: string, enabled: boolean): Promise<void> {
-  const map = await getEnabled()
-  if (enabled) map[recipeId] = { enabledAt: Date.now() }
-  else delete map[recipeId]
-  await chrome.storage.local.set({ [ENABLED_RECIPES_STORAGE_KEY]: map })
-}
-
-function buildCard(
-  recipe: (typeof recipes)[number],
-  enabled: boolean,
-  onToggle: (next: boolean) => void,
-): HTMLElement {
+function buildCard(entry: ManagedWebMCPPackage): HTMLElement {
+  const enabled = entry.activation === 'enabled'
   const card = document.createElement('div')
   card.className = 'card' + (enabled ? '' : ' disabled')
-
-  const glyph = document.createElement('div')
-  glyph.className = 'glyph'
-  glyph.textContent = recipe.glyph
-
   const body = document.createElement('div')
   body.className = 'body'
   const name = document.createElement('div')
   name.className = 'name'
-  name.textContent = recipe.displayName
+  name.textContent = entry.manifest?.id ?? entry.directory
   const host = document.createElement('div')
   host.className = 'host'
-  host.textContent = recipe.hostname
+  host.textContent = `${t(entry.access === 'read-only' ? 'webmcpSourceBuiltin' : 'webmcpSourceUser')} · ${entry.manifest?.version ?? '—'}`
   const desc = document.createElement('div')
   desc.className = 'desc'
-  desc.textContent = recipe.description
-  body.appendChild(name)
-  body.appendChild(host)
-  body.appendChild(desc)
-
-  if (recipe.tools.length > 0) {
-    const tools = document.createElement('div')
-    tools.className = 'tools'
-    for (const tool of recipe.tools) {
-      const chip = document.createElement('span')
-      chip.className = 'tool-chip'
-      chip.textContent = tool.name
-      chip.title = tool.title
-      tools.appendChild(chip)
-    }
-    body.appendChild(tools)
+  desc.textContent = entry.manifest?.description ?? ''
+  const path = document.createElement('div')
+  path.className = 'source-path'
+  path.textContent = entry.uri + 'config.json'
+  body.append(name, host, desc, path)
+  const tools = document.createElement('div')
+  tools.className = 'tools'
+  for (const tool of entry.manifest?.tools ?? []) {
+    const chip = document.createElement('span')
+    chip.className = 'tool-chip'
+    chip.textContent = tool.name
+    chip.title = `${tool.description}\n${entry.uri}${tool.path}`
+    tools.append(chip)
   }
-
+  body.append(tools)
+  if (entry.diagnostics.length) {
+    const diagnostic = document.createElement('div')
+    diagnostic.className = 'diagnostic'
+    diagnostic.textContent = `${t('webmcpPackageInvalid')}: ${entry.diagnostics.join('; ')}`
+    body.append(diagnostic)
+  }
   const toggle = document.createElement('input')
   toggle.type = 'checkbox'
   toggle.className = 'toggle'
   toggle.checked = enabled
-  toggle.addEventListener('change', () => onToggle(toggle.checked))
-
-  card.appendChild(glyph)
-  card.appendChild(body)
-  card.appendChild(toggle)
+  toggle.setAttribute('aria-label', `${t('webmcpPackageActivation')}: ${entry.directory}`)
+  toggle.disabled = !enabled && (!entry.manifest || entry.diagnostics.some(error => !error.startsWith('config.json:')))
+  toggle.addEventListener('change', async () => {
+    toggle.disabled = true
+    errorDisplay.textContent = ''
+    try {
+      await setManagedPackageConfig(entry, { activation: toggle.checked ? 'enabled' : 'disabled' })
+      await render()
+    } catch (error) {
+      toggle.checked = enabled
+      toggle.disabled = false
+      showError(error)
+    }
+  })
+  card.append(body, toggle)
   return card
 }
-
+let generation = 0
 async function render(): Promise<void> {
-  const enabled = await getEnabled()
-  const installed = recipes.filter((r) => enabled[r.id])
-  const available = recipes.filter((r) => !enabled[r.id])
-
-  const installedList = document.getElementById('installedList')!
-  const availableList = document.getElementById('availableList')!
-  installedList.textContent = ''
-  availableList.textContent = ''
-
-  document.getElementById('installedTitle')!.textContent =
-    t('recipesInstalled') + ` (${installed.length})`
-  document.getElementById('availableTitle')!.textContent =
-    t('recipesAvailable') + ` (${available.length})`
-
-  if (installed.length === 0) {
-    const empty = document.createElement('div')
-    empty.className = 'empty'
-    empty.textContent = t('recipesEmptyInstalled')
-    installedList.appendChild(empty)
-  }
-  if (available.length === 0) {
-    const empty = document.createElement('div')
-    empty.className = 'empty'
-    empty.textContent = t('recipesEmptyAvailable')
-    availableList.appendChild(empty)
-  }
-
-  for (const recipe of installed) {
-    installedList.appendChild(
-      buildCard(recipe, true, (next) => {
-        void setRecipeEnabled(recipe.id, next).then(render)
-      }),
-    )
-  }
-  for (const recipe of available) {
-    availableList.appendChild(
-      buildCard(recipe, false, (next) => {
-        void setRecipeEnabled(recipe.id, next).then(render)
-      }),
-    )
+  const current = ++generation
+  const entries = await listManagedPackages()
+  if (current !== generation) return
+  const enabled = entries.filter(entry => entry.activation === 'enabled')
+  const disabled = entries.filter(entry => entry.activation !== 'enabled')
+  for (const [prefix, group, title, empty] of [
+    ['installed', enabled, 'recipesInstalled', 'recipesEmptyInstalled'],
+    ['available', disabled, 'recipesAvailable', 'recipesEmptyAvailable'],
+  ] as const) {
+    const list = document.getElementById(prefix + 'List')!
+    list.replaceChildren()
+    document.getElementById(prefix + 'Title')!.textContent = `${t(title)} (${group.length})`
+    for (const entry of group) list.append(buildCard(entry))
+    if (!group.length) {
+      const placeholder = document.createElement('div')
+      placeholder.className = 'empty'
+      placeholder.textContent = t(empty)
+      list.append(placeholder)
+    }
   }
 }
-
-void render()
+chrome.runtime.onMessage.addListener(message => {
+  if (message?.type === 'webmcp_packages_changed') void render().catch(showError)
+})
+window.addEventListener('focus', () => void render().catch(showError))
+void render().catch(showError)
