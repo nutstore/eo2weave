@@ -16,11 +16,6 @@ import { useRouter } from 'next/navigation'
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { ExtensionInstallGuide } from '@/components/extension'
-// Side-panel recipe opt-in: when the panel opens on a recipe-hosting site
-// (jmail.world archive / JMessage) whose injection switch is still off,
-// ask the user once whether to enable it (enables + reloads upstream page).
-import { RecipeOptInModal } from '@/components/sidepanel/RecipeOptInModal'
-import { getPendingRecipePrompt, RECIPE_REPROBE_INTERVAL_MS, type RecipePromptStatus } from '@/agent/sidepanel-recipe-prompt'
 // Unified authorization modal (PR-1) — replaces both PageWriteAuthModal and
 // ExecAuthModal. They now forward into the shared tool-auth.store queue.
 import { ToolAuthModal } from '@/components/agent/ToolAuthModal'
@@ -534,55 +529,6 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     })
   }, [initialized, isStorageReady, router])
 
-  // ── Side-panel recipe opt-in prompt ──
-  // When the side panel opens on a recipe-hosting site (jmail.world
-  // archive / JMessage) whose injection switch is still off, offer a one-time
-  // enable (writes extension consent storage + reloads the upstream page so
-  // injection takes effect). Non-side-panel sessions never even reach the
-  // bridge probe (getPendingRecipePrompt returns null without a binding).
-  const [recipePrompt, setRecipePrompt] = useState<RecipePromptStatus | null>(null)
-  const probeRecipePrompt = useCallback(() => {
-    console.info('[SidePanelRecipePrompt] probing for pending recipe opt-in…')
-    getPendingRecipePrompt()
-      .then((status) => {
-        if (status) {
-          console.info('[SidePanelRecipePrompt] showing opt-in modal for', status.recipe?.id)
-          setRecipePrompt(status)
-        }
-      })
-      .catch(() => {
-        // probe failure must never surface — best-effort by design
-      })
-  }, [])
-  useEffect(() => {
-    if (!initialized || !isStorageReady) return
-    if (recipePrompt) return
-    let cancelled = false
-    // Delay past the project-route navigation so the workspace UI settles
-    // first; a consent dialog popping over the loading screen reads as a bug.
-    const timer = setTimeout(() => {
-      if (cancelled) return
-      probeRecipePrompt()
-    }, 1200)
-    // ── Host-change re-probe ──
-    // The upstream tab can navigate to a DIFFERENT hostname after the
-    // panel opened (movie.douban.com → search.douban.com: two hosts, two
-    // recipes — the open-time probe only saw the first). Re-probe on an
-    // interval and when the user focuses the panel; the 1-day dismissal
-    // cooldown inside getPendingRecipePrompt bounds any nagging.
-    const interval = setInterval(() => {
-      if (!cancelled) probeRecipePrompt()
-    }, RECIPE_REPROBE_INTERVAL_MS)
-    const onFocus = () => probeRecipePrompt()
-    window.addEventListener('focus', onFocus)
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-      clearInterval(interval)
-      window.removeEventListener('focus', onFocus)
-    }
-  }, [initialized, isStorageReady, recipePrompt, probeRecipePrompt])
-
   // --- Service Worker update prompt (was in AppReady) ---
   const swUpdateToastShownRef = useRef(false)
 
@@ -651,12 +597,6 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         open={extensionGuideOpen}
         onOpenChange={(open) => { if (!open) extensionCloseGuide() }}
       />
-      {recipePrompt?.recipe && (
-        <RecipeOptInModal
-          recipe={recipePrompt.recipe}
-          onClose={() => setRecipePrompt(null)}
-        />
-      )}
       <ToolAuthModal />
       {/* PWA install offer — after storage init so it never competes with the
           loading/error gates; dismissal state is owned by pwa/install-prompt. */}

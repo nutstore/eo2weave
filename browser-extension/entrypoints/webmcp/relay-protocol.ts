@@ -81,28 +81,10 @@ export interface WebMCPRelayInvokeCommand {
   args: Record<string, unknown>
 }
 
-// ── recipe commands (ISOLATED → MAIN, consent-gated) ──
-// Sent by the ISOLATED bridge only after storage.local shows
-// the user enabled the recipe for this hostname. The MAIN-world
-// recipe injector validates the recipe id against its own list.
-
-/** Enable + register a recipe's tools on this page. */
-export interface WebMCPRelayRecipeActivateCommand {
-  kind: 'recipe-activate'
-  recipeId: string
-}
-
-/** Unregister the current recipe's tools. */
-export interface WebMCPRelayRecipeDeactivateCommand {
-  kind: 'recipe-deactivate'
-}
-
 export type WebMCPRelayCommandToAgent =
   | { kind: 'adapters-sync'; tools: unknown[] }
   | WebMCPRelayPingCommand
   | WebMCPRelayInvokeCommand
-  | WebMCPRelayRecipeActivateCommand
-  | WebMCPRelayRecipeDeactivateCommand
 
 // ── runtime message types (ISOLATED ↔ background) ──
 
@@ -178,13 +160,6 @@ export function parseRelayCommand(data: unknown): WebMCPRelayCommandToAgent | nu
   if (command.kind === 'adapters-sync' && Array.isArray(command.tools)) return { kind: 'adapters-sync', tools: command.tools }
 
   if (command.kind === 'ping') return { kind: 'ping' }
-
-  if (command.kind === 'recipe-activate') {
-    if (typeof command.recipeId !== 'string' || command.recipeId.length === 0) return null
-    return { kind: 'recipe-activate', recipeId: command.recipeId }
-  }
-
-  if (command.kind === 'recipe-deactivate') return { kind: 'recipe-deactivate' }
 
   if (command.kind === 'invoke-request') {
     if (typeof command.requestId !== 'string' || command.requestId.length === 0) return null

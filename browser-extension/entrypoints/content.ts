@@ -69,8 +69,6 @@ export default defineContentScript({
       'webmcp_provider_call',
       'webmcp_invoke_tool',
       'webmcp_get_host_authorization',
-      'webmcp_recipe_get_status',
-      'webmcp_recipe_enable',
       'webmcp_plugin_download_stream',
       'webmcp_plugin_download_finalize',
       // Side-panel page bridge (binding-gated in background)

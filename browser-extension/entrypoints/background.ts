@@ -16,7 +16,6 @@ import {
 } from './webmcp/authorization'
 import { streamPluginDownload } from './webmcp/plugin-download-transfer'
 import type { WebMCPPluginDownloadPlan, WebMCPDiscoveredTool } from './webmcp/types'
-import { ENABLED_RECIPES_STORAGE_KEY, findRecipeForLocation } from './webmcp/recipes'
 import { registerTab, unregisterTab } from './webmcp/registry'
 import { getRegistryEntries, entriesToDiscoveredTools } from './webmcp/registry'
 import { buildSafeFullName } from './webmcp/tool-name'
@@ -2025,107 +2024,6 @@ export default defineBackground(() => {
               errorCode: 'CAPTURE_FAILED',
               error: err?.message || String(err),
             })
-          }
-          return
-        }
-
-        if (message.type === 'webmcp_recipe_get_status') {
-          // ── Recipe opt-in prompt: status probe (side panel → upstream tab) ──
-          // CreatorWeave's side panel asks whether the BOUND upstream tab
-          // hosts a built-in recipe (jmail.world archive / JMessage) the
-          // user has not enabled yet. Powers the one-time opt-in modal:
-          // "this site can expose MCP tools — enable injection?".
-          //
-          // Security: same boundary as the other bound-tab handlers — the
-          // sender must be a trusted CreatorWeave origin AND the binding
-          // must resolve to a real tab. Only recipe METADATA (id / display
-          // name / description / glyph / tool count) crosses the bridge;
-          // tool schemas and page content never do.
-          const targetTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
-          if (targetTabId === null) {
-            sendResponse({ ok: false, errorCode: 'UNAUTHORIZED_TARGET', error: 'Missing or invalid side-panel binding.' })
-            return
-          }
-          try {
-            const tab = await chrome.tabs.get(targetTabId)
-            const tabUrl = (() => {
-              try { return new URL(tab.url || '') } catch { return null }
-            })()
-            // Path-scoped lookup: jmail.world hosts two recipes (archive at
-            // / vs JMessage at /messages); only the one matching the CURRENT
-            // path is the opt-in candidate.
-            const recipe = tabUrl ? findRecipeForLocation(tabUrl.hostname, tabUrl.pathname) : undefined
-            if (!recipe) {
-              sendResponse({ ok: true, applicable: false })
-              return
-            }
-            const stored = await chrome.storage.local.get(ENABLED_RECIPES_STORAGE_KEY)
-            const enabledMap = (stored?.[ENABLED_RECIPES_STORAGE_KEY] || {}) as Record<string, unknown>
-            sendResponse({
-              ok: true,
-              applicable: true,
-              recipe: {
-                id: recipe.id,
-                displayName: recipe.displayName,
-                description: recipe.description,
-                glyph: recipe.glyph,
-                hostname: recipe.hostname,
-                toolCount: recipe.tools.length,
-              },
-              enabled: enabledMap[recipe.id] != null && enabledMap[recipe.id] !== false,
-            })
-          } catch (err: any) {
-            sendResponse({ ok: false, errorCode: 'STATUS_FAILED', error: err?.message || String(err) })
-          }
-          return
-        }
-
-        if (message.type === 'webmcp_recipe_enable') {
-          // ── Recipe opt-in: enable + reload the upstream page ──
-          // The user just approved the modal. Writes the SAME storage map the
-          // recipes.html management page writes (single source of truth), then
-          // reloads the bound tab so the recipe injector + agent content
-          // scripts are guaranteed present — this also covers the stale-page
-          // case where the upstream tab predates the extension install/update
-          // (content scripts absent, activation alone could never reach it).
-          const targetTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
-          if (targetTabId === null) {
-            sendResponse({ ok: false, errorCode: 'UNAUTHORIZED_TARGET', error: 'Missing or invalid side-panel binding.' })
-            return
-          }
-          const recipeId = typeof message.recipeId === 'string' ? message.recipeId : ''
-          if (!recipeId) {
-            sendResponse({ ok: false, errorCode: 'INVALID_REQUEST', error: 'recipeId is required' })
-            return
-          }
-          try {
-            // Re-derive the recipe from the LIVE tab URL — never trust the
-            // web-app-supplied recipeId alone. This proves the id matches
-            // what is actually hosted in the bound tab before flipping
-            // storage (a malicious/buggy panel cannot arm an arbitrary
-            // recipe on an unrelated site).
-            const tab = await chrome.tabs.get(targetTabId)
-            const tabUrl = (() => {
-              try { return new URL(tab.url || '') } catch { return null }
-            })()
-            const recipe = tabUrl ? findRecipeForLocation(tabUrl.hostname, tabUrl.pathname) : undefined
-            if (!recipe || recipe.id !== recipeId) {
-              sendResponse({ ok: false, errorCode: 'RECIPE_MISMATCH', error: 'Recipe does not match the bound tab location.' })
-              return
-            }
-            const stored = await chrome.storage.local.get(ENABLED_RECIPES_STORAGE_KEY)
-            const enabledMap = (stored?.[ENABLED_RECIPES_STORAGE_KEY] || {}) as Record<string, unknown>
-            if (!enabledMap[recipeId]) {
-              enabledMap[recipeId] = { enabledAt: Date.now() }
-              await chrome.storage.local.set({ [ENABLED_RECIPES_STORAGE_KEY]: enabledMap })
-            }
-            // storage.onChanged activates injection in ALREADY-loaded pages;
-            // the reload guarantees it for pages whose content scripts were
-            // never injected (pre-install / stale document).
-            await chrome.tabs.reload(targetTabId)
-            sendResponse({ ok: true, recipeId, hostname: recipe.hostname, reloaded: true })
-          } catch (err: any) {
-            sendResponse({ ok: false, errorCode: 'ENABLE_FAILED', error: err?.message || String(err) })
           }
           return
         }

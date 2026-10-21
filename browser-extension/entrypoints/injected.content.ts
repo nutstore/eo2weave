@@ -833,28 +833,6 @@ export default defineContentScript({
       },
 
       /**
-       * Recipe opt-in probe: does the BOUND upstream tab host a built-in
-       * recipe (e.g. jmail.world archive / JMessage) that is not enabled
-       * yet? Used by the side panel to decide whether to show the one-time
-       * opt-in modal. Returns recipe METADATA only (never tool schemas or
-       * page content); `applicable: false` when no recipe matches.
-       */
-      async recipeCheckStatus(binding: string) {
-        return sendToBridge('webmcp_recipe_get_status', { binding });
-      },
-
-      /**
-       * Recipe opt-in commit: enable the recipe for the bound tab's site
-       * (extension-side consent storage — the same map the recipes.html
-       * management page writes) and reload the upstream page so injection
-       * is guaranteed to take effect. The background re-validates the
-       * recipeId against the live tab URL before writing.
-       */
-      async recipeEnable(binding: string, recipeId: string) {
-        return sendToBridge('webmcp_recipe_enable', { binding, recipeId });
-      },
-
-      /**
        * Pull page context from the upstream tab that opened this CreatorWeave
        * side panel. Used by workspace-assistant-context.ts at system-prompt
        * build time. The extension executes

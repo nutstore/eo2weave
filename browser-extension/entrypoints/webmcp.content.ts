@@ -29,7 +29,6 @@ import {
   buildRelayEnvelope,
   parseAgentEvent,
 } from './webmcp/relay-protocol'
-import { ENABLED_RECIPES_STORAGE_KEY, findRecipeForLocation, findRecipesForHostname } from './webmcp/recipes'
 
 type InvokeWaiter = {
   resolve: (value: {
@@ -79,61 +78,8 @@ export default defineContentScript({
       }
     })
 
-    // ── Recipe activation (consent-gated) ──
-    // storage.local holds the user's enabled-recipe map. When a
-    // recipe matches this page's hostname AND is enabled, send a
-    // recipe-activate command into the MAIN world. The MAIN-side
-    // injector re-validates everything before registering tools.
-    function postRecipeCommand(kind: 'recipe-activate' | 'recipe-deactivate', recipeId?: string): void {
-      if (kind === 'recipe-activate' && recipeId) {
-        window.postMessage(
-          buildRelayEnvelope({ kind: 'recipe-activate', recipeId }),
-          window.location.origin,
-        )
-      } else if (kind === 'recipe-deactivate') {
-        window.postMessage(buildRelayEnvelope({ kind: 'recipe-deactivate' }), window.location.origin)
-      }
-    }
-
-    async function syncRecipeState(): Promise<void> {
-      try {
-        const stored = await chrome.storage.local.get(ENABLED_RECIPES_STORAGE_KEY)
-        const enabled = (stored?.[ENABLED_RECIPES_STORAGE_KEY] || {}) as Record<string, unknown>
-        // Path-scoped: a hostname may host several apps with different
-        // recipes (e.g. jmail.world archive vs JMessage /messages). Only
-        // the recipe matching the CURRENT path activates here. The
-        // injector's activate() already unregisters the previous recipe,
-        // so exactly one command is sent — never an activate followed by
-        // a blanket deactivate (which would abort the fresh registration).
-        const active = findRecipeForLocation(location.hostname, location.pathname)
-        if (!active && findRecipesForHostname(location.hostname).length === 0) return
-        if (active && enabled[active.id]) {
-          postRecipeCommand('recipe-activate', active.id)
-          // Retry once after a delay: the MAIN-world injector may still be
-          // booting (both scripts run at document_idle; ordering is not
-          // guaranteed) and its message listener would miss the first send.
-          setTimeout(() => postRecipeCommand('recipe-activate', active.id), 1500)
-        } else {
-          // No recipe for this path (other apps on the hostname) or
-          // disabled by the user — clear anything a previous path
-          // activated.
-          postRecipeCommand('recipe-deactivate')
-        }
-      } catch {
-        // storage unavailable — stay inactive, never auto-enable
-      }
-    }
-
-    void syncRecipeState()
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes[ENABLED_RECIPES_STORAGE_KEY]) {
-        void syncRecipeState()
-      }
-    })
-
     // ── SPA route changes ──
-    // Same-hostname apps navigate client-side (no page reload, no new
-    // document_idle), so the recipe for the previous path keeps running.
+    // Rematch adapter routes after client-side navigation.
     // NOTE: patching history.pushState here would be useless — the page
     // calls ITS OWN (MAIN-world) history object, invisible to this
     // ISOLATED world. `location`, however, IS synchronized across
@@ -143,7 +89,6 @@ export default defineContentScript({
       if (location.href === lastUrl) return
       lastUrl = location.href
       refreshAdapters()
-      void syncRecipeState()
     }
     window.addEventListener('popstate', onRouteChange)
     window.addEventListener('hashchange', onRouteChange)
