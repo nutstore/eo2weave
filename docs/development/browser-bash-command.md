@@ -26,7 +26,7 @@ ref=$(browser snapshot | jq -er '.nodes[] | select(.role == "button" and .name =
 browser click "$ref" && browser snapshot
 printf 'hello world' | browser fill e20
 browser press Enter
-browser eval '() => document.body.innerText' | jq -r '.buffer'
+browser eval '() => document.body.innerText' | jq -r '.result'
 browser screenshot --full-page | jq -r '.data' | base64 -d > screenshot.png
 ```
 
@@ -68,10 +68,26 @@ mouse buttons persist across calls; failed actions release tracked input state.
 Eval accepts a function, including an async function, or reads its source from
 stdin. The optional target is passed as an element argument. It runs in the page
 with page globals and native fetch. It has no Node environment or nested tool
-proxy. `{tabId,buffer}` preserves ordered console entries and the result, marked
-`[log]`, `[info]`, `[warn]`, `[error]`, `[result]`. Thrown errors retain the buffer
-in JSON error details. Reading DOM text and waiting on page conditions can be
-implemented in eval; orchestration of browser commands belongs to Bash.
+proxy. Success returns `{tabId,logs,result}`. `logs` is an ordered array of
+`{level,args}` entries; each argument and the final `result` preserve JSON types
+(objects, arrays, strings, numbers, booleans and null). Console arguments are
+captured when logged, without joining strings or adding text prefixes.
+
+```json
+{"tabId":123,"logs":[{"level":"log","args":["hello",{"count":2}]}],"result":{"title":"Page title"}}
+```
+
+Use `jq -r '.result.title'` to read the title or
+`jq '.logs[] | select(.level == "warn") | .args'` to filter warnings.
+Undefined and non-finite numbers become null; bigint and symbols become strings,
+functions become descriptive strings, and Error values become `{name,message,stack}`.
+Circular references become `"[Circular]"`; values that cannot be serialized become
+`"[UnserializableValue]"`. Repeated non-circular references preserve their values.
+Thrown errors fail with `{tabId,logs,exception}` in `error.details`, retaining
+prior console output separately from the serialized exception. No `buffer` field
+is emitted. Consumers of the previous format must migrate to `.result` and `.logs`.
+Reading DOM text and waiting on page conditions can be implemented in eval;
+orchestration of browser commands belongs to Bash.
 
 ## Execution and lifecycle
 

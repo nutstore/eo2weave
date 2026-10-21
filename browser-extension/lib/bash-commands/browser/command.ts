@@ -37,7 +37,7 @@ snapshot [ref|css] [--boxes] -> {tabId,url,title,snapshotId,tree,nodes}. Nodes h
 click <ref|css> [left|right|middle], dblclick <ref|css> [button], hover <ref|css>, drag <start> <end>. Targeted actions wait for visibility, stability and required actionability up to the deadline.
 fill <ref|css> [text] replaces; type <ref|css> [text] appends. Omitted text reads UTF-8 stdin, including empty input. select <ref|css> <value>..., check <ref|css>, uncheck <ref|css>.
 press <key>, keydown <key>, keyup <key>: Enter, Tab, Escape, ControlOrMeta+A, etc. mousemove <x> <y>, mousedown [button], mouseup [button], mousewheel <dx> <dy>.
-eval [function] [ref|css]: function source defaults to stdin; optional element is passed as its argument. Page globals, native fetch and async functions work; no Node or tools proxy. Returns {tabId,buffer}, with ordered [log]/[info]/[warn]/[error]/[result] entries. Exceptions fail with the buffer in error.details. Use eval for DOM/text reads, calculations and asynchronous page conditions. Compose browser commands in Bash.
+eval [function] [ref|css]: function source defaults to stdin; optional element is passed as its argument. Page globals, native fetch and async functions work; no Node or tools proxy. Returns {tabId,logs,result}; logs is an ordered array of {level,args}, and result preserves JSON types. Undefined becomes null; non-JSON values are serialized safely. Exceptions fail with {tabId,logs,exception} in error.details. Use eval for DOM/text reads, calculations and asynchronous page conditions. Compose browser commands in Bash.
 screenshot [ref|css] [--full-page] [--format=png|jpeg] [--quality=0..100] -> {tabId,mimeType,encoding:"base64",data}. No files or image blocks. Element and --full-page are mutually exclusive.
 dialog-accept [prompt], dialog-dismiss; detach releases debugger without closing the tab.
 Timeout is an overall deadline including queueing (default 10000ms, max 30000ms). Web stop cancels running extension tasks; already completed actions cannot be undone. Dialog commands can run while a page command is waiting on a dialog.
@@ -46,7 +46,7 @@ browser tab-list | jq '.tabs[] | select(.url | contains("example.com")) | .tabId
 browser snapshot | jq '.nodes[] | select(.role == "button")'
 printf 'hello' | browser fill e12
 browser click e12 && browser snapshot
-browser eval '() => document.body.innerText' | jq -r '.buffer'
+browser eval '() => document.body.innerText' | jq -r '.result'
 browser screenshot | jq -r '.data' > screenshot.base64`
 
 export function parseBrowserCommand({ args, stdin }: CommandInput): BrowserRequest {

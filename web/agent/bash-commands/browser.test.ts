@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Bash } from 'just-bash/browser'
 import { parseBrowserCommand, invokeBrowserCommand } from '../../../browser-extension/lib/bash-commands/browser/command'
+import { evaluatePage } from '../../../browser-extension/lib/bash-commands/browser/evaluate'
 import { BrowserError } from '../../../browser-extension/lib/bash-commands/browser/errors'
 import { BrowserTask } from '../../../browser-extension/lib/bash-commands/browser/task'
 import { installBrowserCommand } from '../../../browser-extension/lib/bash-commands/browser/provider'
@@ -25,9 +26,9 @@ describe('composable browser commands', () => {
     expect(() => parseBrowserCommand(input(['goto', 'https://example.com', '--wait-until=networkidle']))).toThrow('--wait-until')
   })
   it('preserves structured diagnostics in JSON stderr', async () => {
-    const result = await invokeBrowserCommand(input(['eval', '() => {}']), async () => { throw new BrowserError('failed', { buffer: '[warn] before\n[error] failed' }) })
+    const result = await invokeBrowserCommand(input(['eval', '() => {}']), async () => { throw new BrowserError('failed', { logs: [{ level: 'warn', args: ['before'] }] }) })
     expect(result.stdout).toBe('')
-    expect(JSON.parse(result.stderr).error.details.buffer).toContain('[warn] before')
+    expect(JSON.parse(result.stderr).error.details.logs).toEqual([{ level: 'warn', args: ['before'] }])
   })
   it('supports selection and persistence using jq and shell composition', async () => {
     const calls: string[][] = []
@@ -98,5 +99,51 @@ describe('browser task deadline', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(settled).toBe(false)
     terminate(); await stopped; task.dispose()
+  })
+})
+
+
+describe('structured browser evaluation', () => {
+  const evaluate = (source: string) => evaluatePage({
+    tabId: 123,
+    evaluate: (expression: string) => (0, eval)(expression),
+  } as BrowserTask, source)
+
+  it('preserves JSON types and console argument boundaries at log time', async () => {
+    const output = await evaluate(`async () => {
+      const value = { count: 2 };
+      console.log("hello\\nworld", value, false, null);
+      value.count = 3;
+      console.warn([1, 2]);
+      return { value, title: "Page", enabled: true };
+    }`)
+    expect(output).toEqual({ tabId: 123, logs: [
+      { level: 'log', args: ['hello\nworld', { count: 2 }, false, null] },
+      { level: 'warn', args: [[1, 2]] },
+    ], result: { value: { count: 3 }, title: 'Page', enabled: true } })
+  })
+
+  it('normalizes non-JSON values and distinguishes cycles from shared references', async () => {
+    const output = await evaluate(`() => {
+      const shared = { n: 1 }; const cycle = {}; cycle.self = cycle;
+      return [undefined, NaN, Infinity, 2n, Symbol('s'), shared, shared, cycle];
+    }`)
+    expect(output.result).toEqual([null, null, null, '2', 'Symbol(s)', { n: 1 }, { n: 1 }, { self: '[Circular]' }])
+    expect((await evaluate('() => {}')).result).toBeNull()
+    expect((await evaluate('() => ({ toJSON() { throw new Error("no") } })')).result).toBe('[UnserializableValue]')
+  })
+
+  it('retains logs and structured exceptions on failure', async () => {
+    await expect(evaluate('() => { console.warn({ count: 2 }); throw new Error("bad") }')).rejects.toMatchObject({
+      message: 'bad', details: { tabId: 123, logs: [{ level: 'warn', args: [{ count: 2 }] }], exception: { name: 'Error', message: 'bad' } },
+    })
+  })
+
+  it('passes structured results through jq without text parsing', async () => {
+    const bash = new Bash({ customCommands: [createProxyCommand('browser', async (_name, commandInput) =>
+      invokeBrowserCommand(commandInput, () => evaluate('() => ({ items: [{ n: 2 }, { n: 3 }] })')))] })
+    const output = await bash.exec(`browser eval '() => ({})' | jq '[.result.items[].n] | add'`)
+    expect(output.exitCode).toBe(0)
+    expect(output.stdout).toBe('5\n')
   })
 })

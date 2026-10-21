@@ -124,17 +124,17 @@ try {
   })
   await check('eval captures logs/results and errors under CSP', async () => {
     const result = await run(['eval', 'async () => { console.log("first"); await Promise.resolve(); const x={n:1n}; x.self=x; return x }'])
-    assert.match(result.buffer, /^\[log\] first\n\[result\]/); assert.match(result.buffer, /Circular/)
+    assert.deepEqual(result.logs, [{ level: 'log', args: ['first'] }]); assert.deepEqual(result.result, { n: '1', self: '[Circular]' })
     const failure = await command(['eval', '() => { console.warn("before"); throw new Error("bad") }'])
-    assert.equal(failure.exitCode, 1); assert.match(JSON.parse(failure.stderr).error.details.buffer, /\[warn\] before/)
-    assert.match((await run(['eval', 'el => el.id', '#name'])).buffer, /\[result\] name/)
+    assert.equal(failure.exitCode, 1); assert.deepEqual(JSON.parse(failure.stderr).error.details.logs, [{ level: 'warn', args: ['before'] }])
+    assert.equal((await run(['eval', 'el => el.id', '#name'])).result, 'name')
   })
   await check('cancellation and timeout terminate JS and prevent queued actions', async () => {
     const controller = new AbortController()
     const running = run(['eval', '() => { while (true) {} }'], '', controller.signal).then(() => null, e => e)
     setTimeout(() => controller.abort(new Error('test canceled')), 120)
     assert.match(String(await running), /canceled/)
-    assert.match((await run(['eval', '() => 42'])).buffer, /42/)
+    assert.equal((await run(['eval', '() => 42'])).result, 42)
     const timeout = await command(['eval', '() => new Promise(() => {})', '--timeout=150']); assert.equal(timeout.exitCode, 1)
     await run(['click', '#save'])
     const holder = new AbortController(), queued = new AbortController()
@@ -154,7 +154,7 @@ try {
     const pending = run(['eval', '() => prompt("Name?")'])
     await dialog
     await run(['dialog-accept', 'Alice'])
-    assert.match((await pending).buffer, /Alice/)
+    assert.match((await pending).result, /Alice/)
     page.off('dialog', listener)
   })
   await check('screenshots are JSON base64 and preserve viewport layout', async () => {
