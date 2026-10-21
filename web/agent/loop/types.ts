@@ -1,3 +1,4 @@
+import type { ContextSource } from '@/agent/context/journal'
 import type { AgentMode } from '../agent-mode'
 import type { CompressionBaselineState } from './context-compression'
 import type { ContextManager } from '../context-manager'
@@ -35,6 +36,9 @@ export interface AfterToolCallHookResult {
 }
 
 export interface AgentCallbacks {
+  /** Durability barrier: reject to prevent dispatch when context cannot be saved. */
+  onContextCommit?: (messages: Message[]) => Promise<void>
+
   /** Called when a new assistant message starts */
   onMessageStart?: () => void
   /** Called when reasoning stream starts (first reasoning_content delta) */
@@ -92,6 +96,8 @@ export interface AgentCallbacks {
 }
 
 export interface AgentLoopConfig {
+  /** Additional environment providers; committed by the same durable context journal. */
+  contextSources?: ContextSource[]
   provider: PiAIProvider
   toolRegistry: ToolRegistry
   contextManager: ContextManager

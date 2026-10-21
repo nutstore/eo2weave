@@ -276,7 +276,8 @@ describe('AgentLoop', () => {
         },
       ])
 
-      expect(capturedContextMessages).toHaveLength(2)
+      expect(capturedContextMessages).toHaveLength(3)
+      expect(capturedContextMessages[2].content).toContain('<runtime_context_update>')
       expect(capturedContextMessages[0]?.role).toBe('user')
       expect(capturedContextMessages[0]?.content).toContain('Earlier conversation summary:')
       expect(capturedContextMessages[0]?.content).toContain('compressed summary')
@@ -297,9 +298,10 @@ describe('AgentLoop', () => {
 
       expect(callbacks.onMessageStart).toHaveBeenCalledOnce()
       expect(callbacks.onComplete).toHaveBeenCalledOnce()
-      expect(result).toHaveLength(2)
-      expect(result[1].role).toBe('assistant')
-      expect(result[1].content).toBe('Hello!')
+      const turns = result.filter(message => message.kind !== 'context_update')
+      expect(turns).toHaveLength(2)
+      expect(turns[1].role).toBe('assistant')
+      expect(turns[1].content).toBe('Hello!')
     })
 
     it('should call onMessageStart for each assistant message', async () => {
@@ -530,7 +532,7 @@ describe('AgentLoop', () => {
       })
 
       expect(updates.length).toBeGreaterThan(0)
-      expect(updates[updates.length - 1]).toHaveLength(2)
+      expect(updates[updates.length - 1].filter(message => message.kind !== 'context_update')).toHaveLength(2)
     })
   })
 

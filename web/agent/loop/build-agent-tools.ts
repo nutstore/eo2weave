@@ -25,6 +25,7 @@ function extractLastAssistantUsage(messages: Message[]): number | undefined {
 }
 
 export interface BuildAgentToolsInput {
+  stableDescriptions?: boolean
   toolRegistry: ToolRegistry
   mode: AgentMode
   callbacks?: AgentCallbacks
@@ -41,7 +42,7 @@ export interface BuildAgentToolsInput {
 }
 
 export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
-  return input.toolRegistry.getToolDefinitionsForMode(input.mode).map((toolDef) => ({
+  return input.toolRegistry.getToolDefinitionsForMode(input.mode, { includeDynamicDescriptions: !input.stableDescriptions }).map((toolDef) => ({
     name: toolDef.function.name,
     label: toolDef.function.name,
     description: toolDef.function.description || '',

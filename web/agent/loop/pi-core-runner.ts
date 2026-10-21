@@ -1,3 +1,4 @@
+import { reconcileContext, type ContextObservation } from '@/agent/context/journal'
 import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 import { produce } from 'immer'
 import { agentLoopContinue, type StreamFn } from '@earendil-works/pi-agent-core'
@@ -74,6 +75,7 @@ function normalizeResponsesInputPayload(payload: Record<string, unknown>): void 
 
 export interface ExecutePiCoreLoopInput {
   signal?: AbortSignal
+  collectContext?: () => Promise<ContextObservation[]>
   initialMessages: Message[]
   callbacks?: AgentCallbacks
   baseSystemPrompt: string
@@ -171,6 +173,7 @@ export async function executePiCoreLoop(
 
   await bashCommandRegistry.refresh()
   const agentTools = buildAgentTools({
+    stableDescriptions: !!input.collectContext,
     toolRegistry: input.toolRegistry,
     mode: input.mode,
     callbacks: input.callbacks,
@@ -302,13 +305,6 @@ export async function executePiCoreLoop(
       reasoning,
       convertToLlm: async (agentMessages) => {
         await bashCommandRegistry.refresh()
-        // Pick up commands registered/replaced while this agent loop is running.
-        const bash = agentTools.find(tool => tool.name === 'bash')
-        if (bash) {
-          const definition = input.toolRegistry.getToolDefinitionsForMode(input.mode)
-            .find(tool => tool.function.name === 'bash')
-          bash.description = definition?.function.description || ''
-        }
         const contextConfig = input.contextManager.getConfig()
         const converted = await convertAgentMessagesToLlm({
           agentMessages,
@@ -347,6 +343,36 @@ export async function executePiCoreLoop(
         convertCallCount = converted.convertCallCount
         lastSummaryConvertCall = converted.lastSummaryConvertCall
         compressionBaseline = converted.compressionBaseline
+        if (input.collectContext) {
+          const observations = await input.collectContext()
+          input.signal?.throwIfAborted()
+          const history = messageState.allMessages
+          const summaryIndex = history.map(message => message.kind).lastIndexOf('context_summary')
+          const contextIndex = history.map(message => message.kind).lastIndexOf('context_update')
+          const envelope = JSON.stringify({
+            version: 1, provider: model.provider, model: model.id, api: model.api, baseUrl: model.baseUrl,
+            system: context.systemPrompt,
+            tools: agentTools.map(({ name, description, parameters }) => ({ name, description, parameters })),
+          })
+          const latestCommit = history[contextIndex]
+          const latestCommitVisible = !latestCommit || converted.piMessages.some(message =>
+            piToInternalMessage(message)?.id === latestCommit.id)
+          const update = reconcileContext(history, observations, envelope,
+            summaryIndex > contextIndex || !latestCommitVisible)
+          if (update) {
+            const next = [...history, update]
+            await input.callbacks?.onContextCommit?.(next)
+            input.signal?.throwIfAborted()
+            messageState.allMessages = next
+            allMessages = next
+            input.callbacks?.onMessagesUpdated?.(next)
+            const mapped = internalToPiMessages([update], model, input.compressedMemoryPrefix)
+            // Commit to both histories: the library owns tool execution while the
+            // application owns durable/UI state. Retries reuse these same records.
+            agentMessages.push(...mapped)
+            converted.piMessages.push(...mapped)
+          }
+        }
         return converted.piMessages
       },
     },

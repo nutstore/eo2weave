@@ -1599,6 +1599,10 @@ export async function runAgentImpl(
               emitError(errorMsg)
             }
           },
+          onContextCommit: async (messages: Message[]) => {
+            if (!isCurrentRun() || !isCurrentRunEpoch()) throw new Error('Context commit belongs to a stale run')
+            await persistMessageReplace(conversationId, messages, true)
+          },
           onMessagesUpdated: (msgs: Message[]) => {
             if (!isCurrentRun() && !isCurrentRunEpoch()) return
             const previous = get().conversations.find((x) => x.id === conversationId)?.messages || []

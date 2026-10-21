@@ -130,7 +130,7 @@ export const searchSkillsDefinition: ToolDefinition = {
       'Results render as interactive cards in the chat — the user can install with one click.',
       '',
       'The search covers the Skill Store catalog (skills NOT yet installed).',
-      'For skills that ARE already installed, check the <available_skills> block in the system prompt instead.',
+      'For skills that ARE already installed, check the current skills catalog in runtime context instead.',
     ].join('\n'),
     parameters: {
       type: 'object',

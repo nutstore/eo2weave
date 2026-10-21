@@ -40,195 +40,213 @@ export function extractTextContent(content: unknown): string | null {
   return text || null
 }
 
-export function internalToPiMessages(
-  messages: Message[],
+function mapInternalToPiMessage(
+  msg: Message,
   model: Model<Api>,
   compressedMemoryPrefix: string
 ): PiMessage[] {
-  const normalizedMessages = ensureToolCallResults(messages)
-  const lastSummaryIndex = normalizedMessages.map((m) => m.kind).lastIndexOf('context_summary')
-  const modelMessages = lastSummaryIndex >= 0 ? normalizedMessages.slice(lastSummaryIndex) : normalizedMessages
-  return modelMessages.flatMap((msg): PiMessage[] => {
-    if (msg.kind === 'run_changes') {
-      // A pure UI card ("what this run changed") — no model-facing content.
-      // Drop it so it never enters the LLM context budget.
-      return []
-    }
-    if (msg.kind === 'context_summary') {
-      // Map context_summary as a user message (system-context block) so the
-      // model treats it as memory/context rather than its own prior response.
-      // Guard against legacy data where the content already includes the prefix.
-      const raw = msg.content || ''
-      const content = raw.startsWith(compressedMemoryPrefix)
-        ? raw
-        : `${compressedMemoryPrefix}\n${raw}`
-      return [
-        {
-          role: 'user',
-          content,
-          timestamp: msg.timestamp || Date.now(),
-        },
-      ]
-    }
-    if (msg.role === 'user') {
-      // If a prior agent-loop round already produced a multimodal contentParts
-      // array (e.g. from image uploads), reuse it verbatim.  This preserves
-      // images across subsequent LLM calls; building fresh from msg.assets
-      // would require re-reading OPFS and re-running base64 conversion.
-      // pi-ai's UserMessage accepts the multimodal array via `content` directly
-      // (no separate contentParts field), so we hand the array through as-is.
-      if (msg.contentParts && msg.contentParts.length > 0) {
-        return [{
-          role: 'user',
-          content: msg.contentParts,
-          timestamp: msg.timestamp || Date.now(),
-        }]
-      }
-
-      // Inject asset metadata into user message so the LLM knows about uploaded files
-      let userContent = msg.content || ''
-      // Defensive: model.input is required by pi-ai's Model<Api> type, but
-      // test mocks sometimes omit it.  Default to text-only when absent.
-      const hasVision = model.input?.includes('image') ?? false
-      if (msg.assets && msg.assets.length > 0) {
-        const assetLines = msg.assets.map((a) => {
-          const dir = a.direction === 'upload' ? 'Uploaded' : 'Generated'
-          return `- ${dir}: ${a.name} (${a.mimeType}, ${formatAssetSize(a.size)})`
-        })
-        userContent += `\n\n[Attached files]\n${assetLines.join('\n')}`
-
-        // Inject OCR text for image assets (so AI can read text from screenshots)
-        // ONLY when the model can't see images directly.  Vision-capable models
-        // can OCR the image themselves, so including Tesseract's noisy output
-        // would waste tokens and degrade quality.
-        const imageAssetsForOcr = msg.assets.filter((a) => a.ocrText && a.ocrText.trim().length > 0)
-        if (!hasVision && imageAssetsForOcr.length > 0) {
-          const ocrTexts = imageAssetsForOcr.map((a) => `[OCR text from ${a.name}]\n${a.ocrText}`)
-          userContent += `\n\n${ocrTexts.join('\n\n')}`
-        }
-
-        // Non-image assets: tell AI to use read tool
-        const nonImageAssets = msg.assets.filter((a) => !a.mimeType.startsWith('image/'))
-        if (nonImageAssets.length > 0) {
-          userContent += '\nUse read vfs://assets/<filename> to read file contents.'
-        }
-      }
-
-      // Inject page context captured at send time (side-panel mode only).
-      // Mirrors the OCR-text attachment pattern: stored per-message, rendered
-      // into the user content only here (UI never shows it). Kept out of the
-      // system prompt so prompt caching remains stable across turns.
-      if (msg.pageContext) {
-        const block = renderPageContextBlock(msg.pageContext)
-        if (block) {
-          userContent += block
-        }
-      }
-
-      // Check if we have image assets with base64 data (for Vision API)
-      const imageAssets = msg.assets?.filter((a) => a.ocrBase64 && a.mimeType.startsWith('image/')) || []
-      if (imageAssets.length > 0 && model.input.includes('image')) {
-        // Vision API mode: send as multimodal content (text + images)
-        const contentParts: Array<
-          | { type: 'text'; text: string }
-          | { type: 'image'; data: string; mimeType: string }
-        > = []
-
-        // Add text content first
-        if (userContent) {
-          contentParts.push({ type: 'text', text: userContent })
-        }
-
-        // Add image parts
-        for (const imgAsset of imageAssets) {
-          contentParts.push({
-            type: 'image',
-            data: imgAsset.ocrBase64!,
-            mimeType: imgAsset.mimeType,
-          })
-        }
-
-        return [
-          {
-            role: 'user',
-            content: contentParts,
-            timestamp: msg.timestamp || Date.now(),
-          },
-        ]
-      }
-
-      return [
-        {
-          role: 'user',
-          content: userContent,
-          timestamp: msg.timestamp || Date.now(),
-        },
-      ]
+  if (msg.kind === 'run_changes') {
+    // A pure UI card ("what this run changed") — no model-facing content.
+    // Drop it so it never enters the LLM context budget.
+    return []
+  }
+  if (msg.kind === 'context_summary') {
+    // Map context_summary as a user message (system-context block) so the
+    // model treats it as memory/context rather than its own prior response.
+    // Guard against legacy data where the content already includes the prefix.
+    const raw = msg.content || ''
+    const content = raw.startsWith(compressedMemoryPrefix)
+      ? raw
+      : `${compressedMemoryPrefix}\n${raw}`
+    return [
+      {
+        role: 'user',
+        content,
+        timestamp: msg.timestamp || Date.now(),
+      },
+    ]
+  }
+  if (msg.role === 'user') {
+    // If a prior agent-loop round already produced a multimodal contentParts
+    // array (e.g. from image uploads), reuse it verbatim.  This preserves
+    // images across subsequent LLM calls; building fresh from msg.assets
+    // would require re-reading OPFS and re-running base64 conversion.
+    // pi-ai's UserMessage accepts the multimodal array via `content` directly
+    // (no separate contentParts field), so we hand the array through as-is.
+    if (msg.contentParts && msg.contentParts.length > 0) {
+      return [{
+        role: 'user',
+        content: msg.contentParts,
+        timestamp: msg.timestamp || Date.now(),
+      }]
     }
 
-    if (msg.role === 'assistant') {
-      const content: Array<
+    // Inject asset metadata into user message so the LLM knows about uploaded files
+    let userContent = msg.content || ''
+    // Defensive: model.input is required by pi-ai's Model<Api> type, but
+    // test mocks sometimes omit it.  Default to text-only when absent.
+    const hasVision = model.input?.includes('image') ?? false
+    if (msg.assets && msg.assets.length > 0) {
+      const assetLines = msg.assets.map((a) => {
+        const dir = a.direction === 'upload' ? 'Uploaded' : 'Generated'
+        return `- ${dir}: ${a.name} (${a.mimeType}, ${formatAssetSize(a.size)})`
+      })
+      userContent += `\n\n[Attached files]\n${assetLines.join('\n')}`
+
+      // Inject OCR text for image assets (so AI can read text from screenshots)
+      // ONLY when the model can't see images directly.  Vision-capable models
+      // can OCR the image themselves, so including Tesseract's noisy output
+      // would waste tokens and degrade quality.
+      const imageAssetsForOcr = msg.assets.filter((a) => a.ocrText && a.ocrText.trim().length > 0)
+      if (!hasVision && imageAssetsForOcr.length > 0) {
+        const ocrTexts = imageAssetsForOcr.map((a) => `[OCR text from ${a.name}]\n${a.ocrText}`)
+        userContent += `\n\n${ocrTexts.join('\n\n')}`
+      }
+
+      // Non-image assets: tell AI to use read tool
+      const nonImageAssets = msg.assets.filter((a) => !a.mimeType.startsWith('image/'))
+      if (nonImageAssets.length > 0) {
+        userContent += '\nUse read vfs://assets/<filename> to read file contents.'
+      }
+    }
+
+    // Inject page context captured at send time (side-panel mode only).
+    // Mirrors the OCR-text attachment pattern: stored per-message, rendered
+    // into the user content only here (UI never shows it). Kept out of the
+    // system prompt so prompt caching remains stable across turns.
+    if (msg.pageContext && msg.pageContextDelivery !== 'journal') {
+      const block = renderPageContextBlock(msg.pageContext)
+      if (block) {
+        userContent += block
+      }
+    }
+
+    // Check if we have image assets with base64 data (for Vision API)
+    const imageAssets = msg.assets?.filter((a) => a.ocrBase64 && a.mimeType.startsWith('image/')) || []
+    if (imageAssets.length > 0 && model.input.includes('image')) {
+      // Vision API mode: send as multimodal content (text + images)
+      const contentParts: Array<
         | { type: 'text'; text: string }
-        | { type: 'thinking'; thinking: string }
-        | { type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> }
+        | { type: 'image'; data: string; mimeType: string }
       > = []
 
-      if (msg.content) {
-        content.push({ type: 'text', text: msg.content })
+      // Add text content first
+      if (userContent) {
+        contentParts.push({ type: 'text', text: userContent })
       }
-      if (msg.reasoning) {
-        content.push({ type: 'thinking', thinking: msg.reasoning })
-      }
-      for (const toolCall of msg.toolCalls || []) {
-        content.push({
-          type: 'toolCall',
-          id: toolCall.id,
-          name: toolCall.function.name,
-          arguments: parseToolArgs(toolCall.function.arguments),
+
+      // Add image parts
+      for (const imgAsset of imageAssets) {
+        contentParts.push({
+          type: 'image',
+          data: imgAsset.ocrBase64!,
+          mimeType: imgAsset.mimeType,
         })
       }
 
       return [
         {
-          role: 'assistant',
-          content,
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          usage: {
-            input: msg.usage?.promptTokens ?? 0,
-            output: msg.usage?.completionTokens ?? 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: msg.usage?.totalTokens ?? 0,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-          },
-          stopReason: 'stop',
+          role: 'user',
+          content: contentParts,
           timestamp: msg.timestamp || Date.now(),
         },
       ]
     }
 
-    if (msg.role === 'tool') {
-      return [
-        {
-          role: 'toolResult',
-          toolCallId: msg.toolCallId || '',
-          toolName: msg.name || 'tool',
-          content: msg.contentParts && msg.contentParts.length > 0
-            ? msg.contentParts
-            : [{ type: 'text', text: msg.content || '' }],
-          isError: msg.content?.startsWith('Error:') ?? false,
-          timestamp: msg.timestamp || Date.now(),
-        },
-      ]
+    return [
+      {
+        role: 'user',
+        content: userContent,
+        timestamp: msg.timestamp || Date.now(),
+      },
+    ]
+  }
+
+  if (msg.role === 'assistant') {
+    const content: Array<
+      | { type: 'text'; text: string }
+      | { type: 'thinking'; thinking: string }
+      | { type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> }
+    > = []
+
+    if (msg.content) {
+      content.push({ type: 'text', text: msg.content })
+    }
+    if (msg.reasoning) {
+      content.push({ type: 'thinking', thinking: msg.reasoning })
+    }
+    for (const toolCall of msg.toolCalls || []) {
+      content.push({
+        type: 'toolCall',
+        id: toolCall.id,
+        name: toolCall.function.name,
+        arguments: parseToolArgs(toolCall.function.arguments),
+      })
     }
 
-    return []
+    return [
+      {
+        role: 'assistant',
+        content,
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: msg.usage?.promptTokens ?? 0,
+          output: msg.usage?.completionTokens ?? 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: msg.usage?.totalTokens ?? 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: 'stop',
+        timestamp: msg.timestamp || Date.now(),
+      },
+    ]
+  }
+
+  if (msg.role === 'tool') {
+    return [
+      {
+        role: 'toolResult',
+        toolCallId: msg.toolCallId || '',
+        toolName: msg.name || 'tool',
+        content: msg.contentParts && msg.contentParts.length > 0
+          ? msg.contentParts
+          : [{ type: 'text', text: msg.content || '' }],
+        isError: msg.content?.startsWith('Error:') ?? false,
+        timestamp: msg.timestamp || Date.now(),
+      },
+    ]
+  }
+
+  return []
+}
+
+/** Keep internal provenance through pi-agent's conversion without putting it in provider payloads. */
+const internalMessages = new WeakMap<object, Message>()
+
+export function internalToPiMessages(messages: Message[], model: Model<Api>, prefix: string): PiMessage[] {
+  const lastSummary = messages.map(message => message.kind).lastIndexOf('context_summary')
+  const visible = lastSummary < 0 ? messages : messages.slice(lastSummary)
+  return ensureToolCallResults(visible).flatMap(message => {
+    const mapped = mapInternalToPiMessage(message, model, prefix)
+    for (const item of mapped) {
+      internalMessages.set(item, message)
+    }
+    return mapped
   })
 }
 
 export function piToInternalMessage(message: PiAgentMessage): Message | null {
+  const retained = internalMessages.get(message)
+  if (retained) return retained
+  const converted = mapPiToInternalMessage(message)
+  if (converted) internalMessages.set(message, converted)
+  return converted
+}
+
+function mapPiToInternalMessage(message: PiAgentMessage): Message | null {
   const now = Date.now()
   if (typeof message !== 'object' || !message || !('role' in message)) return null
 

@@ -377,13 +377,9 @@ export function useConversationLogic() {
         .conversations.find((c) => c.id === targetConvId)
 
       // ── Page context capture (side-panel mode only) ────────────────────
-      // Optimization: only re-pull the full context when the upstream page has
-      // actually changed. We read just the URL cheaply (capturePageUrl) and
-      // compare against the most recent pageContext-bearing message in history.
-      //   - URL unchanged → reuse null (history already has valid context)
-      //   - URL changed / no prior context / compression dropped it → full pull
-      // Null in normal (non-side-panel) mode. Shared by the direct-send and
-      // queued-message paths below.
+      // Capture each user turn, including same-URL content changes. The context
+      // journal deduplicates the captured state before model dispatch. Capture
+      // is shared by direct-send and queued-message paths below.
       let pageContext: Awaited<
         ReturnType<(typeof import('@/agent/workspace-assistant-context'))['capturePageContext']>
       > = null
@@ -392,21 +388,10 @@ export function useConversationLogic() {
         // abort the send (the input has already been cleared optimistically —
         // aborting here would silently drop the user's message).
         try {
-          const { capturePageUrl, capturePageContext, shouldRefreshPageContext } =
-            await import('@/agent/workspace-assistant-context')
-          const currentUrl = await capturePageUrl()
-          if (currentUrl) {
-            // Side-panel mode + URL read OK → compare against history.
-            const needRefresh = shouldRefreshPageContext(targetConv?.messages ?? [], currentUrl)
-            if (needRefresh) {
-              pageContext = await capturePageContext()
-            }
-          } else {
-            // Either non-side-panel mode (capturePageContext returns null too) or
-            // side-panel mode where URL read failed — fall back to a full capture.
-            // In non-side-panel mode this is a cheap null return.
-            pageContext = await capturePageContext()
-          }
+          const { capturePageContext } = await import('@/agent/workspace-assistant-context')
+          // Same URL can have different content. The context journal deduplicates
+          // the actual captured state at the next model request boundary.
+          pageContext = await capturePageContext()
         } catch (err) {
           console.warn('[useConversationLogic] page-context capture failed; sending without it:', err)
         }

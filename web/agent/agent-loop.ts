@@ -10,6 +10,8 @@
  * 6. Max 20 iterations
  */
 
+import { collectContextSources, type ContextSource } from '@/agent/context/journal'
+import { createRuntimeContextSources, collectRuntimeContext } from '@/agent/context/sources'
 import type { ToolContext } from './tools/tool-types'
 import type { Message } from './message-types'
 import { ContextManager } from './context-manager'
@@ -60,6 +62,7 @@ export class AgentLoop {
   private contextManager: ContextManager
   private toolContext: ToolContext
   private maxIterations: number
+  private contextSources: ContextSource[]
   private baseSystemPrompt: string
   private abortController: AbortController | null = null
   private sessionId?: string
@@ -85,6 +88,7 @@ export class AgentLoop {
       this.toolContext.readFileState = new Map()
     }
     this.maxIterations = config.maxIterations ?? MAX_ITERATIONS
+    this.contextSources = config.contextSources ?? []
     this.baseSystemPrompt = config.systemPrompt || DEFAULT_SYSTEM_PROMPT
     this.sessionId = config.sessionId
     this.onLoopComplete = config.onLoopComplete
@@ -145,6 +149,13 @@ export class AgentLoop {
         signal,
         initialMessages: messages,
         callbacks,
+        collectContext: this.skipEnhancements && this.contextSources.length === 0 ? undefined : (() => {
+          const sources = [...(this.skipEnhancements ? [] : createRuntimeContextSources(() => ({
+            baseSystemPrompt: this.baseSystemPrompt, messages, mode: this.mode,
+            toolContext: this.toolContext, sessionId: this.sessionId,
+          }))), ...this.contextSources]
+          return () => this.skipEnhancements ? collectContextSources(sources) : collectRuntimeContext(sources)
+        })(),
         baseSystemPrompt: this.baseSystemPrompt,
         mode: this.mode,
         toolRegistry: this.toolRegistry,

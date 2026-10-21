@@ -340,8 +340,9 @@ export class ToolRegistry {
    * In 'plan' mode, only read-only tools are returned.
    * In 'act' mode, all tools are returned.
    */
-  getToolDefinitionsForMode(mode: AgentMode): ToolDefinition[] {
-    let definitions = Array.from(this.tools.values()).map((entry) => this.withBashCommands(entry.definition, mode))
+  getToolDefinitionsForMode(mode: AgentMode, options?: { includeDynamicDescriptions?: boolean }): ToolDefinition[] {
+    let definitions = Array.from(this.tools.values()).map((entry) =>
+      options?.includeDynamicDescriptions === false ? entry.definition : this.withBashCommands(entry.definition, mode))
 
     // Filter by feature flags first
     definitions = this.filterByFeatureFlags(definitions)
