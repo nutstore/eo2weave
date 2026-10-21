@@ -3,6 +3,19 @@ import { groupMessagesIntoTurns } from '../group-messages'
 import { createAssistantMessage, createUserMessage } from '@/agent/message-types'
 
 describe('groupMessagesIntoTurns usage aggregation', () => {
+  it('hides runtime updates without splitting assistant output and retains handoff cards', () => {
+    const question = createUserMessage('question')
+    const first = createAssistantMessage('first')
+    const second = createAssistantMessage('second')
+    const handoff = { ...createUserMessage('task'), delegationNote: { fromAgentId: 'a', task: 'task' } }
+    const turns = groupMessagesIntoTurns([
+      question, first, { ...createUserMessage('state'), kind: 'context_update' }, second, handoff,
+    ])
+    expect(turns.map(turn => turn.type)).toEqual(['user', 'assistant', 'user'])
+    expect(turns[1]).toMatchObject({ messages: [first, second] })
+    expect(turns[2]).toMatchObject({ message: handoff })
+  })
+
   it('uses latest assistant usage for per-message fields and accumulates across the turn', () => {
     const user = createUserMessage('u1')
     const a1 = createAssistantMessage('a1')

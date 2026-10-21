@@ -19,7 +19,8 @@
 
 import { APP_TOOLS } from './schemas'
 import type { Message } from '@/agent/message-types'
-import { createUserMessage } from '@/agent/message-types'
+import { createUserMessage, getMessageRecordType } from '@/agent/message-types'
+import { selectConversationExportMessages, selectConversationTranscript } from '@/agent/message-projections'
 
 // ─── Run registry ─────────────────────────────────────────────────────────────
 
@@ -145,7 +146,7 @@ function findConv(store: any, conversationId: string): any | null {
  */
 function summaryForRun(store: any, rec: AppRunRecord): string {
   const conv = findConv(store, rec.conversationId)
-  const msgs: Message[] = conv?.messages ?? []
+  const msgs = selectConversationTranscript(conv?.messages ?? [])
   // m-6: prefer message-ORDER scoping. The run's user message is the last user
   // message in the array; everything before it belongs to earlier runs. This is
   // immune to clock skew (timestamps only serve as a sanity check).
@@ -180,7 +181,7 @@ function summaryForRun(store: any, rec: AppRunRecord): string {
 
 function lastAssistantSummary(store: any, conversationId: string): string {
   const conv = findConv(store, conversationId)
-  const msgs: Message[] = conv?.messages ?? []
+  const msgs = selectConversationTranscript(conv?.messages ?? [])
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (m.role === 'assistant' && typeof m.content === 'string') return m.content
@@ -400,7 +401,8 @@ export const handlers: Record<string, Handler> = {
     const all = await repo.findByConversation(conversationId)
     // Skip UI-only cards (run_changes has no text content) — they would show
     // up as empty assistant entries and skew pagination density.
-    const readable = all.filter((m: Message) => m.kind !== 'run_changes')
+    const readable = selectConversationExportMessages(all, { includeSystemMessages: true })
+      .filter(m => getMessageRecordType(m) !== 'run_changes')
     const total = readable.length
     const end = Math.max(0, total - (page - 1) * pageSize)
     const start = Math.max(0, end - pageSize)
@@ -409,7 +411,10 @@ export const handlers: Record<string, Handler> = {
       messages: slice.map((m: Message) => {
         const raw = typeof m.content === 'string' ? m.content : ''
         const t = truncateContent(raw)
-        return { role: m.role, content: t.content, truncated: t.truncated, timestamp: m.timestamp }
+        return {
+          role: m.role, recordType: getMessageRecordType(m), kind: m.kind,
+          content: t.content, truncated: t.truncated, timestamp: m.timestamp,
+        }
       }),
       page,
       totalMessages: total,

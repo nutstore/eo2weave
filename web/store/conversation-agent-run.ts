@@ -16,7 +16,7 @@
  */
 
 import { toast } from 'sonner'
-import { type Conversation, type Message, type ToolCall, type ConversationStatus, type ContextWindowUsage, createRunChangesMessage, createUserMessage } from '@/agent/message-types'
+import { isHumanUserMessage, isConversationUserMessage, type Conversation, type Message, type ToolCall, type ConversationStatus, type ContextWindowUsage, createRunChangesMessage, createUserMessage } from '@/agent/message-types'
 import { extractFirstMentionedAgentId } from '@/agent/agent-mention'
 import { emitThinkingStart, emitThinkingDelta, emitCompressionEvent, emitToolStart, emitComplete, emitError } from '@/streaming-bus'
 import { useConversationContextStore } from './conversation-context.store'
@@ -384,7 +384,7 @@ export async function runAgentImpl(
           })
         }
 
-        const lastUserMessage = [...conv.messages].reverse().find((m) => m.role === 'user')
+        const lastUserMessage = [...conv.messages].reverse().find((m) => isConversationUserMessage(m))
 
         const apiKeyRepo = getApiKeyRepository()
         const settingsState = useSettingsStore.getState()
@@ -1016,7 +1016,7 @@ export async function runAgentImpl(
               try {
                 const titleConv = get().conversations.find((c) => c.id === conversationId)
                 const userTurnCount = titleConv?.messages.filter(
-                  (m) => m.role === 'user' && (m.content || '').trim().length > 0
+                  (m) => isHumanUserMessage(m) && (m.content || '').trim().length > 0
                 ).length ?? 0
                 if (titleConv && titleConv.titleMode !== 'manual' && userTurnCount <= 2) {
                   get().generateTitle(conversationId, false)

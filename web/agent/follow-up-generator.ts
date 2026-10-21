@@ -7,6 +7,8 @@
 
 import { createLLMProvider } from './llm/provider-factory'
 import type { Message } from './message-types'
+import { isHumanUserMessage } from '@/agent/message-types'
+import { selectConversationTranscript } from '@/agent/message-projections'
 import type { LLMProviderType } from '@/agent/providers/types'
 
 /** Flash model configs for each provider type */
@@ -68,22 +70,22 @@ function buildFollowUpMessages(messages: Message[]): Array<{
   const chatMessages: Array<{ role: 'user' | 'assistant'; content: string }> = []
 
   // Find last user message
-  let lastUserMessage: Message | null = null
+  let lastUserIndex = -1
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') {
-      lastUserMessage = messages[i]
+    if (isHumanUserMessage(messages[i])) {
+      lastUserIndex = i
       break
     }
   }
+  const lastUserMessage = messages[lastUserIndex]
 
   // Find last assistant message (after the last user message) with actual content
   let lastAssistantMessage: Message | null = null
   if (lastUserMessage) {
-    for (let i = messages.length - 1; i >= 0; i--) {
+    for (let i = messages.length - 1; i > lastUserIndex; i--) {
       const msg = messages[i]
       if (
         msg.role === 'assistant' &&
-        msg.id > lastUserMessage.id &&
         msg.content &&
         msg.content.trim().length > 0
       ) {
@@ -133,8 +135,10 @@ export async function generateFollowUp(
   apiKey: string
 ): Promise<string | null> {
   try {
+    messages = selectConversationTranscript(messages)
     // Skip if no messages or last message is from user
     if (messages.length === 0) return null
+    if (!messages.some(isHumanUserMessage)) return null
     const lastMessage = messages[messages.length - 1]
     if (lastMessage.role === 'user') return null
 

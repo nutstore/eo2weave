@@ -18,6 +18,23 @@ function assistantMsg(content: string, id = String(Math.random())): Message {
 }
 
 describe('approxTokens', () => {
+  it('builds titles only from dialogue, not tool payloads or synthetic user roles', () => {
+    const messages: Message[] = [
+      userMsg('Plan a trip'),
+      { ...userMsg('private state'), kind: 'context_update' },
+      { ...userMsg('private delegation'), delegationNote: { fromAgentId: 'a', task: 'task' } },
+      { ...assistantMsg('private tool output'), role: 'tool' },
+      { ...assistantMsg('private change'), kind: 'run_changes' },
+      assistantMsg('Visit Kyoto'),
+    ]
+    for (const summary of [null, 'Earlier conversation']) {
+      const output = JSON.stringify(buildTitleMessages(messages, summary))
+      expect(output).toContain('Plan a trip')
+      expect(output).toContain('Visit Kyoto')
+      expect(output).not.toContain('private')
+    }
+  })
+
   it('estimates ~tokens using char length / 3', () => {
     expect(approxTokens('')).toBe(0)
     expect(approxTokens('abc')).toBe(1)

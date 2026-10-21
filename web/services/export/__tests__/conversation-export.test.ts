@@ -97,6 +97,33 @@ describe('conversation-export', () => {
   })
 
   describe('basic export (no attachments)', () => {
+    it.each(['json', 'markdown', 'html'] as const)('excludes runtime patches and labels synthetic records in %s', async (format) => {
+      const conv = makeConversation([
+        makeMessage({ role: 'user', content: 'Real question' }),
+        makeMessage({ role: 'user', kind: 'context_update', content: 'PRIVATE_RUNTIME_CATALOG' }),
+        makeMessage({ role: 'user', content: 'Delegated task', delegationNote: { fromAgentId: 'a', task: 'task' } }),
+        makeMessage({ role: 'user', kind: 'context_summary', content: 'Earlier memory' }),
+        makeMessage({ role: 'assistant', content: 'Real answer' }),
+      ])
+      const result = await exportConversation(conv, { format, includeImages: false, includeSystemMessages: true })
+      expect(result.success).toBe(true)
+      expect(result.messageCount).toBe(4)
+      const output = await lastSave().blob.text()
+      expect(output).not.toContain('PRIVATE_RUNTIME_CATALOG')
+      if (format === 'json') {
+        const messages = JSON.parse(output).messages
+        expect(messages.map((m: { recordType: string }) => m.recordType)).toEqual([
+          'user_input', 'agent_input', 'context_summary', 'assistant_output',
+        ])
+        expect(messages[1].delegationNote.fromAgentId).toBe('a')
+        expect(messages[2].kind).toBe('context_summary')
+      } else {
+        expect(output).toContain('Agent Input')
+        expect(output).toContain('Context Summary')
+      }
+      expect(conv.messages).toHaveLength(5)
+    })
+
     it('exports markdown as a plain .md when no readable images exist', async () => {
       mockGetWorkspace.mockResolvedValue(mockAssetsDir({}))
 

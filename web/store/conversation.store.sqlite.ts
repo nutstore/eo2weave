@@ -9,6 +9,7 @@
  * and not persisted to SQLite.
  */
 
+import { isConversationUserMessage, isHumanUserMessage } from '@/agent/message-types'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import { enableMapSet } from 'immer'
@@ -868,7 +869,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 
           // A user message marks the start of a new loop: bump the
           // conversation's sort position (lastAccessedAt) now — NOT on click.
-          if (message.role === 'user') {
+          if (isHumanUserMessage(message)) {
             const wsState = useConversationContextStore.getState()
             const ws = wsState.workspaces.find((w) => w.id === conversationId)
             if (ws) {
@@ -876,8 +877,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             }
           }
 
-          if (message.role === 'user' && conv.titleMode !== 'manual' && message.content) {
-            const userMessages = conv.messages.filter((m) => m.role === 'user')
+          if (isHumanUserMessage(message) && conv.titleMode !== 'manual' && message.content) {
+            const userMessages = conv.messages.filter((m) => isHumanUserMessage(m))
             if (userMessages.length === 1) {
               const newTitle = truncateTitle(message.content)
               conv.title = newTitle
@@ -895,7 +896,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           toast.error('消息保存失败')
         })
         // If title was auto-generated, also persist metadata
-        if (conv.titleMode === 'auto' && message.role === 'user') {
+        if (conv.titleMode === 'auto' && isHumanUserMessage(message)) {
           persistConversationMeta(conv).catch(() => {})
         }
       }
@@ -922,18 +923,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       set((state) => {
         const conv = state.conversations.find((c) => c.id === conversationId)
         if (conv) {
-          const prevUserMessageCount = conv.messages.filter((m) => m.role === 'user').length
+          const prevUserMessageCount = conv.messages.filter((m) => isHumanUserMessage(m)).length
 
           conv.messages = messages
           conv.updatedAt = Date.now()
 
-          const currentUserMessageCount = messages.filter((m) => m.role === 'user').length
+          const currentUserMessageCount = messages.filter((m) => isHumanUserMessage(m)).length
 
           // A new user message marks the start of a new loop: bump the
           // conversation's sort position (lastAccessedAt) now — NOT on click.
           if (
             currentUserMessageCount > prevUserMessageCount &&
-            messages.some((m) => m.role === 'user')
+            messages.some((m) => isHumanUserMessage(m))
           ) {
             const wsState = useConversationContextStore.getState()
             if (wsState.workspaces.some((w) => w.id === conversationId)) {
@@ -946,7 +947,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             prevUserMessageCount === 0 &&
             conv.titleMode !== 'manual'
           ) {
-            const firstUserMessage = messages.find((m) => m.role === 'user')
+            const firstUserMessage = messages.find((m) => isHumanUserMessage(m))
             if (firstUserMessage?.content) {
               const newTitle = truncateTitle(firstUserMessage.content)
               conv.title = newTitle
@@ -996,7 +997,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         const conv = draft.conversations.find((c) => c.id === conversationId)
         if (!conv) return
         const idx = conv.messages.findIndex((m) => m.id === userMessageId)
-        if (idx < 0 || conv.messages[idx].role !== 'user') return
+        if (idx < 0 || !isConversationUserMessage(conv.messages[idx])) return
         const msgTimestamp = conv.messages[idx].timestamp
         conv.messages.splice(idx, 1)
         // Invalidate compression summary if the deleted message was within the compressed range
@@ -1032,7 +1033,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         const conv = draft.conversations.find((c) => c.id === conversationId)
         if (!conv) return
         const startIdx = conv.messages.findIndex((m) => m.id === userMessageId)
-        if (startIdx < 0 || conv.messages[startIdx].role !== 'user') return
+        if (startIdx < 0 || !isConversationUserMessage(conv.messages[startIdx])) return
 
         const loopStartTimestamp = conv.messages[startIdx].timestamp
 
@@ -1040,7 +1041,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         idsToDelete.add(conv.messages[startIdx].id)
         for (let i = startIdx + 1; i < conv.messages.length; i++) {
           const msg = conv.messages[i]
-          if (msg.role === 'user') break
+          if (isConversationUserMessage(msg)) break
           idsToDelete.add(msg.id)
         }
 
@@ -1084,7 +1085,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         toast.error(i18nText('conversation.toast.targetMessageMissing', '目标消息不存在，可能已被删除'))
         return
       }
-      if (conv.messages[userMsgIndex].role !== 'user') {
+      if (!isConversationUserMessage(conv.messages[userMsgIndex])) {
         toast.error(i18nText('conversation.toast.onlyUserMessageRegenerate', '只能重新生成用户消息'))
         return
       }
@@ -1095,7 +1096,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const idsToDelete = new Set<string>()
       for (let i = userMsgIndex + 1; i < conv.messages.length; i++) {
         const msg = conv.messages[i]
-        if (msg.role === 'user') break
+        if (isConversationUserMessage(msg)) break
         idsToDelete.add(msg.id)
       }
 
@@ -1159,7 +1160,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         toast.error(i18nText('conversation.toast.targetMessageMissing', '目标消息不存在，可能已被删除'))
         return
       }
-      if (conv.messages[userMsgIndex].role !== 'user') {
+      if (!isConversationUserMessage(conv.messages[userMsgIndex])) {
         toast.error(i18nText('conversation.toast.onlyUserMessageEditResend', '只能编辑并重发用户消息'))
         return
       }
@@ -1171,7 +1172,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const idsToDelete = new Set<string>()
       for (let i = userMsgIndex + 1; i < conv.messages.length; i++) {
         const msg = conv.messages[i]
-        if (msg.role === 'user') break
+        if (isConversationUserMessage(msg)) break
         idsToDelete.add(msg.id)
       }
 

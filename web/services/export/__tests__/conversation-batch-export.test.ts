@@ -98,6 +98,9 @@ describe('listConversationsForExport', () => {
     await listConversationsForExport({ query: 'OPFS', keywordSearch: true })
     const [sql] = queryAllMock.mock.calls[0]
     expect(sql).toContain('EXISTS (SELECT 1 FROM messages m')
+    const predicate = "COALESCE(json_extract(NULLIF(m.meta_json, ''), '$.kind'), '') <> 'context_update'"
+    // Both keyword matches and displayed counts use the readable-history policy.
+    expect(sql.split(predicate)).toHaveLength(3)
   })
 
   it('respects custom limit', async () => {
@@ -189,6 +192,22 @@ describe('exportConversationsBatch', () => {
     expect(manifest.items).toHaveLength(2)
     expect(manifest.items[0]).toMatchObject({ title: 'Alpha', dir: '01-Alpha', success: true, messageCount: 2 })
     expect(manifest.items[1]).toMatchObject({ title: 'Beta', dir: '02-Beta', success: true, messageCount: 1 })
+  })
+
+  it('excludes runtime patches from batch documents and manifest counts', async () => {
+    findByConversationMock.mockResolvedValueOnce([
+      makeMessage({ role: 'user', content: 'Question' }),
+      makeMessage({ role: 'user', kind: 'context_update', content: 'PRIVATE_RUNTIME_CATALOG' }),
+      makeMessage({ role: 'assistant', content: 'Answer' }),
+    ])
+    const result = await exportConversationsBatch([
+      { conversationId: 'conv-1', title: 'Alpha', projectName: 'cw', updatedAt: 123 },
+    ], { format: 'markdown', includeImages: false })
+    expect(result.success).toBe(true)
+    const files = unzipSync(new Uint8Array(await lastSave().blob.arrayBuffer()))
+    expect(new TextDecoder().decode(files['01-Alpha/conversation.md'])).not.toContain('PRIVATE_RUNTIME_CATALOG')
+    const manifest = JSON.parse(new TextDecoder().decode(files['manifest.json']))
+    expect(manifest.items[0].messageCount).toBe(2)
   })
 
   it('skips empty conversations instead of aborting the batch', async () => {

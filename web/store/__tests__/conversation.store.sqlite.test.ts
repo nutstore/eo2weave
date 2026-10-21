@@ -622,6 +622,32 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(updated?.messages.map((m) => m.id)).toEqual([a1.id, t1.id, u2.id])
   })
 
+  it('keeps automatic titles tied to human input when internal records survive deletion', () => {
+    const conv = useConversationStore.getState().createNew('title-boundaries')
+    const first = createUserMessage('First question')
+    const second = createUserMessage('Second question')
+    const context = { ...createUserMessage('PRIVATE_RUNTIME'), kind: 'context_update' as const }
+    const delegation = { ...createUserMessage('PRIVATE_TASK'), delegationNote: { fromAgentId: 'a', task: 'task' } }
+    useConversationStore.getState().updateMessages(conv.id, [first, context, delegation, second])
+    expect(useConversationStore.getState().deleteUserMessage(conv.id, first.id)).toBe(true)
+    let updated = useConversationStore.getState().conversations.find(c => c.id === conv.id)
+    expect(updated?.title).toBe('Second question')
+    expect(updated?.messages).toHaveLength(3)
+    expect(useConversationStore.getState().deleteUserMessage(conv.id, second.id)).toBe(true)
+    updated = useConversationStore.getState().conversations.find(c => c.id === conv.id)
+    expect(updated?.title).toBe('New Chat')
+    expect(updated?.messages).toHaveLength(2)
+  })
+
+  it('does not generate automatic titles from agent-only input', () => {
+    const conv = useConversationStore.getState().createNew('agent-only')
+    const before = useConversationStore.getState().conversations.find(c => c.id === conv.id)?.title
+    useConversationStore.getState().addMessage(conv.id, {
+      ...createUserMessage('PRIVATE_TASK'), delegationNote: { fromAgentId: 'a', task: 'task' },
+    })
+    expect(useConversationStore.getState().conversations.find(c => c.id === conv.id)?.title).toBe(before)
+  })
+
   it('should delete a whole agent loop from user message to before next user message', () => {
     const store = useConversationStore.getState()
     const conv = store.createNew('delete-loop')

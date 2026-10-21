@@ -28,7 +28,7 @@ export interface MessageRow {
 interface MessageMeta {
   displayContent?: string
   deferredContext?: Message['deferredContext']
-  kind?: 'normal' | 'context_summary' | 'run_changes'
+  kind?: Message['kind']
   reasoning?: string | null
   reasoningDurationMs?: number
   toolCalls?: ToolCall[]
@@ -40,6 +40,7 @@ interface MessageMeta {
   contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
   runChanges?: { snapshotId: string }
   readImageHandoff?: Message['readImageHandoff']
+  delegationNote?: Message['delegationNote']
 }
 
 interface AppSessionSerializedMessage {
@@ -305,6 +306,10 @@ export class MessageRepository {
       meta.readImageHandoff = message.readImageHandoff
       hasMeta = true
     }
+    if (message.delegationNote !== undefined) {
+      meta.delegationNote = message.delegationNote
+      hasMeta = true
+    }
 
     return {
       contentJson,
@@ -337,6 +342,7 @@ export class MessageRepository {
       deferredContext: meta.deferredContext,
       runChanges: meta.runChanges,
       readImageHandoff: meta.readImageHandoff,
+      delegationNote: meta.delegationNote,
     }
   }
 

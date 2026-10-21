@@ -22,6 +22,13 @@ describe('search_conversations', () => {
     )
   })
 
+  it('excludes runtime journal content and metadata from keyword matches', async () => {
+    await searchConversationsExecutor({ query: 'skills' }, { directoryHandle: null })
+    const [sql] = queryAllMock.mock.calls[0]
+    expect(sql).toContain("COALESCE(json_extract(NULLIF(m_msg.meta_json, ''), '$.kind'), '') <> 'context_update'")
+    expect(sql).toContain('AND (lower(m_msg.content_json)')
+  })
+
   it('rejects a list request with no filter instead of querying every conversation', async () => {
     const result = await searchConversationsExecutor({}, { directoryHandle: null })
 

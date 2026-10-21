@@ -7,6 +7,7 @@
  */
 
 import type { Message, MessageUsage } from '@/agent/message-types'
+import { getMessageRecordType, isConversationUserMessage } from '@/agent/message-types'
 
 export type Turn =
   | { type: 'user'; message: Message }
@@ -43,14 +44,15 @@ export function groupMessagesIntoTurns(messages: Message[]): Turn[] {
   }
 
   for (const msg of messages) {
-    if (msg.role === 'system' || msg.role === 'tool') {
+    const type = getMessageRecordType(msg)
+    if (type === 'system' || type === 'tool_result' || type === 'context_update') {
       continue
     }
 
-    if (msg.role === 'user' && msg.kind !== 'context_summary') {
+    if (isConversationUserMessage(msg)) {
       flushAssistant()
       turns.push({ type: 'user', message: msg })
-    } else if (msg.role === 'assistant' || msg.kind === 'context_summary') {
+    } else if (type === 'assistant_output' || type === 'run_changes' || type === 'context_summary') {
       if (!currentAssistant) {
         currentAssistant = []
       }

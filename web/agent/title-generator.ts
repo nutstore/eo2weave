@@ -12,6 +12,8 @@
  *   + recent messages when the transcript is unexpectedly large.
  */
 
+import { isHumanUserMessage } from '@/agent/message-types'
+import { selectConversationTranscript } from '@/agent/message-projections'
 import { createLLMProvider } from './llm/provider-factory'
 import type { Message } from './message-types'
 import type { LLMProviderType } from '@/agent/providers/types'
@@ -46,6 +48,7 @@ function buildTitleMessages(
   messages: Message[],
   compressedContextSummary: string | null
 ): Array<{ role: 'system' | 'user'; content: string }> {
+  messages = selectConversationTranscript(messages)
   // Bilingual prompt so the model reliably follows instructions for both
   // Chinese and English (and other Latin-script) conversations. We let the
   // model infer the user's language from the user messages themselves —
@@ -63,7 +66,7 @@ function buildTitleMessages(
     const recent = messages.slice(-RECENT_MESSAGE_COUNT)
     const recentText = recent
       .map((m) => {
-        const role = m.role === 'user' ? '用户' : '助手'
+        const role = isHumanUserMessage(m) ? '用户' : '助手'
         const content = (m.content || '').trim()
         return content ? `${role}: ${content}` : ''
       })
@@ -85,7 +88,7 @@ function buildTitleMessages(
   // First try feeding all messages (volume is small at this point).
   const allText = messages
     .map((m) => {
-      const role = m.role === 'user' ? '用户' : '助手'
+      const role = isHumanUserMessage(m) ? '用户' : '助手'
       const content = (m.content || '').trim()
       return content ? `${role}: ${content}` : ''
     })
@@ -101,14 +104,14 @@ function buildTitleMessages(
   }
 
   // Hard budget guard: keep first user message + recent messages.
-  const firstUser = messages.find((m) => m.role === 'user' && (m.content || '').trim())
+  const firstUser = messages.find((m) => isHumanUserMessage(m) && (m.content || '').trim())
   const headText = firstUser
     ? `用户: ${(firstUser.content || '').trim()}`
     : ''
   const tail = messages.slice(-RECENT_MESSAGE_COUNT)
   const tailText = tail
     .map((m) => {
-      const role = m.role === 'user' ? '用户' : '助手'
+      const role = isHumanUserMessage(m) ? '用户' : '助手'
       const content = (m.content || '').trim()
       return content ? `${role}: ${content}` : ''
     })
@@ -193,7 +196,7 @@ export async function generateConversationTitle(
   try {
     // Need at least one user message with content to generate a meaningful title.
     const hasUserContent = messages.some(
-      (m) => m.role === 'user' && (m.content || '').trim().length > 0
+      (m) => isHumanUserMessage(m) && (m.content || '').trim().length > 0
     )
     if (!hasUserContent) return null
 

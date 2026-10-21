@@ -74,8 +74,8 @@ export interface Message {
    * Mirrors pi-ai's UserMessage.content array format.
    */
   contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
-  /** UI-only classification for special assistant records */
-  kind?: 'normal' | 'context_summary' | 'run_changes'
+  /** Application record identity; independent of the provider-facing role. */
+  kind?: 'normal' | 'context_summary' | 'run_changes' | 'context_update'
   /**
    * Present only on `kind === 'run_changes'` assistant records. Points at the
    * auto-apply snapshot that captured everything this agent run changed, so
@@ -296,6 +296,43 @@ export interface Conversation {
 /** Generate a unique message ID */
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+export type MessageRecordType =
+  | 'user_input'
+  | 'agent_input'
+  | 'assistant_output'
+  | 'tool_result'
+  | 'context_update'
+  | 'context_summary'
+  | 'run_changes'
+  | 'system'
+
+/** Derive application identity from persisted fields, including legacy records. */
+export function getMessageRecordType(message: Pick<Message,
+  'role' | 'kind' | 'delegationNote' | 'readImageHandoff'
+>): MessageRecordType {
+  if (message.kind === 'context_update' || message.kind === 'context_summary' || message.kind === 'run_changes') {
+    return message.kind
+  }
+  if (message.role === 'user') {
+    return message.delegationNote || message.readImageHandoff ? 'agent_input' : 'user_input'
+  }
+  if (message.role === 'assistant') return 'assistant_output'
+  if (message.role === 'tool') return 'tool_result'
+  return 'system'
+}
+
+export function isHumanUserMessage(message: Pick<Message,
+  'role' | 'kind' | 'delegationNote' | 'readImageHandoff'
+>): boolean {
+  return getMessageRecordType(message) === 'user_input'
+}
+
+/** Execution boundary, including agent handoffs; not a test for human authorship. */
+export function isConversationUserMessage(message: Pick<Message, 'role' | 'kind'>): boolean {
+  const type = getMessageRecordType(message)
+  return type === 'user_input' || type === 'agent_input'
 }
 
 /** Create a user message */

@@ -27,6 +27,8 @@ import { useConversationStore } from '@/store/conversation.store'
 import { getMessageRepository } from '@/sqlite'
 import type { Message } from '@/agent/message-types'
 import { useT } from '@/i18n'
+import { isHumanUserMessage } from '@/agent/message-types'
+import { selectConversationExportMessages } from '@/agent/message-projections'
 import {
   exportConversation,
   type ConversationExportFormat,
@@ -189,9 +191,10 @@ export function ExportConversationDialog({
     return null
   }
 
-  const messageCount = exportSource.length
-  const userMessages = exportSource.filter((m) => m.role === 'user').length
-  const assistantMessages = exportSource.filter((m) => m.role === 'assistant').length
+  const exportMessages = selectConversationExportMessages(exportSource, options)
+  const messageCount = exportMessages.length
+  const userMessages = exportMessages.filter(isHumanUserMessage).length
+  const assistantMessages = exportMessages.filter((m) => m.role === 'assistant').length
 
   return (
     <BrandDialog open={open} onOpenChange={onOpenChange}>

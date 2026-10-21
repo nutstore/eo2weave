@@ -22,6 +22,7 @@ import { saveAs } from 'file-saver'
 import { strToU8, zipSync, type Zippable } from 'fflate'
 import type { Conversation, Message } from '@/agent/message-types'
 import { getSQLiteDB } from '@/sqlite/sqlite-database'
+import { READABLE_HISTORY_MESSAGE_SQL } from '@/sqlite/message-projections'
 import { getMessageRepository } from '@/sqlite'
 import {
   prepareConversationExport,
@@ -115,7 +116,7 @@ export async function listConversationsForExport(
     const likePattern = `%${query.trim()}%`
     if (keywordSearch) {
       conditions.push(
-        `(c.title LIKE ? OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND lower(m.content_json) LIKE lower(?)))`,
+        `(c.title LIKE ? OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND ${READABLE_HISTORY_MESSAGE_SQL} AND lower(m.content_json) LIKE lower(?)))`,
       )
       params.push(likePattern, likePattern)
     } else {
@@ -134,7 +135,7 @@ export async function listConversationsForExport(
       p.name AS projectName,
       c.updated_at AS updatedAt,
       c.created_at AS createdAt,
-      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS messageCount
+      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND ${READABLE_HISTORY_MESSAGE_SQL}) AS messageCount
     FROM conversations c
     LEFT JOIN workspaces w ON c.id = w.id
     LEFT JOIN projects p ON w.project_id = p.id

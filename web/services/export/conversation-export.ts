@@ -2,7 +2,7 @@
  * Conversation Export Service
  *
  * Exports conversation records in multiple formats:
- * - JSON: structured data, suitable for backup and re-import
+ * - JSON: structured readable history, not a lossless runtime checkpoint
  * - Markdown: human-readable, suitable for sharing and reading
  * - HTML: styled document, suitable for printing and archiving
  *
@@ -24,6 +24,8 @@
 import { saveAs } from 'file-saver'
 import { strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import type { Conversation, Message } from '@/agent/message-types'
+import { getMessageRecordType, type MessageRecordType } from '@/agent/message-types'
+import { selectConversationExportMessages } from '@/agent/message-projections'
 import type { AssetMeta } from '@/types/asset'
 
 // ============================================================================
@@ -88,6 +90,10 @@ export interface ConversationExportData {
   messages: Array<{
     id: string
     role: string
+    recordType: MessageRecordType
+    kind?: Message['kind']
+    delegationNote?: Message['delegationNote']
+    readImageHandoff?: Message['readImageHandoff']
     content: string | null
     reasoning?: string | null
     timestamp: string
@@ -168,7 +174,7 @@ export async function prepareConversationExport(
   } = options
 
   // Filter and normalize messages
-  const messages = filterMessages(conversation.messages, {
+  const messages = selectConversationExportMessages(conversation.messages, {
     includeToolCalls,
     includeSystemMessages,
   })
@@ -318,22 +324,20 @@ export async function exportConversation(
 }
 
 // ============================================================================
-// Message Filtering
+// Message Labels
 // ============================================================================
 
-interface FilterOptions {
-  includeToolCalls: boolean
-  includeSystemMessages: boolean
-}
-
-function filterMessages(messages: Message[], options: FilterOptions): Message[] {
-  return messages.filter((msg) => {
-    // Skip system messages unless requested
-    if (msg.role === 'system' && !options.includeSystemMessages) return false
-    // Skip tool result messages if tool calls are excluded
-    if (msg.role === 'tool' && !options.includeToolCalls) return false
-    return true
-  })
+function messageLabel(message: Message): string {
+  switch (getMessageRecordType(message)) {
+    case 'agent_input': return 'Agent Input'
+    case 'context_summary': return 'Context Summary'
+    case 'context_update': return 'Runtime Context'
+    case 'run_changes': return 'Run Changes'
+    case 'user_input': return 'User'
+    case 'assistant_output': return 'Assistant'
+    case 'tool_result': return 'Tool'
+    case 'system': return 'System'
+  }
 }
 
 // ============================================================================
@@ -635,6 +639,13 @@ function buildJSONString(
     messages: messages.map((msg) => ({
       id: msg.id,
       role: msg.role,
+      recordType: getMessageRecordType(msg),
+      kind: msg.kind,
+      delegationNote: msg.delegationNote,
+      readImageHandoff: msg.readImageHandoff ? {
+        ...msg.readImageHandoff,
+        imageData: options.includeImages ? msg.readImageHandoff.imageData : undefined,
+      } : undefined,
       content: msg.content,
       reasoning: options.includeReasoning ? msg.reasoning : undefined,
       timestamp: new Date(msg.timestamp).toISOString(),
@@ -681,7 +692,7 @@ function buildMarkdown(
 
     switch (msg.role) {
       case 'user':
-        lines.push(`### 👤 User — ${time}`)
+        lines.push(`### 👤 ${messageLabel(msg)} — ${time}`)
         lines.push('')
         lines.push(msg.content || '')
         lines.push('')
@@ -690,7 +701,7 @@ function buildMarkdown(
         break
 
       case 'assistant': {
-        lines.push(`### 🤖 Assistant — ${time}`)
+        lines.push(`### 🤖 ${messageLabel(msg)} — ${time}`)
         lines.push('')
 
         // Reasoning
@@ -786,7 +797,7 @@ function buildHTML(
   }
 
   const messageParts = messages.map((msg) => {
-    const role = roleLabels[msg.role] || roleLabels.system
+    const role = { ...(roleLabels[msg.role] || roleLabels.system), label: messageLabel(msg) }
     const time = new Date(msg.timestamp).toLocaleString()
 
     let body = ''

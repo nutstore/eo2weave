@@ -22,6 +22,7 @@ import type { AssetMeta } from '@/types/asset'
 import {
   createAssistantMessage,
   createToolMessage,
+  isHumanUserMessage,
 } from '@/agent/message-types'
 import { createEmptyRuntime } from './conversation-runtime.store'
 import type { ConversationRuntime } from './conversation-runtime.store'
@@ -343,7 +344,7 @@ export function truncateTitle(content: string): string {
 export function updateAutoTitleAfterMessageDelete(conv: Conversation): void {
   if (conv.titleMode === 'manual') return
 
-  const firstUserMessage = conv.messages.find((m) => m.role === 'user' && m.content)
+  const firstUserMessage = conv.messages.find((m) => isHumanUserMessage(m) && m.content)
   if (firstUserMessage?.content) {
     conv.title = truncateTitle(firstUserMessage.content)
     return

@@ -14,6 +14,7 @@
 
 import type { ToolDefinition, ToolExecutor, ToolPromptDoc } from './tool-types'
 import { getSQLiteDB } from '@/sqlite/sqlite-database'
+import { READABLE_HISTORY_MESSAGE_SQL } from '@/sqlite/message-projections'
 import { toolOkJson, toolErrorJson } from './tool-envelope'
 
 export const searchConversationsDefinition: ToolDefinition = {
@@ -194,7 +195,7 @@ function buildMessageWhere(query: string): { sql: string; params: unknown[] } {
   }
   const likePattern = `%${query}%`
   return {
-    sql: `WHERE (lower(m.content_json) LIKE lower(?) OR lower(COALESCE(m.meta_json, '') ) LIKE lower(?))`,
+    sql: `WHERE ${READABLE_HISTORY_MESSAGE_SQL} AND (lower(m.content_json) LIKE lower(?) OR lower(COALESCE(m.meta_json, '') ) LIKE lower(?))`,
     params: [likePattern, likePattern],
   }
 }

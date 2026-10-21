@@ -147,6 +147,20 @@ describe('app-tools handlers', () => {
     expect(r.hasMore).toBe(false)
   })
 
+  it('get_messages filters internal records before pagination and preserves synthetic identity', async () => {
+    deps.getConversationStore().conversations[0].messages.push(
+      { role: 'user', content: 'PRIVATE_STATE', kind: 'context_update', timestamp: 96 },
+      { role: 'user', content: 'delegated task', delegationNote: { fromAgentId: 'a', task: 'task' }, timestamp: 97 },
+      { role: 'assistant', content: 'change card', kind: 'run_changes', timestamp: 98 },
+    )
+    const r = JSON.parse((await handlers.get_messages({ conversationId: 'c_1', pageSize: 1 })).content)
+    expect(r.totalMessages).toBe(3)
+    expect(r.messages).toHaveLength(1)
+    expect(r.messages[0]).toMatchObject({ recordType: 'agent_input', content: 'delegated task' })
+    expect(r.hasMore).toBe(true)
+    expect(JSON.stringify(r)).not.toContain('PRIVATE_STATE')
+  })
+
   it('send_message returns started and fires runAgent', async () => {
     const r = JSON.parse(
       (await handlers.send_message({ conversationId: 'c_1', content: 'do it' })).content,
