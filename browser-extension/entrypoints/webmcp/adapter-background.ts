@@ -1,4 +1,7 @@
-import { getAdapterStorage, readAdapterPackages } from './provider-storage'
+import { getExtensionSkillStorage } from './skill-resources'
+import { readEnabledWebMCPPackages } from './package-repository'
+import { getBuiltinStorage } from './builtin-storage'
+import { getAdapterStorage } from './provider-storage'
 import { createProviderHandler } from './provider-handler'
 import { createAdapterService } from './adapter-service'
 import { isRecord } from '@creatorweave/shared/webmcp-adapter-protocol'
@@ -9,7 +12,7 @@ export function installAdapterBackground(
 ) {
   let wasm: Promise<WebAssembly.Module> | undefined
   const service = createAdapterService({
-    trusted, resolveBinding, readPackages: readAdapterPackages,
+    trusted, resolveBinding, readPackages: readEnabledWebMCPPackages,
     loadWasm: () => wasm ??= fetch(chrome.runtime.getURL('/assets/quickjs/quickjs.wasm'))
       .then(async response => {
         if (!response.ok) throw new Error(`QuickJS WASM unavailable: ${response.status}`)
@@ -20,13 +23,17 @@ export function installAdapterBackground(
         .map(tab => chrome.tabs.sendMessage(tab.id!, { type: 'webmcp_adapter_changed' })))).catch(() => {})
     },
   })
-  const providerCall = createProviderHandler(getAdapterStorage, () => service.refresh())
+  const refresh = () => service.refresh()
+  const providerCall = createProviderHandler(getAdapterStorage, refresh)
+  const builtinCall = createProviderHandler(getBuiltinStorage, refresh)
+  const skillCall = createProviderHandler(getExtensionSkillStorage, async () => {})
   chrome.runtime.onConnect.addListener(port => service.connect(port))
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (!isRecord(message) || typeof message.type !== 'string') return false
     if (message.type === 'webmcp_provider_call') {
       if (!trusted(sender)) { respond({ ok: false, code: 'EACCES', error: 'Untrusted storage caller' }); return false }
-      void providerCall(message).then(respond)
+      if (message.mount !== undefined && !['webmcp', 'builtin-webmcp', 'extension-skills'].includes(String(message.mount))) { respond({ ok: false, code: 'EINVAL', error: 'Unknown mount' }); return false }
+      void (message.mount === 'extension-skills' ? skillCall : message.mount === 'builtin-webmcp' ? builtinCall : providerCall)(message).then(respond)
       return true
     }
     if (!message.type.startsWith('webmcp_adapter_')) return false

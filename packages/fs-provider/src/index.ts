@@ -41,6 +41,8 @@ export interface ProviderRegistration {
   id: string
   name: string
   mountName: string
+  /** Optional directories whose immediate children are SKILL.md packages. */
+  skillRoots?: readonly string[]
   factory(): FsProvider | Promise<FsProvider>
   /** Cheap availability hint. Operations remain authoritative and may fail. */
   isAlive(): boolean
@@ -53,7 +55,10 @@ export function isProviderRegistration(value: unknown): value is ProviderRegistr
   const r = value as Partial<ProviderRegistration>
   return r.version === 1 && typeof r.id === 'string' && r.id.length > 0 && r.id.length <= 256 &&
     typeof r.name === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(r.mountName ?? '') &&
-    typeof r.factory === 'function' && typeof r.isAlive === 'function'
+    typeof r.factory === 'function' && typeof r.isAlive === 'function' &&
+    (r.skillRoots === undefined || (Array.isArray(r.skillRoots) && r.skillRoots.length <= 16 &&
+      r.skillRoots.every(root => typeof root === 'string' && !root.startsWith('/') &&
+        !root.includes('\\') && !root.includes('\0') && !root.split('/').some(part => part === '.' || part === '..'))))
 }
 
 /** Call from the page's JS context. The provider owns injection and communication. */

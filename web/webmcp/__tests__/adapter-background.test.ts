@@ -13,7 +13,8 @@ beforeEach(() => {
   vi.resetAllMocks()
   vi.stubGlobal('chrome', {
     tabs: { onUpdated: { addListener: onUpdated }, onRemoved: { addListener: onRemoved } },
-    runtime: { onConnect: { addListener: onConnect }, onMessage: { addListener: onMessage } },
+    storage: { onChanged: { addListener: vi.fn() } },
+    runtime: { getURL: (path: string) => 'chrome-extension://test' + path, onConnect: { addListener: onConnect }, onMessage: { addListener: onMessage } },
   })
   installAdapterBackground(() => true, async () => 8)
 })
@@ -28,4 +29,13 @@ it('does not cancel SW workflows on page navigation, refresh or target tab closu
 it('does not inject page authorization gates into workflow execution', () => {
   const dependencies = vi.mocked(createAdapterService).mock.calls[0][0]
   expect(dependencies).not.toHaveProperty('authorize')
+})
+
+it('routes the extension skill mount through the background transport', async () => {
+  const listener = onMessage.mock.calls[0][0]
+  const result = await new Promise<Record<string, unknown>>(resolve => {
+    expect(listener({ type: 'webmcp_provider_call', mount: 'extension-skills', method: 'readFile', path: 'cw-webmcp-creator/SKILL.md' }, {}, resolve)).toBe(true)
+  })
+  expect(result.ok).toBe(true)
+  expect(atob(result.value as string)).toContain('name: cw-webmcp-creator')
 })

@@ -8,6 +8,8 @@ export function createProviderHandler(storage: () => Promise<FsProvider>, change
       if (typeof message.path !== 'string') throw new FsError('EINVAL', 'Missing path')
       const path = normalizeProviderPath(message.path)
       const provider = await storage()
+      if (provider.readOnly && ['writeFile', 'mkdir', 'remove'].includes(String(message.method)))
+        throw new FsError('EROFS', 'Read-only provider')
       switch (message.method) {
         case 'stat': return provider.stat(path)
         case 'readdir': return provider.readdir(path)
