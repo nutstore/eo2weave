@@ -76,7 +76,7 @@ let currentInit: WorkerInitMessage | null = null
  */
 let activeHandlerConfig: VfsRpcHandlerConfig | null = null
 
-/** Pending exec — only one at a time (bash tool calls are serialized by agent loop). */
+/** Pending exec — only one at a time, including concurrent adapter callers. */
 let pendingExec: {
   requestId: number
   commands: Map<string, ExternalBashCommand>
@@ -164,7 +164,61 @@ function isSameInit(init: WorkerInitMessage, config: VfsRpcHandlerConfig): boole
 // Exec
 // ---------------------------------------------------------------------------
 
-export async function bashExec(opts: BashExecOptions, handlerConfig: VfsRpcHandlerConfig): Promise<BashExecResult> {
+type QueuedExecution = {
+  start(): void
+  cancel(error: Error): void
+}
+const executionQueue: QueuedExecution[] = []
+let executing = false
+
+function drainExecutionQueue(): void {
+  if (executing) return
+  executionQueue.shift()?.start()
+}
+
+/** The singleton worker cannot share pendingExec or VFS context across calls.
+ * Queued cancellation never terminates another caller's running worker.
+ */
+export function bashExec(opts: BashExecOptions, handlerConfig: VfsRpcHandlerConfig): Promise<BashExecResult> {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + opts.timeoutMs
+    const cleanup = () => {
+      clearTimeout(timer)
+      opts.abortSignal?.removeEventListener('abort', abort)
+    }
+    const entry: QueuedExecution = {
+      cancel(error) {
+        const index = executionQueue.indexOf(entry)
+        if (index < 0) return
+        executionQueue.splice(index, 1)
+        cleanup()
+        reject(error)
+      },
+      start() {
+        cleanup()
+        const remaining = deadline - Date.now()
+        if (opts.abortSignal?.aborted || remaining <= 0) {
+          reject(opts.abortSignal?.aborted ? new Error('bash execution aborted') : new ToolTimeoutError('bash', opts.timeoutMs))
+          drainExecutionQueue()
+          return
+        }
+        executing = true
+        void executeBash({ ...opts, timeoutMs: remaining }, handlerConfig).then(resolve, reject).finally(() => {
+          executing = false
+          drainExecutionQueue()
+        })
+      },
+    }
+    const abort = () => entry.cancel(new Error('bash execution aborted'))
+    const timer = setTimeout(() => entry.cancel(new ToolTimeoutError('bash', opts.timeoutMs)), opts.timeoutMs)
+    executionQueue.push(entry)
+    opts.abortSignal?.addEventListener('abort', abort, { once: true })
+    if (opts.abortSignal?.aborted) abort()
+    drainExecutionQueue()
+  })
+}
+
+async function executeBash(opts: BashExecOptions, handlerConfig: VfsRpcHandlerConfig): Promise<BashExecResult> {
   const w = ensureWorker(handlerConfig)
   const requestId = ++requestIdCounter
 
@@ -328,6 +382,8 @@ function terminateWorker(): void {
 
 /** Tear down the worker (e.g. on workspace switch / app unload). */
 export function destroyBashWorker(): void {
+  for (const entry of [...executionQueue]) entry.cancel(new Error('bash worker destroyed'))
+  pendingExec?.reject(new Error('bash worker destroyed'))
   terminateWorker()
 }
 

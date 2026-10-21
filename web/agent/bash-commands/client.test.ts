@@ -166,3 +166,54 @@ describe('external commands across the Bash worker boundary', () => {
     await next
   })
 })
+
+describe('concurrent Bash callers', () => {
+  it('serializes execution slots and captured VFS contexts instead of replacing pending results', async () => {
+    const first = bashExec(opts, config)
+    const firstWorker = current()
+    const second = bashExec({ ...opts, command: 'second' }, { ...config, workspaceId: 'other' })
+    expect(MockWorker.instances).toHaveLength(1)
+    expect(firstWorker.messages.filter(message => message.type === 'exec')).toHaveLength(1)
+    firstWorker.finish()
+    await first
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2))
+    const secondWorker = current()
+    expect(secondWorker.exec().command).toBe('second')
+    expect(secondWorker.messages).toContainEqual(expect.objectContaining({ type: 'init', workspaceId: 'other' }))
+    secondWorker.finish()
+    await second
+  })
+
+  it('removes an aborted queued call without canceling the active browser command', async () => {
+    const first = bashExec(opts, config)
+    const worker = current()
+    const controller = new AbortController()
+    const queued = bashExec({ ...opts, abortSignal: controller.signal }, config)
+    const canceled = expect(queued).rejects.toThrow('aborted')
+    controller.abort()
+    await canceled
+    expect(worker.terminate).not.toHaveBeenCalled()
+    worker.finish()
+    await first
+    expect(worker.messages.filter(message => message.type === 'exec')).toHaveLength(1)
+  })
+
+  it('counts queue time in the deadline without terminating the active execution', async () => {
+    const first = bashExec(opts, config)
+    const worker = current()
+    const queued = bashExec({ ...opts, timeoutMs: 10 }, config)
+    await expect(queued).rejects.toThrow(/timed out|timeout/i)
+    expect(worker.terminate).not.toHaveBeenCalled()
+    worker.finish()
+    await first
+  })
+
+  it('rejects both active and queued calls when the workspace worker is destroyed', async () => {
+    const first = bashExec(opts, config)
+    const queued = bashExec(opts, config)
+    const stopped = Promise.all([expect(first).rejects.toThrow('destroyed'), expect(queued).rejects.toThrow('destroyed')])
+    destroyBashWorker()
+    await stopped
+    expect(MockWorker.instances).toHaveLength(1)
+  })
+})
