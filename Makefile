@@ -104,6 +104,7 @@ fmt-web: ## Format frontend code
 typecheck: ## Run TypeScript type check
 	@echo '$(BLUE)Running TypeScript type check...$(NC)'
 	@cd web && pnpm run typecheck
+	@cd browser-extension && pnpm run typecheck
 	@echo '$(GREEN)✅ Type check passed!$(NC)'
 
 clean: ## Clean build artifacts

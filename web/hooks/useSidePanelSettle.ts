@@ -45,7 +45,6 @@ export function useSidePanelSettle(): void {
         recoveryAttempted = true
         void recoverSidePanelSession().then((recovered) => {
           if (recovered) {
-            // eslint-disable-next-line no-console
             console.log('[SidePanelSettle] side-panel session recovered after reload')
           }
           void settleSidePanelPath(path)

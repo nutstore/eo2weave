@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // that module from the web project without depending on a separate Vite client.
 declare global {
   interface ImportMetaEnv {
-    readonly MODE: string
+    MODE: string
     readonly VITE_CW_DEV_WEBAPP_ORIGIN?: string
   }
   interface ImportMeta { readonly env: ImportMetaEnv }

@@ -203,7 +203,7 @@ function renderCapline(): void {
 
 (function () {
   var mgr = document.getElementById('mgrToggle');
-  var box = document.getElementById('webmcpBox');
+  var box = document.getElementById('webmcpBox')!;
   if (!mgr || !box) return;
   mgr.addEventListener('click', function () {
     capExpanded = !capExpanded;
@@ -218,9 +218,9 @@ function renderCapline(): void {
 // host name jumps to the source tab; the switch writes the extension-side
 // authorization store (enforced by the background invoke gate).
 (function () {
-  var box = document.getElementById('webmcpBox');
-  var list = document.getElementById('webmcpList');
-  var summary = document.getElementById('webmcpSummary');
+  var box = document.getElementById('webmcpBox')!;
+  var list = document.getElementById('webmcpList')!;
+  var summary = document.getElementById('webmcpSummary')!;
   var guide = document.getElementById('webmcpGuide');
   if (!box || !list || !summary) return;
 
@@ -708,7 +708,7 @@ function renderCapline(): void {
     chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: 'MAIN',
-      func: function () { return !!(window.__agentWeb && (window.__agentWeb as any).ready); }
+      func: function () { return !!((window as any).__agentWeb && (window as any).__agentWeb.ready); }
     }, function (results) {
       if (chrome.runtime.lastError) {
         capState.search = 'error';
@@ -737,7 +737,7 @@ function renderCapline(): void {
   var resetCreditBox = document.getElementById('resetCreditBox')!;
   var resetCreditCount = document.getElementById('resetCreditCount')!;
   var resetCreditMeta = document.getElementById('resetCreditMeta')!;
-  var resetCreditBtn = document.getElementById('resetCreditBtn')!;
+  var resetCreditBtn = document.getElementById('resetCreditBtn') as HTMLButtonElement;
   if (!logEl || !btn || !resetBtn || !resetCreditBox || !resetCreditCount || !resetCreditMeta || !resetCreditBtn) return;
 
   function sleep(ms: number) { return new Promise<void>(function (r) { setTimeout(r, ms); }); }
@@ -1305,12 +1305,12 @@ document.getElementById('openGithub')!.addEventListener('click', function () {
 // When running, shows ready-to-paste setup commands built from the daemon's
 // hello (binaryPath comes from the native host itself).
 (function () {
-  var box = document.getElementById('webmcpBridgeBox');
-  var toggle = document.getElementById('bridgeToggle') as HTMLInputElement | null;
-  var statusText = document.getElementById('bridgeStatusText');
-  var cmdBox = document.getElementById('bridgeCmdBox');
-  var cmdCodex = document.getElementById('bridgeCmdCodex');
-  var cmdClaude = document.getElementById('bridgeCmdClaude');
+  var box = document.getElementById('webmcpBridgeBox')!;
+  var toggle = document.getElementById('bridgeToggle') as HTMLInputElement;
+  var statusText = document.getElementById('bridgeStatusText')!;
+  var cmdBox = document.getElementById('bridgeCmdBox')!;
+  var cmdCodex = document.getElementById('bridgeCmdCodex')!;
+  var cmdClaude = document.getElementById('bridgeCmdClaude')!;
   var infoRow = document.getElementById('bridgeInfoRow');
   if (!box || !toggle || !statusText || !cmdBox || !cmdCodex || !cmdClaude || !infoRow) return;
 

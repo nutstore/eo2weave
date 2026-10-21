@@ -239,7 +239,7 @@ async function fallbackScanRegistrySilentTabs(windowId?: number): Promise<void> 
         tabUrl: tab.url || '',
         windowId: tab.windowId,
         apiMode: result.mode,
-        tools: result.tools.map((tool) => ({
+        tools: (result.tools ?? []).map((tool) => ({
           name: String(tool.name),
           description: tool.description,
           inputSchema: tool.inputSchema,

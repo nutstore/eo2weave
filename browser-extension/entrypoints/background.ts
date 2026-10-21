@@ -116,8 +116,8 @@ function sleep(ms: number): Promise<void> {
 /**
  * Fetch with timeout
  */
-function fetchWithTimeout(url, options = {}) {
-  return new Promise((resolve, reject) => {
+function fetchWithTimeout(url: string, options: any = {}): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       controller.abort();
@@ -134,7 +134,7 @@ function fetchWithTimeout(url, options = {}) {
 /**
  * Extract real URL from DuckDuckGo redirect link
  */
-function extractRealUrl(href) {
+function extractRealUrl(href: any) {
   if (!href) return '';
   const match = href.match(/uddg=([^&]+)/);
   if (match) return decodeURIComponent(match[1]);
@@ -151,7 +151,7 @@ function extractRealUrl(href) {
  * re-detection runs once per SW lifecycle (a few searches in a row
  * share the cache; the next day starts fresh).
  */
-let _cachedProvider = null; // null = not detected yet
+let _cachedProvider: any = null; // null = not detected yet
 let _cachedProviderAt = 0;
 const PROVIDER_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
 
@@ -231,7 +231,7 @@ async function isDuckDuckGoReachable() {
 }
 
 /** Search via DuckDuckGo HTML */
-async function searchDuckDuckGo(query, limit) {
+async function searchDuckDuckGo(query: any, limit: any) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
   const resp = await fetchWithTimeout(url);
   const html = await resp.text();
@@ -275,7 +275,7 @@ async function searchDuckDuckGo(query, limit) {
 }
 
 /** Fetch Baidu search results HTML (raw, unparsed) */
-async function fetchBaiduHtml(query, limit) {
+async function fetchBaiduHtml(query: any, limit: any) {
   const url = `https://www.baidu.com/s?wd=${encodeURIComponent(query)}&rn=${Math.min(limit * 2, 20)}`;
   // No spoofed User-Agent: the extension's own identity is used. Baidu serves
   // /s results fine without a browser UA (verified), and an honest UA avoids
@@ -296,7 +296,7 @@ async function fetchBaiduHtml(query, limit) {
  * Search one provider without substituting another provider. Explicit callers
  * rely on this strict behavior to preserve source provenance.
  */
-async function searchSingleProvider(query, limit, provider) {
+async function searchSingleProvider(query: any, limit: any, provider: any): Promise<any> {
   try {
     if (provider === 'baidu') {
       const html = await fetchBaiduHtml(query, limit);
@@ -324,7 +324,7 @@ async function searchSingleProvider(query, limit, provider) {
  * only available in the injected MAIN-world parser, so an HTML response carries
  * enough metadata for that layer to perform the final retry when needed.
  */
-async function searchAuto(query, limit, primary) {
+async function searchAuto(query: any, limit: any, primary: any) {
   const first = await searchSingleProvider(query, limit, primary);
   const attempts = [];
 
@@ -388,7 +388,7 @@ async function searchAuto(query, limit, primary) {
   };
 }
 
-async function handleSearch(message) {
+async function handleSearch(message: any) {
   const { query, count = 10 } = message;
   const limit = Math.min(count, CONFIG.SEARCH_MAX_RESULTS);
   const isAuto = !message.provider || message.provider === 'auto';
@@ -410,7 +410,7 @@ async function handleSearch(message) {
 // web_fetch: Fetch URL content (raw HTTP)
 // ============================================================
 
-async function handleFetch(message) {
+async function handleFetch(message: any) {
   const { url, method = 'GET', headers = {}, body = null, extract = 'raw' } = message;
 
   // Validate URL
@@ -423,7 +423,7 @@ async function handleFetch(message) {
   try {
     const resp = await fetchWithTimeout(url, { method, headers, body });
     const status = resp.status;
-    const respHeaders = {};
+    const respHeaders: Record<string, string> = {};
     resp.headers.forEach((value, key) => {
       respHeaders[key] = value;
     });
@@ -447,7 +447,7 @@ async function handleFetch(message) {
         .trim();
     }
 
-    const result = {
+    const result: any = {
       ok: resp.ok,
       status,
       headers: respHeaders,
@@ -461,7 +461,7 @@ async function handleFetch(message) {
     if (truncated) result.truncated = true;
     return result;
 
-  } catch (err) {
+  } catch (err: any) {
     return { ok: false, status: 0, error: err.message };
   }
 }
@@ -473,7 +473,7 @@ async function handleFetch(message) {
 // closes the tab. Returns the rendered HTML.
 // ============================================================
 
-async function handleFetchRender(message) {
+async function handleFetchRender(message: any) {
   const { url } = message;
 
   // Validate URL
@@ -487,7 +487,7 @@ async function handleFetchRender(message) {
     return { ok: false, status: 0, error: 'Invalid URL' };
   }
 
-  let tab = null;
+  let tab: chrome.tabs.Tab | null = null;
 
   try {
     // Create a hidden (inactive) tab
@@ -497,15 +497,16 @@ async function handleFetchRender(message) {
     });
 
     // Wait for the tab to finish loading, with timeout
-    await new Promise((resolve, reject) => {
+    const createdTabId = tab.id;
+    await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         chrome.tabs.onUpdated.removeListener(listener);
         // Resolve anyway — we'll try to extract what we have
         resolve();
       }, CONFIG.RENDER_TIMEOUT_MS);
 
-      function listener(tabId, info) {
-        if (tabId !== tab.id) return;
+      function listener(tabId: any, info: any) {
+        if (tabId !== createdTabId) return;
         if (info.status === 'complete') {
           chrome.tabs.onUpdated.removeListener(listener);
           clearTimeout(timeout);
@@ -521,14 +522,14 @@ async function handleFetchRender(message) {
 
     // Extract rendered HTML from the tab
     const [result] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId: createdTabId! },
       func: () => {
         // Get the full rendered DOM
         const html = document.documentElement.outerHTML;
 
         // Also try to get the page title and meta description
         const title = document.title || '';
-        const metaDesc = document.querySelector('meta[name="description"]')?.content || '';
+        const metaDesc = (document.querySelector('meta[name="description"]') as HTMLMetaElement | null)?.content || '';
 
         // The rendered document's actual URL (after HTTP redirects and JS
         // navigation) — used as the base for resolving relative links so the
@@ -540,7 +541,7 @@ async function handleFetchRender(message) {
     });
 
     // Close the tab
-    await chrome.tabs.remove(tab.id);
+    await chrome.tabs.remove(createdTabId!);
     tab = null;
 
     const data = result?.result;
@@ -557,7 +558,7 @@ async function handleFetchRender(message) {
       truncated = true;
     }
 
-    const response = {
+    const response: any = {
       ok: true,
       status: 200,
       headers: {
@@ -573,10 +574,10 @@ async function handleFetchRender(message) {
     if (truncated) response.truncated = true;
     return response;
 
-  } catch (err) {
+  } catch (err: any) {
     // Clean up tab on error
     if (tab) {
-      try { await chrome.tabs.remove(tab.id); } catch {}
+      try { await chrome.tabs.remove((tab as chrome.tabs.Tab).id!); } catch {}
     }
     return { ok: false, status: 0, error: `Render failed: ${err.message}` };
   }
@@ -611,7 +612,7 @@ interface CodexBlockExports {
   clearPendingCodexAuth(): Promise<void>;
   pollCodexAuthOnce(deviceAuthId: string, userCode: string): Promise<Record<string, any>>;
   parseJsonSafe(resp: Response): Promise<{ text: string; json: any }>;
-  codexHeaders(tokens: CodexTokensLike): Record<string, string>;
+  codexHeaders(accessToken: string, extraHeaders?: Record<string, string>): Record<string, string>;
   getCodexResetCredits(tokens: CodexTokensLike): Promise<unknown>;
   getCodexUsageLive(tokens: CodexTokensLike): Promise<unknown>;
   persistCodexUsageLive(live: any): Promise<void>;
@@ -1983,8 +1984,8 @@ export default defineBackground(() => {
 
         // ── Capture Visible Tab ───────────────────────────────────────
         // Captures the visible area of the upstream tab as a PNG/JPEG data URL.
-        // Uses chrome.tabs.captureVisibleTab (no debugger permission needed,
-        // no yellow debug bar). Only captures the current viewport — for
+        // Uses chrome.tabs.captureVisibleTab (unlike the `browser` bash command,
+        // this path does not attach the debugger, so no debug bar is shown). Only captures the current viewport — for
         // full-page capture, the agent should scroll + capture multiple times.
         if (message.type === 'captureBoundTab') {
           const targetTabId = await resolveBoundSidePanelTab(_sender?.url, message.binding)
@@ -2138,7 +2139,7 @@ export default defineBackground(() => {
               timeout: typeof timeoutMs === 'number' ? timeoutMs : CONFIG.TIMEOUT_MS,
             });
             const text = await resp.text();
-            const responseHeaders = {};
+            const responseHeaders: Record<string, string> = {};
             resp.headers.forEach((value, key) => {
               responseHeaders[key] = value;
             });
@@ -2406,7 +2407,7 @@ export default defineBackground(() => {
             authState = 'expired';
           }
 
-          let models: ReturnType<typeof CODEX.parseCodexModels> = [];
+          let models: ReturnType<CodexBlockExports['parseCodexModels']> = [];
           let modelsEndpointProbe: Record<string, unknown> | null = null;
           if (authorized && tokens?.access_token) {
             // The catalog uses the Codex client version (not the ChatGPT web
@@ -2576,7 +2577,7 @@ export default defineBackground(() => {
               tokens = await CODEX!.refreshCodexAccessToken(tokens);
               resp = await fetch(requestUrl, {
                 ...requestInit,
-                headers: CODEX!.codexHeaders(tokens.access_token, message.headers || {}),
+                headers: CODEX!.codexHeaders(tokens.access_token!, message.headers || {}),
               });
             } catch (refreshErr) {
               sendResponse({ ok: false, errorCode: 'REAUTH_REQUIRED', status: 401, message: 'Token refresh failed. Please re-authorize in the extension popup.' });
@@ -2621,7 +2622,7 @@ export default defineBackground(() => {
             return
           }
           try {
-            await chrome.alarms.delete(`sched_${scheduleId}`)
+            await chrome.alarms.clear(`sched_${scheduleId}`)
             sendResponse({ ok: true })
           } catch (err: any) {
             sendResponse({ ok: false, error: err?.message || String(err) })
@@ -2660,7 +2661,7 @@ export default defineBackground(() => {
           const { scheduleId, reason } = message as { scheduleId: string; reason?: string }
           if (scheduleId) {
             try {
-              await chrome.alarms.delete(`sched_${scheduleId}`)
+              await chrome.alarms.clear(`sched_${scheduleId}`)
             } catch { /* ignore */ }
           }
           await showScheduleNotification({
@@ -2744,7 +2745,7 @@ export default defineBackground(() => {
               }, NATIVE_HOST_TIMEOUT_MS)
               chrome.runtime.sendNativeMessage(
                 'com.creatorweave.nativehost',
-                nativePayload,
+                nativePayload as object,
                 (response: any) => {
                   if (settled) return
                   settled = true
@@ -2844,7 +2845,7 @@ export default defineBackground(() => {
               timeout: streamTimeoutMs,
             });
 
-            const responseHeaders = {};
+            const responseHeaders: Record<string, string> = {};
             resp.headers.forEach((value, key) => {
               responseHeaders[key] = value;
             });

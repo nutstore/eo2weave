@@ -215,8 +215,8 @@ export function groupDisabledError(groupKey: string): {
 
 // storage change listener keeps popup/background views consistent
 // when multiple contexts write (e.g. popup + web app relay).
-if (typeof chrome !== 'undefined' && chrome.storage?.local?.onChanged) {
-  chrome.storage.local.onChanged.addListener((changes, area) => {
+if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return
     const hostChange = changes[STORAGE_KEY]
     if (hostChange) {

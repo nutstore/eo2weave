@@ -784,7 +784,7 @@ export default defineContentScript({
                   done: false,
                 }
               },
-              return() {
+              return(): Promise<IteratorResult<any>> {
                 return it.return ? it.return() : Promise.resolve({ value: undefined, done: true })
               },
             }
@@ -961,7 +961,7 @@ export default defineContentScript({
                 }
                 return { value: value.value, done: false }
               },
-              return() {
+              return(): Promise<IteratorResult<any>> {
                 return it.return ? it.return() : Promise.resolve({ value: undefined, done: true })
               },
             }
@@ -995,7 +995,7 @@ export default defineContentScript({
                 }
                 return { value: value.value as Record<string, unknown>, done: false }
               },
-              return() {
+              return(): Promise<IteratorResult<any>> {
                 return it.return ? it.return() : Promise.resolve({ value: undefined, done: true })
               },
             }
