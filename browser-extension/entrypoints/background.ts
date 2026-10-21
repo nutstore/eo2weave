@@ -1475,13 +1475,14 @@ export default defineBackground(() => {
     })
   }
 
-  installAdapterBackground(
+  const adapterService = installAdapterBackground(
     sender => sender.id === chrome.runtime.id && isTrustedCreatorWeaveSenderUrl(sender.url || ''),
     resolveBoundSidePanelTab,
   )
+  installWorkspaceAdapterInvoker((tabId, name, args) => adapterService.invokeForTab(tabId, name, args))
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type === 'webmcp_provider_call' || (typeof message?.type === 'string' && message.type.startsWith('webmcp_adapter_'))) return false
+    if (message?.type === 'webmcp_provider_call' || (typeof message?.type === 'string' && (message.type.startsWith('webmcp_adapter_') || message.type.startsWith('webmcp_packages_')))) return false
     // The dedicated bridge listener (registered above) owns these types —
     // answering here would race it and close the channel early.
     if (['browser_command', 'browser_command_ping', 'browser_command_cancel'].includes(message?.type)) return false

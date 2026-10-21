@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAdapterService } from '../../../browser-extension/entrypoints/webmcp/adapter-service'
 import { ADAPTER_HOST_PORT } from '@creatorweave/shared/webmcp-adapter-protocol'
 import { pkg } from './fixtures'
@@ -19,7 +19,7 @@ function fakePort() {
 }
 function setup() {
   const loadWasm = vi.fn(async () => ({} as WebAssembly.Module))
-  const readPackages = vi.fn(async () => [pkg])
+  const readPackages = vi.fn(async (): Promise<Array<typeof pkg & { rootUri?: string }>> => [pkg])
   const service = createAdapterService({ readPackages, loadWasm, trusted: s => s.url === 'https://trusted.test', resolveBinding: async () => 8, changed: vi.fn() })
   const connect = async (binding: string | null = null) => {
     const host = fakePort()
@@ -34,6 +34,34 @@ function setup() {
 beforeEach(() => {
   vi.resetAllMocks()
   runner.mockResolvedValue({ ok: true, value: { status: 'success', result: 1 } })
+})
+afterEach(() => vi.unstubAllGlobals())
+
+it('passes the mounted package root to execution and rejects a mismatched VFS root', async () => {
+  const { service, connect, request, readPackages } = setup()
+  const rootUri = `vfs://external/builtin-webmcp/${pkg.manifest.id}/`
+  readPackages.mockResolvedValue([{ ...pkg, rootUri }])
+  await connect()
+  expect((await service.invoke(sender, request())).ok).toBe(true)
+  expect(runner.mock.calls[0][7]).toBe(rootUri)
+  readPackages.mockResolvedValue([{ ...pkg, rootUri: 'vfs://external/webmcp/another-package/' }])
+  await expect(service.refresh()).rejects.toThrow(/root/i)
+  expect(service.catalog(sender)).toEqual([])
+})
+
+it('uses Chrome document identity for workspace calls and leaves native tools on their existing path', async () => {
+  const { service, connect } = setup()
+  await connect()
+  const executeScript = vi.fn(async () => [{ frameId: 0, documentId: 'fresh-document', result: sender.url }])
+  vi.stubGlobal('chrome', { tabs: { get: vi.fn(async () => ({ id: 8, url: sender.url })) }, scripting: { executeScript } })
+  const name = service.catalog(sender)[0].name
+  expect(await service.invokeForTab(8, name, { value: 1 })).toMatchObject({ ok: true })
+  expect(runner.mock.calls[0][6]).toEqual({ tabId: 8, url: sender.url })
+  expect(await service.invokeForTab(8, 'native-tool', {})).toBeNull()
+  expect(executeScript).toHaveBeenCalledTimes(1)
+  executeScript.mockResolvedValueOnce([{ frameId: 0, documentId: 'navigated-document', result: 'https://other.test/' }])
+  expect(await service.invokeForTab(8, name, {})).toBeNull()
+  expect(runner).toHaveBeenCalledTimes(1)
 })
 
 it('withdraws changed or unavailable extension packages and rejects stale routes', async () => {
@@ -144,4 +172,31 @@ it('cancels promptly even while WASM loading is still pending', async () => {
   service.cancel(sender, 'page-request')
   expect(await result).toMatchObject({ ok: false, error: { code: 'JS_CANCELED' } })
   expect(runner).not.toHaveBeenCalled()
+})
+
+it('retains unaffected routes and running workflows when another package is disabled', async () => {
+  const { service, connect, request, readPackages } = setup()
+  const other = { ...pkg, manifest: { ...pkg.manifest, id: 'com.example.other' } }
+  readPackages.mockResolvedValue([pkg, other])
+  await connect()
+  const old = request()
+  let signal!: AbortSignal
+  let finish!: () => void
+  runner.mockImplementationOnce(async (_wasm, _source, _args, _names, _invoke, currentSignal) => {
+    signal = currentSignal
+    await new Promise<void>(resolve => { finish = resolve })
+    return { ok: true, value: { status: 'success', result: 1 } }
+  })
+  const running = service.invoke(sender, old)
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+  readPackages.mockResolvedValue([pkg])
+  await service.refresh()
+  expect(service.catalog(sender)).toHaveLength(1)
+  expect(service.catalog(sender)[0].routeId).toBe(old.routeId)
+  expect(signal.aborted).toBe(false)
+  readPackages.mockResolvedValue([])
+  await service.refresh()
+  expect(signal.aborted).toBe(true)
+  finish()
+  await running
 })

@@ -5,6 +5,8 @@ export interface WorkflowContext {
   input: unknown
   state: Record<string, unknown>
   target: { tabId: number; url: string } | null
+  /** Bash/VFS path of this invocation's package, independent of the provider. */
+  packageRoot: string | null
 }
 export interface WorkflowDefinition {
   inputSchema: JsonSchema

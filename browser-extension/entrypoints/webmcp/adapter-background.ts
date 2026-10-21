@@ -42,4 +42,5 @@ export function installAdapterBackground(
     } catch (error) { respond({ ok: false, error: String(error) }) }
     return false
   })
+  return service
 }

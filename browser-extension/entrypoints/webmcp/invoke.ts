@@ -17,6 +17,12 @@ import type {
 } from './types'
 import { runWebMCPPageProbe } from './page-api'
 import { WEBMCP_INVOKE_IN_TAB_TYPE } from './relay-protocol'
+import type { ExecutionResult } from '@creatorweave/quickjs-runtime'
+
+let invokeAdapter: ((tabId: number, name: string, args: Record<string, unknown>) => Promise<ExecutionResult | null>) | undefined
+export function installWorkspaceAdapterInvoker(invoke: NonNullable<typeof invokeAdapter>) {
+  invokeAdapter = invoke
+}
 
 // Relay-channel invoke timeout. Longer than the old executeScript path
 // (which serialized the whole probe func) because tools may legitimately
@@ -392,7 +398,13 @@ export async function invokeWebMCPTool(
       apiMode?: WebMCPApiMode
       errorCode?: string
       error?: string
-    } = await invokeViaRelay(tabId, toolName, request.args || {})
+    }
+    const adapter = await invokeAdapter?.(tabId, toolName, request.args || {})
+    if (adapter) {
+      result = adapter.ok
+        ? { ok: true, result: adapter.value, apiMode: 'documentModelContext' }
+        : { ok: false, errorCode: adapter.error.code, error: adapter.error.message }
+    } else result = await invokeViaRelay(tabId, toolName, request.args || {})
 
     if (
       !result.ok &&
@@ -431,7 +443,7 @@ export async function invokeWebMCPTool(
 
     // Record run affinity so run-scoped follow-ups route back to this tab (M-3).
     try {
-      const resultObj = JSON.parse(result.result)
+      const resultObj = typeof result.result === 'string' ? JSON.parse(result.result) : result.result as { runId?: string } | null
       rememberRunTab(resultObj?.runId, tabId)
     } catch {
       // non-JSON result — nothing to pin

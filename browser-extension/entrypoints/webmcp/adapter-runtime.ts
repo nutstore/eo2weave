@@ -38,6 +38,7 @@ export async function executeAdapterWorkflow(
   invoke: RuntimeBindings['functions'][string],
   signal: AbortSignal,
   target: { tabId: number; url: string } | null = null,
+  rootUri?: string,
 ) {
   const { expression, contract, tree } = parseWorkflow(source)
   const inputValidator = createSchemaValidator(contract.inputSchema, 'Workflow inputSchema')
@@ -47,7 +48,7 @@ export async function executeAdapterWorkflow(
     setup: TOOL_BINDINGS_SETUP,
     limits: { ...DEFAULT_LIMITS, timeoutMs: ADAPTER_TIMEOUT_MS, cpuTimeMs: 1_000 },
   }, {
-    globals: { workflowInput: input, workflowTarget: target, toolNames },
+    globals: { workflowInput: input, workflowTarget: target, workflowPackageRoot: rootUri ? rootUri.replace(/^vfs:\/\//, '/') : null, toolNames },
     functions: {
       invokeTool: async (args, callSignal) => {
         if (typeof args[0] !== 'string' || !toolNames.includes(args[0])) throw new Error(`Tool unavailable: ${args[0]}`)
@@ -59,7 +60,7 @@ export async function executeAdapterWorkflow(
     assertSchemaValue(inputValidator, input, 'Workflow input')
     await session.evaluate(`
       const workflow = (${expression});
-      const context = { input: workflowInput, state: {}, target: workflowTarget };
+      const context = { input: workflowInput, state: {}, target: workflowTarget, packageRoot: workflowPackageRoot };
       const nodes = new Map();
       function register(node, id) {
         nodes.set(id, node);

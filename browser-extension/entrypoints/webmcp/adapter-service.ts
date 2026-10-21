@@ -4,7 +4,7 @@ import { ADAPTER_HOST_PORT, ADAPTER_TIMEOUT_MS, ADAPTER_TRANSFER_BYTES, isRecord
 import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
 import { executeAdapterWorkflow } from './adapter-runtime'
 
-interface Route { descriptor: AdapterDescriptor; source: string }
+interface Route { descriptor: AdapterDescriptor; source: string; rootUri?: string }
 interface Host {
   port: chrome.runtime.Port
   workspaceId: string
@@ -28,7 +28,7 @@ interface Dependencies {
   trusted(sender: chrome.runtime.MessageSender): boolean
   resolveBinding(senderUrl: string, binding: unknown): Promise<number | null>
   changed(): void
-  readPackages(): Promise<WebMCPPackage[]>
+  readPackages(): Promise<Array<WebMCPPackage & {rootUri?: string}>>
 }
 
 /** Bound WASM loading as well as VM execution to explicit cancellation. */
@@ -91,15 +91,35 @@ export function createAdapterService(deps: Dependencies) {
     if (typeof sender.tab?.id !== 'number' || !sender.documentId || sender.frameId !== 0 || !sender.url) throw new Error('Invalid adapter document')
     return { tabId: sender.tab.id, documentId: sender.documentId, url: sender.url }
   }
-  const updateRoutes = (host: Host, packages: WebMCPPackage[]) => {
+  const readPackages = async () => {
+    const mounted = await deps.readPackages()
+    const packages = validatePackageSnapshot(mounted.map(({manifest, sources}) => ({manifest, sources})))
+    return packages.map((pkg, index) => {
+      const rootUri = mounted[index].rootUri
+      if (rootUri !== undefined && rootUri !== `vfs://external/builtin-webmcp/${pkg.manifest.id}/` && rootUri !== `vfs://external/webmcp/${pkg.manifest.id}/`)
+        throw new Error('Invalid package VFS root')
+      return { ...pkg, rootUri }
+    })
+  }
+  const updateRoutes = (host: Host, packages: Array<WebMCPPackage & {rootUri?: string}>) => {
     const snapshot = JSON.stringify(packages)
     if (snapshot === host.snapshot) return
-    for (const execution of executions.values()) if (execution.host === host) execution.controller.abort()
-    host.routes = packages.flatMap(pkg => pkg.manifest.tools.map(tool => ({
-      source: pkg.sources[tool.path],
-      descriptor: { routeId: crypto.randomUUID(), name: `${pkg.manifest.id}.${tool.name}`, description: tool.description, urlRegex: tool.urlRegex,
-        inputSchema: parseWorkflow(pkg.sources[tool.path]).contract.inputSchema as Record<string, unknown> },
-    })))
+    const previous = new Map(host.routes.map(route => [route.descriptor.name, route]))
+    const routes = packages.flatMap(pkg => pkg.manifest.tools.map(tool => {
+      const name = `${pkg.manifest.id}.${tool.name}`
+      const source = pkg.sources[tool.path]
+      const old = previous.get(name)
+      if (old && old.source === source && old.rootUri === pkg.rootUri && old.descriptor.description === tool.description && old.descriptor.urlRegex === tool.urlRegex) return old
+      return {
+        source, rootUri: pkg.rootUri,
+        descriptor: { routeId: crypto.randomUUID(), name, description: tool.description, urlRegex: tool.urlRegex,
+          inputSchema: parseWorkflow(source).contract.inputSchema as Record<string, unknown> },
+      }
+    }))
+    const retained = new Set(routes)
+    for (const execution of executions.values())
+      if (execution.host === host && !retained.has(execution.route)) execution.controller.abort()
+    host.routes = routes
     host.snapshot = snapshot
     deps.changed()
   }
@@ -115,7 +135,7 @@ export function createAdapterService(deps: Dependencies) {
     refresh(): Promise<void> {
       return catalogTask(async () => {
         try {
-          const packages = validatePackageSnapshot(await deps.readPackages())
+          const packages = await readPackages()
           for (const host of hosts) updateRoutes(host, packages)
         } catch (error) {
           for (const host of hosts) updateRoutes(host, [])
@@ -151,7 +171,7 @@ export function createAdapterService(deps: Dependencies) {
           jsonText(message, ADAPTER_TRANSFER_BYTES)
           if (typeof message.workspaceId !== 'string' || !message.workspaceId || typeof message.sessionId !== 'string' || !message.sessionId ||
             !Array.isArray(message.toolNames) || message.toolNames.length > 1000 || !message.toolNames.every(name => typeof name === 'string' && name.length < 256)) throw new Error('Invalid adapter host')
-          const packages = validatePackageSnapshot(await deps.readPackages())
+          const packages = await readPackages()
           const targetTabId = message.binding == null ? null : await deps.resolveBinding(port.sender!.url || '', message.binding)
           if (message.binding != null && targetTabId === null) throw new Error('Invalid host target binding')
           if (closed) return
@@ -175,6 +195,21 @@ export function createAdapterService(deps: Dependencies) {
     catalog(sender: chrome.runtime.MessageSender): AdapterDescriptor[] {
       const { tabId, url } = identity(sender)
       return candidates(tabId, url).map(item => item.route.descriptor)
+    },
+    /** Workspace invokes stay in the SW when navigation unloads the page proxy.
+     * The caller has already passed normal WebMCP routing/authorization gates.
+     * Obtain identity from Chrome, never from caller-provided URLs or document IDs.
+     */
+    async invokeForTab(tabId: number, toolName: string, args: Record<string, unknown>): Promise<ExecutionResult | null> {
+      const tab = await chrome.tabs.get(tabId)
+      if (!tab.url || !candidates(tabId, tab.url).some(item => item.route.descriptor.name === toolName)) return null
+      const [frame] = await chrome.scripting.executeScript({ target: { tabId }, func: () => location.href })
+      if (!frame?.documentId || frame.frameId !== 0 || typeof frame.result !== 'string') throw new Error('Adapter target document unavailable')
+      const route = candidates(tabId, frame.result).find(item => item.route.descriptor.name === toolName)
+      if (!route) return null
+      return this.invoke({ tab: { id: tabId } as chrome.tabs.Tab, frameId: 0, documentId: frame.documentId, url: frame.result }, {
+        requestId: crypto.randomUUID(), routeId: route.route.descriptor.routeId, args,
+      })
     },
     cancel(sender: chrome.runtime.MessageSender, requestId: unknown) {
       const { tabId, documentId } = identity(sender)
@@ -203,7 +238,7 @@ export function createAdapterService(deps: Dependencies) {
           signal.throwIfAborted()
           if (!isRecord(args) || typeof name !== 'string') throw new Error('Tool arguments must be an object')
           return invokeHost(host, executionId!, name, args as JsonValue, signal)
-        }, controller.signal, { tabId: target.tabId, url: target.url })
+        }, controller.signal, { tabId: target.tabId, url: target.url }, route.rootUri)
       } catch (error) { return { ok: false, error: failure(error) } }
       finally {
         clearTimeout(timer)
