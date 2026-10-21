@@ -1,0 +1,97 @@
+{
+  "id": "com.douban.movie",
+  "version": "2.0.0",
+  "description": "Search movies, read the now-playing lineup and the weekly reputation chart, and open movie pages with ratings, info, summaries and hot short comments on movie.douban.com (public, no login needed).",
+  "tools": [
+    {
+      "name": "get_top250",
+      "description": "Read Douban Movie Top 250 (\u8c46\u74e3\u7535\u5f71 Top 250), page by page (25 rows per page). Use start (0, 25, 50 \u2026) to page through; on a wrong page it navigates first \u2014 call again in a few seconds.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_top250.js"
+    },
+    {
+      "name": "open_celebrity",
+      "description": "Open an actor/director (\u5f71\u4eba) page by celebrity id and return name, bio summary, filmography highlights and awards. Navigate-and-read: call again in a few seconds if it reports navigation.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/open_celebrity.js"
+    },
+    {
+      "name": "get_doulist",
+      "description": "Read a \u8c46\u74e3\u7247\u5355 (doulist, e.g. /doulist/240962/): title, description and its movie rows (title, rating, subject id). Page through with start (25 items per page).",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_doulist.js"
+    },
+    {
+      "name": "get_tv_info",
+      "description": "On the currently open TV series page, read the season structure: all available seasons (subject id each) and \u2014 when the page shows them \u2014 the first/featured season episode list (episode number, title, rating). Call open_subject first if not on a series page.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_tv_info.js"
+    },
+    {
+      "name": "search_movies",
+      "description": "Search Douban Movie by keyword (movie / TV series / celebrity) using the header search box. Returns matching subjects (title, rating, subject id) \u2014 use open_result or open_subject to read one in detail.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/search_movies.js"
+    },
+    {
+      "name": "get_now_playing",
+      "description": "Read the\u300c\u6b63\u5728\u70ed\u6620\u300dlineup from the homepage: title, rating, region, director, main actors, release date and subject id for each film currently in theatres.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_now_playing.js"
+    },
+    {
+      "name": "get_weekly_chart",
+      "description": "Read the\u300c\u4e00\u5468\u53e3\u7891\u699c\u300d(weekly reputation chart) from the homepage sidebar: rank, title, rating and subject id.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_weekly_chart.js"
+    },
+    {
+      "name": "browse_chart",
+      "description": "Open the /chart ranked list page (\u6392\u884c\u699c) and read its top rows (title, rating, subject id).",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/browse_chart.js"
+    },
+    {
+      "name": "open_result",
+      "description": "Open the Nth row (0-based) from the last search_movies result list. Full page navigation \u2014 call get_current_view in a few seconds to read the details.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/open_result.js"
+    },
+    {
+      "name": "open_subject",
+      "description": "Open a movie/TV detail page by subject id (e.g. 1292052) and return its content: Douban rating, vote count, star distribution, metadata (director / writers / actors / genres / release), summary and hot short comments.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/open_subject.js"
+    },
+    {
+      "name": "get_comments",
+      "description": "Read the hot short comments (\u70ed\u95e8\u77ed\u8bc4) from the currently open movie/TV page: author, date, star rating, useful-vote count and text. On a movie page by default; call open_subject first if elsewhere. Full comment pagination requires login \u2014 this reads what renders publicly.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_comments.js"
+    },
+    {
+      "name": "get_reviews",
+      "description": "Read the popular full reviews (\u70ed\u95e8\u5f71\u8bc4) listed on the currently open movie/TV page: author, title, spoiler flag, excerpt and the review URL (use web_fetch or navigate to read the full text). Call open_subject first if not on a movie page.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_reviews.js"
+    },
+    {
+      "name": "get_current_view",
+      "description": "Read whatever movie.douban.com page is currently open \u2014 on a subject page returns structured details (rating, info, summary, hot comments); on other pages returns the rendered text.",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_current_view.js"
+    },
+    {
+      "name": "browse_section",
+      "description": "Navigate to a site section: home, nowplaying (\u5f71\u8baf&\u8d2d\u7968), coming (\u5373\u5c06\u4e0a\u6620), explore (\u9009\u7535\u5f71), tv (\u9009\u5267\u96c6), chart (\u6392\u884c\u699c), reviews (\u5f71\u8bc4).",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/browse_section.js"
+    },
+    {
+      "name": "go_home",
+      "description": "Navigate back to the movie.douban.com homepage (now playing + weekly chart).",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/go_home.js"
+    }
+  ]
+}

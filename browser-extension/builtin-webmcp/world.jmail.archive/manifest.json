@@ -1,0 +1,97 @@
+{
+  "id": "world.jmail.archive",
+  "version": "2.0.0",
+  "description": "Search and read the 7,499 released Jeffrey Epstein emails directly in the Gmail-style archive UI.",
+  "tools": [
+    {
+      "name": "search_emails",
+      "description": "Search the Epstein email archive by keyword using the site search box. Returns the top matching email threads (subject, sender, date, preview, doc id).",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/search_emails.js"
+    },
+    {
+      "name": "open_result",
+      "description": "Open the Nth row (0-based) from the last search_emails result list by clicking it, then return the thread content. Prefer this over open_thread \u2014 indexes come straight from the last search.",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/open_result.js"
+    },
+    {
+      "name": "open_thread",
+      "description": "Open an email thread by doc id in the archive UI and return its rendered content (sender, date, subject, body text).",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/open_thread.js"
+    },
+    {
+      "name": "get_current_view",
+      "description": "Read the email thread currently open in the archive view, without navigating. Returns sender, date, subject and body text.",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_current_view.js"
+    },
+    {
+      "name": "list_topics",
+      "description": "List the curated topic categories shown in the archive sidebar (Asking for advice, Introductions, Damage control, Epstein & Brunel).",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/list_topics.js"
+    },
+    {
+      "name": "list_people",
+      "description": "List the notable people with dedicated archive pages (Ghislaine Maxwell, Bill Gates, Prince Andrew, Elon Musk, \u2026) with their slugs for browse_person.",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/list_people.js"
+    },
+    {
+      "name": "next_thread",
+      "description": "Click the \"Next thread\" pager on a thread view to walk through the result list one email at a time (e.g. a 50-message FBI thread). Pass steps to jump several at once in long threads (e.g. the 968-message Brunel thread).",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/next_thread.js"
+    },
+    {
+      "name": "prev_thread",
+      "description": "Click the \"Previous thread\" pager to step back in the current list. Pass steps to jump several at once.",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/prev_thread.js"
+    },
+    {
+      "name": "browse_person",
+      "description": "Open a person's archive page (all their emails) by slug from list_people, e.g. ghislaine-maxwell, bill-gates.",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/browse_person.js"
+    },
+    {
+      "name": "filter_by_date",
+      "description": "Filter the current inbox/search view by date using the site\u2019s Date control. Provide after and/or before as YYYY-MM-DD. Works on the inbox home view (open go_home first if you are on a thread page).",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/filter_by_date.js"
+    },
+    {
+      "name": "open_message_app",
+      "description": "Switch from the email archive to the jmail.world JMessage app (/messages) \u2014 the iMessage-style text conversations, a different app with its own toolset (search_messages, open_conversation, \u2026). After it runs, the system prompt's <current_page_webmcp> list swaps to the JMessage tools.",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/open_message_app.js"
+    },
+    {
+      "name": "clear_date_filter",
+      "description": "Clear the active date filter and restore the full list (clicks the site\u2019s Clear button). No-op with a note when no filter is active. On a thread page, call go_home first.",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/clear_date_filter.js"
+    },
+    {
+      "name": "browse_folder",
+      "description": "Switch to a sidebar folder: inbox, starred, unredactions, sent, attachments, or activity. Returns the folder\u2019s first rows (e.g. starred = community-starred emails, sent = mail Epstein wrote).",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/browse_folder.js"
+    },
+    {
+      "name": "browse_topic",
+      "description": "Open a curated topic page by slug from list_topics, e.g. damage-control, epstein-brunel-collaboration.",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/browse_topic.js"
+    },
+    {
+      "name": "go_home",
+      "description": "Navigate back to the main inbox view of the archive.",
+      "urlRegex": "^https://jmail\\.world(?:/|/search(?:/[^?#]*)?|/thread(?:/[^?#]*)?|/person(?:/[^?#]*)?|/topic(?:/[^?#]*)?|/starred(?:/[^?#]*)?|/unredactions(?:/[^?#]*)?|/sent(?:/[^?#]*)?|/attachments(?:/[^?#]*)?|/activity(?:/[^?#]*)?)(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/go_home.js"
+    }
+  ]
+}

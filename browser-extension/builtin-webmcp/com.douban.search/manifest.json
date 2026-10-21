@@ -1,0 +1,37 @@
+{
+  "id": "com.douban.search",
+  "version": "2.0.0",
+  "description": "Read and refine Douban Movie search results on search.douban.com: list result rows (title, rating, subject id), re-search by keyword, and open movies. Public, no login needed.",
+  "tools": [
+    {
+      "name": "get_current_view",
+      "description": "Read the search results currently rendered on search.douban.com: each row (title, rating, subject id, url). If the page navigated to a movie/subject page, returns the movie details instead.",
+      "urlRegex": "^https://search\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_current_view.js"
+    },
+    {
+      "name": "search_movies",
+      "description": "Run a new Douban Movie search using the search box on search.douban.com (fills the box and submits \u2014 stays on this host). Returns the result rows.",
+      "urlRegex": "^https://search\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/search_movies.js"
+    },
+    {
+      "name": "open_result",
+      "description": "Open the Nth row (0-based) from the current search results. Navigates to the movie.douban.com subject page \u2014 its toolset (open_subject / get_current_view \u2026) registers after the page loads.",
+      "urlRegex": "^https://search\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/open_result.js"
+    },
+    {
+      "name": "open_subject",
+      "description": "Open a movie/TV detail page by subject id (e.g. 1292052). Navigates to movie.douban.com \u2014 its toolset registers after the page loads; call get_current_view there to read details.",
+      "urlRegex": "^https://search\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/open_subject.js"
+    },
+    {
+      "name": "go_movie_site",
+      "description": "Navigate to the movie.douban.com homepage (now playing, weekly chart, explore \u2026). The toolset swaps to the Douban Movie recipe after the page loads.",
+      "urlRegex": "^https://search\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/go_movie_site.js"
+    }
+  ]
+}
