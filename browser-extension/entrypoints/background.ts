@@ -6,7 +6,7 @@ import { serializeError as serializeBrowserError } from '../lib/bash-commands/br
 import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow } from './webmcp/discovery'
-import { invokeWebMCPTool } from './webmcp/invoke'
+import { invokeWebMCPTool, installWorkspaceAdapterInvoker } from './webmcp/invoke'
 import {
   getHostAuthorizationMap,
   getGroupAuthorizationMap,
