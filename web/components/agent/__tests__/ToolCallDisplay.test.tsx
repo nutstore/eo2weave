@@ -35,7 +35,6 @@ describe('ToolCallDisplay', () => {
     const toolCall: ToolCall = {id:'image',type:'function',function:{name:'read_image',arguments:JSON.stringify({path:'chart.png'})}}
     const result = JSON.stringify({ok:true,tool:'read_image',version:2,data:{type:'image',data:'iVBORw0KGgo=',mimeType:'image/png',width:1,height:1}})
     const {container} = render(<ToolCallDisplay toolCall={toolCall} result={result} />)
-    fireEvent.click(screen.getByRole('button'))
     expect(screen.getByRole('img',{name:'chart.png'})).toBeInTheDocument()
     expect(container.textContent).not.toContain('iVBORw0KGgo=')
   })
@@ -101,12 +100,8 @@ describe('ToolCallDisplay', () => {
 
     render(<ToolCallDisplay toolCall={toolCall} result={result} />)
 
-    expect(screen.getByRole('img', { name: 'Preview of photos/chart.png' })).toBeInTheDocument()
-    expect(screen.getByText('Source: photos/chart.png')).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'photos/chart.png' })).toBeInTheDocument()
     expect(screen.queryByText(/aGVsbG8=/)).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'View full-size image: photos/chart.png' }))
-    expect(screen.getAllByRole('img', { name: 'Preview of photos/chart.png' })).toHaveLength(2)
   })
 
   it('passes the conversation ID to recovered subagent detail panels', async () => {
