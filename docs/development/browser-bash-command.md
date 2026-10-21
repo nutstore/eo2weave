@@ -40,6 +40,7 @@ post-action snapshot features. Use snapshot/jq, page eval, and Bash composition.
 | Tabs | `tab-list`, `tab-new [url] [--background]` (alias `open`), `tab-select <id>`, `tab-close [id]`, `close` |
 | Navigation | `goto <url>`, `reload`, `go-back`, `go-forward`; `--wait-until=load\|domcontentloaded\|commit` |
 | Observation | `snapshot [ref\|css] [--boxes]`, `eval [function] [ref\|css]` |
+| WebMCP | `webmcp list`, `webmcp exec <exact-name> [json-object]`; selected tab or `--tab=<id>` |
 | Targeted input | `click`, `dblclick`, `hover`, `drag <start> <end>`, `fill <target> [text]`, `type <target> [text]`, `select <target> <value>...`, `check`, `uncheck` |
 | Keyboard | `press <key>`, `keydown <key>`, `keyup <key>`; chords such as `ControlOrMeta+A` |
 | Mouse | `mousemove <x> <y>`, `mousedown [button]`, `mouseup [button]`, `mousewheel <dx> <dy>` |
@@ -92,13 +93,17 @@ orchestration of browser commands belongs to Bash.
 ## Execution and lifecycle
 
 `--timeout=<ms>` is one deadline covering queueing, locating, waiting, and
-execution (default 10000, maximum 30000). Calls on the same tab are serialized;
-dialog responses can bypass the queue to unblock page execution. Navigation
+execution (default 10000, maximum 30000; `webmcp exec` defaults to and allows
+60000). Primitive calls on the same tab are serialized; WebMCP orchestration and
+dialog responses bypass the queue to unblock nested page operations. Navigation
 waits on browser lifecycle events rather than a fixed delay.
 
 Web emits `creatorweave:bash-cancel` when an execution ends or its worker stops.
-The provider cancels pending requests through its own bridge. A queued canceled
-request cannot start an action; running page JavaScript is terminated. Actions
+The event's `detail.inputs` scopes cancellation to the original external-command
+input objects for that execution. The provider cancels matching requests through
+its own bridge, not a waiting outer shell's requests. A queued canceled
+request cannot start an action; running CDP evaluations are terminated. Native
+WebMCP tools may still finish after cancellation stops waiting. Actions
 already dispatched cannot be undone. The provider also cancels pending work on
 pagehide and when its bridge finishes or times out. Invocation still passes only
 args/stdin; cancellation does not add tool context to the protocol.
@@ -110,33 +115,49 @@ errors follow the same JSON contract.
 
 ## WebMCP workflows
 
-Builtin and custom VFS packages invoke `tools.bash` directly. Every browser
-command specifies the invocation's target tab; no selected-tab state or side-panel
-binding is required. Check the returned exit code, preserve failure details, and
-reject truncated output when parsing complete JSON. `browser eval` returns
-`{tabId, logs, result}` so page logs are separate from business data.
+Builtin and custom packages are executed directly by the WXT service worker.
+They do not use Bash, a CreatorWeave workspace host or package/VFS access.
+Workflow callbacks receive only `browser` and `console` as extension capability
+globals, plus their normal input/state/target context.
 
-The catalog provides `packageRoot` for both mounts. Shared pure DOM readers live
-as ordinary files inside the package and are read through Bash/VFS; workflows
-combine them with their page function explicitly. No QuickJS imports or injected
-browser SDK is required. Missing resources fail instead of being ignored.
+`browser` is the typed equivalent of this `browser` command. Direct calls
+resolve to command results and reject on failure; they do not return
+`stdout`, `stderr`, `exitCode` or `truncated`. Pass
+`{ tab: target.tabId }` to target-specific operations. `browser.eval` returns
+`{ tabId, logs, result }` directly. Shared DOM helpers must be inlined into the
+eval function because package reader files are not readable from the workflow
+runtime.
+
+Use `browser.webmcp.list({ tab })` and
+`browser.webmcp.exec(exactName, args, { tab })` to discover or invoke a page or
+adapter tool from another workflow. These use exact-tab routing and do not fall
+back to another tab. Nested calls are re-entrant: no per-route or global
+execution lock is held while an adapter waits for another adapter.
+
+From Bash, use `browser webmcp list --tab=<id>` to discover exact names and
+schemas from the live target page and the SW adapter catalog. `browser webmcp
+exec <name> '{}' --tab=<id>` invokes one tool after exact-tab authorization,
+without same-host tab fallback. Arguments may also come from stdin. `list` returns
+`{tabId,url,hostname,groupKey,tools,pageProbeError?}`; `exec` returns
+`{tabId,url,name,source,result}`. Check `pageProbeError` before interpreting an
+empty catalog. See [WebMCP packages](webmcp-packages.md#exact-tab-discovery-and-execution).
 
 Use native input/navigation commands for actions and observational waits for
-application state. Never automatically repeat failed mutating operations. The
-Web Bash worker serializes concurrent executions, includes queue time in each
-deadline, and cancels queued calls without interrupting another running command.
-Workspace-initiated adapter invocations run directly in the SW after the normal
-WebMCP authorization/routing gates, so target navigation does not lose the final
-response. Chrome supplies target URL/document identity; page code cannot select
-an arbitrary workflow source or forge the target document.
+application state. Never automatically repeat failed mutating operations.
+Adapter invocations have independent QuickJS sessions and no global concurrency
+cap. Individual CDP operations may queue on a tab, but `browser.webmcp.exec`
+does not hold the queue open while a nested tool runs. Package withdrawal,
+explicit cancellation and timeout abort in-flight work; target navigation does
+not. Chrome supplies target URL/document identity; page code cannot select an
+arbitrary workflow source or forge the target document.
 
 The live E2E suite is `pnpm --dir web test:e2e:webmcp` after rebuilding the extension.
-It loads the actual MV3 build and Web workspace, creates a real isolated OPFS/SQLite
-project, and invokes every manifest workflow on live Jmail/Douban pages through
-normal discovery and WebMCP invocation. It never intercepts site responses or
-substitutes browser, extension or tool APIs. Setup uses the development app's
-own stores to create the workspace without an LLM account; it does not replace
-the tool host. Failed cases retain diagnostics/screenshots in
+It loads the actual MV3 build without opening CreatorWeave, enables the built-in
+and custom packages through the extension, and invokes every manifest workflow
+on live Jmail/Douban pages through normal page discovery and WebMCP invocation.
+It also exercises a custom package and a nested `browser.webmcp.exec` chain. It
+never intercepts site responses or substitutes browser, extension or tool APIs.
+Failed cases retain diagnostics/screenshots in
 `output/playwright/webmcp-real/`. Site/network failures remain failures.
 Set `WEBMCP_E2E_CHROMIUM` to a Chromium/Chrome-for-Testing executable if the installed
 Playwright browser is unavailable; branded Chrome may refuse unpacked extension
@@ -157,5 +178,5 @@ extension APIs. It verifies the minified command runtime; it is not an end-to-en
 test of the installed extension relay. It uses Chrome's native viewport without
 Playwright device emulation.
 
-Reload the built `browser-extension/dist/chrome-mv3/` extension and the workspace
-page after building. Development and production WXT output directories differ.
+Reload the built `browser-extension/dist/chrome-mv3/` extension and target tabs
+after building. Development and production WXT output directories differ.

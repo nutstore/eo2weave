@@ -59,11 +59,13 @@ checks known file sizes before reading and skips binary files.
 WebMCP is the extension-owned reference provider, mounted at
 `vfs://external/webmcp`. The extension stores files in its own OPFS origin,
 validates packages locally and refreshes catalogs after successful mutations.
-The Web application supplies workspace tool capabilities and binding metadata;
-it does not publish adapter source snapshots. Unavailable catalogs withdraw
-stale routes. The extension's JSON transport limits a single file to 32 MiB;
-this is not a limit in the generic provider contract. The old `vfs://webmcp`
-namespace has been removed without an alias.
+CreatorWeave may use the same mount to author and browse packages, but the
+extension owns discovery, registration and workflow execution. No workspace
+tool capability, binding metadata or adapter source snapshot is supplied by the
+Web application. Unavailable catalogs withdraw stale routes. The extension's
+JSON transport limits a single file to 32 MiB; this is not a limit in the
+generic provider contract. The old `vfs://webmcp` namespace has been removed
+without an alias.
 
 Python retains its existing handle-based mounts. Workspace `mkdir` creates an
 empty directory in the OPFS staging view; the existing native apply pipeline

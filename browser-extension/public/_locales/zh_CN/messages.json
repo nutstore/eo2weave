@@ -127,7 +127,7 @@
     "message": "管理内建和自定义 WebMCP 工作流包。启用后，工具会注册到 URL 匹配的页面。"
   },
   "webmcpPackagesNote": {
-    "message": "两类包均使用 manifest.json、config.json 和工作流文件。内建包只读挂载于 vfs://external/builtin-webmcp/，自定义包可读写挂载于 vfs://external/webmcp/。activation 缺省时禁用。执行需要连接工作区 host，并具备所需页面工具。"
+    "message": "两类包均使用 manifest.json、config.json 和工作流文件。内建包只读挂载于 vfs://external/builtin-webmcp/，自定义包可读写挂载于 vfs://external/webmcp/。activation 缺省时禁用。启用后的工作流在扩展中执行，无需打开 CreatorWeave 或连接工作区 host。"
   },
   "webmcpSourceBuiltin": {
     "message": "内建 · 只读"
