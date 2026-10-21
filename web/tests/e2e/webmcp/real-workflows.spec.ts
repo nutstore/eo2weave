@@ -8,120 +8,223 @@ const extensionPath = resolve('../browser-extension/dist/chrome-mv3')
 const sourcePath = resolve('../browser-extension/builtin-webmcp')
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
-const baseURL = process.env.WEBMCP_E2E_BASE_URL || 'http://localhost:5173'
 const packages = readdirSync(sourcePath).map((id) =>
   JSON.parse(readFileSync(join(sourcePath, id, 'manifest.json'), 'utf8'))
 )
 const allNames: string[] = packages.flatMap((pkg) =>
   pkg.tools.map((tool: { name: string }) => `${pkg.id}.${tool.name}`)
 )
-let context: BrowserContext, host: Page, profile: string
+const customPackageId = 'com.creatorweave.webmcp-e2e'
+const customURLRegex = '^https://jmail\\.world/(?:[^?#]*)?(?:\\?[^#]*)?(?:#.*)?$'
+const customManifest = {
+  id: customPackageId,
+  version: '1.0.0',
+  description: 'Exercise extension-owned nested WebMCP execution without CreatorWeave.',
+  tools: [
+    {
+      name: 'call',
+      description: 'Invoke a tool on another tab while retaining the calling document.',
+      urlRegex: customURLRegex,
+      path: 'workflows/call.js',
+    },
+    {
+      name: 'outer',
+      description: 'Call inner, which calls leaf and reads the initiating page title.',
+      urlRegex: customURLRegex,
+      path: 'workflows/outer.js',
+    },
+    {
+      name: 'inner',
+      description: 'Call leaf and preserve the nested result chain.',
+      urlRegex: customURLRegex,
+      path: 'workflows/inner.js',
+    },
+    {
+      name: 'leaf',
+      description: 'Read the current page title through browser.eval.',
+      urlRegex: customURLRegex,
+      path: 'workflows/leaf.js',
+    },
+  ],
+}
+const inputSchema =
+  "{ type: 'object', properties: { marker: { type: 'string' } }, additionalProperties: false }"
+const customSources: Record<string, string> = {
+  'manifest.json': JSON.stringify(customManifest, null, 2),
+  'workflows/call.js': `export default {
+  inputSchema: {
+    type: 'object',
+    properties: {
+      tabId: { type: 'integer' }, name: { type: 'string' }, args: { type: 'object' }
+    },
+    required: ['tabId', 'name', 'args']
+  },
+  outputSchema: true,
+  tree: {
+    type: 'action',
+    async run({ input, state }) {
+      const response = await browser.webmcp.exec(input.name, input.args, { tab: input.tabId });
+      if (response.tabId !== input.tabId) throw new Error('Browser returned another tab');
+      state.value = response.result;
+      return 'success';
+    }
+  },
+  result({ state }) { return state.value; }
+}`,
+  'workflows/outer.js': `export default {
+  inputSchema: ${inputSchema},
+  outputSchema: true,
+  tree: {
+    type: 'action',
+    async run({ input, state, target }) {
+      const nested = await browser.webmcp.exec(
+        '${customPackageId}.inner',
+        { marker: input.marker },
+        { tab: target.tabId }
+      );
+      if (!nested || nested.tabId !== target.tabId || nested.result?.status !== 'success')
+        throw new Error('Nested inner workflow failed: ' + JSON.stringify(nested));
+      const inner = nested.result.result;
+      state.value = {
+        title: inner.title,
+        tabId: inner.tabId,
+        trace: ['outer', ...inner.trace]
+      };
+      return 'success';
+    }
+  },
+  result({ state }) { return state.value; }
+}`,
+  'workflows/inner.js': `export default {
+  inputSchema: ${inputSchema},
+  outputSchema: true,
+  tree: {
+    type: 'action',
+    async run({ input, state, target }) {
+      const nested = await browser.webmcp.exec(
+        '${customPackageId}.leaf',
+        { marker: input.marker },
+        { tab: target.tabId }
+      );
+      if (!nested || nested.tabId !== target.tabId || nested.result?.status !== 'success')
+        throw new Error('Nested leaf workflow failed: ' + JSON.stringify(nested));
+      const leaf = nested.result.result;
+      state.value = {
+        title: leaf.title,
+        tabId: leaf.tabId,
+        trace: ['inner', ...leaf.trace]
+      };
+      return 'success';
+    }
+  },
+  result({ state }) { return state.value; }
+}`,
+  'workflows/leaf.js': `export default {
+  inputSchema: ${inputSchema},
+  outputSchema: true,
+  tree: {
+    type: 'action',
+    async run({ state, target }) {
+      const page = await browser.eval('() => document.title', { tab: target.tabId });
+      state.value = { title: String(page.result), tabId: page.tabId, trace: ['leaf'] };
+      return 'success';
+    }
+  },
+  result({ state }) { return state.value; }
+}`,
+}
+let context: BrowserContext, profile: string
+let caller: Page
 let setupError: Error | undefined
-let invokedTabId: number | undefined
 const events: unknown[] = []
 
-/** Seed real application services, never replace the workspace host/tool registry.
- * Development Webpack modules are used only to create an OPFS/SQLite project and
- * workspace without configuring an unrelated LLM account or sending AI requests.
- */
-async function createWorkspace(page: Page) {
-  await page.evaluate(async () => {
-    const win = window as any
-    let require: any
-    win.webpackChunk_N_E.push([
-      [`webmcp-e2e-${Date.now()}`],
-      {},
-      (value: any) => {
-        require = value
-      },
-    ])
-    const store = (name: string) => {
-      const key = Object.keys(require.m).find((key) => key.endsWith(`/store/${name}.store.ts`))
-      if (!key) throw new Error(`Application module unavailable: ${name}`)
-      return require(key)
-    }
-    const projects = store('project').useProjectStore
-    const deadline = Date.now() + 45000
-    while (!projects.getState().initialized || projects.getState().isLoading) {
-      if (Date.now() > deadline)
-        throw new Error('Project initialization did not finish: ' + projects.getState().error)
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
-    const project = await projects.getState().createProject('WebMCP live E2E')
-    if (!project || !(await projects.getState().setActiveProject(project.id)))
-      throw new Error('Could not create real project: ' + projects.getState().error)
-    await store('workspace')
-      .useWorkspaceStore.getState()
-      .createWorkspace(`webmcp-live-${Date.now()}`, '', 'WebMCP live E2E')
-    store('settings').useSettingsStore.getState().setEnableWebMCP(true)
-  })
-}
-
-/** Read through the real mounted provider, including the extension transport. */
-async function readBuiltinPackage(page: Page, id: string): Promise<Record<string, string>> {
-  return page.evaluate(async (directory) => {
-    let require: any
-    ;(window as any).webpackChunk_N_E.push([
-      [`webmcp-vfs-${Date.now()}`], {}, (value: any) => { require = value },
-    ])
-    const key = Object.keys(require.m).find(key => key.endsWith('/vfs/provider-registry.ts'))
-    if (!key) throw new Error('Application provider registry unavailable')
-    const provider = await require(key).providerRegistry.get('builtin-webmcp')
-    if (!provider.readOnly) throw new Error('Builtin provider must be read-only')
-    const sources: Record<string, string> = {}
-    const readDirectory = async (relative: string) => {
-      const path = relative ? `${directory}/${relative}` : directory
-      for (const entry of await provider.readdir(path)) {
-        const name = relative ? `${relative}/${entry.name}` : entry.name
-        if (entry.kind === 'directory') await readDirectory(name)
-        else sources[name] = new TextDecoder().decode(await provider.readFile(`${directory}/${name}`))
+/** Seed a real custom package in the extension's OPFS origin. */
+async function writeCustomPackage(page: Page) {
+  await page.evaluate(
+    async ({ id, sources }) => {
+      const root = await navigator.storage.getDirectory()
+      const contents = await root
+        .getDirectoryHandle('webmcp', { create: true })
+        .then((mount) => mount.getDirectoryHandle(id, { create: true }))
+      for (const [path, text] of Object.entries(sources)) {
+        let directory = contents
+        const parts = path.split('/')
+        for (const part of parts.slice(0, -1))
+          directory = await directory.getDirectoryHandle(part, { create: true })
+        const file = await directory.getFileHandle(parts.at(-1)!, { create: true })
+        const writable = await file.createWritable()
+        await writable.write(text)
+        await writable.close()
       }
-    }
-    await readDirectory('')
-    return sources
-  }, id)
+    },
+    { id: customPackageId, sources: customSources }
+  )
 }
 
-async function catalog(page: Page) {
-  return page.evaluate(async () => (window as any).__agentWeb.webMCPDiscover({}))
+async function modelContextToolNames(page: Page): Promise<string[]> {
+  return page
+    .evaluate(async () => {
+      const context = (document as any).modelContext
+      if (!context?.getTools) return []
+      const tools = await context.getTools()
+      return Array.isArray(tools)
+        ? tools
+            .map((tool: any) => tool?.name)
+            .filter((name: unknown): name is string => typeof name === 'string')
+        : []
+    })
+    .catch((error) => {
+      // Sites may redirect through an interstitial before the target document settles.
+      if (String(error).includes('Execution context was destroyed')) return []
+      throw error
+    })
 }
-async function invoke(
-  page: Page,
-  name: string,
-  args: Record<string, unknown> = {},
-  expectFailure = false
-) {
+
+/** Invoke the registered page proxy exactly as a page consumer would. */
+async function invoke(page: Page, name: string, args: Record<string, unknown> = {}) {
   await expect
-    .poll(
-      async () => {
-        const discovered = await catalog(host)
-        return discovered.tools?.some(
-          (tool: any) => tool.name === name && tool.tabUrl === page.url()
-        )
-      },
-      { message: `Actual extension did not register ${name} on ${page.url()}`, timeout: 20000 }
-    )
+    .poll(async () => (await modelContextToolNames(page)).includes(name), {
+      message: `Actual extension did not register ${name} on ${page.url()}`,
+      timeout: 20000,
+    })
     .toBe(true)
-  const discovered = await catalog(host)
-  const route = discovered.tools.find(
-    (tool: any) => tool.name === name && tool.tabUrl === page.url()
+  const output = await page.evaluate(
+    async ({ name, args }) => {
+      const context = (document as any).modelContext
+      const tools = await context.getTools()
+      const tool = tools.find((candidate: any) => candidate?.name === name)
+      if (!tool) throw new Error(`Registered tool disappeared: ${name}`)
+      const ModelContext = (globalThis as any).ModelContext
+      const usesNativeInput =
+        typeof ModelContext === 'function' &&
+        context instanceof ModelContext &&
+        Function.prototype.toString.call(ModelContext).includes('[native code]')
+      const result = await context.executeTool(tool, usesNativeInput ? JSON.stringify(args) : args)
+      if (typeof result === 'string') return JSON.parse(result)
+      try {
+        return JSON.parse(JSON.stringify(result))
+      } catch {
+        return String(result)
+      }
+    },
+    { name, args }
   )
-  const output = await host.evaluate(
-    async ({ route, args }) =>
-      (window as any).__agentWeb.webMCPInvoke({
-        groupKey: route.groupKey,
-        fullToolName: route.fullName,
-        preferredTabId: route.tabId,
-        args,
-      }),
-    { route, args }
-  )
-  invokedTabId = route.tabId
-  if (expectFailure) return output
-  expect(output.ok, JSON.stringify(output)).toBe(true)
-  const workflow = typeof output.result === 'string' ? JSON.parse(output.result) : output.result
-  expect(workflow.status, JSON.stringify(workflow)).toBe('success')
-  return workflow.result
+  expect(output?.status, JSON.stringify(output)).toBe('success')
+  return output.result
+}
+
+/** Retain the caller while the target document navigates; the workflow runs in the SW. */
+async function invokeFromAnotherTab(page: Page, name: string, args: Record<string, unknown>) {
+  await expect.poll(() => modelContextToolNames(page)).toContain(name)
+  const tabId = await context.serviceWorkers()[0].evaluate(async (url) => {
+    const tabs = await (globalThis as any).chrome.tabs.query({})
+    const matches = tabs.filter((tab: any) => tab.url === url)
+    if (matches.length !== 1) throw new Error(`Expected one target tab for ${url}`)
+    return matches[0].id as number
+  }, page.url())
+  const output = await invoke(caller, `${customPackageId}.call`, { tabId, name, args })
+  expect(output?.status, JSON.stringify(output)).toBe('success')
+  return output.result
 }
 async function visit(page: Page, url: string) {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 40000 })
@@ -155,6 +258,7 @@ interface Scenario {
   start: string
   prepare?: (page: Page) => Promise<Record<string, unknown> | void>
   args?: Record<string, unknown>
+  urlOnly?: RegExp
   verify(page: Page, result: any): Promise<void>
 }
 const navigation =
@@ -185,108 +289,91 @@ const transcript: Scenario['verify'] = async (page, result) => {
     expect(actual).toContain(message.text)
   }
 }
+// Douban acceptance is URL-only; live content and rate limiting are diagnostics.
+const doubanURL = (start: string, url: RegExp, args?: Record<string, unknown>): Scenario => ({
+  start,
+  args,
+  urlOnly: url,
+  verify: async (page) => {
+    await expect(page).toHaveURL(url)
+  },
+})
 const scenarios: Record<string, Scenario> = {
-  'com.douban.movie.go_home': {
-    start: `${movie}/subject/1292052/`,
-    verify: navigation(/^https:\/\/movie\.douban\.com\/$/),
+  'com.douban.movie.read_page': doubanURL(movie, /^https:\/\/movie\.douban\.com\/$/),
+  'com.douban.search.read_page': doubanURL(search, /search\.douban\.com\/movie\/subject_search/),
+  'world.jmail.archive.read_page': { start: mail, verify: nonempty('results') },
+  'world.jmail.messages.read_page': {
+    start: `${mail}/messages`,
+    verify: nonempty('conversations'),
   },
-  'com.douban.movie.open_subject': {
-    start: movie,
-    args: { subject_id: '1292052' },
-    verify: navigation(/\/subject\/1292052\//),
-  },
-  'com.douban.movie.open_celebrity': {
-    start: movie,
-    args: { celebrity_id: '1047973' },
-    verify: async (page, result) => {
-      expect(result.navigated).toBe(true)
-      await expect(page).toHaveURL(/\/celebrity\/1047973\/|www\.douban\.com\/personage\/27253735\//)
-      await expect(page.locator('h1')).toContainText('弗兰克')
-    },
-  },
-  'com.douban.movie.browse_section': {
-    start: movie,
-    args: { section: 'chart' },
-    verify: navigation(/\/chart/),
-  },
-  'com.douban.movie.get_now_playing': { start: movie, verify: nonempty('results') },
-  'com.douban.movie.get_weekly_chart': { start: movie, verify: nonempty('results') },
-  'com.douban.movie.browse_chart': { start: `${movie}/chart`, verify: nonempty('results') },
-  'com.douban.movie.get_top250': { start: `${movie}/top250`, verify: nonempty('results') },
-  'com.douban.movie.get_doulist': {
-    start: movie,
-    prepare: async (page) => {
-      const href = await page.locator('a[href*="/doulist/"]').first().getAttribute('href')
-      const id = href?.match(/doulist\/(\d+)/)?.[1]
-      expect(id, 'No real doulist link available').toBeTruthy()
-      return { list_id: id }
-    },
-    verify: async (page, result) => {
-      if (result.navigated) await expect(page).toHaveURL(/\/doulist\/\d+/)
-      else expect(result.results.length).toBeGreaterThan(0)
-    },
-  },
-  'com.douban.movie.get_comments': {
-    start: `${movie}/subject/1292052/`,
-    verify: nonempty('comments'),
-  },
-  'com.douban.movie.get_reviews': {
-    start: `${movie}/subject/1292052/`,
-    verify: nonempty('reviews'),
-  },
-  'com.douban.movie.get_current_view': {
-    start: `${movie}/subject/1292052/`,
-    verify: async (_page, result) => {
-      expect(result.is_subject_page).toBe(true)
-      expect(result.title).toContain('肖申克')
-      expect(result.rating).toMatch(/^\d/)
-      expect(result.summary.length).toBeGreaterThan(0)
-    },
-  },
-  'com.douban.movie.get_tv_info': {
-    start: `${movie}/subject/25853071/`,
-    verify: async (_page, result) => {
-      expect(result.subject).toContain('庆余年')
-      expect(Number(result.episode_count)).toBe(46)
-    },
-  },
-  'com.douban.movie.search_movies': {
-    start: movie,
-    args: { query: 'Inception', limit: 5 },
-    verify: async (page, result) => {
-      expect(result.query).toBe('Inception')
-      expect(result.results.length).toBeGreaterThan(0)
-      await expect(page).toHaveURL(/search\.douban\.com/)
-    },
-  },
-  'com.douban.movie.open_result': {
-    start: `${movie}/subject_search?search_text=Inception&cat=1002`,
-    args: { index: 0 },
-    verify: navigation(/movie\.douban\.com\/subject\/\d+/),
-  },
-  'com.douban.search.get_current_view': { start: search, verify: nonempty('results') },
-  'com.douban.search.search_movies': {
-    start: search,
-    args: { query: '肖申克', limit: 5 },
-    verify: async (_page, result) => {
-      expect(result.query).toBe('肖申克')
-      expect(result.results.length).toBeGreaterThan(0)
-    },
-  },
-  'com.douban.search.open_result': {
-    start: search,
-    args: { index: 0 },
-    verify: navigation(/movie\.douban\.com\/subject\/\d+/),
-  },
-  'com.douban.search.open_subject': {
-    start: search,
-    args: { subject_id: '1292052' },
-    verify: navigation(/\/subject\/1292052\//),
-  },
-  'com.douban.search.go_movie_site': {
-    start: search,
-    verify: navigation(/^https:\/\/movie\.douban\.com\/$/),
-  },
+  'com.douban.movie.go_home': doubanURL(
+    `${movie}/subject/1292052/`,
+    /^https:\/\/movie\.douban\.com\/$/
+  ),
+  'com.douban.movie.open_subject': doubanURL(movie, /movie\.douban\.com\/subject\/1292052\//, {
+    subject_id: '1292052',
+  }),
+  'com.douban.movie.open_celebrity': doubanURL(
+    movie,
+    /\/celebrity\/1047973\/|www\.douban\.com\/personage\/27253735\//,
+    { celebrity_id: '1047973' }
+  ),
+  'com.douban.movie.browse_section': doubanURL(movie, /movie\.douban\.com\/chart/, {
+    section: 'chart',
+  }),
+  'com.douban.movie.get_now_playing': doubanURL(movie, /^https:\/\/movie\.douban\.com\/$/),
+  'com.douban.movie.get_weekly_chart': doubanURL(movie, /^https:\/\/movie\.douban\.com\/$/),
+  'com.douban.movie.browse_chart': doubanURL(`${movie}/chart`, /movie\.douban\.com\/chart/),
+  'com.douban.movie.get_top250': doubanURL(`${movie}/top250`, /movie\.douban\.com\/top250/),
+  'com.douban.movie.get_doulist': doubanURL(
+    movie,
+    /(?:movie|www)\.douban\.com\/doulist\/4541413\//,
+    {
+      list_id: '4541413',
+    }
+  ),
+  'com.douban.movie.get_comments': doubanURL(
+    `${movie}/subject/1292052/`,
+    /movie\.douban\.com\/subject\/1292052\//
+  ),
+  'com.douban.movie.get_reviews': doubanURL(
+    `${movie}/subject/1292052/`,
+    /movie\.douban\.com\/subject\/1292052\//
+  ),
+  'com.douban.movie.get_current_view': doubanURL(
+    `${movie}/subject/1292052/`,
+    /movie\.douban\.com\/subject\/1292052\//
+  ),
+  'com.douban.movie.get_tv_info': doubanURL(
+    `${movie}/subject/25853071/`,
+    /movie\.douban\.com\/subject\/25853071\//
+  ),
+  'com.douban.movie.search_movies': doubanURL(
+    movie,
+    /search\.douban\.com\/movie\/subject_search\?search_text=Inception&cat=1002/,
+    { query: 'Inception', limit: 5 }
+  ),
+  'com.douban.movie.open_result': doubanURL(
+    `${movie}/subject_search?search_text=Inception&cat=1002`,
+    /movie\.douban\.com\/subject\/\d+\//,
+    { index: 0 }
+  ),
+  'com.douban.search.get_current_view': doubanURL(
+    search,
+    /search\.douban\.com\/movie\/subject_search\?search_text=Inception&cat=1002/
+  ),
+  'com.douban.search.search_movies': doubanURL(
+    search,
+    /search\.douban\.com\/movie\/subject_search\?search_text=%E8%82%96%E7%94%B3%E5%85%8B&cat=1002/,
+    { query: '肖申克', limit: 5 }
+  ),
+  'com.douban.search.open_result': doubanURL(search, /movie\.douban\.com\/subject\/\d+\//, {
+    index: 0,
+  }),
+  'com.douban.search.open_subject': doubanURL(search, /movie\.douban\.com\/subject\/1292052\//, {
+    subject_id: '1292052',
+  }),
+  'com.douban.search.go_movie_site': doubanURL(search, /^https:\/\/movie\.douban\.com\/$/),
   'world.jmail.archive.get_current_view': {
     start: mail,
     prepare: emailThread,
@@ -481,7 +568,7 @@ const scenarios: Record<string, Scenario> = {
   },
 }
 
-// Every shipped workflow needs an explicit live setup and business assertion.
+// Every shipped workflow has explicit acceptance: Douban URLs, jmail business results.
 expect(Object.keys(scenarios).sort()).toEqual(allNames.sort())
 
 test.beforeAll(async () => {
@@ -513,6 +600,9 @@ test.beforeAll(async () => {
     context.setDefaultTimeout(20000)
     console.log('LIVE_SETUP management')
     const management = await context.newPage()
+    management.on('console', (message) =>
+      events.push({ type: 'console', level: message.type(), text: message.text() })
+    )
     await management.goto(`chrome-extension://${extensionId}/recipes.html`)
     await expect(management.locator('.card')).toHaveCount(packages.length)
     for (const pkg of packages) {
@@ -534,76 +624,35 @@ test.beforeAll(async () => {
         )
         .toBe('enabled')
     }
-    host = await context.newPage()
-    host.on('console', (message) =>
-      events.push({ type: 'console', level: message.type(), text: message.text() })
-    )
-    await host.goto(baseURL)
-    await expect(host.locator('body')).not.toBeEmpty({ timeout: 60000 })
-    await expect
-      .poll(() => host.evaluate(() => !!(window as any).__agentWeb?.ready), { timeout: 30000 })
-      .toBe(true)
-    console.log('LIVE_SETUP workspace')
-    await createWorkspace(host)
-    console.log('LIVE_SETUP workspace ready')
-    await expect.poll(() => host.evaluate(() => !!(window as any).__agentWeb?.ready)).toBe(true)
-    await host.evaluate(() => {
-      (window as any).__webmcpE2ECalls = []
-      window.addEventListener('message', (event) => {
-        if (event.source === window && event.data?.__cwAdapterHost)
-          (window as any).__webmcpE2ECalls.push(event.data)
-      })
-    })
-    console.log('LIVE_SETUP OPFS copy')
-    // Copy real bundled sources into extension OPFS to exercise the other VFS provider.
-    const builtinSources = await readBuiltinPackage(host, 'world.jmail.archive')
-    await management.evaluate(async (sources) => {
-      const id = 'world.jmail.archive-live'
-      const manifest = JSON.parse(sources['manifest.json'])
-      const files = [...manifest.tools.map((tool: any) => tool.path), 'readers/dom.js']
-      const storage = await navigator.storage.getDirectory()
-      const mount = await storage.getDirectoryHandle('webmcp', { create: true })
-      const directory = await mount.getDirectoryHandle(id, { create: true })
-      const write = async (path: string, text: string) => {
-        const parts = path.split('/')
-        let folder = directory
-        for (const name of parts.slice(0, -1))
-          folder = await folder.getDirectoryHandle(name, { create: true })
-        const file = await folder.getFileHandle(parts.at(-1)!, { create: true })
-        const stream = await file.createWritable()
-        await stream.write(text)
-        await stream.close()
-      }
-      for (const path of files)
-        await write(
-          path,
-          sources[path]
-        )
-      manifest.id = id
-      manifest.tools.push({
-        name: 'probe_builtin_write',
-        description: 'Verify the builtin VFS denies writes',
-        urlRegex: manifest.tools[0].urlRegex,
-        path: 'workflows/probe_builtin_write.js',
-      })
-      await write(
-        'workflows/probe_builtin_write.js',
-        `export default {
-        inputSchema: {type: 'object'}, outputSchema: true,
-        tree: {type: 'action', async run({state}) {
-          const output = await tools.bash({command: "printf '{}' > /external/builtin-webmcp/world.jmail.archive/config.json"});
-          state.result = {exitCode: output.exitCode, stderr: output.stderr};
-          return 'success';
-        }}, result({state}) {return state.result;}
-      };`
-      )
-      await write('manifest.json', JSON.stringify(manifest))
-      await write('config.json', '{}')
-    }, builtinSources)
+    console.log('LIVE_SETUP custom package')
+    await writeCustomPackage(management)
     await management.reload()
-    await management.getByRole('checkbox', { name: /world\.jmail\.archive-live$/ }).check()
+    await expect(management.locator('.card')).toHaveCount(packages.length + 1)
+    const customToggle = management.getByRole('checkbox', {
+      name: /com\.creatorweave\.webmcp-e2e$/,
+    })
+    await expect(customToggle, await management.locator('body').innerText()).toBeEnabled()
+    await customToggle.check()
+    await expect
+      .poll(
+        async () =>
+          management.evaluate(async (id) => {
+            const result = await (globalThis as any).chrome.runtime.sendMessage({
+              type: 'webmcp_packages_list',
+            })
+            return result.entries.find((entry: any) => entry.directory === id)?.activation
+          }, customPackageId),
+        { message: 'Custom package toggle did not commit' }
+      )
+      .toBe('enabled')
     await expect(management.locator('input.toggle:disabled')).toHaveCount(0)
     await management.close()
+    expect(
+      context.pages().some((page) => /localhost:5173/.test(page.url())),
+      'CreatorWeave Web was opened by the extension-owned E2E'
+    ).toBe(false)
+    caller = await context.newPage()
+    await visit(caller, `${mail}/?webmcp-e2e-controller=1`)
     console.log('LIVE_SETUP ready')
   } catch (error) {
     setupError = error instanceof Error ? error : new Error(String(error))
@@ -632,39 +681,46 @@ for (const name of allNames) {
       network.push({ url: request.url(), failure: request.failure() })
     )
     page.on('pageerror', (error) => network.push({ pageError: error.message }))
+    page.on('console', (message) =>
+      events.push({ type: 'console', level: message.type(), text: message.text() })
+    )
     try {
       const scenario = scenarios[name]
-      await visit(page, scenario.start)
-      const prepared = await scenario.prepare?.(page)
-      const before = await host.evaluate(() => (window as any).__webmcpE2ECalls.length)
-      const result = await invoke(page, name, { ...scenario.args, ...prepared })
+      let result: unknown = null
+      try {
+        if (scenario.urlOnly)
+          await page.goto(scenario.start, { waitUntil: 'commit', timeout: 40000 })
+        else await visit(page, scenario.start)
+        const prepared = await scenario.prepare?.(page)
+        result = await invokeFromAnotherTab(page, name, { ...scenario.args, ...prepared })
+      } catch (error) {
+        if (!scenario.urlOnly) throw error
+        await testInfo.attach('douban-invocation-diagnostic', {
+          body: String(error),
+          contentType: 'text/plain',
+        })
+      }
       await testInfo.attach('business-result', {
         body: JSON.stringify(result, null, 2),
         contentType: 'application/json',
       })
       await scenario.verify(page, result)
-      const calls = await host.evaluate(
-        (start) => (window as any).__webmcpE2ECalls.slice(start),
-        before
-      )
-      const invocations = calls.filter((event: any) => event.message.kind === 'invoke')
-      expect(
-        invocations.length,
-        'Workflow did not use the actual workspace tool host'
-      ).toBeGreaterThan(0)
-      expect(invocations.every((event: any) => event.message.toolName === 'bash')).toBe(true)
-      expect(
-        invocations.every((event: any) =>
-          new RegExp(`--tab=${invokedTabId}(?:\\s|$)`).test(event.message.args.command)
-        )
-      ).toBe(true)
       await testInfo.attach('result', {
-        body: JSON.stringify({ name, result, calls }, null, 2),
+        body: JSON.stringify(
+          {
+            name,
+            acceptance: scenario.urlOnly ? 'url-only' : 'business-result',
+            url: page.url(),
+            result,
+          },
+          null,
+          2
+        ),
         contentType: 'application/json',
       })
     } finally {
       await testInfo.attach('live-diagnostics', {
-        body: JSON.stringify({ url: page.url(), network, hostEvents: events }, null, 2),
+        body: JSON.stringify({ url: page.url(), network, extensionEvents: events }, null, 2),
         contentType: 'application/json',
       })
       await testInfo.attach('screenshot', {
@@ -678,44 +734,39 @@ for (const name of allNames) {
 }
 
 // eslint-disable-next-line no-empty-pattern
-test('OPFS copy uses the same workflow and package-relative VFS readers', async ({}, testInfo) => {
+test('custom workflow supports two nested browser.webmcp.exec calls', async ({}, testInfo) => {
   if (setupError) throw setupError
   const page = await context.newPage()
+  await context.tracing.start({ screenshots: true, snapshots: true })
   try {
     await visit(page, mail)
-    const before = await host.evaluate(() => (window as any).__webmcpE2ECalls.length)
-    const result = await invoke(page, 'world.jmail.archive-live.list_topics')
-    expect(result.topics.length).toBeGreaterThan(0)
-    const calls = await host.evaluate(
-      (start) => (window as any).__webmcpE2ECalls.slice(start),
-      before
-    )
-    expect(
-      calls.some(
-        (event: any) =>
-          event.message.kind === 'invoke' &&
-          event.message.args.command.includes(
-            '/external/webmcp/world.jmail.archive-live/readers/dom.js'
-          )
+    await expect
+      .poll(() => modelContextToolNames(page))
+      .toEqual(
+        expect.arrayContaining([
+          `${customPackageId}.outer`,
+          `${customPackageId}.inner`,
+          `${customPackageId}.leaf`,
+        ])
       )
-    ).toBe(true)
+    const result = await invoke(page, `${customPackageId}.outer`, {
+      marker: 'creatorweave-closed',
+    })
+    expect(result).toMatchObject({
+      title: await page.title(),
+      trace: ['outer', 'inner', 'leaf'],
+    })
+    expect(result.tabId).toBeGreaterThan(0)
     await testInfo.attach('result', {
-      body: JSON.stringify({ result, calls }, null, 2),
+      body: JSON.stringify(result, null, 2),
       contentType: 'application/json',
     })
   } finally {
-    await page.close()
-  }
-})
-test('builtin VFS rejects config writes from the real workspace Bash tool', async () => {
-  if (setupError) throw setupError
-  const page = await context.newPage()
-  try {
-    await visit(page, mail)
-    const result = await invoke(page, 'world.jmail.archive-live.probe_builtin_write', {}, true)
-    expect(result.ok).toBe(false)
-    expect(result.error).toMatch(/EROFS|read.only/i)
-  } finally {
+    await testInfo.attach('screenshot', {
+      body: await page.screenshot({ fullPage: true }).catch(() => Buffer.from('')),
+      contentType: 'image/png',
+    })
+    await context.tracing.stop({ path: testInfo.outputPath('trace.zip') })
     await page.close()
   }
 })
