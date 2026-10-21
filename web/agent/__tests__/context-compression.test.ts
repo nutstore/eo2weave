@@ -16,6 +16,15 @@ describe('context-compression helpers', () => {
     expect(getCompressionCutoffTimestamp(messages)).toBe(44)
   })
 
+  it('uses the committed boundary rather than timestamps when messages share a millisecond', () => {
+    const messages: Message[] = [
+      { id: 'old', role: 'user', content: 'old', timestamp: 10 },
+      { id: 'new', role: 'user', content: 'new', timestamp: 10 },
+    ]
+    const result = applyCompressionBaseline(messages, { summary: 'S', cutoffTimestamp: 11, throughMessageId: 'old' }, 'Earlier:')
+    expect(result.map(message => message.content)).toEqual(['S', 'new'])
+  })
+
   it('applyCompressionBaseline prepends summary and can return summary-only context', () => {
     const messages: Message[] = [
       { id: '1', role: 'user', content: 'old', timestamp: 10 },

@@ -11,6 +11,7 @@ export const COMPRESSION_TRIGGER_RATIO = 0.85
 export interface CompressionBaselineState {
   summary: string
   cutoffTimestamp: number
+  throughMessageId?: string
 }
 
 export function injectSummaryMessage(
@@ -54,7 +55,11 @@ export function applyCompressionBaseline(
   baseline: CompressionBaselineState,
   _compressedMemoryPrefix: string
 ): Message[] {
-  const retained = messages.filter(
+  const boundaryIndex = baseline.throughMessageId
+    ? messages.findIndex(message => message.id === baseline.throughMessageId) : -1
+  const latestSummary = messages.map(message => message.kind).lastIndexOf('context_summary')
+  const retained = boundaryIndex >= 0 ? messages.slice(boundaryIndex + 1)
+    : latestSummary >= 0 ? messages.slice(latestSummary + 1) : messages.filter(
     (msg) => typeof msg.timestamp === 'number' && msg.timestamp >= baseline.cutoffTimestamp
   )
 

@@ -1900,7 +1900,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               const c = state.conversations.find((x) => x.id === conversationId)
               if (!c || (c.runEpoch || 0) !== runEpoch) return
               // Only update compression metadata — keep original messages intact
-              const summaryMsg = msgs.find((msg) => msg.kind === 'context_summary')
+              const summaryMsg = [...msgs].reverse().find((msg) => msg.kind === 'context_summary')
               if (summaryMsg) {
                 c.compressedContextSummary = summaryMsg.content || c.compressedContextSummary || null
                 c.compressedContextCutoffTimestamp =
@@ -1920,7 +1920,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           committed = true
           // Extract the summary message from resultMessages to show in UI.
           // Keep ALL original messages intact (no history loss), just add the summary at the end.
-          const summaryMsg = resultMessages.find((m) => m.kind === 'context_summary')
+          const summaryMsg = [...resultMessages].reverse().find((m) => m.kind === 'context_summary')
           const finalMessages = summaryMsg
             ? [...messagesBeforeCompact, summaryMsg]
             : messagesBeforeCompact

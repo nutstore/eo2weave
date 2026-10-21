@@ -29,6 +29,7 @@ interface MessageMeta {
   displayContent?: string
   deferredContext?: Message['deferredContext']
   kind?: Message['kind']
+  compressionBoundary?: Message['compressionBoundary']
   reasoning?: string | null
   reasoningDurationMs?: number
   toolCalls?: ToolCall[]
@@ -298,6 +299,10 @@ export class MessageRepository {
       meta.contentParts = message.contentParts
       hasMeta = true
     }
+    if (message.compressionBoundary !== undefined) {
+      meta.compressionBoundary = message.compressionBoundary
+      hasMeta = true
+    }
     if (message.runChanges !== undefined) {
       meta.runChanges = message.runChanges
       hasMeta = true
@@ -328,6 +333,7 @@ export class MessageRepository {
       role: row.role as Message['role'],
       content: parseJSON<string | null>(row.content_json, null),
       kind: meta.kind,
+      compressionBoundary: meta.compressionBoundary,
       reasoning: meta.reasoning,
       reasoningDurationMs: meta.reasoningDurationMs,
       toolCalls: meta.toolCalls,

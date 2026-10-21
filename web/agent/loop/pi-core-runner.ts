@@ -113,6 +113,7 @@ export interface ExecutePiCoreLoopInput {
 }
 
 export interface ExecutePiCoreLoopResult {
+  compressionBaseline?: CompressionBaselineState | null
   allMessages: Message[]
   shouldStopForElicitation: boolean
   reachedMaxIterations: boolean
@@ -321,7 +322,7 @@ export async function executePiCoreLoop(
           maxContextTokens: contextConfig.maxContextTokens,
           reserveTokens: contextConfig.reserveTokens ?? 0,
           generateContextSummaryWithLLM: input.generateContextSummaryWithLLM,
-          onSummaryInjected: (summary, cutoffTimestamp) => {
+          onSummaryInjected: (summary, cutoffTimestamp, throughMessageId) => {
             // Create context_summary as a user-role message so the LLM always
             // receives it as role='user'.  The kind flag lets the UI render it
             // with the amber summary styling and lets internalToPiMessages()
@@ -331,6 +332,7 @@ export async function executePiCoreLoop(
               role: 'user',
               content: summary,
               kind: 'context_summary',
+              ...(throughMessageId ? { compressionBoundary: { throughMessageId, cutoffTimestamp } } : {}),
               timestamp: Math.max(0, cutoffTimestamp - 1),
             }
             const nextMessages = produce(messageState.allMessages, (draft) => {
@@ -368,6 +370,7 @@ export async function executePiCoreLoop(
 
   return {
     allMessages,
+    compressionBaseline,
     shouldStopForElicitation,
     reachedMaxIterations,
     convertCallCount,

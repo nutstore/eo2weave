@@ -28,7 +28,7 @@ export interface ConvertAgentMessagesToLlmInput {
     droppedContent: string,
     maxSummaryTokens: number
   ) => Promise<{ summary: string | null; mode: CompressionSummaryMode }>
-  onSummaryInjected?: (summary: string, cutoffTimestamp: number) => void
+  onSummaryInjected?: (summary: string, cutoffTimestamp: number, throughMessageId?: string) => void
 }
 
 export interface ConvertAgentMessagesToLlmResult {
@@ -72,7 +72,7 @@ export async function convertAgentMessagesToLlm(
   input: ConvertAgentMessagesToLlmInput
 ): Promise<ConvertAgentMessagesToLlmResult> {
   const convertCallCount = input.convertCallCount + 1
-  const lastSummaryConvertCall = input.lastSummaryConvertCall
+  let lastSummaryConvertCall = input.lastSummaryConvertCall
   let compressionBaseline = input.compressionBaseline
 
   const internalMessagesRaw = input.agentMessages
@@ -120,7 +120,8 @@ export async function convertAgentMessagesToLlm(
   // gate.  The heuristic estimate (preTrimTokens) is inaccurate and can
   // trigger compression as early as 40% real usage.
   const shouldAllowCompression =
-    typeof usedRealTokens === 'number' && usedRealTokens >= compressionTriggerThreshold
+    typeof usedRealTokens === 'number' && usedRealTokens >= compressionTriggerThreshold &&
+    (!compressionBaseline || internalMessagesRaw.some(message => message.role === 'assistant' && message.timestamp >= compressionBaseline!.cutoffTimestamp))
   console.info('[AgentLoop] Compression gate evaluation', {
     convertCallCount,
     preTrimTokens,
@@ -146,7 +147,7 @@ export async function convertAgentMessagesToLlm(
   if (shouldAllowCompression) {
     // Compression: generate summary via LLM, then replace all messages with [summary].
     const droppedContent = internalMessages
-      .filter((msg) => msg.kind !== 'context_summary' && msg.kind !== 'run_changes')
+      .filter((msg) => msg.kind !== 'context_summary' && msg.kind !== 'run_changes' && msg.kind !== 'context_update')
       .map((msg) => {
         // For multimodal messages (with images), use the extracted text only.
         // The LLM doing compression can't see the images anyway, so this is safe.
@@ -169,9 +170,10 @@ export async function convertAgentMessagesToLlm(
       const latencyMs = Date.now() - startedAt
 
       if (summary) {
+        lastSummaryConvertCall = convertCallCount
         const cutoffTimestamp = getCompressionCutoffTimestamp(internalMessagesRaw)
         if (typeof cutoffTimestamp === 'number') {
-          compressionBaseline = { summary, cutoffTimestamp }
+          compressionBaseline = { summary, cutoffTimestamp, throughMessageId: internalMessagesRaw.at(-1)?.id }
         }
 
         // Build the summary in Message-space (preserving kind='context_summary'
@@ -193,7 +195,7 @@ export async function convertAgentMessagesToLlm(
         trimmed = injectSummaryMessage([], summary, input.compressedMemoryPrefix)
 
         if (typeof cutoffTimestamp === 'number') {
-          input.onSummaryInjected?.(summary, cutoffTimestamp)
+          input.onSummaryInjected?.(summary, cutoffTimestamp, compressionBaseline?.throughMessageId)
         }
       }
 

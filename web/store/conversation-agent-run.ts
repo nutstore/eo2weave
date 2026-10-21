@@ -661,7 +661,7 @@ export async function runAgentImpl(
             conv.compressionLastSummaryConvertCall ?? Number.NEGATIVE_INFINITY,
           initialCompressionBaseline:
             conv.compressedContextSummary && conv.compressedContextCutoffTimestamp
-              ? { summary: conv.compressedContextSummary, cutoffTimestamp: conv.compressedContextCutoffTimestamp }
+              ? { summary: conv.compressedContextSummary, cutoffTimestamp: conv.compressedContextCutoffTimestamp, throughMessageId: [...conv.messages].reverse().find(message => message.kind === 'context_summary')?.compressionBoundary?.throughMessageId }
               : null,
           onCompressionStateUpdate: (compressionState) => {
             if (!isCurrentRun()) return
@@ -1611,9 +1611,9 @@ export async function runAgentImpl(
               if (!c || (c.runEpoch || 0) !== runEpoch) return
               c.messages = reconciled
               c.compressedContextSummary =
-                reconciled.find((msg) => msg.kind === 'context_summary')?.content || c.compressedContextSummary || null
+                [...reconciled].reverse().find((msg) => msg.kind === 'context_summary')?.content || c.compressedContextSummary || null
               c.compressedContextCutoffTimestamp =
-                reconciled.find((msg) => msg.kind === 'context_summary')?.timestamp ||
+                [...reconciled].reverse().find((msg) => msg.kind === 'context_summary')?.timestamp ||
                 c.compressedContextCutoffTimestamp ||
                 null
               c.updatedAt = Date.now()

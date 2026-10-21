@@ -76,6 +76,7 @@ export interface Message {
   contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
   /** Application record identity; independent of the provider-facing role. */
   kind?: 'normal' | 'context_summary' | 'run_changes' | 'context_update'
+  compressionBoundary?: { throughMessageId: string; cutoffTimestamp: number }
   /**
    * Present only on `kind === 'run_changes'` assistant records. Points at the
    * auto-apply snapshot that captured everything this agent run changed, so
