@@ -15,7 +15,9 @@
     "./webmcp-schema": "./src/webmcp-schema.ts",
     "./code-tool-bindings": "./src/code-tool-bindings.ts",
     "./code-output": "./src/code-output.ts",
-    "./webmcp-adapter-files": "./src/webmcp-adapter-files.ts"
+    "./webmcp-adapter-files": "./src/webmcp-adapter-files.ts",
+    "./webmcp-config": "./src/webmcp-config.ts",
+    "./webmcp-package-catalog": "./src/webmcp-package-catalog.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
