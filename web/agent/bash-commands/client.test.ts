@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { bashExec, destroyBashWorker } from '@/agent/tools/bash-worker/client'
+import { bashExec, createBashWorkerClient, destroyBashWorker } from '@/agent/tools/bash-worker/client'
 import type { FromWorkerMessage, ToWorkerMessage, WorkerExecRequest } from '@/agent/tools/bash-worker/protocol'
 import { bashCommandRegistry } from './registry'
 
@@ -168,6 +168,33 @@ describe('external commands across the Bash worker boundary', () => {
 })
 
 describe('concurrent Bash callers', () => {
+  it('runs an adapter Bash lane while the outer shell waits, with scoped cancellation', async () => {
+    const adapter = createBashWorkerClient()
+    let innerWorker: MockWorker
+    register(async () => {
+      const result = adapter.exec({ ...opts, command: 'inner' }, { ...config, workspaceId: 'adapter' })
+      innerWorker = current()
+      innerWorker.finish()
+      return { stdout: (await result).stdout, stderr: '', exitCode: 0 }
+    })
+    const canceled: unknown[] = []
+    const observe = (event: Event) => canceled.push((event as CustomEvent).detail)
+    window.addEventListener('creatorweave:bash-cancel', observe)
+    try {
+      const outer = bashExec(opts, config)
+      const outerWorker = current()
+      call(outerWorker)
+      await vi.waitFor(() => expect(outerWorker.messages).toContainEqual({
+        type: 'command-result', rpcId: 1, result: { stdout: 'done', stderr: '', exitCode: 0 },
+      }))
+      expect(MockWorker.instances).toHaveLength(2)
+      expect(canceled).toEqual([{ inputs: [] }])
+      expect(outerWorker.terminate).not.toHaveBeenCalled()
+      outerWorker.finish()
+      await outer
+      expect(canceled[1]).toMatchObject({ inputs: [{ args: ['中文'], stdin: '你好' }] })
+    } finally { adapter.destroy(); window.removeEventListener('creatorweave:bash-cancel', observe) }
+  })
   it('serializes execution slots and captured VFS contexts instead of replacing pending results', async () => {
     const first = bashExec(opts, config)
     const firstWorker = current()

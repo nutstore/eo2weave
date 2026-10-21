@@ -47,8 +47,13 @@ Contract:
 - Exceptions and invalid results become command errors. Web emits the page event
   `creatorweave:bash-cancel` when a Bash execution ends or its worker stops,
   including timeout and explicit stop. Providers may listen and cancel their
-  pending work through their own bridge. The event has no payload and does not
-  change `invoke({args, stdin})`. Web cannot force arbitrary plugin code to stop
+  pending work through their own bridge. The event is a `CustomEvent` whose
+  `detail.inputs` contains the original input objects passed to external
+  `invoke` calls in that Bash execution. Match by object identity to cancel only
+  that execution's work; an inner adapter shell must not cancel a waiting outer
+  shell. A legacy event without `detail.inputs` requests cancellation of all
+  pending work. This does not change `invoke({args, stdin})`.
+  Web cannot force arbitrary plugin code to stop
   or reverse effects; the plugin owns its transport and cancellation behavior.
 - Web probes `isAlive()` every 15 seconds, before model requests and before Bash
   execution. A false result, exception or 3-second timeout removes the command.

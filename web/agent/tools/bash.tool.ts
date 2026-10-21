@@ -136,7 +136,7 @@ export const bashToolExecutor: ToolExecutor = async (
 
   try {
     await bashCommandRegistry.refresh()
-    const result = await bashExec(
+    const result = await (context.bashExecutor ?? bashExec)(
       {
         command,
         cwd,

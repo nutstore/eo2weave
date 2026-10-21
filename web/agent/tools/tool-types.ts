@@ -258,6 +258,8 @@ export interface ToolDefinition {
 export interface ToolContext {
   /** Invocation-scoped tool capability, supplied only to run_code. */
   codeTools?: CodeToolCapabilities
+  /** Adapter-owned Bash lane, independent of a waiting outer Bash invocation. */
+  bashExecutor?: typeof import('./bash-worker/client').bashExec
   /** Root directory handle for file operations */
   directoryHandle: FileSystemDirectoryHandle | null
   /** True when this tool call originates from a delegated subagent. */
