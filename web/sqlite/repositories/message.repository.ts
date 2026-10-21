@@ -29,7 +29,10 @@ interface MessageMeta {
   displayContent?: string
   deferredContext?: Message['deferredContext']
   kind?: Message['kind']
+  contextCommit?: Message['contextCommit']
   compressionBoundary?: Message['compressionBoundary']
+  pageContext?: Message['pageContext']
+  pageContextDelivery?: Message['pageContextDelivery']
   reasoning?: string | null
   reasoningDurationMs?: number
   toolCalls?: ToolCall[]
@@ -303,6 +306,15 @@ export class MessageRepository {
       meta.compressionBoundary = message.compressionBoundary
       hasMeta = true
     }
+    if (message.contextCommit !== undefined) {
+      meta.contextCommit = message.contextCommit
+      hasMeta = true
+    }
+    if (message.pageContext !== undefined) {
+      meta.pageContext = message.pageContext
+      meta.pageContextDelivery = message.pageContextDelivery
+      hasMeta = true
+    }
     if (message.runChanges !== undefined) {
       meta.runChanges = message.runChanges
       hasMeta = true
@@ -333,7 +345,10 @@ export class MessageRepository {
       role: row.role as Message['role'],
       content: parseJSON<string | null>(row.content_json, null),
       kind: meta.kind,
+      contextCommit: meta.contextCommit,
       compressionBoundary: meta.compressionBoundary,
+      pageContext: meta.pageContext,
+      pageContextDelivery: meta.pageContextDelivery,
       reasoning: meta.reasoning,
       reasoningDurationMs: meta.reasoningDurationMs,
       toolCalls: meta.toolCalls,
