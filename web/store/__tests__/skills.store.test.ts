@@ -55,6 +55,7 @@ const { mockManager } = vi.hoisted(() => ({
     initialize: vi.fn(() => Promise.resolve()),
     refreshCache: vi.fn(() => Promise.resolve()),
     refreshUserSkills: vi.fn(() => Promise.resolve()),
+    refreshProviderSkills: vi.fn(() => Promise.resolve()),
     getSkillMetadata: vi.fn<[], SkillMetadata[]>(() => []),
     getSkillById: vi.fn(() => null),
     getSkills: vi.fn<[], Skill[]>(() => []),

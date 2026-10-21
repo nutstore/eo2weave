@@ -1,7 +1,10 @@
-import content from '../builtin-packages/webmcp-creator/SKILL.md?raw'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { expect, it } from 'vitest'
-import { parseSkillMd } from '../skill-parser'
+import { parseSkillMd } from '@/skills/skill-parser'
 import { validatePackage } from '@creatorweave/shared/webmcp-adapter'
+
+const content = readFileSync(resolve(__dirname, '../../../browser-extension/skills/cw-webmcp-creator/SKILL.md'), 'utf8')
 
 it('loads the creator skill and validates its documented adapter example', () => {
   const parsed = parseSkillMd(content)

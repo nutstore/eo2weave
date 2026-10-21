@@ -5,6 +5,7 @@
  * instead of injecting all skills into the system prompt.
  */
 
+import { readProviderSkillFile, listProviderSkillResources } from './provider-skills'
 import type { ToolDefinition, ToolExecutor, ToolContext, ToolPromptDoc } from '@/agent/tools/tool-types'
 import { toolOkJson, toolErrorJson } from '@/agent/tools/tool-envelope'
 import { formatResourceList } from './skill-resources'
@@ -153,9 +154,10 @@ export const readSkillExecutor: ToolExecutor = async (
   const { skill_name } = args as { skill_name: string }
   const manager = getSkillManager()
   await manager.initialize()
+  await manager.refreshProviderSkills()
 
   // Case-insensitive lookup
-  const skillName = skill_name.toLowerCase().trim()
+  const skillName = skill_name.trim()
   const skill = manager.getSkillByName(skillName)
 
   if (!skill) {
@@ -179,7 +181,19 @@ export const readSkillExecutor: ToolExecutor = async (
   // For user skills: the skill directory name is the part after 'user:'
   const userDirName = isUser ? skill.id.replace(/^user:/, '') : ''
 
-  if (isBuiltin) {
+  if (skill.source === 'provider') {
+    try {
+      const { parseSkillMd } = await import('./skill-parser')
+      const parsed = parseSkillMd(await readProviderSkillFile(skill, 'SKILL.md'), 'provider')
+      if (!parsed.skill) throw new Error('Invalid SKILL.md')
+      liveInstruction = parsed.skill.instruction
+      liveExamples = parsed.skill.examples
+      liveTemplates = parsed.skill.templates
+      resources = await listProviderSkillResources(skill)
+    } catch (error) {
+      return toolErrorJson('read_skill', 'provider_unavailable', String(error))
+    }
+  } else if (isBuiltin) {
     // Builtin skills: scan OPFS directory for resource files
     resources = await listSkillResourcesFromOPFS(skill.name)
 
@@ -293,6 +307,10 @@ export const readSkillExecutor: ToolExecutor = async (
     output += `\n\n**Python execution path:** \`/mnt_skills/user/${userDirName}/\``
   }
 
+  if (skill.providerLocation) {
+    output += `\n\n**Resource root:** vfs://external/${skill.providerLocation.mountName}/${skill.providerLocation.directory}/`
+  }
+
   output += `\n---\n*Skill: ${skill.name}*`
 
   return toolOkJson('read_skill', output)
@@ -344,13 +362,32 @@ export const readSkillResourceExecutor: ToolExecutor = async (
   const { skill_name, resource_path } = args as { skill_name: string; resource_path: string }
   const manager = getSkillManager()
   await manager.initialize()
+  await manager.refreshProviderSkills()
 
   // Case-insensitive skill lookup
-  const skillName = skill_name.toLowerCase().trim()
+  const skillName = skill_name.trim()
   const skill = manager.getSkillByName(skillName)
 
   if (!skill) {
     return toolErrorJson('read_skill_resource', 'skill_not_found', `Skill '${skill_name}' not found. Please check the skill name and try again.`)
+  }
+
+  if (skill.source === 'provider') {
+    try {
+      const content = await readProviderSkillFile(skill, resource_path)
+      return toolOkJson('read_skill_resource', `# ${skill.id}/${resource_path}\n\n${content}`)
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') {
+        const available = await listProviderSkillResources(skill).catch(() => [])
+        const availablePaths = available.map((r) => `  - ${r.resourcePath}`).join('\n')
+        return toolErrorJson(
+          'read_skill_resource',
+          'resource_not_found',
+          `Resource '${resource_path}' not found in skill '${skill_name}'.\n\nAvailable resources in this skill:\n${availablePaths || '  (none)'}`
+        )
+      }
+      return toolErrorJson('read_skill_resource', 'resource_unavailable', String(error))
+    }
   }
 
   // For builtin skills: read directly from OPFS

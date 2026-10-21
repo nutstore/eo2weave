@@ -89,13 +89,13 @@ ${skillsList || '(No skills installed yet — use search_skills to discover inst
  * Triggers (keywords/fileExtensions) are included so the LLM can use them as
  * activation hints alongside the description.
  */
-function formatSkillMetadata(skill: SkillMetadata): string {
+export function formatSkillMetadata(skill: SkillMetadata): string {
   const tags = skill.tags.join(',') || 'none'
   const keywords = skill.triggers.keywords.join(',') || 'none'
   const fileExtensions = skill.triggers.fileExtensions?.join(',') || ''
 
   return `<skill>
-<name>${skill.name}</name>
+<name>${skill.source === 'provider' ? skill.id : skill.name}</name>
 <displayName>${skill.name}</displayName>
 <description>${skill.description}</description>
 <category>${skill.category}</category>

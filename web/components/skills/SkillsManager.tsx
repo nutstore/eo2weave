@@ -6,7 +6,7 @@
  */
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import { Plus, FolderOpen, User, Building, X, Inbox, Upload, ChevronDown, ChevronRight } from 'lucide-react'
+import { Plus, FolderOpen, User, Building, Puzzle, X, Inbox, Upload, ChevronDown, ChevronRight } from 'lucide-react'
 import {
   BrandDialog,
   BrandDialogContent,
@@ -110,10 +110,11 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
   // since the last open — we need to re-scan to reflect those changes.
   // loadSkills() has its own `loading` guard to prevent concurrent runs.
   useEffect(() => {
-    if (open) loadSkills()
+    if (!open) return
+    void loadSkills().then(() => import('@/skills/provider-skills')).then(m => m.refreshProviderSkillsIntoStore())
   }, [open, loadSkills])
 
-  const { projectSkills, userSkills, builtinSkills, totalFiltered } = useMemo(() => {
+  const { projectSkills, userSkills, builtinSkills, providerSkills, totalFiltered } = useMemo(() => {
     let filtered = skills
     if (debouncedQuery) {
       const query = debouncedQuery.toLowerCase()
@@ -126,6 +127,7 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
     return {
       projectSkills: filtered.filter((s) => s.source === 'project'),
       userSkills: filtered.filter((s) => s.source === 'user'),
+      providerSkills: filtered.filter(s => s.source === 'provider'),
       builtinSkills: filtered.filter((s) => s.source === 'builtin'),
       totalFiltered: filtered.length,
     }
@@ -246,6 +248,13 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
       secondaryAction: { label: t('skills.importSkill'), icon: <Upload className="h-4 w-4" />, onClick: () => setUserImportOpen(true) },
     },
     {
+      key: 'provider',
+      icon: <Puzzle className="h-4 w-4 text-purple-500 dark:text-purple-400" />,
+      label: t('skills.providerSkills'),
+      skills: providerSkills,
+      isReadOnly: true,
+    },
+    {
       key: 'builtin',
       icon: <Building className="h-4 w-4 text-emerald-500 dark:text-emerald-400" />,
       label: t('skills.builtinSkills'),
@@ -319,7 +328,7 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
                   </div>
                 ) : (
                   <div className="space-y-6">
-                    {sections.map((section) => (
+                    {sections.filter((section) => section.key !== 'provider' || section.skills.length > 0).map((section) => (
                       <SkillSection
                         key={section.key}
                         icon={section.icon}

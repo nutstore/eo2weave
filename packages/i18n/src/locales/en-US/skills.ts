@@ -6,6 +6,7 @@ export const skills = {
     filterDisabled: "Disabled",
     projectSkills: "Project Skills",
     mySkills: "My Skills",
+    providerSkills: "Extension Skills",
     builtinSkills: "Builtin Skills",
     enabledCount: "{count} / {total} enabled",
     createNew: "Create Skill",

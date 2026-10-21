@@ -7,6 +7,7 @@ export const skills = {
     filterDisabled: "無効",
     projectSkills: "プロジェクトスキル",
     mySkills: "マイスキル",
+    providerSkills: "拡張機能のスキル",
     builtinSkills: "組み込みスキル",
     enabledCount: "{count} / {total} 有効",
     createNew: "新規スキル",

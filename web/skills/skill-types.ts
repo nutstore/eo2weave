@@ -9,7 +9,7 @@
  */
 
 /** Skill source origin */
-export type SkillSource = 'builtin' | 'user' | 'import' | 'project'
+export type SkillSource = 'builtin' | 'user' | 'import' | 'project' | 'provider'
 
 /** Skill category for classification */
 export type SkillCategory =
@@ -41,6 +41,8 @@ export interface SkillMetadata {
   category: SkillCategory
   tags: string[]
   source: SkillSource
+  /** Runtime-only location; provider skills are never installed into OPFS or SQLite. */
+  providerLocation?: { providerId: string; mountName: string; directory: string }
   /** Trigger conditions for auto-matching */
   triggers: SkillTrigger
   /** Whether this skill is enabled */

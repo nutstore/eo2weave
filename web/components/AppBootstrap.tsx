@@ -80,6 +80,11 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       if (!disposed) stopWorkspaceToolHost = startWorkspaceToolHost()
     })
 
+    let stopProviderSkills: (() => void) | undefined
+    import('@/skills/provider-skills').then(({ startProviderSkillSync }) => {
+      if (!disposed) stopProviderSkills = startProviderSkillSync()
+    })
+
     let stopProviders: (() => void) | undefined
     import('@/vfs/provider-registry').then(({ startProviderDiscovery }) => {
       if (!disposed) stopProviders = startProviderDiscovery()
@@ -92,6 +97,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       clearTimeout(initial)
       clearInterval(interval)
       stopProviders?.()
+      stopProviderSkills?.()
       if (stopWebMCPSyncLoop) stopWebMCPSyncLoop()
       if (stopWorkspaceToolHost) stopWorkspaceToolHost()
     }

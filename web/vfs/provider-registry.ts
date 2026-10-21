@@ -8,6 +8,17 @@ interface Mount {
 
 /** Owns mounts, not connections. Factories may implement any transport internally. */
 export class ProviderRegistry {
+  private listeners = new Set<() => void>()
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) listener()
+  }
+
   private mounts = new Map<string, Mount>()
 
   register(registration: ProviderRegistration): void {
@@ -17,6 +28,11 @@ export class ProviderRegistry {
     if (existing && this.alive(existing)) throw new FsError('EEXIST', `Mount ${registration.mountName} already exists`)
     if (existing) this.release(existing)
     this.mounts.set(registration.mountName, { registration })
+    this.notify()
+  }
+
+  registrations(): ProviderRegistration[] {
+    return [...this.mounts.values()].filter(mount => this.alive(mount)).map(mount => mount.registration)
   }
 
   names(): string[] {
@@ -51,6 +67,7 @@ export class ProviderRegistry {
   clear(): void {
     for (const mount of this.mounts.values()) this.release(mount)
     this.mounts.clear()
+    this.notify()
   }
 
   private alive(mount: Mount): boolean {

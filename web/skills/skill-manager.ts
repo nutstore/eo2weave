@@ -8,6 +8,8 @@
  * - Build skills block for system prompt (metadata-only, on-demand loading)
  */
 
+import { scanProviderSkills, listProviderSkillResources } from './provider-skills'
+import { providerRegistry } from '@/vfs/provider-registry'
 import type { Skill, SkillMetadata, SkillResource } from './skill-types'
 import * as storage from './skill-storage'
 import {
@@ -25,6 +27,8 @@ export class SkillManager {
   private _initialized = false
   private cachedPersistentSkills: Skill[] = []
   private cachedProjectSkills: Skill[] = []
+  private cachedProviderSkills: Skill[] = []
+  private providerRefresh: Promise<void> | null = null
   private cachedUserSkills: Skill[] = []
   private userResourcesBySkillId = new Map<string, SkillResource[]>()
   private projectResourcesBySkillId = new Map<string, SkillResource[]>()
@@ -151,6 +155,7 @@ export class SkillManager {
       // These are runtime-loaded (not persisted to SQLite) — OPFS files
       // are the single source of truth for user skills.
       await this.refreshUserSkills()
+      await this.refreshProviderSkills()
 
       // Update tool registry with skill tools
       const { getToolRegistry } = await import('@/agent/tool-registry')
@@ -219,7 +224,10 @@ export class SkillManager {
    * Get all cached skills (for UI display).
    */
   getSkills(): Skill[] {
-    return [...this.cachedPersistentSkills, ...this.cachedUserSkills, ...this.cachedProjectSkills]
+    const registrations = providerRegistry.registrations()
+    const providers = this.cachedProviderSkills.filter(skill => registrations.some(r =>
+      r.id === skill.providerLocation?.providerId && r.mountName === skill.providerLocation?.mountName))
+    return [...this.cachedPersistentSkills, ...this.cachedUserSkills, ...this.cachedProjectSkills, ...providers]
   }
 
   /**
@@ -235,6 +243,7 @@ export class SkillManager {
       category: s.category,
       tags: s.tags,
       source: s.source,
+      providerLocation: s.providerLocation,
       triggers: s.triggers,
       enabled: s.enabled,
       createdAt: s.createdAt,
@@ -254,7 +263,13 @@ export class SkillManager {
    */
   getSkillByName(name: string): Skill | null {
     const normalized = name.toLowerCase().trim()
-    return this.getSkills().find((skill) => skill.name.toLowerCase() === normalized) || null
+    const skills = this.getSkills()
+    const byId = skills.find(skill => skill.id === name.trim())
+    if (byId) return byId
+    const matches = skills.filter(skill => skill.name.toLowerCase() === normalized)
+    const local = matches.filter(skill => skill.source !== 'provider')
+    if (local.length === 1) return local[0]
+    return matches.length === 1 ? matches[0] : null
   }
 
   /**
@@ -263,7 +278,7 @@ export class SkillManager {
   getEnabledSkillNames(): string[] {
     return this.getSkills()
       .filter((skill) => skill.enabled)
-      .map((skill) => skill.name)
+      .map((skill) => skill.source === 'provider' ? skill.id : skill.name)
       .sort((a, b) => a.localeCompare(b))
   }
 
@@ -271,6 +286,10 @@ export class SkillManager {
    * Get resources for a skill (project resources are runtime-scoped in memory).
    */
   async getSkillResources(skillId: string): Promise<SkillResource[]> {
+    if (skillId.startsWith('provider:')) {
+      const skill = this.getSkillById(skillId)
+      return skill ? listProviderSkillResources(skill) : []
+    }
     if (skillId.startsWith('project:')) {
       return this.projectResourcesBySkillId.get(skillId) || []
     }
@@ -317,7 +336,7 @@ export class SkillManager {
   }
 
   /**
-   * Update enabled status for a user-scoped skill (OPFS-based).
+   * Update enabled status for a user or provider skill without a SQLite record.
    *
    * User skills do not have a SQLite record. The enabled state is persisted
    * to localStorage (keyed globally, not per-project) so that it survives
@@ -330,6 +349,8 @@ export class SkillManager {
     state[skillId] = enabled
     this.saveUserSkillState(state)
 
+    this.cachedProviderSkills = this.cachedProviderSkills.map(skill =>
+      skill.id === skillId ? { ...skill, enabled } : skill)
     // Update in-memory cache
     this.cachedUserSkills = this.cachedUserSkills.map((skill) =>
       skill.id === skillId ? { ...skill, enabled } : skill
@@ -356,6 +377,20 @@ export class SkillManager {
     this.cachedProjectSkills = this.cachedProjectSkills.map((skill) =>
       skill.id === skillId ? { ...skill, enabled } : skill
     )
+  }
+
+  /** Refresh connected provider skills in memory, sharing concurrent discovery requests. */
+  async refreshProviderSkills(): Promise<void> {
+    if (this.providerRefresh) return this.providerRefresh
+    this.providerRefresh = (async () => {
+      const skills = await scanProviderSkills()
+      const state = this.loadUserSkillState()
+      const next = skills.map(skill => ({ ...skill, enabled: state[skill.id] ?? skill.enabled, createdAt: 0, updatedAt: 0 }))
+      if (JSON.stringify(next) === JSON.stringify(this.cachedProviderSkills)) return
+      this.cachedProviderSkills = next
+      this.syncSlashCommands()
+    })().finally(() => { this.providerRefresh = null })
+    return this.providerRefresh
   }
 
   /**
@@ -446,7 +481,7 @@ export class SkillManager {
       if (skills.length > 0) {
         registerSkillCommands(
           skills.map((skill) => ({
-            id: skill.name,
+            id: skill.source === 'provider' ? skill.id : skill.name,
             label: skill.name,
             description: skill.description,
             source: 'skill' as const,

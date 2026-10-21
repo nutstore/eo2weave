@@ -7,6 +7,7 @@ export const skills = {
     filterDisabled: "비활성화됨",
     projectSkills: "프로젝트 스킬",
     mySkills: "내 스킬",
+    providerSkills: "확장 프로그램 스킬",
     builtinSkills: "내장 스킬",
     enabledCount: "{count} / {total} 활성화됨",
     createNew: "새 스킬",

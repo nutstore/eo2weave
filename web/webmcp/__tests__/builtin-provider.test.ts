@@ -56,3 +56,23 @@ it('mounts builtin read-only and enforces it at both transport boundaries', asyn
   expect(await handler({ method: 'writeFile', path: 'world.jmail.archive/config.json', content: btoa('{}') })).toMatchObject({ ok: false, code: 'EROFS' })
   expect(refresh).not.toHaveBeenCalled()
 })
+
+it('discovers extension-owned skills through the read-only provider and withdraws them on disposal', async () => {
+  const { getExtensionSkillStorage } = await import('../../../browser-extension/entrypoints/webmcp/skill-resources')
+  const { scanProviderSkills } = await import('@/skills/provider-skills')
+  const handler = createProviderHandler(getExtensionSkillStorage, async () => {})
+  const send = vi.fn(async (_type: string, payload: Record<string, unknown>) => handler(payload))
+  stops.push(startProviderDiscovery())
+  const dispose = installWebMcpProvider(send)
+  stops.push(dispose)
+  const skills = await scanProviderSkills()
+  expect(skills).toHaveLength(1)
+  expect(skills[0]).toMatchObject({ name: 'cw-webmcp-creator', source: 'provider' })
+  const path = 'vfs://external/extension-skills/cw-webmcp-creator/SKILL.md'
+  const target = await resolveVfsTarget(path, { directoryHandle: null }, 'read')
+  expect((await target.backend.readFile(target.path, { encoding: 'text' })).content).toContain('name: cw-webmcp-creator')
+  await expect(target.backend.writeFile(target.path, 'changed')).rejects.toMatchObject({ code: 'EROFS' })
+  expect(await handler({ method: 'remove', path: 'cw-webmcp-creator', recursive: true })).toMatchObject({ ok: false, code: 'EROFS' })
+  dispose()
+  expect(await scanProviderSkills()).toEqual([])
+})

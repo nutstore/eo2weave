@@ -25,6 +25,7 @@ async function refreshSkillManagerCache() {
     // UI reflects OPFS writes immediately.
     await manager.refreshCache()
     await manager.refreshUserSkills()
+    await manager.refreshProviderSkills()
   } catch (error) {
     console.error('[SkillsStore] Failed to refresh SkillManager cache:', error)
   }
@@ -268,7 +269,7 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
         return
       }
 
-      if (skill?.source === 'user') {
+      if (skill?.source === 'user' || skill?.source === 'provider') {
         // User skills live in OPFS; there is no SQLite record to update.
         // Update the in-memory cache directly so the UI reflects the change.
         manager.setUserSkillEnabled(id, enabled)
