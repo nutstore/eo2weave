@@ -1,4 +1,4 @@
-import { listManagedPackages, setManagedPackageConfig, type ManagedWebMCPPackage } from '../webmcp/package-client'
+import { deleteManagedPackage, listManagedPackages, setManagedPackageConfig, type ManagedWebMCPPackage } from '../webmcp/package-client'
 
 function t(key: string, substitutions?: string | string[]): string {
   return chrome.i18n.getMessage(key as any, substitutions) || key
@@ -61,7 +61,33 @@ function buildCard(entry: ManagedWebMCPPackage): HTMLElement {
       showError(error)
     }
   })
-  card.append(body, toggle)
+  const actions = document.createElement('div')
+  actions.className = 'actions'
+  actions.append(toggle)
+  if (entry.mount === 'webmcp' && entry.access === 'read-write') {
+    const remove = document.createElement('button')
+    remove.type = 'button'
+    remove.className = 'delete-package'
+    remove.textContent = t('webmcpPackageDelete')
+    remove.setAttribute('aria-label', `${t('webmcpPackageDelete')}: ${entry.directory}`)
+    remove.addEventListener('click', async () => {
+      if (!window.confirm(t('webmcpPackageDeleteConfirm', [entry.manifest?.id ?? entry.directory, entry.uri]))) return
+      remove.disabled = true
+      const toggleDisabled = toggle.disabled
+      toggle.disabled = true
+      errorDisplay.textContent = ''
+      try {
+        await deleteManagedPackage(entry)
+        await render()
+      } catch (error) {
+        remove.disabled = false
+        toggle.disabled = toggleDisabled
+        showError(error)
+      }
+    })
+    actions.append(remove)
+  }
+  card.append(body, actions)
   return card
 }
 let generation = 0

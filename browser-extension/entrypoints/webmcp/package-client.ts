@@ -12,3 +12,8 @@ export async function setManagedPackageConfig(entry: ManagedWebMCPPackage, confi
   const response = await chrome.runtime.sendMessage({ type: 'webmcp_packages_set_config', mount: entry.mount, directory: entry.directory, config })
   if (!response?.ok) throw new Error(response?.error ?? 'Configuration update failed')
 }
+
+export async function deleteManagedPackage(entry: ManagedWebMCPPackage): Promise<void> {
+  const response = await chrome.runtime.sendMessage({ type: 'webmcp_packages_delete', mount: entry.mount, directory: entry.directory })
+  if (!response?.ok) throw new Error(response?.error ?? 'Package deletion failed')
+}

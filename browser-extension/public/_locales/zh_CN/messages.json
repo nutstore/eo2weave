@@ -140,5 +140,11 @@
   },
   "webmcpPackageActivation": {
     "message": "启用包"
+  },
+  "webmcpPackageDelete": {
+    "message": "删除"
+  },
+  "webmcpPackageDeleteConfirm": {
+    "message": "确定删除 WebMCP 包“$1”吗？\n\n这将从 OPFS 中永久删除该包及其全部文件：\n$2\n\n此操作无法撤销。"
   }
 }

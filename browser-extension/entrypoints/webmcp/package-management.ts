@@ -14,13 +14,17 @@ export function createPackageManagement(
         const entries = await readWebMCPCatalog()
         return { ok: true, entries: entries.map(({ package: pkg, ...entry }) => ({ ...entry, manifest: pkg?.manifest ?? null })) }
       }
-      if (message.type !== 'webmcp_packages_set_config') throw new FsError('EINVAL', 'Unknown package operation')
+      if (!['webmcp_packages_set_config', 'webmcp_packages_delete'].includes(String(message.type))) throw new FsError('EINVAL', 'Unknown package operation')
       if (typeof message.directory !== 'string' || normalizeProviderPath(message.directory) !== message.directory || message.directory.includes('/'))
         throw new FsError('EINVAL', 'Expected a package directory')
       if (!['webmcp', 'builtin-webmcp'].includes(String(message.mount))) throw new FsError('EINVAL', 'Unknown mount')
-      const config = parseWebMCPConfig(message.config)
       const entry = (await readWebMCPCatalog()).find(entry => entry.directory === message.directory && entry.mount === message.mount)
       if (!entry) throw new FsError('ENOENT', 'Package not found')
+      if (message.type === 'webmcp_packages_delete') {
+        if (entry.mount !== 'webmcp' || entry.access !== 'read-write') throw new FsError('EROFS', 'Built-in packages cannot be deleted')
+        return await writeUser({ method: 'remove', path: entry.directory, recursive: true })
+      }
+      const config = parseWebMCPConfig(message.config)
       if (config.activation === 'enabled' && (!entry.package || entry.diagnostics.some(error => !error.startsWith('config.json:'))))
         throw new FsError('EINVAL', 'Cannot enable an invalid or conflicting package')
       if (entry.access === 'read-only') {

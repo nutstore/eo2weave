@@ -419,5 +419,11 @@
   },
   "webmcpPackageActivation": {
     "message": "Enable package"
+  },
+  "webmcpPackageDelete": {
+    "message": "Delete"
+  },
+  "webmcpPackageDeleteConfirm": {
+    "message": "Delete WebMCP package “$1”?\n\nThis permanently deletes the package and all its files from OPFS:\n$2\n\nThis cannot be undone."
   }
 }

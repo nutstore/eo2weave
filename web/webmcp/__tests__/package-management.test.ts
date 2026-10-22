@@ -58,3 +58,23 @@ it('acknowledges persisted builtin config even if catalog refresh fails', async 
     expect(setBuiltinConfig).toHaveBeenCalledOnce()
   } finally { warn.mockRestore() }
 })
+
+it('recursively deletes user packages and refreshes the catalog', async () => {
+  const storage = memoryProvider()
+  await storage.writeFile(`${entry.directory}/nested/tool.js`, new TextEncoder().encode('source'))
+  const refresh = vi.fn(async () => {})
+  const manage = createPackageManagement(createProviderHandler(async () => storage, refresh), refresh)
+  expect(await manage({ type: 'webmcp_packages_delete', mount: 'webmcp', directory: entry.directory })).toEqual({ ok: true, value: null })
+  await expect(storage.stat(entry.directory)).rejects.toThrow()
+  expect(refresh).toHaveBeenCalledOnce()
+})
+it('rejects builtin deletion, traversal and missing packages without writing', async () => {
+  const write = vi.fn()
+  const manage = createPackageManagement(write, vi.fn())
+  for (const directory of ['../escape', '', 'missing']) {
+    expect(await manage({ type: 'webmcp_packages_delete', mount: 'webmcp', directory })).toMatchObject({ ok: false })
+  }
+  vi.mocked(readWebMCPCatalog).mockResolvedValue([{ ...entry, mount: 'builtin-webmcp', access: 'read-only' }])
+  expect(await manage({ type: 'webmcp_packages_delete', mount: 'builtin-webmcp', directory: entry.directory })).toMatchObject({ ok: false, code: 'EROFS' })
+  expect(write).not.toHaveBeenCalled()
+})

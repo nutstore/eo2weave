@@ -46,6 +46,11 @@
       border-radius: 5px; padding: 2px 7px;
     }
     .card.disabled { opacity: 0.72; }
+    .actions { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
+    .delete-package { background: #fff; color: #b91c1c; border: 1px solid #fecaca; border-radius: 5px; padding: 4px 8px; cursor: pointer; }
+    .delete-package:hover { background: #fef2f2; }
+    .delete-package:disabled { opacity: 0.5; cursor: not-allowed; }
+    .delete-package:focus-visible { outline: 2px solid #b91c1c; outline-offset: 2px; }
     .toggle {
       position: relative; width: 38px; height: 21px; flex: 0 0 auto;
       appearance: none; -webkit-appearance: none;

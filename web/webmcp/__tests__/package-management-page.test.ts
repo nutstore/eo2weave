@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { listManagedPackages, setManagedPackageConfig } from '../../../browser-extension/entrypoints/webmcp/package-client'
+import { deleteManagedPackage, listManagedPackages, setManagedPackageConfig } from '../../../browser-extension/entrypoints/webmcp/package-client'
 import { manifest } from './fixtures'
-vi.mock('../../../browser-extension/entrypoints/webmcp/package-client', () => ({ listManagedPackages: vi.fn(), setManagedPackageConfig: vi.fn() }))
+vi.mock('../../../browser-extension/entrypoints/webmcp/package-client', () => ({ deleteManagedPackage: vi.fn(), listManagedPackages: vi.fn(), setManagedPackageConfig: vi.fn() }))
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren() })
 it('renders both mounts and invalid packages, persists toggles and reacts to external config edits', async () => {
   const listen = vi.fn()
@@ -30,4 +30,20 @@ it('renders both mounts and invalid packages, persists toggles and reacts to ext
   active.dispatchEvent(new Event('change'))
   await vi.waitFor(() => expect(document.getElementById('pageError')!.textContent).toBe('Storage unavailable'))
   expect(active.checked).toBe(true)
+  expect(document.querySelectorAll('.delete-package')).toHaveLength(2)
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  const remove = document.querySelector<HTMLButtonElement>('#installedList .delete-package')!
+  remove.click()
+  expect(confirm).toHaveBeenCalled()
+  expect(deleteManagedPackage).not.toHaveBeenCalled()
+  confirm.mockReturnValue(true)
+  vi.mocked(deleteManagedPackage).mockRejectedValueOnce(new Error('Deletion failed'))
+  remove.click()
+  await vi.waitFor(() => expect(document.getElementById('pageError')!.textContent).toBe('Deletion failed'))
+  expect(remove.disabled).toBe(false)
+  vi.mocked(listManagedPackages).mockResolvedValue([builtin, broken])
+  remove.click()
+  await vi.waitFor(() => expect(document.querySelectorAll('.card')).toHaveLength(2))
+  expect(deleteManagedPackage).toHaveBeenCalledWith(expect.objectContaining({ directory: entry.directory }))
+  confirm.mockRestore()
 })

@@ -56,7 +56,7 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       const allowed = [chrome.runtime.getURL('/recipes.html'), chrome.runtime.getURL('/popup.html')]
       const senderUrl = (sender.url || '').split(/[?#]/)[0]
       if (sender.id !== chrome.runtime.id || !allowed.includes(senderUrl) ||
-        (message.type === 'webmcp_packages_set_config' && senderUrl !== allowed[0])) {
+        (message.type !== 'webmcp_packages_list' && senderUrl !== allowed[0])) {
         respond({ ok: false, code: 'EACCES', error: 'Package management requires the extension management page' })
         return false
       }
