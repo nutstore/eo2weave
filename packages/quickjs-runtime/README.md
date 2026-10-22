@@ -39,7 +39,7 @@ The guest has JavaScript built-ins and explicitly supplied bindings. The runtime
 does not install DOM, browser/extension APIs, network access, timers, `tools`, or
 an application console. There is no module loader. Syntax diagnostics refer to
 the caller's source. The host requires standard WebAssembly, AbortController,
-TextEncoder, and timer APIs; it does not require a browser or Worker.
+TextEncoder, a monotonic `performance.now` clock, and timer APIs; it does not require a browser or Worker.
 
 Limits cover wall time, guest CPU time, VM memory, total and concurrent host calls,
 and JSON transfer size. Host waiting does not consume guest CPU time. Execution
@@ -85,6 +85,15 @@ guest global with JSON arguments. Both reject on guest errors; the scoped API
 converts uncaught errors to the same structured failure as `executeQuickJs`.
 Each evaluation is preflighted. Await evaluations sequentially; overlapping calls
 are rejected. Await every guest host-call Promise as well.
+
+`session.call(name, args, { timeoutMs })` optionally bounds a single call, including
+CPU work and asynchronous waiting. The finite, nonnegative timeout is measured
+with a monotonic clock. Zero allows one immediate evaluation without asynchronous
+waiting (the shared CPU limit still applies). A timeout returns `JS_CALL_TIMEOUT`,
+aborts the host cancellation signal, and permanently cancels the session. Catching
+the rejection does not make the VM reusable: pending guest continuations must not
+run alongside later calls. A successful call clears its timer. The overall session
+deadline and external cancellation still apply.
 
 The callback owns orchestration. Use `session.signal` for host waits so that they
 observe cancellation and the shared wall-clock deadline. CPU and host-call budgets

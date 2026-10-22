@@ -77,7 +77,7 @@ export default {
 };
 ```
 
-Callbacks receive `{ input, state, target: { tabId, url } }`. `state` persists within an invocation; `target.url` is the initiating URL. Input is validated before execution. After root success, `result(context)` runs once and its output is validated; undefined becomes null. Adapter outcomes are `{status:'success', result:...}` or `{status:'failure'}`.
+Callbacks receive `{ input, state, target: { tabId, url } }`. `state` persists within an invocation; `target.url` is the initiating URL. Input is validated before execution. After root success, `result(context)` runs once and its output is validated; undefined becomes null. Adapter outcomes are `{status:'success', result:...}` or `{status:'failure', diagnostics:{node, logs}}`. Failure diagnostics identify the node path, type, optional description, elapsed milliseconds, reason, and an optional truncated last browser observation. `result` is not called on failure. Exceptions carry diagnostics in the invocation error instead.
 
 | Node | Definition and behavior |
 |---|---|
@@ -87,13 +87,26 @@ Callbacks receive `{ input, state, target: { tabId, url } }`. `state` persists w
 | `wait` | `inspect(context)` returns boolean; false keeps waiting. Optional `intervalMs` and `timeoutMs` default to zero interval and no timeout. |
 | `action` | `run(context)` returns exactly `success`, `failure` or `running`; running repeats the callback on a later tick. |
 
-Composites retain progress and do not rerun completed children. Every node accepts an optional nonempty `description`. Exceptions fail the invocation; they do not trigger selector fallback. Wait timeouts are checked between inspections, not during an awaited call.
+Composites retain progress and do not rerun completed children: these are one-shot workflows, not reactive trees. Every node accepts an optional nonempty `description`. Exceptions fail the invocation; they do not trigger selector fallback. A wait that reaches its deadline between inspections returns failure and can select a fallback. Positive deadlines also bound in-flight inspections and cancel their browser calls; an interrupted inspection ends the entire invocation with `JS_WAIT_TIMEOUT`, because the shared VM cannot safely resume after interruption. Zero timeout allows one immediate inspection but no asynchronous waiting. Late successful inspections do not override a positive deadline.
 
 Keep `inspect` observational. Perform one-shot effects in `run`, then poll completion with `wait`. Use `selector(condition, sequence(action, wait))` for “already there, otherwise navigate and wait.”
+
+Returning `running` reruns the entire action callback on the next tick. An action
+that clicks “Load more” and then returns `running` while loading will click again.
+Use a sequence with an action that awaits the click and returns `success`, followed
+by a wait that only observes loading. A still-pending action Promise is awaited;
+it is not called again while pending. Use `running` only when repeated callbacks
+are intentional and any one-shot effects are explicitly guarded.
 
 ## Browser API
 
 Callbacks run in QuickJS with `browser` and `console`. There is no package/file access, Bash, DOM, `window`, `URL`, `fetch`, timers or Chrome API. Run page code through `browser.eval` and return JSON data.
+
+`console.log/info/warn/error` use an independent synchronous event channel and do
+not consume total or concurrent browser-call quotas. Each message is truncated to
+2048 characters. The first 100 messages are printed in the extension service worker
+console; failure diagnostics retain the most recent 100. Logging still uses guest
+CPU and memory, so avoid logging entire snapshots in polling loops.
 
 Pass `{ tab: target.tabId, timeout: ... }` explicitly. Browser calls return results directly and reject on errors. Await every call.
 

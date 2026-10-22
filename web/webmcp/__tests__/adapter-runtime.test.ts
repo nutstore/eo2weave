@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { createRequire } from 'node:module'
 import { readFile } from 'node:fs/promises'
-import { executeAdapterWorkflow } from '../../../browser-extension/entrypoints/webmcp/adapter-runtime'
+import { executeAdapterWorkflow, type BrowserCommand } from '../../../browser-extension/entrypoints/webmcp/adapter-runtime'
 let wasm: WebAssembly.Module
 beforeAll(async () => {
   const require = createRequire(import.meta.url)
@@ -16,7 +16,7 @@ const workflow = (tree: string, result = 'return state.value', outputSchema = "{
 const run = (body: string) => workflow(`{type: 'action', async run({input, state, target}) { ${body}; return 'success' }}`)
 const execute = (
   source: string,
-  runBrowser = vi.fn(async () => 5 as any),
+  runBrowser: BrowserCommand = vi.fn(async () => 5),
   controller = new AbortController(),
 ) => executeAdapterWorkflow(
   wasm,
@@ -62,7 +62,9 @@ describe('SW behavior tree with guest callbacks', () => {
       {type:'condition', inspect() { return false }},
       {type:'action', async run({target}) { await browser.eval('() => 5', {tab: target.tabId}); return 'success' }}
     ]}`, "throw new Error('must not run')")
-    expect(await execute(source, invoke)).toEqual({ok:true, value:{status:'failure'}})
+    expect(await execute(source, invoke)).toMatchObject({ok:true, value:{status:'failure', diagnostics: {
+      node: {path:'tree.children[0]', type:'condition', reason:'condition_false'}, logs:[],
+    }}})
     expect(invoke).not.toHaveBeenCalled()
   })
   it('handles running actions and wait timeouts as BT statuses', async () => {
@@ -140,5 +142,88 @@ describe('SW behavior tree with guest callbacks', () => {
     expect(invoke).toHaveBeenCalledWith(expect.objectContaining({
       command: 'webmcp', positionals: ['list'], options: {tab: '1'},
     }), expect.any(AbortSignal))
+  })
+
+  it('keeps log traffic outside browser call quotas and retains bounded diagnostics', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const invoke = vi.fn(async () => 5)
+    try {
+      const source = workflow(`{type:'action', description:'Read after logging', async run({target}) {
+        for (let i = 0; i < 250; i++) console.log('message-' + i);
+        for (let i = 0; i < 200; i++) await browser.eval('() => 5', {tab:target.tabId});
+        return 'failure';
+      }}`)
+      const outcome = await execute(source, invoke)
+      expect(outcome).toMatchObject({ok:true, value:{status:'failure', diagnostics:{
+        node:{path:'tree', description:'Read after logging', reason:'action_failure', lastObservation:'5'},
+      }}})
+      if (!outcome.ok) throw new Error('Workflow unexpectedly failed')
+      const diagnostics = (outcome.value as any).diagnostics
+      expect(diagnostics.logs).toHaveLength(100)
+      expect(diagnostics.logs[0]).toEqual({level:'log', message:'message-150'})
+      expect(diagnostics.logs.at(-1)).toEqual({level:'log', message:'message-249'})
+      expect(invoke).toHaveBeenCalledTimes(200)
+      expect(log).toHaveBeenCalledTimes(100)
+    } finally { log.mockRestore() }
+  })
+
+  it('reports the deepest failed node, including empty selectors', async () => {
+    const source = workflow(`{type:'sequence', children:[
+      {type:'action', run(){return 'success'}},
+      {type:'wait', description:'Wait for rows', timeoutMs:0, async inspect({target}) {
+        return false;
+      }}
+    ]}`)
+    expect(await execute(source)).toMatchObject({ok:true,value:{status:'failure',diagnostics:{node:{
+      path:'tree.children[1]', type:'wait', description:'Wait for rows', reason:'wait_timeout', elapsedMs:expect.any(Number),
+    }}}})
+    expect(await execute(workflow("{type:'selector',children:[]}"))).toMatchObject({ok:true,value:{status:'failure',diagnostics:{node:{reason:'empty_selector'}}}})
+  })
+
+  it('cancels a pending inspection at its deadline without starting fallback or result', async () => {
+    let browserSignal: AbortSignal | undefined
+    const invoke = vi.fn(async (_request, signal: AbortSignal) => {
+      browserSignal = signal
+      return new Promise<never>(() => {})
+    })
+    const source = workflow(`{type:'selector',children:[
+      {type:'wait', description:'Wait for page', timeoutMs:40, async inspect({target}) {
+        await browser.eval('() => true', {tab:target.tabId}); return true;
+      }},
+      {type:'action',run(){throw new Error('fallback must not run')}}
+    ]}`, "throw new Error('result must not run')")
+    expect(await execute(source, invoke)).toMatchObject({ok:false,error:{code:'JS_WAIT_TIMEOUT',diagnostics:{node:{
+      path:'tree.children[0]', description:'Wait for page', reason:'JS_WAIT_TIMEOUT',
+    }}}})
+    expect(browserSignal?.aborted).toBe(true)
+    expect(invoke).toHaveBeenCalledTimes(1)
+  })
+
+  it('bounds CPU work and guest-only promises by the inspection deadline', async () => {
+    for (const body of ['while (true) {}', 'return await new Promise(() => {})']) {
+      expect(await execute(workflow(`{type:'wait',timeoutMs:30,async inspect(){${body}}}`)))
+        .toMatchObject({ok:false,error:{code:'JS_WAIT_TIMEOUT',diagnostics:{node:{path:'tree',type:'wait'}}}})
+    }
+  })
+
+  it('uses the remaining wait budget across inspections', async () => {
+    let first = true
+    const invoke = vi.fn(async () => {
+      if (first) { first = false; return false }
+      return new Promise<never>(() => {})
+    })
+    const source = workflow(`{type:'wait',timeoutMs:100,async inspect({target}) {
+      return await browser.eval('() => false',{tab:target.tabId});
+    }}`)
+    expect(await execute(source, invoke)).toMatchObject({ok:false,error:{code:'JS_WAIT_TIMEOUT'}})
+    expect(invoke).toHaveBeenCalledTimes(2)
+  })
+
+  it('adds node context to exceptions and does not blame a leaf for result errors', async () => {
+    expect(await execute(workflow("{type:'action',description:'Read title',run(){throw new Error('broken')}}")))
+      .toMatchObject({ok:false,error:{message:'broken',diagnostics:{node:{path:'tree',description:'Read title'}}}})
+    const outcome = await execute(workflow("{type:'action',run(){return 'success'}}", "throw new Error('bad result')"))
+    expect(outcome).toMatchObject({ok:false,error:{message:'bad result'}})
+    if (!outcome.ok) expect(outcome.error).not.toHaveProperty('diagnostics.node')
   })
 })

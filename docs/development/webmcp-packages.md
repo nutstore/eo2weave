@@ -140,6 +140,33 @@ Started side effects are not rolled back. Individual CDP browser primitives may
 queue on a tab, but `browser.webmcp.exec` bypasses that queue while another
 adapter is running, so re-entrant and multi-level WebMCP calls do not deadlock.
 
+BT composites remember progress for one-shot workflows. Returning `running` from
+an action invokes its entire callback again on the next tick; a pending Promise
+is awaited without reinvocation. Keep clicks and other one-shot effects in actions
+that return `success`, followed by observational wait nodes.
+
+Wait deadlines use a monotonic clock. A timeout between inspections produces
+branch failure and permits selector fallback. A positive deadline also bounds an
+in-flight inspection, including browser work and guest CPU. If it expires during
+that call, the adapter cancels pending browser work and ends the invocation with
+`JS_WAIT_TIMEOUT`; the interrupted shared VM is disposed rather than reused for
+fallback. Zero timeout permits one immediate inspection without asynchronous
+waiting. Cancellation does not undo already-started side effects.
+
+Root failure returns `{ status: 'failure', diagnostics: { node, logs } }` without
+calling `result`. Node diagnostics include `path`, `type`, `elapsedMs`, `reason`,
+optional `description`, and optional `lastObservation` (the most recent browser
+response, serialized and truncated to 2048 characters). Reasons include
+`condition_false`, `action_failure`, `wait_timeout`, and `empty_selector`.
+Invocation exceptions attach the same diagnostics to the error, with its error
+code as the node reason. Errors in `result` or output validation are not attributed
+to the last successful tree node. Success outcomes remain `{ status, result }`.
+
+Console logs use an event channel independent of browser-call quotas. Each message
+is truncated to 2048 characters, the first 100 are printed in the service worker
+console, and failure diagnostics retain the most recent 100. These retention limits
+do not stop execution or reduce the 200-call browser budget.
+
 The authoritative authoring guide is the `cw-webmcp-creator` skill at
 `browser-extension/skills/cw-webmcp-creator/SKILL.md`.
 

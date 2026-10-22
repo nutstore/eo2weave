@@ -102,4 +102,50 @@ describe('scoped QuickJS sessions', () => {
     })
     expect(result).toEqual({ok:true,value:2})
   })
+
+  it('cancels host work and prevents VM reuse after a per-call timeout', async () => {
+    let hostSignal!: AbortSignal
+    const result = await withQuickJsSession(wasm, request, {globals:{},functions:{wait:async (_, abort) => {
+      hostSignal = abort
+      return new Promise<never>(() => {})
+    }}}, signal(), async session => {
+      await session.evaluate('globalThis.read = async () => await wait()')
+      await expect(session.call('read', [], {timeoutMs:30})).rejects.toThrow()
+      expect(hostSignal.aborted).toBe(true)
+      await expect(session.evaluate('return 1')).rejects.toMatchObject({code:'JS_CALL_TIMEOUT'})
+      return 1
+    })
+    expect(result).toMatchObject({ok:false,error:{code:'JS_CALL_TIMEOUT'}})
+  })
+
+  it('interrupts CPU-bound calls and clears successful per-call timers', async () => {
+    const result = await withQuickJsSession(wasm, request, empty, signal(), async session => {
+      await session.evaluate('globalThis.fast = () => 1; globalThis.slow = () => { while (true) {} }')
+      expect(await session.call('fast', [], {timeoutMs:20})).toBe(1)
+      await new Promise(resolve => setTimeout(resolve, 40))
+      expect(session.signal.aborted).toBe(false)
+      return session.call('slow', [], {timeoutMs:30})
+    })
+    expect(result).toMatchObject({ok:false,error:{code:'JS_CALL_TIMEOUT'}})
+  })
+
+  it('permits an immediate result at zero timeout but cancels async waiting', async () => {
+    const result = await withQuickJsSession(wasm, request, empty, signal(), async session => {
+      await session.evaluate('globalThis.fast = () => true; globalThis.slow = () => new Promise(() => {})')
+      expect(await session.call('fast', [], {timeoutMs:0})).toBe(true)
+      return session.call('slow', [], {timeoutMs:0})
+    })
+    expect(result).toMatchObject({ok:false,error:{code:'JS_CALL_TIMEOUT'}})
+  })
+
+  it('does not change the active deadline when an overlapping call is rejected', async () => {
+    let finish!: (value: number) => void
+    const result = await withQuickJsSession(wasm, request, {globals:{},functions:{wait:async () => new Promise<number>(resolve => {finish=resolve})}}, signal(), async session => {
+      const first = session.call('wait', [], {timeoutMs:100})
+      await expect(session.call('wait', [], {timeoutMs:0})).rejects.toThrow('Await')
+      finish(3)
+      return first
+    })
+    expect(result).toEqual({ok:true,value:3})
+  })
 })

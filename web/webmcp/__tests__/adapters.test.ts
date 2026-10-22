@@ -62,7 +62,7 @@ describe('package validation', () => {
         {type:'condition', inspect() { throw new Error('not executed') }},
         {type:'sequence', children: [
           {type:'action', run() { return 'success' }},
-          {type:'wait', intervalMs:100, timeoutMs:2000, inspect() { return true }}
+          {type:'wait', description:'Wait for data', intervalMs:100, timeoutMs:2000, inspect() { return true }}
         ]}
       ]
     }`)
@@ -70,7 +70,7 @@ describe('package validation', () => {
       {type:'condition',id:'tree.children[0]'},
       {type:'sequence',children:[
         {type:'action',id:'tree.children[1].children[0]'},
-        {type:'wait',id:'tree.children[1].children[1]',intervalMs:100,timeoutMs:2000}
+        {type:'wait',id:'tree.children[1].children[1]',description:'Wait for data',intervalMs:100,timeoutMs:2000}
       ]}
     ]})
   })

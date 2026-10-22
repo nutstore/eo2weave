@@ -46,6 +46,13 @@ interface Memory {
   nextInspectionAt?: number
 }
 
+export interface Transition {
+  path: string
+  type: Node<unknown>['type']
+  status: Status
+  elapsedMs: number
+}
+
 export interface Execution<C> {
   readonly context: C
   readonly status: Status | undefined
@@ -58,7 +65,7 @@ export interface Execution<C> {
 export function createExecution<C>(
   root: Node<C>,
   context: C,
-  options: { now?: () => number } = {},
+  options: { now?: () => number; onTransition?: (event: Transition) => void } = {},
 ): Execution<C> {
   const now = options.now ?? Date.now
   // Paths distinguish repeated occurrences of the same reusable subtree.
@@ -73,6 +80,8 @@ export function createExecution<C>(
       memory.set(path, state)
     }
     if (state.status === 'success' || state.status === 'failure') return state.status
+    const previous = state.status
+    state.startedAt ??= now()
     state.status = 'running'
     let result: Status
     switch (node.type) {
@@ -87,8 +96,7 @@ export function createExecution<C>(
         break
       case 'wait': {
         const time = now()
-        const first = state.startedAt === undefined
-        state.startedAt ??= time
+        const first = previous === undefined
         const expired = () => node.timeoutMs !== undefined && now() - state.startedAt! >= node.timeoutMs
         if (!first && expired()) {
           result = 'failure'
@@ -96,7 +104,7 @@ export function createExecution<C>(
           result = 'running'
         } else {
           const ready = await inspect(node.inspect)
-          result = ready ? 'success' : expired() ? 'failure' : 'running'
+          result = expired() && node.timeoutMs !== 0 ? 'failure' : ready ? 'success' : expired() ? 'failure' : 'running'
           state.nextInspectionAt = now() + node.intervalMs
         }
         break
@@ -114,6 +122,7 @@ export function createExecution<C>(
       }
     }
     state.status = result
+    if (previous !== result) options.onTransition?.({ path, type: node.type, status: result, elapsedMs: Math.max(0, now() - state.startedAt!) })
     return result
   }
 

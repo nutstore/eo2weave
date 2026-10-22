@@ -26,10 +26,11 @@ export interface WorkflowContract {
 }
 
 /** Static structure only; executable callbacks stay inside the guest VM. */
-export type WorkflowTreeDescriptor =
+export type WorkflowTreeDescriptor = { description?: string } & (
   | { type: 'sequence' | 'selector'; children: WorkflowTreeDescriptor[] }
   | { type: 'action' | 'condition'; id: string }
   | { type: 'wait'; id: string; intervalMs: number; timeoutMs?: number }
+)
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -165,7 +166,11 @@ export function parseWorkflow(source: string): { expression: string; contract: W
       }
     } else throw new Error(`${path}: unknown node type ${String(type)}`)
     for (const key of props.keys()) if (!['type', 'description', ...required, ...optional].includes(key)) throw new Error(`${path}: invalid ${key} for ${type}`)
-    if (props.has('description')) text(jsonLiteral(value(props, 'description')), `${path}.description`)
+    if (props.has('description')) {
+      const description = jsonLiteral(value(props, 'description'))
+      text(description, `${path}.description`)
+      descriptor.description = description
+    }
     return descriptor
   }
   const props = properties(definition, ['inputSchema', 'outputSchema', 'tree', 'result'], ['inputSchema', 'outputSchema', 'tree', 'result'], 'Workflow')

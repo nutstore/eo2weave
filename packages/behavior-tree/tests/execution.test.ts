@@ -120,6 +120,39 @@ describe('wait', () => {
     expect(await createExecution(wait(() => false, { timeoutMs: 0 }), {}).tick()).toBe('failure')
   })
 
+  it('rejects a successful inspection that finishes after a positive deadline', async () => {
+    let time = 0
+    const fallback = vi.fn(() => 'success' as const)
+    const execution = createExecution(selector(
+      wait(async () => { time = 21; return true }, {timeoutMs:20}),
+      action(fallback),
+    ), {}, {now:() => time})
+    expect(await execution.tick()).toBe('success')
+    expect(fallback).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports node transitions with paths and total elapsed time', async () => {
+    let time = 0
+    const onTransition = vi.fn()
+    const execution = createExecution(sequence(wait(() => false, {timeoutMs:20})), {}, {now:() => time,onTransition})
+    await execution.tick()
+    time = 10
+    await execution.tick()
+    time = 20
+    await execution.tick()
+    expect(onTransition.mock.calls.map(([event]) => event)).toEqual([
+      {path:'root/0',type:'wait',status:'running',elapsedMs:0},
+      {path:'root',type:'sequence',status:'running',elapsedMs:0},
+      {path:'root/0',type:'wait',status:'failure',elapsedMs:20},
+      {path:'root',type:'sequence',status:'failure',elapsedMs:20},
+    ])
+    await execution.tick()
+    expect(onTransition).toHaveBeenCalledTimes(4)
+    execution.reset()
+    await execution.tick()
+    expect(onTransition).toHaveBeenLastCalledWith({path:'root',type:'sequence',status:'running',elapsedMs:0})
+  })
+
   it('has no implicit timeout', async () => {
     let time = 0
     const execution = createExecution(wait(() => false), {}, { now: () => time })

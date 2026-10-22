@@ -13,7 +13,8 @@ import {
 export interface QuickJsSession {
   /** JSON-only evaluations share globals, closures and resource budgets. Await every call. */
   evaluate(code: string, filename?: string): Promise<JsonValue>
-  call(name: string, args?: JsonValue[]): Promise<JsonValue>
+  /** A call timeout cancels the entire session; the interrupted VM cannot be reused. */
+  call(name: string, args?: JsonValue[], options?: { timeoutMs: number }): Promise<JsonValue>
   readonly signal: AbortSignal
 }
 
@@ -44,17 +45,28 @@ export async function withQuickJsSession(
     }
   }
   const controller = new AbortController()
+  let callDeadline = Infinity
+  let callTimedOut = false
+  const expireCall = () => {
+    if (controller.signal.aborted) return
+    callTimedOut = true
+    controller.abort()
+  }
   const onAbort = () => controller.abort()
   const timer = setTimeout(() => controller.abort(), limits.timeoutMs)
   signal.addEventListener('abort', onAbort, { once: true })
-  const interruption = (): RuntimeFailure | null =>
-    Date.now() >= deadline
+  const interruption = (): RuntimeFailure | null => {
+    if (performance.now() >= callDeadline) expireCall()
+    return Date.now() >= deadline
       ? { code: 'JS_TIMEOUT', message: 'Execution timed out' }
-      : controller.signal.aborted
+      : callTimedOut
+        ? { code: 'JS_CALL_TIMEOUT', message: 'Guest call timed out; session canceled' }
+        : controller.signal.aborted
         ? { code: 'JS_CANCELED', message: 'Execution canceled' }
         : remainingCpu <= 0
           ? { code: 'JS_CPU_LIMIT', message: 'CPU time limit exceeded' }
           : null
+  }
   let closed = false
   let calls = 0
   const pending = new Set<Deferred>()
@@ -65,7 +77,7 @@ export async function withQuickJsSession(
       wasm,
       memoryLimit: limits.memoryBytes,
       interruptHandler: () =>
-        controller.signal.aborted || Date.now() >= deadline || Date.now() >= cpuDeadline,
+        controller.signal.aborted || Date.now() >= deadline || Date.now() >= cpuDeadline || performance.now() >= callDeadline,
     })
     const runtime = vm
     const set = (name: string, value: unknown) => {
@@ -185,6 +197,7 @@ export async function withQuickJsSession(
             // The outer catch reports the specific interruption reason.
             if (interruption()) throw new Error('Execution interrupted')
             guest(() => runtime.executePendingJobs())
+            if (interruption()) throw new Error('Execution interrupted')
             if (result.promiseState !== 0) break
             await new Promise((resolve) => setTimeout(resolve, 0))
           }
@@ -231,7 +244,24 @@ export async function withQuickJsSession(
     }
     const value = await use({
       evaluate,
-      call: async (name, args = []) => evaluate(`return await globalThis[${JSON.stringify(name)}](...JSON.parse(${JSON.stringify(jsonText(args, limits.maxTransferBytes))}))`),
+      call: async (name, args = [], options) => {
+        if (activeEvaluation) throw new Error('Await the current QuickJS evaluation before starting another')
+        const code = `return await globalThis[${JSON.stringify(name)}](...JSON.parse(${JSON.stringify(jsonText(args, limits.maxTransferBytes))}))`
+        if (!options) return evaluate(code)
+        if (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0)
+          throw new RangeError('Call timeout must be finite and nonnegative')
+        // Zero permits one immediate evaluation, but no asynchronous waiting.
+        callDeadline = options.timeoutMs === 0 ? Infinity : performance.now() + options.timeoutMs
+        const callTimer = setTimeout(expireCall, Math.ceil(Math.min(options.timeoutMs, limits.timeoutMs)))
+        try {
+          return await evaluate(code)
+        } finally {
+          // Latch synchronous timeouts before clearing the per-call deadline.
+          interruption()
+          clearTimeout(callTimer)
+          callDeadline = Infinity
+        }
+      },
       signal: controller.signal,
     })
     const interrupted = interruption()
