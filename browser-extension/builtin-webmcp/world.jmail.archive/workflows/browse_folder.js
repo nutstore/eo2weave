@@ -137,9 +137,9 @@ export default {
         type: "action",
         description: "Open the folder",
         async run({ input, state, target }) {
-          await browser.click(state.selector, undefined, {
+          await browser.goto("https://jmail.world" + state.path, {
             tab: target.tabId,
-            activate: true,
+            "wait-until": "domcontentloaded",
             timeout: 15000,
           });
           return "success";

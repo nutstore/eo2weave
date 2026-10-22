@@ -13,6 +13,11 @@ export default {
         type: "string",
         description: "When supplied, only read search results for this exact query",
       },
+      search_started_at: {
+        type: "number",
+        minimum: 0,
+        description: "Page performance.now() recorded before submitting this search",
+      },
     },
     additionalProperties: false,
   },
@@ -82,9 +87,10 @@ export default {
             items: { $ref: "#/definitions/searchResult" },
             maxItems: 25,
           },
+          response_finished_at: { type: ["number", "null"], minimum: 0 },
           results_ready: { type: "boolean" },
         },
-        required: ["query", "total_matches", "count", "results", "results_ready"],
+        required: ["query", "total_matches", "count", "results", "response_finished_at", "results_ready"],
         additionalProperties: false,
       },
     },
@@ -282,6 +288,8 @@ export default {
     return out;
   }
 
+  let searchBodiesMatchQuery = true;
+
   function readSearchResultRows(limit) {
     const main = document.querySelector("main") || document.body;
     const rows = [];
@@ -306,6 +314,10 @@ export default {
       const key = \`\${person}|\${dateLine}|\${snippet.slice(0, 80)}\`;
       if (seen.has(key)) continue;
       seen.add(key);
+      // Validate the full body of every visible hit, including rows beyond the output limit.
+      if (args.query && !snippet.toLowerCase().includes(args.query.toLowerCase()))
+        searchBodiesMatchQuery = false;
+      if (rows.length >= limit) continue;
       rows.push({
         index: rows.length,
         selector: selectorFor(btn),
@@ -315,7 +327,6 @@ export default {
         snippet: snippet.slice(0, 300),
         slug: slugFromRowImage(btn) || "",
       });
-      if (rows.length >= limit) break;
     }
     return rows;
   }
@@ -339,6 +350,21 @@ export default {
   const query = control?.value || "";
   const main = document.querySelector("main") || document.body;
   const total = (main.innerText || "").match(/MESSAGES\\s*(\\d+)/i)?.[1];
+  const noResults = /no results found|no results|没有找到|没有结果/i.test(main.innerText || "");
+  // The input updates 300 ms before the site submits its debounced search.
+  // Resource timing binds an empty result to a completed request for this invocation.
+  let responseFinishedAt = null;
+  const since = args.search_started_at ?? 0;
+  const resources = typeof performance !== "undefined"
+    ? performance.getEntriesByType("resource") : [];
+  for (const entry of resources) {
+    if (entry.initiatorType !== "fetch" || entry.startTime < since ||
+        !entry.responseEnd || entry.responseStatus >= 400) continue;
+    const url = new URL(entry.name, location.href);
+    if (url.origin !== location.origin || url.pathname !== "/api/imessage/search" ||
+        url.searchParams.get("q") !== query) continue;
+    responseFinishedAt = Math.max(responseFinishedAt || 0, entry.responseEnd);
+  }
   const searchResults =
     args.query !== undefined && args.query !== query
       ? []
@@ -360,14 +386,12 @@ export default {
       total_matches: total === undefined ? null : Number(total),
       count: searchResults.length,
       results: searchResults,
+      response_finished_at: responseFinishedAt,
       results_ready:
         (args.query === undefined || args.query === query) &&
-        ((searchResults.length > 0 &&
-          (!args.query ||
-            searchResults.some((row) =>
-              JSON.stringify(row).toLowerCase().includes(args.query.toLowerCase()),
-            ))) ||
-          total === "0"),
+        (searchResults.length > 0
+          ? searchBodiesMatchQuery
+          : !!query && responseFinishedAt !== null && (total === "0" || noResults)),
     },
     conversation: slug
       ? {

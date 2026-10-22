@@ -6,7 +6,7 @@
     {
       "name": "read_page",
       "description": "Read a single structured snapshot of the current page, including readiness and available data. Read-only; never navigates or interacts. Other tools compose this reader through browser.webmcp.exec.",
-      "urlRegex": "^https://(?:movie|search)\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "urlRegex": "^https://(?:movie|search)\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$|^https://www\\.douban\\.com/(?:doulist|personage)/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
       "path": "workflows/read_page.js"
     },
     {
@@ -18,13 +18,13 @@
     {
       "name": "open_celebrity",
       "description": "Open a celebrity page by numeric id and return the profile, filmography and awards once rendered.",
-      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$|^https://www\\.douban\\.com/personage/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
       "path": "workflows/open_celebrity.js"
     },
     {
       "name": "get_doulist",
       "description": "Read a 豆瓣片单 (doulist, e.g. /doulist/240962/): title, description and its movie rows (title, rating, subject id). Page through with start (25 items per page).",
-      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "urlRegex": "^https://movie\\.douban\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$|^https://www\\.douban\\.com/doulist/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
       "path": "workflows/get_doulist.js"
     },
     {

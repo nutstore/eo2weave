@@ -72,9 +72,46 @@ export default {
       },
       {
         type: "action",
+        description: "Clear the previous search before submitting another query",
+        async run({ target }) {
+          await browser.fill('input[placeholder="Search"]', "", {
+            tab: target.tabId,
+            timeout: 15000,
+          });
+          return "success";
+        },
+      },
+      {
+        type: "wait",
+        description: "Wait for the previous search results to leave the page",
+        intervalMs: 250,
+        timeoutMs: 15000,
+        async inspect({ target }) {
+          const response = await browser.webmcp.exec(
+            "world.jmail.messages.read_page",
+            {},
+            { tab: target.tabId, timeout: 15000 },
+          );
+          if (response.result.status !== "success")
+            throw new Error("Page reader did not succeed");
+          const page = response.result.result;
+          return page.ready && page.search.query === "" &&
+            page.search.count === 0 && page.search.total_matches === null &&
+            !page.search.results_ready;
+        },
+      },
+      {
+        type: "action",
         description: "Search all messages",
         async run({ input, state, target }) {
           state.query = input.query.trim();
+          const clock = await browser.eval("() => performance.now()", {
+            tab: target.tabId,
+            timeout: 15000,
+          });
+          if (clock.tabId !== target.tabId || typeof clock.result !== "number")
+            throw new Error("Could not read the search request clock");
+          state.searchStartedAt = clock.result;
           await browser.fill('input[placeholder="Search"]', state.query, {
             tab: target.tabId,
             timeout: 15000,
@@ -90,14 +127,30 @@ export default {
         async inspect({ input, state, target }) {
           const response = await browser.webmcp.exec(
             "world.jmail.messages.read_page",
-            { limit: input.limit || 10, query: state.query },
+            {
+              limit: input.limit || 10,
+              query: state.query,
+              search_started_at: state.searchStartedAt,
+            },
             { tab: target.tabId, timeout: 15000 },
           );
           if (response.result.status !== "success")
             throw new Error("Page reader did not succeed");
           const page = response.result.result;
           if (!page.ready) return false;
-          if (page.search.query !== state.query || !page.search.results_ready) return false;
+          if (page.search.query !== state.query || !page.search.results_ready) {
+            state.emptyResponseAt = null;
+            return false;
+          }
+          if (page.search.count === 0) {
+            // Fetch completion may precede React's DOM commit. Recheck on the next poll.
+            const finishedAt = page.search.response_finished_at;
+            if (finishedAt === null) return false;
+            if (state.emptyResponseAt !== finishedAt) {
+              state.emptyResponseAt = finishedAt;
+              return false;
+            }
+          }
           state.result = {
             query: state.query,
             total_matches: page.search.total_matches,

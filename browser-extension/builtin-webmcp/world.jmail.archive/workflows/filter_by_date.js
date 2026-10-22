@@ -79,34 +79,8 @@ export default {
         },
       },
       {
-        type: "action",
-        description: "Clear an existing range through the public tool",
-        async run({ input, state, target }) {
-          const response = await browser.webmcp.exec(
-            "world.jmail.archive.clear_date_filter",
-            {},
-            { tab: target.tabId, timeout: 15000 },
-          );
-          if (response.result.status !== "success")
-            throw new Error("Could not clear the previous date filter");
-          return "success";
-        },
-      },
-      {
-        type: "action",
-        description: "Open the date range controls",
-        async run({ input, state, target }) {
-          await browser.click('button[aria-label="Filter by date range"]', undefined, {
-            tab: target.tabId,
-            activate: true,
-            timeout: 15000,
-          });
-          return "success";
-        },
-      },
-      {
         type: "wait",
-        description: "Locate the date fields",
+        description: "Read the current list URL",
         intervalMs: 250,
         timeoutMs: 15000,
         async inspect({ input, state, target }) {
@@ -119,36 +93,32 @@ export default {
             throw new Error("Page reader did not succeed");
           const page = response.result.result;
           if (!page.ready) return false;
-          if (
-            !page.date_filter.open ||
-            (state.after && !page.date_filter.after) ||
-            (state.before && !page.date_filter.before)
-          )
-            return false;
-          state.fields = page.date_filter;
+          if (page.kind !== "list")
+            throw new Error("Open an email list before filtering by date");
+          state.listUrl = page.url;
+          state.params = page.params;
           return true;
         },
       },
       {
         type: "action",
-        description: "Fill and apply the requested range",
+        description: "Apply the requested range through the list URL",
         async run({ input, state, target }) {
-          // Native text insertion does not reliably edit Chromium date controls.
-          for (const [field, value] of [
-            [state.fields.after, state.after],
-            [state.fields.before, state.before],
-          ]) {
-            if (!value) continue;
-            const source =
-              '(element) => { const value=__VALUE__; const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(element,value); element.dispatchEvent(new Event("input",{bubbles:true})); element.dispatchEvent(new Event("change",{bubbles:true})); }'.replace(
-                "__VALUE__",
-                () => JSON.stringify(value),
-              );
-            await browser.evalElement(source, field, { tab: target.tabId, timeout: 15000 });
+          const params = { ...state.params };
+          for (const key of ["after", "before"]) {
+            if (state[key]) params[key] = state[key];
+            else delete params[key];
           }
-          await browser.click(".date-filter-apply", undefined, {
+          const query = Object.entries(params)
+            .map(
+              ([key, value]) =>
+                encodeURIComponent(key) + "=" + encodeURIComponent(String(value)),
+            )
+            .join("&");
+          const url = state.listUrl.split(/[?#]/)[0] + (query ? "?" + query : "");
+          await browser.goto(url, {
             tab: target.tabId,
-            activate: true,
+            "wait-until": "domcontentloaded",
             timeout: 15000,
           });
           return "success";

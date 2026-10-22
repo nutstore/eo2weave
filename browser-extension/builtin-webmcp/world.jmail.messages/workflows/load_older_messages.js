@@ -25,6 +25,8 @@ export default {
       },
     },
     properties: {
+      person: { type: "string", minLength: 1 },
+      slug: { type: "string", minLength: 1 },
       loads_performed: { type: "integer", minimum: 1, maximum: 10 },
       messages_before: { type: "integer", minimum: 0 },
       messages_after: { type: "integer", minimum: 0 },
@@ -38,6 +40,8 @@ export default {
       },
     },
     required: [
+      "person",
+      "slug",
       "loads_performed",
       "messages_before",
       "messages_after",
@@ -72,6 +76,8 @@ export default {
       state.before ??= bubbles;
       if (state.loads >= state.requested) {
         state.result = {
+          person: page.conversation.person,
+          slug: page.conversation.slug,
           loads_performed: state.loads,
           messages_before: state.before.length,
           messages_after: bubbles.length,

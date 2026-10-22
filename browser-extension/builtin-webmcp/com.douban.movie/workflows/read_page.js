@@ -201,7 +201,6 @@ export default {
           },
           seasons: {
             type: "array",
-            minItems: 1,
             items: {
               type: "object",
               properties: {
@@ -214,7 +213,6 @@ export default {
           },
           episodes: {
             type: "array",
-            minItems: 1,
             maxItems: 100,
             items: {
               type: "object",
@@ -411,10 +409,14 @@ export default {
       const rawTitle = cleanText(a.textContent);
       if (!id || !rawTitle || seen.has(id)) continue;
       const title = rawTitle.replace(/\\s*\\(\\d{4}\\)\\s*$/, "").trim() || rawTitle;
-      const container = a.closest("table.item, .item, li, .ob, div") || a.parentElement;
-      const rating = cleanText(container?.querySelector(".rating_nums")?.textContent);
+      const container =
+        a.closest(".doulist-item") ||
+        a.closest(".doulist-subject") ||
+        a.closest("table.item, .item, li, .ob") ||
+        a.parentElement;
+      const rating = cleanText(container?.querySelector(".rating_num, .rating_nums")?.textContent);
       const detail = cleanText(
-        container?.querySelector(".pl, .subject-cast, .detail")?.textContent,
+        container?.querySelector(".pl, .subject-cast, .detail, .abstract")?.textContent,
       );
       seen.add(id);
       out.push({
@@ -423,7 +425,7 @@ export default {
         rating,
         url: a.href,
         subject_id: id,
-        detail: detail || undefined,
+        detail,
       });
       if (out.length >= limit) break;
     }
@@ -501,14 +503,16 @@ export default {
       const d = li.dataset || {};
       const title = cleanText(d.title);
       if (!title) continue;
-      const link = li.querySelector('a.title[href*="/subject/"]');
-      const m = link?.getAttribute("href")?.match(/subject\\/(\\d+)/);
+      const link = li.querySelector('a[href*="/subject/"]');
+      const href = link?.getAttribute("href") || d.trailer || d.ticket || "";
+      const m = href.match(/subject\\/(\\d+)/) || href.match(/movie_id=(\\d+)/);
+      const subjectId = m ? m[1] : null;
       out.push({
         index: out.length,
         title,
-        rating: cleanText(d.rating) || "暂无评分",
-        subject_id: m ? m[1] : null,
-        url: link?.href || null,
+        rating: cleanText(d.rate) || "暂无评分",
+        subject_id: subjectId,
+        url: link?.href || (subjectId ? \`https://movie.douban.com/subject/\${subjectId}/\` : null),
         release: cleanText(d.release),
         region: cleanText(d.region),
         director: cleanText(d.director),
@@ -538,7 +542,7 @@ export default {
       out.push({
         rank: out.length + 1,
         title,
-        rating: cleanText(tr.querySelector(".rating_nums")?.textContent),
+        rating: cleanText(tr.querySelector(".rating_nums")?.textContent) || "暂无评分",
         url: link.href,
         subject_id: m ? m[1] : null,
       });
@@ -679,7 +683,7 @@ export default {
       .map((r) => {
         const el = r;
         const link = el.querySelector('h2 a[href*="/review/"]');
-        const metaEl = el.querySelector(".header-meta, .meta, .byline");
+        const metaEl = el.querySelector("header.main-hd, .header-meta, .meta, .byline");
         let meta = cleanText(metaEl?.textContent);
         if (!meta) {
           for (const d of Array.from(el.querySelectorAll("div"))) {
@@ -700,8 +704,13 @@ export default {
           review_id:
             el.id || (link?.getAttribute("href")?.match(/review\\/(\\d+)/)?.[1] ?? null),
           title: cleanText(link?.textContent),
-          author: meta.split(/\\d{4}-/)[0].trim(),
-          date: (meta.match(/\\d{4}-\\d{2}-\\d{2}/) || [""])[0],
+          author:
+            cleanText(metaEl?.querySelector("a.name")?.textContent) ||
+            meta.split(/\\d{4}-/)[0].trim(),
+          date: (
+            metaEl?.querySelector("span[content]")?.getAttribute("content")?.match(/\\d{4}-\\d{2}-\\d{2}/) ||
+            meta.match(/\\d{4}-\\d{2}-\\d{2}/) || [""]
+          )[0],
           spoiler,
           excerpt,
           url: link?.href || null,
@@ -724,7 +733,7 @@ export default {
     const seen = new Set();
     const seasonList = Array.from(
       document.querySelectorAll(
-        '#season a[href*="/subject/"], .seasons a[href*="/subject/"], #content a[href*="/subject/"] img[src*="poster"], .subject-item a[href*="/subject/"]',
+        '#season a[href*="/subject/"], .seasons a[href*="/subject/"]',
       ),
     )
       .map((el) => (el instanceof HTMLImageElement ? el.closest("a") : el))
@@ -778,19 +787,19 @@ export default {
         )?.[1] ??
           null),
       series,
-      seasons: seasonList.length ? seasonList : undefined,
-      episodes: episodes.length ? episodes : undefined,
+      seasons: seasonList,
+      episodes,
       note:
         episodes.length === 0 && seasonList.length === 0 && !series
           ? "No seasons/episodes found — this may be a movie, or episode data is login-gated."
           : episodes.length === 0
             ? "Episode-level data requires login; use the seasons/series fields to navigate between entries."
-            : undefined,
+            : "",
     };
   }
 
   function readCelebrityView() {
-    const isCelebrity = /\\/celebrity\\/\\d+/.test(location.pathname);
+    const isCelebrity = /\\/(?:celebrity|personage)\\/\\d+/.test(location.pathname);
     const base = {
       url: location.pathname + location.search,
       page_title: cleanText(document.title),
@@ -803,34 +812,45 @@ export default {
         text: cleanText(main.innerText).slice(0, 4000),
       };
     }
-    const name = cleanText(document.querySelector("#content h1")?.textContent);
+    const name = cleanText(document.querySelector("#content h1, h1")?.textContent);
     const bio = cleanText(
-      Array.from(document.querySelectorAll("#intro p"))
+      Array.from(document.querySelectorAll(".subject-intro .desc .content p, #intro p"))
         .map((p) => p.textContent || "")
         .join("\\n"),
     );
     const works = {};
-    for (const mod of Array.from(document.querySelectorAll("#content .mod"))) {
+    const modules = document.querySelectorAll("#content .mod, .subject-mod.subject-creations");
+    for (const mod of Array.from(modules)) {
       const heading = cleanText(mod.querySelector("h2")?.textContent);
       if (!heading) continue;
-      const rows = Array.from(mod.querySelectorAll('a[href*="/subject/"]'))
-        .slice(0, 10)
-        .map((a) => {
-          const m = a.getAttribute("href")?.match(/subject\\/(\\d+)/);
-          const container = a.closest(".ob, li, div") || a.parentElement;
-          return {
-            title: cleanText(a.textContent)
-              .replace(/\\s*\\(\\d{4}\\)\\s*$/, "")
-              .trim(),
-            rating: cleanText(container?.querySelector(".rating_nums")?.textContent),
-            subject_id: m?.[1] || "",
-          };
-        })
-        .filter((r) => r.title && r.subject_id);
+      const links = mod.querySelectorAll(
+        mod.matches(".subject-creations")
+          ? 'li.creation a[href*="/subject/"]'
+          : 'a[href*="/subject/"]',
+      );
+      const rows = [];
+      const seen = new Set();
+      for (const a of Array.from(links)) {
+        const id = a.getAttribute("href")?.match(/subject\\/(\\d+)/)?.[1];
+        const title = cleanText(
+          a.textContent || a.getAttribute("title") || a.querySelector("img")?.alt,
+        ).replace(/\\s*\\(\\d{4}\\)\\s*$/, "").trim();
+        if (!id || !title || seen.has(id)) continue;
+        seen.add(id);
+        const container = a.closest(".creation, .ob, li") || a.parentElement;
+        rows.push({
+          title,
+          rating: cleanText(
+            container?.querySelector(".rating-val, .rating_nums, .rating_num")?.textContent,
+          ),
+          subject_id: id,
+        });
+        if (rows.length >= 10) break;
+      }
       if (rows.length) works[heading] = rows;
     }
     const awards = cleanText(
-      Array.from(document.querySelectorAll('#award-block, [data-category="awards"]'))
+      Array.from(document.querySelectorAll('.subject-awards, #award-block, [data-category="awards"]'))
         .map((el) => el.innerText || "")
         .join("\\n"),
     ).slice(0, 1500);
@@ -842,7 +862,7 @@ export default {
       photo,
       bio: bio.slice(0, 2500),
       filmography: works,
-      awards: awards || undefined,
+      awards,
     };
   }
   if (
@@ -870,7 +890,11 @@ export default {
       results_ready: results.length > 0 || empty,
     };
   }
-  if (location.origin !== "https://movie.douban.com") return { ready: false };
+  const isMovieSite = location.origin === "https://movie.douban.com";
+  const isSupportedWwwPage =
+    location.origin === "https://www.douban.com" &&
+    /^\\/(?:doulist|personage)\\/\\d+/.test(location.pathname);
+  if (!isMovieSite && !isSupportedWwwPage) return { ready: false };
   const subject = location.pathname.match(/^\\/subject\\/(\\d+)/)?.[1] || null;
   if (subject) {
     const comments = readComments(Math.min(20, limit));
@@ -886,7 +910,7 @@ export default {
       tv: readTvInfo(limit),
     };
   }
-  if (/^\\/celebrity\\/\\d+/.test(location.pathname))
+  if (/^\\/(?:celebrity|personage)\\/\\d+/.test(location.pathname))
     return { ...base, kind: "celebrity", view: readCelebrityView() };
   if (location.pathname === "/chart") {
     const results = readChartPage(Math.min(25, limit));
@@ -908,7 +932,7 @@ export default {
       start: Number(new URL(location.href).searchParams.get("start")) || 0,
       title: cleanText(document.querySelector("#content h1")?.textContent),
       description: cleanText(
-        document.querySelector(".doulist-note, #content .intro")?.textContent,
+        document.querySelector(".doulist-note, .doulist-about, #content .intro")?.textContent,
       ),
       results_ready:
         results.length > 0 ||

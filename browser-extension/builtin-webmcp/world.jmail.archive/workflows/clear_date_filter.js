@@ -62,50 +62,32 @@ export default {
           const page = response.result.result;
           if (!page.ready) return false;
           state.active = page.date_filter.active;
+          state.listUrl = page.url;
+          state.params = page.params;
           return true;
         },
       },
       {
         type: "action",
-        description: "Open the active date filter",
+        description: "Remove the active range from the list URL",
         async run({ input, state, target }) {
-          if (state.active)
-            await browser.click('button[aria-label="Filter by date range"]', undefined, {
+          if (state.active) {
+            const params = { ...state.params };
+            delete params.after;
+            delete params.before;
+            const query = Object.entries(params)
+              .map(
+                ([key, value]) =>
+                  encodeURIComponent(key) + "=" + encodeURIComponent(String(value)),
+              )
+              .join("&");
+            const url = state.listUrl.split(/[?#]/)[0] + (query ? "?" + query : "");
+            await browser.goto(url, {
               tab: target.tabId,
-              activate: true,
+              "wait-until": "domcontentloaded",
               timeout: 15000,
             });
-          return "success";
-        },
-      },
-      {
-        type: "wait",
-        description: "Wait for the clear control",
-        intervalMs: 250,
-        timeoutMs: 15000,
-        async inspect({ input, state, target }) {
-          const response = await browser.webmcp.exec(
-            "world.jmail.archive.read_page",
-            {},
-            { tab: target.tabId, timeout: 15000 },
-          );
-          if (response.result.status !== "success")
-            throw new Error("Page reader did not succeed");
-          const page = response.result.result;
-          if (!page.ready) return false;
-          return !state.active || page.date_filter.can_clear;
-        },
-      },
-      {
-        type: "action",
-        description: "Clear the date filter once",
-        async run({ input, state, target }) {
-          if (state.active)
-            await browser.click(".date-filter-clear", undefined, {
-              tab: target.tabId,
-              activate: true,
-              timeout: 15000,
-            });
+          }
           return "success";
         },
       },

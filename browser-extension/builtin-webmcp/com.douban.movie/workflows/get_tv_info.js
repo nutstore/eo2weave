@@ -26,7 +26,6 @@ export default {
       },
       seasons: {
         type: "array",
-        minItems: 1,
         items: {
           type: "object",
           properties: {
@@ -39,7 +38,6 @@ export default {
       },
       episodes: {
         type: "array",
-        minItems: 1,
         maxItems: 100,
         items: {
           type: "object",

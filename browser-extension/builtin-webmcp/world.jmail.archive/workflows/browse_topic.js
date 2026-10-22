@@ -118,8 +118,9 @@ export default {
           const slug = input.topic.trim();
           const link = page.topics.find((link) => link.slug === slug);
           if (!link) throw new Error("No topic link for " + slug);
+          state.origin = page.url.match(/^https?:\/\/[^/]+/)?.[0];
+          if (!state.origin) throw new Error("Could not determine the archive origin");
           state.path = link.path;
-          state.selector = link.selector;
           return true;
         },
       },
@@ -127,9 +128,9 @@ export default {
         type: "action",
         description: "Open the topic",
         async run({ input, state, target }) {
-          await browser.click(state.selector, undefined, {
+          await browser.goto(state.origin + state.path, {
             tab: target.tabId,
-            activate: true,
+            "wait-until": "domcontentloaded",
             timeout: 15000,
           });
           return "success";

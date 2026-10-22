@@ -111,8 +111,12 @@ export default {
         intervalMs: 250,
         timeoutMs: 15000,
         async inspect({ input, state, target }) {
-          // Douban may redirect legacy links to pages outside this package's URL scope.
-          if (!state.navigation.url.startsWith("https://movie.douban.com/")) {
+          const personagePath = state.navigation.url.match(
+            /^https:\/\/www\.douban\.com(\/personage\/\d+\/)(?:[?#]|$)/,
+          )?.[1];
+          if (personagePath) state.path = personagePath;
+          // Verification and other unsupported redirects have no profile to read.
+          if (!personagePath && !state.navigation.url.startsWith("https://movie.douban.com/")) {
             state.result = { navigated: true, url: state.navigation.url };
             return true;
           }

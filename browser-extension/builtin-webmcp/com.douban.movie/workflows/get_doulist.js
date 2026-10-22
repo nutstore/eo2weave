@@ -101,8 +101,8 @@ export default {
         intervalMs: 250,
         timeoutMs: 15000,
         async inspect({ input, state, target }) {
-          // Douban may redirect legacy links to pages outside this package's URL scope.
-          if (!state.navigation.url.startsWith("https://movie.douban.com/")) {
+          // Legacy movie.douban.com doulists redirect to www.douban.com.
+          if (!/^https:\/\/(?:movie|www)\.douban\.com\/doulist\//.test(state.navigation.url)) {
             state.result = { navigated: true, url: state.navigation.url };
             return true;
           }
