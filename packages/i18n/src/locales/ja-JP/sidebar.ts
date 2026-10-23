@@ -11,6 +11,7 @@ export const sidebar = {
     newWorkspace: "新しいチャット",
     workspaceLabel: "チャット: {name}",
     running: "実行中",
+    scheduleIndicator: "定時タスク",
     pendingReviewCount: "{count}件の変更が確認待ち",
     hasSchedule: "このチャットにはスケジュールされたタスクがあります",
     workspaceDeleted: "チャットが削除されました",

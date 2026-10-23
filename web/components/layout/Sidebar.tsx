@@ -247,6 +247,14 @@ const ConversationItem = memo(function ConversationItem({
             </div>
           )}
 
+          {/* Schedule indicator — BEFORE the title so hover action buttons
+              (absolute, right-aligned) can never cover it */}
+          {hasSchedule && !isEditing && (
+            <Clock
+              className="h-3 w-3 shrink-0 text-primary-400"
+              aria-label={t('sidebar.scheduleIndicator')}
+            />
+          )}
           {isEditing ? (
             <input
               ref={renameInputRef as React.LegacyRef<HTMLInputElement>}
@@ -278,9 +286,6 @@ const ConversationItem = memo(function ConversationItem({
             >
               {pendingReviewCount}
             </span>
-          )}
-          {hasSchedule && !isEditing && (
-            <Clock className="h-3 w-3 shrink-0 text-primary-400" />
           )}
         </Link>
       </ContextMenuTrigger>

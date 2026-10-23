@@ -11,6 +11,7 @@ export const sidebar = {
     newWorkspace: "New Chat",
     workspaceLabel: "Chat: {name}",
     running: "Running",
+    scheduleIndicator: "Scheduled task",
     pendingReviewCount: "{count} changes to confirm",
     hasSchedule: "This conversation has scheduled tasks",
     workspaceDeleted: "Chat deleted",
