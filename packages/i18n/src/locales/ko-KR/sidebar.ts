@@ -11,6 +11,7 @@ export const sidebar = {
     newWorkspace: "새 채팅",
     workspaceLabel: "채팅: {name}",
     running: "실행 중",
+    scheduleIndicator: "예정 작업",
     pendingReviewCount: "{count}개 변경 확인 대기",
     hasSchedule: "이 채팅에 예약된 작업이 있습니다",
     workspaceDeleted: "채팅이 삭제되었습니다",
