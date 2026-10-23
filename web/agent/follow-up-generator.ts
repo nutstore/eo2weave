@@ -26,11 +26,11 @@ const FLASH_MODEL_CONFIGS: Partial<Record<LLMProviderType, { model: string; base
     baseURL: 'https://api.moonshot.cn/v1',
   },
   minimax: {
-    model: 'MiniMax-M2.7',
+    model: 'MiniMax-M3.1-Flash',
     baseURL: 'https://api.minimax.io/v1',
   },
   'minimax-cn': {
-    model: 'MiniMax-M2.7',
+    model: 'MiniMax-M3.1-Flash',
     baseURL: 'https://api.minimaxi.com/v1',
   },
   qwen: {

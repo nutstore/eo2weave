@@ -43,8 +43,8 @@ export const DEFAULT_PINNED_MODELS: Partial<Record<string, readonly string[]>> =
   glm: ['glm-5.3-flash'],
   'glm-coding': ['glm-5.3-flash'],
   kimi: ['moonshot-v1-32k'],
-  minimax: ['MiniMax-M2.7-highspeed'],
-  'minimax-cn': ['MiniMax-M2.7-highspeed'],
+  minimax: ['MiniMax-M3.1-Flash'],
+  'minimax-cn': ['MiniMax-M3.1-Flash'],
   qwen: ['qwen-turbo'],
   // 火山方舟 Coding — ARK coding endpoint; Doubao Seed Code is the value pick.
   'volcengine-coding': ['doubao-seed-2.0-code'],

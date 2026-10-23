@@ -470,6 +470,11 @@ export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
     website: 'https://www.minimax.io',
     models: [
       {
+        id: 'MiniMax-M3.1-Flash',
+        name: 'MiniMax M3.1 Flash',
+        capabilities: ['code', 'reasoning', 'fast'],
+      },
+      {
         id: 'MiniMax-M2.7',
         name: 'MiniMax M2.7',
         capabilities: ['code', 'reasoning'],
@@ -486,6 +491,11 @@ export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
     displayName: 'MiniMax',
     website: 'https://www.minimaxi.com',
     models: [
+      {
+        id: 'MiniMax-M3.1-Flash',
+        name: 'MiniMax M3.1 Flash',
+        capabilities: ['code', 'reasoning', 'fast'],
+      },
       {
         id: 'MiniMax-M2.7',
         name: 'MiniMax M2.7',
