@@ -17,7 +17,7 @@ import { isOutputPart } from '@creatorweave/shared/code-output'
  * - Massive token savings: catalog removed from prompt
  */
 
-import type { ToolDefinition, ToolExecutor, ToolPromptDoc } from './tools/tool-types'
+import type { ToolContext, ToolDefinition, ToolExecutor, ToolPromptDoc } from './tools/tool-types'
 import { toolErrorJson, toolOkJson } from './tools/tool-envelope'
 import { authorize } from './policy-engine'
 import { getMCPManager } from '@/mcp/mcp-manager'
@@ -871,7 +871,7 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
   if (tool.source === 'mcp') {
     return executeMCPTool(tool, toolArgs || {})
   } else {
-    return executeWebMCPTool(tool, toolArgs || {}, context as unknown as Record<string, unknown>)
+    return executeWebMCPTool(tool, toolArgs || {}, context)
   }
 }
 
@@ -1001,7 +1001,7 @@ async function executeMCPTool(
 async function executeWebMCPTool(
   tool: UnifiedToolEntry,
   toolArgs: Record<string, unknown>,
-  context: Record<string, unknown>
+  context: ToolContext
 ): Promise<string> {
   const untrusted = tool.annotations?.untrustedContentHint === true
   const sourceId = tool.hostname || tool.sourceId
@@ -1045,7 +1045,7 @@ async function executeWebMCPTool(
     let invokeArgs = toolArgs
     if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_content') {
       const { prepareXiaohongshuImage } = await import('./tools/xiaohongshu-image-transfer')
-      try { invokeArgs = await prepareXiaohongshuImage(toolArgs, context as unknown as import('./tools/tool-types').ToolContext) }
+      try { invokeArgs = await prepareXiaohongshuImage(toolArgs, context) }
       catch (error) { return toolErrorJson('call_tool', 'IMAGE_TRANSFER_FAILED', error instanceof Error ? error.message : 'Image transfer failed; no image was silently skipped.', { retryable: false }) }
       if (new TextEncoder().encode(JSON.stringify(invokeArgs)).length >= 64 * 1024 * 1024 - 4096) {
         return toolErrorJson('call_tool', 'IMAGE_TRANSFER_TOO_LARGE', 'Image payload and bridge envelope exceed Chrome 64 MiB message capacity.', { retryable: false })
@@ -1061,7 +1061,7 @@ async function executeWebMCPTool(
     let response: import('@/webmcp/types').WebMCPInvokeResponse
     if (toolInfo.hostname === 'creator.xiaohongshu.com' && toolInfo.name === 'xhs_publish_video') {
       const { invokeXiaohongshuVideo } = await import('./tools/xiaohongshu-video-transfer')
-      try { response = await invokeXiaohongshuVideo(invokeRequest, context as unknown as import('./tools/tool-types').ToolContext, (request) => bridge.webMCPInvoke(request)) }
+      try { response = await invokeXiaohongshuVideo(invokeRequest, context, (request) => bridge.webMCPInvoke(request)) }
       catch (error) { return toolErrorJson('call_tool', 'VIDEO_TRANSFER_FAILED', error instanceof Error ? error.message : 'Video file transfer failed.', { retryable: false }) }
     } else response = await bridge.webMCPInvoke(invokeRequest)
 
@@ -1106,7 +1106,7 @@ async function executeWebMCPTool(
         const saveResult = await consumeAndSavePluginDownload(
           bridge,
           response.pluginDownloadPlan,
-          context as any
+          context
         )
 
         const finalizeResp = await bridge.webMCPPluginDownloadFinalize({
