@@ -49,10 +49,12 @@ export function HelpPopover({ onOpenDocs }: HelpPopoverProps) {
       >
         <BookOpen className="h-4 w-4" />
       </button>
+      {/* The menu drops below the header button group, so it needs a z-index
+          above the page content (extension banner, hero) to stay clickable. */}
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-20 mt-2 w-44 overflow-hidden rounded-lg border border-border bg-card py-1 shadow-md"
+          className="absolute right-0 top-full z-40 mt-2 w-44 overflow-hidden rounded-lg border border-border bg-card py-1 shadow-md"
         >
           <button
             type="button"

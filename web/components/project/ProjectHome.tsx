@@ -249,7 +249,11 @@ export function ProjectHome({
             />
             <span>{t('projectHome.brand')}</span>
           </div>
-          <div className="flex items-center overflow-hidden rounded-lg border border-border bg-card">
+          {/* No overflow-hidden on this group: HelpPopover's dropdown is absolutely
+              positioned BELOW the buttons, so clipping the group would cut the
+              whole menu away (it was invisible and unclickable). The buttons
+              have no background, so nothing needs clipping for the rounded look. */}
+          <div className="flex items-center rounded-lg border border-border bg-card">
             <HelpPopover onOpenDocs={() => void onOpenDocs?.()} />
             <span className="h-5 w-px bg-border" aria-hidden />
             <button
