@@ -379,8 +379,11 @@ export const useSettingsStore = create<SettingsState>()(
       temperature: 0.7,
       maxTokens: 4096,
       maxIterations: 20,
-      enableThinking: false,
-      thinkingLevel: 'medium' as ExtendedThinkingLevel,
+      // First-run defaults (v4): thinking ON at 'high'. Existing installs keep
+      // their persisted values — the persist migrate (version < 4) restores
+      // whatever was stored, so these defaults only apply to fresh installs.
+      enableThinking: true,
+      thinkingLevel: 'high' as ExtendedThinkingLevel,
       enableBatchSpawn: false,
       enableWebMCP: true,
       snapshotHighWatermark: 100,
@@ -1185,11 +1188,16 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'bfosa-settings',
-      version: 3,
+      version: 4,
       // Migrate older persisted states forward. v1 state doesn't have
       // agentLoopNotifications — backfill defaults on load.
       // v3 drops enableSchedules: schedules became a first-class feature
       // (always on), so the legacy opt-out flag is stripped from storage.
+      // v4 flips the first-run default of enableThinking/thinkingLevel to
+      // true/'high'. Any state that reached the migrate path already existed
+      // in storage, so the persisted enableThinking (even explicit false) is
+      // kept verbatim — only fresh installs (no stored state) get the new
+      // defaults.
       migrate: (persistedState: unknown, version: number) => {
         if (!persistedState || typeof persistedState !== 'object') return persistedState
         let next = persistedState as Record<string, unknown>
