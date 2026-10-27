@@ -133,7 +133,7 @@ export async function runAgentImpl(
         return
       }
 
-      // ── Unregistered dynamic provider guard (#87, Sourcery round 2) ──
+      // ── Unregistered dynamic provider guard (#87, Sourcery rounds 2+3) ──
       // runAgent is the shared dispatch boundary for every AI action —
       // sendMessage, QuickActionsPanel, FilePreview, SyncPreviewPanel and
       // the sync review-request all end here. The send-path guards in the
@@ -141,17 +141,32 @@ export async function runAgentImpl(
       // provider can unregister (extension disconnect, auth revocation), so
       // recheck the LIVE registry at dispatch. Blocking here guarantees no
       // direct caller can push a run through a dead route.
-      if (
-        providerType &&
-        isPotentiallyDynamicProviderType(providerType) &&
-        !getProviderConfig(providerType)
-      ) {
+      //
+      // Round 3: the guard surfaces a FAILURE instead of silently returning.
+      // Direct callers that already persisted a user message (or a queued
+      // message that reached its guard) get a visible run error they can
+      // recover from, instead of an unanswered message hanging in the
+      // conversation with no result to roll back.
+      const providerMissing = (type: LLMProviderType | string): boolean =>
+        !!type && isPotentiallyDynamicProviderType(type) && !getProviderConfig(type as LLMProviderType)
+      if (providerMissing(providerType)) {
         toast.error(
           i18nText(
             'conversation.toast.providerReauthRequired',
             'The selected provider is unavailable — sign in again to use it.'
           )
         )
+        set((state) => {
+          const c = state.conversations.find((c) => c.id === conversationId)
+          if (c) {
+            c.status = 'error'
+            c.error = i18nText(
+              'conversation.toast.providerReauthRequired',
+              'The selected provider is unavailable — sign in again to use it.'
+            )
+            c.activeRunId = null
+          }
+        })
         return
       }
 
@@ -407,6 +422,22 @@ export async function runAgentImpl(
         }
 
         const lastUserMessage = [...conv.messages].reverse().find((m) => isConversationUserMessage(m))
+
+        // ── Registry recheck immediately before dispatch (#87, Sourcery round 3) ──
+        // The entry guard ran before workspace setup / directory-handle
+        // resolution (both await). A dynamic provider can unregister inside
+        // that window; resolving provider configuration from the stale
+        // selection would start the agent on a dead route instead of
+        // showing the reauthentication guidance.
+        if (providerMissing(providerType)) {
+          failRunEarly(
+            i18nText(
+              'conversation.toast.providerReauthRequired',
+              'The selected provider is unavailable — sign in again to use it.'
+            )
+          )
+          return
+        }
 
         const apiKeyRepo = getApiKeyRepository()
         const settingsState = useSettingsStore.getState()

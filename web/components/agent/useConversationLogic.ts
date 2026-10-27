@@ -500,6 +500,25 @@ export function useConversationLogic() {
         }
       }
 
+      // ── Dispatch-time registry recheck (#87, Sourcery round 3) ──
+      // The entry guard ran before several awaits (page-context capture,
+      // asset writes, OCR). A dynamic provider can unregister inside that
+      // window (extension disconnect, auth revocation). This recheck sits
+      // BEFORE every commit — the user message append, the draft clear, the
+      // staged-asset consumption, and queued-message enqueue all happen
+      // below — so a rejected send leaves no half-committed turn for a
+      // retry to duplicate.
+      if (isPotentiallyDynamicProviderType(pType) && !getProviderConfig(pType)) {
+        toast.error(t('conversation.toast.providerReauthRequired'))
+        // Remove the OPFS copies that were only written in preparation for
+        // this send; rejectSend hands the staged files and typed text back.
+        if (wrotePendingAssets && assets) {
+          void removeAssetsFromOPFS(assets)
+        }
+        rejectSend()
+        return
+      }
+
       if (useConversationRuntimeStore.getState().isConversationRunning(targetConvId)) {
         // Queue the message instead of rejecting it
         const result = useConversationRuntimeStore.getState().enqueueMessage(targetConvId, {
@@ -542,17 +561,10 @@ export function useConversationLogic() {
       isUserAtBottomRef.current = true
       draftConvIdRef.current = null
 
-      // ── Dispatch-time registry recheck (#87, Sourcery round 2) ──
-      // The guard above ran before several awaits (page-context capture,
-      // asset writes, OCR). A dynamic provider can unregister inside that
-      // window (extension disconnect, auth revocation) — dispatching would
-      // hit a dead route. Recheck the LIVE registry immediately before
-      // runAgent and block with the reauthentication guidance.
-      if (isPotentiallyDynamicProviderType(pType) && !getProviderConfig(pType)) {
-        toast.error(t('conversation.toast.providerReauthRequired'))
-        rejectSend()
-        return
-      }
+      // (The dispatch-time registry recheck now runs BEFORE any commit —
+      // message append, draft clear, asset consumption, queue enqueue — see
+      // above. runAgent's own store-level guard is the final backstop for a
+      // provider unregistering inside the remaining synchronous window.)
 
       await runAgent(targetConvId, pType, mName, mTokens, dh, options?.agentOverrideId ?? null)
     },

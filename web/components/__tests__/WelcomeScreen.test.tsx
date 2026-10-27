@@ -901,11 +901,19 @@ describe('WelcomeScreen', () => {
     // Extension removed / auth revoked → unregisters while mounted.
     // (Sourcery round 2) No manual rerender: the send below must observe
     // the registry change through the component's own subscription.
-    unregisterDynamicProvider('codex-oauth')
-
-    // The first send consumed the input — compose a new payload.
+    // (Sourcery round 3) Re-type BEFORE unregistering (the send consumed
+    // the input, and an empty input would early-return before the guard),
+    // then attempt the send IMMEDIATELY after the unregister — the ONLY
+    // render between the unregister and the send is the
+    // useSyncExternalStore one. `mock-input-type` after unregistering
+    // would cause an ordinary onChange rerender that recomputes the memo
+    // and lets a broken subscription still pass.
     fireEvent.click(screen.getByTestId('mock-input-type'))
+    act(() => {
+      unregisterDynamicProvider('codex-oauth')
+    })
     fireEvent.click(screen.getByTestId('mock-send'))
+
     expect(onStart).toHaveBeenCalledTimes(1) // no new conversation started
     expect(toastErrorMock).toHaveBeenCalledWith(
       'The selected provider is unavailable — sign in again to use it.',

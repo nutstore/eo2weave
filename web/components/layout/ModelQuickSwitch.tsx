@@ -89,6 +89,12 @@ export function ModelQuickSwitch({
   const searchInputRef = useRef<HTMLInputElement>(null)
   const thinkingCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // True once the FIRST provider-list load has settled (Sourcery round 3).
+  // `loading` must not gate the unregistered-provider warning after this:
+  // a registry-triggered refresh sets `loading` again and would suppress
+  // the live warning until the refresh resolves.
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
+
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -103,7 +109,10 @@ export function ModelQuickSwitch({
         console.error('[ModelQuickSwitch] Failed to load providers:', err)
         if (!cancelled) setLoadError(true)
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+          setHasLoadedOnce(true)
+        }
       }
     }
     void load()
@@ -240,10 +249,16 @@ export function ModelQuickSwitch({
   // a snapshot, the registry is the truth.
   const selectedProviderUnregistered = useMemo(() => {
     void providerRegistryVersion
-    if (loading || !providerType || !modelName) return false
+    // Suppress the warning only during the INITIAL load (dynamic providers
+    // register asynchronously after mount — warning before that window
+    // closes would flash a false "unavailable"). Registry-triggered
+    // refreshes (Sourcery round 3) must NOT re-arm the suppression: a
+    // provider that unregisters mid-session would otherwise lose its
+    // warning while the provider-list reload is pending.
+    if (!hasLoadedOnce || !providerType || !modelName) return false
     if (!isPotentiallyDynamicProviderType(providerType)) return false
     return !getProviderConfig(providerType)
-  }, [loading, providerType, modelName, providerRegistryVersion])
+  }, [hasLoadedOnce, providerType, modelName, providerRegistryVersion])
 
   // Warning copy must name the provider the user must re-login to
   // (Sourcery round 5): codex-oauth gets the Codex-specific recovery text;

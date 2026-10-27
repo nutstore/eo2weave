@@ -155,8 +155,17 @@ function supportsBundledVersionComparison(distribution: ExtensionDistribution): 
  * Register the codex-oauth provider into the dynamic provider registry.
  * Accepts the live catalog returned by the extension.
  * Also persists a virtual API key so the standard provider pipeline works.
+ *
+ * Round-3 race fix (Sourcery): the registry notification now happens only
+ * AFTER virtual-key persistence AND only while the extension is still
+ * installed/authorized. If the extension disappears (or its auth is
+ * revoked) during the `saveApiKey` await, `checkStatus` tears the provider
+ * down but its `codexOAuthRegistered` early-return can skip the unregister
+ * — so this function re-verifies before committing. Returns false when the
+ * extension vanished mid-registration (caller must not set the registered
+ * flag); true when the provider is registered.
  */
-async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; name: string; contextWindow?: number; capabilities?: string[] }>) {
+async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; name: string; contextWindow?: number; capabilities?: string[] }>): Promise<boolean> {
   const models = extensionModels.map(m => ({
     id: m.id,
     name: m.name,
@@ -177,6 +186,33 @@ async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; n
     return (ai === -1 ? RECOMMENDED_FIRST.length : ai) - (bi === -1 ? RECOMMENDED_FIRST.length : bi)
   })
 
+  // Persist through the initialization gate: extension detection starts before
+  // the app's storage bootstrap has necessarily completed.
+  try {
+    const { saveApiKey } = await import('@/security/api-key-store')
+    await saveApiKey(CODEX_OAUTH_PROVIDER_ID, CODEX_OAUTH_API_KEY)
+  } catch (err) {
+    console.warn('[extension.store] Failed to save codex-oauth virtual API key:', err)
+  }
+
+  // Extension disappeared (or auth revoked) during the await above: do NOT
+  // complete the stale registration — leave the registry clean so the
+  // persisted codex-oauth selection resolves as unregistered (#87) and the
+  // next status tick offers the re-login guidance.
+  const bridge = getWebBridge()
+  if (!bridge?.codexGetStatus) {
+    return false
+  }
+  try {
+    const resp = await bridge.codexGetStatus()
+    if (!resp?.ok || !resp.data?.authorized) {
+      return false
+    }
+  } catch {
+    // Bridge error = extension gone — same treatment.
+    return false
+  }
+
   registerDynamicProvider(
     CODEX_OAUTH_PROVIDER_ID,
     {
@@ -191,15 +227,7 @@ async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; n
       models,
     },
   )
-
-  // Persist through the initialization gate: extension detection starts before
-  // the app's storage bootstrap has necessarily completed.
-  try {
-    const { saveApiKey } = await import('@/security/api-key-store')
-    await saveApiKey(CODEX_OAUTH_PROVIDER_ID, CODEX_OAUTH_API_KEY)
-  } catch (err) {
-    console.warn('[extension.store] Failed to save codex-oauth virtual API key:', err)
-  }
+  return true
 }
 
 function unregisterCodexOAuthProvider() {
@@ -395,7 +423,20 @@ export const useExtensionStore = create<ExtensionState>()(
             try {
               const resp = await bridge.codexGetStatus()
               if (resp?.ok && resp.data?.authorized && Array.isArray(resp.data.models) && resp.data.models.length > 0 && !get().codexOAuthRegistered) {
-                await registerCodexOAuthProvider(resp.data.models)
+                const registered = await registerCodexOAuthProvider(resp.data.models)
+                // (Sourcery round 3) If the extension vanished during the
+                // registration awaits, the provider was NOT re-registered —
+                // do not flip the flag; the next status tick will surface
+                // the not-authorized branch and offer re-login guidance.
+                if (!registered) {
+                  try {
+                    const { useSettingsStore } = await import('@/store/settings.store')
+                    await useSettingsStore.getState().checkHasApiKey({ flush: true })
+                  } catch {
+                    // Best-effort flush.
+                  }
+                  return
+                }
                 set({ codexOAuthRegistered: true })
                 // Auto-pin codex models if none pinned yet + refresh provider list
                 try {

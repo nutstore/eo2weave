@@ -103,8 +103,15 @@ describe('ModelQuickSwitch unregistered dynamic provider (#87)', () => {
     // Amber warning state on the trigger.
     const trigger = screen.getByRole('button', { name: 'Codex unavailable — sign in again' })
     expect(trigger.className).toContain('text-amber-600')
-    // Warning triangle carries the same accessible label.
-    expect(screen.getByLabelText('Codex unavailable — sign in again')).toBeInTheDocument()
+    // (Sourcery round 3) The warning TRIANGLE must be verified independently
+    // of the trigger button — the trigger already carries the accessible
+    // label, so `getByLabelText` alone could pass with the triangle gone.
+    const triangle = screen.getByLabelText('No usable model selected — click to pick one')
+    expect(triangle).toBeInTheDocument()
+    expect(triangle.className).toContain('text-amber-500')
+    // Both elements inside the trigger carry a warning label, so scope the
+    // sanity check to the trigger's subtree.
+    expect(trigger).toContainElement(triangle)
   })
 
   it('keeps the persisted selection — no switch/clear is issued', async () => {

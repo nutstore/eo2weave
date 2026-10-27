@@ -102,7 +102,7 @@ import { createLLMProvider } from '@/agent/llm/provider-factory'
 import { ContextManager } from '@/agent/context-manager'
 import { getToolRegistry } from '@/agent/tool-registry'
 import { getApiKeyRepository } from '@/sqlite'
-import { LLM_PROVIDER_CONFIGS, isCustomProviderType, type LLMProviderType } from '@/agent/providers/types'
+import { LLM_PROVIDER_CONFIGS, isCustomProviderType, isPotentiallyDynamicProviderType, getProviderConfig, type LLMProviderType } from '@/agent/providers/types'
 import { generateConversationTitle } from '@/agent/title-generator'
 import { getMessageRepository, getSQLiteDB, initSQLiteDB } from '@/sqlite'
 import { useSettingsStore } from './settings.store'
@@ -1074,6 +1074,21 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         return
       }
 
+      // ── Unregistered dynamic provider guard (#87, Sourcery round 3) ──
+      // Direct callers bypass the component-level guards in
+      // useConversationLogic. The deletion below mutates and persists the
+      // conversation BEFORE runAgent would reject dispatch — check the live
+      // registry here so a rejected provider never deletes history.
+      const preSettings = useSettingsStore.getState()
+      if (
+        preSettings.providerType &&
+        isPotentiallyDynamicProviderType(preSettings.providerType) &&
+        !getProviderConfig(preSettings.providerType)
+      ) {
+        toast.error(i18nText('conversation.toast.providerReauthRequired', '所选服务商当前不可用，请重新登录后使用'))
+        return
+      }
+
       const conv = state.conversations.find((c) => c.id === conversationId)
       if (!conv) {
         toast.error(i18nText('conversation.toast.conversationMissingForRegenerate', '会话不存在，无法重新生成'))
@@ -1146,6 +1161,20 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const state = get()
       if (state.isConversationRunning(conversationId)) {
         toast.error(i18nText('conversation.toast.stopBeforeEditResend', '请先停止当前运行，再编辑发送'))
+        return
+      }
+
+      // ── Unregistered dynamic provider guard (#87, Sourcery round 3) ──
+      // Same rationale as regenerateUserMessage above: check the live
+      // registry BEFORE mutating/persisting the edited message, because a
+      // direct caller skips the component-level guard.
+      const preSettings = useSettingsStore.getState()
+      if (
+        preSettings.providerType &&
+        isPotentiallyDynamicProviderType(preSettings.providerType) &&
+        !getProviderConfig(preSettings.providerType)
+      ) {
+        toast.error(i18nText('conversation.toast.providerReauthRequired', '所选服务商当前不可用，请重新登录后使用'))
         return
       }
 
