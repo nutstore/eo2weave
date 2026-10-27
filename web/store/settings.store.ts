@@ -370,6 +370,30 @@ function registerCustomAsDynamic(cp: CustomProviderConfig) {
   )
 }
 
+// ── Cross-tab settings sync — module state ──────────────────────────────────
+// These MUST be declared BEFORE the persisted store below. Zustand rehydrates
+// synchronously from localStorage during create(), so the rehydrate callback
+// (setupCrossTabSettingsSync) and the migration write-back (the storage
+// wrapper's suppression check) run while this module is still initializing.
+// Declared after the store, both hit a TDZ ReferenceError that zustand's
+// hydration .catch() swallows silently — the storage listener never registers
+// and migrated v<4 state is never written back.
+let crossTabSyncInstalled = false
+let lastAppliedStorageEventTime = -1
+// Set in the storage wrapper's setItem passthrough right before THIS tab
+// persists; a storage event older than this stamp is a queued snapshot of
+// our own pre-write state and must never replace the newer local state.
+let lastLocalWriteAt = -1
+let suppressPersistWrites = 0
+
+/** Persist schema version — must match the persist config's `version` below. */
+const SETTINGS_PERSIST_VERSION = 4
+
+/** True when persist middleware writes to storage are currently suppressed. */
+function persistWritesSuppressed(): boolean {
+  return suppressPersistWrites > 0
+}
+
 export const useSettingsStore = create<SettingsState, [['zustand/persist', unknown]]>(
   persist<SettingsState, [], [], PersistedSettingsState>(
     (set, get) => ({
@@ -1189,7 +1213,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
     }),
     {
       name: 'bfosa-settings',
-      version: 4,
+      version: SETTINGS_PERSIST_VERSION,
       // The cross-tab storage handler applies incoming snapshots with
       // setState while persist writes are suppressed: the snapshot is
       // already IN storage (the storage event just delivered it), so the
@@ -1198,14 +1222,33 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       // While suppression is active, setItem is a no-op; read paths and the
       // in-memory state are untouched.
       storage: (() => {
-        const base = createJSONStorage<PersistedSettingsState>(() =>
-          typeof window === 'undefined' ? undefined as unknown as Storage : window.localStorage,
-        )
+        // Server-side import safety: without `window` the getter would return
+        // undefined and createJSONStorage would wrap it anyway (it only
+        // returns undefined if the getter THROWS). persist would then call
+        // getItem on undefined during hydration and crash module init.
+        // Returning an empty in-memory Storage keeps the import harmless in
+        // non-browser environments; the app itself is client-only.
+        if (typeof window === 'undefined') {
+          const emptyStorage: Storage = {
+            length: 0,
+            clear: () => undefined,
+            getItem: () => null,
+            key: () => null,
+            removeItem: () => undefined,
+            setItem: () => undefined,
+          }
+          return createJSONStorage<PersistedSettingsState>(() => emptyStorage)
+        }
+        const base = createJSONStorage<PersistedSettingsState>(() => window.localStorage)
         if (!base) return base
         return {
           ...base,
           setItem: (name, value) => {
             if (persistWritesSuppressed()) return
+            // Stamp before the write lands so any storage event this tab
+            // later receives that is OLDER than this write is recognized as
+            // a queued snapshot of our own pre-write state.
+            lastLocalWriteAt = performance.now()
             return base.setItem(name, value)
           },
         }
@@ -1331,14 +1374,6 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
 // removed ones) — the same registerCustomAsDynamic path the local edit
 // actions use — otherwise a provider added in another tab stays unusable
 // in this one.
-let crossTabSyncInstalled = false
-let lastAppliedStorageEventTime = -1
-let suppressPersistWrites = 0
-
-/** True when persist middleware writes to storage are currently suppressed. */
-function persistWritesSuppressed(): boolean {
-  return suppressPersistWrites > 0
-}
 
 /**
  * Shape written to localStorage: the partialize() projection of
@@ -1402,11 +1437,33 @@ function setupCrossTabSettingsSync(): void {
   crossTabSyncInstalled = true
   window.addEventListener('storage', (e) => {
     if (e.key !== 'bfosa-settings' || e.newValue == null) return
+    // Schema-version guard: an OLD tab (persist version < ours) holds a
+    // pre-upgrade shape. Letting its snapshot overwrite our v4 state would
+    // revert newer settings (including the thinking choice). The old tab
+    // rehydrates our v4 write through its own migrate path, so skipping the
+    // stale snapshot costs nothing.
+    try {
+      const versioned = JSON.parse(e.newValue) as { version?: unknown } | null
+      if (
+        versioned &&
+        typeof versioned.version === 'number' &&
+        versioned.version < SETTINGS_PERSIST_VERSION
+      ) {
+        return
+      }
+    } catch {
+      // Malformed envelope — fall through; the state parse below rejects it.
+    }
     // Out-of-order guard: a storage event carrying an OLDER write than the
     // one we already applied must never clobber it (two tabs writing in
     // quick succession queue two events here; applying both in arrival
     // order would let the older snapshot overwrite the newer settings).
     if (e.timeStamp < lastAppliedStorageEventTime) return
+    // Concurrent-write guard: a write from THIS tab that hasn't been handled
+    // yet means queued events carry snapshots of our own PRE-write state —
+    // applying one would revert local edits. Ignore events older than the
+    // stamp taken when the local write was persisted.
+    if (e.timeStamp < lastLocalWriteAt) return
     try {
       const parsed = JSON.parse(e.newValue) as { state?: Record<string, unknown> } | null
       if (!parsed || typeof parsed.state !== 'object' || !parsed.state) return

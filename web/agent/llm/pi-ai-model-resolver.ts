@@ -155,25 +155,40 @@ type ReasoningSupport = boolean | 'unknown'
 
 /**
  * Consult the STATIC provider catalog only — the single curated capability
- * source. getModelsForProvider() is deliberately NOT used here: it prefers
- * the dynamic registry, whose capability tags are heuristic — llm-gateway
- * tags EVERY model ['code','writing','reasoning'] without real capability
- * data (updateGatewayModels), custom-* registry entries carry
- * guessCapabilities() keyword guesses, and the dynamic model cache
- * (findCachedModelInfo) stores parseModelInfo() output whose capabilities
- * ALWAYS come from guessCapabilities() too (the /models API publishes
- * input_modalities/context, never reasoning support). Those tags can
- * neither prove support (a false positive forwards reasoning_effort to
- * endpoints that reject it with 400) nor disprove it (a heuristic entry
- * missing the tag would strip reasoning the static catalog grants).
+ * source for heuristic-tagged providers. getModelsForProvider() is deliberately
+ * NOT used for providers like llm-gateway: it prefers the dynamic registry,
+ * whose capability tags are heuristic — llm-gateway tags EVERY model
+ * ['code','writing','reasoning'] without real capability data
+ * (updateGatewayModels), custom-* registry entries carry guessCapabilities()
+ * keyword guesses, and the dynamic model cache (findCachedModelInfo) stores
+ * parseModelInfo() output whose capabilities ALWAYS come from
+ * guessCapabilities() too (the /models API publishes input_modalities/context,
+ * never reasoning support). Those tags can neither prove support (a false
+ * positive forwards reasoning_effort to endpoints that reject it with 400) nor
+ * disprove it (a heuristic entry missing the tag would strip reasoning the
+ * static catalog grants).
+ *
+ * Exception — codex-oauth: its dynamic registry entry is not heuristic. The
+ * model list comes from the browser extension's live catalog and the
+ * registration defaults capabilities to ['code','reasoning'] (see
+ * registerCodexOAuthProvider), so for models absent from PROVIDER_META the
+ * registry is the only evidence source. Skipping it would silently strip
+ * thinking from extension-provided Codex models on every request.
  */
 function staticCatalogReasoning(providerType: LLMProviderType, modelName: string): ReasoningSupport {
   try {
     const staticModels =
       (PROVIDER_META as Record<string, ProviderMeta | undefined>)[providerType]?.models ?? []
     const found = staticModels.find((m) => m.id === modelName)
-    if (!found) return 'unknown'
-    return found.capabilities.includes('reasoning')
+    if (found) return found.capabilities.includes('reasoning')
+    // Extension-provided Codex model missing from the static catalog: fall
+    // back to the codex-oauth registry entry (curated by the extension, not
+    // guessed). Any other provider keeps the heuristic-unknown contract.
+    if (providerType === 'codex-oauth') {
+      const registered = getModelsForProvider(providerType).find((m) => m.id === modelName)
+      if (registered) return registered.capabilities.includes('reasoning')
+    }
+    return 'unknown'
   } catch {
     // Catalog unavailable — treat as unknown rather than guessing.
     return 'unknown'

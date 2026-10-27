@@ -196,25 +196,97 @@ describe('resolvePiAIModel', () => {
     expect(model.reasoning).toBe(false)
   })
 
-  it('should keep reasoning disabled for fallback models the static catalog lists without reasoning', () => {
+  it('should keep reasoning disabled for fallback models the static catalog lists without reasoning', async () => {
     // deepseek-flash declares ['fast'] (no reasoning) in the static catalog.
     // deepseek has no PROVIDER_MAP entry, so this always takes the fallback
-    // path — asserting the api first proves resolveFallbackReasoning ran,
-    // and a heuristic dynamic-cache entry (guessCapabilities adds 'reasoning'
-    // for ids containing "pro"/"max" etc.) must not flip it to true.
-    const model = resolvePiAIModel('deepseek', 'deepseek-flash', 'https://api.deepseek.com/v1')
-    expect(model.api).toBe('openai-completions')
-    expect(model.reasoning).toBe(false)
+    // path — asserting the api first proves resolveFallbackReasoning ran.
+    // Seed a CONFLICTING heuristic dynamic-cache entry (guessCapabilities
+    // output with a 'reasoning' tag) for this exact id: a regression that
+    // lets cache tags enable reasoning would flip this to true and fail.
+    const { setCachedModels } = await import('@/agent/providers/model-store')
+    setCachedModels('deepseek', {
+      models: [
+        {
+          id: 'deepseek-flash',
+          name: 'DeepSeek V4.1 Flash',
+          capabilities: ['code', 'reasoning', 'fast'],
+        },
+      ],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    try {
+      const model = resolvePiAIModel('deepseek', 'deepseek-flash', 'https://api.deepseek.com/v1')
+      expect(model.api).toBe('openai-completions')
+      expect(model.reasoning).toBe(false)
+    } finally {
+      localStorage.removeItem('cw-models:deepseek')
+    }
   })
 
-  it('should not let heuristic gateway reasoning tags enable reasoning for unknown models', () => {
-    // llm-gateway tags EVERY fetched model ['code','writing','reasoning']
-    // without real capability data, and guessCapabilities adds 'reasoning'
-    // to any id containing "max". A heuristic tag must be treated as
-    // UNKNOWN — the fallback must still omit reasoning params.
-    const model = resolvePiAIModel('llm-gateway', 'vendor-text-max-turbo', 'https://gateway.example.com/v1')
-    expect(model.api).toBe('cw-openai-fetch')
-    expect(model.reasoning).toBe(false)
+  it('should not let heuristic gateway reasoning tags enable reasoning for unknown models', async () => {
+    // Seed the REGISTRY the way llm-gateway really does: every fetched model
+    // tagged ['code','writing','reasoning'] without real capability data.
+    // Registering the provider is what makes the heuristic tag REACHABLE —
+    // with an empty registry (as before) this assertion passed trivially even
+    // if a regression consulted the registry, because there was nothing to
+    // find. A heuristic tag must be treated as UNKNOWN regardless.
+    const { registerDynamicProvider, unregisterDynamicProvider } = await import(
+      '@/agent/providers/types'
+    )
+    registerDynamicProvider(
+      'llm-gateway',
+      { baseURL: 'https://gateway.example.com/v1', modelName: 'vendor-text-max-turbo', headers: {} },
+      {
+        category: 'custom',
+        displayName: 'Nutstore AI',
+        models: [
+          {
+            id: 'vendor-text-max-turbo',
+            name: 'Vendor Text Max Turbo',
+            capabilities: ['code', 'writing', 'reasoning'],
+          },
+        ],
+      },
+    )
+    try {
+      const model = resolvePiAIModel('llm-gateway', 'vendor-text-max-turbo', 'https://gateway.example.com/v1')
+      expect(model.api).toBe('cw-openai-fetch')
+      expect(model.reasoning).toBe(false)
+    } finally {
+      unregisterDynamicProvider('llm-gateway')
+    }
+  })
+
+  it('should enable reasoning for extension-provided codex-oauth models absent from the static catalog', async () => {
+    // Codex thinking is curated, not heuristic: registerCodexOAuthProvider
+    // defaults extension catalog entries to ['code','reasoning']. A model id
+    // the static PROVIDER_META.codex-oauth list doesn't know must still get
+    // reasoning:true via the extension registry, or the send path silently
+    // omits thinking params for it. The id below contains no reasoning-ish
+    // keyword, so guessCapabilities-style heuristics would NOT produce it —
+    // this only passes when the curated registry is consulted.
+    const { registerDynamicProvider, unregisterDynamicProvider } = await import(
+      '@/agent/providers/types'
+    )
+    registerDynamicProvider(
+      'codex-oauth',
+      { baseURL: 'https://chatgpt.com/backend-api/codex', modelName: 'vendor-pulse-9', headers: {} },
+      {
+        category: 'custom',
+        displayName: 'Codex (Browser OAuth)',
+        models: [
+          { id: 'vendor-pulse-9', name: 'Vendor Pulse 9', capabilities: ['code', 'reasoning'] },
+        ],
+      },
+    )
+    try {
+      const model = resolvePiAIModel('codex-oauth', 'vendor-pulse-9', 'https://chatgpt.com/backend-api/codex')
+      expect(model.api).toBe('openai-responses')
+      expect(model.reasoning).toBe(true)
+    } finally {
+      unregisterDynamicProvider('codex-oauth')
+    }
   })
 })
 
