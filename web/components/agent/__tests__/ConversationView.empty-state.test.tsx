@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { ConversationView } from '../ConversationView'
 
+vi.mock('@/hooks/useProjectAgentsInit', () => ({ useProjectAgentsInit: vi.fn() }))
+
 const { useConversationStoreMock } = vi.hoisted(() => {
   const state = {
     activeConversationId: 'conv-1',

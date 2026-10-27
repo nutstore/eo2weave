@@ -75,8 +75,8 @@ export function useConversationLogic() {
   //  initialisation moved to useProjectAgentsInit, which subscribes to
   //  it on its own.)
   const allAgents = useAgentsStore((s) => s.agents)
-  const activeAgentId = useAgentsStore((s) => s.activeAgentId)
-  const setActiveAgent = useAgentsStore((s) => s.setActiveAgent)
+  const projectActiveAgentId = useAgentsStore((s) => s.activeAgentId)
+  const setProjectActiveAgent = useAgentsStore((s) => s.setActiveAgent)
   const createAgent = useAgentsStore((s) => s.createAgent)
   const deleteAgent = useAgentsStore((s) => s.deleteAgent)
   const mentionAgents = useAgentsStore(
@@ -92,6 +92,16 @@ export function useConversationLogic() {
   // Streaming data is subscribed inside ConversationMessages directly.
   const active = useActiveConversation()
   const convId = active.convId
+  const conversationAgentId = useWorkspacePreferencesStore((s) => convId ? s.agentIdByWorkspace?.[convId] : undefined)
+  const activeAgentId = conversationAgentId || projectActiveAgentId
+  const setActiveAgent = useCallback(async (id: string) => {
+    const projectId = useAgentsStore.getState().loadedProjectId
+    await setProjectActiveAgent(id)
+    const state = useAgentsStore.getState()
+    if (convId && state.loadedProjectId === projectId && state.activeAgentId === id) {
+      useWorkspacePreferencesStore.getState().setWorkspaceAgentId(convId, id)
+    }
+  }, [convId, setProjectActiveAgent])
   const activeMessages = active.messages
   const status = active.status
   // NOTE: active.draftAssistant and active.streamingState are intentionally

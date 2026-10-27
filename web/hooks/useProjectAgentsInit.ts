@@ -13,37 +13,25 @@
  *   effect lets both screens call it.
  *
  * Behaviour:
- * - Skips bare-URL state (no `activeProjectId`).
- * - Re-runs only if the project changes, init is not in flight, and either
- *   the store is not yet initialised or the agent list is empty. The
- *   re-run guard matches the original ConversationView guard exactly so
- *   swapping callers does not change the trigger conditions.
+ * - Loads when the route's project changes and clears on project exit.
+ * - The store coalesces concurrent callers and rejects stale results; a
+ *   legitimately empty catalog does not trigger an initialization loop.
  */
 
 import { useEffect } from 'react'
-import { useShallow } from 'zustand/react/shallow'
 import { useProjectStore } from '@/store/project.store'
 import { useAgentsStore } from '@/store/agents.store'
 
-const EMPTY_MENTION_AGENTS: { id: string; name: string }[] = []
-
 export function useProjectAgentsInit(): void {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
-  const isAgentsLoading = useAgentsStore((s) => s.isLoading)
-  const isAgentsInitialized = useAgentsStore((s) => s.isInitialized)
-  const mentionAgents = useAgentsStore(
-    useShallow((s) => {
-      const filtered = s.agents
-        .filter((agent) => agent.id !== 'default')
-        .map((agent) => ({ id: agent.id, name: agent.name }))
-      return filtered.length === 0 ? EMPTY_MENTION_AGENTS : filtered
-    })
-  )
 
   useEffect(() => {
-    if (!activeProjectId) return
-    if (isAgentsLoading) return
-    if (mentionAgents.length > 0 && isAgentsInitialized) return
+    if (!activeProjectId) {
+      void useAgentsStore.getState().initialize('')
+      return
+    }
+    const state = useAgentsStore.getState()
+    if (state.isInitialized && state.loadedProjectId === activeProjectId) return
 
     let cancelled = false
     ;(async () => {
@@ -64,5 +52,5 @@ export function useProjectAgentsInit(): void {
     return () => {
       cancelled = true
     }
-  }, [activeProjectId, isAgentsLoading, isAgentsInitialized, mentionAgents])
+  }, [activeProjectId])
 }

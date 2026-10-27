@@ -17,7 +17,7 @@
 
 import { toast } from 'sonner'
 import { isHumanUserMessage, isConversationUserMessage, type Conversation, type Message, type ToolCall, type ConversationStatus, type ContextWindowUsage, createRunChangesMessage, createUserMessage } from '@/agent/message-types'
-import { extractFirstMentionedAgentId } from '@/agent/agent-mention'
+import { resolveConversationAgentId } from '@/agent/conversation-agent-routing'
 import { emitThinkingStart, emitThinkingDelta, emitCompressionEvent, emitToolStart, emitComplete, emitError } from '@/streaming-bus'
 import { useConversationContextStore } from './conversation-context.store'
 import { useConversationRuntimeStore, createEmptyRuntime } from './conversation-runtime.store'
@@ -482,8 +482,6 @@ export async function runAgentImpl(
         // Resolve runtime routing context from the current conversation/workspace.
         // Do not depend on global active-project pointer for agent prompt injection.
         let resolvedProjectId: string | null = null
-        let activeAgentId: string | null = null
-        let knownAgentIds: Set<string> | null = null
 
         try {
           const { getWorkspaceRepository } =
@@ -494,18 +492,13 @@ export async function runAgentImpl(
           // Ignore workspace lookup failures; agent prompt injection will be skipped without projectId.
         }
 
-        try {
-          const { useAgentsStore } = await import('./agents.store')
-          const agentsState = useAgentsStore.getState()
-          activeAgentId = agentsState.activeAgentId || null
-          knownAgentIds = new Set(agentsState.agents.map((agent) => agent.id.toLowerCase()))
-        } catch {
-          // Ignore agents-store read failures and fallback to default.
-        }
+        let activeAgentId = await resolveConversationAgentId(
+          resolvedProjectId, conversationId, agentOverrideId, lastUserMessage?.content,
+        )
 
         // ── Final registry recheck immediately before provider construction
         // (#87, Sourcery round 4) ── The round-3 recheck above runs BEFORE
-        // the API-key load, workspace repo and agents-store awaits. If the
+        // the API-key load, workspace lookup and Agent identity resolution. If the
         // dynamic provider unregisters inside THAT window, the stale
         // provider config captured before the awaits would still dispatch
         // the run onto a dead route. Recheck once more after all awaits
@@ -539,25 +532,6 @@ export async function runAgentImpl(
 
         const toolRegistry = getToolRegistry()
         const toolPolicyHooks = createToolPolicyHooks()
-
-        const normalizedOverride = agentOverrideId?.trim() || null
-        const overrideFromLatestMessage = extractFirstMentionedAgentId(lastUserMessage?.content)
-        const resolvedOverride = normalizedOverride || overrideFromLatestMessage
-
-        if (resolvedOverride) {
-          const normalizedResolvedOverride = resolvedOverride.toLowerCase()
-          if (!knownAgentIds || knownAgentIds.has(normalizedResolvedOverride)) {
-            activeAgentId = resolvedOverride
-          } else {
-            console.warn(
-              '[conversation.store] Ignoring unknown @agent override from latest message:',
-              resolvedOverride
-            )
-          }
-        }
-        if (!activeAgentId) {
-          activeAgentId = 'default'
-        }
 
         try {
           const { getWorkspaceManager } = await import('@/opfs')

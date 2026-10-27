@@ -32,6 +32,18 @@ describe('workspace-preferences.store agent mode isolation', () => {
     expect(getCurrentWorkspaceAgentMode()).toBe('plan')
   })
 
+  it('persists independent Agent identities across rehydration', async () => {
+    const store = useWorkspacePreferencesStore.getState()
+    store.setWorkspaceAgentId('chat-a', 'resource-loop')
+    store.setWorkspaceAgentId('chat-b', 'default')
+    const persisted = localStorage.getItem('bfosa-workspace-preferences')!
+    expect(JSON.parse(persisted).state.agentIdByWorkspace).toMatchObject({ 'chat-a': 'resource-loop', 'chat-b': 'default' })
+    useWorkspacePreferencesStore.setState({ agentIdByWorkspace: {} })
+    localStorage.setItem('bfosa-workspace-preferences', persisted)
+    await useWorkspacePreferencesStore.persist.rehydrate()
+    expect(useWorkspacePreferencesStore.getState().agentIdByWorkspace).toMatchObject({ 'chat-a': 'resource-loop', 'chat-b': 'default' })
+  })
+
   it('isolates completion auto-apply by workspace', () => {
     useWorkspaceStore.setState({ activeWorkspaceId: 'ws-a' })
     useWorkspacePreferencesStore.getState().setAutoApplyOnRunComplete(true)
