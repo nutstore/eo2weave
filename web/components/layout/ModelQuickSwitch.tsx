@@ -426,7 +426,7 @@ export function ModelQuickSwitch({
             {noUsableModel ? (
               <AlertTriangle
                 className="h-3 w-3 shrink-0 text-amber-500"
-                aria-label={t('topbar.modelSwitcher.noUsableModelWarning')}
+                aria-hidden
               />
             ) : null}
           </span>

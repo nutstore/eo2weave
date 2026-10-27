@@ -150,23 +150,45 @@ export async function runAgentImpl(
       const providerMissing = (type: LLMProviderType | string): boolean =>
         !!type && isPotentiallyDynamicProviderType(type) && !getProviderConfig(type as LLMProviderType)
       if (providerMissing(providerType)) {
-        toast.error(
-          i18nText(
-            'conversation.toast.providerReauthRequired',
-            'The selected provider is unavailable — sign in again to use it.'
-          )
+        const unavailableMessage = i18nText(
+          'conversation.toast.providerReauthRequired',
+          'The selected provider is unavailable — sign in again to use it.'
         )
+        toast.error(unavailableMessage)
+        // Round 4: the guard must do everything failRunEarly does for the
+        // dispatch-time recheck — mirror the failure into the runtime store
+        // (otherwise no error banner/retry state is rendered) and persist
+        // the messages (otherwise the user message that triggered this run
+        // disappears after a page reload). No run lock has been acquired
+        // yet at this point, so the isCurrentRun gating inside failRunEarly
+        // would no-op — hence the inline mirror here.
         set((state) => {
           const c = state.conversations.find((c) => c.id === conversationId)
           if (c) {
             c.status = 'error'
-            c.error = i18nText(
-              'conversation.toast.providerReauthRequired',
-              'The selected provider is unavailable — sign in again to use it.'
-            )
+            c.error = unavailableMessage
             c.activeRunId = null
           }
         })
+        useConversationRuntimeStore.setState((state) => {
+          const r = ensureRuntime(state, conversationId)
+          r.status = 'error'
+          r.error = unavailableMessage
+          r.activeRunId = null
+          r.draftAssistant = null
+          r.currentToolCall = null
+          r.activeToolCalls = []
+          r.streamingToolArgs = ''
+          r.streamingToolArgsByCallId = {}
+          r.streamingContent = ''
+          r.streamingReasoning = ''
+        })
+        const errorConv = get().conversations.find((c) => c.id === conversationId)
+        if (errorConv) {
+          persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
+            console.error('[conversation.store] Failed to persist provider-missing failure:', err)
+          })
+        }
         return
       }
 
@@ -489,6 +511,24 @@ export async function runAgentImpl(
           // Ignore agents-store read failures and fallback to default.
         }
 
+        // ── Final registry recheck immediately before provider construction
+        // (#87, Sourcery round 4) ── The round-3 recheck above runs BEFORE
+        // the API-key load, workspace repo and agents-store awaits. If the
+        // dynamic provider unregisters inside THAT window, the stale
+        // provider config captured before the awaits would still dispatch
+        // the run onto a dead route. Recheck once more after all awaits
+        // settle; a provider that vanished mid-setup routes through
+        // failRunEarly like every other pre-dispatch failure.
+        if (providerMissing(providerType)) {
+          failRunEarly(
+            i18nText(
+              'conversation.toast.providerReauthRequired',
+              'The selected provider is unavailable — sign in again to use it.'
+            )
+          )
+          return
+        }
+
         const provider = createLLMProvider({
           apiKey: apiKey || '',
           providerType,
@@ -498,7 +538,6 @@ export async function runAgentImpl(
             ? settingsState.customProviders.find((p) => p.id === providerType)?.apiMode || 'chat-completions'
             : undefined,
         })
-
         const contextManager = new ContextManager({
           maxContextTokens: provider.maxContextTokens,
           reserveTokens: maxTokens,

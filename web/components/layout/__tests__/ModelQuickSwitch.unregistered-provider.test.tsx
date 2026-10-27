@@ -103,13 +103,15 @@ describe('ModelQuickSwitch unregistered dynamic provider (#87)', () => {
     // Amber warning state on the trigger.
     const trigger = screen.getByRole('button', { name: 'Codex unavailable — sign in again' })
     expect(trigger.className).toContain('text-amber-600')
-    // (Sourcery round 3) The warning TRIANGLE must be verified independently
-    // of the trigger button — the trigger already carries the accessible
-    // label, so `getByLabelText` alone could pass with the triangle gone.
-    const triangle = screen.getByLabelText('No usable model selected — click to pick one')
-    expect(triangle).toBeInTheDocument()
-    expect(triangle.className).toContain('text-amber-500')
-    // Both elements inside the trigger carry a warning label, so scope the
+    // (Sourcery round 4) The triangle is decoration only — it must be hidden
+    // from assistive tech so it never duplicates/conflicts with the button's
+    // provider-specific "sign in again" label.
+    const triangle = document.querySelector<SVGElement>('svg.lucide-alert-triangle, svg.lucide-triangle-alert')
+    expect(triangle).not.toBeNull()
+    expect(triangle).toHaveAttribute('aria-hidden', 'true')
+    // The old generic guidance label is gone from the accessibility tree.
+    expect(screen.queryByLabelText('No usable model selected — click to pick one')).not.toBeInTheDocument()
+    // Both elements inside the trigger carry the warning, so scope the
     // sanity check to the trigger's subtree.
     expect(trigger).toContainElement(triangle)
   })

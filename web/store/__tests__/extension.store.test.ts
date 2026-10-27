@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   checkHasApiKey: vi.fn(async () => true),
   invalidateApiKeyCache: vi.fn(),
   triggerProviderRefresh: vi.fn(),
+  isWebBridgeAvailable: vi.fn(() => true),
 }))
 
 vi.mock('@/security/api-key-store', () => ({ saveApiKey: mocks.saveApiKey }))
@@ -16,7 +17,7 @@ vi.mock('@/agent/providers/types', () => ({
   unregisterDynamicProvider: mocks.unregisterDynamicProvider,
 }))
 
-vi.mock('@/agent/tools/web-bridge.tool', () => ({ isWebBridgeAvailable: () => true }))
+vi.mock('@/agent/tools/web-bridge.tool', () => ({ isWebBridgeAvailable: mocks.isWebBridgeAvailable }))
 
 // Pin the "latest known version" so version-comparison tests are deterministic
 vi.mock('@/app-build', () => ({
@@ -89,6 +90,7 @@ describe('extension store', () => {
     expect(mocks.registerDynamicProvider).not.toHaveBeenCalled()
     expect(useExtensionStore.getState().codexOAuthRegistered).toBe(false)
   })
+
 })
 
 describe('extension distribution classification', () => {
@@ -229,5 +231,45 @@ describe('extension version comparison', () => {
       expect(useExtensionStore.getState().extensionVersion).toBe('1.0.0')
     })
     expect(getVersion).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('extension store: stale registration invalidation (round 4)', () => {
+  // ── Sourcery round 4: a wedged bridge must not stall registration forever ──
+  it('settles registration when the codexGetStatus bridge request hangs', async () => {
+    vi.useFakeTimers()
+    try {
+      Object.defineProperty(window, '__agentWeb', {
+        configurable: true,
+        value: { codexGetStatus: vi.fn(() => new Promise(() => {})) }, // never resolves
+      })
+      useExtensionStore.setState({ codexOAuthRegistered: false })
+      const pending = useExtensionStore.getState().ensureCodexRegistered()
+      // Advance past the 5s status timeout — the wedged bridge request is
+      // abandoned and registration settles (registry untouched), so the
+      // shared in-flight promise cannot be reused as a stuck promise.
+      await vi.advanceTimersByTimeAsync(6_000)
+      await pending
+      expect(mocks.registerDynamicProvider).not.toHaveBeenCalled()
+      expect(useExtensionStore.getState().codexOAuthRegistered).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not register a stale provider when the extension disappears before the status round-trip completes', async () => {
+    mocks.isWebBridgeAvailable.mockReturnValue(false)
+
+    Object.defineProperty(window, '__agentWeb', {
+      configurable: true,
+      value: { codexGetStatus: vi.fn(async () => ({
+        ok: true,
+        data: { authorized: true, models: [{ id: 'gpt-5.4', name: 'GPT-5.4' }] },
+      })) },
+    })
+    useExtensionStore.setState({ codexOAuthRegistered: false })
+    await useExtensionStore.getState().ensureCodexRegistered()
+    expect(mocks.registerDynamicProvider).not.toHaveBeenCalled()
+    expect(useExtensionStore.getState().codexOAuthRegistered).toBe(false)
   })
 })

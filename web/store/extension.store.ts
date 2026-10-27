@@ -164,7 +164,34 @@ function supportsBundledVersionComparison(distribution: ExtensionDistribution): 
  * — so this function re-verifies before committing. Returns false when the
  * extension vanished mid-registration (caller must not set the registered
  * flag); true when the provider is registered.
+ *
+ * Round-4 fixes (Sourcery):
+ *  - the `codexGetStatus` bridge request is bounded by a timeout so a
+ *    wedged bridge cannot leave the in-flight `codexRegisterPromise`
+ *    pending forever (later `ensureCodexRegistered` calls would reuse it
+ *    and never retry);
+ *  - liveness is re-verified AFTER the status await too — the extension
+ *    can become unavailable while the status round-trip is in flight, and
+ *    a stale provider must not be registered.
  */
+const CODEX_STATUS_TIMEOUT_MS = 5_000
+
+function withStatusTimeout<T>(promise: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('codexGetStatus timed out')), CODEX_STATUS_TIMEOUT_MS)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
 async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; name: string; contextWindow?: number; capabilities?: string[] }>): Promise<boolean> {
   const models = extensionModels.map(m => ({
     id: m.id,
@@ -203,13 +230,24 @@ async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; n
   if (!bridge?.codexGetStatus) {
     return false
   }
+  // Round 4: bound the bridge round-trip so a wedged bridge request cannot
+  // leave the shared `codexRegisterPromise` pending forever — a timeout is
+  // treated exactly like a bridge error (extension gone).
+  let resp: Awaited<ReturnType<NonNullable<typeof bridge.codexGetStatus>>>
   try {
-    const resp = await bridge.codexGetStatus()
-    if (!resp?.ok || !resp.data?.authorized) {
-      return false
-    }
+    resp = await withStatusTimeout(bridge.codexGetStatus())
   } catch {
-    // Bridge error = extension gone — same treatment.
+    // Timeout or bridge error = extension gone — same treatment.
+    return false
+  }
+  if (!resp?.ok || !resp.data?.authorized) {
+    return false
+  }
+  // Round 4: the extension can ALSO vanish while the status round-trip is
+  // in flight (checkStatus flips to 'not_installed' and tears the provider
+  // down). Verify we are still current before committing the registration;
+  // otherwise the stale provider would outlive the extension.
+  if (!isWebBridgeAvailable()) {
     return false
   }
 
@@ -421,7 +459,10 @@ export const useExtensionStore = create<ExtensionState>()(
             }
 
             try {
-              const resp = await bridge.codexGetStatus()
+              // Round 4: bound this round-trip too — a wedged bridge here
+              // would otherwise hold `codexRegisterPromise` open forever and
+              // stall every later ensureCodexRegistered tick.
+              const resp = await withStatusTimeout(bridge.codexGetStatus())
               if (resp?.ok && resp.data?.authorized && Array.isArray(resp.data.models) && resp.data.models.length > 0 && !get().codexOAuthRegistered) {
                 const registered = await registerCodexOAuthProvider(resp.data.models)
                 // (Sourcery round 3) If the extension vanished during the
