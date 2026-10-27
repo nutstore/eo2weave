@@ -342,12 +342,15 @@ export function useConversationLogic() {
       // (not the credential) is what's missing.
       const providerUnregistered =
         !!pType && isPotentiallyDynamicProviderType(pType) && !getProviderConfig(pType)
-      if (!hasKey || modelCredentialStatus === 'expired' || providerUnregistered || !pType || !mName) {
+      // Precedence (Sourcery round 5): the unregistered-provider guard wins
+      // over the expired-credential toast — when the provider itself is
+      // gone, the gateway re-login flow is the wrong guidance.
+      if (providerUnregistered || !hasKey || modelCredentialStatus === 'expired' || !pType || !mName) {
         toast.error(
-          modelCredentialStatus === 'expired'
-            ? t('conversation.toast.gatewayReauthRequired')
-            : providerUnregistered
-              ? t('conversation.toast.providerReauthRequired')
+          providerUnregistered
+            ? t('conversation.toast.providerReauthRequired')
+            : modelCredentialStatus === 'expired'
+              ? t('conversation.toast.gatewayReauthRequired')
               : !pType || !mName
                 ? t('conversation.toast.noModel')
                 : t('conversation.toast.noApiKey'),
@@ -617,6 +620,24 @@ export function useConversationLogic() {
         : ''
     const isAttachmentOnly = !inputTrimmed && hasStagedAssets
     if (textToSend || isAttachmentOnly) {
+      // ── Unregistered-provider pre-gate (Sourcery round 5) ──
+      // The optimistic clear below bumps the reset token; AgentRichInput's
+      // reset effect then wipes the staged attachments. If the selected
+      // dynamic provider is unregistered, sendMessage would reject before
+      // snapshotting the pending files — so validate BEFORE clearing and
+      // bail with the re-login toast, leaving input + attachments intact.
+      {
+        const { providerType: pType } = useSettingsStore.getState()
+        if (
+          pType &&
+          isPotentiallyDynamicProviderType(pType) &&
+          !getProviderConfig(pType)
+        ) {
+          toast.error(t('conversation.toast.providerReauthRequired'))
+          return
+        }
+      }
+
       // ── Optimistic input clear ──
       // Clear the input BEFORE the async sendMessage pipeline runs. sendMessage
       // awaits page-context capture / asset writes / OCR before it reaches its
@@ -684,13 +705,28 @@ export function useConversationLogic() {
     [deleteAgentLoop, t]
   )
 
+  // ── Unregistered dynamic provider guard (#87, Sourcery round 5) ──
+  // regenerate / edit-and-resend call the conversation-store actions
+  // directly, which run the persisted provider without the checks
+  // sendMessage has — a rejected provider would hit a dead route instead
+  // of showing the re-login guidance. Returns true when the guard blocked
+  // the attempt (caller must abort).
+  const blockIfProviderUnregistered = useCallback((): boolean => {
+    const { providerType: pType } = useSettingsStore.getState()
+    if (!pType || !isPotentiallyDynamicProviderType(pType)) return false
+    if (getProviderConfig(pType)) return false
+    toast.error(t('conversation.toast.providerReauthRequired'))
+    return true
+  }, [t])
+
   const handleEditAndResend = useCallback(
     (userMessageId: string, newContent: string) => {
+      if (blockIfProviderUnregistered()) return
       const currentConvId = convIdRef.current
       if (!currentConvId) return
       editAndResendUserMessage(currentConvId, userMessageId, newContent)
     },
-    [editAndResendUserMessage]
+    [editAndResendUserMessage, blockIfProviderUnregistered]
   )
 
   // Always call unconditionally (rules-of-hooks); when convId is absent the
@@ -698,11 +734,12 @@ export function useConversationLogic() {
   // (undefined) observed by consumers — they only invoke it with a message id.
   const handleRegenerate = useCallback(
     (id: string) => {
+      if (blockIfProviderUnregistered()) return
       const currentConvId = convId
       if (!currentConvId) return
       regenerateUserMessage(currentConvId, id)
     },
-    [convId, regenerateUserMessage]
+    [convId, regenerateUserMessage, blockIfProviderUnregistered]
   )
 
   return {

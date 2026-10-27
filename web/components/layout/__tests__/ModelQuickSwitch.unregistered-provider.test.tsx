@@ -54,6 +54,7 @@ vi.mock('@/i18n', () => ({
     'topbar.modelSwitcher.loading': 'Loading models…',
     'topbar.modelSwitcher.noModels': 'No models available',
     'topbar.modelSwitcher.codexUnavailableWarning': 'Codex unavailable — sign in again',
+    'topbar.modelSwitcher.providerUnavailableWarning': 'Provider unavailable — sign in again',
     'topbar.modelSwitcher.credentialExpired': 'Re-login required',
     'topbar.modelSwitcher.credentialExpiredWarning': 'Selected model needs re-login — click to manage the gateway credential',
     'topbar.modelSwitcher.noUsableModelWarning': 'No usable model selected — click to pick one',
@@ -78,6 +79,7 @@ vi.mock('@creatorweave/ui', () => ({
 }))
 
 import { ModelQuickSwitch } from '../ModelQuickSwitch'
+import { registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
 describe('ModelQuickSwitch unregistered dynamic provider (#87)', () => {
   beforeEach(() => {
@@ -117,10 +119,18 @@ describe('ModelQuickSwitch unregistered dynamic provider (#87)', () => {
   })
 
   it('does not warn when the codex-oauth provider IS registered this session', async () => {
-    settingsState.getEffectiveProviderConfig = vi.fn(() => ({
-      baseURL: 'https://codex.example',
-      modelName: 'gpt-6-luna',
-    }))
+    // The component now treats the LIVE registry as authoritative, so the
+    // "registered" case must actually register codex-oauth in the real
+    // dynamic-provider registry (not just appear in the providers list).
+    registerDynamicProvider(
+      'codex-oauth',
+      { baseURL: 'https://chatgpt.com/backend-api/codex', modelName: 'gpt-6-luna', headers: {} },
+      {
+        category: 'custom',
+        displayName: 'Codex (Browser OAuth)',
+        models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna', capabilities: ['code', 'reasoning'] }],
+      },
+    )
     settingsState.getAvailableProviders = vi.fn(async () => [
       {
         providerType: 'codex-oauth',
@@ -129,14 +139,22 @@ describe('ModelQuickSwitch unregistered dynamic provider (#87)', () => {
         providerKey: 'codex-oauth',
       },
     ])
+    settingsState.getEffectiveProviderConfig = vi.fn(() => ({
+      baseURL: 'https://codex.example',
+      modelName: 'gpt-6-luna',
+    }))
 
-    render(<ModelQuickSwitch />)
+    try {
+      render(<ModelQuickSwitch />)
 
-    await vi.waitFor(() => {
-      expect(screen.getAllByTitle('GPT-6 Luna').length).toBeGreaterThan(0)
-    })
-    expect(screen.queryByLabelText('Codex unavailable — sign in again')).not.toBeInTheDocument()
-    expect(screen.queryByText(/Codex unavailable/)).not.toBeInTheDocument()
+      await vi.waitFor(() => {
+        expect(screen.getAllByTitle('GPT-6 Luna').length).toBeGreaterThan(0)
+      })
+      expect(screen.queryByLabelText('Codex unavailable — sign in again')).not.toBeInTheDocument()
+      expect(screen.queryByText(/Codex unavailable/)).not.toBeInTheDocument()
+    } finally {
+      unregisterDynamicProvider('codex-oauth')
+    }
   })
 
   it('does not warn for non-dynamic providers that are simply missing from the list', async () => {
@@ -165,5 +183,65 @@ describe('ModelQuickSwitch unregistered dynamic provider (#87)', () => {
       )
     })
     expect(screen.queryByText(/Re-login required/)).not.toBeInTheDocument()
+  })
+
+  // ── Sourcery round 5: the LIVE registry is authoritative ──
+  it('still flags the provider as unregistered when a stale cached list still contains it', async () => {
+    // The provider unregistered after the list was loaded: the cached
+    // `providers` snapshot still contains codex-oauth, but the live
+    // registry has no config for it. The old `liveInList` logic treated
+    // the cached entry as proof of registration and showed a usable model.
+    settingsState.getAvailableProviders = vi.fn(async () => [
+      {
+        providerType: 'codex-oauth',
+        displayName: 'Codex (Browser OAuth)',
+        models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna' }],
+        providerKey: 'codex-oauth',
+      },
+    ])
+    settingsState.getEffectiveProviderConfig = vi.fn(() => null)
+
+    render(<ModelQuickSwitch />)
+
+    // The stale cached list still resolves the model display name, but the
+    // live-registry miss must still produce the unavailable warning.
+    await vi.waitFor(() => {
+      expect(screen.getByTitle(/Codex unavailable/)).toHaveTextContent(
+        'GPT-6 Luna · Codex unavailable — sign in again',
+      )
+    })
+    const trigger = screen.getByRole('button', { name: 'Codex unavailable — sign in again' })
+    expect(trigger.className).toContain('text-amber-600')
+  })
+
+  // ── Sourcery round 5: warning copy must match the provider kind ──
+  it('uses provider-neutral warning copy for an unregistered llm-gateway provider', async () => {
+    settingsState.providerType = 'llm-gateway'
+    settingsState.modelName = 'gateway-model'
+
+    render(<ModelQuickSwitch />)
+
+    await vi.waitFor(() => {
+      expect(screen.getByTitle(/gateway-model/)).toHaveTextContent(
+        'Provider unavailable — sign in again',
+      )
+    })
+    expect(screen.queryByText(/Codex unavailable/)).not.toBeInTheDocument()
+    const trigger = screen.getByRole('button', { name: 'Provider unavailable — sign in again' })
+    expect(trigger.className).toContain('text-amber-600')
+  })
+
+  it('uses provider-neutral warning copy for an unregistered custom-* provider', async () => {
+    settingsState.providerType = 'custom-abc123'
+    settingsState.modelName = 'local-model'
+
+    render(<ModelQuickSwitch />)
+
+    await vi.waitFor(() => {
+      expect(screen.getByTitle(/local-model/)).toHaveTextContent(
+        'Provider unavailable — sign in again',
+      )
+    })
+    expect(screen.queryByText(/Codex unavailable/)).not.toBeInTheDocument()
   })
 })

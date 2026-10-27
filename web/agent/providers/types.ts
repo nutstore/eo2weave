@@ -171,6 +171,31 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProviderType, Omit<LLMProviderConfi
 const DYNAMIC_PROVIDER_CONFIGS = new Map<string, Omit<LLMProviderConfig, 'apiKey'>>()
 const DYNAMIC_PROVIDER_METAS = new Map<string, ProviderMeta>()
 
+// ── Registry change notifications ──
+// Dynamic providers register/unregister asynchronously after startup
+// (extension detection, gateway login, custom-provider restore). UI that
+// memoizes `getProviderConfig` results must recompute when the registry
+// changes — a plain memo never sees the mutation. Subscribers get a monoton
+//ically increasing version number (useSyncExternalStore-compatible).
+let registryVersion = 0
+const registryListeners = new Set<() => void>()
+
+function notifyRegistryChanged() {
+  registryVersion += 1
+  for (const listener of registryListeners) listener()
+}
+
+/** Subscribe to dynamic-provider registry changes; returns an unsubscribe fn. */
+export function subscribeToProviderRegistry(listener: () => void): () => void {
+  registryListeners.add(listener)
+  return () => registryListeners.delete(listener)
+}
+
+/** Snapshot for useSyncExternalStore — stable between registry mutations. */
+export function getProviderRegistryVersion(): number {
+  return registryVersion
+}
+
 /** Register (or update) a custom provider */
 export function registerDynamicProvider(
   id: string,
@@ -179,12 +204,13 @@ export function registerDynamicProvider(
 ) {
   DYNAMIC_PROVIDER_CONFIGS.set(id, config)
   DYNAMIC_PROVIDER_METAS.set(id, meta)
+  notifyRegistryChanged()
 }
 
 /** Remove a custom provider */
 export function unregisterDynamicProvider(id: string) {
-  DYNAMIC_PROVIDER_CONFIGS.delete(id)
-  DYNAMIC_PROVIDER_METAS.delete(id)
+  if (!DYNAMIC_PROVIDER_CONFIGS.delete(id) && !DYNAMIC_PROVIDER_METAS.delete(id)) return
+  notifyRegistryChanged()
 }
 
 /** Check if a providerType is a dynamically registered custom provider */

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Search } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
-import { isPotentiallyDynamicProviderType } from '@/agent/providers/types'
+import { isPotentiallyDynamicProviderType, getProviderConfig, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
 import type { LLMProviderType } from '@/agent/providers/types'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
@@ -190,6 +190,16 @@ export function ModelQuickSwitch({
     return currentProvider?.models.some((model) => model.id === modelName && model.stale) ?? false
   }, [enrichedProviders, providerType, modelName])
 
+  // The dynamic-provider registry mutates asynchronously (extension
+  // detection, gateway login, custom-provider restore). Subscribing to its
+  // version makes the memo below reactive (Sourcery round 5): registering
+  // or unregistering a provider while this component is mounted must
+  // recompute the flag — a stale cached `providers` list alone cannot.
+  const providerRegistryVersion = useSyncExternalStore(
+    subscribeToProviderRegistry,
+    getProviderRegistryVersion,
+    getProviderRegistryVersion
+  )
   // Unregistered dynamic provider (#87): the persisted selection names a
   // provider (codex-oauth, llm-gateway, custom-*) that has not registered
   // this session — `getProviderConfig` returns null for it, so
@@ -197,16 +207,26 @@ export function ModelQuickSwitch({
   // dead route (the stale virtual key in SQLite even makes the credential
   // check pass), so this is a THIRD no-usable-model state alongside
   // gateway-expired. The selection is kept for seamless re-login restore.
+  //
+  // `getProviderConfig` (the LIVE registry) is authoritative (Sourcery
+  // round 5): a provider still present in the cached `providers` list
+  // after unregistering must NOT count as registered — the cached list is
+  // a snapshot, the registry is the truth.
   const selectedProviderUnregistered = useMemo(() => {
+    void providerRegistryVersion
     if (loading || !providerType || !modelName) return false
     if (!isPotentiallyDynamicProviderType(providerType)) return false
-    // A provider whose live registry entry exists is registered — never
-    // flag it. A provider absent from the loaded list AND absent from the
-    // dynamic registry is the dead-selection state.
-    const liveInList = providers.some((p) => p.providerType === providerType)
-    const { getEffectiveProviderConfig } = useSettingsStore.getState()
-    return !liveInList && !getEffectiveProviderConfig()
-  }, [loading, providerType, modelName, providers])
+    return !getProviderConfig(providerType)
+  }, [loading, providerType, modelName, providerRegistryVersion])
+
+  // Warning copy must name the provider the user must re-login to
+  // (Sourcery round 5): codex-oauth gets the Codex-specific recovery text;
+  // llm-gateway and custom-* would otherwise see guidance for the wrong
+  // provider. Keys exist in all four locales.
+  const unregisteredWarningKey =
+    providerType === 'codex-oauth'
+      ? 'topbar.modelSwitcher.codexUnavailableWarning'
+      : 'topbar.modelSwitcher.providerUnavailableWarning'
 
   const currentModelLabel = useMemo(() => {
     // No API key configured → always show "unavailable" regardless of persisted values
@@ -220,15 +240,15 @@ export function ModelQuickSwitch({
     // A selected model with an unresolved/missing key check is a CREDENTIAL
     // state, not "no models" (#84 review round 2) — keep showing the model
     // name so the chip's amber warning reads as re-credentials, not re-pick.
-    // An unregistered dynamic provider (#87) appends the Codex re-login
-    // warning instead of the bare model name.
+    // An unregistered dynamic provider (#87) appends the provider-specific
+    // re-login warning instead of the bare model name.
     const currentProvider = providers.find((p) => p.providerType === providerType)
     const model = currentProvider?.models.find((m) => m.id === modelName)
     const base = model?.name || modelName
     return selectedProviderUnregistered
-      ? `${base} · ${t('topbar.modelSwitcher.codexUnavailableWarning')}`
+      ? `${base} · ${t(unregisteredWarningKey)}`
       : base
-  }, [loading, selectedProviderUnregistered, modelCredentialStatus, providerType, providers, modelName, t])
+  }, [loading, selectedProviderUnregistered, modelCredentialStatus, providerType, providers, modelName, t, unregisteredWarningKey])
 
   // No usable model (#82): nothing selectable — the composer's input is
   // disabled and this chip carries the amber warning state pointing at
@@ -329,7 +349,7 @@ export function ModelQuickSwitch({
             noModelSelected
               ? t('topbar.modelSwitcher.noUsableModelWarning')
               : selectedProviderUnregistered
-                ? t('topbar.modelSwitcher.codexUnavailableWarning')
+                ? t(unregisteredWarningKey)
                 : credentialExpired
                   ? t('topbar.modelSwitcher.credentialExpiredWarning')
                   : undefined

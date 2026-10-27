@@ -819,4 +819,117 @@ describe('WelcomeScreen', () => {
     fireEvent.click(screen.getByTestId('mock-send'))
     expect(onStart).not.toHaveBeenCalled()
   })
+
+  // ── Sourcery round 5 (High #1): the registry must be a REACTIVE
+  // dependency — a provider registering while the screen stays mounted
+  // (extension installed / gateway logged in) must unblock the send
+  // without any selection change, and unregistering must re-block it. ──
+  it('unblocks sending once a previously-unregistered provider registers mid-session', async () => {
+    const onStart = vi.fn()
+    const { registerDynamicProvider, unregisterDynamicProvider } = await import('@/agent/providers/types')
+
+    // Start unregistered (empty registry → #87 state).
+    settingsState.hasApiKey = true
+    settingsState.providerType = 'codex-oauth'
+    settingsState.modelName = 'gpt-6-luna'
+    const { rerender } = render(<WelcomeScreen onStartConversation={onStart} />)
+
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    fireEvent.click(screen.getByTestId('mock-send'))
+    expect(onStart).not.toHaveBeenCalled()
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      'The selected provider is unavailable — sign in again to use it.',
+    )
+
+    // The extension registers codex-oauth while the screen stays mounted.
+    registerDynamicProvider(
+      'codex-oauth',
+      { baseURL: 'https://chatgpt.com/backend-api/codex', modelName: 'gpt-6-luna', headers: {} },
+      {
+        category: 'custom',
+        displayName: 'Codex (Browser OAuth)',
+        models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna', capabilities: ['code', 'reasoning'] }],
+      },
+    )
+    try {
+      // The useSyncExternalStore subscription fires synchronously on
+      // registry change; React processes the update before the next act
+      // event, so no rerender with changed props is required. Drive one
+      // through anyway (mount stays identical) to flush the update.
+      rerender(<WelcomeScreen onStartConversation={onStart} />)
+
+      fireEvent.click(screen.getByTestId('mock-send'))
+      expect(toastErrorMock).toHaveBeenCalledTimes(1) // no NEW provider toast
+      expect(onStart).toHaveBeenCalledTimes(1)
+      expect(onStart).toHaveBeenCalledWith('typed text')
+    } finally {
+      unregisterDynamicProvider('codex-oauth')
+    }
+  })
+
+  it('re-blocks sending when the selected provider unregisters mid-session', async () => {
+    const onStart = vi.fn()
+    const types = await import('@/agent/providers/types')
+    const { registerDynamicProvider, unregisterDynamicProvider } = types
+
+    // Start registered: codex-oauth is live this session.
+    settingsState.hasApiKey = true
+    settingsState.providerType = 'codex-oauth'
+    settingsState.modelName = 'gpt-6-luna'
+    registerDynamicProvider(
+      'codex-oauth',
+      { baseURL: 'https://chatgpt.com/backend-api/codex', modelName: 'gpt-6-luna', headers: {} },
+      {
+        category: 'custom',
+        displayName: 'Codex (Browser OAuth)',
+        models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna', capabilities: ['code', 'reasoning'] }],
+      },
+    )
+    const { rerender } = render(<WelcomeScreen onStartConversation={onStart} />)
+
+    // Send works while the provider is live.
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    fireEvent.click(screen.getByTestId('mock-send'))
+    expect(onStart).toHaveBeenCalledTimes(1)
+
+    // Extension removed / auth revoked → unregisters while mounted.
+    unregisterDynamicProvider('codex-oauth')
+    rerender(<WelcomeScreen onStartConversation={onStart} />)
+
+    // The first send consumed the input — compose a new payload.
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    fireEvent.click(screen.getByTestId('mock-send'))
+    expect(onStart).toHaveBeenCalledTimes(1) // no new conversation started
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      'The selected provider is unavailable — sign in again to use it.',
+    )
+    // Selection preserved for recovery.
+    expect(settingsState.providerType).toBe('codex-oauth')
+  })
+
+  // ── Sourcery round 5 (Medium #7): the unregistered-provider toast must
+  // win over the generic not-ready guidance when both apply. ──
+  it('shows the provider re-login toast instead of the not-ready guidance when unregistered on a setup step', () => {
+    const onStart = vi.fn()
+    const onOpenSettings = vi.fn()
+    // Expired credential dropped hasApiKey → api-key setup step, while the
+    // dynamic provider selection is unregistered.
+    settingsState.hasApiKey = false
+    settingsState.providerType = 'codex-oauth'
+    settingsState.modelName = 'gpt-6-luna'
+    render(<WelcomeScreen onStartConversation={onStart} onOpenSettings={onOpenSettings} />)
+
+    expect(screen.getByRole('button', { name: 'Skip for now' })).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    fireEvent.click(screen.getByTestId('mock-send'))
+
+    expect(onStart).not.toHaveBeenCalled()
+    // Provider-specific toast wins; the generic warning / settings redirect
+    // from the not-ready branch must NOT fire.
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      'The selected provider is unavailable — sign in again to use it.',
+    )
+    expect(toastWarningMock).not.toHaveBeenCalled()
+    expect(onOpenSettings).not.toHaveBeenCalled()
+  })
 })
