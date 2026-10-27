@@ -167,6 +167,10 @@ describe('cross-tab settings sync (round-3 findings)', () => {
       state: { enableThinking: true, temperature: 0.3 },
       version: 3,
     })
+    // The old tab's write REPLACED the shared value before its event fired —
+    // mirror that here, otherwise a regression that removes the repair call
+    // still passes (the assertions would read the untouched v4 seed).
+    localStorage.setItem(STORAGE_KEY, v3Raw)
     dispatchStorageEvent(performance.now() + 5, v3Raw)
 
     // v4 state must not be reverted by the older-schema snapshot...

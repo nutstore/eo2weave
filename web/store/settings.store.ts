@@ -392,6 +392,11 @@ let lastWrittenRevision = 0
 // Highest revision this tab has APPLIED from a peer (and written itself);
 // incoming snapshots at or below it are stale queue arrivals and are dropped.
 let lastAppliedRevision = 0
+// StorageEvent.timeStamp watermark for revisionless snapshots only (peers on
+// an older deploy). Receiving-tab timing cannot order writes across tabs,
+// so this is a weak fallback — but two revisionless snapshots delivered out
+// of order must still not let the older one revert the newer.
+let lastRevisionlessEventTimestamp = 0
 
 /** Persist schema version — must match the persist config's `version` below. */
 const SETTINGS_PERSIST_VERSION = 4
@@ -688,14 +693,18 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       },
 
       checkHasApiKey: async (options?: { flush?: boolean }) => {
-        // No epoch guard here anymore. The old up-front `++apiKeyCheckEpoch`
-        // let a deduplicated same-provider caller (one that reused the
-        // in-flight promise cache) bump the epoch, stale-out the in-flight
-        // lookup's write guard, and leave `hasApiKey` unwritten after the
-        // promise resolved (#84 review round 3). Every lookup now writes
-        // its result unconditionally; a mid-flight provider switch stays
-        // correct because the switch path re-runs checkHasApiKey() and its
-        // fresh write lands after the stale one.
+        // The up-front `++apiKeyCheckEpoch` epoch guard is gone: it let a
+        // deduplicated same-provider caller (one that reused the in-flight
+        // promise cache) bump the epoch, stale-out the in-flight lookup's
+        // write guard, and leave `hasApiKey` unwritten after the promise
+        // resolved (#84 review round 3). Every lookup now writes its result
+        // when it resolves — but the write is GUARDED by the provider it
+        // was started for: a cross-provider switch can leave the previous
+        // provider's lookup in flight, and its late result must not
+        // overwrite the active provider's status (see the guard inside the
+        // promise below). Same-provider deduplicated callers still get
+        // their write because the effective key is unchanged when the
+        // shared promise resolves.
         const state = get()
         const effective = state.getEffectiveProviderConfig()
         if (!effective) {
@@ -760,20 +769,31 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             const hasKey = !!key
             apiKeyCache.set(providerKey, hasKey)
 
-            // Update the reactive state. Mark loaded in the same set() so
-            // subscribers see a consistent (hasApiKey, hasApiKeyLoaded) pair.
-            // Written UNCONDITIONALLY (#84 review round 3): see the note at
-            // the top of checkHasApiKey for why the old epoch guard here
-            // dropped deduplicated lookups' write.
-            set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
+            // Update the reactive state — but ONLY if the provider this
+            // lookup was started for is still active. A cross-provider
+            // switch can leave this lookup in flight; its late result must
+            // not clobber the new provider's status (unlike the removed
+            // epoch guard, this never drops a CURRENT provider's write, so
+            // deduplicated same-provider lookups still land their result).
+            const after = get()
+            const afterKey = after.getEffectiveProviderConfig()?.apiKeyProviderKey
+            if (afterKey === providerKey) {
+              // Mark loaded in the same set() so subscribers see a
+              // consistent (hasApiKey, hasApiKeyLoaded) pair.
+              set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
+            }
 
             return hasKey
           } catch (error) {
             console.error('[SettingsStore] Failed to check API key:', error)
             // Even on error, mark as loaded — otherwise the UI would stay
-            // in the "loading" state forever. Unconditional write, same
-            // rationale as the success path above (#84 review round 3).
-            set({ hasApiKey: false, hasApiKeyLoaded: true })
+            // in the "loading" state forever. Same provider guard as the
+            // success path above.
+            const after = get()
+            const afterKey = after.getEffectiveProviderConfig()?.apiKeyProviderKey
+            if (afterKey === providerKey) {
+              set({ hasApiKey: false, hasApiKeyLoaded: true })
+            }
 
             // Schedule a delayed retry — the SQLite worker init race
             // (OPFS lock release, cold-start handshake) often self-resolves
@@ -1557,8 +1577,18 @@ function setupCrossTabSettingsSync(): void {
       if (incomingRevision <= Math.max(lastAppliedRevision, lastWrittenRevision)) return
       lastAppliedRevision = incomingRevision
     }
-    // Snapshot without a revision (peer on an older deploy): fall back to
-    // the legacy event-timeStamp ordering — weak, but better than nothing.
+    // Snapshot WITHOUT a revision (peer on an older deploy): fall back to
+    // the legacy event-timeStamp ordering — weak, but better than nothing,
+    // and a revisionless snapshot must not silently bypass the guard. The
+    // watermark only defends against OTHER revisionless events: a revisioned
+    // snapshot always applies (its revision scheme is incomparable with the
+    // timestamp fallback and its embedded ordering is authoritative), while
+    // two revisionless snapshots are ordered against each other so a late
+    // delivery of the older one cannot revert the newer.
+    if (incomingRevision == null) {
+      if (e.timeStamp <= lastRevisionlessEventTimestamp) return
+      lastRevisionlessEventTimestamp = e.timeStamp
+    }
 
     try {
       const incoming = parsed.state
@@ -1605,16 +1635,30 @@ function setupCrossTabSettingsSync(): void {
         incoming.modelName !== credentialsBefore.modelName
       ) {
         const next = useSettingsStore.getState()
-        apiKeyCache.delete(next.providerType)
-        apiKeyCachePromise.delete(next.providerType)
-        void next.checkHasApiKey()
+        // Invalidate by the EFFECTIVE credential key, not providerType:
+        // getEffectiveProviderConfig derives `__llm_gateway_token__` for
+        // llm-gateway, so deleting under the providerType would leave the
+        // gateway's cached lookup in place and checkHasApiKey would reuse
+        // the stale result.
+        const effectiveKey = next.getEffectiveProviderConfig()?.apiKeyProviderKey ?? next.providerType
+        apiKeyCache.delete(effectiveKey)
+        apiKeyCachePromise.delete(effectiveKey)
         // The credential flag describes the PREVIOUS provider's auth; a
         // cross-provider switch must clear it (same rule as
         // switchProviderAndModel) or noUsableModel keeps marking the new,
-        // valid selection unusable.
-        if (incoming.providerType !== credentialsBefore.providerType) {
-          useSettingsStore.setState({ modelCredentialStatus: 'unknown' })
+        // valid selection unusable. This reset must land INSIDE the
+        // suppression window: setState is wrapped by persist, and a write
+        // outside the block would re-persist the whole (just-applied,
+        // possibly already-superseded) snapshot over a newer peer write.
+        suppressPersistWrites++
+        try {
+          if (incoming.providerType !== credentialsBefore.providerType) {
+            useSettingsStore.setState({ modelCredentialStatus: 'unknown' })
+          }
+        } finally {
+          suppressPersistWrites--
         }
+        void next.checkHasApiKey()
       }
     } catch {
       // Malformed state payload — ignore; the next legitimate write
