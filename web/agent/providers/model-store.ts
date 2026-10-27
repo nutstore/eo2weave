@@ -41,6 +41,17 @@ export const MODELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h
 
 const memoryCache = new Map<string, CachedModels>()
 
+/**
+ * Test-only escape hatch: `setCachedModels` seeds BOTH this memory cache and
+ * localStorage, so a test fixture that only removes the localStorage key still
+ * leaks the memory entry into later tests in the same module environment.
+ */
+export function __clearMemoryCacheForTests(providerType: string): void {
+  for (const key of [...memoryCache.keys()]) {
+    if (key === providerType || key.startsWith(`${providerType}:`)) memoryCache.delete(key)
+  }
+}
+
 function getCacheKey(
   providerType: LLMProviderType,
   providerKey?: string

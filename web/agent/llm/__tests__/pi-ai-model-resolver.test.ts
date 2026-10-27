@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { RESOLUTION_COUNTS, resetResolutionCounts, resolvePiAIModel } from '@/agent/llm/pi-ai-model-resolver'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
 
+// setCachedModels seeds a module-level memory cache that removeItem alone
+// cannot clear (Sourcery: "Cached fixture leaks between tests") — reset the
+// memory layer through the public API by overwriting it with an empty result.
+async function clearModelCache(providerType: string): Promise<void> {
+  const mod = await import('@/agent/providers/model-store')
+  const clear = (mod as unknown as { __clearMemoryCacheForTests?: (k: string) => void }).__clearMemoryCacheForTests
+  if (clear) clear(providerType)
+}
+
 describe('resolvePiAIModel', () => {
   it('should resolve known native provider/model', () => {
     const model = resolvePiAIModel('openai', 'gpt-4o', 'https://api.openai.com/v1')
@@ -239,7 +248,12 @@ describe('resolvePiAIModel', () => {
       expect(model.api).toBe('openai-completions')
       expect(model.reasoning).toBe(false)
     } finally {
+      // Clear BOTH layers: setCachedModels seeds the module-level memory cache
+      // as well as localStorage, and removeItem alone leaves the memory entry
+      // reachable for findCachedModelInfo in later tests in this module.
+      clearModelCache('deepseek')
       localStorage.removeItem('cw-models:deepseek')
+      localStorage.removeItem('cw-models:deepseek:undefined')
     }
   })
 
