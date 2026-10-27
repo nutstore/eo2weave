@@ -209,7 +209,9 @@ export function registerDynamicProvider(
 
 /** Remove a custom provider */
 export function unregisterDynamicProvider(id: string) {
-  if (!DYNAMIC_PROVIDER_CONFIGS.delete(id) && !DYNAMIC_PROVIDER_METAS.delete(id)) return
+  const removedConfig = DYNAMIC_PROVIDER_CONFIGS.delete(id)
+  const removedMeta = DYNAMIC_PROVIDER_METAS.delete(id)
+  if (!removedConfig && !removedMeta) return
   notifyRegistryChanged()
 }
 

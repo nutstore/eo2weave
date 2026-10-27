@@ -57,6 +57,35 @@ export function ModelQuickSwitch({
   const [searchResultIdx, setSearchResultIdx] = useState(0)
   const [thinkingPopoverOpen, setThinkingPopoverOpen] = useState(false)
 
+  // The dynamic-provider registry mutates asynchronously (extension
+  // detection, gateway login, custom-provider restore). Subscribing to its
+  // version (useSyncExternalStore) makes both the cached provider list
+  // refresh below and the selectedProviderUnregistered memo reactive.
+  const providerRegistryVersion = useSyncExternalStore(
+    subscribeToProviderRegistry,
+    getProviderRegistryVersion,
+    getProviderRegistryVersion
+  )
+
+  // Re-fetch the cached provider list when the dynamic-provider registry
+  // changes (Sourcery round 2): registering/unregistering a provider while
+  // this popover is mounted must refresh the cached list, otherwise the
+  // switcher keeps offering models from a provider that no longer exists.
+  // The initial version is captured once; subsequent registry mutations bump
+  // a generation counter that the load effect below depends on.
+  const [registryLoadGen, setRegistryLoadGen] = useState(0)
+  const initialRegistryVersionRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (initialRegistryVersionRef.current === null) {
+      initialRegistryVersionRef.current = providerRegistryVersion
+      return
+    }
+    if (providerRegistryVersion !== initialRegistryVersionRef.current) {
+      initialRegistryVersionRef.current = providerRegistryVersion
+      setRegistryLoadGen((v) => v + 1)
+    }
+  }, [providerRegistryVersion])
+
   const searchInputRef = useRef<HTMLInputElement>(null)
   const thinkingCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -84,7 +113,7 @@ export function ModelQuickSwitch({
     // NOTE: `open` is intentionally excluded — providers are cached after first load
     // and refreshed only when _providerRefreshVersion changes (pin/unpin/custom provider edits).
     // Including `open` here caused a full reload every time the popover opens.
-  }, [getAvailableProviders, providerRefreshVersion])
+  }, [getAvailableProviders, providerRefreshVersion, registryLoadGen])
 
   // Reset transient search state when the popover closes.
   useEffect(() => {
@@ -195,11 +224,8 @@ export function ModelQuickSwitch({
   // version makes the memo below reactive (Sourcery round 5): registering
   // or unregistering a provider while this component is mounted must
   // recompute the flag — a stale cached `providers` list alone cannot.
-  const providerRegistryVersion = useSyncExternalStore(
-    subscribeToProviderRegistry,
-    getProviderRegistryVersion,
-    getProviderRegistryVersion
-  )
+  // (Declaration moved above the cached-list refresh effect, which also
+  // depends on this version — Sourcery round 2.)
   // Unregistered dynamic provider (#87): the persisted selection names a
   // provider (codex-oauth, llm-gateway, custom-*) that has not registered
   // this session — `getProviderConfig` returns null for it, so

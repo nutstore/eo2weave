@@ -25,7 +25,7 @@ import { deleteAgentLoop, setAgentLoop } from './agent-loop-registry'
 import { deleteStreamingQueues, getStreamingQueues, setStreamingQueues } from './streaming-queue-registry'
 import { applyDraftAssistantEvent } from './draft-assistant'
 import { getElicitationHandler } from '@/mcp/elicitation-handler.tsx'
-import { ensureRuntime, attachReasoningDurations, commitDraftToMessages, findSpawnStepInDraft, summarizeForNotification, reconcileMessageSnapshot, deriveContextUsageFromAssistantUsage } from './conversation-message-ops'
+import { ensureRuntime, attachReasoningDurations, commitDraftToMessages, findSpawnStepInDraft, summarizeForNotification, reconcileMessageSnapshot, deriveContextUsageFromAssistantUsage, i18nText } from './conversation-message-ops'
 import { StreamingQueue } from '../utils/streaming-queue'
 import { AgentLoop } from '@/agent/agent-loop'
 import { createToolPolicyHooks } from '@/agent/tool-policy'
@@ -34,7 +34,7 @@ import { ContextManager } from '@/agent/context-manager'
 import { getToolRegistry } from '@/agent/tool-registry'
 import { getOrCreateSubagentRuntime } from '@/agent/subagent/runtime'
 import { getApiKeyRepository } from '@/sqlite'
-import { LLM_PROVIDER_CONFIGS, isCustomProviderType } from '@/agent/providers/types'
+import { LLM_PROVIDER_CONFIGS, isCustomProviderType, isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { generateFollowUp } from '@/agent/follow-up-generator'
 import { useSettingsStore } from './settings.store'
 import { getCurrentWorkspaceAgentMode } from './workspace-preferences.store'
@@ -130,6 +130,28 @@ export async function runAgentImpl(
 
       if (state.isConversationRunning(conversationId)) {
         console.warn('[conversation.store] Conversation is already running:', conversationId)
+        return
+      }
+
+      // ── Unregistered dynamic provider guard (#87, Sourcery round 2) ──
+      // runAgent is the shared dispatch boundary for every AI action —
+      // sendMessage, QuickActionsPanel, FilePreview, SyncPreviewPanel and
+      // the sync review-request all end here. The send-path guards in the
+      // UI only check at click time; between that check and this call the
+      // provider can unregister (extension disconnect, auth revocation), so
+      // recheck the LIVE registry at dispatch. Blocking here guarantees no
+      // direct caller can push a run through a dead route.
+      if (
+        providerType &&
+        isPotentiallyDynamicProviderType(providerType) &&
+        !getProviderConfig(providerType)
+      ) {
+        toast.error(
+          i18nText(
+            'conversation.toast.providerReauthRequired',
+            'The selected provider is unavailable — sign in again to use it.'
+          )
+        )
         return
       }
 

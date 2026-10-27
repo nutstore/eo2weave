@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -832,7 +832,7 @@ describe('WelcomeScreen', () => {
     settingsState.hasApiKey = true
     settingsState.providerType = 'codex-oauth'
     settingsState.modelName = 'gpt-6-luna'
-    const { rerender } = render(<WelcomeScreen onStartConversation={onStart} />)
+    render(<WelcomeScreen onStartConversation={onStart} />)
 
     fireEvent.click(screen.getByTestId('mock-input-type'))
     fireEvent.click(screen.getByTestId('mock-send'))
@@ -842,24 +842,30 @@ describe('WelcomeScreen', () => {
     )
 
     // The extension registers codex-oauth while the screen stays mounted.
-    registerDynamicProvider(
-      'codex-oauth',
-      { baseURL: 'https://chatgpt.com/backend-api/codex', modelName: 'gpt-6-luna', headers: {} },
-      {
-        category: 'custom',
-        displayName: 'Codex (Browser OAuth)',
-        models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna', capabilities: ['code', 'reasoning'] }],
-      },
-    )
+    // act() flushes the useSyncExternalStore subscriber re-render that the
+    // registry change triggers — it must reach the component WITHOUT any
+    // manual rerender call (Sourcery round 2).
+    act(() => {
+      registerDynamicProvider(
+        'codex-oauth',
+        { baseURL: 'https://chatgpt.com/backend-api/codex', modelName: 'gpt-6-luna', headers: {} },
+        {
+          category: 'custom',
+          displayName: 'Codex (Browser OAuth)',
+          models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna', capabilities: ['code', 'reasoning'] }],
+        },
+      )
+    })
     try {
-      // The useSyncExternalStore subscription fires synchronously on
-      // registry change; React processes the update before the next act
-      // event, so no rerender with changed props is required. Drive one
-      // through anyway (mount stays identical) to flush the update.
-      rerender(<WelcomeScreen onStartConversation={onStart} />)
-
+      // The useSyncExternalStore subscription must fire the re-render by
+      // itself (Sourcery round 2): attempt the send WITHOUT calling
+      // rerender, so a component that only recomputes on unrelated renders
+      // cannot pass.
       fireEvent.click(screen.getByTestId('mock-send'))
-      expect(toastErrorMock).toHaveBeenCalledTimes(1) // no NEW provider toast
+      // Exactly one NEW toast allowed: the pre-gate rejection above. A
+      // second provider toast would mean the mid-session registration did
+      // NOT unblock the send through the component's own subscription.
+      expect(toastErrorMock).toHaveBeenCalledTimes(1)
       expect(onStart).toHaveBeenCalledTimes(1)
       expect(onStart).toHaveBeenCalledWith('typed text')
     } finally {
@@ -885,7 +891,7 @@ describe('WelcomeScreen', () => {
         models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna', capabilities: ['code', 'reasoning'] }],
       },
     )
-    const { rerender } = render(<WelcomeScreen onStartConversation={onStart} />)
+    render(<WelcomeScreen onStartConversation={onStart} />)
 
     // Send works while the provider is live.
     fireEvent.click(screen.getByTestId('mock-input-type'))
@@ -893,8 +899,9 @@ describe('WelcomeScreen', () => {
     expect(onStart).toHaveBeenCalledTimes(1)
 
     // Extension removed / auth revoked → unregisters while mounted.
+    // (Sourcery round 2) No manual rerender: the send below must observe
+    // the registry change through the component's own subscription.
     unregisterDynamicProvider('codex-oauth')
-    rerender(<WelcomeScreen onStartConversation={onStart} />)
 
     // The first send consumed the input — compose a new payload.
     fireEvent.click(screen.getByTestId('mock-input-type'))

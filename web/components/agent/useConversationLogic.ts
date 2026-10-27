@@ -542,6 +542,18 @@ export function useConversationLogic() {
       isUserAtBottomRef.current = true
       draftConvIdRef.current = null
 
+      // ── Dispatch-time registry recheck (#87, Sourcery round 2) ──
+      // The guard above ran before several awaits (page-context capture,
+      // asset writes, OCR). A dynamic provider can unregister inside that
+      // window (extension disconnect, auth revocation) — dispatching would
+      // hit a dead route. Recheck the LIVE registry immediately before
+      // runAgent and block with the reauthentication guidance.
+      if (isPotentiallyDynamicProviderType(pType) && !getProviderConfig(pType)) {
+        toast.error(t('conversation.toast.providerReauthRequired'))
+        rejectSend()
+        return
+      }
+
       await runAgent(targetConvId, pType, mName, mTokens, dh, options?.agentOverrideId ?? null)
     },
     [t]
@@ -565,6 +577,18 @@ export function useConversationLogic() {
     const currentConvId = convIdRef.current
     const currentMentionedAgentIds = mentionedAgentIdsRef.current
     const { getSuggestedFollowUp, clearSuggestedFollowUp } = useConversationRuntimeStore.getState()
+
+    // ── Provider pre-gate (Sourcery round 2) ──
+    // Runs BEFORE any slash-command dispatch or optimistic input clear so a
+    // rejected send leaves the typed command (e.g. /compact) and the editor
+    // content intact — the user keeps what they typed while recovering.
+    {
+      const { providerType: pType } = useSettingsStore.getState()
+      if (pType && isPotentiallyDynamicProviderType(pType) && !getProviderConfig(pType)) {
+        toast.error(t('conversation.toast.providerReauthRequired'))
+        return
+      }
+    }
 
     // P0 builtin light-operation pack (/summary /translate /explain /polish
     // /titles): assemble the prompt from template + page context, then fall
@@ -620,23 +644,9 @@ export function useConversationLogic() {
         : ''
     const isAttachmentOnly = !inputTrimmed && hasStagedAssets
     if (textToSend || isAttachmentOnly) {
-      // ── Unregistered-provider pre-gate (Sourcery round 5) ──
-      // The optimistic clear below bumps the reset token; AgentRichInput's
-      // reset effect then wipes the staged attachments. If the selected
-      // dynamic provider is unregistered, sendMessage would reject before
-      // snapshotting the pending files — so validate BEFORE clearing and
-      // bail with the re-login toast, leaving input + attachments intact.
-      {
-        const { providerType: pType } = useSettingsStore.getState()
-        if (
-          pType &&
-          isPotentiallyDynamicProviderType(pType) &&
-          !getProviderConfig(pType)
-        ) {
-          toast.error(t('conversation.toast.providerReauthRequired'))
-          return
-        }
-      }
+      // (The unregistered-provider pre-gate now runs at the top of handleSend,
+      // before slash-command dispatch and the optimistic clear — Sourcery
+      // round 2.)
 
       // ── Optimistic input clear ──
       // Clear the input BEFORE the async sendMessage pipeline runs. sendMessage
