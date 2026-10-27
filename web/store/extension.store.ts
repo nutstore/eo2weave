@@ -174,11 +174,32 @@ function supportsBundledVersionComparison(distribution: ExtensionDistribution): 
  *    can become unavailable while the status round-trip is in flight, and
  *    a stale provider must not be registered.
  */
-const CODEX_STATUS_TIMEOUT_MS = 5_000
+const CODEX_STATUS_TIMEOUT_MS = 12_000
+
+/**
+ * Rejected by `withStatusTimeout` when the underlying bridge request does not
+ * settle within `CODEX_STATUS_TIMEOUT_MS`. The postMessage-based bridge has no
+ * cancellation mechanism (no AbortSignal crosses the `window.postMessage`
+ * boundary), so the page cannot abort the outstanding request — the extension
+ * side eventually settles it via its own timeout. We therefore abandon the
+ * wrapper and back off instead of piling up retries.
+ *
+ * The wrapper timeout (12s) deliberately exceeds the extension side's own
+ * bridge timeout (35s relay) AND the background's 10s models-fetch timeout so
+ * a legitimately slow `codexGetStatus` — one whose catalog request is slow but
+ * still completes — is never abandoned by the page; only a truly wedged
+ * bridge (nothing settles at all) hits it.
+ */
+class CodexStatusTimeoutError extends Error {
+  constructor() {
+    super('codexGetStatus timed out')
+    this.name = 'CodexStatusTimeoutError'
+  }
+}
 
 function withStatusTimeout<T>(promise: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('codexGetStatus timed out')), CODEX_STATUS_TIMEOUT_MS)
+    const timer = setTimeout(() => reject(new CodexStatusTimeoutError()), CODEX_STATUS_TIMEOUT_MS)
     promise.then(
       (value) => {
         clearTimeout(timer)
@@ -192,7 +213,42 @@ function withStatusTimeout<T>(promise: Promise<T>): Promise<T> {
   })
 }
 
-async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; name: string; contextWindow?: number; capabilities?: string[] }>): Promise<boolean> {
+/**
+ * Consecutive-timeout backoff for `codexGetStatus` (Sourcery round 5). A
+ * hung bridge request cannot be cancelled (see `CodexStatusTimeoutError`),
+ * and App.tsx re-drives `ensureCodexRegistered` every 5s — without backoff a
+ * permanently wedged bridge would accumulate one abandoned request per tick.
+ * After N consecutive timeouts the next status query is delayed by the matching
+ * step (5s → 10s → 20s, capped at 60s); any successful response resets the
+ * streak. Module-level state on purpose — simple and shared by all callers.
+ */
+const CODEX_STATUS_BACKOFF_STEPS_MS = [5_000, 10_000, 20_000]
+const CODEX_STATUS_BACKOFF_CAP_MS = 60_000
+let codexStatusTimeoutStreak = 0
+let codexStatusNextAttemptAt = 0
+
+function noteCodexStatusTimeout(): void {
+  const step = CODEX_STATUS_BACKOFF_STEPS_MS[
+    Math.min(codexStatusTimeoutStreak, CODEX_STATUS_BACKOFF_STEPS_MS.length - 1)
+  ] ?? CODEX_STATUS_BACKOFF_CAP_MS
+  codexStatusTimeoutStreak++
+  codexStatusNextAttemptAt = Date.now() + Math.min(step, CODEX_STATUS_BACKOFF_CAP_MS)
+}
+
+function noteCodexStatusSuccess(): void {
+  codexStatusTimeoutStreak = 0
+  codexStatusNextAttemptAt = 0
+}
+
+/** True while a status query is deferred by the consecutive-timeout backoff. */
+function isCodexStatusBackedOff(): boolean {
+  return Date.now() < codexStatusNextAttemptAt
+}
+
+async function registerCodexOAuthProvider(
+  statusResp: NonNullable<Awaited<ReturnType<NonNullable<ExtensionWebBridge['codexGetStatus']>>>>,
+): Promise<boolean> {
+  const extensionModels = statusResp.data?.models || []
   const models = extensionModels.map(m => ({
     id: m.id,
     name: m.name,
@@ -226,30 +282,23 @@ async function registerCodexOAuthProvider(extensionModels: Array<{ id: string; n
   // complete the stale registration — leave the registry clean so the
   // persisted codex-oauth selection resolves as unregistered (#87) and the
   // next status tick offers the re-login guidance.
-  const bridge = getWebBridge()
-  if (!bridge?.codexGetStatus) {
-    return false
-  }
-  // Round 4: bound the bridge round-trip so a wedged bridge request cannot
-  // leave the shared `codexRegisterPromise` pending forever — a timeout is
-  // treated exactly like a bridge error (extension gone).
-  let resp: Awaited<ReturnType<NonNullable<typeof bridge.codexGetStatus>>>
-  try {
-    resp = await withStatusTimeout(bridge.codexGetStatus())
-  } catch {
-    // Timeout or bridge error = extension gone — same treatment.
-    return false
-  }
-  if (!resp?.ok || !resp.data?.authorized) {
-    return false
-  }
-  // Round 4: the extension can ALSO vanish while the status round-trip is
-  // in flight (checkStatus flips to 'not_installed' and tears the provider
-  // down). Verify we are still current before committing the registration;
-  // otherwise the stale provider would outlive the extension.
+  //
+  // (Sourcery round 5) The authorization check itself now happens in exactly
+  // ONE place: `ensureCodexRegistered` performs the single `codexGetStatus`
+  // round-trip and only calls this function when `resp.ok && authorized` held
+  // at that instant. This function therefore does NOT re-query the bridge —
+  // the previous internal second query widened the revocation TOCTOU window
+  // to two full round-trips instead of shrinking it.
   if (!isWebBridgeAvailable()) {
     return false
   }
+  // (Sourcery round 5) `isWebBridgeAvailable()` only proves the bridge exists
+  // — the authorization snapshot can still be up to one round-trip stale.
+  // Revocation during the `saveApiKey` await below is therefore unavoidable
+  // (a revoked route can survive for one window), but it is bounded: the
+  // periodic re-check in `ensureCodexRegistered` (finding 1) re-queries the
+  // status on every App.tsx 5s tick and unregisters a revoked provider within
+  // one interval.
 
   registerDynamicProvider(
     CODEX_OAUTH_PROVIDER_ID,
@@ -430,104 +479,134 @@ export const useExtensionStore = create<ExtensionState>()(
         // promise for all callers — `finally` clears it for the next tick.
         if (codexRegisterPromise) return codexRegisterPromise
 
-        codexRegisterPromise = (async () => {
-          try {
-            // Already registered — still flush checkHasApiKey in case a prior
-            // deferred call is waiting.
-            if (get().codexOAuthRegistered) {
-              try {
-                const { useSettingsStore } = await import('@/store/settings.store')
-                await useSettingsStore.getState().checkHasApiKey().catch(() => {})
-              } catch {
-                // Best-effort flush — failure here doesn't block registration.
-              }
-              return
-            }
-
+        // The clear MUST be a `.finally()` chain, not a `finally` block inside
+        // the async body: the backoff early-return completes the body with no
+        // awaits, so an in-body `finally` would run synchronously BEFORE the
+        // `codexRegisterPromise = ...` assignment below lands — the settled
+        // promise would then be stored into the mutex and wedge every later
+        // caller. `.finally()` always defers the clear to a microtask, after
+        // the assignment.
+        const run = async () => {
+          // (Sourcery round 5, finding 3) A bridge request that never
+          // settles cannot be cancelled — the postMessage bridge exposes no
+          // AbortSignal, so the timed-out request is abandoned (the
+          // extension side eventually settles it via its own timeout).
+          // Back off instead of issuing a fresh request on every 5s tick.
+          if (isCodexStatusBackedOff()) {
+            // Return WITHOUT issuing a request; the `.finally()` chain below clears
+            // the shared in-flight promise so later ticks can re-evaluate
+            // the backoff window.
+            return
+          }
+          // Already registered — (Sourcery round 5, finding 1) the OAuth
+          // grant can be revoked at any moment, so "registered" can no
+          // longer skip the status query: re-check authorization on every
+          // tick and unregister a revoked provider. Still best-effort: a
+          // timeout keeps the current registration (the extension may just
+          // be wedged) but arms the backoff.
+          if (get().codexOAuthRegistered) {
             const bridge = getWebBridge()
-            if (!bridge?.codexGetStatus) {
-              // Bridge not ready (extension page might still be initializing).
-              // Flush with `flush: true` so the deferred checkHasApiKey doesn't
-              // hang forever — caller can re-trigger later if needed.
+            if (bridge?.codexGetStatus) {
               try {
-                const { useSettingsStore } = await import('@/store/settings.store')
-                await useSettingsStore.getState().checkHasApiKey({ flush: true })
-              } catch {
-                // Best-effort flush.
-              }
-              return
-            }
-
-            try {
-              // Round 4: bound this round-trip too — a wedged bridge here
-              // would otherwise hold `codexRegisterPromise` open forever and
-              // stall every later ensureCodexRegistered tick.
-              const resp = await withStatusTimeout(bridge.codexGetStatus())
-              if (resp?.ok && resp.data?.authorized && Array.isArray(resp.data.models) && resp.data.models.length > 0 && !get().codexOAuthRegistered) {
-                const registered = await registerCodexOAuthProvider(resp.data.models)
-                // (Sourcery round 3) If the extension vanished during the
-                // registration awaits, the provider was NOT re-registered —
-                // do not flip the flag; the next status tick will surface
-                // the not-authorized branch and offer re-login guidance.
-                if (!registered) {
-                  try {
-                    const { useSettingsStore } = await import('@/store/settings.store')
-                    await useSettingsStore.getState().checkHasApiKey({ flush: true })
-                  } catch {
-                    // Best-effort flush.
-                  }
-                  return
-                }
-                set({ codexOAuthRegistered: true })
-                // Auto-pin codex models if none pinned yet + refresh provider list
-                try {
-                  const { useSettingsStore } = await import('@/store/settings.store')
-                  const settings = useSettingsStore.getState()
-                  const modelIds = (resp.data.models || []).map((m) => m.id)
-                  const existing = settings.pinnedModelsByProvider['codex-oauth']
-                  if (!existing || existing.length === 0) {
-                    if (modelIds.length > 0) {
-                      settings.setPinnedModels('codex-oauth', modelIds)
-                    }
-                  }
-                  // The extension response IS the authoritative list — record
-                  // which pins were confirmed present so pins that disappear
-                  // from a future response can be flagged as stale/delisted.
-                  if (modelIds.length > 0) {
-                    settings.markPinnedModelsSeen('codex-oauth', modelIds)
-                  }
-                  useSettingsStore.getState().triggerProviderRefresh()
-                } catch {
-                  // Pinning + provider refresh are best-effort.
-                }
-                // Re-check API key now that the provider is registered.
-                // No `{ flush: true }` needed here — by this point the provider
-                // IS registered, so the check can proceed normally.
-                try {
-                  const { useSettingsStore } = await import('@/store/settings.store')
-                  useSettingsStore.getState().invalidateApiKeyCache('codex-oauth')
-                  await useSettingsStore.getState().checkHasApiKey()
-                } catch {
-                  // Cache invalidation / re-check is best-effort.
-                }
-              } else if (resp?.ok && resp.data?.authorized) {
-                // Catalog is temporarily unavailable; keep the existing provider
-                // and retry on the next status check without inventing models.
-                if (!get().codexOAuthRegistered) {
-                  try {
-                    const { useSettingsStore } = await import('@/store/settings.store')
-                    await useSettingsStore.getState().checkHasApiKey({ flush: true })
-                  } catch {
-                    // Best-effort flush.
-                  }
-                }
-              } else {
-                // Not authorized, or auth revoked. Flush any deferred
-                // checkHasApiKey so the UI doesn't stay in loading state.
-                if (get().codexOAuthRegistered) {
+                const resp = await withStatusTimeout(bridge.codexGetStatus())
+                noteCodexStatusSuccess()
+                if (!resp?.ok || !resp.data?.authorized) {
                   unregisterCodexOAuthProvider()
                   set({ codexOAuthRegistered: false })
                 }
+              } catch (err) {
+                // Only a genuine timeout leaves an abandoned request behind —
+                // a promptly-rejected bridge error must not extend the backoff.
+                if (err instanceof CodexStatusTimeoutError) {
+                  noteCodexStatusTimeout()
+                }
+              }
+            }
+            try {
+              const { useSettingsStore } = await import('@/store/settings.store')
+              await useSettingsStore.getState().checkHasApiKey({ flush: true }).catch(() => {})
+            } catch {
+              // Best-effort flush — failure here doesn't block registration.
+            }
+            return
+          }
+
+          const bridge = getWebBridge()
+          if (!bridge?.codexGetStatus) {
+            // Bridge not ready (extension page might still be initializing).
+            // Flush with `flush: true` so the deferred checkHasApiKey doesn't
+            // hang forever — caller can re-trigger later if needed.
+            try {
+              const { useSettingsStore } = await import('@/store/settings.store')
+              await useSettingsStore.getState().checkHasApiKey({ flush: true })
+            } catch {
+              // Best-effort flush.
+            }
+            return
+          }
+
+          try {
+            // Round 4: bound this round-trip too — a wedged bridge here
+            // would otherwise hold `codexRegisterPromise` open forever and
+            // stall every later ensureCodexRegistered tick.
+            const resp = await withStatusTimeout(bridge.codexGetStatus())
+            noteCodexStatusSuccess()
+            if (resp?.ok && resp.data?.authorized && Array.isArray(resp.data.models) && resp.data.models.length > 0 && !get().codexOAuthRegistered) {
+              // (Sourcery round 5, finding 2) Single source of truth for the
+              // authorization snapshot: `resp` above is the ONLY status
+              // query — `registerCodexOAuthProvider` consumes it instead of
+              // re-querying, so the revocation TOCTOU window is one
+              // round-trip, not two.
+              const registered = await registerCodexOAuthProvider(resp)
+              // (Sourcery round 3) If the extension vanished during the
+              // registration awaits, the provider was NOT re-registered —
+              // do not flip the flag; the next status tick will surface
+              // the not-authorized branch and offer re-login guidance.
+              if (!registered) {
+                try {
+                  const { useSettingsStore } = await import('@/store/settings.store')
+                  await useSettingsStore.getState().checkHasApiKey({ flush: true })
+                } catch {
+                  // Best-effort flush.
+                }
+                return
+              }
+              set({ codexOAuthRegistered: true })
+              // Auto-pin codex models if none pinned yet + refresh provider list
+              try {
+                const { useSettingsStore } = await import('@/store/settings.store')
+                const settings = useSettingsStore.getState()
+                const modelIds = (resp.data.models || []).map((m) => m.id)
+                const existing = settings.pinnedModelsByProvider['codex-oauth']
+                if (!existing || existing.length === 0) {
+                  if (modelIds.length > 0) {
+                    settings.setPinnedModels('codex-oauth', modelIds)
+                  }
+                }
+                // The extension response IS the authoritative list — record
+                // which pins were confirmed present so pins that disappear
+                // from a future response can be flagged as stale/delisted.
+                if (modelIds.length > 0) {
+                  settings.markPinnedModelsSeen('codex-oauth', modelIds)
+                }
+                useSettingsStore.getState().triggerProviderRefresh()
+              } catch {
+                // Pinning + provider refresh are best-effort.
+              }
+              // Re-check API key now that the provider is registered.
+              // No `{ flush: true }` needed here — by this point the provider
+              // IS registered, so the check can proceed normally.
+              try {
+                const { useSettingsStore } = await import('@/store/settings.store')
+                useSettingsStore.getState().invalidateApiKeyCache('codex-oauth')
+                await useSettingsStore.getState().checkHasApiKey()
+              } catch {
+                // Cache invalidation / re-check is best-effort.
+              }
+            } else if (resp?.ok && resp.data?.authorized) {
+              // Catalog is temporarily unavailable; keep the existing provider
+              // and retry on the next status check without inventing models.
+              if (!get().codexOAuthRegistered) {
                 try {
                   const { useSettingsStore } = await import('@/store/settings.store')
                   await useSettingsStore.getState().checkHasApiKey({ flush: true })
@@ -535,9 +614,13 @@ export const useExtensionStore = create<ExtensionState>()(
                   // Best-effort flush.
                 }
               }
-            } catch {
-              // Bridge error (extension may not support codex, or auth flow
-              // not yet ready). Flush the deferred check so the UI doesn't hang.
+            } else {
+              // Not authorized, or auth revoked. Flush any deferred
+              // checkHasApiKey so the UI doesn't stay in loading state.
+              if (get().codexOAuthRegistered) {
+                unregisterCodexOAuthProvider()
+                set({ codexOAuthRegistered: false })
+              }
               try {
                 const { useSettingsStore } = await import('@/store/settings.store')
                 await useSettingsStore.getState().checkHasApiKey({ flush: true })
@@ -545,10 +628,26 @@ export const useExtensionStore = create<ExtensionState>()(
                 // Best-effort flush.
               }
             }
-          } finally {
-            codexRegisterPromise = null
+          } catch (err) {
+            // Only a genuine timeout leaves an abandoned request behind —
+            // arm the consecutive-timeout backoff for it. A promptly-rejected
+            // bridge error leaves no bridge-side work, so it must retry on the
+            // next tick WITHOUT extending the backoff.
+            if (err instanceof CodexStatusTimeoutError) {
+              noteCodexStatusTimeout()
+            }
+            // Flush the deferred check so the UI doesn't hang.
+            try {
+              const { useSettingsStore } = await import('@/store/settings.store')
+              await useSettingsStore.getState().checkHasApiKey({ flush: true })
+            } catch {
+              // Best-effort flush.
+            }
           }
-        })()
+        }
+        codexRegisterPromise = run().finally(() => {
+          codexRegisterPromise = null
+        })
         return codexRegisterPromise
       },
 

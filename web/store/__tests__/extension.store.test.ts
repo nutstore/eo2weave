@@ -40,7 +40,7 @@ vi.mock('@/store/settings.store', () => ({
   },
 }))
 
-import { CODEX_OAUTH_API_KEY, useExtensionStore } from '../extension.store'
+import { CODEX_OAUTH_API_KEY, useExtensionStore as useExtensionStoreModule } from '../extension.store'
 import {
   CHROME_WEB_STORE_EXTENSION_ID,
   EDGE_ADDONS_EXTENSION_ID,
@@ -49,6 +49,10 @@ import {
 } from '../../../browser-extension/extension-distribution'
 
 describe('extension store', () => {
+  // This describe does not touch the module-level backoff/mutex state, so the
+  // static module instance is fine here (the round-4 describe re-imports a
+  // fresh instance per test).
+  const useExtensionStore = useExtensionStoreModule
   beforeEach(() => {
     vi.clearAllMocks()
     Object.defineProperty(window, '__agentWeb', {
@@ -110,6 +114,13 @@ describe('extension distribution classification', () => {
 })
 
 describe('extension version comparison', () => {
+  // Like the round-4 describe below, use a fresh module instance so version
+  // tests are independent of any backoff/mutex state left by other describes.
+  let useExtensionStore: (typeof import('../extension.store'))['useExtensionStore']
+  beforeEach(async () => {
+    ;({ useExtensionStore } = await import('../extension.store'))
+  })
+
   /** Stub the bridge with fixed metadata and run checkStatus. */
   async function checkWithVersion(
     version: string,
@@ -235,31 +246,107 @@ describe('extension version comparison', () => {
 })
 
 describe('extension store: stale registration invalidation (round 4)', () => {
+  // The codex module holds module-level mutex/backoff state. `vi.resetModules`
+  // alone is NOT enough (the file's top-level static import keeps the original
+  // instance alive), so re-import a FRESH module instance per test — a
+  // backoff armed by one test must not silence the next one.
+  let useExtensionStore: (typeof import('../extension.store'))['useExtensionStore']
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.clearAllMocks()
+    mocks.isWebBridgeAvailable.mockReturnValue(true)
+    ;({ useExtensionStore } = await import('../extension.store'))
+  })
   // ── Sourcery round 4: a wedged bridge must not stall registration forever ──
-  it('settles registration when the codexGetStatus bridge request hangs', async () => {
+  // ── Sourcery round 5: the retry after a timeout must actually be exercised ──
+  it('settles registration when the codexGetStatus bridge request hangs, then retries and registers on a fresh status request', async () => {
     vi.useFakeTimers()
     try {
+      const statusFn = vi.fn(() => new Promise(() => {})) // never resolves
       Object.defineProperty(window, '__agentWeb', {
         configurable: true,
-        value: { codexGetStatus: vi.fn(() => new Promise(() => {})) }, // never resolves
+        value: { codexGetStatus: statusFn },
       })
       useExtensionStore.setState({ codexOAuthRegistered: false })
       const pending = useExtensionStore.getState().ensureCodexRegistered()
-      // Advance past the 5s status timeout — the wedged bridge request is
+      // Advance past the 12s status timeout — the wedged bridge request is
       // abandoned and registration settles (registry untouched), so the
       // shared in-flight promise cannot be reused as a stuck promise.
-      await vi.advanceTimersByTimeAsync(6_000)
+      await vi.advanceTimersByTimeAsync(13_000)
       await pending
       expect(mocks.registerDynamicProvider).not.toHaveBeenCalled()
       expect(useExtensionStore.getState().codexOAuthRegistered).toBe(false)
+
+      // (Sourcery round 5) The bridge recovers: calling ensureCodexRegistered
+      // again must issue a FRESH status request (not reuse a stale resolved
+      // promise) and successfully register the provider.
+      statusFn.mockImplementation(async () => ({
+        ok: true,
+        data: { authorized: true, models: [{ id: 'gpt-5.4', name: 'GPT-5.4' }] },
+      }))
+      // The first timeout armed the 5s backoff — advance past it.
+      await vi.advanceTimersByTimeAsync(5_000)
+      await useExtensionStore.getState().ensureCodexRegistered()
+      expect(statusFn.mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(mocks.registerDynamicProvider).toHaveBeenCalledTimes(1)
+      expect(useExtensionStore.getState().codexOAuthRegistered).toBe(true)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('does not register a stale provider when the extension disappears before the status round-trip completes', async () => {
-    mocks.isWebBridgeAvailable.mockReturnValue(false)
+  // ── Sourcery round 5, finding 3: consecutive timeouts back off ──
+  it('backs off status queries after consecutive timeouts and recovers on success', async () => {
+    vi.useFakeTimers()
+    try {
+      const statusFn = vi.fn(() => new Promise(() => {})) // never resolves
+      Object.defineProperty(window, '__agentWeb', {
+        configurable: true,
+        value: { codexGetStatus: statusFn },
+      })
+      useExtensionStore.setState({ codexOAuthRegistered: false })
 
+      // Timeout #1 (at ~12s) arms a 5s backoff. Never `await` the ensure while
+      // its status request can only settle via fake timers — advance first.
+      const first = useExtensionStore.getState().ensureCodexRegistered()
+      await vi.advanceTimersByTimeAsync(13_000)
+      await first
+      expect(statusFn.mock.calls.length).toBe(1)
+
+      // Within the backoff window the next tick must NOT issue a request.
+      await useExtensionStore.getState().ensureCodexRegistered()
+      expect(statusFn.mock.calls.length).toBe(1)
+
+      // Past the 5s backoff the query runs again → timeout #2 arms 10s.
+      await vi.advanceTimersByTimeAsync(5_000)
+      const second = useExtensionStore.getState().ensureCodexRegistered()
+      await vi.advanceTimersByTimeAsync(13_000)
+      await second
+      expect(statusFn.mock.calls.length).toBe(2)
+      await useExtensionStore.getState().ensureCodexRegistered()
+      expect(statusFn.mock.calls.length).toBe(2) // still backed off (10s)
+
+      // Bridge recovers: after the backoff elapses the request succeeds and
+      // the provider registers (backoff fully reset by the success).
+      statusFn.mockImplementation(async () => ({
+        ok: true,
+        data: { authorized: true, models: [{ id: 'gpt-5.4', name: 'GPT-5.4' }] },
+      }))
+      await vi.advanceTimersByTimeAsync(10_000)
+      await useExtensionStore.getState().ensureCodexRegistered()
+      expect(statusFn.mock.calls.length).toBe(3)
+      expect(mocks.registerDynamicProvider).toHaveBeenCalledTimes(1)
+      expect(useExtensionStore.getState().codexOAuthRegistered).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // ── Sourcery round 5, finding 1: a registered provider is re-checked and ──
+  // ── unregistered as soon as the OAuth grant is revoked ──
+  it('unregisters a registered codex provider when its OAuth authorization is revoked', async () => {
+    mocks.unregisterDynamicProvider.mockClear()
+    // First: register normally.
     Object.defineProperty(window, '__agentWeb', {
       configurable: true,
       value: { codexGetStatus: vi.fn(async () => ({
@@ -269,6 +356,84 @@ describe('extension store: stale registration invalidation (round 4)', () => {
     })
     useExtensionStore.setState({ codexOAuthRegistered: false })
     await useExtensionStore.getState().ensureCodexRegistered()
+    expect(useExtensionStore.getState().codexOAuthRegistered).toBe(true)
+    expect(mocks.registerDynamicProvider).toHaveBeenCalledTimes(1)
+
+    // Then: the user revokes the OAuth grant — the next tick must unregister.
+    Object.defineProperty(window, '__agentWeb', {
+      configurable: true,
+      value: { codexGetStatus: vi.fn(async () => ({
+        ok: true,
+        data: { authorized: false },
+      })) },
+    })
+    await useExtensionStore.getState().ensureCodexRegistered()
+    expect(mocks.unregisterDynamicProvider).toHaveBeenCalledWith('codex-oauth')
+    expect(useExtensionStore.getState().codexOAuthRegistered).toBe(false)
+
+    // checkHasApiKey was flushed so the UI does not sit in loading state.
+    expect(mocks.checkHasApiKey).toHaveBeenCalledWith({ flush: true })
+  })
+
+  it('keeps the registration when the periodic re-check times out (extension may just be wedged)', async () => {
+    vi.useFakeTimers()
+    try {
+      // Register with an immediate authorized response.
+      const statusFn = vi.fn(async () => ({
+        ok: true,
+        data: { authorized: true, models: [{ id: 'gpt-5.4', name: 'GPT-5.4' }] },
+      }))
+      Object.defineProperty(window, '__agentWeb', {
+        configurable: true,
+        value: { codexGetStatus: statusFn },
+      })
+      useExtensionStore.setState({ codexOAuthRegistered: false })
+      await useExtensionStore.getState().ensureCodexRegistered()
+      expect(useExtensionStore.getState().codexOAuthRegistered).toBe(true)
+
+      // Wedged bridge on the next tick: the periodic re-check MUST actually
+      // issue a second status request (an implementation that skips the
+      // query for registered providers would otherwise pass silently).
+      statusFn.mockImplementation(() => new Promise(() => {}))
+      const pending = useExtensionStore.getState().ensureCodexRegistered()
+      await vi.waitFor(() => expect(statusFn).toHaveBeenCalledTimes(2))
+      await vi.advanceTimersByTimeAsync(12_000)
+      await pending
+      expect(useExtensionStore.getState().codexOAuthRegistered).toBe(true)
+      expect(mocks.unregisterDynamicProvider).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not register a stale provider when the extension disappears before the status round-trip completes', async () => {
+    // Flip availability only AFTER the status request is in flight, so an
+    // implementation that moved the availability check ahead of the await
+    // (and dropped the post-await check) still fails this test.
+    let flipAvailability: () => void = () => {}
+    const availabilityGate = new Promise<void>((resolve) => { flipAvailability = resolve })
+    const statusFn = vi.fn(async () => {
+      await availabilityGate
+      return {
+        ok: true,
+        data: { authorized: true, models: [{ id: 'gpt-5.4', name: 'GPT-5.4' }] },
+      }
+    })
+    Object.defineProperty(window, '__agentWeb', {
+      configurable: true,
+      value: { codexGetStatus: statusFn },
+    })
+    useExtensionStore.setState({ codexOAuthRegistered: false })
+
+    const pending = useExtensionStore.getState().ensureCodexRegistered()
+    // The status request has been issued (and is parked in its gate) — NOW
+    // the extension bridge disappears.
+    await vi.waitFor(() => expect(statusFn).toHaveBeenCalledTimes(1))
+    expect(mocks.registerDynamicProvider).not.toHaveBeenCalled()
+    mocks.isWebBridgeAvailable.mockReturnValue(false)
+    flipAvailability()
+
+    await pending
     expect(mocks.registerDynamicProvider).not.toHaveBeenCalled()
     expect(useExtensionStore.getState().codexOAuthRegistered).toBe(false)
   })
