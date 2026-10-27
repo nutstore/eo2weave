@@ -146,12 +146,35 @@ function resolveInputModalities(modelName: string, providerType?: LLMProviderTyp
 export function supportsImageInput(modelName: string, providerType?: LLMProviderType): boolean {
   return resolveInputModalities(modelName, providerType).includes('image')
 }
+function resolveFallbackReasoning(providerType: LLMProviderType, modelName: string): boolean {
+  // 1. Dynamic model cache: DeepSeek (2026+) and other providers publish
+  //    reasoning-related capabilities on their /models endpoint — the freshest,
+  //    provider-authoritative source.
+  if (providerType) {
+    try {
+      const cached = findCachedModelInfo(providerType, modelName)
+      if (cached) return cached.capabilities.includes('reasoning')
+    } catch { /* registry unavailable — fall through */ }
+  }
+  // 2. Static PROVIDER_META / dynamic registry entries for this provider
+  try {
+    const found = getModelsForProvider(providerType).find((m) => m.id === modelName)
+    if (found) return found.capabilities.includes('reasoning')
+  } catch { /* registry unavailable — fall through */ }
+  // 3. Unknown model (custom "add model" id on a dynamic provider): NOT
+  //    reasoning-capable. Defaulting to true makes the send path forward
+  //    reasoning_effort to endpoints that reject it (400) and the whole
+  //    conversation fails — the conservative default must be false.
+  return false
+}
+
 function createOpenAICompatibleFallback(
   providerType: LLMProviderType,
   modelName: string,
   baseUrl: string,
   apiMode?: 'chat-completions' | 'responses'
 ): Model<Api> {
+  const reasoning = resolveFallbackReasoning(providerType, modelName)
   // Codex OAuth: use openai-responses handler with bridge fetch interception
   if (providerType === 'codex-oauth') {
     const contextWindow = lookupContextWindow(providerType, modelName)
@@ -161,7 +184,7 @@ function createOpenAICompatibleFallback(
       api: 'openai-responses', // Use official handler — fetch is intercepted by streamFn
       provider: providerType,
       baseUrl: normalizeBaseUrl(baseUrl),
-      reasoning: true,
+      reasoning,
       input: resolveInputModalities(modelName, providerType),
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
@@ -234,7 +257,12 @@ function createOpenAICompatibleFallback(
     api: fallbackApi,
     provider: providerType,
     baseUrl: normalizeBaseUrl(baseUrl),
-    reasoning: true,
+    // Gate reasoning on actual capability evidence (dynamic model cache →
+    // provider model list), not on a blanket true. The send path forwards
+    // reasoning_effort only for reasoning-capable models; a blanket true
+    // makes fresh-install thinking-defaults break non-reasoning models on
+    // OpenAI-compatible / custom / dynamic providers (issue #88 review).
+    reasoning,
     // Resolve vision capability. Pass providerType so the dynamic model cache
     // (DeepSeek input_modalities etc.) and registry capabilities are consulted,
     // not just the OpenRouter snapshot. Conservative text-only default when

@@ -151,6 +151,36 @@ describe('resolvePiAIModel', () => {
     expect(model.input).toEqual(['text'])
     expect(model.input).not.toContain('image')
   })
+
+  // ── Reasoning capability gating (issue #88 Sourcery High finding) ────────
+  // A blanket reasoning:true on the fallback made the send path forward
+  // reasoning_effort to endpoints that reject it (400) once thinking became
+  // default-ON for fresh installs. The fallback must gate reasoning on
+  // capability evidence and default to FALSE for unknown model ids.
+
+  it('should mark unknown custom-provider model as NOT reasoning-capable', () => {
+    const model = resolvePiAIModel('custom', 'my-private-model-v1', 'https://my-proxy.example.com/v1')
+    expect(model.reasoning).toBe(false)
+  })
+
+  it('should mark unknown dynamic-provider model as NOT reasoning-capable', () => {
+    // llm-gateway user-added id absent from any capability source — the
+    // conservative default must be false, never a blanket true.
+    const model = resolvePiAIModel('llm-gateway', 'brand-new-unknown-id', 'https://gateway.example.com/v1')
+    expect(model.reasoning).toBe(false)
+  })
+
+  it('should keep reasoning:true for provider models that declare it', () => {
+    // glm-5.1 declares ['code', 'writing', 'reasoning'] in the static catalog
+    const model = resolvePiAIModel('glm-coding', 'glm-5.1', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+    expect(model.reasoning).toBe(true)
+  })
+
+  it('should mark fast-tier models without reasoning capability as NOT reasoning-capable', () => {
+    // glm-4.7-flash declares ['code', 'writing', 'fast'] — no reasoning tag
+    const model = resolvePiAIModel('glm-coding', 'glm-4.7-flash', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+    expect(model.reasoning).toBe(false)
+  })
 })
 
 describe('getOpenRouterInputModalities', () => {

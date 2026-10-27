@@ -1267,11 +1267,42 @@ export const useSettingsStore = create<SettingsState>()(
           for (const cp of state.customProviders) {
             registerCustomAsDynamic(cp)
           }
+          setupCrossTabSettingsSync()
         }
       },
     }
   )
 )
+
+// ── Cross-tab settings sync ─────────────────────────────────────────────────
+// Without this, a STALE tab persists its full settings snapshot over another
+// tab's newer write: two tabs open, tab A turns thinking off, tab B (still
+// holding enableThinking:true in memory) later changes any other setting —
+// its persist write silently reverts A's enableThinking:false. The storage
+// event (fires in every tab EXCEPT the writer) rehydrates the changed keys
+// from the freshly-written snapshot before this tab's own next write, so
+// each tab's subsequent persist carries the other tab's newer values.
+let crossTabSyncInstalled = false
+function setupCrossTabSettingsSync(): void {
+  if (crossTabSyncInstalled || typeof window === 'undefined') return
+  crossTabSyncInstalled = true
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'bfosa-settings' || e.newValue == null) return
+    try {
+      const parsed = JSON.parse(e.newValue) as { state?: Record<string, unknown> } | null
+      if (!parsed || typeof parsed.state !== 'object' || !parsed.state) return
+      // Re-read the persisted snapshot into memory. This mirrors zustand's
+      // own rehydrate(): merge the persisted partial over current state.
+      // Snapshot-shaped keys are replaced wholesale (same as initial load);
+      // per-key merging is not attempted because every persisted write is a
+      // full partialize() snapshot anyway.
+      useSettingsStore.setState(parsed.state as Partial<SettingsState>)
+    } catch {
+      // Malformed snapshot from an older version mid-migration — ignore; the
+      // next legitimate write re-triggers this handler.
+    }
+  })
+}
 
 /**
  * Hook to get the real-time API key status

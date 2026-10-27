@@ -21,7 +21,7 @@ interface PersistedShape {
 async function importStore() {
   // Dynamic import so each test can control localStorage BEFORE the store
   // module (and its zustand persist middleware) rehydrates.
-  const mod = await import('../settings.store')
+  const mod = await import('@/store/settings.store')
   return mod
 }
 
