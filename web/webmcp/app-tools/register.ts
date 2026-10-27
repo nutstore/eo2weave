@@ -37,6 +37,10 @@ export async function registerAppTools(): Promise<void> {
     const { useConversationStore } = await import('@/store/conversation.store')
     const { useSettingsStore } = await import('@/store/settings.store')
     const { useAgentStore } = await import('@/store/agent.store')
+    const { useConversationContextStore } = await import('@/store/conversation-context.store')
+    const { waitForConversationMetaPersist } = await import('@/store/conversation-persist')
+    const { useWorkspacePreferencesStore } = await import('@/store/workspace-preferences.store')
+    const { resolveConversationTarget } = await import('@/services/conversation-target')
     const { getWorkspaceManager } = await import('@/opfs')
     const { getProjectRepository } = await import('@/sqlite/repositories/project.repository')
     const { getMessageRepository } = await import('@/sqlite/repositories/message.repository')
@@ -51,6 +55,15 @@ export async function registerAppTools(): Promise<void> {
       getRuntimeStore: () => useConversationRuntimeStore.getState(),
       getSettingsStore: () => useSettingsStore.getState(),
       getAgentStore: () => useAgentStore.getState(),
+      resolveConversationTarget,
+      setConversationAgent: (id, agentId) => useWorkspacePreferencesStore.getState().setWorkspaceAgentId(id, agentId),
+      ensureConversationWorkspace: async (id, title, projectId) => {
+        const [workspace] = await Promise.all([
+          useConversationContextStore.getState().ensureWorkspace(id, title, projectId),
+          waitForConversationMetaPersist(id),
+        ])
+        return workspace
+      },
       getFSOverlayRepository: () => getFSOverlayRepository(),
       validatePath: (path: string) => {
         // validatePathImpl is a pure path normalizer over the runtime bridge —

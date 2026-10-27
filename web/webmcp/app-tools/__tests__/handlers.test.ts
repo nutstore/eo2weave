@@ -71,6 +71,12 @@ function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
     getSettingsStore: () => ({ ...settings }),
     getAgentStore: () => agentStore,
     getWorkspaceManager: async () => manager,
+    ensureConversationWorkspace: vi.fn(async () => ({ projectId: 'p_1' })),
+    resolveConversationTarget: vi.fn(async () => ({
+      projectId: 'p_1', projectName: 'P1', workspaceId: 'c_1', agentId: 'default',
+      agents: [{ id: 'default', name: 'Default' }, { id: 'resource-loop', name: 'Resource Loop' }],
+    })),
+    setConversationAgent: vi.fn(),
     getProjectRepository: () => ({
       findAllProjects: async () => [{ id: 'p_1', name: 'P1' }],
       findProjectStats: async () => [{ projectId: 'p_1', workspaceCount: 1, lastWorkspaceAccessAt: 100 }],
@@ -119,6 +125,56 @@ describe('app-tools handlers', () => {
   it('create_project creates', async () => {
     const r = JSON.parse((await handlers.create_project({ name: 'X' })).content)
     expect(r.project.name).toBe('X')
+  })
+
+  it('create_conversation waits for workspace readiness without activating the conversation', async () => {
+    let resolve!: (value: { projectId: string }) => void
+    const ready = new Promise<{ projectId: string }>((r) => { resolve = r })
+    const ensure = vi.fn(() => ready)
+    initAppToolDeps({ ...deps, ensureConversationWorkspace: ensure })
+    let finished = false
+    const creating = handlers.create_conversation({ title: 'Portal task' }).then((r) => {
+      finished = true
+      return JSON.parse(r.content)
+    })
+    await Promise.resolve()
+    expect(finished).toBe(false)
+    expect(deps.getConversationStore().createNew).toHaveBeenCalledWith('Portal task', { activate: false })
+    expect(ensure).toHaveBeenCalledWith('c_new', 't', 'p_1')
+    resolve({ projectId: 'p_1' })
+    expect(await creating).toEqual({ conversation: { id: 'c_new', title: 't', workspaceId: 'c_new', projectId: 'p_1', agentId: 'default' } })
+    expect(deps.setConversationAgent).toHaveBeenCalledWith('c_new', 'default')
+    expect(deps.getConversationStore().setActive).not.toHaveBeenCalled()
+  })
+
+  it('create_conversation does not report success when workspace initialization fails', async () => {
+    initAppToolDeps({
+      ...deps,
+      ensureConversationWorkspace: vi.fn(async () => { throw new Error('No open project') }),
+    })
+    await expect(handlers.create_conversation({})).rejects.toThrow('No open project')
+  })
+
+  it('get_workspace_context queries the source without creating or activating a conversation', async () => {
+    const result = JSON.parse((await handlers.get_workspace_context({ workspaceId: 'c_1' })).content)
+    expect(deps.resolveConversationTarget).toHaveBeenCalledWith({ workspaceId: 'c_1' })
+    expect(result.agents.map((a: { id: string }) => a.id)).toContain('resource-loop')
+    expect(deps.getConversationStore().createNew).not.toHaveBeenCalled()
+  })
+
+  it('create_conversation accepts explicit context and remembers the canonical Agent ID', async () => {
+    const result = JSON.parse((await handlers.create_conversation({ workspaceId: 'c_1', projectId: 'p_1', agentId: 'RESOURCE-LOOP' })).content)
+    expect(deps.resolveConversationTarget).toHaveBeenCalledWith({ workspaceId: 'c_1', projectId: 'p_1' })
+    expect(result.conversation).toMatchObject({ projectId: 'p_1', agentId: 'resource-loop' })
+    expect(deps.setConversationAgent).toHaveBeenCalledWith('c_new', 'resource-loop')
+  })
+
+  it('rejects unknown Agents and invalid contexts before creating an orphan conversation', async () => {
+    const result = JSON.parse((await handlers.create_conversation({ agentId: 'other-project-agent' })).content)
+    expect(result.error).toMatch(/Agent not found/)
+    expect(deps.getConversationStore().createNew).not.toHaveBeenCalled()
+    await expect(handlers.create_conversation({ workspaceId: '  ' })).rejects.toThrow('workspaceId')
+    expect(deps.getConversationStore().createNew).not.toHaveBeenCalled()
   })
 
   it('list_conversations filters by folderId via workspace lookup', async () => {

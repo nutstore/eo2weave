@@ -1,5 +1,5 @@
 /**
- * App-tools handlers — the execute() implementations behind the 20 schemas.
+ * App-tools handlers — the execute() implementations behind the app schemas.
  *
  * Every handler goes through the app's OWN public surfaces (zustand stores,
  * repositories, WorkspaceManager, WorkspaceRuntime) — the same code paths the
@@ -21,6 +21,7 @@ import { APP_TOOLS } from './schemas'
 import type { Message } from '@/agent/message-types'
 import { createUserMessage, getMessageRecordType } from '@/agent/message-types'
 import { selectConversationExportMessages, selectConversationTranscript } from '@/agent/message-projections'
+import type { ConversationTarget, ConversationTargetInput } from '@/services/conversation-target'
 
 // ─── Run registry ─────────────────────────────────────────────────────────────
 
@@ -92,6 +93,9 @@ export interface AppToolDeps {
   getSettingsStore: () => any
   getAgentStore: () => any
   getWorkspaceManager: () => Promise<any>
+  ensureConversationWorkspace: (conversationId: string, title?: string, projectId?: string) => Promise<{ projectId?: string }>
+  resolveConversationTarget: (input: ConversationTargetInput) => Promise<ConversationTarget>
+  setConversationAgent: (conversationId: string, agentId: string) => void
   getProjectRepository: () => any
   getMessageRepository: () => any
   getFSOverlayRepository: () => any
@@ -136,6 +140,16 @@ function truncateContent(content: string): { content: string; truncated: boolean
 
 function findConv(store: any, conversationId: string): any | null {
   return store.conversations.find((c: any) => c.id === conversationId) ?? null
+}
+
+function targetInput(args: Record<string, unknown>): ConversationTargetInput {
+  const input: ConversationTargetInput = {}
+  for (const key of ['workspaceId', 'projectId'] as const) {
+    if (args[key] == null) continue
+    if (typeof args[key] !== 'string' || !args[key].trim()) throw new Error(`${key} must be a non-empty string`)
+    input[key] = args[key].trim()
+  }
+  return input
 }
 
 /**
@@ -369,14 +383,28 @@ export const handlers: Record<string, Handler> = {
     return { content: raw }
   },
 
+  get_workspace_context: async (args) => ok(await d().resolveConversationTarget(targetInput(args))),
+
   create_conversation: async (args) => {
+    const target = await d().resolveConversationTarget(targetInput(args))
+    if (args.agentId != null && (typeof args.agentId !== 'string' || !args.agentId.trim())) {
+      return err('agentId must be a non-empty string')
+    }
+    const requestedId = typeof args.agentId === 'string' ? args.agentId.trim() : target.agentId
+    const agentId = requestedId
+      ? target.agents.find((a) => a.id.toLowerCase() === requestedId.toLowerCase())?.id : null
+    if (requestedId && !agentId) return err(`Agent not found in project ${target.projectId}: ${requestedId}`)
     const store = d().getConversationStore()
     const conv = store.createNew(args.title ? String(args.title) : undefined, {
       activate: false, // background creation — never yank the user's current view
     })
-    // v3.1: projectId is not persisted on conversations (schema has no column);
-    // the parameter was removed from the schema so agents don't expect it.
-    return ok({ conversation: { id: conv.id, title: conv.title } })
+    // A successful create must already be usable and visible in its project,
+    // even before the first send_message starts the background agent loop.
+    const workspace = await d().ensureConversationWorkspace(conv.id, conv.title, target.projectId)
+    if (agentId) d().setConversationAgent(conv.id, agentId)
+    return ok({ conversation: {
+      id: conv.id, title: conv.title, workspaceId: conv.id, projectId: workspace.projectId, agentId,
+    } })
   },
 
   rename_conversation: async (args) => {
