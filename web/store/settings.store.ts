@@ -380,18 +380,49 @@ function registerCustomAsDynamic(cp: CustomProviderConfig) {
 // and migrated v<4 state is never written back.
 let crossTabSyncInstalled = false
 let suppressPersistWrites = 0
-// Monotonic write-order stamp embedded in every persisted snapshot. The
-// persist storage wrapper bumps it into the serialized payload right before
-// THIS tab writes to localStorage, and the cross-tab storage handler reads
-// it out of the incoming snapshot. Unlike StorageEvent.timeStamp — which
-// measures when the RECEIVING tab dispatched the event and says nothing
-// about which peer wrote first — this revision travels inside the payload,
-// so ordering decisions are made from the writer's own sequence, not from
-// per-tab event timing.
-let lastWrittenRevision = 0
-// Highest revision this tab has APPLIED from a peer (and written itself);
-// incoming snapshots at or below it are stale queue arrivals and are dropped.
-let lastAppliedRevision = 0
+// ── Lamport write-order stamp ───────────────────────────────────────────────
+// Every persisted snapshot embeds a (revision, writerId) pair. The revision
+// is a LAMPORT CLOCK, not a per-tab counter: a tab merges any revision it
+// sees (own write or applied peer snapshot) into its clock before bumping,
+// so concurrent writers no longer produce incomparable equal counters that
+// each tab rejects as "stale" — the classic divergence bug a plain local
+// counter has. The writer id breaks the tie two tabs can still hit at the
+// same clock value (both bumped from the same merged revision around the
+// same time): the HIGHER id owns the slot in EVERY tab, giving a total
+// order without any shared coordinator. Unlike StorageEvent.timeStamp —
+// which measures when the RECEIVING tab dispatched the event and says
+// nothing about which peer wrote first — this pair travels inside the
+// payload, so ordering decisions are made from the writers' own stamps.
+const TAB_WRITER_ID =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? `tab-${crypto.randomUUID()}`
+    : `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`
+let lastSeenRevision = 0
+let lastSeenWriterId = TAB_WRITER_ID
+
+/** Stamp a LOCAL write: merge the clock, then bump under our writer id. */
+function recordLocalWrite(): { revision: number; writerId: string } {
+  lastSeenRevision += 1
+  lastSeenWriterId = TAB_WRITER_ID
+  return { revision: lastSeenRevision, writerId: TAB_WRITER_ID }
+}
+
+/** True when an incoming snapshot must NOT be applied over what we have. */
+function isStaleIncomingSnapshot(incomingRevision: number, incomingWriterId: string | null): boolean {
+  if (incomingRevision !== lastSeenRevision) return incomingRevision < lastSeenRevision
+  // Clock tie: the higher writer id wins. A legacy peer (older deploy)
+  // carries no id — the tiebreak is impossible, so treat it as stale
+  // instead of guessing; its next legitimate write re-orders the clock.
+  if (incomingWriterId == null) return true
+  return incomingWriterId <= lastSeenWriterId
+}
+
+/** Merge an APPLIED snapshot into the clock (Lamport receive rule). */
+function recordAppliedSnapshot(revision: number, writerId: string | null): void {
+  lastSeenRevision = Math.max(lastSeenRevision, revision)
+  if (writerId != null) lastSeenWriterId = writerId
+}
+
 // StorageEvent.timeStamp watermark for revisionless snapshots only (peers on
 // an older deploy). Receiving-tab timing cannot order writes across tabs,
 // so this is a weak fallback — but two revisionless snapshots delivered out
@@ -1272,17 +1303,18 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           ...base,
           setItem: (name, value) => {
             if (persistWritesSuppressed()) return
-            // Embed a monotonic write-order revision IN the payload before
+            // Embed the Lamport write-order stamp IN the payload before
             // the write lands. Peers (and this tab's own storage handler)
-            // compare against this revision instead of StorageEvent
-            // .timeStamp, which reflects receiving-tab timing and cannot
-            // order writes from two different tabs.
+            // order snapshots by this (revision, writerId) pair instead of
+            // StorageEvent.timeStamp, which reflects receiving-tab timing
+            // and cannot order writes from two different tabs.
             try {
               const raw = typeof value === 'string' ? value : JSON.stringify(value)
               const parsed = JSON.parse(raw) as { state?: Record<string, unknown> } | null
               if (parsed && typeof parsed === 'object' && parsed.state && typeof parsed.state === 'object') {
-                lastWrittenRevision++
-                parsed.state.__settingsWriteRevision = lastWrittenRevision
+                const stamp = recordLocalWrite()
+                parsed.state.__settingsWriteRevision = stamp.revision
+                parsed.state.__settingsWriterId = stamp.writerId
                 window.localStorage.setItem(name, JSON.stringify(parsed))
                 return
               }
@@ -1404,13 +1436,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
 //
 // 2. Out-of-order application. Two writers can fire two storage events in
 //    this tab in an order where we must never let the older snapshot
-//    replace the newer one; every persisted write embeds a monotonic
-//    revision IN the payload and a snapshot whose revision is not newer
-//    than the last applied one is dropped (StorageEvent.timeStamp reflects
-//    receiving-tab timing and cannot order peer writes). A snapshot whose
-//    values already match the in-memory state is skipped entirely — that
-//    also keeps identical re-broadcasts from churning the provider
-//    registry.
+//    replace the newer one; every persisted write embeds a Lamport
+//    (revision, writerId) stamp IN the payload and a snapshot that is not
+//    newer under that total order is dropped (StorageEvent.timeStamp
+//    reflects receiving-tab timing and cannot order peer writes; a plain
+//    per-tab counter cannot order CONCURRENT writers — the clock merge +
+//    id tiebreak can). A snapshot whose values already match the in-memory
+//    state is skipped entirely — that also keeps identical re-broadcasts
+//    from churning the provider registry.
 //
 // If the incoming snapshot changes customProviders, the dynamic provider
 // registry is re-synced here (register new/updated entries, unregister
@@ -1448,13 +1481,18 @@ interface PersistedSettingsState {
 
 function shallowEqualRecord(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   if (a === b) return true
-  const aKeys = Object.keys(a)
-  const bKeys = Object.keys(b)
+  const aKeys = Object.keys(a).filter(isSyncMetadataKey)
+  const bKeys = Object.keys(b).filter(isSyncMetadataKey)
   if (aKeys.length !== bKeys.length) return false
   for (const k of aKeys) {
     if (a[k] !== b[k]) return false
   }
   return true
+}
+
+/** Internal write-order metadata — never user settings, never compared as such. */
+function isSyncMetadataKey(key: string): boolean {
+  return key !== '__settingsWriteRevision' && key !== '__settingsWriterId'
 }
 
 /**
@@ -1514,13 +1552,13 @@ function restoreCurrentSnapshotToStorage(): void {
     Object.assign(snapshot, persistedShape)
     // Route through the same storage wrapper the persist middleware uses so
     // the write is suppressed during apply windows and stamped with the
-    // monotonic revision like every other write.
+    // Lamport write-order stamp like every other write.
     if (typeof window !== 'undefined' && !persistWritesSuppressed()) {
-      lastWrittenRevision++
+      const stamp = recordLocalWrite()
       window.localStorage.setItem(
         'bfosa-settings',
         JSON.stringify({
-          state: { ...snapshot, __settingsWriteRevision: lastWrittenRevision },
+          state: { ...snapshot, __settingsWriteRevision: stamp.revision, __settingsWriterId: stamp.writerId },
           version: SETTINGS_PERSIST_VERSION,
         }),
       )
@@ -1564,18 +1602,23 @@ function setupCrossTabSettingsSync(): void {
     }
     if (!parsed.state || typeof parsed.state !== 'object') return
 
-    // Write-order guard: the revision is embedded in the payload by the
-    // WRITING tab's storage wrapper, so it orders peer writes correctly even
-    // when StorageEvent delivery order/timing differs per tab. A snapshot
-    // whose revision is not newer than the last one we applied (or wrote)
-    // is a queued arrival carrying pre-write state — drop it.
+    // Write-order guard: the (revision, writerId) Lamport stamp is embedded
+    // in the payload by the WRITING tab's storage wrapper, so it orders peer
+    // writes correctly even when StorageEvent delivery order/timing differs
+    // per tab. The revision is a merged clock (not a per-tab counter), so
+    // concurrent writers converge on a comparable order; the writer id
+    // breaks clock ties. A snapshot that is not NEWER under that total
+    // order is a queued arrival carrying pre-write state — drop it.
     const incomingRevision =
       typeof parsed.state.__settingsWriteRevision === 'number'
         ? (parsed.state.__settingsWriteRevision as number)
         : null
+    const incomingWriterId =
+      typeof parsed.state.__settingsWriterId === 'string'
+        ? (parsed.state.__settingsWriterId as string)
+        : null
     if (incomingRevision != null) {
-      if (incomingRevision <= Math.max(lastAppliedRevision, lastWrittenRevision)) return
-      lastAppliedRevision = incomingRevision
+      if (isStaleIncomingSnapshot(incomingRevision, incomingWriterId)) return
     }
     // Snapshot WITHOUT a revision (peer on an older deploy): fall back to
     // the legacy event-timeStamp ordering — weak, but better than nothing,
@@ -1590,6 +1633,15 @@ function setupCrossTabSettingsSync(): void {
       lastRevisionlessEventTimestamp = e.timeStamp
     }
 
+    // Lamport receive rule: merge the applied snapshot into the clock so
+    // our NEXT local write orders after this peer write (the revision is
+    // a merged clock, not a per-tab counter — that merge is what keeps
+    // concurrent writers comparable). The applied writer id rides along
+    // so a clock tie on the next concurrent write still resolves via the
+    // higher-id-wins tiebreak instead of diverging.
+    if (incomingRevision != null) {
+      recordAppliedSnapshot(incomingRevision, incomingWriterId)
+    }
     try {
       const incoming = parsed.state
       const current = useSettingsStore.getState() as unknown as Record<string, unknown>

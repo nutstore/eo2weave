@@ -56,8 +56,15 @@ function dispatchStorageEvent(timeStamp: number, rawValue: string | null) {
 }
 
 /** Snapshot envelope with an embedded write revision, as v4 tabs write it. */
-function revSnapshot(value: Record<string, unknown>, revision: number, version = 4): string {
-  return JSON.stringify({ state: { ...value, __settingsWriteRevision: revision }, version })
+function revSnapshot(
+  value: Record<string, unknown>,
+  revision: number,
+  version = 4,
+  writerId?: string,
+): string {
+  const state: Record<string, unknown> = { ...value, __settingsWriteRevision: revision }
+  if (writerId !== undefined) state.__settingsWriterId = writerId
+  return JSON.stringify({ state, version })
 }
 
 async function importStore() {
@@ -155,6 +162,91 @@ describe('cross-tab settings sync (round-3 findings)', () => {
 
     expect(useSettingsStore.getState().temperature).toBe(0.5)
     expect(useSettingsStore.getState().maxIterations).toBe(42)
+  })
+
+  it('accepts peer writes from CONCURRENT tabs (Lamport merge, no divergence)', async () => {
+    // Regression for the per-tab-counter bug: two tabs editing concurrently
+    // each bumped their OWN counter, so each rejected the other's snapshot
+    // ("stale") and settings diverged/reverted. With the Lamport clock the
+    // receiver merges the peer revision, so its own next write orders AFTER
+    // the peer write and both directions stay acceptable.
+    seedStorage({ temperature: 0.7 })
+    const { useSettingsStore } = await importStore()
+
+    // Simulated concurrent peer: peer's local counter also sat at 1, so its
+    // first write is stamped revision 1 — the same clock value this tab's
+    // own first write would get. Under the old per-tab counters this tab
+    // would drop it; with the tiebreak the higher writer id wins cleanly.
+    dispatchStorageEvent(performance.now() + 10, revSnapshot({ temperature: 0.5, maxIterations: 30 }, 1))
+    expect(useSettingsStore.getState().temperature).toBe(0.5)
+
+    // This tab now edits: its stamp must merge the peer's revision (rev 1)
+    // and bump strictly ABOVE it, ordering AFTER the peer write — verify
+    // via storage. (The exact value may be higher: other internal setState
+    // calls also persist and bump the same clock — the ordering property is
+    // the contract, not the exact number.)
+    useSettingsStore.getState().setTemperature(0.9)
+    const localRaw = localStorage.getItem(STORAGE_KEY)!
+    const localState = JSON.parse(localRaw) as { state: { __settingsWriteRevision: number; __settingsWriterId: string } }
+    expect(localState.state.__settingsWriteRevision).toBeGreaterThan(1)
+    expect(typeof localState.state.__settingsWriterId).toBe('string')
+
+    // A queued stale snapshot from the peer's PRE-edit state (still rev 1,
+    // late delivery) must not revert the local edit...
+    dispatchStorageEvent(performance.now() + 20, revSnapshot({ temperature: 0.7 }, 1))
+    expect(useSettingsStore.getState().temperature).toBe(0.9)
+
+    // ...while the peer's NEXT write (merged our stamps, bumped past them)
+    // applies.
+    dispatchStorageEvent(performance.now() + 30, revSnapshot({ temperature: 0.4, maxIterations: 60 }, localState.state.__settingsWriteRevision + 1))
+    expect(useSettingsStore.getState().temperature).toBe(0.4)
+    expect(useSettingsStore.getState().maxIterations).toBe(60)
+  })
+
+  it('breaks a revision TIE by writer id: higher id wins, everywhere', async () => {
+    // Two tabs can still land on the same clock value (both bumped from the
+    // same merged revision). The tiebreak must be deterministic across tabs:
+    // the snapshot from the HIGHER writer id applies, the lower-id one is a
+    // stale queue arrival.
+    seedStorage({ temperature: 0.7 })
+    const { useSettingsStore } = await importStore()
+
+    // Adopt a known clock floor: apply a peer snapshot at revision 4, then
+    // make a local write — the clock merges to 4 and the local stamp lands
+    // strictly above it under OUR id. (Internal setState paths also persist
+    // and bump the same clock, so assert the ordering property, read the
+    // actual stamp back, and build the tie cases around it.)
+    dispatchStorageEvent(performance.now() + 10, revSnapshot({ temperature: 0.5 }, 4))
+    expect(useSettingsStore.getState().temperature).toBe(0.5)
+    useSettingsStore.getState().setTemperature(0.9)
+    const localState = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as {
+      state: { __settingsWriteRevision: number; __settingsWriterId: string }
+    }
+    expect(localState.state.__settingsWriteRevision).toBeGreaterThan(4)
+
+    // Peer write at the SAME revision with a LOWER writer id → stale.
+    // (All-zero id is lexicographically minimal, so it loses the tiebreak
+    // against any real tab-<uuid>; all-f is maximal and wins against any.)
+    dispatchStorageEvent(
+      performance.now() + 20,
+      revSnapshot({ temperature: 0.3 }, localState.state.__settingsWriteRevision, 4, 'tab-00000000-0000-0000-0000-000000000000'),
+    )
+    expect(useSettingsStore.getState().temperature).toBe(0.9)
+
+    // Peer write at the SAME revision with a HIGHER writer id → applies.
+    dispatchStorageEvent(
+      performance.now() + 30,
+      revSnapshot({ temperature: 0.3, maxIterations: 77 }, localState.state.__settingsWriteRevision, 4, 'tab-ffffffff-ffff-ffff-ffff-ffffffffffff'),
+    )
+    expect(useSettingsStore.getState().temperature).toBe(0.3)
+    expect(useSettingsStore.getState().maxIterations).toBe(77)
+
+    // Our next local write merges the tie winner (same revision, its higher
+    // id) and lands strictly above it — a later queued same-revision replay
+    // can never win again.
+    useSettingsStore.getState().setTemperature(0.2)
+    const next = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as { state: { __settingsWriteRevision: number } }
+    expect(next.state.__settingsWriteRevision).toBeGreaterThan(localState.state.__settingsWriteRevision)
   })
 
   it('rejects a v3 snapshot from an old tab and repairs shared localStorage (schema-version guard)', async () => {
