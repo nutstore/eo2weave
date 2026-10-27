@@ -20,6 +20,30 @@ import { normalizeBaseUrl } from './pi-ai-url-utils'
 // from this constant should no longer be the binding constraint.
 const DEFAULT_MAX_TOKENS = 65536
 
+/**
+ * Test-observable counters for resolvePiAIModel's two resolution branches.
+ * Production code never reads them; tests reset both to 0, call the resolver,
+ * and assert the counter that matches the intended path (native pi-ai
+ * catalog lookup vs. createOpenAICompatibleFallback). This makes a
+ * "reasoning came from X" claim falsifiable: a regression that silently
+ * re-routes a model from the native catalog to the fallback (or never
+ * reaches the curated codex-oauth registry read) fails the counter
+ * assertion even when the resulting reasoning flag happens to match.
+ */
+export const RESOLUTION_COUNTS = {
+  nativeCatalogHits: 0,
+  fallbackContextLookups: 0,
+  /** The curated codex-oauth registry fallback inside staticCatalogReasoning(). */
+  curatedRegistryReads: 0,
+}
+
+/** Reset both branch counters (used by tests between scenarios). */
+export function resetResolutionCounts(): void {
+  RESOLUTION_COUNTS.nativeCatalogHits = 0
+  RESOLUTION_COUNTS.fallbackContextLookups = 0
+  RESOLUTION_COUNTS.curatedRegistryReads = 0
+}
+
 const PROVIDER_MAP: Partial<Record<LLMProviderType, KnownProvider>> = {
   openai: 'openai',
   anthropic: 'anthropic',
@@ -91,7 +115,11 @@ function tryGetNativeModel(
   return null
 }
 
+/**
+ * Resolve a model's context window.
+ */
 function lookupContextWindow(providerType: LLMProviderType, modelName: string): number {
+  RESOLUTION_COUNTS.fallbackContextLookups++
   return getModelContextWindow(providerType, modelName)
 }
 
@@ -131,19 +159,6 @@ function resolveInputModalities(modelName: string, providerType?: LLMProviderTyp
   return ['text']
 }
 
-/**
- * Check whether a model accepts image input, as determined by the OpenRouter
- * snapshot.  Use this from UI contexts (model pickers, capability badges) that
- * need to render vision-capability indicators without constructing a full
- * `Model<Api>` — those callers usually don't have a `baseUrl` / `apiMode` in
- * hand, and `resolvePiAIModel`'s 3rd arg is required.
- *
- * Pass `providerType` when available: for models missing from the OpenRouter
- * snapshot (newly released, e.g. gpt-6-sol/luna), the dynamic provider
- * registry's declared capabilities are consulted as a fallback. Runtime
- * call sites (attach-image gating, OCR skip, page_screenshot registration)
- * MUST pass it — otherwise the UI badge and the actual send path disagree.
- */
 export function supportsImageInput(modelName: string, providerType?: LLMProviderType): boolean {
   return resolveInputModalities(modelName, providerType).includes('image')
 }
@@ -186,7 +201,10 @@ function staticCatalogReasoning(providerType: LLMProviderType, modelName: string
     // guessed). Any other provider keeps the heuristic-unknown contract.
     if (providerType === 'codex-oauth') {
       const registered = getModelsForProvider(providerType).find((m) => m.id === modelName)
-      if (registered) return registered.capabilities.includes('reasoning')
+      if (registered) {
+        RESOLUTION_COUNTS.curatedRegistryReads++
+        return registered.capabilities.includes('reasoning')
+      }
     }
     return 'unknown'
   } catch {
@@ -331,7 +349,10 @@ export function resolvePiAIModel(
   apiMode?: 'chat-completions' | 'responses'
 ): Model<Api> {
   const native = tryGetNativeModel(providerType, modelName, baseUrl)
-  if (native) return native
+  if (native) {
+    RESOLUTION_COUNTS.nativeCatalogHits++
+    return native
+  }
   const resolvedModelName = MODEL_ALIASES[providerType]?.[modelName] || modelName
   return createOpenAICompatibleFallback(providerType, resolvedModelName, baseUrl, apiMode)
 }

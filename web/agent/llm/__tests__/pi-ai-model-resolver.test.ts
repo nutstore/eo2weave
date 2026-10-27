@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolvePiAIModel } from '../pi-ai-model-resolver'
+import { RESOLUTION_COUNTS, resetResolutionCounts, resolvePiAIModel } from '../pi-ai-model-resolver'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
 
 describe('resolvePiAIModel', () => {
@@ -187,12 +187,31 @@ describe('resolvePiAIModel', () => {
     expect(model.reasoning).toBe(true)
   })
 
-  it('should mark fast-tier models without reasoning capability as NOT reasoning-capable', () => {
-    // glm-4.7-flash declares ['code', 'writing', 'fast'] — no reasoning tag
-    // — in the static catalog. It IS in pi-ai's native zai catalog with
-    // reasoning:false, so this asserts the native path honors the catalog;
-    // the fallback-path counterpart is the deepseek-flash test below.
+  it('should mark native-catalog reasoning models as reasoning-capable via the NATIVE path', () => {
+    // glm-4.7 IS in pi-ai's native zai catalog with reasoning:true, while
+    // the static app catalog also lists it with 'reasoning' — both sources
+    // agree on the flag. Round-3 finding: a reasoning-only assertion is
+    // vacuous, because if native lookup stopped recognizing the id the
+    // fallback would read the same static catalog and report true anyway.
+    // The nativeCatalogHits counter proves resolvePiAIModel answered through
+    // tryGetNativeModel's pi-ai getModel() call, not the fallback.
+    resetResolutionCounts()
+    const model = resolvePiAIModel('glm-coding', 'glm-4.7', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+    expect(RESOLUTION_COUNTS.nativeCatalogHits).toBe(1)
+    expect(RESOLUTION_COUNTS.fallbackContextLookups).toBe(0)
+    expect(model.reasoning).toBe(true)
+  })
+
+  it('should keep fast-tier native-catalog models NOT reasoning-capable via the NATIVE path', () => {
+    // glm-4.7 declares ['code', 'writing', 'fast'] — no reasoning tag — in
+    // the static catalog. pi-ai's native zai catalog does NOT know the id,
+    // so this resolves through the fallback and asserts its conservative
+    // false; the native-path counterpart is the glm-4.7 test above.
+    resetResolutionCounts()
     const model = resolvePiAIModel('glm-coding', 'glm-4.7-flash', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+    expect(RESOLUTION_COUNTS.nativeCatalogHits).toBe(0)
+    expect(RESOLUTION_COUNTS.fallbackContextLookups).toBe(1)
+    expect(model.api).toBe('openai-completions')
     expect(model.reasoning).toBe(false)
   })
 
@@ -281,8 +300,17 @@ describe('resolvePiAIModel', () => {
       },
     )
     try {
+      // Round-3 finding: the fallback's reasoning answer is not
+      // distinguishable from the curated registry's, so asserting only
+      // reasoning:true passes even if the registry lookup is broken (the
+      // fallback reports true unconditionally for anything it considers
+      // evidence). The curatedRegistryReads counter is bumped exactly when
+      // staticCatalogReasoning consults the codex-oauth registry entry —
+      // zero reads means the answer came from somewhere else.
+      resetResolutionCounts()
       const model = resolvePiAIModel('codex-oauth', 'vendor-pulse-9', 'https://chatgpt.com/backend-api/codex')
       expect(model.api).toBe('openai-responses')
+      expect(RESOLUTION_COUNTS.curatedRegistryReads).toBe(1)
       expect(model.reasoning).toBe(true)
     } finally {
       unregisterDynamicProvider('codex-oauth')

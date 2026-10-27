@@ -109,7 +109,7 @@ describe('first-run thinking default (#88)', () => {
 
     const raw = localStorage.getItem(STORAGE_KEY)
     expect(raw).not.toBeNull()
-    const parsed = JSON.parse(raw as string) as { state: PersistedShape; version: number }
+    const parsed = JSON.parse(raw as string) as { state: PersistedShape & { __settingsWriteRevision?: number }; version: number }
     expect(parsed.version).toBe(4)
     expect(parsed.state.enableThinking).toBe(false)
     expect(parsed.state.thinkingLevel).toBe('high')

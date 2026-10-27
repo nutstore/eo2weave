@@ -379,12 +379,19 @@ function registerCustomAsDynamic(cp: CustomProviderConfig) {
 // hydration .catch() swallows silently — the storage listener never registers
 // and migrated v<4 state is never written back.
 let crossTabSyncInstalled = false
-let lastAppliedStorageEventTime = -1
-// Set in the storage wrapper's setItem passthrough right before THIS tab
-// persists; a storage event older than this stamp is a queued snapshot of
-// our own pre-write state and must never replace the newer local state.
-let lastLocalWriteAt = -1
 let suppressPersistWrites = 0
+// Monotonic write-order stamp embedded in every persisted snapshot. The
+// persist storage wrapper bumps it into the serialized payload right before
+// THIS tab writes to localStorage, and the cross-tab storage handler reads
+// it out of the incoming snapshot. Unlike StorageEvent.timeStamp — which
+// measures when the RECEIVING tab dispatched the event and says nothing
+// about which peer wrote first — this revision travels inside the payload,
+// so ordering decisions are made from the writer's own sequence, not from
+// per-tab event timing.
+let lastWrittenRevision = 0
+// Highest revision this tab has APPLIED from a peer (and written itself);
+// incoming snapshots at or below it are stale queue arrivals and are dropped.
+let lastAppliedRevision = 0
 
 /** Persist schema version — must match the persist config's `version` below. */
 const SETTINGS_PERSIST_VERSION = 4
@@ -1245,10 +1252,24 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           ...base,
           setItem: (name, value) => {
             if (persistWritesSuppressed()) return
-            // Stamp before the write lands so any storage event this tab
-            // later receives that is OLDER than this write is recognized as
-            // a queued snapshot of our own pre-write state.
-            lastLocalWriteAt = performance.now()
+            // Embed a monotonic write-order revision IN the payload before
+            // the write lands. Peers (and this tab's own storage handler)
+            // compare against this revision instead of StorageEvent
+            // .timeStamp, which reflects receiving-tab timing and cannot
+            // order writes from two different tabs.
+            try {
+              const raw = typeof value === 'string' ? value : JSON.stringify(value)
+              const parsed = JSON.parse(raw) as { state?: Record<string, unknown> } | null
+              if (parsed && typeof parsed === 'object' && parsed.state && typeof parsed.state === 'object') {
+                lastWrittenRevision++
+                parsed.state.__settingsWriteRevision = lastWrittenRevision
+                window.localStorage.setItem(name, JSON.stringify(parsed))
+                return
+              }
+            } catch {
+              // Never block a persist write because the envelope shape was
+              // unexpected — the cross-tab handler tolerates missing revisions.
+            }
             return base.setItem(name, value)
           },
         }
@@ -1363,8 +1384,10 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
 //
 // 2. Out-of-order application. Two writers can fire two storage events in
 //    this tab in an order where we must never let the older snapshot
-//    replace the newer one; events are ordered by their timeStamp and a
-//    snapshot older than the last applied one is dropped. A snapshot whose
+//    replace the newer one; every persisted write embeds a monotonic
+//    revision IN the payload and a snapshot whose revision is not newer
+//    than the last applied one is dropped (StorageEvent.timeStamp reflects
+//    receiving-tab timing and cannot order peer writes). A snapshot whose
 //    values already match the in-memory state is skipped entirely — that
 //    also keeps identical re-broadcasts from churning the provider
 //    registry.
@@ -1432,47 +1455,117 @@ function syncDynamicRegistryWithSnapshot(incoming: CustomProviderConfig[]): void
   }
 }
 
+/**
+ * Re-serialize the current in-memory state over whatever is in shared
+ * localStorage. Used when an incoming storage event must NOT be applied
+ * (old-schema peer write) but has already REPLACED the shared snapshot with
+ * stale values: without the repair, a reload rehydrates the stale snapshot
+ * and older settings silently come back ("newer settings disappear after
+ * reload"). The write goes through the persist wrapper's revision stamping
+ * so the repaired snapshot wins the write-order race against the stale
+ * peer tab's next queued write too.
+ */
+function restoreCurrentSnapshotToStorage(): void {
+  try {
+    const current = useSettingsStore.getState() as unknown as Record<string, unknown>
+    const snapshot: Record<string, unknown> = {}
+    const persistedShape: PersistedSettingsState = {
+      providerType: current.providerType as PersistedSettingsState['providerType'],
+      modelName: current.modelName as string,
+      customBaseUrl: current.customBaseUrl as string,
+      customProviders: current.customProviders as CustomProviderConfig[],
+      temperature: current.temperature as number,
+      maxTokens: current.maxTokens as number,
+      maxIterations: current.maxIterations as number,
+      enableThinking: current.enableThinking as boolean,
+      thinkingLevel: current.thinkingLevel as PersistedSettingsState['thinkingLevel'],
+      enableBatchSpawn: current.enableBatchSpawn as boolean,
+      enableWebMCP: current.enableWebMCP as boolean,
+      snapshotHighWatermark: current.snapshotHighWatermark as number,
+      snapshotLowWatermark: current.snapshotLowWatermark as number,
+      modelOverridesByWorkspace: current.modelOverridesByWorkspace as PersistedSettingsState['modelOverridesByWorkspace'],
+      lastUsedModelByProvider: current.lastUsedModelByProvider as PersistedSettingsState['lastUsedModelByProvider'],
+      imageGenModel: current.imageGenModel as string,
+      imageGenAspectRatio: current.imageGenAspectRatio as string,
+      pinnedModelsByProvider: current.pinnedModelsByProvider as PersistedSettingsState['pinnedModelsByProvider'],
+      pinnedSeenByProvider: current.pinnedSeenByProvider as PersistedSettingsState['pinnedSeenByProvider'],
+      agentLoopNotifications: current.agentLoopNotifications as PersistedSettingsState['agentLoopNotifications'],
+    }
+    Object.assign(snapshot, persistedShape)
+    // Route through the same storage wrapper the persist middleware uses so
+    // the write is suppressed during apply windows and stamped with the
+    // monotonic revision like every other write.
+    if (typeof window !== 'undefined' && !persistWritesSuppressed()) {
+      lastWrittenRevision++
+      window.localStorage.setItem(
+        'bfosa-settings',
+        JSON.stringify({
+          state: { ...snapshot, __settingsWriteRevision: lastWrittenRevision },
+          version: SETTINGS_PERSIST_VERSION,
+        }),
+      )
+    }
+  } catch {
+    // Best-effort repair; the next legitimate write re-persists anyway.
+  }
+}
+
 function setupCrossTabSettingsSync(): void {
   if (crossTabSyncInstalled || typeof window === 'undefined') return
   crossTabSyncInstalled = true
   window.addEventListener('storage', (e) => {
     if (e.key !== 'bfosa-settings' || e.newValue == null) return
+    // Parse ONCE — the schema-version guard, revision guard, and apply path
+    // all read the same envelope.
+    let parsed: { state?: Record<string, unknown>; version?: unknown } | null = null
+    try {
+      parsed = JSON.parse(e.newValue) as { state?: Record<string, unknown>; version?: unknown } | null
+    } catch {
+      // Malformed snapshot from an older version mid-migration — ignore; the
+      // next legitimate write re-triggers this handler.
+      return
+    }
+    if (!parsed || typeof parsed !== 'object') return
+
     // Schema-version guard: an OLD tab (persist version < ours) holds a
     // pre-upgrade shape. Letting its snapshot overwrite our v4 state would
-    // revert newer settings (including the thinking choice). The old tab
-    // rehydrates our v4 write through its own migrate path, so skipping the
-    // stale snapshot costs nothing.
-    try {
-      const versioned = JSON.parse(e.newValue) as { version?: unknown } | null
-      if (
-        versioned &&
-        typeof versioned.version === 'number' &&
-        versioned.version < SETTINGS_PERSIST_VERSION
-      ) {
-        return
-      }
-    } catch {
-      // Malformed envelope — fall through; the state parse below rejects it.
+    // revert newer settings (including the thinking choice). Worse, the
+    // v3 write has REPLACED the shared snapshot in localStorage with stale
+    // values — a reload here would migrate those stale values back in and
+    // silently resurrect old settings. So alongside skipping the event we
+    // REPAIR storage: re-serialize our current (newer) state over the stale
+    // snapshot the old tab just wrote.
+    if (
+      typeof parsed.version === 'number' &&
+      parsed.version < SETTINGS_PERSIST_VERSION
+    ) {
+      restoreCurrentSnapshotToStorage()
+      return
     }
-    // Out-of-order guard: a storage event carrying an OLDER write than the
-    // one we already applied must never clobber it (two tabs writing in
-    // quick succession queue two events here; applying both in arrival
-    // order would let the older snapshot overwrite the newer settings).
-    if (e.timeStamp < lastAppliedStorageEventTime) return
-    // Concurrent-write guard: a write from THIS tab that hasn't been handled
-    // yet means queued events carry snapshots of our own PRE-write state —
-    // applying one would revert local edits. Ignore events older than the
-    // stamp taken when the local write was persisted.
-    if (e.timeStamp < lastLocalWriteAt) return
+    if (!parsed.state || typeof parsed.state !== 'object') return
+
+    // Write-order guard: the revision is embedded in the payload by the
+    // WRITING tab's storage wrapper, so it orders peer writes correctly even
+    // when StorageEvent delivery order/timing differs per tab. A snapshot
+    // whose revision is not newer than the last one we applied (or wrote)
+    // is a queued arrival carrying pre-write state — drop it.
+    const incomingRevision =
+      typeof parsed.state.__settingsWriteRevision === 'number'
+        ? (parsed.state.__settingsWriteRevision as number)
+        : null
+    if (incomingRevision != null) {
+      if (incomingRevision <= Math.max(lastAppliedRevision, lastWrittenRevision)) return
+      lastAppliedRevision = incomingRevision
+    }
+    // Snapshot without a revision (peer on an older deploy): fall back to
+    // the legacy event-timeStamp ordering — weak, but better than nothing.
+
     try {
-      const parsed = JSON.parse(e.newValue) as { state?: Record<string, unknown> } | null
-      if (!parsed || typeof parsed.state !== 'object' || !parsed.state) return
       const incoming = parsed.state
       const current = useSettingsStore.getState() as unknown as Record<string, unknown>
       // No-op guard: identical snapshot — nothing to apply, and skipping
       // avoids a pointless re-render plus provider-registry churn.
       if (shallowEqualRecord(current, incoming)) {
-        lastAppliedStorageEventTime = e.timeStamp
         return
       }
       // Re-read the persisted snapshot into memory. This mirrors zustand's
@@ -1485,6 +1578,10 @@ function setupCrossTabSettingsSync(): void {
       // snapshot is applied WITHOUT re-persisting it (storage already holds
       // exactly this snapshot; echoing it back is how an older queued
       // event could overwrite a newer write).
+      const credentialsBefore = {
+        providerType: useSettingsStore.getState().providerType,
+        modelName: useSettingsStore.getState().modelName,
+      }
       suppressPersistWrites++
       try {
         useSettingsStore.setState(incoming as Partial<SettingsState>)
@@ -1496,10 +1593,32 @@ function setupCrossTabSettingsSync(): void {
       if (Array.isArray(incoming.customProviders)) {
         syncDynamicRegistryWithSnapshot(incoming.customProviders as CustomProviderConfig[])
       }
-      lastAppliedStorageEventTime = e.timeStamp
+      // Runtime-only credential state is NOT part of the persisted snapshot,
+      // so applying a peer's provider/model switch leaves this tab holding
+      // the PREVIOUS provider's hasApiKey and modelCredentialStatus —
+      // sendMessage then rejects sends against the now-active provider
+      // (or sends with a stale key assumption). Re-evaluate when the
+      // snapshot switched provider or model, mirroring what
+      // switchProviderAndModel does for a local switch.
+      if (
+        incoming.providerType !== credentialsBefore.providerType ||
+        incoming.modelName !== credentialsBefore.modelName
+      ) {
+        const next = useSettingsStore.getState()
+        apiKeyCache.delete(next.providerType)
+        apiKeyCachePromise.delete(next.providerType)
+        void next.checkHasApiKey()
+        // The credential flag describes the PREVIOUS provider's auth; a
+        // cross-provider switch must clear it (same rule as
+        // switchProviderAndModel) or noUsableModel keeps marking the new,
+        // valid selection unusable.
+        if (incoming.providerType !== credentialsBefore.providerType) {
+          useSettingsStore.setState({ modelCredentialStatus: 'unknown' })
+        }
+      }
     } catch {
-      // Malformed snapshot from an older version mid-migration — ignore; the
-      // next legitimate write re-triggers this handler.
+      // Malformed state payload — ignore; the next legitimate write
+      // re-triggers this handler.
     }
   })
 }
