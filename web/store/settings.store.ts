@@ -7,7 +7,7 @@
 
 import { useEffect } from 'react'
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, createJSONStorage } from 'zustand/middleware'
 import type { LLMProviderType } from '@/agent/providers/types'
 import {
   isCustomProviderType,
@@ -15,6 +15,7 @@ import {
   registerDynamicProvider,
   unregisterDynamicProvider,
   getProviderConfig,
+  getDynamicProviderIds,
 } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
@@ -369,8 +370,8 @@ function registerCustomAsDynamic(cp: CustomProviderConfig) {
   )
 }
 
-export const useSettingsStore = create<SettingsState>()(
-  persist(
+export const useSettingsStore = create<SettingsState, [['zustand/persist', unknown]]>(
+  persist<SettingsState, [], [], PersistedSettingsState>(
     (set, get) => ({
       providerType: '' as LLMProviderType,
       modelName: '',
@@ -1189,6 +1190,26 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: 'bfosa-settings',
       version: 4,
+      // The cross-tab storage handler applies incoming snapshots with
+      // setState while persist writes are suppressed: the snapshot is
+      // already IN storage (the storage event just delivered it), so the
+      // middleware write would only echo it back — and in a two-writer race
+      // that echo can land an older queued snapshot over a newer one.
+      // While suppression is active, setItem is a no-op; read paths and the
+      // in-memory state are untouched.
+      storage: (() => {
+        const base = createJSONStorage<PersistedSettingsState>(() =>
+          typeof window === 'undefined' ? undefined as unknown as Storage : window.localStorage,
+        )
+        if (!base) return base
+        return {
+          ...base,
+          setItem: (name, value) => {
+            if (persistWritesSuppressed()) return
+            return base.setItem(name, value)
+          },
+        }
+      })(),
       // Migrate older persisted states forward. v1 state doesn't have
       // agentLoopNotifications — backfill defaults on load.
       // v3 drops enableSchedules: schedules became a first-class feature
@@ -1198,8 +1219,10 @@ export const useSettingsStore = create<SettingsState>()(
       // in storage, so the persisted enableThinking (even explicit false) is
       // kept verbatim — only fresh installs (no stored state) get the new
       // defaults.
-      migrate: (persistedState: unknown, version: number) => {
-        if (!persistedState || typeof persistedState !== 'object') return persistedState
+      migrate: (persistedState: unknown, version: number): PersistedSettingsState => {
+        if (!persistedState || typeof persistedState !== 'object') {
+          return {} as PersistedSettingsState
+        }
         let next = persistedState as Record<string, unknown>
         if (version < 2) {
           next = {
@@ -1213,10 +1236,10 @@ export const useSettingsStore = create<SettingsState>()(
         if (version < 3) {
           delete next.enableSchedules
         }
-        return next
+        return next as unknown as PersistedSettingsState
       },
       // Don't persist hasApiKey - it's derived from SQLite
-      partialize: (state) => ({
+      partialize: (state): PersistedSettingsState => ({
         providerType: state.providerType,
         modelName: state.modelName,
         customBaseUrl: state.customBaseUrl,
@@ -1282,21 +1305,141 @@ export const useSettingsStore = create<SettingsState>()(
 // event (fires in every tab EXCEPT the writer) rehydrates the changed keys
 // from the freshly-written snapshot before this tab's own next write, so
 // each tab's subsequent persist carries the other tab's newer values.
+//
+// Two hazards this handler must avoid:
+//
+// 1. Re-persisting the incoming snapshot. useSettingsStore.setState() is
+//    wrapped by the persist middleware — every call re-writes the whole
+//    snapshot to localStorage. Applying an incoming snapshot through it
+//    would echo it back to storage, and when two tabs write in quick
+//    succession the receiving tab can re-persist an OLDER queued snapshot
+//    over a newer one, reverting the newer write. Incoming snapshots are
+//    therefore applied with persist writes suppressed (the store's storage
+//    wrapper is a no-op while suppressed) — the state lands in memory only;
+//    storage already holds exactly what we just read.
+//
+// 2. Out-of-order application. Two writers can fire two storage events in
+//    this tab in an order where we must never let the older snapshot
+//    replace the newer one; events are ordered by their timeStamp and a
+//    snapshot older than the last applied one is dropped. A snapshot whose
+//    values already match the in-memory state is skipped entirely — that
+//    also keeps identical re-broadcasts from churning the provider
+//    registry.
+//
+// If the incoming snapshot changes customProviders, the dynamic provider
+// registry is re-synced here (register new/updated entries, unregister
+// removed ones) — the same registerCustomAsDynamic path the local edit
+// actions use — otherwise a provider added in another tab stays unusable
+// in this one.
 let crossTabSyncInstalled = false
+let lastAppliedStorageEventTime = -1
+let suppressPersistWrites = 0
+
+/** True when persist middleware writes to storage are currently suppressed. */
+function persistWritesSuppressed(): boolean {
+  return suppressPersistWrites > 0
+}
+
+/**
+ * Shape written to localStorage: the partialize() projection of
+ * SettingsState (hasApiKey & other runtime-only fields are excluded).
+ * Kept in sync with the partialize() body below.
+ */
+interface PersistedSettingsState {
+  providerType: LLMProviderType
+  modelName: string
+  customBaseUrl: string
+  customProviders: CustomProviderConfig[]
+  temperature: number
+  maxTokens: number
+  maxIterations: number
+  enableThinking: boolean
+  thinkingLevel: ExtendedThinkingLevel
+  enableBatchSpawn: boolean
+  enableWebMCP: boolean
+  snapshotHighWatermark: number
+  snapshotLowWatermark: number
+  modelOverridesByWorkspace: Record<string, WorkspaceModelOverride>
+  lastUsedModelByProvider: Partial<Record<LLMProviderType, string>>
+  imageGenModel: string
+  imageGenAspectRatio: string
+  pinnedModelsByProvider: Record<string, string[]>
+  pinnedSeenByProvider: Record<string, string[]>
+  agentLoopNotifications: { enabled: boolean; onlyWhenHidden: boolean }
+}
+
+function shallowEqualRecord(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  if (a === b) return true
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  for (const k of aKeys) {
+    if (a[k] !== b[k]) return false
+  }
+  return true
+}
+
+/**
+ * Sync the dynamic provider registry with an incoming customProviders list:
+ * register (or re-register) every provider present in the snapshot and
+ * unregister ones that disappeared. Uses the same registration path as the
+ * local add/update/remove actions.
+ */
+function syncDynamicRegistryWithSnapshot(incoming: CustomProviderConfig[]): void {
+  const incomingIds = new Set(incoming.map((cp) => cp.id))
+  for (const cp of incoming) {
+    registerCustomAsDynamic(cp)
+  }
+  for (const id of getDynamicProviderIds()) {
+    if (!incomingIds.has(id)) {
+      unregisterDynamicProvider(id)
+    }
+  }
+}
+
 function setupCrossTabSettingsSync(): void {
   if (crossTabSyncInstalled || typeof window === 'undefined') return
   crossTabSyncInstalled = true
   window.addEventListener('storage', (e) => {
     if (e.key !== 'bfosa-settings' || e.newValue == null) return
+    // Out-of-order guard: a storage event carrying an OLDER write than the
+    // one we already applied must never clobber it (two tabs writing in
+    // quick succession queue two events here; applying both in arrival
+    // order would let the older snapshot overwrite the newer settings).
+    if (e.timeStamp < lastAppliedStorageEventTime) return
     try {
       const parsed = JSON.parse(e.newValue) as { state?: Record<string, unknown> } | null
       if (!parsed || typeof parsed.state !== 'object' || !parsed.state) return
+      const incoming = parsed.state
+      const current = useSettingsStore.getState() as unknown as Record<string, unknown>
+      // No-op guard: identical snapshot — nothing to apply, and skipping
+      // avoids a pointless re-render plus provider-registry churn.
+      if (shallowEqualRecord(current, incoming)) {
+        lastAppliedStorageEventTime = e.timeStamp
+        return
+      }
       // Re-read the persisted snapshot into memory. This mirrors zustand's
       // own rehydrate(): merge the persisted partial over current state.
       // Snapshot-shaped keys are replaced wholesale (same as initial load);
       // per-key merging is not attempted because every persisted write is a
       // full partialize() snapshot anyway.
-      useSettingsStore.setState(parsed.state as Partial<SettingsState>)
+      //
+      // setState is wrapped by persist — suppress its storage write so the
+      // snapshot is applied WITHOUT re-persisting it (storage already holds
+      // exactly this snapshot; echoing it back is how an older queued
+      // event could overwrite a newer write).
+      suppressPersistWrites++
+      try {
+        useSettingsStore.setState(incoming as Partial<SettingsState>)
+      } finally {
+        suppressPersistWrites--
+      }
+      // Keep the dynamic provider registry in step with the incoming
+      // snapshot so cross-tab custom-provider edits are usable here.
+      if (Array.isArray(incoming.customProviders)) {
+        syncDynamicRegistryWithSnapshot(incoming.customProviders as CustomProviderConfig[])
+      }
+      lastAppliedStorageEventTime = e.timeStamp
     } catch {
       // Malformed snapshot from an older version mid-migration — ignore; the
       // next legitimate write re-triggers this handler.

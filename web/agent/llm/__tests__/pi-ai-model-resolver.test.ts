@@ -160,6 +160,10 @@ describe('resolvePiAIModel', () => {
 
   it('should mark unknown custom-provider model as NOT reasoning-capable', () => {
     const model = resolvePiAIModel('custom', 'my-private-model-v1', 'https://my-proxy.example.com/v1')
+    // Finding E guard: assert the FALLBACK path was actually taken — 'custom'
+    // has no PROVIDER_MAP entry so tryGetNativeModel can't shadow this, but
+    // the explicit api check keeps the assertion honest if providers change.
+    expect(model.api).toBe('openai-completions')
     expect(model.reasoning).toBe(false)
   })
 
@@ -167,18 +171,49 @@ describe('resolvePiAIModel', () => {
     // llm-gateway user-added id absent from any capability source — the
     // conservative default must be false, never a blanket true.
     const model = resolvePiAIModel('llm-gateway', 'brand-new-unknown-id', 'https://gateway.example.com/v1')
+    expect(model.api).toBe('cw-openai-fetch')
     expect(model.reasoning).toBe(false)
   })
 
-  it('should keep reasoning:true for provider models that declare it', () => {
-    // glm-5.1 declares ['code', 'writing', 'reasoning'] in the static catalog
-    const model = resolvePiAIModel('glm-coding', 'glm-5.1', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+  it('should keep reasoning:true for fallback models the static catalog declares reasoning', () => {
+    // glm-5 declares ['code', 'reasoning'] in the static glm-coding catalog,
+    // but has NO entry in pi-ai's native zai catalog (which only knows
+    // glm-4.5-air, glm-4.7, glm-5-turbo, glm-5.1, glm-5v-turbo) — so this
+    // resolves through createOpenAICompatibleFallback and actually exercises
+    // resolveFallbackReasoning (asserting the fallback API first guards the
+    // test against future catalog additions silently re-routing it).
+    const model = resolvePiAIModel('glm-coding', 'glm-5', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+    expect(model.api).toBe('openai-completions')
     expect(model.reasoning).toBe(true)
   })
 
   it('should mark fast-tier models without reasoning capability as NOT reasoning-capable', () => {
     // glm-4.7-flash declares ['code', 'writing', 'fast'] — no reasoning tag
+    // — in the static catalog. It IS in pi-ai's native zai catalog with
+    // reasoning:false, so this asserts the native path honors the catalog;
+    // the fallback-path counterpart is the deepseek-flash test below.
     const model = resolvePiAIModel('glm-coding', 'glm-4.7-flash', 'https://open.bigmodel.cn/api/coding/paas/v4/')
+    expect(model.reasoning).toBe(false)
+  })
+
+  it('should keep reasoning disabled for fallback models the static catalog lists without reasoning', () => {
+    // deepseek-flash declares ['fast'] (no reasoning) in the static catalog.
+    // deepseek has no PROVIDER_MAP entry, so this always takes the fallback
+    // path — asserting the api first proves resolveFallbackReasoning ran,
+    // and a heuristic dynamic-cache entry (guessCapabilities adds 'reasoning'
+    // for ids containing "pro"/"max" etc.) must not flip it to true.
+    const model = resolvePiAIModel('deepseek', 'deepseek-flash', 'https://api.deepseek.com/v1')
+    expect(model.api).toBe('openai-completions')
+    expect(model.reasoning).toBe(false)
+  })
+
+  it('should not let heuristic gateway reasoning tags enable reasoning for unknown models', () => {
+    // llm-gateway tags EVERY fetched model ['code','writing','reasoning']
+    // without real capability data, and guessCapabilities adds 'reasoning'
+    // to any id containing "max". A heuristic tag must be treated as
+    // UNKNOWN — the fallback must still omit reasoning params.
+    const model = resolvePiAIModel('llm-gateway', 'vendor-text-max-turbo', 'https://gateway.example.com/v1')
+    expect(model.api).toBe('cw-openai-fetch')
     expect(model.reasoning).toBe(false)
   })
 })

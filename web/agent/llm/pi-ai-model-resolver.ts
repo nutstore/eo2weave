@@ -1,7 +1,8 @@
 import { getModel } from '@earendil-works/pi-ai'
 import type { Api, KnownProvider, Model } from '@earendil-works/pi-ai'
 import type { LLMProviderType } from '@/agent/providers/types'
-import { isChineseProviderType, isPotentiallyDynamicProviderType, getModelsForProvider } from '@/agent/providers/types'
+import { isChineseProviderType, isPotentiallyDynamicProviderType, getModelsForProvider, PROVIDER_META } from '@/agent/providers/types'
+import type { ProviderMeta } from '@/agent/providers/types'
 import { getModelContextWindow, findCachedModelInfo } from '@/agent/providers/model-store'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
 import { CW_OPENAI_FETCH_API } from './pi-ai-custom-openai-fetch'
@@ -146,25 +147,53 @@ function resolveInputModalities(modelName: string, providerType?: LLMProviderTyp
 export function supportsImageInput(modelName: string, providerType?: LLMProviderType): boolean {
   return resolveInputModalities(modelName, providerType).includes('image')
 }
-function resolveFallbackReasoning(providerType: LLMProviderType, modelName: string): boolean {
-  // 1. Dynamic model cache: DeepSeek (2026+) and other providers publish
-  //    reasoning-related capabilities on their /models endpoint — the freshest,
-  //    provider-authoritative source.
-  if (providerType) {
-    try {
-      const cached = findCachedModelInfo(providerType, modelName)
-      if (cached) return cached.capabilities.includes('reasoning')
-    } catch { /* registry unavailable — fall through */ }
-  }
-  // 2. Static PROVIDER_META / dynamic registry entries for this provider
+/**
+ * Tri-state reasoning support: true/false only from curated evidence,
+ * 'unknown' when only heuristic data exists.
+ */
+type ReasoningSupport = boolean | 'unknown'
+
+/**
+ * Consult the STATIC provider catalog only — the single curated capability
+ * source. getModelsForProvider() is deliberately NOT used here: it prefers
+ * the dynamic registry, whose capability tags are heuristic — llm-gateway
+ * tags EVERY model ['code','writing','reasoning'] without real capability
+ * data (updateGatewayModels), custom-* registry entries carry
+ * guessCapabilities() keyword guesses, and the dynamic model cache
+ * (findCachedModelInfo) stores parseModelInfo() output whose capabilities
+ * ALWAYS come from guessCapabilities() too (the /models API publishes
+ * input_modalities/context, never reasoning support). Those tags can
+ * neither prove support (a false positive forwards reasoning_effort to
+ * endpoints that reject it with 400) nor disprove it (a heuristic entry
+ * missing the tag would strip reasoning the static catalog grants).
+ */
+function staticCatalogReasoning(providerType: LLMProviderType, modelName: string): ReasoningSupport {
   try {
-    const found = getModelsForProvider(providerType).find((m) => m.id === modelName)
-    if (found) return found.capabilities.includes('reasoning')
-  } catch { /* registry unavailable — fall through */ }
-  // 3. Unknown model (custom "add model" id on a dynamic provider): NOT
-  //    reasoning-capable. Defaulting to true makes the send path forward
-  //    reasoning_effort to endpoints that reject it (400) and the whole
-  //    conversation fails — the conservative default must be false.
+    const staticModels =
+      (PROVIDER_META as Record<string, ProviderMeta | undefined>)[providerType]?.models ?? []
+    const found = staticModels.find((m) => m.id === modelName)
+    if (!found) return 'unknown'
+    return found.capabilities.includes('reasoning')
+  } catch {
+    // Catalog unavailable — treat as unknown rather than guessing.
+    return 'unknown'
+  }
+}
+
+function resolveFallbackReasoning(providerType: LLMProviderType, modelName: string): boolean {
+  // The static catalog is the only trusted evidence: a curated entry
+  // declaring 'reasoning' enables it, and a curated entry WITHOUT the tag
+  // (fast-tier flash models) explicitly disables it. Consulted FIRST so a
+  // heuristic cache/registry entry can never shadow the catalog in either
+  // direction.
+  const fromCatalog = staticCatalogReasoning(providerType, modelName)
+  if (fromCatalog !== 'unknown') return fromCatalog
+  // Unknown model (custom "add model" id, gateway id, uncached future id):
+  // heuristic reasoning tags are UNKNOWN, never proof of support, and a
+  // missing tag is never proof of absence. Unknown resolves to false — the
+  // send path omits reasoning params. Defaulting to true forwards
+  // reasoning_effort to endpoints that reject it (400) and the whole
+  // conversation fails — the conservative default must be false.
   return false
 }
 
