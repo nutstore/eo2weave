@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RESOLUTION_COUNTS, resetResolutionCounts, resolvePiAIModel } from '../pi-ai-model-resolver'
+import { RESOLUTION_COUNTS, resetResolutionCounts, resolvePiAIModel } from '@/agent/llm/pi-ai-model-resolver'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
 
 describe('resolvePiAIModel', () => {
