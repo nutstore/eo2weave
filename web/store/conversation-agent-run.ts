@@ -215,15 +215,7 @@ export async function runAgentImpl(
         // the conversationId as its workspaceId explicitly.
         const workspaceStore = useConversationContextStore.getState()
         if (background) {
-          // Ensure the workspace record/OPFS dirs exist without switching.
-          const manager = await (async () => {
-            const m = await import('@/opfs')
-            return m.getWorkspaceManager()
-          })()
-          const existing = manager.getWorkspaceByRoot(`workspaces/${conversationId}`)
-          if (!existing || existing.workspaceId !== conversationId) {
-            await manager.getOrCreateWorkspace(`workspaces/${conversationId}`)
-          }
+          await workspaceStore.ensureWorkspace(conversationId, conv.title)
         } else if (workspaceStore.activeWorkspaceId !== conversationId) {
           await workspaceStore.switchWorkspace(conversationId)
         }

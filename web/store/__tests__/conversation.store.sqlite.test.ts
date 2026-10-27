@@ -7,6 +7,7 @@ const conversationRepoDeleteMock = vi.fn(() => Promise.resolve())
 const conversationRepoSaveMetaMock = vi.fn(() => Promise.resolve())
 const messageRepoInsertMock = vi.fn(() => Promise.resolve())
 const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
+const ensureWorkspaceMock = vi.fn(() => Promise.resolve())
 
 vi.mock('sonner', () => ({
   toast: {
@@ -30,6 +31,7 @@ vi.mock('../conversation-context.store', () => ({
       activeWorkspaceId: null,
       workspaces: [],
       createWorkspace: vi.fn(() => Promise.resolve()),
+      ensureWorkspace: ensureWorkspaceMock,
       switchWorkspace: vi.fn(() => Promise.resolve()),
       refreshWorkspaces: vi.fn(() => Promise.resolve()),
       refreshPendingChanges: vi.fn(() => Promise.resolve()),
@@ -267,6 +269,14 @@ describe('conversation.store.sqlite tool-call routing', () => {
     await vi.waitFor(() => {
       expect(messageRepoInsertMock).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it('ensures the same-ID workspace before a background run without activating it', async () => {
+    const conv = useConversationStore.getState().createNew('background-task', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('@resource-loop hello'))
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    expect(ensureWorkspaceMock).toHaveBeenCalledWith(conv.id, '@resource-loop hello')
+    expect(useConversationStore.getState().activeConversationId).not.toBe(conv.id)
   })
 
   it('should finalize non-current tool steps by toolCallId in interleaved calls', async () => {
