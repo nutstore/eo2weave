@@ -106,6 +106,7 @@ export const conversation = {
       noApiKey: "먼저 설정에서 API Key를 구성하세요",
       noModel: "사용 가능한 모델이 없습니다",
       gatewayReauthRequired: "Nutstore AI 세션이 만료되었습니다. 다시 로그인하세요",
+      providerReauthRequired: "선택한 공급자를 현재 사용할 수 없습니다. 다시 로그인하세요",
       deletedTurn: "완전한 채팅 턴 삭제됨",
       stopBeforeSend: "이 대화가 실행 중입니다. 보내기 전에 먼저 중지해 주세요",
       stopBeforeRegenerate: "다시 생성하기 전에 현재 실행을 중지해 주세요",

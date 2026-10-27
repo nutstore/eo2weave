@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Search } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
+import { isPotentiallyDynamicProviderType } from '@/agent/providers/types'
 import type { LLMProviderType } from '@/agent/providers/types'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
@@ -189,10 +190,28 @@ export function ModelQuickSwitch({
     return currentProvider?.models.some((model) => model.id === modelName && model.stale) ?? false
   }, [enrichedProviders, providerType, modelName])
 
+  // Unregistered dynamic provider (#87): the persisted selection names a
+  // provider (codex-oauth, llm-gateway, custom-*) that has not registered
+  // this session — `getProviderConfig` returns null for it, so
+  // `getAvailableProviders` cannot list it either. Sending would hit a
+  // dead route (the stale virtual key in SQLite even makes the credential
+  // check pass), so this is a THIRD no-usable-model state alongside
+  // gateway-expired. The selection is kept for seamless re-login restore.
+  const selectedProviderUnregistered = useMemo(() => {
+    if (loading || !providerType || !modelName) return false
+    if (!isPotentiallyDynamicProviderType(providerType)) return false
+    // A provider whose live registry entry exists is registered — never
+    // flag it. A provider absent from the loaded list AND absent from the
+    // dynamic registry is the dead-selection state.
+    const liveInList = providers.some((p) => p.providerType === providerType)
+    const { getEffectiveProviderConfig } = useSettingsStore.getState()
+    return !liveInList && !getEffectiveProviderConfig()
+  }, [loading, providerType, modelName, providers])
+
   const currentModelLabel = useMemo(() => {
     // No API key configured → always show "unavailable" regardless of persisted values
     if (loading) return t('topbar.modelSwitcher.loading')
-    if (modelCredentialStatus === 'expired' && modelName) {
+    if (modelCredentialStatus === 'expired' && modelName && !selectedProviderUnregistered) {
       return `${modelName} · ${t('topbar.modelSwitcher.credentialExpired')}`
     }
     if (!providerType || !modelName) {
@@ -201,10 +220,15 @@ export function ModelQuickSwitch({
     // A selected model with an unresolved/missing key check is a CREDENTIAL
     // state, not "no models" (#84 review round 2) — keep showing the model
     // name so the chip's amber warning reads as re-credentials, not re-pick.
+    // An unregistered dynamic provider (#87) appends the Codex re-login
+    // warning instead of the bare model name.
     const currentProvider = providers.find((p) => p.providerType === providerType)
     const model = currentProvider?.models.find((m) => m.id === modelName)
-    return model?.name || modelName
-  }, [loading, modelCredentialStatus, providerType, providers, modelName, t])
+    const base = model?.name || modelName
+    return selectedProviderUnregistered
+      ? `${base} · ${t('topbar.modelSwitcher.codexUnavailableWarning')}`
+      : base
+  }, [loading, selectedProviderUnregistered, modelCredentialStatus, providerType, providers, modelName, t])
 
   // No usable model (#82): nothing selectable — the composer's input is
   // disabled and this chip carries the amber warning state pointing at
@@ -218,9 +242,12 @@ export function ModelQuickSwitch({
   // unresolved key check must not count as a confirmed missing key. The
   // credential branch below wins whenever a provider+model are chosen, so
   // the label points at recovering credentials, not re-picking a model.
+  //
+  // The unregistered-provider term above slots into the same
+  // noUsableModel family (#87).
   const noModelSelected = !loading && (!providerType || !modelName)
   const credentialExpired = !loading && modelCredentialStatus === 'expired'
-  const noUsableModel = noModelSelected || credentialExpired
+  const noUsableModel = noModelSelected || credentialExpired || selectedProviderUnregistered
 
   const thinkingLevels: { value: ExtendedThinkingLevel; label: string }[] = [
     { value: 'minimal', label: t('conversation.thinkingLevels.minimal') },
@@ -301,9 +328,11 @@ export function ModelQuickSwitch({
           aria-label={
             noModelSelected
               ? t('topbar.modelSwitcher.noUsableModelWarning')
-              : credentialExpired
-                ? t('topbar.modelSwitcher.credentialExpiredWarning')
-                : undefined
+              : selectedProviderUnregistered
+                ? t('topbar.modelSwitcher.codexUnavailableWarning')
+                : credentialExpired
+                  ? t('topbar.modelSwitcher.credentialExpiredWarning')
+                  : undefined
           }
         >
           <span className="flex min-w-0 items-center gap-1.5">

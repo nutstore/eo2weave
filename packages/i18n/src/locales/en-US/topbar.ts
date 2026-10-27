@@ -15,6 +15,7 @@ export const topbar = {
       credentialExpired: "Re-login required",
             noUsableModelWarning: "No usable model selected — click to pick one",
             credentialExpiredWarning: "Selected model needs re-login — click to manage the gateway credential",
+      codexUnavailableWarning: "Codex unavailable — sign in again",
       temporarilyUnavailable: "Temporarily unable to verify",
       noPinnedModels: "No models pinned yet. Add models in Settings.",
       searchPlaceholder: "Search models…",

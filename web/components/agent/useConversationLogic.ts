@@ -25,6 +25,7 @@ import { useAssetStore } from '@/store/asset.store'
 import { removeAssetsFromOPFS, writePendingAssetsToOPFS } from '@/services/asset.service'
 import { performOcr, isOcrCompatibleImage } from '@/services/ocr.service'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
+import { isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { useInputDraftStore } from '@/store/input-draft.store'
 import { useActiveConversation } from './useActiveConversation'
 import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
@@ -332,13 +333,24 @@ export function useConversationLogic() {
         maxTokens: mTokens,
         modelCredentialStatus,
       } = useSettingsStore.getState()
-      if (!hasKey || modelCredentialStatus === 'expired' || !pType || !mName) {
+      // An unregistered dynamic provider (#87 — codex-oauth whose extension
+      // disappeared or whose auth was revoked) leaves the persisted
+      // providerType in place but the registry has no config for it, so
+      // sending would hit a dead route even though the stale virtual key
+      // satisfies the hasKey check. Block it with the re-login toast —
+      // same family as the expired gateway credential, but the registry
+      // (not the credential) is what's missing.
+      const providerUnregistered =
+        !!pType && isPotentiallyDynamicProviderType(pType) && !getProviderConfig(pType)
+      if (!hasKey || modelCredentialStatus === 'expired' || providerUnregistered || !pType || !mName) {
         toast.error(
           modelCredentialStatus === 'expired'
             ? t('conversation.toast.gatewayReauthRequired')
-            : !pType || !mName
-              ? t('conversation.toast.noModel')
-              : t('conversation.toast.noApiKey'),
+            : providerUnregistered
+              ? t('conversation.toast.providerReauthRequired')
+              : !pType || !mName
+                ? t('conversation.toast.noModel')
+                : t('conversation.toast.noApiKey'),
         )
         options?.onInputRejected?.(text)
         return

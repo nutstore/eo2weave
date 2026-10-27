@@ -134,6 +134,7 @@ export const conversation = {
       noApiKey: "Please configure API Key in settings first",
       noModel: "No usable model is available",
       gatewayReauthRequired: "Your Nutstore AI session expired. Please log in again.",
+      providerReauthRequired: "The selected provider is unavailable — sign in again to use it.",
       deletedTurn: "Deleted complete conversation turn",
       stopBeforeSend: "This conversation is running. Stop it before sending a new message.",
       stopBeforeRegenerate: "Please stop the current run before regenerating.",

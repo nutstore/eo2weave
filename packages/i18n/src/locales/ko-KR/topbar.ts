@@ -16,6 +16,7 @@ export const topbar = {
       credentialExpired: "다시 로그인해야 합니다",
             noUsableModelWarning: "사용 가능한 모델이 선택되지 않았습니다. 클릭하여 선택하세요",
             credentialExpiredWarning: "선택한 모델은 다시 로그인이 필요합니다. 클릭하여 자격 증명 관리",
+      codexUnavailableWarning: "Codex를 사용할 수 없습니다. 다시 로그인하세요",
       temporarilyUnavailable: "일시적으로 확인할 수 없음",
       noPinnedModels: "아직 고정된 모델이 없습니다. 설정에서 추가하세요.",
       searchPlaceholder: "모델 검색…",

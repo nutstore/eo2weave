@@ -26,6 +26,7 @@ import { RunEndPolicySelect } from './RunEndPolicySelect'
 import { useConversationLogic } from './useConversationLogic'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
+import { isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { useSettingsStore } from '@/store/settings.store'
 import { useExtensionStore } from '@/store/extension.store'
 import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
@@ -95,7 +96,15 @@ export function ConversationView({
   // editor. No hydration guard needed any more: `hasSelectableModel` no
   // longer reads `hasApiKey`, whose pre-hydration default caused the flash.
   const hasUsableModel = !!providerType && !!modelName
-  const hasSelectableModel = hasUsableModel || modelCredentialStatus === 'expired'
+  // An unregistered dynamic provider (#87 — codex-oauth after extension
+  // removal / auth revocation) keeps the persisted selection, so the
+  // editor stays editable for copying errors — same treatment as an
+  // expired gateway credential. Only the send path blocks (toast).
+  const selectedProviderUnregistered = useMemo(() => {
+    if (!hasUsableModel || !isPotentiallyDynamicProviderType(providerType)) return false
+    return !getProviderConfig(providerType)
+  }, [hasUsableModel, providerType])
+  const hasSelectableModel = hasUsableModel || modelCredentialStatus === 'expired' || selectedProviderUnregistered
   const {
     hasInput, setInput, setMentionedAgentIds, inputResetToken, messagesEndRef, scrollContainerRef,
     isUserAtBottomRef,

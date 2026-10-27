@@ -2,11 +2,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { captureTabMock, addFilesMock, addNativeHostRootMock, toastWarningMock, conversationState, pageActionAvailable, folderAccessState, settingsState, inputDraftState, projectState, workspacePreferencesState, agentsState } = vi.hoisted(() => ({
+const { captureTabMock, addFilesMock, addNativeHostRootMock, toastWarningMock, toastErrorMock, conversationState, pageActionAvailable, folderAccessState, settingsState, inputDraftState, projectState, workspacePreferencesState, agentsState } = vi.hoisted(() => ({
   captureTabMock: vi.fn(async () => ({ ok: true, dataUrl: 'data:image/png;base64,c2NyZWVuc2hvdA==' })),
   addFilesMock: vi.fn(),
   addNativeHostRootMock: vi.fn(async () => true),
   toastWarningMock: vi.fn(),
+  toastErrorMock: vi.fn(),
   conversationState: { conversations: [] as unknown[] },
   pageActionAvailable: { value: true },
   // Mutable settings state so readiness-flip tests can flip hasApiKey.
@@ -139,11 +140,20 @@ vi.mock('@/store/input-draft.store', () => ({
 vi.mock('sonner', () => ({
   toast: {
     warning: toastWarningMock,
-    error: vi.fn(),
+    error: toastErrorMock,
     success: vi.fn(),
     info: vi.fn(),
   },
 }))
+
+// #87: the dynamic-provider registry is NOT mocked away wholesale — the
+// component under test must observe the real isPotentiallyDynamicProviderType
+// / getProviderConfig pair against an empty registry (the unregistered
+// codex-oauth state). Only the static model-list surface is stubbed.
+vi.mock('@/agent/providers/types', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/agent/providers/types')>()
+  return { ...actual }
+})
 
 vi.mock('@/hooks/useGatewayLogin', () => ({
   isLLMGatewayConfigured: () => false,
@@ -186,6 +196,7 @@ vi.mock('@/i18n', () => ({
     'welcome.skipButton': 'Skip for now',
     'welcome.placeholder': 'Type a message to start...',
     'conversation.input.placeholderNoModel': 'Pick a usable model in the model selector below first',
+    'conversation.toast.providerReauthRequired': 'The selected provider is unavailable — sign in again to use it.',
   })[key] ?? key,
 }))
 
@@ -335,6 +346,7 @@ describe('WelcomeScreen', () => {
     delete (window as unknown as { __agentWeb?: unknown }).__agentWeb
     addNativeHostRootMock.mockClear()
     toastWarningMock.mockClear()
+    toastErrorMock.mockClear()
     projectState.activeProjectId = 'proj-1'
     localStorage.setItem('creatorweave:onboarding:welcome-seen', 'true')
     // The mount-folder skip persists across remounts by design; clear it so
@@ -750,6 +762,39 @@ describe('WelcomeScreen', () => {
     expect(inputDraftState.drafts.has('proj-1')).toBe(false)
     const send = screen.getByTestId('mock-send')
     expect(send).toBeDisabled()
+  })
+
+  // ── #87: unregistered dynamic provider keeps the selection editable but blocks sending ──
+  it('keeps the editor editable but blocks sending when the selected provider never registered (#87)', () => {
+    // Persisted codex-oauth selection with the stale virtual key still
+    // satisfying hasApiKey, but the extension is gone so the dynamic
+    // provider never registered this session. The selection must stay on
+    // the READY step (nothing to re-pick) with an EDITABLE input, and the
+    // send must be blocked — the persisted selection itself stays intact
+    // so a re-login seamlessly restores it.
+    const onStart = vi.fn()
+    settingsState.hasApiKey = true
+    settingsState.providerType = 'codex-oauth'
+    settingsState.modelName = 'gpt-6-luna'
+    settingsState.modelCredentialStatus = 'unknown'
+    render(<WelcomeScreen onStartConversation={onStart} onOpenSettings={vi.fn()} />)
+
+    // Ready step, not a setup card ('Skip for now' only renders there).
+    expect(screen.queryByRole('button', { name: 'Skip for now' })).not.toBeInTheDocument()
+    // Input stays editable — the user may need to compose/copy while
+    // recovering the Codex login.
+    fireEvent.click(screen.getByTestId('mock-input-type'))
+    expect(screen.getByTestId('agent-rich-input')).toHaveAttribute('data-typing-accepted', 'true')
+    expect(inputDraftState.drafts.get('proj-1')?.text).toBe('typed text')
+    // Send path is blocked: handleSubmit rejects with the re-login toast.
+    fireEvent.click(screen.getByTestId('mock-send'))
+    expect(onStart).not.toHaveBeenCalled()
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      'The selected provider is unavailable — sign in again to use it.',
+    )
+    // The persisted selection was NOT cleared.
+    expect(settingsState.providerType).toBe('codex-oauth')
+    expect(settingsState.modelName).toBe('gpt-6-luna')
   })
 
   it('blocks sending when the model becomes unconfigured mid-session', () => {
