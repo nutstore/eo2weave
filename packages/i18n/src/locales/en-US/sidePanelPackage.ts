@@ -15,6 +15,8 @@ export const sidePanelPackage = {
   confirm: "Enable & reload page",
   enabling: "Enabling…",
   notNow: "Not now (no reminder for 1 day)",
+  enabledReloadFailedToast: "{name} enabled, but reloading the page failed — reload it manually to activate the tools",
+  enableTimeoutToast: "The enable request timed out. Please try again in a moment.",
   enabledToast: "{name} enabled — the page will reload to activate the tools",
   enableFailedToast: "Failed to enable. Please make sure the extension is up to date and try again.",
 }

@@ -848,12 +848,14 @@ export default defineContentScript({
       /**
        * Package opt-in commit: enable the builtin package for the bound tab's
        * site (the same extension-side config the packages management page
-       * writes) and reload the upstream page so its tools register. The
-       * background re-validates the package against the live tab URL before
-       * writing.
+       * writes) and reload the upstream page so its tools register. Requires
+       * the one-time consent token minted by `webMCPPackageOptInStatus` — the
+       * background verifies it before writing, so a page script cannot flip
+       * the config by calling this method alone. The background also
+       * re-validates the package against the live tab URL before writing.
        */
-      async webMCPPackageOptInEnable(binding: string, packageId: string) {
-        return sendToBridge('webmcp_package_optin_enable', { binding, packageId });
+      async webMCPPackageOptInEnable(binding: string, packageId: string, consentToken: string) {
+        return sendToBridge('webmcp_package_optin_enable', { binding, packageId, consentToken });
       },
 
       /**

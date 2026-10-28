@@ -87,9 +87,11 @@ function hostnameOf(url: string): string {
 }
 
 /**
- * The package whose tools match the URL best. "Best" = most matching tools
+ * The package the opt-in prompt should offer. "Best" = most matching tools
  * (a site hosting two packages keeps the more specific one), ties broken by
- * package id for a stable result.
+ * package id for a stable result — BUT a DISABLED package always wins over
+ * an enabled one: the prompt exists to offer disabled packages, so a more
+ * popular enabled package on the same site must not shadow it.
  */
 export function findPackageOptInCandidate(
   entries: WebMCPPackageEntry[],
@@ -130,7 +132,18 @@ export function findPackageOptInCandidate(
       activation: entry.activation === 'enabled' ? 'enabled' : 'disabled',
       tools,
     }
-    if (!best || candidate.tools.length > best.tools.length) best = candidate
+    if (!best) {
+      best = candidate
+      continue
+    }
+    const candidateDisabled = candidate.activation === 'disabled'
+    const bestDisabled = best.activation === 'disabled'
+    if (candidateDisabled !== bestDisabled) {
+      // Disabled first: the prompt only exists to offer disabled packages.
+      if (candidateDisabled) best = candidate
+      continue
+    }
+    if (candidate.tools.length > best.tools.length) best = candidate
   }
   return best
 }

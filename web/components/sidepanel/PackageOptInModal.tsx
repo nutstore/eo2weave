@@ -85,6 +85,10 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
   const [enableOnConfirm, setEnableOnConfirm] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [showTools, setShowTools] = useState(false)
+  // id for the toggle: an explicit htmlFor association instead of a wrapping
+  // <label> — Switch renders its own <label> around the checkbox, and a label
+  // cannot activate a control nested inside another label.
+  const toggleId = `package-optin-toggle-${packageInfo.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`
 
   const Icon = packageIcon(packageInfo.id)
   const tools = packageInfo.tools ?? []
@@ -97,15 +101,40 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
       return
     }
     setSubmitting(true)
-    const ok = await enablePackageAndReload(packageInfo.id)
+    // The 8s timeout may fire while the bridge call is still in flight; the
+    // late-completion callback corrects the picture (success toast) instead
+    // of leaving the user with an error while the package enables silently.
+    const result = await enablePackageAndReload(packageInfo.id, packageInfo.consentToken ?? '', late => {
+      if (late.ok) {
+        toast.success(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
+      }
+      // A late FAILURE stays silent: the modal already showed the failure
+      // path and closed; re-toasting an error after the fact would only nag.
+    })
     setSubmitting(false)
-    if (ok) {
-      toast.success(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
+    if (result.ok) {
+      if (result.reloaded === false) {
+        // Enabled but the page reload failed — the tools stay inactive until
+        // the user reloads. Say so instead of claiming success.
+        toast.info(t('sidePanelPackage.enabledReloadFailedToast', { name: packageInfo.id }))
+      } else {
+        toast.success(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
+      }
     } else {
-      // Bridge failure — likely a stale extension. Cool the prompt down so
-      // it does not reappear immediately in a broken state.
+      // Structured failure: log for diagnosis, cool the prompt down so it
+      // does not reappear immediately in a broken state, surface the toast.
+      // eslint-disable-next-line no-console
+      console.error('[PackageOptInModal] enable failed:', {
+        packageId: packageInfo.id,
+        errorCode: result.errorCode,
+        error: result.error,
+      })
       dismissPackagePrompt(packageInfo.id)
-      toast.error(t('sidePanelPackage.enableFailedToast'))
+      toast.error(
+        result.errorCode === 'TIMEOUT'
+          ? t('sidePanelPackage.enableTimeoutToast')
+          : t('sidePanelPackage.enableFailedToast'),
+      )
     }
     onClose()
   }
@@ -228,12 +257,18 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
             {t('sidePanelPackage.privacyNote')}
           </p>
 
-          <label className="mt-4 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
-            <span className="text-sm text-foreground">
+          {/* htmlFor (not a wrapping label): Switch renders its own <label>,
+              and a nested label cannot activate the inner control. */}
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
+            <label htmlFor={toggleId} className="cursor-pointer text-sm text-foreground">
               {t('sidePanelPackage.enableToggle')}
-            </span>
-            <Switch checked={enableOnConfirm} onCheckedChange={setEnableOnConfirm} />
-          </label>
+            </label>
+            <Switch
+              id={toggleId}
+              checked={enableOnConfirm}
+              onCheckedChange={setEnableOnConfirm}
+            />
+          </div>
         </div>
 
         {/* Footer */}

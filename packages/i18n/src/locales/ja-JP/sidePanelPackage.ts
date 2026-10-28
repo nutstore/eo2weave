@@ -1,4 +1,4 @@
-// サイドパネルの WebMCP パッケージ有効化プロンプト（issue #100）
+// Side-panel WebMCP package opt-in prompt (issue #100)
 export const sidePanelPackage = {
   title: "このサイトで AI ツールを有効にしますか？",
   description:
@@ -15,6 +15,8 @@ export const sidePanelPackage = {
   confirm: "有効にしてページを再読み込み",
   enabling: "有効化中…",
   notNow: "今はしない（1 日間は再通知しません）",
+  enabledReloadFailedToast: "{name} を有効にしましたが、ページの再読み込みに失敗しました。手動で再読み込みするとツールが有効になります",
+  enableTimeoutToast: "有効化リクエストがタイムアウトしました。しばらくしてからもう一度お試しください。",
   enabledToast: "{name} を有効にしました。ページを再読み込みしてツールを反映します",
   enableFailedToast: "有効化に失敗しました。拡張機能が最新版か確認して再度お試しください。",
 }

@@ -17,7 +17,7 @@
  *     → window.__agentWeb.webMCPPackageOptInStatus(binding)  [MAIN world]
  *     → content.ts (ISOLATED relay)                          [postMessage]
  *     → background: resolveBoundSidePanelTab + package catalog
- *     → { applicable, package?, enabled? }
+ *     → { applicable, package?, enabled?, consentToken? }
  *
  * The enable state lives extension-side (chrome.storage.local) — the web app
  * never persists "enabled" itself; it only records a local dismissal
@@ -38,6 +38,11 @@ export interface PackageOptInInfo {
   hostname: string
   activation: 'enabled' | 'disabled'
   tools: PackageOptInToolInfo[]
+  /**
+   * One-time, extension-issued proof of consent minted while the package was
+   * disabled. Echoed back on enable; the background verifies and consumes it.
+   */
+  consentToken?: string
 }
 
 export interface PackageOptInStatus {
@@ -50,40 +55,50 @@ export interface PackageOptInStatus {
   ok?: boolean
   /** Structured failure (bridge unavailable, unauthorized binding, …). */
   errorCode?: string
+  error?: string
+  /**
+   * One-time, extension-issued proof of consent (present only while the
+   * package is still disabled). Must be echoed back on enable.
+   */
+  consentToken?: string
 }
 
-const DISMISS_STORAGE_KEY = 'cw_webmcp_package_prompt_dismissed_v1'
+const DISMISS_STORAGE_KEY_PREFIX = 'cw_webmcp_package_prompt_dismissed_v1'
 /** "Not now" cooldown: re-prompt after 1 day, not on every panel open. */
 export const DISMISS_COOLDOWN_MS = 24 * 60 * 60 * 1000
 
-function readDismissedMap(): Record<string, number> {
+/**
+ * One storage key PER PACKAGE (`<prefix>.<packageId>` → timestamp). A shared
+ * map key would make two side-panel instances dismissing different packages
+ * race on read-modify-write and drop each other's cooldown; per-key writes
+ * are independent and cannot clobber a sibling dismissal.
+ */
+function dismissKeyFor(packageId: string): string {
+  return `${DISMISS_STORAGE_KEY_PREFIX}.${packageId}`
+}
+
+function readDismissedAt(packageId: string): number | null {
   try {
-    const raw = localStorage.getItem(DISMISS_STORAGE_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    const out: Record<string, number> = {}
-    for (const [id, ts] of Object.entries(parsed)) {
-      if (typeof ts === 'number' && Number.isFinite(ts)) out[id] = ts
-    }
-    return out
+    const raw = localStorage.getItem(dismissKeyFor(packageId))
+    if (!raw) return null
+    const ts = Number(JSON.parse(raw) as unknown)
+    return typeof ts === 'number' && Number.isFinite(ts) ? ts : null
   } catch {
-    return {}
+    return null
   }
 }
 
 /** True when the user said "not now" for this package within the cooldown window. */
 export function isPackagePromptDismissed(packageId: string): boolean {
-  const dismissedAt = readDismissedMap()[packageId]
-  if (typeof dismissedAt !== 'number') return false
+  const dismissedAt = readDismissedAt(packageId)
+  if (dismissedAt === null) return false
   return Date.now() - dismissedAt < DISMISS_COOLDOWN_MS
 }
 
 /** Record a "not now" answer for the package (1-day cooldown). */
 export function dismissPackagePrompt(packageId: string): void {
   try {
-    const map = readDismissedMap()
-    map[packageId] = Date.now()
-    localStorage.setItem(DISMISS_STORAGE_KEY, JSON.stringify(map))
+    localStorage.setItem(dismissKeyFor(packageId), JSON.stringify(Date.now()))
   } catch {
     // localStorage unavailable (quota / privacy mode) — cooldown silently
     // degrades to "prompt may reappear next session". Never fatal.
@@ -93,7 +108,12 @@ export function dismissPackagePrompt(packageId: string): void {
 /** Test seam: clear all dismissal records. */
 export function resetPackagePromptDismissals(): void {
   try {
-    localStorage.removeItem(DISMISS_STORAGE_KEY)
+    const doomed: string[] = []
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i)
+      if (key?.startsWith(`${DISMISS_STORAGE_KEY_PREFIX}.`)) doomed.push(key)
+    }
+    for (const key of doomed) localStorage.removeItem(key)
   } catch {
     // localStorage unavailable — nothing to reset, and tests stub it anyway.
   }
@@ -102,6 +122,21 @@ export function resetPackagePromptDismissals(): void {
 interface AgentWebPackageOptInBridge {
   webMCPPackageOptInStatus?: (binding: string) => Promise<PackageOptInStatus>
 }
+
+/** Structured enable outcome — never reduce a background error to `false`. */
+export interface PackageOptInEnableResult {
+  ok: boolean
+  /** Structured reason when ok is false (background errorCode or client-side). */
+  errorCode?: string
+  /** Human-readable background error message when available. */
+  error?: string
+  /** False when the package was enabled but the bound tab reload failed. */
+  reloaded?: boolean
+}
+
+const ENABLE_TIMEOUT_MS = 8000
+/** Probe budget: covers cold service-worker starts without stalling startup. */
+const PROBE_TIMEOUT_MS = 4000
 
 /**
  * Ask the extension whether the bound upstream tab hosts a DISABLED builtin
@@ -113,9 +148,15 @@ interface AgentWebPackageOptInBridge {
  *   - the user dismissed the prompt within the cooldown window
  *
  * Bridge failures resolve `null` as well (never throw) — this prompt is a
- * nice-to-have and must not disturb side-panel startup.
+ * nice-to-have and must not disturb side-panel startup. Transient failures
+ * (timeout / bridge error) return a reason so callers can retry; only the
+ * terminal "nothing to offer" outcomes report `retryable: false`.
  */
-export async function getPendingPackagePrompt(): Promise<PackageOptInStatus | null> {
+export async function getPendingPackagePrompt(): Promise<
+  | (PackageOptInStatus & { applicable: true; package: PackageOptInInfo; enabled: false })
+  | { applicable: false; retryable: boolean }
+  | null
+> {
   const { getSidePanelBindingId } = await import('@/agent/workspace-assistant-context')
   const binding = getSidePanelBindingId()
   if (!binding) {
@@ -136,16 +177,22 @@ export async function getPendingPackagePrompt(): Promise<PackageOptInStatus | nu
   }
 
   let status: PackageOptInStatus | null = null
+  let timedOut = false
   try {
     // Bounded wait: side-panel startup must never hang on this probe. The
     // bridge itself has a 35s timeout; 4s covers cold service-worker starts
     // without stalling the modal long when the extension is half-dead.
     status = await Promise.race([
       agentWeb.webMCPPackageOptInStatus(binding),
-      new Promise<null>(resolve => setTimeout(() => resolve(null), 4000)),
+      new Promise<null>(resolve => {
+        setTimeout(() => {
+          timedOut = true
+          resolve(null)
+        }, PROBE_TIMEOUT_MS)
+      }),
     ])
   } catch {
-    return null
+    return { applicable: false, retryable: true }
   }
   if (!status || status.ok === false) {
     // eslint-disable-next-line no-console
@@ -153,7 +200,10 @@ export async function getPendingPackagePrompt(): Promise<PackageOptInStatus | nu
       status,
       hint: 'UNAUTHORIZED_TARGET = binding/trusted-origin check failed in background; null = 4s probe timeout',
     })
-    return null
+    // The bridge-level {ok:false} answers are structural (bad binding, bad
+    // origin) — retrying cannot fix them. A timeout CAN recover once the
+    // service worker wakes up, so that case stays retryable.
+    return { applicable: false, retryable: timedOut || status === null }
   }
   if (!status.applicable || !status.package || typeof status.package.id !== 'string') {
     // eslint-disable-next-line no-console
@@ -171,7 +221,13 @@ export async function getPendingPackagePrompt(): Promise<PackageOptInStatus | nu
     return null
   }
 
-  return { applicable: true, package: status.package, enabled: false }
+  // Attach the status-level consent token to the package payload the modal
+  // consumes, so the enable call can echo it back to the background.
+  const packageInfo: PackageOptInInfo = {
+    ...status.package,
+    consentToken: typeof status.consentToken === 'string' ? status.consentToken : undefined,
+  }
+  return { applicable: true, package: packageInfo, enabled: false }
 }
 
 /**
@@ -179,12 +235,21 @@ export async function getPendingPackagePrompt(): Promise<PackageOptInStatus | nu
  * extension-side AND reload the upstream page so its tools register (the
  * adapter proxies are injected by a static content script, so a config change
  * alone cannot reach pages loaded before the extension install/update).
- * Returns the bridge's ok flag.
+ *
+ * The 8s timeout is implemented with Promise.race + abort-style bookkeeping:
+ * whichever side loses keeps running, so the loser's result is forwarded
+ * through `onSettledLate` instead of being dropped. Without this, a slow
+ * enable that eventually succeeds would still show the user an error toast
+ * and record a dismissal while the package flips on in the background.
  */
-export async function enablePackageAndReload(packageId: string): Promise<boolean> {
+export async function enablePackageAndReload(
+  packageId: string,
+  consentToken: string,
+  onSettledLate?: (result: PackageOptInEnableResult) => void,
+): Promise<PackageOptInEnableResult> {
   const { getSidePanelBindingId } = await import('@/agent/workspace-assistant-context')
   const binding = getSidePanelBindingId()
-  if (!binding) return false
+  if (!binding) return { ok: false, errorCode: 'NO_BINDING' }
 
   const agentWeb = (
     globalThis as {
@@ -192,19 +257,89 @@ export async function enablePackageAndReload(packageId: string): Promise<boolean
         webMCPPackageOptInEnable?: (
           binding: string,
           packageId: string,
-        ) => Promise<{ ok?: boolean; error?: string }>
+          consentToken: string,
+        ) => Promise<{ ok?: boolean; error?: string; errorCode?: string; reloaded?: boolean }>
       }
     }
   ).__agentWeb
-  if (!agentWeb?.webMCPPackageOptInEnable) return false
+  if (!agentWeb?.webMCPPackageOptInEnable) {
+    return { ok: false, errorCode: 'BRIDGE_UNAVAILABLE' }
+  }
 
+  const toResult = (raw: {
+    ok?: boolean
+    error?: string
+    errorCode?: string
+    reloaded?: boolean
+  } | undefined): PackageOptInEnableResult => ({
+    ok: raw?.ok === true,
+    errorCode: raw?.errorCode ?? (raw?.ok === true ? undefined : 'ENABLE_FAILED'),
+    error: raw?.error,
+    reloaded: raw?.reloaded,
+  })
+
+  let winner: 'bridge' | 'timeout' | null = null
   try {
-    const result = await Promise.race([
-      agentWeb.webMCPPackageOptInEnable(binding, packageId),
-      new Promise<{ ok: false }>(resolve => setTimeout(() => resolve({ ok: false }), 8000)),
-    ])
-    return result?.ok === true
-  } catch {
-    return false
+    const result = await new Promise<PackageOptInEnableResult>(resolve => {
+      // ONE bridge call, shared by both racers — the timeout branch must
+      // observe the SAME pending promise, not fire a second enable.
+      const enable = agentWeb.webMCPPackageOptInEnable
+      const bridgeCall = enable!.call(agentWeb, binding, packageId, consentToken)
+      const timer = setTimeout(() => {
+        if (winner) return
+        winner = 'timeout'
+        resolve({ ok: false, errorCode: 'TIMEOUT' })
+        // The bridge call keeps running; forward its real outcome when it
+        // lands so the caller can correct the UI instead of silently
+        // enabling behind a dismissal.
+        bridgeCall
+          .then(late => {
+            if (winner !== 'timeout') return
+            onSettledLate?.(toResult(late))
+          })
+          .catch((err: unknown) => {
+            if (winner !== 'timeout') return
+            onSettledLate?.({
+              ok: false,
+              errorCode: 'ENABLE_FAILED',
+              error: err instanceof Error ? err.message : String(err),
+            })
+          })
+      }, ENABLE_TIMEOUT_MS)
+      bridgeCall
+        .then(late => {
+          if (winner) return
+          winner = 'bridge'
+          clearTimeout(timer)
+          resolve(toResult(late))
+        })
+        .catch((err: unknown) => {
+          if (winner) return
+          winner = 'bridge'
+          clearTimeout(timer)
+          // Unexpected bridge failures must keep their cause for diagnosis.
+          // eslint-disable-next-line no-console
+          console.error('[SidePanelPackagePrompt] enable bridge call failed:', err, {
+            packageId,
+            binding,
+          })
+          resolve({
+            ok: false,
+            errorCode: 'ENABLE_FAILED',
+            error: err instanceof Error ? err.message : String(err),
+          })
+        })
+    })
+    return result
+  } catch (err: unknown) {
+    // Unreachable in practice (the promise never rejects) but kept as a
+    // belt-and-braces guard so the flow can never throw into the modal.
+    // eslint-disable-next-line no-console
+    console.error('[SidePanelPackagePrompt] enable flow crashed:', err, { packageId })
+    return {
+      ok: false,
+      errorCode: 'ENABLE_FAILED',
+      error: err instanceof Error ? err.message : String(err),
+    }
   }
 }

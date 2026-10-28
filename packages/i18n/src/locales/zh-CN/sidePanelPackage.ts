@@ -1,4 +1,4 @@
-// 侧边栏 WebMCP 包开启引导弹窗（issue #100）
+// Side-panel WebMCP package opt-in prompt (issue #100)
 export const sidePanelPackage = {
   title: "开启此网站的 AI 工具注入？",
   description:
@@ -15,6 +15,8 @@ export const sidePanelPackage = {
   confirm: "开启并刷新页面",
   enabling: "正在开启…",
   notNow: "暂不开启（1 天内不再提示）",
+  enabledReloadFailedToast: "已开启 {name}，但网页刷新失败——请手动刷新网页以加载工具",
+  enableTimeoutToast: "开启请求超时，请稍后重试",
   enabledToast: "已开启 {name}，网页将自动刷新以加载工具",
   enableFailedToast: "开启失败，请确认插件为最新版本后重试",
 }

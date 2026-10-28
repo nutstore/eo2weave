@@ -1,4 +1,4 @@
-// 사이드 패널 WebMCP 패키지 활성화 프롬프트 (issue #100)
+// Side-panel WebMCP package opt-in prompt (issue #100)
 export const sidePanelPackage = {
   title: "이 사이트에서 AI 도구를 사용할까요?",
   description:
@@ -15,6 +15,8 @@ export const sidePanelPackage = {
   confirm: "활성화 후 페이지 새로고침",
   enabling: "활성화 중…",
   notNow: "나중에 (1일 동안 다시 알리지 않음)",
+  enabledReloadFailedToast: "{name}이(가) 활성화되었지만 페이지 새로고침에 실패했습니다. 수동으로 새로고침하면 도구가 활성화됩니다",
+  enableTimeoutToast: "활성화 요청이 시간 초과되었습니다. 잠시 후 다시 시도해 주세요.",
   enabledToast: "{name}이(가) 활성화되었습니다. 도구를 적용하기 위해 페이지를 새로고침합니다",
   enableFailedToast: "활성화에 실패했습니다. 확장 프로그램이 최신 버전인지 확인 후 다시 시도해 주세요.",
 }

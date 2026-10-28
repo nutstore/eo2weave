@@ -539,27 +539,50 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     if (!initialized || !isStorageReady) return
     if (packagePrompt) return
     let cancelled = false
+    // Retry bookkeeping (finding: a slow probe must not hide the prompt for
+    // the whole session): transient probe failures (timeout / bridge error)
+    // come back with `retryable: true` and are re-probed with capped backoff
+    // instead of being dropped. Terminal outcomes (no binding, no matching
+    // package, enabled, dismissed) return null and end the loop.
+    const startedAt = Date.now()
+    const MAX_RETRY_MS = 5 * 60 * 1000
+    const attempt = (delayMs: number) => {
+      const timer = setTimeout(() => {
+        if (cancelled) return
+        // eslint-disable-next-line no-console
+        console.info('[SidePanelPackagePrompt] probing for pending package opt-in…')
+        import('@/agent/sidepanel-package-prompt')
+          .then(({ getPendingPackagePrompt }) => getPendingPackagePrompt())
+          .then(status => {
+            if (cancelled) return
+            if (status && 'package' in status && status.package) {
+              // eslint-disable-next-line no-console
+              console.info('[SidePanelPackagePrompt] showing opt-in modal for', status.package.id)
+              setPackagePrompt(status as PackageOptInStatus)
+              return
+            }
+            if (
+              status &&
+              'retryable' in status &&
+              status.retryable &&
+              Date.now() - startedAt < MAX_RETRY_MS
+            ) {
+              attempt(Math.min((Date.now() - startedAt) / 4, 8000))
+            }
+          })
+          .catch(() => {
+            // probe failure must never surface — best-effort by design
+          })
+      }, delayMs)
+      activeTimer = timer
+    }
+    let activeTimer: ReturnType<typeof setTimeout> | undefined
     // Delay past the project-route navigation so the workspace UI settles
     // first; a consent dialog popping over the loading screen reads as a bug.
-    const timer = setTimeout(() => {
-      // eslint-disable-next-line no-console
-      console.info('[SidePanelPackagePrompt] probing for pending package opt-in…')
-      import('@/agent/sidepanel-package-prompt')
-        .then(({ getPendingPackagePrompt }) => getPendingPackagePrompt())
-        .then(status => {
-          if (!cancelled && status) {
-            // eslint-disable-next-line no-console
-            console.info('[SidePanelPackagePrompt] showing opt-in modal for', status.package?.id)
-            setPackagePrompt(status)
-          }
-        })
-        .catch(() => {
-          // probe failure must never surface — best-effort by design
-        })
-    }, 1200)
+    attempt(1200)
     return () => {
       cancelled = true
-      clearTimeout(timer)
+      if (activeTimer) clearTimeout(activeTimer)
     }
   }, [initialized, isStorageReady, packagePrompt])
 
