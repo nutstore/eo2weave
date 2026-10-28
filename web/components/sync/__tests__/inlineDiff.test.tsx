@@ -541,21 +541,27 @@ describe('LazyDiffViewer content-type split', () => {
       />
     )
 
-    // Removed fragments render as semantic <del> (implicit `deletion` role),
-    // added fragments as semantic <ins> (implicit `insertion` role), so a
-    // screen reader can distinguish deleted from inserted text.
+    // Removed/added fragments must expose their semantics to AT. The
+    // renderer emits the semantic <del>/<ins> elements (implicit
+    // `deletion`/`insertion` roles); if it ever falls back to bare
+    // <span>s it MUST set role="deletion"/"insertion" explicitly, so the
+    // assertion below accepts either but rejects a bare span with no
+    // a11y role — a screen reader could not tell deleted from inserted
+    // text.
     const removed = screen.getAllByTestId('track-changes-removed')
     expect(removed.length).toBeGreaterThan(0)
     for (const fragment of removed) {
-      expect(fragment.tagName).toBe('DEL')
-      expect(fragment.getAttribute('role')).toBeNull()
+      expect(
+        fragment.tagName === 'DEL' || fragment.getAttribute('role') === 'deletion',
+      ).toBe(true)
     }
 
     const added = screen.getAllByTestId('track-changes-added')
     expect(added.length).toBeGreaterThan(0)
     for (const fragment of added) {
-      expect(fragment.tagName).toBe('INS')
-      expect(fragment.getAttribute('role')).toBeNull()
+      expect(
+        fragment.tagName === 'INS' || fragment.getAttribute('role') === 'insertion',
+      ).toBe(true)
     }
 
     // The fragments must actually be VISIBLE to the accessibility tree —
@@ -609,6 +615,34 @@ describe('LazyDiffViewer content-type split', () => {
       // must be non-empty, so the whole visible text lives in
       // a11y-visible nodes.
       expect(fragment.textContent!.length).toBeGreaterThan(0)
+      // The ancestors matter as much as the descendants: an `inert`,
+      // `hidden` or `aria-hidden="true"` ANCESTOR hides the whole subtree
+      // for AT, and an ancestor with an accessible name (aria-label /
+      // aria-labelledby) announces that name instead of the subtree text.
+      for (
+        let ancestor = fragment.parentElement;
+        ancestor && ancestor !== document.body;
+        ancestor = ancestor.parentElement
+      ) {
+        expect(ancestor.hasAttribute('inert')).toBe(false)
+        expect(ancestor.hasAttribute('hidden')).toBe(false)
+        // `aria-hidden="false"` (or absent) keeps content exposed; only
+        // the literal "true" hides it (matched case-insensitively).
+        expect((ancestor.getAttribute('aria-hidden') ?? '').toLowerCase()).not.toBe('true')
+        // Only roles that REPLACE the subtree text matter here: any role
+        // combined with an accessible name makes the ancestor an atomic
+        // replacement. A semantically neutral `role="presentation"` or
+        // `role="none"` WITHOUT a label still exposes the text, so it is
+        // allowed.
+        if (
+          ancestor.getAttribute('aria-label') !== null ||
+          ancestor.getAttribute('aria-labelledby') !== null
+        ) {
+          expect(ancestor.getAttribute('role')).toBeNull()
+          expect(ancestor.getAttribute('aria-label')).toBeNull()
+          expect(ancestor.getAttribute('aria-labelledby')).toBeNull()
+        }
+      }
       for (const node of [fragment, ...fragment.querySelectorAll<HTMLElement>('*')]) {
         // `aria-hidden="false"` is valid and keeps content exposed; only
         // the literal "true" hides a node. Match case-insensitively so
@@ -617,27 +651,43 @@ describe('LazyDiffViewer content-type split', () => {
         // `hidden` and `inert` both remove a subtree from the a11y tree.
         expect(node.hasAttribute('hidden')).toBe(false)
         expect(node.hasAttribute('inert')).toBe(false)
-        // `role` + `aria-label` makes a node an atomic replacement: AT
-        // announces the label instead of the subtree text, so a diff
-        // fragment must not be wrapped in one.
-        expect(node.getAttribute('role')).toBeNull()
-        expect(node.getAttribute('aria-label')).toBeNull()
+        // `role` + an accessible name makes a node an atomic replacement:
+        // AT announces the name instead of the subtree text, so a diff
+        // fragment must not be wrapped in one. `aria-labelledby` is
+        // rejected for the same reason — a referenced label overrides the
+        // announced text just like `aria-label` does. A bare
+        // `role="presentation"`/`role="none"` WITHOUT a name is allowed:
+        // it strips the node's own semantics but keeps the text exposed.
+        if (
+          node.getAttribute('aria-label') !== null ||
+          node.getAttribute('aria-labelledby') !== null
+        ) {
+          expect(node.getAttribute('role')).toBeNull()
+          expect(node.getAttribute('aria-label')).toBeNull()
+          expect(node.getAttribute('aria-labelledby')).toBeNull()
+        }
         expect(node.style.display).not.toBe('none')
         expect(node.style.visibility).not.toBe('hidden')
         expect(node.style.visibility).not.toBe('collapse')
+        expect(node.style.contentVisibility).not.toBe('hidden')
         // Computed-style guard: the inline `style` checks above only see
-        // inline declarations, so also read each node's computed display
-        // and visibility to catch hiding applied via the CSSOM (e.g.
-        // programmatic style or class changes). happy-dom (this suite's
-        // test environment) resolves class-based rules from stylesheets
-        // in the document, but it is NOT a full CSS engine —
-        // media-query-scoped, pseudo-class or externally-hosted rules can
-        // still be missed, so this check complements rather than replaces
-        // the markup assertions above. `opacity: 0` is deliberately not
-        // checked: it does not remove content from the accessibility
-        // tree. `visibility: collapse` is treated like `hidden`: AT
-        // removes collapsed content that is not table rows/columns.
-        // NOTE on effective vs. per-node visibility: `visibility` is
+        // inline declarations, so also read each node's computed display,
+        // visibility and content-visibility to catch hiding applied via
+        // the CSSOM (e.g. programmatic style or class changes). happy-dom
+        // (this suite's test environment) resolves class-based rules from
+        // stylesheets in the document — including any stylesheet the test
+        // injects — but it is NOT a full CSS engine and the app's
+        // production Tailwind stylesheet is not loaded here, so
+        // production-only hiding classes (e.g. Tailwind `hidden`) are
+        // detected by the className-independent assertions above plus
+        // build-time review, not by getComputedStyle. The check
+        // complements rather than replaces the markup assertions.
+        // `opacity: 0` is deliberately not checked: it does not remove
+        // content from the accessibility tree. `visibility: collapse` is
+        // treated like `hidden`: AT removes collapsed content that is not
+        // table rows/columns. `content-visibility: hidden` is rejected
+        // like `display: none`: the subtree is skipped for rendering and
+        // AT. NOTE on effective vs. per-node visibility: `visibility` is
         // inheritable-with-override (`hidden` wrapper + `visible` child
         // exposes the child). This loop asserts per-node values, so a
         // nested `visibility: visible` under a `hidden` ancestor is
@@ -648,6 +698,7 @@ describe('LazyDiffViewer content-type split', () => {
         const computed = window.getComputedStyle(node)
         expect(computed.display).not.toBe('none')
         expect(computed.visibility === 'hidden' || computed.visibility === 'collapse').toBe(false)
+        expect(computed.contentVisibility).not.toBe('hidden')
       }
     }
   })
