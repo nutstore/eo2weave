@@ -83,10 +83,12 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
 
   const attachAbort = (signal: AbortSignal | undefined) => {
     if (!signal) return
-    const onAbort = () => timeoutController.abort()
+    // Forward the source signal's reason so tools can tell WHY they were
+    // cancelled (user Stop vs internal teardown) instead of a bare abort.
+    const onAbort = () => timeoutController.abort(signal.reason)
     signal.addEventListener('abort', onAbort)
     cleanupListeners.push(() => signal.removeEventListener('abort', onAbort))
-    if (signal.aborted) timeoutController.abort()
+    if (signal.aborted) timeoutController.abort(signal.reason)
   }
 
   attachAbort(input.runAbortSignal)

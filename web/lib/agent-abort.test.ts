@@ -12,6 +12,7 @@ import {
   createAgentAbortReason,
   isExpectedAgentAbort,
   installAgentAbortRejectionFilter,
+  registerAgentAbortError,
 } from '@/lib/agent-abort'
 import { AgentLoop } from '@/agent/agent-loop'
 import type { Message } from '@/agent/message-types'
@@ -49,6 +50,19 @@ describe('isExpectedAgentAbort', () => {
     expect(isExpectedAgentAbort(new Error('agent-cancelled-by-user'))).toBe(false)
     expect(isExpectedAgentAbort('agent-cancelled-by-user')).toBe(false)
     expect(isExpectedAgentAbort(undefined)).toBe(false)
+  })
+
+  it('rejects a foreign AbortError that merely copies the agent-cancelled prefix', () => {
+    // Ownership is decided by the module's WeakSet of minted reasons, not by
+    // the message alone — a hostile/foreign subsystem minting the same prefix
+    // must still surface.
+    const foreign = new DOMException(`${AGENT_ABORT_PREFIX}: fake`, 'AbortError')
+    expect(isExpectedAgentAbort(foreign)).toBe(false)
+  })
+
+  it('recognizes fallback AbortErrors registered via registerAgentAbortError', () => {
+    const registered = registerAgentAbortError(new DOMException(AGENT_ABORT_PREFIX, 'AbortError'))
+    expect(isExpectedAgentAbort(registered)).toBe(true)
   })
 })
 

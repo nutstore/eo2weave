@@ -378,7 +378,11 @@ export class AgentLoop {
    */
   async run(messages: Message[], callbacks?: AgentCallbacks): Promise<Message[]> {
     this.abortController = new AbortController()
-    const signal = this.abortController.signal
+    // Capture this invocation's controller locally: if a second run() starts
+    // before this one finishes, the earlier run's teardown must not abort the
+    // newer run's signal or null out its controller.
+    const controller = this.abortController
+    const signal = controller.signal
     const latestSummary = [...messages].reverse().find(message => message.kind === 'context_summary')
     if (latestSummary?.content) {
       this.compressionBaseline = {
@@ -430,8 +434,10 @@ export class AgentLoop {
       // Without this, requests left unconsumed when the loop ends (aborted,
       // errored, or completed while a prompt-level auth was still queued)
       // survive as stale popups that keep surfacing across later loops.
-      this.abortController?.abort(createAgentAbortReason(AgentAbortReasonName.LifecycleTeardown))
-      this.abortController = null
+      controller.abort(createAgentAbortReason(AgentAbortReasonName.LifecycleTeardown))
+      // Clear the instance reference only if a newer run() has not already
+      // replaced it — otherwise we would orphan the newer run's controller.
+      if (this.abortController === controller) this.abortController = null
     }
   }
 }

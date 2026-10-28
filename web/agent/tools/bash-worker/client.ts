@@ -29,10 +29,13 @@ import type {
 import { handleVfsRpc, type VfsRpcHandlerConfig } from './vfs-rpc-handler'
 import { ToolTimeoutError } from '../tool-utils'
 import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from '../agent-file-protection'
-import { AGENT_ABORT_PREFIX } from '@/lib/agent-abort'
+import { AGENT_ABORT_PREFIX, registerAgentAbortError } from '@/lib/agent-abort'
 
 /** Error used to reject in-flight bash work when the run signal aborts. */
-const bashAbortedError = () => new Error(`${AGENT_ABORT_PREFIX}: bash execution aborted`)
+const bashAbortedError = () =>
+  registerAgentAbortError(
+    new DOMException(`${AGENT_ABORT_PREFIX}: bash execution aborted`, 'AbortError'),
+  )
 
 // ---------------------------------------------------------------------------
 // Public types
