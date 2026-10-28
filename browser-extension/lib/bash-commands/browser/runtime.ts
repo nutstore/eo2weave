@@ -6,6 +6,7 @@ import { BrowserTask } from './task'
 import { actionable, withElement } from './target'
 import { keyboard, mouse, moveMouse, releaseInput, forgetInput } from './input'
 import { evaluatePage } from './evaluate'
+import { evaluateViaScripting } from './scripting-eval'
 import { navigate } from './navigation'
 import { BrowserError } from './errors'
 import type { TabWebMCPApi } from '../../../entrypoints/webmcp/tab-api'
@@ -68,6 +69,9 @@ async function runTab(task: BrowserTask, owner: string, request: BrowserRequest)
   task.check()
   if (command === 'close' || command === 'tab-close') { await task.wait(chrome.tabs.remove(tabId)); return { tabId, closed: true } }
   if (command === 'detach') { await releaseInput(tabId); await task.wait(detachDebugger(tabId)); clearSnapshotsForTab(tabId); return { tabId, detached: true } }
+  // No-ref eval injects through chrome.scripting instead — attaching here
+  // would raise the debugging banner the scripting path exists to avoid.
+  if (command === 'eval' && !request.positionals[1]) return runAttachedTab(task, owner, request)
   await task.wait(ensureAttached(tabId))
   // Hidden renderers do not reliably acknowledge or deliver CDP mouse input.
   // Emulate page focus for this click without activating the browser tab.
@@ -99,9 +103,14 @@ async function runAttachedTab(task: BrowserTask, owner: string, request: Browser
     }
     return p[0] ? withElement(task, owner, p[0], async objectId => capture((await task.send('DOM.describeNode', { objectId })).node.backendNodeId)) : capture()
   }
-  if (command === 'eval') return p[1]
-    ? withElement(task, owner, p[1], objectId => evaluatePage(task, p[0] ?? stdin, objectId))
-    : evaluatePage(task, p[0] ?? stdin)
+  if (command === 'eval') {
+    // No element target: no objectIds involved, so chrome.scripting keeps the
+    // debugger (and its banner) out of the tab entirely. Ref/CSS eval needs
+    // CDP Runtime.callFunctionOn and stays on the attached path below. This
+    // branch is reached before ensureAttached for the no-ref form (runTab).
+    if (!p[1]) return evaluateViaScripting(task, p[0] ?? stdin)
+    return withElement(task, owner, p[1], objectId => evaluatePage(task, p[0] ?? stdin, objectId))
+  }
   if (command === 'screenshot') return screenshot(task, owner, request)
   if (command === 'dialog-accept' || command === 'dialog-dismiss') {
     await task.send('Page.handleJavaScriptDialog', { accept: command === 'dialog-accept', ...(p[0] === undefined ? {} : { promptText: p[0] }) })

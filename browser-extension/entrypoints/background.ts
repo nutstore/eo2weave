@@ -4,6 +4,7 @@
 import { installAdapterBackground } from './webmcp/adapter-background'
 import { serializeError as serializeBrowserError } from '../lib/bash-commands/browser/errors'
 import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
+import { installCdpIdleWatch } from '../lib/bash-commands/browser/cdp'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
@@ -1034,6 +1035,7 @@ CODEX = {
 
 export default defineBackground(() => {
   installBrowserLifecycle()
+  installCdpIdleWatch()
   let tabWebMCP: ReturnType<typeof createTabWebMCPApi> | undefined
   const adapterService = installAdapterBackground({
     runBrowser: (owner, request, signal) => {
