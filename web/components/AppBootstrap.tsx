@@ -20,6 +20,8 @@ import { ExtensionInstallGuide } from '@/components/extension'
 // ExecAuthModal. They now forward into the shared tool-auth.store queue.
 import { ToolAuthModal } from '@/components/agent/ToolAuthModal'
 import { DeviceCodeFlowDialog } from '@/components/agent/DeviceCodeFlowDialog'
+import { PackageOptInModal } from '@/components/sidepanel/PackageOptInModal'
+import type { PackageOptInStatus } from '@/agent/sidepanel-package-prompt'
 import { useGatewayReloginStore } from '@/store/gateway-relogin.store'
 import { ServiceWorkerBridge } from '@/components/ServiceWorkerBridge'
 import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
@@ -525,6 +527,42 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     })
   }, [initialized, isStorageReady, router])
 
+  // ── Side-panel package opt-in prompt (issue #100) ──
+  // When the side panel opens on a site hosted by a builtin WebMCP package
+  // (jmail.world, douban, …) whose activation is still off, offer a one-time
+  // enable (writes the extension-side package config + reloads the upstream
+  // page so the tools register). Non-side-panel sessions never even reach
+  // the bridge probe (getPendingPackagePrompt returns null without a
+  // binding).
+  const [packagePrompt, setPackagePrompt] = useState<PackageOptInStatus | null>(null)
+  useEffect(() => {
+    if (!initialized || !isStorageReady) return
+    if (packagePrompt) return
+    let cancelled = false
+    // Delay past the project-route navigation so the workspace UI settles
+    // first; a consent dialog popping over the loading screen reads as a bug.
+    const timer = setTimeout(() => {
+      // eslint-disable-next-line no-console
+      console.info('[SidePanelPackagePrompt] probing for pending package opt-in…')
+      import('@/agent/sidepanel-package-prompt')
+        .then(({ getPendingPackagePrompt }) => getPendingPackagePrompt())
+        .then(status => {
+          if (!cancelled && status) {
+            // eslint-disable-next-line no-console
+            console.info('[SidePanelPackagePrompt] showing opt-in modal for', status.package?.id)
+            setPackagePrompt(status)
+          }
+        })
+        .catch(() => {
+          // probe failure must never surface — best-effort by design
+        })
+    }, 1200)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [initialized, isStorageReady, packagePrompt])
+
   // --- Service Worker update prompt (was in AppReady) ---
   const swUpdateToastShownRef = useRef(false)
 
@@ -594,6 +632,12 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         onOpenChange={(open) => { if (!open) extensionCloseGuide() }}
       />
       <ToolAuthModal />
+      {packagePrompt?.package && (
+        <PackageOptInModal
+          packageInfo={packagePrompt.package}
+          onClose={() => setPackagePrompt(null)}
+        />
+      )}
       {/* Gateway re-login dialog (issue #75) — driven by the relogin store so
           the credential-expired error card can open it from anywhere (chat
           view, side panel) without prop threading. Mounted at this stable root

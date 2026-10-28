@@ -835,6 +835,28 @@ export default defineContentScript({
       },
 
       /**
+       * Package opt-in probe: does the BOUND upstream tab host a builtin
+       * WebMCP package (jmail.world, douban, …) that is not enabled yet?
+       * Used by the side panel to decide whether to show the one-time
+       * opt-in modal. Returns package METADATA only (never tool schemas or
+       * page content); `applicable: false` when no package matches.
+       */
+      async webMCPPackageOptInStatus(binding: string) {
+        return sendToBridge('webmcp_package_optin_status', { binding });
+      },
+
+      /**
+       * Package opt-in commit: enable the builtin package for the bound tab's
+       * site (the same extension-side config the packages management page
+       * writes) and reload the upstream page so its tools register. The
+       * background re-validates the package against the live tab URL before
+       * writing.
+       */
+      async webMCPPackageOptInEnable(binding: string, packageId: string) {
+        return sendToBridge('webmcp_package_optin_enable', { binding, packageId });
+      },
+
+      /**
        * Pull page context from the upstream tab that opened this CreatorWeave
        * side panel. Used by workspace-assistant-context.ts at system-prompt
        * build time. The extension executes

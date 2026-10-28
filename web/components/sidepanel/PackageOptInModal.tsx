@@ -1,0 +1,261 @@
+'use client'
+
+/**
+ * PackageOptInModal — one-time consent dialog when the side panel opens on a
+ * site hosted by a builtin WebMCP package that is still disabled
+ * (issue #100).
+ *
+ * Flow:
+ *   1. AppBootstrap (side-panel mode, storage ready) calls
+ *      `getPendingPackagePrompt()` after a short delay (let the workspace
+ *      render first — the modal must not race the project route).
+ *   2. If the bound upstream tab hosts a disabled builtin package AND the
+ *      user has not dismissed it within the 1-day cooldown → this modal
+ *      renders.
+ *   3. 「开启并刷新页面」→ `enablePackageAndReload()` enables the package
+ *      extension-side (the same config the packages management page writes)
+ *      and reloads the upstream page so the tools register. Success toast
+ *      explains what happened.
+ *   4. 「暂不开启」→ 1-day local cooldown, no nagging on every panel open.
+ *
+ * The web app never persists the enabled state itself — extension storage is
+ * the single source of truth (revocable in the extension's Supported Sites
+ * page). This is purely an accelerator for the consent UX.
+ *
+ * Visual spec (owner-approved, issue #100): lucide icons only (NO emoji),
+ * a collapsible tool list (chevron + Wrench + count) with internal scroll
+ * and zebra rows, per-tool read-only / write badges, and a flex modal
+ * (max-height 88%) whose header and footer stay fixed while the body
+ * scrolls. A backdrop click must NOT close the dialog — an accidental click
+ * is not a decision (same rule as ToolAuthModal).
+ */
+
+import { useState } from 'react'
+import { toast } from 'sonner'
+import {
+  ChevronDown,
+  ChevronRight,
+  Clapperboard,
+  Globe,
+  Mail,
+  MessageSquare,
+  ShoppingBag,
+  Wrench,
+  type LucideIcon,
+} from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
+import { useT } from '@/i18n'
+import {
+  dismissPackagePrompt,
+  enablePackageAndReload,
+  type PackageOptInInfo,
+} from '@/agent/sidepanel-package-prompt'
+
+/**
+ * Package id → lucide icon. The package manifest has no icon field (and the
+ * manifest schema stays untouched), so the mapping lives in the front end.
+ */
+const PACKAGE_ICONS: Record<string, LucideIcon> = {
+  'world.jmail.archive': Mail,
+  'world.jmail.messages': MessageSquare,
+  'com.xiaohongshu.main': ShoppingBag,
+  'com.douban.movie': Clapperboard,
+  'com.douban.search': Clapperboard,
+  'com.discord.main': MessageSquare,
+}
+
+export function packageIcon(packageId: string): LucideIcon {
+  return PACKAGE_ICONS[packageId] ?? Globe
+}
+
+/** Per-tool semantic icon — a per-tool icon map would be guesswork. */
+function toolIcon(toolName: string): LucideIcon {
+  if (/read|list|search|get|view|check|browse|show|open/i.test(toolName)) return Globe
+  if (/publish|post|send|comment|like|reply|write|upload/i.test(toolName)) return Wrench
+  return Wrench
+}
+
+export interface PackageOptInModalProps {
+  packageInfo: PackageOptInInfo
+  onClose: () => void
+}
+
+export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalProps) {
+  const t = useT()
+  const [enableOnConfirm, setEnableOnConfirm] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [showTools, setShowTools] = useState(false)
+
+  const Icon = packageIcon(packageInfo.id)
+  const tools = packageInfo.tools ?? []
+
+  const handleConfirm = async () => {
+    if (!enableOnConfirm) {
+      // User unticked the switch → treat as an explicit "not now".
+      dismissPackagePrompt(packageInfo.id)
+      onClose()
+      return
+    }
+    setSubmitting(true)
+    const ok = await enablePackageAndReload(packageInfo.id)
+    setSubmitting(false)
+    if (ok) {
+      toast.success(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
+    } else {
+      // Bridge failure — likely a stale extension. Cool the prompt down so
+      // it does not reappear immediately in a broken state.
+      dismissPackagePrompt(packageInfo.id)
+      toast.error(t('sidePanelPackage.enableFailedToast'))
+    }
+    onClose()
+  }
+
+  const handleDismiss = () => {
+    dismissPackagePrompt(packageInfo.id)
+    onClose()
+  }
+
+  return (
+    // Backdrop deliberately has no onClick (mirrors ToolAuthModal): an
+    // accidental outside click must not be recorded as a consent decision.
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('sidePanelPackage.title')}
+    >
+      <div
+        className="mx-4 flex max-h-[88%] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="shrink-0 border-b border-border px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-100 text-primary-600 dark:bg-primary-50/50 dark:text-primary-500">
+              <Icon className="h-5 w-5" aria-hidden="true" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-base font-semibold text-foreground">
+                {t('sidePanelPackage.title')}
+              </h2>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                {packageInfo.hostname}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <p className="text-sm leading-relaxed text-foreground">
+            {t('sidePanelPackage.description', { count: tools.length })}
+          </p>
+
+          {/* Package card */}
+          <div className="mt-3 flex items-start gap-2.5 rounded-lg bg-muted/60 px-3 py-2.5">
+            <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-foreground">
+                {packageInfo.id}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {packageInfo.description}
+              </p>
+            </div>
+          </div>
+
+          {/* Collapsible tool list (same disclosure pattern as PageContextCard) */}
+          {tools.length > 0 && (
+            <div className="mt-3 overflow-hidden rounded-lg border border-border">
+              <button
+                type="button"
+                className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                onClick={() => setShowTools(value => !value)}
+                aria-expanded={showTools}
+                aria-label={showTools ? t('sidePanelPackage.toolsCollapse') : t('sidePanelPackage.toolsExpand')}
+              >
+                {showTools ? (
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+                )}
+                <Wrench className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">
+                  {t('sidePanelPackage.toolsTitle', { count: tools.length })}
+                </span>
+              </button>
+              {showTools && (
+                <ul className="custom-scrollbar max-h-[140px] overflow-y-auto">
+                  {tools.map((tool, index) => {
+                    const ToolIcon = toolIcon(tool.name)
+                    return (
+                      <li
+                        key={tool.name}
+                        className={`flex items-start gap-2 px-3 py-1.5 text-[11px] leading-relaxed ${
+                          index % 2 === 0 ? 'bg-muted/40' : 'bg-transparent'
+                        }`}
+                      >
+                        <ToolIcon
+                          className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="font-mono text-foreground">{tool.name}</span>
+                          {tool.description ? (
+                            <span className="text-muted-foreground"> — {tool.description}</span>
+                          ) : null}
+                        </span>
+                        <span
+                          className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            tool.readOnly
+                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                              : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                          }`}
+                        >
+                          {tool.readOnly
+                            ? t('sidePanelPackage.readOnly')
+                            : t('sidePanelPackage.write')}
+                        </span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+            {t('sidePanelPackage.privacyNote')}
+          </p>
+
+          <label className="mt-4 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
+            <span className="text-sm text-foreground">
+              {t('sidePanelPackage.enableToggle')}
+            </span>
+            <Switch checked={enableOnConfirm} onCheckedChange={setEnableOnConfirm} />
+          </label>
+        </div>
+
+        {/* Footer */}
+        <div className="flex shrink-0 justify-end gap-2 border-t border-border px-5 py-3.5">
+          <button
+            type="button"
+            className="rounded-lg px-3.5 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={handleDismiss}
+            disabled={submitting}
+          >
+            {t('sidePanelPackage.notNow')}
+          </button>
+          <button
+            type="button"
+            className="rounded-lg bg-primary-600 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={() => void handleConfirm()}
+            disabled={submitting}
+          >
+            {submitting ? t('sidePanelPackage.enabling') : t('sidePanelPackage.confirm')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

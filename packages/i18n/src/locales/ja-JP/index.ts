@@ -33,6 +33,7 @@ import { keyboardShortcuts } from './keyboardShortcuts'
 import { assets } from './assets'
 import { processes } from './processes'
 import { sidePanelRecipe } from './sidePanelRecipe'
+import { sidePanelPackage } from './sidePanelPackage'
 import { execPolicy } from './execPolicy'
 import { tools } from './tools'
 import { schedule } from './schedule'
@@ -93,6 +94,7 @@ export const jaJP = {
   assets,
   processes,
   sidePanelRecipe,
+  sidePanelPackage,
   execPolicy,
   extension,
   tools,
