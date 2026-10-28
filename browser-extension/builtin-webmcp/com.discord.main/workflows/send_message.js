@@ -120,7 +120,12 @@ export default {
             // credential (logged out, account switched), so the cached
             // token from a previous account must NOT be used. A token that
             // Discord rejected with 401 is also suppressed until the page
-            // exposes a fresh credential.
+            // exposes a fresh credential. Because a cached token cannot be
+            // attributed to the current account when the probe is
+            // unavailable or incomplete, the fallback below is REMOVED:
+            // without a confirmed live token the caller sees
+            // UNAUTHENTICATED instead of risking the previous account's
+            // credential.
             var rejectedValue = null
             try {
               rejectedValue = globalThis.__eo2DiscordTokenRejected
@@ -162,18 +167,11 @@ export default {
             }
             // The walk itself failed or never completed (webpack not
             // loaded, or the chunk global was swapped mid-update and the
-            // probe callback did not run): fall back to the cache unless
-            // that cached token is the rejected one. A completed walk that
-            // found no token is handled above and can never reach here.
-            try {
-              var cached = globalThis.__eo2DiscordToken
-              if (
-                typeof cached === 'string' &&
-                cached &&
-                cached !== rejectedValue
-              )
-                return cached
-            } catch (e) {}
+            // probe callback did not run): the cached token can no longer
+            // be confirmed to belong to the CURRENT account — an account
+            // switch exactly when the probe is unavailable would silently
+            // reuse the previous account's credential. Fail closed with
+            // UNAUTHENTICATED until a fresh token can be read.
             return null
           }
           async function discordApi(endpoint, options) {
@@ -279,12 +277,15 @@ export default {
               if (code !== undefined) {
                 // A coded 403 (e.g. 50013 Missing Permissions) is a
                 // permission denial, not a login failure: classify it and
-                // keep the cached token. A coded 401 always means the
-                // credential itself was rejected, so clear the cache no
-                // matter how the code classifies (see below); uncoded
-                // 401/403 bodies fall through to the generic AUTH branch.
+                // keep the cached token. Every HTTP 401 is an auth failure
+                // in the caller-visible contract regardless of the Discord
+                // code (an unknown code such as 50012 must not degrade to a
+                // generic API error), so override the classification and
+                // clear the cache; the code stays in the message and in
+                // discord_code as diagnostic detail.
                 var classified = classify(code, message)
-                if (classified === 'AUTH' || response.status === 401) {
+                if (response.status === 401) classified = 'AUTH'
+                if (classified === 'AUTH') {
                   // Evict only if the cache still holds THIS rejected
                   // token: a newer credential cached by a concurrent call
                   // (account switch) must survive this stale 401.
@@ -313,6 +314,9 @@ export default {
                 }
               }
               if (response.status === 401 || response.status === 403) {
+                // Uncoded bodies: 401 keeps its AUTH classification here,
+                // while an uncoded 403 falls through to the generic HTTP
+                // branch below (only coded 403s are permission denials).
                 try {
                   if (globalThis.__eo2DiscordToken === token)
                     delete globalThis.__eo2DiscordToken
@@ -462,10 +466,18 @@ export default {
               // omitted one, the auto-generated value is remembered per
               // (channel, reply, content) key in a bounded map, so retries
               // of DIFFERENT sends do not evict each other the way a single
-              // last-send slot would. Entries expire after 10 minutes and
-              // the map holds at most 32 keys (oldest evicted first).
+              // last-send slot would. The remember window is 5 minutes,
+              // matched to Discord's enforce_nonce guarantee ("uniqueness
+              // is checked over the past few minutes"): within it a retry
+              // IS deduped by Discord; a retry AFTER it re-sends the same
+              // nonce but Discord no longer enforces uniqueness, so it can
+              // post a duplicate — automatic reuse is deliberately bounded
+              // to the window Discord actually guarantees. The timestamp is
+              // set once at nonce creation and NOT refreshed on retry
+              // attempts, so the window cannot be extended by retries.
+              // The map holds at most 32 keys (oldest evicted first).
               // Known trade-off: two intentionally identical sends to the
-              // same channel/reply target within the 10-minute window share
+              // same channel/reply target within the 5-minute window share
               // a nonce and Discord dedupes the second one — vary the
               // content or pass an explicit nonce to force a new message.
               // A different message always gets a fresh nonce, so two sends
@@ -485,15 +497,18 @@ export default {
                     (globalThis.__eo2DiscordRetryNonces =
                       globalThis.__eo2DiscordRetryNonces || new Map())
                   // Lazily drop expired entries instead of timing each one.
+                  // 5 minutes = the dedup window Discord's enforce_nonce
+                  // guarantees ("uniqueness ... over the past few
+                  // minutes"); automatic nonce reuse never outlives it.
                   var now = Date.now()
                   retries.forEach(function (value, k) {
-                    if (now - value.at >= 600000) retries.delete(k)
+                    if (now - value.at >= 300000) retries.delete(k)
                   })
                   var remembered = retries.get(retryKey)
                   if (
                     remembered &&
                     typeof remembered.nonce === 'string' &&
-                    now - remembered.at < 600000
+                    now - remembered.at < 300000
                   )
                     nonce = remembered.nonce
                 } catch (e) {}
@@ -508,8 +523,14 @@ export default {
                   var store =
                     (globalThis.__eo2DiscordRetryNonces =
                       globalThis.__eo2DiscordRetryNonces || new Map())
-                  store.delete(retryKey)
-                  store.set(retryKey, { nonce: nonce, at: Date.now() })
+                  var existing = store.get(retryKey)
+                  // Store-once: the timestamp marks when the nonce was
+                  // CREATED, never refreshed on retry attempts, so the
+                  // 5-minute reuse window cannot be extended by retries.
+                  if (!existing) {
+                    store.delete(retryKey)
+                    store.set(retryKey, { nonce: nonce, at: Date.now() })
+                  }
                   // Bounded: keep the map at 32 keys, evicting the oldest.
                   while (store.size > 32) {
                     var oldest = store.keys().next().value

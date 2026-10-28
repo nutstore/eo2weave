@@ -115,7 +115,12 @@ export default {
             // credential (logged out, account switched), so the cached
             // token from a previous account must NOT be used. A token that
             // Discord rejected with 401 is also suppressed until the page
-            // exposes a fresh credential.
+            // exposes a fresh credential. Because a cached token cannot be
+            // attributed to the current account when the probe is
+            // unavailable or incomplete, the fallback below is REMOVED:
+            // without a confirmed live token the caller sees
+            // UNAUTHENTICATED instead of risking the previous account's
+            // credential.
             var rejectedValue = null
             try {
               rejectedValue = globalThis.__eo2DiscordTokenRejected
@@ -157,18 +162,11 @@ export default {
             }
             // The walk itself failed or never completed (webpack not
             // loaded, or the chunk global was swapped mid-update and the
-            // probe callback did not run): fall back to the cache unless
-            // that cached token is the rejected one. A completed walk that
-            // found no token is handled above and can never reach here.
-            try {
-              var cached = globalThis.__eo2DiscordToken
-              if (
-                typeof cached === 'string' &&
-                cached &&
-                cached !== rejectedValue
-              )
-                return cached
-            } catch (e) {}
+            // probe callback did not run): the cached token can no longer
+            // be confirmed to belong to the CURRENT account — an account
+            // switch exactly when the probe is unavailable would silently
+            // reuse the previous account's credential. Fail closed with
+            // UNAUTHENTICATED until a fresh token can be read.
             return null
           }
           async function discordApi(endpoint, options) {
@@ -274,12 +272,15 @@ export default {
               if (code !== undefined) {
                 // A coded 403 (e.g. 50013 Missing Permissions) is a
                 // permission denial, not a login failure: classify it and
-                // keep the cached token. A coded 401 always means the
-                // credential itself was rejected, so clear the cache no
-                // matter how the code classifies (see below); uncoded
-                // 401/403 bodies fall through to the generic AUTH branch.
+                // keep the cached token. Every HTTP 401 is an auth failure
+                // in the caller-visible contract regardless of the Discord
+                // code (an unknown code such as 50012 must not degrade to a
+                // generic API error), so override the classification and
+                // clear the cache; the code stays in the message and in
+                // discord_code as diagnostic detail.
                 var classified = classify(code, message)
-                if (classified === 'AUTH' || response.status === 401) {
+                if (response.status === 401) classified = 'AUTH'
+                if (classified === 'AUTH') {
                   // Evict only if the cache still holds THIS rejected
                   // token: a newer credential cached by a concurrent call
                   // (account switch) must survive this stale 401.
@@ -308,6 +309,9 @@ export default {
                 }
               }
               if (response.status === 401 || response.status === 403) {
+                // Uncoded bodies: 401 keeps its AUTH classification here,
+                // while an uncoded 403 falls through to the generic HTTP
+                // branch below (only coded 403s are permission denials).
                 try {
                   if (globalThis.__eo2DiscordToken === token)
                     delete globalThis.__eo2DiscordToken
