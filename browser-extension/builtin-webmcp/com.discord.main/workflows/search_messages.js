@@ -49,10 +49,12 @@ export default {
           // Runs INSIDE the discord.com tab: token never leaves page context.
           var AUTH_ERRORS = [0, 40001, 40002, 50014]
           var NOT_FOUND_ERRORS = [10003, 10004, 10006, 10008, 10013, 10011, 10014, 10015]
-          var VALIDATION_ERRORS = [50001, 50003, 50006, 50007, 50008, 50013, 50035, 50109]
+          var FORBIDDEN_ERRORS = [50001, 50013]
+          var VALIDATION_ERRORS = [50003, 50006, 50007, 50008, 50035, 50109]
           function classify(code, message) {
             if (VALIDATION_ERRORS.indexOf(code) !== -1) return 'VALIDATION'
             if (NOT_FOUND_ERRORS.indexOf(code) !== -1) return 'NOT_FOUND'
+            if (FORBIDDEN_ERRORS.indexOf(code) !== -1) return 'FORBIDDEN'
             if (AUTH_ERRORS.indexOf(code) !== -1) return 'AUTH'
             return 'API'
           }
@@ -97,17 +99,51 @@ export default {
             // Re-read the live webpack token on every call and refresh the
             // cache with it: a user switching accounts in a still-loaded
             // tab must never let requests run as the previous account.
-            // The cache is only a fallback for windows where the walk fails.
-            var token = getTokenFromWebpack()
-            if (token) {
+            // The cache is only a fallback for windows where the walk itself
+            // fails (webpack not yet loaded, page mid-navigation). A walk
+            // that RAN but found no token means the page really has no
+            // credential (logged out, account switched), so the cached
+            // token from a previous account must NOT be used. A token that
+            // Discord rejected with 401 is also suppressed until the page
+            // exposes a fresh credential.
+            var rejectedValue = null
+            try {
+              rejectedValue = globalThis.__eo2DiscordTokenRejected
+            } catch (e) {}
+            var ran = false
+            var token = null
+            try {
+              var chunks = globalThis.webpackChunkdiscord_app
+              if (chunks && typeof chunks.push === 'function') {
+                ran = true
+                token = getTokenFromWebpack()
+              }
+            } catch (e) {}
+            if (ran && token) {
+              // The page exposes a live credential. If it is the exact
+              // string Discord rejected with 401, keep it suppressed; a
+              // DIFFERENT token means a fresh session (re-login, account
+              // switch) and replaces the rejection.
+              if (rejectedValue && token === rejectedValue) return null
               try {
+                globalThis.__eo2DiscordTokenRejected = null
                 globalThis.__eo2DiscordToken = token
               } catch (e) {}
               return token
             }
+            // The walk ran and found no token: the page really has no
+            // credential (logged out), so never fall back to the cache.
+            if (ran) return null
+            // The walk itself failed (webpack not loaded): fall back to
+            // the cache unless that cached token is the rejected one.
             try {
               var cached = globalThis.__eo2DiscordToken
-              if (typeof cached === 'string' && cached) return cached
+              if (
+                typeof cached === 'string' &&
+                cached &&
+                cached !== rejectedValue
+              )
+                return cached
             } catch (e) {}
             return null
           }
@@ -176,12 +212,21 @@ export default {
                   : 'Network error calling Discord API: ' + String(e),
               }
             }
-            if (abortTimer !== null) clearTimeout(abortTimer)
+            // Keep the in-page deadline armed while the response body is
+            // consumed: headers can arrive while the body stalls forever,
+            // and the browser eval would time out with the read un-aborted.
+            if (abortTimer !== null)
+              abortTimer = setTimeout(function () {
+                try {
+                  abortController.abort()
+                } catch (e) {}
+              }, 20000)
             if (!response.ok) {
               var text = ''
               try {
                 text = await response.text()
               } catch (e) {}
+              if (abortTimer !== null) clearTimeout(abortTimer)
               var code, message
               try {
                 var parsed = JSON.parse(text)
@@ -189,9 +234,8 @@ export default {
                 message = parsed.message
               } catch (e) {}
               if (response.status === 429) {
-                try {
-                  delete globalThis.__eo2DiscordToken
-                } catch (e) {}
+                // Rate limiting does not reject the credential: keep the
+                // cache so a later failed walk does not read as a logout.
                 return {
                   ok: false,
                   error_code: 'RATE_LIMITED',
@@ -211,6 +255,12 @@ export default {
                   try {
                     delete globalThis.__eo2DiscordToken
                   } catch (e) {}
+                  // A 401 means Discord rejected this credential: suppress
+                  // it even if the webpack module still exposes it, until a
+                  // fresh (different) token appears.
+                  try {
+                    globalThis.__eo2DiscordTokenRejected = token
+                  } catch (e) {}
                 }
                 return {
                   ok: false,
@@ -229,6 +279,10 @@ export default {
                 try {
                   delete globalThis.__eo2DiscordToken
                 } catch (e) {}
+                if (response.status === 401)
+                  try {
+                    globalThis.__eo2DiscordTokenRejected = token
+                  } catch (e) {}
                 return {
                   ok: false,
                   error_code: 'AUTH',
@@ -244,10 +298,24 @@ export default {
                   'Discord API error (' + response.status + '): ' + text.slice(0, 512),
               }
             }
-            if (response.status === 204) return { ok: true, data: {} }
+            if (response.status === 204) {
+              if (abortTimer !== null) clearTimeout(abortTimer)
+              return { ok: true, data: {} }
+            }
             try {
-              return { ok: true, data: await response.json() }
+              var data = await response.json()
+              if (abortTimer !== null) clearTimeout(abortTimer)
+              return { ok: true, data: data }
             } catch (e) {
+              if (abortTimer !== null) clearTimeout(abortTimer)
+              var aborted =
+                e && (e.name === 'AbortError' || String(e).indexOf('abort') !== -1)
+              if (aborted)
+                return {
+                  ok: false,
+                  error_code: 'NETWORK',
+                  message: 'Discord API response aborted after the 20s in-page deadline.',
+                }
               return {
                 ok: false,
                 error_code: 'HTTP',

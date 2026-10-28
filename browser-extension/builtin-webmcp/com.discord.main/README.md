@@ -25,17 +25,22 @@ The token never leaves the page context.
 
 Every workflow returns `{ status: 'ok'|'error', data, message }`. Error
 results carry a stable `error_code`: `UNSUPPORTED_PAGE`, `UNAUTHENTICATED`,
-`AUTH`, `VALIDATION`, `NOT_FOUND`, `RATE_LIMITED`, `NETWORK`, `HTTP`, `API`
-(unclassified Discord error codes), `EMPTY_RESULT`, `TAB_UNAVAILABLE` (the
+`AUTH`, `VALIDATION`, `FORBIDDEN`, `NOT_FOUND`, `RATE_LIMITED`, `NETWORK`,
+`HTTP`, `API` (unclassified Discord error codes), `EMPTY_RESULT`,
+`TAB_UNAVAILABLE` (the
 discord.com tab closed, navigated away, or could not run the tool) or
 `UNKNOWN`. Discord error codes are
 classified the same way as OpenTabs
 (auth 0/40001/40002/50014, not-found 10003/10004/10006/10008/10013/10011/
-10014/10015, validation 50001/50003/50006/50007/50008/50013/50035/50109).
-Cache-clearing is deliberate per case: every HTTP 401 clears the cached
-token, an uncoded 403 clears it, a coded 403 (e.g. 50013 Missing
-Permissions) is a permission denial that keeps it, and HTTP 429 is
-reported as `RATE_LIMITED` without touching it.
+10014/10015, forbidden 50001/50013, validation 50003/50006/50007/50008/
+50035/50109). Cache-clearing is deliberate per case: every HTTP 401 clears
+the cached token AND suppresses the webpack-exposed token until the page
+offers a fresh credential (Discord has rejected that exact credential, so
+re-reading it would keep sending a dead token), an uncoded 403 clears the
+cache, a coded 403 (e.g. 50013 Missing Permissions) is a permission denial
+that keeps it, and HTTP 429 is reported as `RATE_LIMITED` without touching
+the cache — rate limiting does not reject the credential, so a later failed
+webpack walk must not read as a logout.
 
 Input validation rejects before any API call: `read_messages` accepts at
 most one of `before`/`after`/`around`, `list_guilds` accepts at most one
@@ -43,7 +48,10 @@ of `before`/`after`, and `search_messages` requires at least one search
 criterion (`content`, `author_id`, `channel_id` or `has`) alongside
 `guild_id`. `send_message` posts with `nonce` plus `enforce_nonce: true`;
 retrying a timed-out send with the SAME `nonce` input makes Discord dedupe
-it, and auto-generated nonces are echoed back in `data.nonce`.
+it, and when the caller omits `nonce` the auto-generated value (max 25
+chars, like every caller-supplied nonce enforced by the schema) is
+remembered for 10 minutes so a retry of the same send reuses it and is
+deduped instead of posting twice; it is echoed back in `data.nonce`.
 
 ## Readiness gating
 
@@ -52,11 +60,14 @@ If the current tab is not on discord.com, tools return
 has not hydrated its webpack modules yet (or the session has no token), tools
 return `error_code: 'UNAUTHENTICATED'` immediately instead of hanging. A successful token extraction is cached on the page
 (`globalThis.__eo2DiscordToken`) to skip the webpack walk on subsequent
-calls; a rejected 401, an uncoded 403 or a 429 clears the cache so a token
-Discord just rejected cannot linger. On every call the workflow re-reads
+calls, but only when the walk itself fails (webpack not yet loaded). When
+the walk runs and finds no token, the page genuinely has no credential and
+the cache is not used — this is what keeps a previous account's token from
+being sent after logout or an account switch. A 401 additionally marks the
+credential as rejected so the webpack-exposed token is suppressed until the
+page exposes a fresh one. On every call the workflow re-reads
 Discord's live webpack token and refreshes the cache with it, so switching
-accounts in a still-loaded tab is picked up immediately; the cache only
-covers windows where the webpack walk itself fails. Unclassified Discord
+accounts in a still-loaded tab is picked up immediately. Unclassified Discord
 error codes surface as `API`.
 
 ## Tool descriptions (i18n)
