@@ -96,7 +96,7 @@ function FragmentSpan({ fragment }: { fragment: InlineFragment }) {
   // Unchanged text sits on the dark row surface in both themes — it needs
   // its own light foreground rather than the inherited theme foreground.
   return (
-    <span data-testid="track-changes-equal" className="text-neutral-100">
+    <span data-testid="track-changes-equal" className="text-neutral-700 dark:text-neutral-100">
       {fragment.value}
     </span>
   )
@@ -116,7 +116,7 @@ const TrackChangesLine: React.FC<TrackChangesLineProps> = ({
 }) => {
   return (
     <div
-      className="relative flex bg-[#1c2128]"
+      className="relative flex bg-neutral-100 dark:bg-[#1c2128]"
       data-testid={TRACK_CHANGES_LINE_TESTID}
       data-selected={selected ? 'true' : 'false'}
     >
