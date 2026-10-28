@@ -193,6 +193,11 @@ export class AgentLoop {
       // Commit compression state only while this invocation still owns the
       // instance (a newer overlapping run must not have its baseline or
       // counters clobbered by an older, slower run finishing last).
+      // NOTE: executePiCoreLoop reads this.compressionBaseline for trimming
+      // during the run; overlapping runs are prevented at the store layer (a
+      // new run replaces the registered loop before starting), so the read
+      // path cannot race in practice — the commit-side guard below protects
+      // the one overlap window that exists (older run finishing last).
       if (this.abortController === controller) {
         this.compressionBaseline = result.compressionBaseline ?? this.compressionBaseline
         this.convertCallCount = result.convertCallCount
@@ -324,17 +329,22 @@ export class AgentLoop {
         // covers.  The full message list is NOT modified; only the baseline metadata
         // is persisted so that the next LLM call uses the trimmed context.
         const cutoffTimestamp = getCompressionCutoffTimestamp(messages)
-        if (typeof cutoffTimestamp === 'number') {
-          this.compressionBaseline = { summary, cutoffTimestamp, throughMessageId: messages.at(-1)?.id }
-        }
+        // Commit only while this compaction still owns the loop — an older
+        // runCompactOnly finishing after a newer run must not overwrite the
+        // newer run's baseline or counters.
+        if (this.abortController === controller) {
+          if (typeof cutoffTimestamp === 'number') {
+            this.compressionBaseline = { summary, cutoffTimestamp, throughMessageId: messages.at(-1)?.id }
+          }
 
-        // Update compression state counters
-        this.convertCallCount++
-        this.lastSummaryConvertCall = this.convertCallCount
-        this.onCompressionStateUpdate?.({
-          convertCallCount: this.convertCallCount,
-          lastSummaryConvertCall: this.lastSummaryConvertCall,
-        })
+          // Update compression state counters
+          this.convertCallCount++
+          this.lastSummaryConvertCall = this.convertCallCount
+          this.onCompressionStateUpdate?.({
+            convertCallCount: this.convertCallCount,
+            lastSummaryConvertCall: this.lastSummaryConvertCall,
+          })
+        }
 
         // Build result for compression baseline only (NOT used to replace UI messages)
         const summaryMessage: Message = {
