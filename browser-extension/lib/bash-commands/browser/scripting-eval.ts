@@ -37,16 +37,22 @@ async function runEvalWrapper(fnSource: string): Promise<unknown> {
 }
 
 /**
- * Does this failure mean the page's CSP refused to compile the MAIN-world
- * wrapper? Chrome surfaces it either as an executeScript rejection or as the
- * wrapper's own EvalError result. The patterns match the Function-constructor
- * compile signature specifically ("Refused to evaluate… 'unsafe-eval'… Content
- * Security Policy"), so a user function that merely throws a CSP-flavored
- * message from unrelated code is far less likely to be mistaken for a blocked
- * compile than broad keyword matches would be.
+ * Does this executeScript rejection mean the page's CSP refused the MAIN-world
+ * wrapper compile, so the injected function provably never ran?
+ *
+ * Only reached when chrome.scripting.executeScript itself rejected — i.e. the
+ * injection failed at the extension boundary. Even then, some Chrome versions
+ * surface unrelated injection errors (the classic "Cannot access a chrome://
+ * URL" family) with messages that cannot be told apart from a CSP refusal by
+ * shape, so the message prefix is matched strictly against Chrome's documented
+ * Function-constructor CSP wording rather than loose keyword containment.
  */
 export function isCspRejection(message: string): boolean {
-  return /Refused to evaluate|is not an allowed source of script|Content Security Policy directive|unsafe-eval/i.test(message)
+  const prefixes = [
+    "Refused to evaluate a string as JavaScript because 'unsafe-eval'",
+  ]
+  const normalized = message.trim()
+  return prefixes.some(prefix => normalized.startsWith(prefix) || normalized.startsWith(`EvalError: ${prefix}`))
 }
 
 /**
@@ -85,6 +91,12 @@ export async function evaluateViaScripting(task: BrowserTask, source: string): P
   } catch (error) {
     scriptingError = error instanceof Error ? error : new Error(String(error))
     const message = scriptingError.message
+    // Fallback only on an executeScript rejection: the injection itself failed
+    // at the extension boundary, so the page function provably never ran and
+    // re-running it via CDP cannot duplicate any of its effects. The strict
+    // CSP prefix additionally excludes unrelated injection errors (blocked
+    // chrome:// targets, disconnected tabs, other extension errors) that must
+    // surface as failures, not trigger a second execution attempt.
     if (isCspRejection(message)) {
       // The scripting attempt is stateless (nothing to clean up in the tab),
       // but the CDP path needs an attached debugger — the no-ref branch
@@ -99,7 +111,7 @@ export async function evaluateViaScripting(task: BrowserTask, source: string): P
     // tagged compile failure (raised before any user code ran) is safe to
     // re-run: a message from the user function itself could coincide with
     // CSP patterns, and re-running it would double its external effects.
-    if (outcome && outcome.compileError === true) {
+    if (outcome?.compileError === true) {
       await ensureAttached(tabId)
       return await evaluatePage(task, source)
     }

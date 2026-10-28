@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runBrowserRequest } from '../../../browser-extension/lib/bash-commands/browser/runtime'
+import { isCspRejection } from '../../../browser-extension/lib/bash-commands/browser/scripting-eval'
 import { clearDebuggerState } from '../../../browser-extension/lib/bash-commands/browser/cdp'
 
 /**
@@ -271,6 +272,49 @@ describe('browser eval routing', () => {
     expect(dbg.attach).toHaveBeenCalled()
   })
 
+  it('does not fall back when executeScript rejects with a non-CSP injection error', async () => {
+    // executeScript rejections that are not the CSP compile refusal mean the
+    // injection failed for an unrelated reason. Without the rejection itself
+    // matching the strict CSP prefix, there is no evidence about whether the
+    // page function ran, so the request must fail instead of re-running it.
+    const executeScript = vi.fn(async () => { throw new Error('Cannot access contents of the page. Extension manifest must request permission to access the respective host.') })
+    const dbg = debuggerApi()
+    vi.stubGlobal('chrome', {
+      scripting: { executeScript },
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    await expect(runBrowserRequest('owner', {
+      command: 'eval', positionals: ['() => document.title'], options: { tab: '7' }, stdin: '',
+    })).rejects.toMatchObject({ message: 'Cannot access contents of the page. Extension manifest must request permission to access the respective host.' })
+    expect(executeScript).toHaveBeenCalledTimes(1)
+    expect(dbg.attach).not.toHaveBeenCalled()
+    expect(dbg.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it('falls back only on the exact browser CSP refusal prefix, not CSP wording mid-message', async () => {
+    // The rejection must match Chrome's documented Function-constructor CSP
+    // message from the start; a message that merely CONTAINS CSP wording (an
+    // unrelated injection error quoting it, for example) must surface as a
+    // failure rather than trigger the CDP fallback.
+    const executeScript = vi.fn(async () => { throw new Error('Injection failed: Refused to evaluate a string as JavaScript because \'unsafe-eval\' is not an allowed source of script') })
+    const dbg = debuggerApi()
+    vi.stubGlobal('chrome', {
+      scripting: { executeScript },
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    await expect(runBrowserRequest('owner', {
+      command: 'eval', positionals: ['() => document.title'], options: { tab: '7' }, stdin: '',
+    })).rejects.toMatchObject({ message: expect.stringContaining('Refused to evaluate a string as JavaScript') })
+    expect(dbg.attach).not.toHaveBeenCalled()
+    expect(dbg.sendCommand).not.toHaveBeenCalled()
+  })
+
   it('keeps snapshot-ref eval on the CDP path with Runtime.callFunctionOn', async () => {
     const executeScript = vi.fn()
     const dbg = debuggerApi()
@@ -337,5 +381,24 @@ describe('browser eval routing', () => {
     expect(result).toMatchObject({ tabId: 7, result: 'css-title' })
     expect(dbg.sendCommand).toHaveBeenCalledWith(expect.objectContaining({ tabId: 7 }), 'Runtime.callFunctionOn', expect.objectContaining({ objectId: 'obj-9' }), expect.any(Function))
     expect(executeScript).not.toHaveBeenCalled()
+  })
+})
+
+describe('isCspRejection signature', () => {
+  it('matches the exact browser Function-constructor CSP refusal prefix', () => {
+    expect(isCspRejection("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script in the following Content Security Policy directive: \"script-src 'self'\"")).toBe(true)
+    expect(isCspRejection("EvalError: Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script")).toBe(true)
+    expect(isCspRejection("  Refused to evaluate a string as JavaScript because 'unsafe-eval' ...")).toBe(true)
+  })
+
+  it('rejects messages that merely contain CSP wording or unrelated injection errors', () => {
+    // User-function error whose message coincidentally carries CSP wording.
+    expect(isCspRejection('Refused to evaluate: unsafe-eval is not allowed by Content Security Policy directive')).toBe(false)
+    // CSP refusal quoted mid-message by an unrelated error.
+    expect(isCspRejection("Injection failed: Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script")).toBe(false)
+    // Non-CSP injection errors.
+    expect(isCspRejection('Cannot access a chrome:// URL')).toBe(false)
+    expect(isCspRejection('The tab was closed')).toBe(false)
+    expect(isCspRejection('Cannot access contents of the page. Extension manifest must request permission to access the respective host.')).toBe(false)
   })
 })
