@@ -653,6 +653,53 @@ it('keeps a newer cached token when a stale in-flight 401 arrives', async () => 
   expect(page.fetches).toHaveLength(3)
 })
 
+it('does not let a stale in-flight 401 re-enable a newer rejected token', async () => {
+  // Token B's request 401s while an older in-flight request for token A
+  // is still stalled at the gate: A's late marker write must not
+  // overwrite B's rejection (which would re-enable B on the next call).
+  let releaseStale: (() => void) | null = null
+  const staleGate = new Promise<void>((resolve) => {
+    releaseStale = resolve
+  })
+  const page = fixture({
+    respond: (url) =>
+      url.includes('/channels/stale/') || url.includes('/channels/expired/')
+        ? { status: 401, body: { code: 50012, message: 'Unknown session' } }
+        : { status: 200, body: [] },
+    gate: (url) => (url.includes('/channels/stale/') ? staleGate : undefined),
+  })
+  let currentToken = 'token-account-a'
+  ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
+    const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
+    requireCallback({
+      c: { mod: { exports: { default: { getToken: () => currentToken } } } },
+    })
+  }
+  // Cache account A's token with a successful call.
+  await page.execute('read_messages', { channel: 'ok' })
+  // Stale request for A is IN FLIGHT at the gate.
+  const staleA = page.execute('read_messages', { channel: 'stale' })
+  await vi.waitFor(() => expect(page.fetches).toHaveLength(2))
+  // Switch to B; its request 401s immediately and B becomes the marker.
+  currentToken = 'token-account-b'
+  const asB = await page.execute('read_messages', { channel: 'expired' })
+  expect(asB.value.result.error_code).toBe('AUTH')
+  // NOW A's stale 401 lands. It must NOT overwrite the rejection marker.
+  releaseStale!()
+  const stale = await staleA
+  expect(stale.value.result.error_code).toBe('AUTH')
+  // The marker still holds B: with the live walk finding B again, the
+  // token stays suppressed (UNAUTHENTICATED, no fetch) instead of B being
+  // resent. Then a genuinely fresh token is accepted immediately.
+  const resent = await page.execute('read_messages', { channel: 'ok' })
+  expect(resent.value.result.error_code).toBe('UNAUTHENTICATED')
+  expect(page.fetches).toHaveLength(3)
+  currentToken = 'token-account-c'
+  const fresh = await page.execute('read_messages', { channel: 'ok' })
+  expect(fresh.value.result.status).toBe('ok')
+  expect(page.fetches[3].init.headers).toMatchObject({ Authorization: 'token-account-c' })
+})
+
 it('keeps the cached token and the auth state on HTTP 429', async () => {
   let rateLimited = true
   const page = fixture({

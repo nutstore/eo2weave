@@ -287,10 +287,16 @@ export default {
                       delete globalThis.__eo2DiscordToken
                   } catch (e) {}
                   // A 401 means Discord rejected this credential: suppress
-                  // it even if the webpack module still exposes it, until a
-                  // fresh (different) token appears.
+                  // it even if the webpack module still exposes it, until
+                  // a fresh (different) token appears. The marker is only
+                  // overwritten when it is empty or already holds THIS
+                  // token: a stale in-flight 401 from an older token must
+                  // not replace the marker for a newer already-rejected
+                  // token, which would re-enable that rejected credential.
                   try {
-                    globalThis.__eo2DiscordTokenRejected = token
+                    var currentRejected = globalThis.__eo2DiscordTokenRejected
+                    if (typeof currentRejected !== 'string' || !currentRejected || currentRejected === token)
+                      globalThis.__eo2DiscordTokenRejected = token
                   } catch (e) {}
                 }
                 return {
@@ -316,7 +322,14 @@ export default {
                 } catch (e) {}
                 if (response.status === 401)
                   try {
-                    globalThis.__eo2DiscordTokenRejected = token
+                    // Same guard as the coded branch: only an empty
+                    // marker or one already holding THIS token may be
+                    // (re)written, so a stale in-flight 401 from an older
+                    // token cannot overwrite the marker for a newer
+                    // already-rejected token.
+                    var currentRejected = globalThis.__eo2DiscordTokenRejected
+                    if (typeof currentRejected !== 'string' || !currentRejected || currentRejected === token)
+                      globalThis.__eo2DiscordTokenRejected = token
                   } catch (e) {}
                 return {
                   ok: false,
