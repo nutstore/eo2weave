@@ -93,6 +93,41 @@ describe('CDP idle auto-detach', () => {
     expect(stored.cw_cdp_activity).toEqual({ 5: expect.any(Number), 7: expect.any(Number) })
   })
 
+  it('keeps the activity record when a detach fails after a SW restart, so sweeps retry', async () => {
+    // Discarded-SW scenario: persisted stale timestamp, empty in-memory state
+    // — attachedTabs does NOT list the tab when the sweep detach fails.
+    const data = new Map<string, unknown>([['cw_cdp_activity', { 7: Date.now() }]])
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}))
+    ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
+    const cdp = await loadModule()
+    await vi.advanceTimersByTimeAsync(cdp.CDP_IDLE_TIMEOUT_MS + 1000)
+    ;(chrome.debugger.getTargets as ReturnType<typeof vi.fn>).mockResolvedValue([{ tabId: 7, attached: true }])
+    ;(chrome.debugger.detach as ReturnType<typeof vi.fn>).mockImplementationOnce((_t: unknown, done: () => void) => {
+      chrome.runtime.lastError = { message: 'Detach failed' }
+      done()
+      Reflect.deleteProperty(chrome.runtime, 'lastError')
+    })
+    await cdp.sweepIdleTabs()
+    // The timestamp survives the failed detach, so the next sweep can retry.
+    const stored = await chrome.storage.session.get('cw_cdp_activity')
+    expect(stored.cw_cdp_activity?.[7]).toBeGreaterThan(0)
+    await cdp.sweepIdleTabs()
+    expect(chrome.debugger.detach).toHaveBeenCalledTimes(2)
+  })
+
+  it('persists an empty activity snapshot when the last tracked tab is detached', async () => {
+    const data = new Map<string, unknown>()
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}))
+    ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
+    const cdp = await loadModule()
+    await cdp.ensureAttached(7)
+    await cdp.detachDebugger(7)
+    // Flush the coalesced persist: the stale timestamp must not linger.
+    await vi.advanceTimersByTimeAsync(10)
+    const stored = await chrome.storage.session.get('cw_cdp_activity')
+    expect(stored.cw_cdp_activity).toEqual({})
+  })
+
   it('sweeps idle tabs through the alarm after a service worker restart', async () => {
     const cdp = await loadModule()
     cdp.installCdpIdleWatch()
@@ -106,11 +141,12 @@ describe('CDP idle auto-detach', () => {
     expect(revived.attachedTabs.size).toBe(0)
     // The browser still reports the debugger attached (getTargets survives).
     ;(chrome.debugger.getTargets as ReturnType<typeof vi.fn>).mockResolvedValue([{ tabId: 7, attached: true }])
-    const [, listener] = [...alarmListeners]
     // The frozen clock keeps the persisted timestamp fresh; let the idle
     // window elapse, then the alarm sweep (with storage recovered) detaches.
+    // Drive sweepIdleTabs directly — the alarm listener discards the sweep's
+    // promise, so awaiting the listener would race the assertions.
     await vi.advanceTimersByTimeAsync(cdp.CDP_IDLE_TIMEOUT_MS + 1000)
-    await listener({ name: 'cw-cdp-idle-sweep' })
+    await revived.sweepIdleTabs()
     expect(chrome.debugger.detach).toHaveBeenCalledWith({ tabId: 7 }, expect.any(Function))
     expect(revived.attachedTabs.has(7)).toBe(false)
   })
@@ -125,8 +161,7 @@ describe('CDP idle auto-detach', () => {
     // Overwrite the persisted snapshot with a fresh timestamp, as if the SW
     // was discarded seconds ago.
     await chrome.storage.session.set({ cw_cdp_activity: { 7: Date.now() } })
-    const [, listener] = [...alarmListeners]
-    await listener({ name: 'cw-cdp-idle-sweep' })
+    await revived.sweepIdleTabs()
     expect(chrome.debugger.detach).not.toHaveBeenCalled()
   })
 
@@ -173,8 +208,9 @@ describe('CDP idle auto-detach', () => {
     ;(chrome.debugger.getTargets as ReturnType<typeof vi.fn>).mockImplementationOnce(() => gate.then(() => [{ tabId: 7, attached: true }]))
     // Expire the persisted timestamp.
     await vi.advanceTimersByTimeAsync(cdp.CDP_IDLE_TIMEOUT_MS + 1000)
-    const listener = [...alarmListeners].at(-1)!
-    const sweeping = listener({ name: 'cw-cdp-idle-sweep' })
+    // Drive sweepIdleTabs directly: the alarm listener discards the sweep's
+    // promise, so awaiting the listener would not cover the async sweep.
+    const sweeping = cdp.sweepIdleTabs()
     // A command attaches through the same module while the check hangs,
     // recording fresh activity.
     await cdp.ensureAttached(7)
