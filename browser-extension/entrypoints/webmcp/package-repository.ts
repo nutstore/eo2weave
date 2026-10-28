@@ -27,6 +27,16 @@ export async function getWebMCPMounts() {
 export async function readWebMCPCatalog() {
   return readMountedWebMCPCatalog(await getWebMCPMounts())
 }
+/**
+ * Builtin-only catalog read for the opt-in prompt: the user-mounted provider
+ * (OPFS adapter storage) can fail to initialize independently, and a failing
+ * USER mount must not hide healthy BUILTIN packages from the opt-in status
+ * probe. The opt-in flow only ever offers/enables builtin packages, so it
+ * reads this narrower catalog.
+ */
+export async function readBuiltinWebMCPCatalog() {
+  return readMountedWebMCPCatalog([providerMount('builtin-webmcp', await getBuiltinStorage())])
+}
 export async function readEnabledWebMCPPackages() {
   const entries = await readWebMCPCatalog()
   const uriByPackage = new Map(entries.map(entry => [entry.package, entry.uri]))

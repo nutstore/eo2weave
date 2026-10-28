@@ -106,7 +106,7 @@ describe('getPendingPackagePrompt', () => {
 
   it('returns the package with its consent token when applicable, disabled and not dismissed', async () => {
     getSidePanelBindingIdMock.mockReturnValue(BINDING)
-    const status = vi.fn().mockResolvedValue(okStatus())
+    const status = vi.fn().mockResolvedValue(okStatus({ totalTools: 5 }))
     setAgentWeb({ webMCPPackageOptInStatus: status })
 
     const result = await getPendingPackagePrompt()
@@ -116,6 +116,8 @@ describe('getPendingPackagePrompt', () => {
     expect(result.package.id).toBe('world.jmail.archive')
     expect(result.enabled).toBe(false)
     expect(result.package.consentToken).toBe('token-abc')
+    // package-wide count passes through for the consent disclosure
+    expect(result.package.totalTools).toBe(5)
   })
 
   it('returns null while the 1-day dismissal cooldown is active, and again afterwards', async () => {
@@ -130,6 +132,10 @@ describe('getPendingPackagePrompt', () => {
     // Simulate cooldown expiry: backdate the dismissal past 24 hours.
     const key = 'cw_webmcp_package_prompt_dismissed_v1.world.jmail.archive'
     const ts = JSON.parse(localStorage.getItem(key)!) as number
+    localStorage.setItem(key, JSON.stringify(ts - 25 * 60 * 60 * 1000))
+    // A new panel session starts with an empty in-memory fallback set.
+    resetPackagePromptDismissals()
+    // re-seed the persisted (backdated) record the reset just cleared
     localStorage.setItem(key, JSON.stringify(ts - 25 * 60 * 60 * 1000))
 
     expect(isPackagePromptDismissed('world.jmail.archive')).toBe(false)
@@ -197,6 +203,22 @@ describe('dismissPackagePrompt (concurrency-safe storage)', () => {
     resetPackagePromptDismissals()
     expect(isPackagePromptDismissed('world.jmail.archive')).toBe(false)
     expect(isPackagePromptDismissed('com.douban.movie')).toBe(false)
+  })
+
+  it('keeps the dismissal in-memory when localStorage writes throw (no immediate reopen)', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded')
+    })
+    try {
+      dismissPackagePrompt('world.jmail.archive')
+      // The session fallback suppresses the prompt even though nothing was
+      // persisted — the modal must not immediately reappear.
+      expect(isPackagePromptDismissed('world.jmail.archive')).toBe(true)
+      expect(isPackagePromptDismissed('com.douban.movie')).toBe(false)
+    } finally {
+      setItem.mockRestore()
+      resetPackagePromptDismissals()
+    }
   })
 })
 

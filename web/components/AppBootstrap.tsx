@@ -539,13 +539,19 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     if (!initialized || !isStorageReady) return
     if (packagePrompt) return
     let cancelled = false
-    // Retry bookkeeping (finding: a slow probe must not hide the prompt for
-    // the whole session): transient probe failures (timeout / bridge error)
-    // come back with `retryable: true` and are re-probed with capped backoff
-    // instead of being dropped. Terminal outcomes (no binding, no matching
-    // package, enabled, dismissed) return null and end the loop.
+    // Retry bookkeeping (findings: "a slow probe hides the prompt" +
+    // "recovery skips the opt-in prompt"): transient probe failures
+    // (timeout / bridge error) come back with `retryable: true` and are
+    // re-probed with capped backoff. A terminal `null` (no binding yet) is
+    // also re-probed a bounded number of times — clean-URL side-panel
+    // recovery can restore the binding AFTER the first probe ran, and the
+    // re-probe picks the session up then. Terminal outcomes that stay null
+    // (no matching package, enabled, dismissed) just burn two cheap extra
+    // probes and stop.
     const startedAt = Date.now()
     const MAX_RETRY_MS = 5 * 60 * 1000
+    const MAX_NULL_PROBES = 3
+    let nullProbes = 0
     const attempt = (delayMs: number) => {
       const timer = setTimeout(() => {
         if (cancelled) return
@@ -561,14 +567,16 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
               setPackagePrompt(status as PackageOptInStatus)
               return
             }
-            if (
-              status &&
-              'retryable' in status &&
-              status.retryable &&
-              Date.now() - startedAt < MAX_RETRY_MS
-            ) {
-              attempt(Math.min((Date.now() - startedAt) / 4, 8000))
+            if (status && 'retryable' in status && status.retryable) {
+              if (Date.now() - startedAt < MAX_RETRY_MS) {
+                attempt(Math.min((Date.now() - startedAt) / 4, 8000))
+              }
+              return
             }
+            // null (nothing to offer) — bounded re-probes for late binding
+            // recovery; give up after MAX_NULL_PROBES.
+            nullProbes += 1
+            if (nullProbes < MAX_NULL_PROBES) attempt(5000)
           })
           .catch(() => {
             // probe failure must never surface — best-effort by design

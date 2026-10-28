@@ -9,6 +9,7 @@ export const sidePanelPackage = {
   toolsExpand: "ツール一覧を展開する",
   readOnly: "読み取り専用",
   write: "書き込み",
+  additionalToolsNote: "有効にすると、このパッケージの他 {count} 個のツールが他の対応サイトでも有効になります。",
   privacyNote:
     "この許可は拡張機能の「対応サイト」管理ページでいつでも解除できます。書き込み操作は別途確認を求めます。",
   enableToggle: "確認後にすぐ有効化してページを再読み込み",

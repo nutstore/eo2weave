@@ -1,12 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { findPackageOptInCandidate, toolIsReadOnly } from '../../../browser-extension/entrypoints/webmcp/package-optin'
 import { createPackageOptInHandler, CONSENT_TOKEN_MIN_AGE_MS } from '../../../browser-extension/entrypoints/webmcp/package-optin-handler'
-import { readWebMCPCatalog } from '../../../browser-extension/entrypoints/webmcp/package-repository'
-import { setBuiltinConfig } from '../../../browser-extension/entrypoints/webmcp/builtin-storage'
+import { readBuiltinWebMCPCatalog } from '../../../browser-extension/entrypoints/webmcp/package-repository'
+import { setBuiltinConfig, readBuiltinConfig } from '../../../browser-extension/entrypoints/webmcp/builtin-storage'
 import type { WebMCPPackageEntry } from '@creatorweave/shared/webmcp-package-catalog'
 
-vi.mock('../../../browser-extension/entrypoints/webmcp/package-repository', () => ({ readWebMCPCatalog: vi.fn() }))
-vi.mock('../../../browser-extension/entrypoints/webmcp/builtin-storage', () => ({ setBuiltinConfig: vi.fn() }))
+vi.mock('../../../browser-extension/entrypoints/webmcp/package-repository', () => ({ readBuiltinWebMCPCatalog: vi.fn() }))
+vi.mock('../../../browser-extension/entrypoints/webmcp/builtin-storage', () => ({
+  setBuiltinConfig: vi.fn(),
+  readBuiltinConfig: vi.fn(),
+  getBuiltinStorage: vi.fn(),
+}))
 
 const READ_ONLY_SOURCE = 'export default { inputSchema: {}, outputSchema: {}, tree: { type: "action", run: async () => { const t = await browser.eval("() => document.title"); return t; } }, result: () => ({}) }'
 const WRITE_SOURCE = 'export default { inputSchema: {}, outputSchema: {}, tree: { type: "action", run: async () => { await browser.click("e1"); return "success"; } }, result: () => ({}) }'
@@ -143,8 +147,9 @@ describe('createPackageOptInHandler', () => {
     vi.stubGlobal('chrome', {
       tabs: { get, reload },
     })
-    vi.mocked(readWebMCPCatalog).mockResolvedValue([entry()])
+    vi.mocked(readBuiltinWebMCPCatalog).mockResolvedValue([entry()])
     vi.mocked(setBuiltinConfig).mockResolvedValue(undefined)
+    vi.mocked(readBuiltinConfig).mockResolvedValue({ activation: 'enabled' })
   })
 
   /** Mint a fresh token through the status probe (mirrors the real flow). */
@@ -174,7 +179,7 @@ describe('createPackageOptInHandler', () => {
   })
 
   it('issues NO consent token when the matching package is already enabled', async () => {
-    vi.mocked(readWebMCPCatalog).mockResolvedValue([entry({ activation: 'enabled' })])
+    vi.mocked(readBuiltinWebMCPCatalog).mockResolvedValue([entry({ activation: 'enabled' })])
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     await handle({ type: 'webmcp_package_optin_status' }, respond)
@@ -266,6 +271,47 @@ describe('createPackageOptInHandler', () => {
     expect(setBuiltinConfig).toHaveBeenCalledWith('world.jmail.archive', { activation: 'enabled' })
     expect(reload).toHaveBeenCalledWith(7)
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: true, reloaded: true }))
+  })
+
+  it('reports the package-WIDE tool count (multi-origin consent disclosure)', async () => {
+    // Two tools match the tab URL, but the package ships a third tool for
+    // another origin — enabling activates it too, so consent must disclose it.
+    const multiOrigin = entry({
+      package: {
+        manifest: {
+          id: 'world.jmail.archive',
+          version: '2.0.0',
+          description: 'Archive email tools.',
+          tools: [
+            { name: 'read_page', description: '', urlRegex: '^https://jmail\\.world/.*$', path: 'workflows/read_page.js' },
+            { name: 'search_emails', description: '', urlRegex: '^https://jmail\\.world/.*$', path: 'workflows/search_emails.js' },
+            { name: 'creator_stats', description: '', urlRegex: '^https://creator\\.jmail\\.world/.*$', path: 'workflows/read_page.js' },
+          ],
+        },
+        sources: {
+          'workflows/read_page.js': READ_ONLY_SOURCE,
+          'workflows/search_emails.js': WRITE_SOURCE,
+        },
+      },
+    })
+    vi.mocked(readBuiltinWebMCPCatalog).mockResolvedValue([multiOrigin])
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_status' }, respond)
+    const body = respond.mock.calls[0][0] as { package: { tools: unknown[] }; totalTools: number }
+    expect(body.package.tools).toHaveLength(2) // only the tab-matching tools listed
+    expect(body.totalTools).toBe(3) // but the consent discloses the package-wide count
+  })
+
+  it('reports ENABLE_REVERTED when a concurrent disable undid the enable write', async () => {
+    const { token } = await mintToken()
+    vi.mocked(readBuiltinConfig).mockResolvedValue({ activation: 'disabled' })
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_enable', packageId: 'world.jmail.archive', consentToken: token }, respond)
+    expect(setBuiltinConfig).toHaveBeenCalled()
+    expect(reload).not.toHaveBeenCalled()
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'ENABLE_REVERTED' }))
   })
 
   it('rejects a package id that does not match the bound tab url', async () => {

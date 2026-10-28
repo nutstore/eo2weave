@@ -30,8 +30,8 @@
  */
 
 import { findPackageOptInCandidate, type PackageOptInCandidate } from './package-optin'
-import { readWebMCPCatalog } from './package-repository'
-import { setBuiltinConfig } from './builtin-storage'
+import { readBuiltinWebMCPCatalog } from './package-repository'
+import { getBuiltinStorage, readBuiltinConfig, setBuiltinConfig } from './builtin-storage'
 
 export interface PackageOptInStatus {
   ok: boolean
@@ -105,12 +105,27 @@ function consumeConsentToken(token: string, tabId: number): boolean {
 export function createPackageOptInHandler(deps: PackageOptInDependencies) {
   const candidateFor = async (
     tabId: number,
-  ): Promise<{ candidate: PackageOptInCandidate | null; entries: Awaited<ReturnType<typeof readWebMCPCatalog>> }> => {
+  ): Promise<{
+    candidate: PackageOptInCandidate | null
+    entries: Awaited<ReturnType<typeof readBuiltinWebMCPCatalog>>
+  }> => {
     const tab = await chrome.tabs.get(tabId)
     const url = tab.url || ''
     if (!url) return { candidate: null, entries: [] }
-    const entries = await readWebMCPCatalog()
+    // Builtin-only read (finding: "Builtin prompt depends on user storage"):
+    // a failing user-mounted OPFS provider must not break the opt-in probe.
+    const entries = await readBuiltinWebMCPCatalog()
     return { candidate: findPackageOptInCandidate(entries, url), entries }
+  }
+
+  /**
+   * Total tool count of the package, across ALL origins — not just the ones
+   * matching the current tab URL. The enable flips the whole package on, so
+   * the consent payload must disclose everything that will be activated.
+   */
+  const totalToolCount = (candidate: PackageOptInCandidate, entries: Awaited<ReturnType<typeof readBuiltinWebMCPCatalog>>): number => {
+    const entry = entries.find(e => e.directory === candidate.directory)
+    return entry?.package?.manifest?.tools.length ?? candidate.tools.length
   }
 
   return async (
@@ -130,13 +145,16 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
 
     if (message.type === 'webmcp_package_optin_status') {
       try {
-        const { candidate } = await candidateFor(tabId)
+        const { candidate, entries } = await candidateFor(tabId)
         if (!candidate) {
           sendResponse({ ok: true, applicable: false })
           return false
         }
         // A token is only minted while the package is still disabled — this
-        // is the proof the enable handler demands.
+        // is the proof the enable handler demands. totalTools discloses the
+        // package-wide tool count (finding: "Consent omits package-wide
+        // tools"): enabling activates tools for other origins too, and the
+        // consent must cover them.
         const consentToken =
           candidate.activation === 'disabled' ? issueConsentToken(tabId) : undefined
         sendResponse({
@@ -145,6 +163,7 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           package: candidate,
           enabled: candidate.activation === 'enabled',
           consentToken,
+          totalTools: totalToolCount(candidate, entries),
         })
       } catch (err: unknown) {
         sendResponse({
@@ -208,6 +227,19 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           return false
         }
         await setBuiltinConfig(candidate.directory, { activation: 'enabled' })
+        // Verify the write actually stuck (finding: "Concurrent disable is
+        // overwritten"): if the user disabled the package through package
+        // management between our write and now, the disable must win — we
+        // report failure instead of claiming a success that was reverted.
+        const stored = await readBuiltinConfig(candidate.directory)
+        if (stored?.activation !== 'enabled') {
+          sendResponse({
+            ok: false,
+            errorCode: 'ENABLE_REVERTED',
+            error: 'The package was disabled again while enabling; nothing was enabled.',
+          })
+          return false
+        }
         // The reload guarantees the tools register in this tab: adapter
         // proxies are injected by a static content script, so a config change
         // alone cannot reach a page loaded before the extension update. A

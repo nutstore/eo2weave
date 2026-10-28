@@ -84,6 +84,25 @@ describe('PackageOptInModal', () => {
     expect(toggle.checked).toBe(false)
   })
 
+  it('discloses additional package-wide tools when the enable covers more origins', () => {
+    render(
+      <PackageOptInModal
+        packageInfo={{ ...packageInfo, totalTools: 5 }}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(
+      screen.getByText(/activates 3 additional tool/),
+    ).toBeTruthy()
+  })
+
+  it('hides the additional-tools note when totalTools is absent or equals the tab count', () => {
+    const { container } = render(
+      <PackageOptInModal packageInfo={{ ...packageInfo, totalTools: 2 }} onClose={vi.fn()} />,
+    )
+    expect(container.textContent).not.toContain('additional tool')
+  })
+
   it('confirm: enables the package with the consent token + shows the localized success toast + closes', async () => {
     const onClose = vi.fn()
     render(<PackageOptInModal packageInfo={packageInfo} onClose={onClose} />)

@@ -39,6 +39,13 @@ export interface PackageOptInInfo {
   activation: 'enabled' | 'disabled'
   tools: PackageOptInToolInfo[]
   /**
+   * Package-WIDE tool count across all origins (the enable activates every
+   * tool of the package, including ones not matching the current tab URL).
+   * Used for the consent copy; `tools` above lists only the tools matching
+   * the bound tab's current URL.
+   */
+  totalTools?: number
+  /**
    * One-time, extension-issued proof of consent minted while the package was
    * disabled. Echoed back on enable; the background verifies and consumes it.
    */
@@ -61,6 +68,8 @@ export interface PackageOptInStatus {
    * package is still disabled). Must be echoed back on enable.
    */
   consentToken?: string
+  /** Package-wide tool count across all origins (consent disclosure). */
+  totalTools?: number
 }
 
 const DISMISS_STORAGE_KEY_PREFIX = 'cw_webmcp_package_prompt_dismissed_v1'
@@ -88,8 +97,12 @@ function readDismissedAt(packageId: string): number | null {
   }
 }
 
+/** In-memory fallback: suppresses re-prompting within the current session. */
+const sessionDismissals = new Set<string>()
+
 /** True when the user said "not now" for this package within the cooldown window. */
 export function isPackagePromptDismissed(packageId: string): boolean {
+  if (sessionDismissals.has(packageId)) return true
   const dismissedAt = readDismissedAt(packageId)
   if (dismissedAt === null) return false
   return Date.now() - dismissedAt < DISMISS_COOLDOWN_MS
@@ -97,16 +110,22 @@ export function isPackagePromptDismissed(packageId: string): boolean {
 
 /** Record a "not now" answer for the package (1-day cooldown). */
 export function dismissPackagePrompt(packageId: string): void {
+  // Session fallback recorded BEFORE the storage attempt: when localStorage
+  // is unavailable (quota / privacy mode / thrown write), the in-memory set
+  // still suppresses the prompt for this panel session, so a "not now" is
+  // never immediately followed by the same modal again.
+  sessionDismissals.add(packageId)
   try {
     localStorage.setItem(dismissKeyFor(packageId), JSON.stringify(Date.now()))
   } catch {
-    // localStorage unavailable (quota / privacy mode) — cooldown silently
-    // degrades to "prompt may reappear next session". Never fatal.
+    // localStorage unavailable — the session fallback above covers the
+    // current session; the cooldown simply degrades across sessions.
   }
 }
 
-/** Test seam: clear all dismissal records. */
+/** Test seam: clear all dismissal records (storage AND in-memory fallback). */
 export function resetPackagePromptDismissals(): void {
+  sessionDismissals.clear()
   try {
     const doomed: string[] = []
     for (let i = 0; i < localStorage.length; i += 1) {
@@ -221,11 +240,13 @@ export async function getPendingPackagePrompt(): Promise<
     return null
   }
 
-  // Attach the status-level consent token to the package payload the modal
-  // consumes, so the enable call can echo it back to the background.
+  // Attach the status-level consent token and package-wide tool count to the
+  // payload the modal consumes (token echoed back on enable; totalTools
+  // drives the multi-origin consent disclosure).
   const packageInfo: PackageOptInInfo = {
     ...status.package,
     consentToken: typeof status.consentToken === 'string' ? status.consentToken : undefined,
+    totalTools: typeof status.totalTools === 'number' ? status.totalTools : undefined,
   }
   return { applicable: true, package: packageInfo, enabled: false }
 }

@@ -257,6 +257,14 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
             {t('sidePanelPackage.privacyNote')}
           </p>
 
+          {typeof packageInfo.totalTools === 'number' && packageInfo.totalTools > tools.length && (
+            <p className="mt-2 text-xs leading-relaxed text-amber-600 dark:text-amber-400">
+              {t('sidePanelPackage.additionalToolsNote', {
+                count: packageInfo.totalTools - tools.length,
+              })}
+            </p>
+          )}
+
           {/* htmlFor (not a wrapping label): Switch renders its own <label>,
               and a nested label cannot activate the inner control. */}
           <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
