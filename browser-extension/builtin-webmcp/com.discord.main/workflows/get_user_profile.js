@@ -154,14 +154,17 @@ export default {
                 code = parsed.code
                 message = parsed.message
               } catch (e) {}
-              if (code !== undefined)
+              if (response.status === 429) {
+                try {
+                  delete globalThis.__eo2DiscordToken
+                } catch (e) {}
                 return {
                   ok: false,
-                  error_code: classify(code, message),
-                  status: response.status,
-                  discord_code: code,
-                  message: 'Discord API error: ' + (message || text.slice(0, 512)) + ' (code ' + code + ')',
+                  error_code: 'RATE_LIMITED',
+                  status: 429,
+                  message: 'Discord API rate limited: ' + text.slice(0, 512),
                 }
+              }
               if (response.status === 401 || response.status === 403) {
                 try {
                   delete globalThis.__eo2DiscordToken
@@ -173,13 +176,13 @@ export default {
                   message: 'Discord API auth error (' + response.status + '): ' + text.slice(0, 512),
                 }
               }
-              if (response.status === 429)
-                return {
-                  ok: false,
-                  error_code: 'RATE_LIMITED',
-                  status: 429,
-                  message: 'Discord API rate limited: ' + text.slice(0, 512),
-                }
+              return {
+                ok: false,
+                error_code: classify(code, message),
+                status: response.status,
+                discord_code: code,
+                message: 'Discord API error: ' + (message || text.slice(0, 512)) + ' (code ' + code + ')',
+              }
               return {
                 ok: false,
                 error_code: 'HTTP',
@@ -293,29 +296,38 @@ export default {
                   'UNSUPPORTED_PAGE',
                   'Not on a discord.com page.',
                 )
-              var endpoint =
-                args.user_id === '@me'
-                  ? '/users/@me'
-                  : '/users/' + encodeURIComponent(args.user_id)
+              // /users/:id does not expose bio and /users/@me is the only
+              // endpoint carrying private account fields (email, MFA), so
+              // other users go through /users/:id/profile and never see them.
+              var isSelf = args.user_id === '@me'
+              var endpoint = isSelf
+                ? '/users/@me'
+                : '/users/' + encodeURIComponent(args.user_id) + '/profile'
               var response = await discordApi(endpoint)
               if (!response.ok) return response
               var d = response.data || {}
-              return ok({
-                user: {
-                  id: d.id || '',
-                  username: d.username || '',
-                  global_name:
-                    d.global_name === undefined ? null : d.global_name,
-                  avatar: d.avatar === undefined ? null : d.avatar,
-                  banner: d.banner === undefined ? null : d.banner,
-                  bio: d.bio || '',
-                  bot: !!d.bot,
-                  email: d.email === undefined ? null : d.email,
-                  verified: !!d.verified,
-                  mfa_enabled: !!d.mfa_enabled,
-                  locale: d.locale === undefined ? null : d.locale,
-                },
-              })
+              var u = isSelf ? d : d.user || {}
+              var profile = isSelf ? d : d.user_profile || {}
+              var user = {
+                id: u.id || '',
+                username: u.username || '',
+                global_name: u.global_name === undefined ? null : u.global_name,
+                avatar: u.avatar === undefined ? null : u.avatar,
+                banner: u.banner === undefined ? null : u.banner,
+                bio: profile.bio || '',
+                bot: !!u.bot,
+                locale: u.locale === undefined ? null : u.locale,
+              }
+              var result = {
+                user: user,
+                profile_source: isSelf ? 'users/@me' : 'users/:id/profile',
+              }
+              if (isSelf) {
+                result.email = d.email === undefined ? null : d.email
+                result.verified = !!d.verified
+                result.mfa_enabled = !!d.mfa_enabled
+              }
+              return ok(result)
             },
           }
 

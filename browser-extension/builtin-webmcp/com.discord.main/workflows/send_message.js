@@ -152,14 +152,17 @@ export default {
                 code = parsed.code
                 message = parsed.message
               } catch (e) {}
-              if (code !== undefined)
+              if (response.status === 429) {
+                try {
+                  delete globalThis.__eo2DiscordToken
+                } catch (e) {}
                 return {
                   ok: false,
-                  error_code: classify(code, message),
-                  status: response.status,
-                  discord_code: code,
-                  message: 'Discord API error: ' + (message || text.slice(0, 512)) + ' (code ' + code + ')',
+                  error_code: 'RATE_LIMITED',
+                  status: 429,
+                  message: 'Discord API rate limited: ' + text.slice(0, 512),
                 }
+              }
               if (response.status === 401 || response.status === 403) {
                 try {
                   delete globalThis.__eo2DiscordToken
@@ -171,13 +174,13 @@ export default {
                   message: 'Discord API auth error (' + response.status + '): ' + text.slice(0, 512),
                 }
               }
-              if (response.status === 429)
-                return {
-                  ok: false,
-                  error_code: 'RATE_LIMITED',
-                  status: 429,
-                  message: 'Discord API rate limited: ' + text.slice(0, 512),
-                }
+              return {
+                ok: false,
+                error_code: classify(code, message),
+                status: response.status,
+                discord_code: code,
+                message: 'Discord API error: ' + (message || text.slice(0, 512)) + ' (code ' + code + ')',
+              }
               return {
                 ok: false,
                 error_code: 'HTTP',
@@ -291,7 +294,9 @@ export default {
                   'UNSUPPORTED_PAGE',
                   'Not on a discord.com page.',
                 )
-              var body = { content: args.content }
+              // nonce lets Discord dedupe a retried POST after a lost
+              // response, so a timeout cannot turn into a duplicate message.
+              var body = { content: args.content, nonce: String(Date.now()) }
               if (args.reply_to !== undefined)
                 body.message_reference = { message_id: args.reply_to }
               var response = await discordApi(

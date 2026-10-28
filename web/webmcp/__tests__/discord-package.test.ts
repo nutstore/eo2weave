@@ -99,8 +99,10 @@ function fixture(options: {
         body = [{ id: 'ch1', type: 0, guild_id: 'g1', name: 'general', topic: null, position: 0, parent_id: null, nsfw: false }]
       else if (url.includes('/users/@me/guilds'))
         body = [{ id: 'g1', name: 'Guild', icon: null, owner: false, description: null, approximate_member_count: 42 }]
+      else if (url.endsWith('/users/@me'))
+        body = { id: 'self', username: 'me', bot: false, email: 'me@example.com', verified: true, mfa_enabled: true, locale: 'en-US' }
       else if (url.includes('/users/'))
-        body = { id: 'u1', username: 'tester', global_name: 'Tester', bot: false }
+        body = { user: { id: 'u1', username: 'tester', global_name: 'Tester', bot: false, banner: null }, user_profile: { bio: 'bio text' } }
       else if (url.includes('/messages'))
         body = [{ id: 'm1', channel_id: 'c1', content: 'hello', author: { id: 'u1', username: 'tester' } }]
       return { status: 200, body }
@@ -243,6 +245,7 @@ it('sends messages and reactions through the right methods and bodies', async ()
   expect(page.fetches[0].init).toMatchObject({ method: 'POST', credentials: 'include' })
   expect(JSON.parse(page.fetches[0].init.body!)).toEqual({
     content: 'hello world',
+    nonce: expect.any(String),
     message_reference: { message_id: 'm0' },
   })
 
@@ -291,11 +294,39 @@ it('maps guild, channel, profile and search responses', async () => {
   })
   expect(channels.value.result.data.channels[0]).toHaveProperty('nsfw', false)
   const profile = await page.execute('get_user_profile', { user_id: 'u1' })
-  expect(profile.value.result.data.user).toMatchObject({ id: 'u1', username: 'tester', bot: false })
+  expect(profile.value.result.data.user).toMatchObject({ id: 'u1', username: 'tester', bio: 'bio text' })
+  expect(profile.value.result.data.user).not.toHaveProperty('email')
+  expect(profile.value.result.data).not.toHaveProperty('email')
+  expect(profile.value.result.data.profile_source).toBe('users/:id/profile')
+  const me = await page.execute('get_user_profile', { user_id: '@me' })
+  expect(me.value.result.data.user).toMatchObject({ id: 'self', username: 'me' })
+  expect(me.value.result.data.email).toBe('me@example.com')
+  expect(me.value.result.data.mfa_enabled).toBe(true)
+  expect(me.value.result.data.profile_source).toBe('users/@me')
   const search = await page.execute('search_messages', { guild_id: 'g1', content: 'hit' })
   expect(search.value.result.data).toMatchObject({ total_results: 1 })
   expect(search.value.result.data.messages[0][0]).toMatchObject({ id: 'm1', content: 'hit' })
-  expect(page.fetches[3].url).toContain('https://discord.com/api/v9/guilds/g1/messages/search?content=hit')
+  const searchFetch = page.fetches.find((f) => f.url.includes('/messages/search'))
+  expect(searchFetch?.url).toContain('https://discord.com/api/v9/guilds/g1/messages/search?content=hit')
+})
+
+it('rejects combined pagination cursors before touching the API', async () => {
+  const page = fixture()
+  const bad = await page.execute('read_messages', { channel: '123', before: '10', after: '20' })
+  expect(bad).toMatchObject({
+    ok: true,
+    value: {
+      result: {
+        status: 'error',
+        error_code: 'VALIDATION',
+      },
+    },
+  })
+  expect(bad.value.result.message).toContain('only one of before, after or around')
+  expect(page.fetches).toHaveLength(0)
+  const good = await page.execute('read_messages', { channel: '123', before: '10' })
+  expect(good.value.result.status).toBe('ok')
+  expect(page.fetches[0].url).toContain('before=10')
 })
 
 it('gates on an unauthenticated or non-discord tab with a clear error instead of hanging', async () => {

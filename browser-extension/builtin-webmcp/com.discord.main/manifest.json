@@ -5,7 +5,7 @@
   "tools": [
     {
       "name": "read_messages",
-      "description": "Read recent messages from a Discord channel with optional pagination (before/after/around). Uses the logged-in session of the current discord.com tab.",
+      "description": "Read recent messages from a Discord channel with optional pagination (pass at most one of before/after/around). Uses the logged-in session of the current discord.com tab.",
       "urlRegex": "^https://discord\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
       "path": "workflows/read_messages.js"
     },

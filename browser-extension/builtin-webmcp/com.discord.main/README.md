@@ -25,8 +25,9 @@ The token never leaves the page context.
 
 Every workflow returns `{ status: 'ok'|'error', data, message }`. Error
 results carry a stable `error_code`: `UNSUPPORTED_PAGE`, `UNAUTHENTICATED`,
-`AUTH`, `VALIDATION`, `NOT_FOUND`, `RATE_LIMITED`, `NETWORK`, `HTTP` or
-`UNKNOWN`. Discord error codes are classified the same way as OpenTabs
+`AUTH`, `VALIDATION`, `NOT_FOUND`, `RATE_LIMITED`, `NETWORK`, `HTTP`, `API`
+(unclassified Discord error codes) or `UNKNOWN`. Discord error codes are
+classified the same way as OpenTabs
 (auth 0/40001/40002/50014, not-found 10003/10004/10006/10008/10013/10011/
 10014/10015, validation 50001/50003/50006/50007/50008/50013/50035/50109).
 
@@ -37,7 +38,8 @@ hydrated its webpack modules yet, tools return
 `status: 'error'` with `error_code: 'UNAUTHENTICATED'` immediately instead of
 hanging. A successful token extraction is cached on the page
 (`globalThis.__eo2DiscordToken`) to skip the webpack walk on subsequent
-calls; a 401/403 clears the cache.
+calls; a 401/403/429 clears the cache so a token Discord just rejected
+cannot linger. Unclassified Discord error codes surface as `API`.
 
 ## Tool descriptions (i18n)
 

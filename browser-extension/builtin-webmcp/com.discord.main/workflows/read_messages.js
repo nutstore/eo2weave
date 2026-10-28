@@ -154,14 +154,17 @@ export default {
                 code = parsed.code
                 message = parsed.message
               } catch (e) {}
-              if (code !== undefined)
+              if (response.status === 429) {
+                try {
+                  delete globalThis.__eo2DiscordToken
+                } catch (e) {}
                 return {
                   ok: false,
-                  error_code: classify(code, message),
-                  status: response.status,
-                  discord_code: code,
-                  message: 'Discord API error: ' + (message || text.slice(0, 512)) + ' (code ' + code + ')',
+                  error_code: 'RATE_LIMITED',
+                  status: 429,
+                  message: 'Discord API rate limited: ' + text.slice(0, 512),
                 }
+              }
               if (response.status === 401 || response.status === 403) {
                 try {
                   delete globalThis.__eo2DiscordToken
@@ -173,13 +176,13 @@ export default {
                   message: 'Discord API auth error (' + response.status + '): ' + text.slice(0, 512),
                 }
               }
-              if (response.status === 429)
-                return {
-                  ok: false,
-                  error_code: 'RATE_LIMITED',
-                  status: 429,
-                  message: 'Discord API rate limited: ' + text.slice(0, 512),
-                }
+              return {
+                ok: false,
+                error_code: classify(code, message),
+                status: response.status,
+                discord_code: code,
+                message: 'Discord API error: ' + (message || text.slice(0, 512)) + ' (code ' + code + ')',
+              }
               return {
                 ok: false,
                 error_code: 'HTTP',
@@ -292,6 +295,14 @@ export default {
                 return error(
                   'UNSUPPORTED_PAGE',
                   'Not on a discord.com page.',
+                )
+              var cursors = ['before', 'after', 'around'].filter(function (k) {
+                return args[k] !== undefined
+              })
+              if (cursors.length > 1)
+                return error(
+                  'VALIDATION',
+                  'Pass only one of before, after or around per call; Discord accepts a single pagination cursor.',
                 )
               var query = { limit: args.limit === undefined ? 50 : args.limit }
               if (args.before !== undefined) query.before = args.before
