@@ -29,9 +29,10 @@ import {
   computeInlineFragments,
   fuseHunkLines,
   exceedsInlineDiffLimit,
+  createInlineDiffBudget,
   MAX_INLINE_DIFF_LENGTH,
-} from '../inlineDiff'
-import LazyDiffViewer from '../LazyDiffViewer'
+} from '@/components/sync/inlineDiff'
+import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 
 // ── Strategy detection ─────────────────────────────────────────────────────
 
@@ -50,6 +51,22 @@ describe('containsCJK', () => {
 
   it('returns false for Latin-only text', () => {
     expect(containsCJK('plain english text')).toBe(false)
+  })
+
+  it('detects Han characters in Extension A', () => {
+    // U+3400–U+4DBF (Extension A)
+    expect(containsCJK('㐀㐁')).toBe(true)
+  })
+
+  it('detects Han characters in the supplementary planes', () => {
+    // U+20000–U+2A6DF (Extension B) and U+30000–U+3134F (Extension G)
+    expect(containsCJK('\u{20000}')).toBe(true)
+    expect(containsCJK('\u{30000}')).toBe(true)
+  })
+
+  it('detects CJK compatibility ideographs', () => {
+    // U+F900–U+FAFF
+    expect(containsCJK('豈')).toBe(true)
   })
 })
 
@@ -125,6 +142,29 @@ describe('computeInlineFragments', () => {
     expect(removed).toContain('updat')
     // The CJK tail survives untouched as an equal fragment.
     expect(fragments.some((f) => f.type === 'equal' && f.value.includes('更新'))).toBe(true)
+  })
+
+  it('uses char-level diffing for a mixed-language line, not word-level', () => {
+    // Reconstruction alone would also pass if the wrong strategy were
+    // used, so the fragment boundaries are asserted explicitly: word-level
+    // diffing emits whole-word fragments ('update' / 'refresh'), while
+    // char-level diffing splits inside the word.
+    const oldLine = 'use the update button 更新'
+    const newLine = 'use the refresh button 更新'
+
+    const fragments = computeInlineFragments(oldLine, newLine)
+
+    const removed = fragments.filter((f) => f.type === 'removed').map((f) => f.value).join('')
+    const added = fragments.filter((f) => f.type === 'added').map((f) => f.value).join('')
+    // The changed run is cut inside the word, not at the word boundary.
+    expect(removed).toBe('updat')
+    expect(added).toBe('rfresh')
+    // A word-level diff would have produced whole-word fragments.
+    expect(removed).not.toBe('update')
+    expect(added).not.toBe('refresh')
+    // ...and the changed run is split into more than one fragment, which
+    // only happens at character granularity.
+    expect(fragments.filter((f) => f.type === 'added')).toHaveLength(2)
   })
 
   it('emits fragments in jsdiff order (removed before its added counterpart)', () => {
@@ -218,18 +258,67 @@ describe('computeInlineFragments over-limit guard', () => {
     expect(exceedsInlineDiffLimit('short', 'a'.repeat(MAX_INLINE_DIFF_LENGTH + 1))).toBe(true)
   })
 
-  it('does not freeze the caller on an adversarial over-limit line', () => {
+  it('does not hand an adversarial over-limit line to jsdiff', () => {
     // The pathological shape for jsdiff: two long lines sharing no chunks.
     // Before the guard this took multiple seconds on the main thread.
+    // The guarantee is asserted structurally (jsdiff is never called)
+    // rather than by wall-clock timing, which would flake on a loaded
+    // CI machine.
     const oldLine = 'a'.repeat(MAX_INLINE_DIFF_LENGTH + 500)
     const newLine = 'b'.repeat(MAX_INLINE_DIFF_LENGTH + 500)
 
-    const started = Date.now()
     const fragments = computeInlineFragments(oldLine, newLine)
-    const elapsed = Date.now() - started
 
     expect(fragments).toHaveLength(2)
-    expect(elapsed).toBeLessThan(1000)
+    expect(vi.mocked(diffChars)).not.toHaveBeenCalled()
+    expect(vi.mocked(diffWordsWithSpace)).not.toHaveBeenCalled()
+  })
+
+  it('shares one time budget across all pairs of a diff', () => {
+    // A budget that is already spent must stop further inline diffing
+    // instead of giving every pair a fresh allowance.
+    const budget = createInlineDiffBudget(0)
+
+    const fragments = computeInlineFragments('alpha beta', 'alpha gamma', budget)
+
+    // The budget is spent → whole-line fallback, jsdiff not called.
+    expect(fragments).toEqual([
+      { type: 'removed', value: 'alpha beta' },
+      { type: 'added', value: 'alpha gamma' },
+    ])
+    expect(vi.mocked(diffWordsWithSpace)).not.toHaveBeenCalled()
+  })
+
+  it('passes the shared budget through fuseHunkLines so pairs share it', () => {
+    // Budget already spent → both pairs degrade to whole-line styling.
+    const budget = createInlineDiffBudget(0)
+    const rows = fuseHunkLines(
+      [
+        { type: 'removed', content: 'alpha beta', oldLineNo: 1 },
+        { type: 'added', content: 'alpha gamma', newLineNo: 1 },
+        { type: 'removed', content: 'delta epsilon', oldLineNo: 2 },
+        { type: 'added', content: 'delta zeta', newLineNo: 2 },
+      ],
+      budget,
+    )
+
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.kind === 'fused')).toBe(true)
+    expect(vi.mocked(diffWordsWithSpace)).not.toHaveBeenCalled()
+  })
+
+  it('uses the shared budget when it still has time left', () => {
+    const budget = createInlineDiffBudget(60_000)
+
+    const fragments = computeInlineFragments('alpha beta', 'alpha gamma', budget)
+
+    // Normal inline diffing still happens.
+    expect(fragments).toEqual([
+      { type: 'equal', value: 'alpha ' },
+      { type: 'removed', value: 'beta' },
+      { type: 'added', value: 'gamma' },
+    ])
+    expect(vi.mocked(diffWordsWithSpace)).toHaveBeenCalledTimes(1)
   })
 
   it('keeps a fused row for an over-limit pair (whole-line styling, not dropped)', () => {
@@ -489,15 +578,25 @@ describe('LazyDiffViewer content-type split', () => {
     )
     expect(screen.getByText('original')).toBeDefined()
     expect(screen.getByText('revised')).toBeDefined()
+
+    // The unchanged context must survive too — a renderer that dropped
+    // the equal fragments would still satisfy the two assertions above.
+    const rows = screen.getAllByTestId('track-changes-line')
+    expect(rows).toHaveLength(1)
+    const equal = rows[0].querySelectorAll('[data-testid="track-changes-equal"]')
+    expect(equal.length).toBeGreaterThan(0)
+    const equalText = Array.from(equal).map((e) => e.textContent).join('')
+    expect(equalText).toContain('Long prose line that keeps going')
+    // The whole unchanged prefix is preserved, not just its start.
+    expect(equalText).toBe(prefix)
   })
 
-  it('renders an over-limit markdown line as one whole-line pair without freezing', () => {
+  it('renders an over-limit markdown line as one whole-line fused row', () => {
     // A huge line must still render (as whole-line added/removed styling)
-    // and must not block the main thread.
+    // as ONE fused row.
     const oldLine = 'a'.repeat(MAX_INLINE_DIFF_LENGTH + 100)
     const newLine = 'b'.repeat(MAX_INLINE_DIFF_LENGTH + 100)
 
-    const started = Date.now()
     render(
       <LazyDiffViewer
         original={oldLine}
@@ -505,16 +604,124 @@ describe('LazyDiffViewer content-type split', () => {
         path="huge.md"
       />,
     )
-    const elapsed = Date.now() - started
 
     // The row is rendered...
-    expect(screen.getAllByTestId('track-changes-line').length).toBeGreaterThan(0)
+    const rows = screen.getAllByTestId('track-changes-line')
+    expect(rows).toHaveLength(1)
     // ...with the whole line as one removed fragment and one added fragment.
-    const removed = screen.getByTestId('track-changes-removed')
-    const added = screen.getByTestId('track-changes-added')
-    expect(removed.textContent).toBe(oldLine)
-    expect(added.textContent).toBe(newLine)
-    // ...and it did not take seconds.
-    expect(elapsed).toBeLessThan(5000)
+    const removed = rows[0].querySelector('[data-testid="track-changes-removed"]')
+    const added = rows[0].querySelector('[data-testid="track-changes-added"]')
+    expect(removed).not.toBeNull()
+    expect(added).not.toBeNull()
+    expect(removed!.textContent).toBe(oldLine)
+    expect(added!.textContent).toBe(newLine)
+    // ...and both fragments belong to the SAME track-changes row — an
+    // over-limit pair must stay one fused row, not two.
+    expect(removed!.closest('[data-testid="track-changes-line"]')).toBe(rows[0])
+    expect(added!.closest('[data-testid="track-changes-line"]')).toBe(rows[0])
+    expect(removed!.parentElement).toBe(added!.parentElement)
+  })
+
+  it('keeps the selection highlight visible on a selected fused row', () => {
+    // The fused row paints its own opaque surface, so the selection fill
+    // has to be rendered by the row itself — a caller-applied fill would
+    // be hidden behind it.
+    render(
+      <LazyDiffViewer
+        original={'alpha beta\nkept'}
+        modified={'alpha gamma\nkept'}
+        path="notes.md"
+        selectedTarget={{ side: 'modified', startLine: 1, endLine: 1 }}
+      />,
+    )
+
+    const rows = screen.getAllByTestId('track-changes-line')
+    expect(rows.length).toBeGreaterThan(0)
+    // The selected row carries the selection marker...
+    const selected = rows.filter((r) => r.getAttribute('data-selected') === 'true')
+    expect(selected).toHaveLength(1)
+    // ...and it paints a selection overlay of its own.
+    const overlay = selected[0].querySelector('[data-testid="track-changes-selection"]')
+    expect(overlay).not.toBeNull()
+  })
+
+  it('shows comment markers in the gutter of a fused row', () => {
+    // The comment indicator belongs in the row's gutter, aligned with the
+    // other gutter cells — not in a separate row below the content.
+    render(
+      <LazyDiffViewer
+        original={'alpha beta\nkept'}
+        modified={'alpha gamma\nkept'}
+        path="notes.md"
+        comments={[
+          { side: 'original', startLine: 1, endLine: 1 },
+          { side: 'modified', startLine: 1, endLine: 1 },
+        ]}
+      />,
+    )
+
+    const rows = screen.getAllByTestId('track-changes-line')
+    expect(rows).toHaveLength(1)
+    const row = rows[0]
+
+    // The original-side marker lives inside the ORIGINAL gutter cell.
+    const oldCell = row.querySelector('[data-testid="track-changes-old-line-no"]')
+    expect(oldCell).not.toBeNull()
+    const oldMarker = oldCell!.querySelector('[data-testid="track-changes-old-comment"]')
+    expect(oldMarker).not.toBeNull()
+
+    // The modified-side marker lives inside the NEW gutter cell.
+    const newCell = row.querySelector('[data-testid="track-changes-new-line-no"]')
+    expect(newCell).not.toBeNull()
+    const newMarker = newCell!.querySelector('[data-testid="track-changes-new-comment"]')
+    expect(newMarker).not.toBeNull()
+
+    // Both markers are inside the row, not in a sibling row below it.
+    expect(row.contains(oldMarker)).toBe(true)
+    expect(row.contains(newMarker)).toBe(true)
+    // No separate comment row was rendered underneath.
+    expect(row.parentElement!.querySelectorAll('[data-testid="track-changes-line"]')).toHaveLength(1)
+  })
+
+  it('routes clicks on the original gutter cell to the original side', () => {
+    const onLineSelectForComment = vi.fn()
+    render(
+      <LazyDiffViewer
+        original={'alpha beta\nkept'}
+        modified={'alpha gamma\nkept'}
+        path="notes.md"
+        onLineSelectForComment={onLineSelectForComment}
+      />,
+    )
+
+    const rows = screen.getAllByTestId('track-changes-line')
+    const oldCell = rows[0].querySelector('[data-testid="track-changes-old-line-no"]')!
+    const newCell = rows[0].querySelector('[data-testid="track-changes-new-line-no"]')!
+
+    // The original gutter cell reports the ORIGINAL side...
+    oldCell.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(onLineSelectForComment).toHaveBeenCalledTimes(1)
+    expect(onLineSelectForComment.mock.calls[0][0]).toMatchObject({ side: 'original' })
+
+    // ...and the new gutter cell reports the MODIFIED side.
+    newCell.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(onLineSelectForComment).toHaveBeenCalledTimes(2)
+    expect(onLineSelectForComment.mock.calls[1][0]).toMatchObject({ side: 'modified' })
+  })
+
+  it('keeps the original line number on a fused row', () => {
+    const rows = fuseHunkLines([
+      { type: 'removed', content: 'old text here', oldLineNo: 3 },
+      { type: 'added', content: 'new text here', newLineNo: 7 },
+    ])
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].kind).toBe('fused')
+    if (rows[0].kind === 'fused') {
+      // Both line numbers are retained — the gutter shows the new one, but
+      // original-side comments and selections need the old one.
+      expect(rows[0].newLineNo).toBe(7)
+      expect(rows[0].oldLineNo).toBe(3)
+    }
   })
 })

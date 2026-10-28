@@ -20,8 +20,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@creatorweave/ui'
-import TrackChangesLine from './TrackChangesLine'
-import { fuseHunkLines } from './inlineDiff'
+import TrackChangesLine from '@/components/sync/TrackChangesLine'
+import { createInlineDiffBudget, fuseHunkLines } from '@/components/sync/inlineDiff'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -289,7 +289,8 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
   // memoized per hunk (issue #96 performance requirement).
   const fusedRows = useMemo(() => {
     if (!isMarkdown) return null
-    return hunks.map((hunk) => fuseHunkLines(hunk.lines))
+    const budget = createInlineDiffBudget()
+    return hunks.map((hunk) => fuseHunkLines(hunk.lines, budget))
   }, [hunks, isMarkdown])
 
   // Reset context when file changes
@@ -676,29 +677,21 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
                 const side = 'modified' as const
                 const commented = isLineCommented(side, row.newLineNo, comments)
                 const selected = isLineSelected(side, row.newLineNo, selectedTarget)
+                const oldCommented = isLineCommented('original', row.oldLineNo, comments)
+                const oldSelected = isLineSelected('original', row.oldLineNo, selectedTarget)
                 return (
-                  <div
-                    key={`row-${hunkIndex}-${rowIdx}`}
-                    className={
-                      selected
-                        ? 'bg-blue-50 dark:bg-blue-950/30 ring-1 ring-inset ring-blue-300 dark:ring-blue-700'
-                        : ''
-                    }
-                  >
+                  <div key={`row-${hunkIndex}-${rowIdx}`}>
                     <TrackChangesLine
                       fragments={row.fragments}
                       newLineNo={row.newLineNo}
-                      clickable={!!onLineSelectForComment || commented}
+                      oldLineNo={row.oldLineNo}
+                      clickable={!!onLineSelectForComment || commented || oldCommented}
+                      selected={selected || oldSelected}
+                      oldSideCommented={oldCommented}
+                      newSideCommented={commented}
                       onLineNoClick={(e) => handleLineClick('modified', row.newLineNo, e)}
+                      onOldLineNoClick={(e) => handleLineClick('original', row.oldLineNo, e)}
                     />
-                    {commented && (
-                      <div className="flex">
-                        <span className="w-5 shrink-0" />
-                        <span className="font-mono text-[13px] text-amber-500 dark:text-amber-400">
-                          <MessageSquare className="inline h-2.5 w-2.5" />
-                        </span>
-                      </div>
-                    )}
                   </div>
                 )
               }

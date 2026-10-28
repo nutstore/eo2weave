@@ -45,6 +45,14 @@ export interface FusedRow {
   fragments: InlineFragment[]
   /** Gutter shows the NEW line number only (the surviving line) */
   newLineNo: number
+  /**
+   * Original line number of the removed side.
+   *
+   * The gutter only shows the surviving (new) line, but original-side
+   * comments and selections still target the old line — without this the
+   * caller cannot detect or route them.
+   */
+  oldLineNo: number
 }
 
 /** A pure-added / pure-removed line — falls back to full-line styling */
@@ -62,8 +70,13 @@ export type DiffRow = FusedRow | PlainRow
  * `diffWords*` tokenizes on whitespace/punctuation, so a Chinese sentence
  * (no spaces) would collapse into a single token — CJK lines must use
  * char-level diffing instead.
+ *
+ * Covers the full Han range: the BMP block (U+4E00–U+9FFF), Extension A
+ * (U+3400–U+4DBF), and the supplementary planes (U+20000–U+2A6DF
+ * Extension B, U+2A700–U+2EBEF Extensions C–F, U+2F800–U+2FA1F
+ * Compatibility Ideographs, U+30000–U+3134F Extension G).
  */
-const CJK_PATTERN = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/
+const CJK_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]|[\u{20000}-\u{2a6df}\u{2a700}-\u{2ebef}\u{2f800}-\u{2fa1f}\u{30000}-\u{3134f}]/u
 
 export function containsCJK(text: string): boolean {
   return CJK_PATTERN.test(text)
@@ -106,6 +119,34 @@ export const MAX_INLINE_DIFF_LENGTH = 5000
 export const INLINE_DIFF_TIMEOUT_MS = 200
 
 /**
+ * Total wall-clock budget (milliseconds) for the inline diff of a whole
+ * file diff.
+ *
+ * A per-pair allowance is not enough: a diff with many changed line pairs
+ * would give every pair a fresh allowance, and the work accumulates until
+ * rendering blocks for seconds. The budget is therefore shared across all
+ * pairs of one diff — once it is spent, the remaining pairs keep their
+ * whole-line styling instead of being diffed.
+ */
+export const INLINE_DIFF_TOTAL_BUDGET_MS = 1000
+
+/**
+ * A shared time budget for the inline diff of one file diff.
+ * Created once per diff and threaded through every line pair.
+ */
+export interface InlineDiffBudget {
+  /** Epoch milliseconds after which no further inline diffing is attempted. */
+  readonly deadline: number
+}
+
+/** Create a shared inline-diff budget for one whole file diff. */
+export function createInlineDiffBudget(
+  totalMs: number = INLINE_DIFF_TOTAL_BUDGET_MS,
+): InlineDiffBudget {
+  return { deadline: Date.now() + totalMs }
+}
+
+/**
  * True when any of the given lines is too long to be diffed inline.
  * Callers MUST NOT invoke `diffChars` / `diffWordsWithSpace` for lines
  * that exceed the bound.
@@ -134,22 +175,34 @@ function wholeLineFragments(oldLine: string, newLine: string): InlineFragment[] 
  *
  * Over-limit lines never reach jsdiff — they degrade to a whole-line
  * removed/added pair (see `MAX_INLINE_DIFF_LENGTH`). Lines within the
- * limit that still exceed the time budget degrade the same way.
+ * limit that exceed the per-call time budget, or that are reached after
+ * the shared budget is spent, degrade the same way.
  */
 export function computeInlineFragments(
   oldLine: string,
   newLine: string,
+  budget?: InlineDiffBudget,
 ): InlineFragment[] {
   // Guard first: never hand an over-limit line to jsdiff.
   if (exceedsInlineDiffLimit(oldLine, newLine)) {
     return wholeLineFragments(oldLine, newLine)
   }
 
+  // The shared budget is spent — skip jsdiff entirely rather than giving
+  // this pair a fresh allowance.
+  const remaining = budget ? budget.deadline - Date.now() : INLINE_DIFF_TIMEOUT_MS
+  if (remaining <= 0) {
+    return wholeLineFragments(oldLine, newLine)
+  }
+
+  // Never give a single pair more than its own share of the budget.
+  const timeout = Math.min(INLINE_DIFF_TIMEOUT_MS, Math.max(1, remaining))
+
   const strategy = detectInlineStrategy(oldLine, newLine)
   const changes =
     strategy === 'chars'
-      ? diffChars(oldLine, newLine, { timeout: INLINE_DIFF_TIMEOUT_MS })
-      : diffWordsWithSpace(oldLine, newLine, { timeout: INLINE_DIFF_TIMEOUT_MS })
+      ? diffChars(oldLine, newLine, { timeout })
+      : diffWordsWithSpace(oldLine, newLine, { timeout })
 
   // `undefined` means jsdiff hit the time budget — fall back to
   // whole-line styling instead of blocking the reviewer.
@@ -175,8 +228,15 @@ export function computeInlineFragments(
  *
  * Runs only on changed line pairs and only for markdown files — the
  * caller memoizes the result per hunk.
+ *
+ * `budget` is a shared wall-clock allowance for the whole file diff. It
+ * is threaded through every pair so that a diff with many changed pairs
+ * cannot give each pair a fresh timeout and block rendering for seconds.
  */
-export function fuseHunkLines(lines: FuseableLine[]): DiffRow[] {
+export function fuseHunkLines(
+  lines: FuseableLine[],
+  budget?: InlineDiffBudget,
+): DiffRow[] {
   const removed = lines.filter((l) => l.type === 'removed')
   const added = lines.filter((l) => l.type === 'added')
   const pairCount = Math.min(removed.length, added.length)
@@ -186,8 +246,9 @@ export function fuseHunkLines(lines: FuseableLine[]): DiffRow[] {
   for (let i = 0; i < pairCount; i++) {
     rows.push({
       kind: 'fused',
-      fragments: computeInlineFragments(removed[i].content, added[i].content),
+      fragments: computeInlineFragments(removed[i].content, added[i].content, budget),
       newLineNo: added[i].newLineNo ?? 0,
+      oldLineNo: removed[i].oldLineNo ?? 0,
     })
   }
 
