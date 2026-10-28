@@ -233,7 +233,7 @@ it('extracts the token through the webpack walk and reads channel messages', asy
   })
 })
 
-it('falls back to the cached token when the webpack walk yields nothing', async () => {
+it('returns UNAUTHENTICATED when the walk fails after a token was cached', async () => {
   const page = fixture()
   let walkYieldsToken = true
   ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
@@ -245,16 +245,19 @@ it('falls back to the cached token when the webpack walk yields nothing', async 
     })
   }
   await page.execute('list_guilds', {})
-  // The walk now FAILS (webpack gone, e.g. mid-navigation); the cached
-  // token from call 1 keeps the session working instead of degrading to
-  // UNAUTHENTICATED. A walk that runs but finds nothing would NOT use the
-  // cache — see 'does not use a stale cached token after logout'.
+  // The walk now FAILS (webpack gone, e.g. mid-navigation). A cached token
+  // can no longer be confirmed to belong to the CURRENT account while the
+  // probe is unavailable — an account switch in exactly this window must
+  // never reuse the previous credential — so the workflow fails closed
+  // with UNAUTHENTICATED instead of falling back to the cache.
   delete page.sandbox.webpackChunkdiscord_app
-  await page.execute('list_guilds', {})
-  expect(page.fetches).toHaveLength(2)
+  const result = await page.execute('list_guilds', {})
+  expect(result).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'UNAUTHENTICATED' } },
+  })
+  expect(page.fetches).toHaveLength(1)
   expect(page.fetches[0].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
-  expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
-  expect(page.fetches.every((f) => f.url === 'https://discord.com/api/v9/users/@me/guilds?limit=200&with_counts=true')).toBe(true)
 })
 
 it('does not use a stale cached token after logout or account switch', async () => {
@@ -285,19 +288,24 @@ it('does not use a stale cached token after logout or account switch', async () 
   expect(page.fetches).toHaveLength(1)
 })
 
-it('falls back to the cache when the probe chunk callback never runs', async () => {
+it('fails closed when the probe chunk callback never runs', async () => {
   const page = fixture()
   // First call: normal walk caches the live token.
   await page.execute('list_guilds', {})
   expect(page.fetches[0].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
   // Webpack is mid-update: the chunk global is present and push works,
   // but the injected callback never runs (getTokenFromWebpack.done stays
-  // false). This is a transient lookup failure, not a logout — the cached
-  // token must keep the tool working instead of returning UNAUTHENTICATED.
+  // false). The probe is INCOMPLETE, so the cached token cannot be
+  // confirmed to belong to the current account — the workflow must fail
+  // closed with UNAUTHENTICATED instead of risking the previous
+  // account's credential, even though the failure is transient.
   ;(page.window as any).webpackChunkdiscord_app.push = () => {}
   const stuck = await page.execute('list_guilds', {})
-  expect(stuck.value.result.status).toBe('ok')
-  expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
+  expect(stuck).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'UNAUTHENTICATED' } },
+  })
+  expect(page.fetches).toHaveLength(1)
 })
 
 it('removes its probe chunk so repeated lookups do not accumulate entries', async () => {
@@ -521,15 +529,15 @@ it('keeps the cached token on a coded 403 but clears it on any 401', async () =>
   expect(denied.value.result.message).toContain('(code 50013)')
   // Permission denial keeps the token cached: no re-auth, no walk needed.
 
-  // Now the session is gone entirely: the walk FAILS (webpack gone), so
-  // the cached token is sent and Discord rejects it with a coded 401. The
-  // cache must still be cleared even though 50012 is not in AUTH_ERRORS.
-  delete page.sandbox.webpackChunkdiscord_app
+  // Now the walk runs against a LIVE webpack token and Discord rejects it
+  // with a coded 401 whose code (50012) is NOT in AUTH_ERRORS: the
+  // caller-visible contract must still be AUTH, with the code kept as
+  // diagnostic detail.
   await page.window.happyDOM.setURL('https://discord.com/channels/expired')
   const expired = await page.execute('read_messages', { channel: 'expired' })
   expect(expired).toMatchObject({
     ok: true,
-    value: { result: { status: 'error', error_code: 'API' } },
+    value: { result: { status: 'error', error_code: 'AUTH' } },
   })
   expect(expired.value.result.message).toContain('(code 50012)')
   // The rejected token is fully invalidated: the next call neither uses
@@ -539,6 +547,20 @@ it('keeps the cached token on a coded 403 but clears it on any 401', async () =>
   expect(again.value.result.error_code).toBe('UNAUTHENTICATED')
   expect(again.value.result.message).toContain('log in')
   expect(page.fetches).toHaveLength(2)
+})
+
+it('classifies an uncoded HTTP 401 as AUTH without touching the API', async () => {
+  // Discord (or an intermediary) returns 401 with a non-JSON body: the
+  // uncoded branch must also surface AUTH.
+  const page = fixture({
+    respond: () => ({ status: 401, body: 'Unauthorized' }),
+  })
+  const result = await page.execute('read_messages', { channel: 'c' })
+  expect(result).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'AUTH' } },
+  })
+  expect(result.value.result.message).toContain('401')
 })
 
 it('does not reuse a rejected webpack token but accepts a fresh one', async () => {
@@ -607,15 +629,28 @@ it('keeps a newer cached token when a stale in-flight 401 arrives', async () => 
   expect(asB.value.result.status).toBe('ok')
   expect(page.fetches[2].init.headers).toMatchObject({ Authorization: 'token-account-b' })
   // NOW the stale A request resolves with a coded 401. The eviction must
-  // remove only A's token and leave B's cache entry intact.
+  // remove only A's token and leave B's cache entry intact. (A coded 401
+  // surfaces as AUTH regardless of the Discord code.)
   releaseStale!()
   const stale = await staleA
+  expect(stale).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'AUTH' } },
+  })
   expect(stale.value.result.message).toContain('(code 50012)')
-  // B is still cached and usable when webpack disappears entirely.
+  // B is still cached — but the cache is now unreachable: a stale 401
+  // recorded B's predecessor's token value... in fact the eviction is
+  // value-keyed so B's entry survives, yet B can only be REUSED when the
+  // probe can confirm it against the live webpack token, which is gone.
+  // The fail-closed rule therefore yields UNAUTHENTICATED here rather
+  // than sending B unconfirmed.
   delete page.sandbox.webpackChunkdiscord_app
   const after = await page.execute('read_messages', { channel: 'ok' })
-  expect(after.value.result.status).toBe('ok')
-  expect(page.fetches[3].init.headers).toMatchObject({ Authorization: 'token-account-b' })
+  expect(after).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'UNAUTHENTICATED' } },
+  })
+  expect(page.fetches).toHaveLength(3)
 })
 
 it('keeps the cached token and the auth state on HTTP 429', async () => {
@@ -640,13 +675,19 @@ it('keeps the cached token and the auth state on HTTP 429', async () => {
     ok: true,
     value: { result: { status: 'error', error_code: 'RATE_LIMITED' } },
   })
-  // After the rate limit, the walk FAILS (transient hydration window): the
-  // cached token must still be used — a 429 is not a logout.
+  // After the rate limit, the walk FAILS (transient hydration window). A
+  // cached token cannot be confirmed to belong to the current account
+  // while the probe is down, so the workflow fails closed — a 429 never
+  // rejected the credential, but the fail-closed rule still applies (and
+  // the cache was never deleted by the 429 itself).
   rateLimited = false
   delete page.sandbox.webpackChunkdiscord_app
   const next = await page.execute('read_messages', { channel: '123' })
-  expect(next.value.result.status).toBe('ok')
-  expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
+  expect(next).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'UNAUTHENTICATED' } },
+  })
+  expect(page.fetches).toHaveLength(1)
 })
 
 it('threads a caller-supplied nonce through send_message', async () => {
@@ -762,4 +803,76 @@ it('maps a browser.eval rejection to a stable TAB_UNAVAILABLE error result', asy
     value: { result: { status: 'error', error_code: 'TAB_UNAVAILABLE' } },
   })
   expect(result.value.result.message).toContain('Target tab closed')
+})
+
+it('classifies a coded HTTP 401 as AUTH across all eight workflows', async () => {
+  // An unrecognized Discord code on HTTP 401 (e.g. 50012) must surface as
+  // AUTH in the caller-visible contract — the code stays as diagnostic
+  // detail. Exercise each workflow once against the same 401 fixture.
+  const tools = manifest.tools.map((t: { name: string }) => t.name)
+  const inputs: Record<string, Record<string, unknown>> = {
+    read_messages: { channel: 'c' },
+    send_message: { channel: 'c', content: 'x' },
+    add_reaction: { channel: 'c', message_id: 'm', emoji: '👍' },
+    remove_reaction: { channel: 'c', message_id: 'm', emoji: '👍' },
+    list_guilds: {},
+    list_channels: { guild_id: 'g' },
+    get_user_profile: { user_id: 'u' },
+    search_messages: { guild_id: 'g', content: 'q' },
+  }
+  for (const name of tools) {
+    const page = fixture({
+      respond: () => ({ status: 401, body: { code: 50012, message: 'Unknown session' } }),
+    })
+    const result = await page.execute(name, inputs[name])
+    expect(result, name).toMatchObject({
+      ok: true,
+      value: { result: { status: 'error', error_code: 'AUTH' } },
+    })
+    expect(result.value.result.message, name).toContain('(code 50012)')
+  }
+})
+
+it('aborts a queued reaction fetch by its queue time, not its start time', async () => {
+  // The workflow runs inside QuickJS, so timer math is not observable
+  // through the fixture without real delays; assert the source contract
+  // instead: the reaction workflows must derive the abort deadline from
+  // options.queued_at (the lock's queue timestamp) and the lock must hand
+  // that timestamp to the run callback, and the dispatch cutoff must stay
+  // below the 18s in-page deadline so a dispatched entry always has
+  // remaining budget and can never outlive the 25s browser-eval timeout.
+  const sourceOf = (name: string) => {
+    const tool = manifest.tools.find((t: { name: string }) => t.name === name)
+    return builtinResources[prefix + tool.path] as string
+  }
+  for (const name of ['add_reaction', 'remove_reaction']) {
+    const source = sourceOf(name)
+    expect(source, name).toMatch(/queued_at === 'number'/)
+    expect(source, name).toMatch(/deadlineMs - \(Date\.now\(\) - queuedAtMs\)/)
+    expect(source, name).toMatch(/return run\(queuedAt\)/)
+    expect(source, name).toMatch(/queuedAt > 15000/)
+    expect(source, name).not.toMatch(/queuedAt > 25000/)
+    expect(source, name).not.toMatch(/var startedAt = Date\.now\(\)/)
+  }
+  // Non-reaction workflows keep their own start-of-request deadline.
+  expect(sourceOf('read_messages')).toMatch(/var startedAt = Date\.now\(\)/)
+}, 15000)
+
+it("bounds automatic nonce reuse to Discord's enforce_nonce window", async () => {
+  const page = fixture()
+  const input = { channel: '555', content: 'window test' }
+  await page.execute('send_message', input)
+  const firstNonce = JSON.parse(page.fetches[0].init.body!).nonce as string
+  // Within the window a retry reuses the nonce (Discord dedupes it).
+  await page.execute('send_message', input)
+  expect(JSON.parse(page.fetches[1].init.body!).nonce).toBe(firstNonce)
+  // Source-level: the remember window must not exceed the dedup window
+  // Discord guarantees ("uniqueness ... over the past few minutes") —
+  // 5 minutes, set once at creation and never refreshed by retries.
+  const tool = manifest.tools.find((t: { name: string }) => t.name === 'send_message')
+  const source = builtinResources[prefix + tool.path] as string
+  expect(source).not.toContain('600000')
+  expect(source).toMatch(/300000/)
+  expect(source).toMatch(/if \(!existing\)/)
+  expect(source).toMatch(/5-minute reuse window cannot be extended/)
 })
