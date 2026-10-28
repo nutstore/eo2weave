@@ -96,11 +96,17 @@ function persistActivity(force = false): void {
     // A per-tab guard, not a global one: throttling globally could drop a
     // just-activated tab from the stored snapshot, and a discarded service
     // worker would then leave its debugger attached forever (banner stays).
+    let scheduled = 0
     for (const tabId of lastActivity.keys()) {
         if (!force && now - (tabPersistedAt.get(tabId) ?? 0) < ACTIVITY_PERSIST_INTERVAL_MS) continue
         tabPersistedAt.set(tabId, now)
         scheduleTabPersist(tabId)
+        scheduled++
     }
+    // Removals (detach, clearDebuggerState) shrink lastActivity without
+    // scheduling anything; when the map empties, the final tab's timestamp
+    // would linger in storage and every later sweep would revisit that tab.
+    if (scheduled === 0 && lastActivity.size === 0) scheduleTabPersist(-1)
 }
 
 const pendingPersists = new Map<number, ReturnType<typeof setTimeout>>()
@@ -256,13 +262,23 @@ export function attachDebugger(tabId: number): Promise<void> {
 export function detachDebugger(tabId: number): Promise<void> {
     const detaching = detachInFlight.get(tabId)
     if (detaching) return detaching
-    const promise = new Promise<void>((resolve) => {
-        chrome.debugger.detach({ tabId }, () => {
+    // Register in-flight before invoking detach: a synchronous callback
+    // (mocked APIs, some Chrome errors) would otherwise run and delete the
+    // entry before the code below stores it, leaving the promise stranded in
+    // the map and blocking every later detach of this tab.
+    let resolveDetach!: () => void
+    const promise = new Promise<void>((resolve) => { resolveDetach = resolve })
+    detachInFlight.set(tabId, promise)
+    chrome.debugger.detach({ tabId }, () => {
             detachInFlight.delete(tabId)
-            // On failure the debugger may still be attached: keep activity and
-            // the idle timer so cleanup can retry on the next sweep.
-            if (getLastErrorMessage() && attachedTabs.has(tabId)) {
-                resolve()
+            // On failure the debugger may still be attached: keep the activity
+            // record (and re-arm the idle timer) so cleanup can retry on the
+            // next sweep — even when attachedTabs does not list the tab, e.g.
+            // right after a service-worker restart, or the retried sweep would
+            // have nothing to act on while the banner stays up.
+            if (getLastErrorMessage()) {
+                if (!idleTimers.has(tabId) && lastActivity.has(tabId)) armIdleTimer(tabId)
+                resolveDetach()
                 return
             }
             attachedTabs.delete(tabId)
@@ -271,10 +287,8 @@ export function detachDebugger(tabId: number): Promise<void> {
             tabPersistedAt.delete(tabId)
             clearIdleTimer(tabId)
             persistActivity(true)
-            resolve()
+            resolveDetach()
         })
-    })
-    detachInFlight.set(tabId, promise)
     return promise
 }
 

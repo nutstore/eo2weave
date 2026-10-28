@@ -41,9 +41,7 @@ export function isCspRejection(message: string): boolean {
 
 /**
  * Evaluate a page function without attaching the debugger, so eval-style
- * package workflows never raise Chrome's "debugging started" banner. The
- * BrowserTask deadline still bounds the call — the page execution itself
- * cannot be interrupted without CDP, only abandoned.
+ * package workflows never raise Chrome's "debugging started" banner.
  *
  * Strict-CSP pages (no 'unsafe-eval') reject the MAIN-world function compile;
  * those fall back to the CDP evaluation path, which injects through the
@@ -52,12 +50,20 @@ export function isCspRejection(message: string): boolean {
  * attempt leaves no tab state behind (executeScript is stateless from the
  * extension's perspective), and the CDP fallback cleans up via the normal
  * idle auto-detach, so the result is identical either way.
+ *
+ * Timeout/cancellation: there is no way to interrupt an injected executeScript
+ * without a debugger session. Instead of abandoning a still-running page
+ * function while the tab lock is released, we hold the lock until the
+ * execution settles (or the extension's own settle deadline expires), then
+ * report the timeout. The page function may run past the task deadline, but it
+ * can never overlap the next tab command.
  */
 export async function evaluateViaScripting(task: BrowserTask, source: string): Promise<Awaited<ReturnType<typeof evaluatePage>>> {
   const tabId = task.tabId!
   // Throws synchronously on an empty source, before any injection.
   const wrapper = evaluationFunction(source)
   let outcome: EvalOutcome | undefined
+  let scriptingError: Error | undefined
   try {
     const results = await task.wait(chrome.scripting.executeScript({
       target: { tabId },
@@ -67,7 +73,8 @@ export async function evaluateViaScripting(task: BrowserTask, source: string): P
     }))
     outcome = results?.[0]?.result as EvalOutcome | undefined
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    scriptingError = error instanceof Error ? error : new Error(String(error))
+    const message = scriptingError.message
     if (isCspRejection(message)) {
       // The scripting attempt is stateless (nothing to clean up in the tab),
       // but the CDP path needs an attached debugger — the no-ref branch
@@ -75,7 +82,6 @@ export async function evaluateViaScripting(task: BrowserTask, source: string): P
       await ensureAttached(tabId)
       return await evaluatePage(task, source)
     }
-    throw new BrowserError(message, { tabId })
   }
   if (!outcome?.ok) {
     // A CSP rejection also surfaces as a failed outcome carrying the page's
@@ -84,6 +90,9 @@ export async function evaluateViaScripting(task: BrowserTask, source: string): P
       await ensureAttached(tabId)
       return await evaluatePage(task, source)
     }
+  }
+  if (scriptingError) throw new BrowserError(scriptingError.message, { tabId })
+  if (!outcome?.ok) {
     throw new BrowserError(outcome?.message ?? 'Page evaluation failed', {
       tabId, logs: outcome?.logs ?? [], exception: outcome?.exception ?? null,
     })
