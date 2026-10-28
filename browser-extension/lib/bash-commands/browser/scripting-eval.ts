@@ -1,5 +1,6 @@
 import { ensureAttached } from './cdp'
 import { evaluationFunction, evaluatePage } from './evaluate'
+import { isCspCompileRejection } from './csp-rejection'
 import { BrowserError } from './errors'
 import type { BrowserTask } from './task'
 
@@ -48,11 +49,7 @@ async function runEvalWrapper(fnSource: string): Promise<unknown> {
  * Function-constructor CSP wording rather than loose keyword containment.
  */
 export function isCspRejection(message: string): boolean {
-  const prefixes = [
-    "Refused to evaluate a string as JavaScript because 'unsafe-eval'",
-  ]
-  const normalized = message.trim()
-  return prefixes.some(prefix => normalized.startsWith(prefix) || normalized.startsWith(`EvalError: ${prefix}`))
+  return isCspCompileRejection(message)
 }
 
 /**

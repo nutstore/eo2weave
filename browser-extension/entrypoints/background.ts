@@ -5,6 +5,7 @@ import { installAdapterBackground } from './webmcp/adapter-background'
 import { serializeError as serializeBrowserError } from '../lib/bash-commands/browser/errors'
 import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
 import { installCdpIdleWatch } from '../lib/bash-commands/browser/cdp'
+import { evaluateBoundExpressionViaCdp } from '../lib/bash-commands/browser/cdp-evaluate'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
@@ -2016,7 +2017,29 @@ export default defineBackground(() => {
               },
               args: [action],
             })
-            const result = Array.isArray(results) ? results[0]?.result : null
+            let result = Array.isArray(results) ? results[0]?.result : null
+            // Strict-CSP pages: the runner's `evaluate` action compiles the
+            // expression with `new Function` in the page's MAIN world, which
+            // the page's CSP can refuse. The runner tags that compile-stage
+            // failure (thrown BEFORE any user code ran, so the expression is
+            // side-effect-free and safe to re-run); fall back to the CDP
+            // evaluation path, which injects through the debugger and is not
+            // CSP-bound (#106). Same trade-off as the browser.eval fallback in
+            // scripting-eval.ts: the debugger attaches (banner shows) — the
+            // price of evaluating at all on such pages. User-code errors whose
+            // message merely mentions CSP wording never carry the tag, so they
+            // can never trigger a duplicate execution.
+            if (
+              result &&
+              typeof result === 'object' &&
+              (result as Record<string, unknown>).compileError === true &&
+              (action as { type?: string }).type === 'evaluate'
+            ) {
+              const expression = (action as { expression?: unknown }).expression
+              if (typeof expression === 'string' && expression.trim()) {
+                result = await evaluateBoundExpressionViaCdp(targetTabId, expression)
+              }
+            }
             sendResponse(result ?? { ok: false, errorCode: 'NO_RESULT', error: 'executeScript returned no result' })
           } catch (err: any) {
             // Common causes: tab gone, restricted URL (chrome://, web store),

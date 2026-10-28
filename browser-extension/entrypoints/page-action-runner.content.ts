@@ -22,6 +22,7 @@
 // ============================================================
 
 import { synthesizeElementLocators } from '../lib/page-action-synthesis-source'
+import { isCspCompileRejection } from '../lib/bash-commands/browser/csp-rejection'
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -709,7 +710,18 @@ export default defineContentScript({
             const result = await Promise.resolve(fn())
             return { ok: true, result }
           } catch (err) {
-            return { ok: false, error: (err as Error).message }
+            const message = err instanceof Error ? err.message : String(err)
+            // A CSP rejection is thrown by `new Function` BEFORE any user code
+            // ran, so the expression is side-effect-free and safe to re-run
+            // elsewhere. Tag it (compileError) so the background handler can
+            // fall back to the CSP-exempt CDP path (#106); a message from the
+            // user's own code that happens to mention CSP wording must NOT
+            // trigger a second execution, so only genuine compile throws
+            // (thrown by the constructor itself) carry the tag.
+            if (isCspCompileRejection(message)) {
+              return { ok: false, errorCode: 'CSP_BLOCKED_COMPILE', compileError: true, error: message }
+            }
+            return { ok: false, error: message }
           }
         }
         default:
