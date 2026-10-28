@@ -183,26 +183,27 @@ describe('installAgentAbortRejectionFilter', () => {
     }
   })
 
-  it('installing twice for the same window does not add a second filter pass', () => {
-    // Count FILTER passes rather than deliveries: a naive duplicate-listener
-    // check would pass even with dedup removed, because the FIRST filter's
-    // stopImmediatePropagation hides a second duplicate from any downstream
-    // listener. Wrap preventDefault on the EVENT before dispatching — every
-    // registered filter instance calls it once for an owned abort, so the
-    // call count equals the number of installed filter listeners.
-    let preventDefaultCalls = 0
-    const event = new Event('unhandledrejection') as PromiseRejectionEvent
-    Object.defineProperty(event, 'reason', { value: createAgentAbortReason(AgentAbortReasonName.ByUser) })
-    Object.defineProperty(event, 'promise', { value: Promise.resolve() })
-    const original = event.preventDefault.bind(event)
-    event.preventDefault = (): void => {
-      original()
-      preventDefaultCalls += 1
-    }
-    installAgentAbortRejectionFilter(window) // second install must be a no-op
-    window.dispatchEvent(event)
-    // Exactly one filter pass ran (the beforeEach install); a stacked
-    // duplicate would call preventDefault twice.
-    expect(preventDefaultCalls).toBe(1)
+  it('installing twice for the same window does not register a second listener', () => {
+    // Observe REGISTRATIONS, not deliveries: stopImmediatePropagation masks
+    // any duplicate filter before it can run, so delivery- or
+    // preventDefault-counting passes even with the dedup guard removed.
+    // Wrapping addEventListener on a fresh stub target counts exactly what
+    // the installer registers — a removed WeakSet guard registers 2.
+    const stub = new EventTarget() as unknown as Window
+    const registered: EventListener[] = []
+    const originalAdd = stub.addEventListener.bind(stub)
+    ;(stub as unknown as { addEventListener: Window['addEventListener'] }).addEventListener = ((
+      type: string,
+      listener: EventListener,
+      options?: boolean | AddEventListenerOptions,
+    ) => {
+      if (type === 'unhandledrejection') registered.push(listener)
+      return originalAdd(type, listener, options)
+    }) as Window['addEventListener']
+
+    installAgentAbortRejectionFilter(stub)
+    installAgentAbortRejectionFilter(stub) // second install must be a no-op
+
+    expect(registered.length).toBe(1)
   })
 })

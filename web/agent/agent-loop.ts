@@ -138,7 +138,8 @@ export class AgentLoop {
   private async runWithPiAgentCore(
     messages: Message[],
     callbacks?: AgentCallbacks,
-    invocationController?: AbortController | null
+    invocationController?: AbortController | null,
+    invocationCompression?: { baseline: CompressionBaselineState | null; convertCallCount: number; lastSummaryConvertCall: number }
   ): Promise<Message[]> {
     // Use the CALLER's captured controller when provided (run() captured it
     // right after creating it); fall back to the instance field otherwise.
@@ -174,8 +175,8 @@ export class AgentLoop {
         toolExecutionTimeout: this.toolExecutionTimeout,
         toolTimeoutExemptions: TOOL_TIMEOUT_EXEMPTIONS,
         maxIterations: this.maxIterations,
-        convertCallCount: this.convertCallCount,
-        lastSummaryConvertCall: this.lastSummaryConvertCall,
+        convertCallCount: invocationCompression?.convertCallCount ?? this.convertCallCount,
+        lastSummaryConvertCall: invocationCompression?.lastSummaryConvertCall ?? this.lastSummaryConvertCall,
         compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
         generateContextSummaryWithLLM: (droppedContent, maxSummaryTokens) =>
           generateContextSummaryWithLLM({
@@ -185,7 +186,10 @@ export class AgentLoop {
             compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
           }),
         onAbortRequested: () => controller?.abort(createAgentAbortReason(AgentAbortReasonName.Internal)),
-        initialCompressionBaseline: this.compressionBaseline,
+        // Per-invocation compression state: captured by run() BEFORE any await
+        // point, so an overlapping run's commits can never leak into this
+        // invocation's trimming/compaction input.
+        initialCompressionBaseline: invocationCompression?.baseline ?? this.compressionBaseline,
         disableThinking: this.disableThinking,
         shouldYieldForQueue: this.shouldYieldForQueue,
         sessionId: this.sessionId,
@@ -436,7 +440,11 @@ export class AgentLoop {
     }
 
     try {
-      return await this.runWithPiAgentCore(messages, callbacks, controller)
+      return await this.runWithPiAgentCore(messages, callbacks, controller, {
+        baseline: this.compressionBaseline,
+        convertCallCount: this.convertCallCount,
+        lastSummaryConvertCall: this.lastSummaryConvertCall,
+      })
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] run_aborted', {
