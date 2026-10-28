@@ -94,16 +94,22 @@ export default {
             }
           }
           function getTokenCached() {
+            // Re-read the live webpack token on every call and refresh the
+            // cache with it: a user switching accounts in a still-loaded
+            // tab must never let requests run as the previous account.
+            // The cache is only a fallback for windows where the walk fails.
+            var token = getTokenFromWebpack()
+            if (token) {
+              try {
+                globalThis.__eo2DiscordToken = token
+              } catch (e) {}
+              return token
+            }
             try {
               var cached = globalThis.__eo2DiscordToken
               if (typeof cached === 'string' && cached) return cached
             } catch (e) {}
-            var token = getTokenFromWebpack()
-            if (token)
-              try {
-                globalThis.__eo2DiscordToken = token
-              } catch (e) {}
-            return token
+            return null
           }
           async function discordApi(endpoint, options) {
             options = options || {}
@@ -133,6 +139,22 @@ export default {
               headers['Content-Type'] = 'application/json'
               body = JSON.stringify(options.body)
             }
+            // Abort the in-page fetch before the 25s browser command
+            // deadline can orphan it, so a timed-out call does not leave
+            // the request running (and retries piling up) against quota.
+            var abortController = null
+            if (typeof AbortController === 'function')
+              try {
+                abortController = new AbortController()
+              } catch (e) {}
+            var abortTimer =
+              abortController !== null
+                ? setTimeout(function () {
+                    try {
+                      abortController.abort()
+                    } catch (e) {}
+                  }, 20000)
+                : null
             var response
             try {
               response = await fetch(url, {
@@ -140,14 +162,21 @@ export default {
                 headers: headers,
                 body: body,
                 credentials: 'include',
+                signal: abortController ? abortController.signal : undefined,
               })
             } catch (e) {
+              if (abortTimer !== null) clearTimeout(abortTimer)
+              var aborted =
+                e && (e.name === 'AbortError' || String(e).indexOf('abort') !== -1)
               return {
                 ok: false,
                 error_code: 'NETWORK',
-                message: 'Network error calling Discord API: ' + String(e),
+                message: aborted
+                  ? 'Discord API request aborted after the 20s in-page deadline.'
+                  : 'Network error calling Discord API: ' + String(e),
               }
             }
+            if (abortTimer !== null) clearTimeout(abortTimer)
             if (!response.ok) {
               var text = ''
               try {
@@ -173,10 +202,12 @@ export default {
               if (code !== undefined) {
                 // A coded 403 (e.g. 50013 Missing Permissions) is a
                 // permission denial, not a login failure: classify it and
-                // keep the cached token. Only uncoded 401/403 bodies below
-                // fall back to the generic AUTH branch that clears it.
+                // keep the cached token. A coded 401 always means the
+                // credential itself was rejected, so clear the cache no
+                // matter how the code classifies (see below); uncoded
+                // 401/403 bodies fall through to the generic AUTH branch.
                 var classified = classify(code, message)
-                if (classified === 'AUTH') {
+                if (classified === 'AUTH' || response.status === 401) {
                   try {
                     delete globalThis.__eo2DiscordToken
                   } catch (e) {}
@@ -318,6 +349,16 @@ export default {
                   'UNSUPPORTED_PAGE',
                   'Not on a discord.com page.',
                 )
+              var hasCriteria =
+                args.content !== undefined ||
+                args.author_id !== undefined ||
+                args.channel_id !== undefined ||
+                args.has !== undefined
+              if (!hasCriteria)
+                return error(
+                  'VALIDATION',
+                  'Provide at least one search criterion: content, author_id, channel_id or has.',
+                )
               var query = {}
               if (args.content !== undefined) query.content = args.content
               if (args.author_id !== undefined) query.author_id = args.author_id
@@ -356,12 +397,34 @@ export default {
 
         return workflow(args)
       }
-      const response = await browser.eval(
-        '() => (' + execute.toString() + ')(' + JSON.stringify(input) + ')',
-        options,
-      )
-      if (response.tabId !== target.tabId)
-        throw new Error('Browser returned another tab')
+      let response
+      try {
+        response = await browser.eval(
+          '() => (' + execute.toString() + ')(' + JSON.stringify(input) + ')',
+          options,
+        )
+      } catch (error) {
+        // Tab closed/navigated or the eval timed out: surface a stable
+        // workflow error instead of letting the adapter rejection escape.
+        state.result = {
+          status: 'error',
+          data: null,
+          message:
+            'The discord.com tab could not run the tool (it may have closed or navigated away): ' +
+            String(error),
+          error_code: 'TAB_UNAVAILABLE',
+        }
+        return 'success'
+      }
+      if (response.tabId !== target.tabId) {
+        state.result = {
+          status: 'error',
+          data: null,
+          message: 'Browser returned another tab',
+          error_code: 'TAB_UNAVAILABLE',
+        }
+        return 'success'
+      }
       const result = response.result
       if (result && result.status === 'ok')
         state.result = { status: 'ok', data: result.data, message: null }
