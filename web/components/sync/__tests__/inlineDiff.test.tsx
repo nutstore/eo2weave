@@ -566,17 +566,48 @@ describe('LazyDiffViewer content-type split', () => {
     // queries double as the visibility guard against that regression.
     expect(screen.getAllByRole('deletion')).toEqual(removed)
     expect(screen.getAllByRole('insertion')).toEqual(added)
+
+    // The expected fragment stream comes from `computeInlineFragments`,
+    // independent of the rendered DOM, so the assertions below compare the
+    // DOM-exposed text against an oracle rather than the fragment's own
+    // textContent (which a hidden descendant would trivially satisfy).
+    // `brown fox`/`red fox` is a modified pair (inline fragments); the
+    // `removed`/`added entirely` lines fall back to whole-line styling.
+    const pairFragments = computeInlineFragments(
+      'The quick brown fox',
+      'The quick red fox',
+    )
+    const expectedRemoved = pairFragments
+      .filter((f) => f.type === 'removed')
+      .map((f) => f.value)
+      .join('')
+    const expectedAdded = pairFragments
+      .filter((f) => f.type === 'added')
+      .map((f) => f.value)
+      .join('')
+    // The whole-line removal/addition rows render exactly one <del>/<ins>
+    // carrying the full line text — include them in the oracle.
+    expect([...removed.map((n) => n.textContent)]).toEqual([
+      expectedRemoved,
+      'removed',
+    ])
+    expect([...added.map((n) => n.textContent)]).toEqual([
+      expectedAdded,
+      'added',
+    ])
+
     for (const fragment of [...removed, ...added]) {
       expect(fragment.getAttribute('aria-hidden')).toBeNull()
       expect(fragment.hasAttribute('hidden')).toBe(false)
       expect(fragment.style.display).not.toBe('none')
       expect(fragment.style.visibility).not.toBe('hidden')
       // The fragment's TEXT must be exposed too — hiding the text in an
-      // aria-hidden descendant would leave the wrapper visible to the a11y
-      // tree while assistive technology still gets none of the content.
-      // toHaveTextContent walks the rendered text, and the a11y-tree role
-      // queries above would miss a text hidden only in a descendant.
-      expect(fragment).toHaveTextContent(fragment.textContent!)
+      // aria-hidden / CSS-hidden / `hidden`-attribute descendant would leave
+      // the wrapper visible to the a11y tree while assistive technology
+      // still gets none of the content. The textContent equality check
+      // above uses the `computeInlineFragments` oracle, so an empty or
+      // hidden text node fails instead of self-satisfying.
+      expect(fragment.textContent!.length).toBeGreaterThan(0)
       expect(
         fragment.querySelectorAll('[aria-hidden="true"]').length,
       ).toBe(0)
