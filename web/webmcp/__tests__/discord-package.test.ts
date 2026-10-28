@@ -192,7 +192,7 @@ function fixture(options: {
     }
     return { tabId: 9 }
   }
-  return { execute, window, fetches }
+  return { execute, window, fetches, sandbox: pageSandbox }
 }
 
 it('extracts the token through the webpack walk and reads channel messages', async () => {
@@ -239,14 +239,37 @@ it('falls back to the cached token when the webpack walk yields nothing', async 
     })
   }
   await page.execute('list_guilds', {})
-  // The walk now returns nothing; the cached token from call 1 keeps the
-  // session working instead of degrading to UNAUTHENTICATED.
-  walkYieldsToken = false
+  // The walk now FAILS (webpack gone, e.g. mid-navigation); the cached
+  // token from call 1 keeps the session working instead of degrading to
+  // UNAUTHENTICATED. A walk that runs but finds nothing would NOT use the
+  // cache — see 'does not use a stale cached token after logout'.
+  delete page.sandbox.webpackChunkdiscord_app
   await page.execute('list_guilds', {})
   expect(page.fetches).toHaveLength(2)
   expect(page.fetches[0].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
   expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
   expect(page.fetches.every((f) => f.url === 'https://discord.com/api/v9/users/@me/guilds?limit=200&with_counts=true')).toBe(true)
+})
+
+it('does not use a stale cached token after logout or account switch', async () => {
+  const page = fixture()
+  let currentToken: string | null = 'token-account-a'
+  ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
+    const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
+    requireCallback({
+      c: currentToken
+        ? { mod: { exports: { default: { getToken: () => currentToken } } } }
+        : {},
+    })
+  }
+  await page.execute('list_guilds', {})
+  expect(page.fetches[0].init.headers).toMatchObject({ Authorization: 'token-account-a' })
+  // The user logs out IN the still-loaded tab: the walk runs and finds no
+  // token. The cached previous-account credential must NOT be used.
+  currentToken = null
+  const loggedOut = await page.execute('list_guilds', {})
+  expect(loggedOut.value.result.error_code).toBe('UNAUTHENTICATED')
+  expect(page.fetches).toHaveLength(1)
 })
 
 it('sends messages and reactions through the right methods and bodies', async () => {
@@ -328,7 +351,11 @@ it('maps guild, channel, profile and search responses', async () => {
   expect(search.value.result.data).toMatchObject({ total_results: 1 })
   expect(search.value.result.data.messages[0][0]).toMatchObject({ id: 'm1', content: 'hit' })
   const searchFetch = page.fetches.find((f) => f.url.includes('/messages/search'))
-  expect(searchFetch?.url).toContain('https://discord.com/api/v9/guilds/g1/messages/search?content=hit')
+  const searchUrl = new URL(searchFetch!.url)
+  expect(searchUrl.origin + searchUrl.pathname).toBe(
+    'https://discord.com/api/v9/guilds/g1/messages/search',
+  )
+  expect(searchUrl.searchParams.get('content')).toBe('hit')
 })
 
 it('rejects combined pagination cursors before touching the API', async () => {
@@ -347,7 +374,12 @@ it('rejects combined pagination cursors before touching the API', async () => {
   expect(page.fetches).toHaveLength(0)
   const good = await page.execute('read_messages', { channel: '123', before: '10' })
   expect(good.value.result.status).toBe('ok')
-  expect(page.fetches[0].url).toContain('before=10')
+  const cursorUrl = new URL(page.fetches[0].url)
+  expect(cursorUrl.origin + cursorUrl.pathname).toBe(
+    'https://discord.com/api/v9/channels/123/messages',
+  )
+  expect(cursorUrl.searchParams.get('before')).toBe('10')
+  expect([...cursorUrl.searchParams.keys()].sort()).toEqual(['before', 'limit'])
 })
 
 it('gates on an unauthenticated or non-discord tab with a clear error instead of hanging', async () => {
@@ -385,17 +417,32 @@ it('classifies Discord API error codes into stable error codes', async () => {
           : { status: 200, body: [] },
   })
   await page.window.happyDOM.setURL('https://discord.com/channels/missing')
-  const bad = await page.execute('read_messages', { channel: 'forbidden' })
-  expect(bad).toMatchObject({
+  // Code 10003 must classify as NOT_FOUND: hitting the /missing fixture
+  // directly proves the mapping, not just the 50013 branch.
+  const missing = await page.execute('read_messages', { channel: 'missing' })
+  expect(missing).toMatchObject({
     ok: true,
     value: {
       result: {
         status: 'error',
-        error_code: 'VALIDATION',
+        error_code: 'NOT_FOUND',
       },
     },
   })
-  expect(bad.value.result.message).toContain('(code 50013)')
+  expect(missing.value.result.message).toContain('(code 10003)')
+  // Code 50013 is a permission denial: it gets its own FORBIDDEN class so
+  // callers can tell it apart from invalid input.
+  const denied = await page.execute('read_messages', { channel: 'forbidden' })
+  expect(denied).toMatchObject({
+    ok: true,
+    value: {
+      result: {
+        status: 'error',
+        error_code: 'FORBIDDEN',
+      },
+    },
+  })
+  expect(denied.value.result.message).toContain('(code 50013)')
 })
 
 it('keeps the cached token on a coded 403 but clears it on any 401', async () => {
@@ -418,15 +465,15 @@ it('keeps the cached token on a coded 403 but clears it on any 401', async () =>
   const denied = await page.execute('read_messages', { channel: 'forbidden' })
   expect(denied).toMatchObject({
     ok: true,
-    value: { result: { status: 'error', error_code: 'VALIDATION' } },
+    value: { result: { status: 'error', error_code: 'FORBIDDEN' } },
   })
   expect(denied.value.result.message).toContain('(code 50013)')
   // Permission denial keeps the token cached: no re-auth, no walk needed.
 
-  // Now the session is gone entirely: the walk yields nothing, so the
-  // cached token is sent and Discord rejects it with a coded 401. The
+  // Now the session is gone entirely: the walk FAILS (webpack gone), so
+  // the cached token is sent and Discord rejects it with a coded 401. The
   // cache must still be cleared even though 50012 is not in AUTH_ERRORS.
-  walkYieldsToken = false
+  delete page.sandbox.webpackChunkdiscord_app
   await page.window.happyDOM.setURL('https://discord.com/channels/expired')
   const expired = await page.execute('read_messages', { channel: 'expired' })
   expect(expired).toMatchObject({
@@ -434,16 +481,105 @@ it('keeps the cached token on a coded 403 but clears it on any 401', async () =>
     value: { result: { status: 'error', error_code: 'API' } },
   })
   expect(expired.value.result.message).toContain('(code 50012)')
-  // The cached token was cleared: the next call has no token at all.
+  // The rejected token is fully invalidated: the next call neither uses
+  // the cache nor re-reads the same webpack token — it goes UNAUTHENTICATED
+  // without another fetch (the 403 and the 401 each fetched once).
   const again = await page.execute('read_messages', { channel: 'expired' })
   expect(again.value.result.error_code).toBe('UNAUTHENTICATED')
   expect(again.value.result.message).toContain('log in')
+  expect(page.fetches).toHaveLength(2)
+})
+
+it('does not reuse a rejected webpack token but accepts a fresh one', async () => {
+  const page = fixture({
+    respond: (url) =>
+      url.includes('/channels/expired/')
+        ? { status: 401, body: { code: 50012, message: 'Unknown session' } }
+        : { status: 200, body: [] },
+  })
+  let currentToken = 'discord-token-xyz'
+  ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
+    const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
+    requireCallback({
+      c: { mod: { exports: { default: { getToken: () => currentToken } } } },
+    })
+  }
+  await page.window.happyDOM.setURL('https://discord.com/channels/expired')
+  // The live webpack token is sent and Discord rejects it with 401.
+  const expired = await page.execute('read_messages', { channel: 'expired' })
+  expect(expired.value.result.message).toContain('(code 50012)')
+  // The SAME token must not be sent again even though the walk finds it.
+  const resent = await page.execute('read_messages', { channel: 'expired' })
+  expect(resent.value.result.error_code).toBe('UNAUTHENTICATED')
+  expect(page.fetches).toHaveLength(1)
+  // A DIFFERENT token (re-login / account switch) is accepted immediately.
+  currentToken = 'fresh-account-token'
+  const fresh = await page.execute('read_messages', { channel: 'ok' })
+  expect(fresh.value.result.status).toBe('ok')
+  expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'fresh-account-token' })
+})
+
+it('keeps the cached token and the auth state on HTTP 429', async () => {
+  let rateLimited = true
+  const page = fixture({
+    respond: () =>
+      rateLimited
+        ? { status: 429, body: { code: 0, message: 'You are being rate limited.' } }
+        : { status: 200, body: [] },
+  })
+  let walkYieldsToken = true
+  ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
+    const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
+    requireCallback({
+      c: walkYieldsToken
+        ? { mod: { exports: { default: { getToken: () => 'discord-token-xyz' } } } }
+        : {},
+    })
+  }
+  const limited = await page.execute('read_messages', { channel: '123' })
+  expect(limited).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'RATE_LIMITED' } },
+  })
+  // After the rate limit, the walk FAILS (transient hydration window): the
+  // cached token must still be used — a 429 is not a logout.
+  rateLimited = false
+  delete page.sandbox.webpackChunkdiscord_app
+  const next = await page.execute('read_messages', { channel: '123' })
+  expect(next.value.result.status).toBe('ok')
+  expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
 })
 
 it('threads a caller-supplied nonce through send_message', async () => {
   const page = fixture()
   await page.execute('send_message', { channel: '555', content: 'x', nonce: 'my-nonce-1' })
   expect(JSON.parse(page.fetches[0].init.body!).nonce).toBe('my-nonce-1')
+})
+
+it('rejects nonces longer than the Discord 25-char limit at the schema boundary', async () => {
+  const page = fixture()
+  const longNonce = 'n'.repeat(26)
+  expect((await page.execute('send_message', { channel: '1', content: 'x', nonce: longNonce })).ok).toBe(false)
+  expect(page.fetches).toHaveLength(0)
+  expect((await page.execute('send_message', { channel: '1', content: 'x', nonce: 'n'.repeat(25) })).ok).toBe(true)
+})
+
+it('reuses the auto-generated nonce when a send is retried with identical input', async () => {
+  const page = fixture()
+  const input = { channel: '555', content: 'hello world', reply_to: 'm0' }
+  const first = await page.execute('send_message', input)
+  const firstNonce = JSON.parse(page.fetches[0].init.body!).nonce as string
+  expect(firstNonce).toMatch(/.+-[0-9a-z]+/)
+  expect(first.value.result.data.nonce).toBe(firstNonce)
+  // Retry after a lost result: the remembered nonce makes Discord dedupe.
+  await page.execute('send_message', input)
+  expect(JSON.parse(page.fetches[1].init.body!).nonce).toBe(firstNonce)
+  // A different message always gets a fresh nonce.
+  await page.execute('send_message', { channel: '555', content: 'different' })
+  expect(JSON.parse(page.fetches[2].init.body!).nonce).not.toBe(firstNonce)
+  // A caller-supplied nonce always wins over the remembered one.
+  await page.execute('send_message', { ...input, nonce: 'caller-nonce' })
+  expect(JSON.parse(page.fetches[3].init.body!).nonce).toBe('caller-nonce')
 })
 
 it('rejects malformed inputs at the schema boundary without touching the tab', async () => {
@@ -477,7 +613,9 @@ it('rejects empty searches and mutually exclusive guild cursors before the API',
   expect(page.fetches).toHaveLength(0)
   const fine = await page.execute('list_guilds', { before: '10' })
   expect(fine.value.result.status).toBe('ok')
-  expect(page.fetches[0].url).toContain('before=10')
+  const guildUrl = new URL(page.fetches[0].url)
+  expect(guildUrl.searchParams.get('before')).toBe('10')
+  expect(guildUrl.searchParams.get('after')).toBeNull()
 })
 
 it('re-reads the webpack token so an account switch is picked up immediately', async () => {
