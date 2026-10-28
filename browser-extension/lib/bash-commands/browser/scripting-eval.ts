@@ -9,6 +9,7 @@ type EvalOutcome = {
   logs?: unknown[]
   result?: unknown
   exception?: unknown
+  compileError?: boolean
 }
 
 /**
@@ -22,8 +23,17 @@ type EvalOutcome = {
  * a pending Promise.
  */
 async function runEvalWrapper(fnSource: string): Promise<unknown> {
-  const compile = new Function(`return (${fnSource})`) as () => (this: unknown) => Promise<unknown>
-  return await compile().call(undefined)
+  try {
+    const factory = new Function(`return (${fnSource})`) as () => (this: unknown) => Promise<unknown>
+    const fn = factory()
+    return await fn.call(undefined)
+  } catch (error) {
+    // The compile failed before any user code ran — tag it so the caller can
+    // tell a CSP-blocked compile apart from the user function's own failure
+    // (whose message may coincidentally match CSP patterns) and only then
+    // re-run the function through the CDP fallback.
+    return { ok: false, compileError: true, message: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 /**
@@ -85,8 +95,11 @@ export async function evaluateViaScripting(task: BrowserTask, source: string): P
   }
   if (!outcome?.ok) {
     // A CSP rejection also surfaces as a failed outcome carrying the page's
-    // own EvalError message rather than an executeScript rejection.
-    if (outcome && isCspRejection(outcome.message ?? '')) {
+    // own EvalError message rather than an executeScript rejection. Only the
+    // tagged compile failure (raised before any user code ran) is safe to
+    // re-run: a message from the user function itself could coincide with
+    // CSP patterns, and re-running it would double its external effects.
+    if (outcome && outcome.compileError === true) {
       await ensureAttached(tabId)
       return await evaluatePage(task, source)
     }

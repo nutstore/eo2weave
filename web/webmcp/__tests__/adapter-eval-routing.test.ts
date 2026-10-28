@@ -211,10 +211,41 @@ describe('browser eval routing', () => {
     expect(dbg.sendCommand).not.toHaveBeenCalled()
   })
 
-  it('falls back to CDP when the CSP rejection surfaces as a failed wrapper outcome', async () => {
+  it('does not re-run a user function whose error message matches CSP patterns', async () => {
+    // A genuine user-code error that merely mentions CSP wording must be
+    // surfaced as-is: the CDP fallback would execute the function a second
+    // time, and its external effects (requests, clicks) cannot be undone.
+    let runs = 0
+    const executeScript = vi.fn(async (details: { args?: unknown[] }) => {
+      runs++
+      // Execute the wrapper the same way the page would: compile the
+      // serialized function source, then call it.
+      const wrapper = (new Function(`return (${String(details.args![0])})`))() as () => Promise<{ ok: boolean; message: string }>
+      return [{ result: await wrapper.call(undefined) }]
+    })
+    const dbg = debuggerApi()
+    vi.stubGlobal('chrome', {
+      scripting: { executeScript },
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    await expect(runBrowserRequest('owner', {
+      command: 'eval', positionals: ['() => { throw new Error("Refused to evaluate: unsafe-eval is not allowed by Content Security Policy directive") }'], options: { tab: '7' }, stdin: '',
+    })).rejects.toMatchObject({ message: 'Refused to evaluate: unsafe-eval is not allowed by Content Security Policy directive' })
+    // Exactly one execution — no CDP fallback re-run.
+    expect(runs).toBe(1)
+    expect(dbg.attach).not.toHaveBeenCalled()
+    expect(dbg.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it('falls back to CDP when the CSP rejection surfaces as a tagged compile failure', async () => {
     // Some Chrome versions deliver the CSP refusal as the injected function's
-    // EvalError result instead of an executeScript rejection.
-    const executeScript = vi.fn(async () => [{ result: { ok: false, message: 'EvalError: Refused to evaluate a string as JavaScript because \'unsafe-eval\' is not an allowed source of script in the following Content Security Policy directive', logs: [] } }])
+    // EvalError result instead of an executeScript rejection. The wrapper
+    // tags compile-stage failures so they can be told apart from user-code
+    // errors without pattern matching.
+    const executeScript = vi.fn(async () => [{ result: { ok: false, compileError: true, message: 'EvalError: Refused to evaluate a string as JavaScript because \'unsafe-eval\' is not an allowed source of script in the following Content Security Policy directive', logs: [] } }])
     const dbg = debuggerApi()
     const storage = storageApi()
     await storage.session.set({ 'cw_browser_selected:owner': 7 })
