@@ -618,10 +618,12 @@ describe('LazyDiffViewer content-type split', () => {
       // The ancestors matter as much as the descendants: an `inert`,
       // `hidden` or `aria-hidden="true"` ANCESTOR hides the whole subtree
       // for AT, and an ancestor that is an atomic text replacement
-      // announces its own name instead of the subtree text.
+      // announces its own name instead of the subtree text. `document.body`
+      // is included: an `inert`/`hidden` body hides every fragment, and the
+      // loop must not stop just before it.
       for (
         let ancestor = fragment.parentElement;
-        ancestor && ancestor !== document.body;
+        ancestor;
         ancestor = ancestor.parentElement
       ) {
         expect(ancestor.hasAttribute('inert')).toBe(false)
@@ -633,29 +635,73 @@ describe('LazyDiffViewer content-type split', () => {
         // AT when the role is a "text container" role combined with a
         // name from any source, or when the role is inherently atomic.
         // Checking is split so neither direction can slip through:
-        // - a role that suppresses subtree text (`presentation`/`none`
-        //   keep the text, everything else is treated as replacement-
-        //   capable) is only allowed when it is `presentation`/`none`;
+        // - a role that SUPPRESSES subtree text must be limited to
+        //   `presentation`/`none` (which keep the text exposed);
+        // - non-suppressing semantic wrappers (`group`, `region`, `list`,
+        //   `table` …) KEEP descendant text in the a11y tree and are
+        //   allowed without a name;
         // - any accessible name (`aria-label`, `aria-labelledby`, or the
-        //   `title` attribute fallback) combined with a replacement-
-        //   capable role is rejected even without explicit ARIA label
-        //   attributes.
+        //   `title` attribute fallback — the title becomes the accName
+        //   for many roles) combined with a replacement-capable role is
+        //   rejected even without explicit ARIA label attributes.
+        // IMPLICIT native roles count too: an element can be atomic for AT
+        // without any `role` attribute (e.g. `<button>`, `<option>`,
+        // `<img alt=…>`, `<progress>`) — the tag-based replacement list
+        // below catches those where an explicit-role check would not.
         const ancestorRole = ancestor.getAttribute('role')
         const hasName =
           ancestor.getAttribute('aria-label') !== null ||
           ancestor.getAttribute('aria-labelledby') !== null ||
           ancestor.getAttribute('title') !== null
-        if (ancestorRole !== null) {
-          expect(['presentation', 'none']).toContain(ancestorRole)
+        // Roles/elements whose accName REPLACES the subtree text for AT
+        // when one is present. `group`/`region` are nameable but NOT
+        // text-replacing (their name is announced in addition to content).
+        const REPLACEMENT_ROLES = new Set([
+          'button', 'link', 'menuitem', 'option', 'tab', 'checkbox',
+          'radio', 'switch', 'progressbar', 'scrollbar', 'slider',
+          'spinbutton', 'tooltip', 'img', 'heading', 'term', 'cell',
+          'columnheader', 'rowheader', 'gridcell', 'caption', 'figure',
+          'blockquote', 'code', 'time', 'meter', 'status', 'alert',
+          'log', 'marquee', 'timer',
+        ])
+        const IMPLICIT_REPLACEMENT_TAGS = new Set([
+          'button', 'a', 'option', 'img', 'progress', 'meter', 'select',
+          'textarea', 'label', 'output', 'data', 'time', 'summary',
+          'fieldset', 'legend', 'caption', 'th', 'td', 'dt', 'dd',
+          'figcaption', 'blockquote', 'pre', 'code', 'h1', 'h2', 'h3',
+          'h4', 'h5', 'h6',
+        ])
+        const roleIsReplacement =
+          (ancestorRole !== null && REPLACEMENT_ROLES.has(ancestorRole)) ||
+          (ancestorRole === null && IMPLICIT_REPLACEMENT_TAGS.has(ancestor.tagName.toLowerCase()))
+        if (roleIsReplacement) {
+          // A text-replacing ancestor must not carry any accessible name —
+          // with one, AT announces the name and the diff text vanishes.
           expect(hasName).toBe(false)
+          expect(ancestor.getAttribute('aria-label')).toBeNull()
+          expect(ancestor.getAttribute('aria-labelledby')).toBeNull()
+          expect(ancestor.getAttribute('title')).toBeNull()
         }
         // Computed-style guard on ancestors too: a hidden ancestor hides
         // everything below it even when the fragment itself is clean.
-        // Same environment limits as below: happy-dom resolves rules
-        // present in the test document; the production Tailwind
-        // stylesheet is not loaded here, so production-only utility-class
-        // hiding on ancestors is covered by build-time review, not by
-        // this assertion.
+        // happy-dom cannot resolve the production Tailwind stylesheet, so
+        // utility-class hiding is checked by CLASS NAME instead: any
+        // known hiding utility (`hidden`, `invisible`, `sr-only`,
+        // `content-*`/`collapse`…) on the ancestor chain would remove the
+        // subtree from AT regardless of what computed style resolves to.
+        const HIDING_CLASS_PATTERNS = [
+          /\bhidden\b/,
+          /\binvisible\b/,
+          /\bsr-only\b/,
+          /\bnot-sr-only\b/,
+          /\bcollapse\b/,
+          /\bcontent-hidden\b/,
+          /\bsr-only-focusable\b/,
+        ]
+        const ancestorClasslistHasHiding = HIDING_CLASS_PATTERNS.some((p) =>
+          p.test(ancestor.className),
+        )
+        expect(ancestorClasslistHasHiding).toBe(false)
         const ancestorComputed = window.getComputedStyle(ancestor)
         expect(ancestorComputed.display).not.toBe('none')
         expect(
@@ -719,6 +765,23 @@ describe('LazyDiffViewer content-type split', () => {
         expect(computed.display).not.toBe('none')
         expect(computed.visibility === 'hidden' || computed.visibility === 'collapse').toBe(false)
         expect(computed.contentVisibility).not.toBe('hidden')
+        // Utility-class hiding by CLASS NAME: computed style cannot see the
+        // production Tailwind stylesheet in this environment, so a `hidden`
+        // / `invisible` / `sr-only` class on the fragment or a descendant
+        // would escape the computed-style assertions. Reject the known
+        // hiding utilities directly on the class list.
+        const HIDING_CLASS_PATTERNS = [
+          /\bhidden\b/,
+          /\binvisible\b/,
+          /\bsr-only\b/,
+          /\bnot-sr-only\b/,
+          /\bcollapse\b/,
+          /\bcontent-hidden\b/,
+          /\bsr-only-focusable\b/,
+        ]
+        expect(
+          HIDING_CLASS_PATTERNS.some((p) => p.test(node.className)),
+        ).toBe(false)
       }
     }
   })
