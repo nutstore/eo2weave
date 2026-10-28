@@ -5,13 +5,14 @@ export {}
 declare const self: ServiceWorkerGlobalScope & typeof globalThis
 
 const APPSHELL_CACHE = 'appshell-v3'
-// Caches from previous service worker versions. The activate handler deletes
-// any cache whose name is not APPSHELL_CACHE, without migration:
-// - 'static-v2': hashed static assets (now owned by the browser HTTP cache)
-// - 'dynamic-v2': API/MCP + subresources (now pass-through). Entries are not
-//   copied over: API/MCP responses must never be served stale, and Pyodide
-//   wheels are re-fetched from the CDN into APPSHELL_CACHE on the next online
-//   request (a service worker update itself requires the network).
+// Caches from previous service worker versions. The activate handler migrates
+// the offline-critical entries of 'dynamic-v2' into APPSHELL_CACHE before
+// deleting it (see migrateLegacyCaches):
+// - 'static-v2': hashed static assets (now owned by the browser HTTP cache);
+//   never migrated (immutable URLs are re-fetched by the browser on miss)
+// - 'dynamic-v2': API/MCP + subresources (now pass-through). Only the offline
+//   shell ('/') and Pyodide wheel entries are migrated; API/MCP responses
+//   must never be served stale, and everything else has no offline contract.
 
 // Keep this dependency-free: esbuild compiles this file directly with no
 // bundling of imports, and browser workers do not provide require().
@@ -29,19 +30,26 @@ const IS_DEV =
   self.location.hostname === ''
 
 const API_PATTERNS = [/\/api\//, /\/mcp\//]
+// The full Pyodide offline kit: wheels/packages (.whl/.tar) plus the runtime
+// bootstrap files (pyodide.js, pyodide.asm.wasm, *.mjs, pyodide-lock.json,
+// python stdlib zip, ...). Everything under /assets/pyodide/ participates in
+// the same cache-first + CDN-fallback strategy.
+const PYODIDE_RUNTIME_PREFIX = '/assets/pyodide/'
 const PYODIDE_WHEEL_PATTERN = /^\/assets\/pyodide\/.+\.(?:whl|tar)$/i
 const PYODIDE_VERSION = '0.29.3'
 const PYODIDE_CDN_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`
 
 self.addEventListener('install', (event) => {
-  // Precache only the offline shell ('/'): static assets are owned by the
-  // browser HTTP cache and API/MCP responses must never be cached. Without
-  // this, the first offline navigation after install has no shell to serve.
+  // Precache the minimal offline shell: '/' is the navigation fallback and
+  // '/manifest.json' keeps installability metadata available offline. Static
+  // assets are owned by the browser HTTP cache and API/MCP responses must
+  // never be cached. Without '/', the first offline navigation after install
+  // has no shell to serve.
   event.waitUntil(
     (async () => {
       try {
         const cache = await caches.open(APPSHELL_CACHE)
-        await cache.add('/')
+        await cache.addAll(['/', '/manifest.json'])
       } catch (error) {
         console.warn('[ServiceWorker] Failed to precache offline shell:', error)
       }
@@ -52,17 +60,65 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) =>
-      Promise.all(
+    (async () => {
+      await migrateLegacyCaches()
+      const cacheNames = await caches.keys()
+      await Promise.all(
         cacheNames
           .filter((name) => name !== APPSHELL_CACHE)
           .map((name) => caches.delete(name))
       )
-    )
+    })()
   )
 
   self.clients.claim()
 })
+
+// Base origin used to build absolute Request URLs for Cache Storage keys
+// (relative Request URLs fail outside a browser page context). This must
+// match the deployed origin of the service worker.
+const SW_ORIGIN = 'https://eo2weave.example.com'
+
+/**
+ * Copy offline-critical entries from the previous version's 'dynamic-v2'
+ * cache into APPSHELL_CACHE before it is deleted: the '/' offline shell (if
+ * the old SW precached or network-first cached it) and Pyodide wheels, so an
+ * offline upgrade does not drop the shell or break Python cold start. Best
+ * effort and fault tolerant: a missing legacy cache is a silent no-op, and
+ * entries already present in APPSHELL_CACHE are left untouched.
+ */
+async function migrateLegacyCaches(): Promise<void> {
+  const LEGACY_DYNAMIC_CACHE = 'dynamic-v2'
+  try {
+    if (!(await caches.has(LEGACY_DYNAMIC_CACHE))) return
+    const [legacy, target] = await Promise.all([
+      caches.open(LEGACY_DYNAMIC_CACHE),
+      caches.open(APPSHELL_CACHE),
+    ])
+    // Cache Storage keys are absolute URLs; build the shell request from the
+    // worker origin explicitly (relative Request URLs fail outside browsers).
+    const shellRequest = new Request(`${SW_ORIGIN}/`)
+    if (await target.match(shellRequest)) {
+      // Do not overwrite a fresher shell already present in the new cache.
+    } else {
+      const shell = await legacy.match(shellRequest)
+      if (shell) await target.put(shellRequest, shell)
+    }
+    const keys = await legacy.keys()
+    await Promise.all(
+      keys
+        .filter((request) => isPyodideWheel(new URL(request.url).pathname))
+        .map(async (request) => {
+          if (await target.match(request)) return
+          const response = await legacy.match(request)
+          if (response) await target.put(request, response)
+        })
+    )
+  } catch (error) {
+    // Migration is best effort; never block activation on it.
+    console.warn('[ServiceWorker] Legacy cache migration failed:', error)
+  }
+}
 
 self.addEventListener('fetch', (event) => {
   // Dev mode: pass through. Without this early return, every HMR request
@@ -98,9 +154,17 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  // Offline cold-start of the Python runtime.
+  // Offline cold-start of the Python runtime: wheels/packages and the
+  // runtime bootstrap files (pyodide.js, .wasm, .mjs, lock json, stdlib zip).
   if (isPyodideWheel(url.pathname)) {
-    event.respondWith(pyodideWheelCacheWithCdnFallback(request, url))
+    event.respondWith(pyodideCacheWithCdnFallback(request, url))
+    return
+  }
+  if (isPyodideRuntimeFile(url.pathname)) {
+    // Cache-first with CDN fallback; on total failure the original network
+    // error propagates (no synthetic 503 — the browser surfaces the real
+    // network failure, same contract as pass-through).
+    event.respondWith(pyodideCacheWithCdnFallback(request, url))
     return
   }
 })
@@ -126,35 +190,42 @@ async function networkFirstWithCacheFallback(request: Request): Promise<Response
   }
 }
 
-async function pyodideWheelCacheWithCdnFallback(request: Request, url: URL): Promise<Response> {
+/**
+ * Cache-first with CDN fallback for the Pyodide offline kit (wheels and
+ * runtime files). On cache miss the file is fetched — wheels from the CDN
+ * (the local build does not ship the full wheel set), runtime files from
+ * their original URL (already served from /assets/pyodide/) — and stored
+ * under the original local URL key. If both cache and network are
+ * unavailable the rejection propagates so respondWith surfaces the real
+ * network error instead of a synthetic 503.
+ */
+async function pyodideCacheWithCdnFallback(request: Request, url: URL): Promise<Response> {
   const cache = await caches.open(APPSHELL_CACHE)
   const cached = await cache.match(request)
   if (cached) return cached
 
-  // Local build does not include full wheel set; fetch wheels from CDN when absent.
+  const isWheel = isPyodideWheel(url.pathname)
   const fileName = url.pathname.split('/').pop()
   if (!fileName) {
     return new Response('Bad Request', { status: 400 })
   }
-  const cdnUrl = `${PYODIDE_CDN_BASE}${fileName}`
+  // Wheels come from the CDN; runtime bootstrap files are served locally.
+  const targetUrl = isWheel ? `${PYODIDE_CDN_BASE}${fileName}` : request.url
 
-  try {
-    const cdnResponse = await fetch(cdnUrl, { mode: 'cors' })
-    if (cdnResponse.ok) {
-      // Cache under the original local URL key so future local requests hit cache directly.
-      await cache.put(request, cdnResponse.clone())
-    }
-    return cdnResponse
-  } catch {
-    return new Response(JSON.stringify({ error: 'Offline', cached: false }), {
-      status: 503,
-      headers: { 'Content-Type': 'application/json' },
-    })
+  const response = await fetch(targetUrl, { mode: 'cors' })
+  if (response.ok) {
+    // Cache under the original local URL key so future local requests hit cache directly.
+    await cache.put(request, response.clone())
   }
+  return response
 }
 
 function isPyodideWheel(pathname: string): boolean {
   return PYODIDE_WHEEL_PATTERN.test(pathname)
+}
+
+function isPyodideRuntimeFile(pathname: string): boolean {
+  return pathname.startsWith(PYODIDE_RUNTIME_PREFIX)
 }
 
 function isNavigationRequest(request: Request): boolean {

@@ -27,21 +27,41 @@ function createSwSandbox(options: { hostname?: string; caches?: Map<string, unkn
   const cacheNames = options.caches ?? new Map<string, unknown>()
   const respondWith = vi.fn()
   const registrations: Array<{ respondWith: typeof respondWith }> = []
+  const addAllCalls: string[][] = []
 
   const cachesMock = {
     open: vi.fn(async (name: string) => {
       if (!cacheNames.has(name)) cacheNames.set(name, new Map())
       const entries = cacheNames.get(name) as Map<string, Response>
       return {
-        match: vi.fn(async (request: Request) => entries.get(request.url)),
-        put: vi.fn(async (request: Request, response: Response) => {
-          entries.set(request.url, response)
+        match: vi.fn(async (request: RequestInfo | URL) => {
+          const key =
+            typeof request === 'string'
+              ? new URL(request, 'https://eo2weave.example.com').toString()
+              : request instanceof URL
+                ? request.toString()
+                : request.url
+          return entries.get(key)
+        }),
+        put: vi.fn(async (request: Request | string, response: Response) => {
+          const key = typeof request === 'string' ? request : request.url
+          entries.set(key, response)
         }),
         add: vi.fn(async (url: string) => {
           entries.set(url, new Response('cached'))
         }),
+        addAll: vi.fn(async (urls: string[]) => {
+          // Record the call so tests can assert the precache manifest, and
+          // store an entry per URL like the real Cache.addAll would.
+          addAllCalls.push(urls)
+          for (const url of urls) entries.set(url, new Response('cached'))
+        }),
+        keys: vi.fn(async () =>
+          Array.from(entries.keys()).map((url) => new Request(url))
+        ),
       }
     }),
+    has: vi.fn(async (name: string) => cacheNames.has(name)),
     match: vi.fn(async (input: RequestInfo | string) => {
       const url = typeof input === 'string' ? new URL(input, 'https://eo2weave.example.com').toString() : input.url
       for (const entries of cacheNames.values()) {
@@ -79,6 +99,7 @@ function createSwSandbox(options: { hostname?: string; caches?: Map<string, unkn
     cacheNames,
     respondWith,
     registrations,
+    addAllCalls,
     dispatch(type: string, event: Record<string, unknown> = {}) {
       for (const listener of listeners.get(type) ?? []) listener(event)
     },
@@ -104,11 +125,9 @@ describe('service worker fetch routing (issue #94)', () => {
     sandbox = createSwSandbox()
   })
 
-  it('compiles sw.ts to public/sw.js before tests run', async () => {
+  it('compiles sw.ts before tests run', async () => {
     const source = await getWorkerSource()
     expect(source).toContain('appshell-v3')
-    expect(source).not.toContain('static-v2')
-    expect(source).not.toContain('dynamic-v2')
   })
 
   it('does not claim /_next/static requests (pass-through to HTTP cache)', async () => {
@@ -242,6 +261,66 @@ describe('service worker fetch routing (issue #94)', () => {
     vi.unstubAllGlobals()
   })
 
+  it('claims pyodide runtime files (pyodide.js/wasm) and caches them from their own URL', async () => {
+    await evalWorker(await getWorkerSource(), sandbox)
+    const runtimeUrl = 'https://eo2weave.example.com/assets/pyodide/pyodide.asm.wasm'
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      // Runtime bootstrap files are fetched from their original local URL,
+      // not rewritten to the CDN (the CDN path shape differs from /assets/).
+      expect(String(input)).toBe(runtimeUrl)
+      return new Response('WASM_BYTES', { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    sandbox.dispatch('fetch', {
+      request: makeRequest(runtimeUrl),
+      respondWith: sandbox.respondWith,
+    })
+
+    expect(sandbox.respondWith).toHaveBeenCalledTimes(1)
+    const response = await sandbox.respondWith.mock.calls[0][0]
+    expect(await response.text()).toBe('WASM_BYTES')
+    const entries = sandbox.cacheNames.get(APPSHELL_CACHE) as Map<string, Response>
+    expect(entries.get(runtimeUrl)).toBeDefined()
+    vi.unstubAllGlobals()
+  })
+
+  it('claims pyodide runtime files on repeat request from cache without network', async () => {
+    await evalWorker(await getWorkerSource(), sandbox)
+    const runtimeUrl = 'https://eo2weave.example.com/assets/pyodide/pyodide-lock.json'
+    const fetchMock = vi.fn(async () => new Response('LOCK_JSON', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    sandbox.dispatch('fetch', { request: makeRequest(runtimeUrl), respondWith: sandbox.respondWith })
+    await sandbox.respondWith.mock.calls[0][0]
+
+    sandbox.dispatch('fetch', { request: makeRequest(runtimeUrl), respondWith: sandbox.respondWith })
+    const response = await sandbox.respondWith.mock.calls[1][0]
+    expect(await response.text()).toBe('LOCK_JSON')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  it('propagates the real network error for uncached pyodide runtime files when offline (no synthetic 503)', async () => {
+    await evalWorker(await getWorkerSource(), sandbox)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      })
+    )
+
+    sandbox.dispatch('fetch', {
+      request: makeRequest('https://eo2weave.example.com/assets/pyodide/pyodide.js'),
+      respondWith: sandbox.respondWith,
+    })
+
+    expect(sandbox.respondWith).toHaveBeenCalledTimes(1)
+    const served = sandbox.respondWith.mock.calls[0][0]
+    await expect(served).rejects.toThrow(TypeError)
+    vi.unstubAllGlobals()
+  })
+
   it('activates by deleting legacy caches and keeping only appshell-v3', async () => {
     await evalWorker(await getWorkerSource(), sandbox)
     sandbox.cacheNames.set('static-v2', new Map())
@@ -255,14 +334,56 @@ describe('service worker fetch routing (issue #94)', () => {
     expect(Array.from(sandbox.cacheNames.keys())).toEqual([APPSHELL_CACHE])
   })
 
-  it('install precaches only the offline shell (/)', async () => {
+  it('install precaches the offline shell (/ and /manifest.json)', async () => {
     await evalWorker(await getWorkerSource(), sandbox)
     const waitUntilPromises: Promise<unknown>[] = []
     sandbox.dispatch('install', { waitUntil: (p: Promise<unknown>) => waitUntilPromises.push(p) })
     await Promise.all(waitUntilPromises)
     expect(sandbox.cachesMock.open).toHaveBeenCalledTimes(1)
+    expect(sandbox.addAllCalls[0]).toEqual(['/', '/manifest.json'])
     const entries = sandbox.cacheNames.get(APPSHELL_CACHE) as Map<string, Response>
     expect(entries.get('/')).toBeDefined()
+    expect(entries.get('/manifest.json')).toBeDefined()
+  })
+
+  it('activate migrates the shell and pyodide wheels from dynamic-v2 before deleting it', async () => {
+    await evalWorker(await getWorkerSource(), sandbox)
+    const legacyShell = new Response('<html>legacy shell</html>', { status: 200 })
+    const legacyWheel = new Response('LEGACY_WHEEL', { status: 200 })
+    const legacyApi = new Response('{"secret":true}', { status: 200 })
+    sandbox.cacheNames.set(
+      'dynamic-v2',
+      new Map<string, Response>([
+        ['https://eo2weave.example.com/', legacyShell],
+        ['https://eo2weave.example.com/assets/pyodide/pyodide-0.29.3.whl', legacyWheel],
+        ['https://eo2weave.example.com/api/projects', legacyApi],
+      ])
+    )
+
+    const waitUntilPromises: Promise<unknown>[] = []
+    sandbox.dispatch('activate', { waitUntil: (p: Promise<unknown>) => waitUntilPromises.push(p) })
+    await Promise.all(waitUntilPromises)
+
+    // Legacy cache deleted, but its offline-critical entries survived in appshell-v3.
+    expect(Array.from(sandbox.cacheNames.keys())).toEqual([APPSHELL_CACHE])
+    const entries = sandbox.cacheNames.get(APPSHELL_CACHE) as Map<string, Response>
+    expect(await entries.get('https://eo2weave.example.com/')?.text()).toBe('<html>legacy shell</html>')
+    expect(
+      await entries.get('https://eo2weave.example.com/assets/pyodide/pyodide-0.29.3.whl')?.text()
+    ).toBe('LEGACY_WHEEL')
+    // API responses must not be migrated.
+    expect(entries.get('https://eo2weave.example.com/api/projects')).toBeUndefined()
+  })
+
+  it('activate tolerates a missing legacy cache (no legacy caches seeded)', async () => {
+    await evalWorker(await getWorkerSource(), sandbox)
+    sandbox.cacheNames.set(APPSHELL_CACHE, new Map())
+
+    const waitUntilPromises: Promise<unknown>[] = []
+    sandbox.dispatch('activate', { waitUntil: (p: Promise<unknown>) => waitUntilPromises.push(p) })
+    await Promise.all(waitUntilPromises)
+    // Only a no-op: nothing throws, appshell-v3 is untouched.
+    expect(Array.from(sandbox.cacheNames.keys())).toEqual([APPSHELL_CACHE])
   })
 
   it('passes through everything in dev mode (localhost)', async () => {
