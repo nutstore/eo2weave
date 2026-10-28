@@ -5,7 +5,8 @@ import { installAdapterBackground } from './webmcp/adapter-background'
 import { serializeError as serializeBrowserError } from '../lib/bash-commands/browser/errors'
 import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
 import { installCdpIdleWatch } from '../lib/bash-commands/browser/cdp'
-import { evaluateBoundExpressionViaCdp } from '../lib/bash-commands/browser/cdp-evaluate'
+import { captureFrameLoaderId, evaluateBoundExpressionViaCdpUnlocked } from '../lib/bash-commands/browser/cdp-evaluate'
+import { withTabLock } from '../lib/bash-commands/browser/cdp'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
@@ -1990,7 +1991,13 @@ export default defineBackground(() => {
             return
           }
           try {
-            const results = await chrome.scripting.executeScript({
+            // Serialize the ENTIRE page-action flow (executeScript + CSP
+            // fallback) on the same per-tab operation lock the CDP fallback
+            // evaluator uses. Without this, a concurrent page action could
+            // mutate the tab between an async evaluation's steps — the
+            // fallback would observe or act on inconsistent page state.
+            const result: unknown = await withTabLock(targetTabId, async () => {
+              const results = await chrome.scripting.executeScript({
               target: { tabId: targetTabId },
               world: 'MAIN',
               func: async (a: unknown) => {
@@ -2036,44 +2043,27 @@ export default defineBackground(() => {
               (action as { type?: string }).type === 'evaluate'
             ) {
               const expression = (action as { expression?: unknown }).expression
-              // The runner pins the failing document's identity (`pageDocId`)
-              // and URL (`pageUrl`). The CDP fallback re-checks BOTH at
-              // evaluation time: a reload or same-URL navigation between the
-              // compile failure and the CDP run would otherwise execute the
-              // stale expression in the replacement document, reading or
-              // mutating the wrong page. Fail closed on a missing/mismatched
-              // document identity.
-              const compilePageUrl = (result as Record<string, unknown>).pageUrl
-              const compilePageDocId = (result as Record<string, unknown>).pageDocId
-              let urlStillMatches = false
-              if (typeof compilePageUrl === 'string' && compilePageUrl) {
-                try {
-                  const tab = await chrome.tabs.get(targetTabId)
-                  urlStillMatches = tab.url === compilePageUrl
-                } catch {
-                  // Tab gone — treat as mismatched; the structured error below
-                  // tells the caller why the fallback did not run.
-                }
-              }
-              if (!urlStillMatches) {
-                sendResponse({
-                  ok: false,
-                  errorCode: 'CSP_FALLBACK_STALE_DOCUMENT',
-                  error: 'The tab navigated after the CSP compile failure; the expression was NOT re-run in the new document. Retry the action if still needed.',
-                })
-                return
-              }
+              // Document identity guard: pin the frame loader id captured at
+              // compile-failure time (below). The loader id comes from the
+              // browser (Page.getFrameTree) — page scripts can neither read
+              // nor forge it, so a hostile page cannot replay a stolen window
+              // token into a replacement document. It changes on every
+              // cross-document navigation or reload (fail closed) but stays
+              // stable across same-document history changes (pushState / hash
+              // — same document, allowed), which strict URL equality would
+              // abort. captureFrameLoaderId returning null (tab gone /
+              // restricted / transport error) also fails closed.
               if (typeof expression === 'string' && expression.trim()) {
-                // Evaluation-time document check inside `evaluateBoundExpressionViaCdp`:
-                // the URL guard above closes the pre-check gap; the docId check
-                // below closes the same-URL replacement-document race.
-                result = await evaluateBoundExpressionViaCdp(
+                const compileLoaderId = await captureFrameLoaderId(targetTabId)
+                result = await evaluateBoundExpressionViaCdpUnlocked(
                   targetTabId,
                   expression,
-                  typeof compilePageDocId === 'string' ? compilePageDocId : undefined,
+                  compileLoaderId ?? undefined,
                 )
               }
             }
+            return result
+            })
             sendResponse(result ?? { ok: false, errorCode: 'NO_RESULT', error: 'executeScript returned no result' })
           } catch (err: any) {
             // Common causes: tab gone, restricted URL (chrome://, web store),

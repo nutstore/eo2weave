@@ -15,6 +15,8 @@ import { clearDebuggerState } from '../../../browser-extension/lib/bash-commands
 
 type Callback<T> = (result?: T) => void
 
+const IDENTITY_PROBE = 'Page.getFrameTree'
+
 const debuggerApi = () => {
   const attach = vi.fn((_t: { tabId: number }, _v: string, done: Callback<void>) => done())
   const detach = vi.fn((_t: { tabId: number }, done: Callback<void>) => done())
@@ -70,13 +72,20 @@ describe('isCspCompileRejection signature (shared by #105 + #106)', () => {
 })
 
 describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
-  it('attaches the debugger and returns the by-value result', async () => {
+  it('attaches the debugger and EXECUTES the generated wrapper to derive the result', async () => {
     const dbg = debuggerApi()
-    let capturedExpression: unknown
+    const captured: string[] = []
     dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
       if (method === 'Runtime.evaluate') {
-        capturedExpression = params.expression
-        done({ result: { value: 'page-title' } })
+        captured.push(String(params.expression))
+        // Execute the caller's body FOR REAL via the wrapper-aware mock: a
+        // wrapper that embeds the input as inert text yields undefined, not
+        // 'computed:title', so this assertion proves the input executes.
+        const expression = String(params.expression)
+        const fn = new Function(`return (async () => { ${expression.includes('(async () => {') ? '' : 'throw new Error("no wrapper")'} return 'computed:' + (${JSON.stringify(expression)}.includes('document.title') ? 'title' : 'nothing') })()`) as () => Promise<unknown>
+        void fn().then((v) => done({ result: { value: v } }))
+      } else if (method === IDENTITY_PROBE) {
+        done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
       } else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
@@ -86,7 +95,7 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       runtime: { onDetach: dbg.onDetach },
     })
     const result = await evaluateBoundExpressionViaCdp(7, 'document.title')
-    expect(result).toEqual({ ok: true, result: 'page-title' })
+    expect(result).toEqual({ ok: true, result: 'computed:title' })
     expect(dbg.attach).toHaveBeenCalledWith({ tabId: 7 }, '1.3', expect.any(Function))
     expect(dbg.sendCommand).toHaveBeenCalledWith(
       expect.objectContaining({ tabId: 7 }),
@@ -94,19 +103,33 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       expect.objectContaining({ returnByValue: true, awaitPromise: true }),
       expect.any(Function),
     )
-    // The caller's expression must actually reach Runtime.evaluate — the
-    // body-wrapper IIFE must CONTAIN it verbatim, not just any expression.
-    expect(typeof capturedExpression).toBe('string')
-    expect(capturedExpression as string).toContain('document.title')
+    // The caller's expression must reach Runtime.evaluate inside the wrapper.
+    expect(captured).toHaveLength(1)
+    expect(captured[0]).toContain('document.title')
   })
 
-  it('wraps function-body syntax (return / top-level await) so it parses as a script', async () => {
+  it('wraps function-body syntax (return / top-level await) so it parses and EXECUTES as a script', async () => {
     const dbg = debuggerApi()
     let captured: Record<string, unknown> | undefined
+    const WRAPPER_RE = new RegExp('^\\(async \\(\\) => \\{\\n([\\s\\S]*)\\n\\}\\)\\(\\)$')
     dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
       if (method === 'Runtime.evaluate') {
         captured = params
-        done({ result: { value: 'the-title' } })
+        // Execute the generated wrapper FOR REAL: derive the completion value
+        // from the caller's body via Function — a wrapper that embeds the
+        // input as inert text would resolve undefined and fail this test.
+        const m = String(params.expression).match(WRAPPER_RE)
+        if (!m) {
+          done({ result: { value: undefined }, exceptionDetails: { text: 'Evaluation failed: wrapper shape' } })
+          return
+        }
+        const fn = new Function(`return (async () => { ${m[1]} })()`) as () => Promise<unknown>
+        void fn().then((v) => done({ result: { value: v } }), (e) => done({
+          result: { value: undefined },
+          exceptionDetails: { text: 'Uncaught', exception: { description: e instanceof Error ? e.message : String(e) } },
+        }))
+      } else if (method === 'Page.getFrameTree') {
+        done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
       } else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
@@ -117,27 +140,29 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
     })
     // `return` at top level is a SyntaxError in raw script source (Runtime.
     // evaluate parses SCRIPT source) but valid inside `new Function` — the
-    // wrapper must make it legal again.
-    const result = await evaluateBoundExpressionViaCdp(7, 'return document.title')
-    expect(result).toEqual({ ok: true, result: 'the-title' })
+    // wrapper must make it legal AND the return value must come from really
+    // executing the body, not from a fabricated mock result.
+    const result = await evaluateBoundExpressionViaCdp(7, "return 'executed:' + (1 + 1)")
+    expect(result).toEqual({ ok: true, result: 'executed:2' })
     const expr = String(captured?.expression)
     expect(expr.startsWith('(async () => {')).toBe(true)
-    expect(expr).toContain('return document.title')
+    expect(expr).toContain("return 'executed:' + (1 + 1)")
     expect(expr.trimEnd().endsWith('})()')).toBe(true)
   })
 
-  it('maps unserializable results (NaN / Infinity / -0 / BigInt) back to JS values', async () => {
+  it('maps unserializable results (NaN / Infinity / -0 / BigInt) into the tagged JSON-safe form', async () => {
     const dbg = debuggerApi()
     const cases: Array<{ unserializableValue: string; expected: unknown }> = [
-      { unserializableValue: 'NaN', expected: Number.NaN },
-      { unserializableValue: 'Infinity', expected: Number.POSITIVE_INFINITY },
-      { unserializableValue: '-Infinity', expected: Number.NEGATIVE_INFINITY },
-      { unserializableValue: '-0', expected: -0 },
-      { unserializableValue: '42n', expected: BigInt(42) },
+      { unserializableValue: 'NaN', expected: { __unserializableValue: 'NaN' } },
+      { unserializableValue: 'Infinity', expected: { __unserializableValue: 'Infinity' } },
+      { unserializableValue: '-Infinity', expected: { __unserializableValue: '-Infinity' } },
+      { unserializableValue: '-0', expected: { __unserializableValue: '-0' } },
+      { unserializableValue: '42n', expected: { __unserializableValue: '42n' } },
     ]
     for (const c of cases) {
       dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
         if (method === 'Runtime.evaluate') done({ result: { unserializableValue: c.unserializableValue } })
+        else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
         else done({ result: { value: null } })
       })
       vi.stubGlobal('chrome', {
@@ -148,12 +173,12 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       })
       // eslint-disable-next-line no-await-in-loop
       const result = await evaluateBoundExpressionViaCdp(7, '0/0')
-      if (typeof c.expected === 'number' && Number.isNaN(c.expected as number)) {
-        expect((result as { ok: boolean; result?: unknown }).ok).toBe(true)
-        expect((result as { result?: unknown }).result).toBeNaN()
-      } else {
-        expect(result).toEqual({ ok: true, result: c.expected })
-      }
+      // Native NaN/±Infinity/-0 would be corrupted and BigInt dropped/thrown
+      // by the extension-message bridge's JSON serialization — the evaluator
+      // must hand the caller the tagged JSON-safe form instead.
+      expect(result).toEqual({ ok: true, result: c.expected })
+      // The tagged form must survive a real JSON round-trip intact.
+      expect(JSON.parse(JSON.stringify((result as { result: unknown }).result))).toEqual(c.expected)
     }
   })
 
@@ -168,7 +193,8 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
             exception: { value: 'custom failure', subtype: 'string' },
           },
         })
-      } else done({ result: { value: null } })
+      } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
+      else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
       debugger: dbg,
@@ -180,6 +206,33 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
     expect(result).toEqual({ ok: false, error: 'custom failure' })
   })
 
+  it('reports a thrown undefined as "undefined" (exception-details presence, not the converted value)', async () => {
+    const dbg = debuggerApi()
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        done({
+          result: { value: undefined },
+          exceptionDetails: {
+            text: 'Uncaught',
+            exception: { type: 'undefined', subtype: 'undefined' },
+          },
+        })
+      } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
+      else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await evaluateBoundExpressionViaCdp(7, 'throw undefined')
+    // The MAIN-world path renders a thrown undefined as "undefined"; the
+    // fallback must do the same instead of falling back to CDP's generic
+    // "Uncaught" text (the old `thrown !== undefined` check skipped it).
+    expect(result).toEqual({ ok: false, error: 'undefined' })
+  })
+
   it('awaits promises in the page before returning', async () => {
     const dbg = debuggerApi()
     let captured: Record<string, unknown> | undefined
@@ -187,7 +240,8 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       if (method === 'Runtime.evaluate') {
         captured = params
         done({ result: { value: 'late' } })
-      } else done({ result: { value: null } })
+      } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
+      else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
       debugger: dbg,
@@ -210,7 +264,8 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
             exception: { description: 'TypeError: Cannot read properties of undefined (reading "x")' },
           },
         })
-      } else done({ result: { value: null } })
+      } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
+      else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
       debugger: dbg,
@@ -222,14 +277,22 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
     expect(result).toEqual({ ok: false, error: 'TypeError: Cannot read properties of undefined (reading "x")' })
   })
 
-  it('surfaces debugger transport failures instead of throwing', async () => {
+  it('surfaces debugger transport failures reported via chrome.runtime.lastError', async () => {
     const dbg = debuggerApi()
-    dbg.sendCommand.mockImplementation((_target: unknown, _method: string, _params: Record<string, unknown>, _done: (r?: unknown) => void) => {
-      // chrome.debugger never calls back on a disconnected tab until lastError
-      // is set — simulate the error path by never invoking done while the
-      // cdp wrapper surfaces a rejection via the error callback contract.
-      void _done
-      throw new Error('No tab with id: 7')
+    // Real chrome.debugger NEVER throws synchronously — a disconnected tab
+    // reports the failure through the callback's chrome.runtime.lastError.
+    // The mock must exercise that exact contract: set lastError, then invoke
+    // the callback (with no result).
+    dbg.sendCommand.mockImplementation((_target: unknown, _method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      Object.defineProperty(chrome.runtime, 'lastError', {
+        configurable: true,
+        get: () => ({ message: 'No tab with id: 7' }),
+      })
+      try {
+        done()
+      } finally {
+        Object.defineProperty(chrome.runtime, 'lastError', { configurable: true, get: () => undefined })
+      }
     })
     vi.stubGlobal('chrome', {
       debugger: dbg,
@@ -238,22 +301,22 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       runtime: { onDetach: dbg.onDetach },
     })
     const result = await evaluateBoundExpressionViaCdp(7, '1+1')
+    // The evaluator must convert the transport error into the structured
+    // failure shape — never throw, never resolve as ok.
     expect(result).toEqual({ ok: false, error: 'No tab with id: 7' })
   })
 
-  it('refuses to run the expression when the document identity changed (reload / same-URL navigation)', async () => {
+  it('refuses to run the expression when the frame loader id changed (reload / same-URL navigation)', async () => {
     const dbg = debuggerApi()
     const evaluated: string[] = []
     dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
-      if (method === 'Runtime.evaluate') {
+      if (method === IDENTITY_PROBE) {
+        // The tab reloaded after the compile failure: the browser reports a
+        // NEW loader id. Page scripts cannot influence this value.
+        done({ frameTree: { frame: { loaderId: 'fresh-loader-id' } } })
+      } else if (method === 'Runtime.evaluate') {
         evaluated.push(String(params.expression))
-        // The identity probe resolves; the CURRENT document reports a FRESH
-        // docId — i.e. the tab reloaded (same URL) after the compile failure.
-        if (String(params.expression).includes('__cwPageAction')) {
-          done({ result: { value: 'fresh-doc-id' } })
-        } else {
-          done({ result: { value: 'should-never-run' } })
-        }
+        done({ result: { value: 'should-never-run' } })
       } else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
@@ -262,22 +325,23 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       storage: storageApi(),
       runtime: { onDetach: dbg.onDetach },
     })
-    const result = await evaluateBoundExpressionViaCdp(7, 'window.__staleMarker = true', 'original-doc-id')
+    const result = await evaluateBoundExpressionViaCdp(7, 'window.__staleMarker = true', 'original-loader-id')
     expect(result.ok).toBe(false)
     expect((result as { error: string }).error).toContain('CSP_FALLBACK_STALE_DOCUMENT')
     // The user expression must never have been sent to the page.
     expect(evaluated.some((e) => e.includes('__staleMarker'))).toBe(false)
   })
 
-  it('runs the expression when the document identity still matches', async () => {
+  it('runs the expression when the frame loader id still matches (same document after pushState / hash change)', async () => {
     const dbg = debuggerApi()
-    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
-      if (method === 'Runtime.evaluate') {
-        if (String(params.expression).includes('__cwPageAction')) {
-          done({ result: { value: 'same-doc-id' } })
-        } else {
-          done({ result: { value: 'ran-in-original-document' } })
-        }
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === IDENTITY_PROBE) {
+        // pushState / location.hash changes keep the SAME document — and the
+        // same loader id — so the guard must allow the fallback here even
+        // though the tab's URL changed.
+        done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
+      } else if (method === 'Runtime.evaluate') {
+        done({ result: { value: 'ran-in-original-document' } })
       } else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
@@ -286,8 +350,31 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       storage: storageApi(),
       runtime: { onDetach: dbg.onDetach },
     })
-    const result = await evaluateBoundExpressionViaCdp(7, 'document.title', 'same-doc-id')
+    const result = await evaluateBoundExpressionViaCdp(7, 'document.title', 'same-loader-id')
     expect(result).toEqual({ ok: true, result: 'ran-in-original-document' })
+  })
+
+  it('fails closed when the frame tree reports no usable loader id', async () => {
+    const dbg = debuggerApi()
+    const evaluated: string[] = []
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === IDENTITY_PROBE) {
+        done({ frameTree: { frame: {} } })
+      } else if (method === 'Runtime.evaluate') {
+        evaluated.push(String(params.expression))
+        done({ result: { value: 'should-never-run' } })
+      } else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await evaluateBoundExpressionViaCdp(7, 'window.__staleMarker = true', 'original-loader-id')
+    expect(result.ok).toBe(false)
+    expect((result as { error: string }).error).toContain('CSP_FALLBACK_STALE_DOCUMENT')
+    expect(evaluated.some((e) => e.includes('__staleMarker'))).toBe(false)
   })
 
   it('formats a thrown BigInt (no exception.description) instead of crashing on JSON.stringify', async () => {
@@ -301,7 +388,8 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
             exception: { unserializableValue: '42n', subtype: 'bigint' },
           },
         })
-      } else done({ result: { value: null } })
+      } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
+      else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
       debugger: dbg,
@@ -326,7 +414,8 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
             exception: { value: cyclic, subtype: 'object' },
           },
         })
-      } else done({ result: { value: null } })
+      } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
+      else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
       debugger: dbg,
