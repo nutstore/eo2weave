@@ -364,18 +364,60 @@ it('classifies Discord API error codes into stable error codes', async () => {
           : { status: 200, body: [] },
   })
   await page.window.happyDOM.setURL('https://discord.com/channels/missing')
-  const notFound = await page.execute('read_messages', { channel: 'missing' })
-  expect(notFound).toMatchObject({
+  const bad = await page.execute('read_messages', { channel: 'forbidden' })
+  expect(bad).toMatchObject({
     ok: true,
     value: {
       result: {
         status: 'error',
-        error_code: 'NOT_FOUND',
-        message: expect.stringContaining('Unknown Channel'),
+        error_code: 'VALIDATION',
       },
     },
   })
-  expect(page.fetches).toHaveLength(1)
+  expect(bad.value.result.message).toContain('(code 50013)')
+})
+
+it('keeps the cached token on a coded 403 but clears it on an uncoded 401', async () => {
+  const page = fixture({
+    respond: (url) =>
+      url.includes('/channels/forbidden/')
+        ? { status: 403, body: { code: 50013, message: 'Missing Permissions' } }
+        : { status: 401, body: { message: 'Unauthorized' } },
+  })
+  let walkCount = 0
+  ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
+    walkCount++
+    const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
+    requireCallback({
+      c: { mod: { exports: { default: { getToken: () => 'discord-token-xyz' } } } },
+    })
+  }
+  await page.window.happyDOM.setURL('https://discord.com/channels/forbidden')
+  const denied = await page.execute('read_messages', { channel: 'forbidden' })
+  expect(denied).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'VALIDATION' } },
+  })
+  expect(denied.value.result.message).toContain('(code 50013)')
+  // Permission denial keeps the token cached: no second webpack walk.
+  expect(walkCount).toBe(1)
+
+  await page.window.happyDOM.setURL('https://discord.com/channels/expired')
+  const expired = await page.execute('read_messages', { channel: 'expired' })
+  expect(expired).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'AUTH' } },
+  })
+  // Uncoded 401 cleared the cache: the next call re-walks webpack.
+  const again = await page.execute('read_messages', { channel: 'expired' })
+  expect(again.value.result.error_code).toBe('AUTH')
+  expect(walkCount).toBe(2)
+})
+
+it('threads a caller-supplied nonce through send_message', async () => {
+  const page = fixture()
+  await page.execute('send_message', { channel: '555', content: 'x', nonce: 'my-nonce-1' })
+  expect(JSON.parse(page.fetches[0].init.body!).nonce).toBe('my-nonce-1')
 })
 
 it('rejects malformed inputs at the schema boundary without touching the tab', async () => {

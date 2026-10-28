@@ -20,7 +20,7 @@ The token never leaves the page context.
 | `remove_reaction` | DELETE endpoint | `DELETE /channels/:id/messages/:mid/reactions/:emoji/@me` |
 | `list_guilds` | collection mapping, `with_counts` | `GET /users/@me/guilds` |
 | `list_channels` | nested resource | `GET /guilds/:id/channels` |
-| `get_user_profile` | user-shaped output | `GET /users/:id` (`@me` supported) |
+| `get_user_profile` | user-shaped output | `GET /users/:id/profile` (`@me` uses `GET /users/@me`) |
 | `search_messages` | grouped search results | `GET /guilds/:id/messages/search` |
 
 Every workflow returns `{ status: 'ok'|'error', data, message }`. Error
@@ -33,10 +33,10 @@ classified the same way as OpenTabs
 
 ## Readiness gating
 
-If the current tab is not on discord.com, or the Discord app has not
-hydrated its webpack modules yet, tools return
-`status: 'error'` with `error_code: 'UNAUTHENTICATED'` immediately instead of
-hanging. A successful token extraction is cached on the page
+If the current tab is not on discord.com, tools return
+`status: 'error'` with `error_code: 'UNSUPPORTED_PAGE'`. If the Discord app
+has not hydrated its webpack modules yet (or the session has no token), tools
+return `error_code: 'UNAUTHENTICATED'` immediately instead of hanging. A successful token extraction is cached on the page
 (`globalThis.__eo2DiscordToken`) to skip the webpack walk on subsequent
 calls; a 401/403/429 clears the cache so a token Discord just rejected
 cannot linger. Unclassified Discord error codes surface as `API`.

@@ -161,6 +161,30 @@ export default {
                   message: 'Discord API rate limited: ' + text.slice(0, 512),
                 }
               }
+              if (code !== undefined) {
+                // A coded 403 (e.g. 50013 Missing Permissions) is a
+                // permission denial, not a login failure: classify it and
+                // keep the cached token. Only uncoded 401/403 bodies below
+                // fall back to the generic AUTH branch that clears it.
+                var classified = classify(code, message)
+                if (classified === 'AUTH') {
+                  try {
+                    delete globalThis.__eo2DiscordToken
+                  } catch (e) {}
+                }
+                return {
+                  ok: false,
+                  error_code: classified,
+                  status: response.status,
+                  discord_code: code,
+                  message:
+                    'Discord API error: ' +
+                    (message || text.slice(0, 512)) +
+                    ' (code ' +
+                    code +
+                    ')',
+                }
+              }
               if (response.status === 401 || response.status === 403) {
                 try {
                   delete globalThis.__eo2DiscordToken
@@ -171,13 +195,6 @@ export default {
                   status: response.status,
                   message: 'Discord API auth error (' + response.status + '): ' + text.slice(0, 512),
                 }
-              }
-              return {
-                ok: false,
-                error_code: classify(code, message),
-                status: response.status,
-                discord_code: code,
-                message: 'Discord API error: ' + (message || text.slice(0, 512)) + ' (code ' + code + ')',
               }
               return {
                 ok: false,
