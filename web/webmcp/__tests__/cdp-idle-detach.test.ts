@@ -72,10 +72,25 @@ describe('CDP idle auto-detach', () => {
     await cdp.ensureAttached(7)
     for (let i = 0; i < 5; i++) {
       await vi.advanceTimersByTimeAsync(cdp.CDP_IDLE_TIMEOUT_MS / 2)
-      cdp.noteCdpActivity(7)
+      // Through the production path: sendCommand must record activity itself.
+      await cdp.sendCommand(7, 'Runtime.evaluate', { expression: '1' })
     }
     expect(chrome.debugger.detach).not.toHaveBeenCalled()
     expect(cdp.attachedTabs.has(7)).toBe(true)
+  })
+
+  it('keeps persisted timestamps for other tabs when a new tab persists activity', async () => {
+    // Tab A's timestamp exists in storage (previous SW); the current worker
+    // only knows tab B. A B-activity persist must not erase A's record.
+    const data = new Map<string, unknown>([['cw_cdp_activity', { 5: Date.now() }]])
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}))
+    ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
+    const cdp = await loadModule()
+    cdp.noteCdpActivity(7)
+    // Flush the coalesced persist.
+    await vi.advanceTimersByTimeAsync(10)
+    const stored = await chrome.storage.session.get('cw_cdp_activity')
+    expect(stored.cw_cdp_activity).toEqual({ 5: expect.any(Number), 7: expect.any(Number) })
   })
 
   it('sweeps idle tabs through the alarm after a service worker restart', async () => {

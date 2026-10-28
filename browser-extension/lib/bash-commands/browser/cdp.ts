@@ -105,13 +105,18 @@ function persistActivity(force = false): void {
 
 const pendingPersists = new Map<number, ReturnType<typeof setTimeout>>()
 
-/** Coalesce a tab's storage write; only the newest timestamp per tab lands. */
+/**
+ * Coalesce a tab's storage write; only the newest timestamp per tab lands.
+ * The write hydrates persisted activity first: right after a service-worker
+ * restart the in-memory map is empty or partial, and writing it directly
+ * would erase other tabs' saved timestamps.
+ */
 function scheduleTabPersist(tabId: number): void {
     const pending = pendingPersists.get(tabId)
     if (pending !== undefined) clearTimeout(pending)
     const timer = setTimeout(() => {
         pendingPersists.delete(tabId)
-        writePersistedActivity()
+        void loadPersistedActivity().then(writePersistedActivity)
     }, 0)
     pendingPersists.set(tabId, timer)
 }
@@ -144,6 +149,10 @@ function armIdleTimer(tabId: number): void {
 /** Record CDP activity for a tab and restart its idle window. */
 export function noteCdpActivity(tabId: number): void {
     lastActivity.set(tabId, Date.now())
+    // Hydrate before the first write of this worker's lifetime: persisting a
+    // snapshot from an empty in-memory map right after a restart would erase
+    // the saved timestamps of every other attached tab.
+    void loadPersistedActivity()
     persistActivity()
     armIdleTimer(tabId)
 }
@@ -319,6 +328,9 @@ export async function ensureAttached(tabId: number) {
 }
 
 export function clearDebuggerState(tabId: number): void {
+    // Hydrate first so the forced snapshot write below cannot erase records of
+    // other attached tabs before this worker has read them.
+    void loadPersistedActivity()
     attachedTabs.delete(tabId)
     attachInFlight.delete(tabId)
     lastActivity.delete(tabId)

@@ -189,6 +189,55 @@ describe('browser eval routing', () => {
     expect(dbg.sendCommand).toHaveBeenCalledWith(expect.objectContaining({ tabId: 7 }), 'Runtime.evaluate', expect.anything(), expect.any(Function))
   })
 
+  it('surfaces a CSP-flavored result that is not a compile rejection unchanged', async () => {
+    // The page function itself throws a message containing CSP wording — that
+    // is a genuine page error, not the wrapper's Function compile being
+    // blocked, so no fallback and no attach may happen.
+    const executeScript = vi.fn(async () => [{ result: { ok: false, message: 'User code violated policy: Content Security Policy', logs: [], exception: { name: 'Error' } } }])
+    const dbg = debuggerApi()
+    vi.stubGlobal('chrome', {
+      scripting: { executeScript },
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    await expect(runBrowserRequest('owner', {
+      command: 'eval', positionals: ['() => { throw new Error("Content Security Policy") }'], options: { tab: '7' }, stdin: '',
+    })).rejects.toMatchObject({ message: 'User code violated policy: Content Security Policy' })
+    expect(dbg.attach).not.toHaveBeenCalled()
+    expect(dbg.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it('falls back to CDP when the CSP rejection surfaces as a failed wrapper outcome', async () => {
+    // Some Chrome versions deliver the CSP refusal as the injected function's
+    // EvalError result instead of an executeScript rejection.
+    const executeScript = vi.fn(async () => [{ result: { ok: false, message: 'EvalError: Refused to evaluate a string as JavaScript because \'unsafe-eval\' is not an allowed source of script in the following Content Security Policy directive', logs: [] } }])
+    const dbg = debuggerApi()
+    const storage = storageApi()
+    await storage.session.set({ 'cw_browser_selected:owner': 7 })
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        const expression = String(params.expression).replace(/document\.title/g, '"outcome-fallback"')
+        const invoke = new Function(`return ${expression}`) as () => Promise<{ ok: boolean; logs: unknown[]; result: unknown }>
+        return invoke().then(outcome => done({ result: { value: outcome } }))
+      }
+      done({ result: { value: 42 } })
+    })
+    vi.stubGlobal('chrome', {
+      scripting: { executeScript },
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage,
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await runBrowserRequest('owner', {
+      command: 'eval', positionals: ['() => document.title'], options: { tab: '7' }, stdin: '',
+    })
+    expect(result).toEqual({ tabId: 7, logs: [], result: 'outcome-fallback' })
+    expect(dbg.attach).toHaveBeenCalled()
+  })
+
   it('keeps snapshot-ref eval on the CDP path with Runtime.callFunctionOn', async () => {
     const executeScript = vi.fn()
     const dbg = debuggerApi()
