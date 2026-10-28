@@ -6,9 +6,12 @@ declare const self: ServiceWorkerGlobalScope & typeof globalThis
 
 const APPSHELL_CACHE = 'appshell-v3'
 // Caches from previous service worker versions. The activate handler deletes
-// any cache whose name is not APPSHELL_CACHE:
+// any cache whose name is not APPSHELL_CACHE, without migration:
 // - 'static-v2': hashed static assets (now owned by the browser HTTP cache)
-// - 'dynamic-v2': API/MCP + subresources (now pass-through)
+// - 'dynamic-v2': API/MCP + subresources (now pass-through). Entries are not
+//   copied over: API/MCP responses must never be served stale, and Pyodide
+//   wheels are re-fetched from the CDN into APPSHELL_CACHE on the next online
+//   request (a service worker update itself requires the network).
 
 // Keep this dependency-free: esbuild compiles this file directly with no
 // bundling of imports, and browser workers do not provide require().
@@ -31,8 +34,19 @@ const PYODIDE_VERSION = '0.29.3'
 const PYODIDE_CDN_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`
 
 self.addEventListener('install', (event) => {
-  // No precache: the offline shell is cached on first navigation (fetch
-  // handler). Old-version caches are removed by the activate handler below.
+  // Precache only the offline shell ('/'): static assets are owned by the
+  // browser HTTP cache and API/MCP responses must never be cached. Without
+  // this, the first offline navigation after install has no shell to serve.
+  event.waitUntil(
+    (async () => {
+      try {
+        const cache = await caches.open(APPSHELL_CACHE)
+        await cache.add('/')
+      } catch (error) {
+        console.warn('[ServiceWorker] Failed to precache offline shell:', error)
+      }
+    })()
+  )
   event.waitUntil(self.skipWaiting())
 })
 
@@ -60,6 +74,12 @@ self.addEventListener('fetch', (event) => {
 
   if (request.method !== 'GET') return
   if (url.protocol === 'ws:' || url.protocol === 'wss:') return
+
+  // Cross-origin requests: pass through untouched. The offline shell and the
+  // Pyodide wheel cache are same-origin concerns; claiming a cross-origin
+  // request could answer an external URL with this app's shell or a
+  // CDN-proxied response.
+  if (url.origin !== self.location.origin) return
 
   // Everything not handled below is a deliberate pass-through: no
   // respondWith() means the request flows exactly as if no SW existed.

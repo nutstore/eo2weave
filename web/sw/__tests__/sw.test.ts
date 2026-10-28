@@ -105,13 +105,10 @@ describe('service worker fetch routing (issue #94)', () => {
   })
 
   it('compiles sw.ts to public/sw.js before tests run', async () => {
-    const { existsSync, readFileSync } = await import('node:fs')
-    const path = await import('node:path')
-    const swJs = path.resolve(__dirname, '../../public/sw.js')
-    expect(existsSync(swJs)).toBe(true)
-    expect(readFileSync(swJs, 'utf8')).toContain('appshell-v3')
-    expect(readFileSync(swJs, 'utf8')).not.toContain('static-v2')
-    expect(readFileSync(swJs, 'utf8')).not.toContain('dynamic-v2')
+    const source = await getWorkerSource()
+    expect(source).toContain('appshell-v3')
+    expect(source).not.toContain('static-v2')
+    expect(source).not.toContain('dynamic-v2')
   })
 
   it('does not claim /_next/static requests (pass-through to HTTP cache)', async () => {
@@ -142,6 +139,24 @@ describe('service worker fetch routing (issue #94)', () => {
     await evalWorker(await getWorkerSource(), sandbox)
     sandbox.dispatch('fetch', { request: makeRequest('https://eo2weave.example.com/api/projects', { method: 'POST' }) })
     sandbox.dispatch('fetch', { request: makeRequest('https://eo2weave.example.com/', { method: 'POST' }) })
+    expect(sandbox.respondWith).not.toHaveBeenCalled()
+  })
+
+  it('does not claim cross-origin navigation requests (pass-through)', async () => {
+    await evalWorker(await getWorkerSource(), sandbox)
+    sandbox.dispatch('fetch', {
+      request: makeRequest('https://other.example.com/docs', { headers: { accept: 'text/html' } }),
+      respondWith: sandbox.respondWith,
+    })
+    expect(sandbox.respondWith).not.toHaveBeenCalled()
+  })
+
+  it('does not claim cross-origin pyodide-wheel-looking requests (pass-through)', async () => {
+    await evalWorker(await getWorkerSource(), sandbox)
+    sandbox.dispatch('fetch', {
+      request: makeRequest('https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide-0.29.3.whl'),
+      respondWith: sandbox.respondWith,
+    })
     expect(sandbox.respondWith).not.toHaveBeenCalled()
   })
 
@@ -183,7 +198,7 @@ describe('service worker fetch routing (issue #94)', () => {
     const served = await sandbox.respondWith.mock.calls[1][0]
     const response = await served
     expect(response.status).toBe(200)
-    expect(await response.text()).toContain('shell')
+    expect(await response.text()).toBe('<html>shell</html>')
     vi.unstubAllGlobals()
   })
 
@@ -240,12 +255,14 @@ describe('service worker fetch routing (issue #94)', () => {
     expect(Array.from(sandbox.cacheNames.keys())).toEqual([APPSHELL_CACHE])
   })
 
-  it('install does not precache anything (empty manifest removed)', async () => {
+  it('install precaches only the offline shell (/)', async () => {
     await evalWorker(await getWorkerSource(), sandbox)
     const waitUntilPromises: Promise<unknown>[] = []
     sandbox.dispatch('install', { waitUntil: (p: Promise<unknown>) => waitUntilPromises.push(p) })
     await Promise.all(waitUntilPromises)
-    expect(sandbox.cachesMock.open).not.toHaveBeenCalled()
+    expect(sandbox.cachesMock.open).toHaveBeenCalledTimes(1)
+    const entries = sandbox.cacheNames.get(APPSHELL_CACHE) as Map<string, Response>
+    expect(entries.get('/')).toBeDefined()
   })
 
   it('passes through everything in dev mode (localhost)', async () => {
@@ -258,10 +275,28 @@ describe('service worker fetch routing (issue #94)', () => {
 
 let workerSourcePromise: Promise<string> | null = null
 
+/**
+ * Compile web/sw.ts with esbuild (write: false, in memory) and return the
+ * bundle. Compiling at test time instead of reading the generated
+ * public/sw.js keeps the tests honest: a clean checkout passes, and a stale
+ * public/sw.js can never satisfy routing assertions against outdated code.
+ */
 async function getWorkerSource(): Promise<string> {
   if (!workerSourcePromise) {
-    workerSourcePromise = Promise.all([import('node:fs'), import('node:path')]).then(
-      ([{ readFileSync }, path]) => readFileSync(path.resolve(__dirname, '../../public/sw.js'), 'utf8')
+    workerSourcePromise = Promise.all([import('node:path'), import('esbuild')]).then(
+      ([path, esbuild]) => {
+        const swTs = path.resolve(__dirname, '../../sw.ts')
+        return esbuild
+          .build({
+            entryPoints: [swTs],
+            bundle: true,
+            format: 'iife',
+            target: 'es2020',
+            write: false,
+            logLevel: 'silent',
+          })
+          .then((result) => result.outputFiles[0].text)
+      }
     )
   }
   return workerSourcePromise
