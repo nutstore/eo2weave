@@ -129,17 +129,33 @@ describe('computeInlineFragments', () => {
   })
 
   it('degrades mixed-language lines to char-level diffing', () => {
+    // Reconstruction alone (and a `toContain` on the removed text) would
+    // also pass if the wrong strategy were used — a word-level diff of
+    // these lines yields removed='update' / added='refresh', which still
+    // reconstructs both sides and still contains 'updat'. So the exact
+    // fragment boundaries are asserted instead: char-level diffing splits
+    // INSIDE the latin words ('updat' / 'r'+'fresh'), while a word-level
+    // diff would emit the whole words as single fragments.
     const oldLine = 'use the update button 更新'
     const newLine = 'use the refresh button 更新'
     const fragments = computeInlineFragments(oldLine, newLine)
     const removed = fragments.filter((f) => f.type === 'removed').map((f) => f.value).join('')
-    // diffChars splits inside the word — reconstruct via fragment mapping
-    // to verify the streams rebuild both sides exactly.
+    const added = fragments.filter((f) => f.type === 'added').map((f) => f.value).join('')
+    // The changed run is cut inside the word, not at the word boundary.
+    expect(removed).toBe('updat')
+    expect(added).toBe('rfresh')
+    // A word-level diff would have produced whole-word fragments.
+    expect(removed).not.toBe('update')
+    expect(added).not.toBe('refresh')
+    // ...and the changed run is split into more than one added fragment,
+    // which only happens at character granularity.
+    expect(fragments.filter((f) => f.type === 'added')).toHaveLength(2)
+
+    // Reconstruction still preserves both sides exactly.
     const old = fragments.map((f) => (f.type === 'added' ? '' : f.value)).join('')
     const neu = fragments.map((f) => (f.type === 'removed' ? '' : f.value)).join('')
     expect(old).toBe(oldLine)
     expect(neu).toBe(newLine)
-    expect(removed).toContain('updat')
     // The CJK tail survives untouched as an equal fragment.
     expect(fragments.some((f) => f.type === 'equal' && f.value.includes('更新'))).toBe(true)
   })
