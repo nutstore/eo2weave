@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { findPackageOptInCandidate, toolIsReadOnly } from '../../../browser-extension/entrypoints/webmcp/package-optin'
-import { createPackageOptInHandler, CONSENT_TOKEN_MIN_AGE_MS } from '../../../browser-extension/entrypoints/webmcp/package-optin-handler'
+import { createPackageOptInHandler, CONSENT_TOKEN_MIN_AGE_MS, setConsentTokenEnforcementForTests } from '../../../browser-extension/entrypoints/webmcp/package-optin-handler'
 import { readBuiltinWebMCPCatalog } from '../../../browser-extension/entrypoints/webmcp/package-repository'
 import { setBuiltinConfig, readBuiltinConfig } from '../../../browser-extension/entrypoints/webmcp/builtin-storage'
 import type { WebMCPPackageEntry } from '@creatorweave/shared/webmcp-package-catalog'
@@ -198,16 +198,42 @@ describe('createPackageOptInHandler', () => {
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'UNAUTHORIZED_TARGET' }))
   })
 
-  it('rejects enable WITHOUT a consent token (scripted enable cannot bypass the modal)', async () => {
-    const respond = vi.fn()
-    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
-    await handle({ type: 'webmcp_package_optin_enable', packageId: 'world.jmail.archive' }, respond)
-    expect(setBuiltinConfig).not.toHaveBeenCalled()
-    expect(reload).not.toHaveBeenCalled()
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'CONSENT_REQUIRED' }))
+  it('rejects enable WITHOUT a consent token in strict mode (legacy path closed)', async () => {
+    setConsentTokenEnforcementForTests('strict')
+    try {
+      const respond = vi.fn()
+      const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+      await handle({ type: 'webmcp_package_optin_enable', packageId: 'world.jmail.archive' }, respond)
+      expect(setBuiltinConfig).not.toHaveBeenCalled()
+      expect(reload).not.toHaveBeenCalled()
+      expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'CONSENT_REQUIRED' }))
+    } finally {
+      setConsentTokenEnforcementForTests(null)
+    }
   })
 
-  it('rejects an UNKNOWN consent token', async () => {
+  it('accepts a tokenless enable via the LEGACY grace path and logs a warn (old extension compat)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const respond = vi.fn()
+      const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+      await handle({ type: 'webmcp_package_optin_enable', packageId: 'world.jmail.archive' }, respond)
+      expect(setBuiltinConfig).toHaveBeenCalledWith('world.jmail.archive', { activation: 'enabled' })
+      expect(reload).toHaveBeenCalledWith(7)
+      expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: true, reloaded: true }))
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0][0]).toContain('[PackageOptIn] legacy enable (no consent token)')
+      // The observability payload carries what migration stats need.
+      const context = warn.mock.calls[0][1] as { packageId: string; timestamp: string; userAgent: string }
+      expect(context.packageId).toBe('world.jmail.archive')
+      expect(context.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+      expect(context.userAgent.length).toBeGreaterThan(0)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('STILL rejects a WRONG token in grace mode (present-but-bad token is tampering, not legacy)', async () => {
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     await handle(
@@ -215,6 +241,7 @@ describe('createPackageOptInHandler', () => {
       respond,
     )
     expect(setBuiltinConfig).not.toHaveBeenCalled()
+    expect(reload).not.toHaveBeenCalled()
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'CONSENT_REQUIRED' }))
   })
 

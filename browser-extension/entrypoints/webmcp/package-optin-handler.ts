@@ -12,9 +12,9 @@
  * tab. Only package metadata (id / description / tool names) crosses the
  * bridge; tool schemas and page content never do.
  *
- * The enable path requires a CONSENT TOKEN that the background itself issued
- * in the status response: a short-lived, single-use, tab-bound random id.
- * A page script cannot flip the config by calling the enable method alone —
+ * The enable path PREFERRED a CONSENT TOKEN that the background itself
+ * issued in the status response: a short-lived, single-use, tab-bound random
+ * id. A page script cannot flip the config by calling the enable method alone —
  * it needs a token that only exists while the status probe reports a
  * disabled package, and each token enables exactly one package on exactly
  * one tab. The 600ms minimum token age makes an instant scripted
@@ -22,6 +22,27 @@
  * Confirm passes easily. (A malicious script running inside the trusted
  * side-panel document can still pace the chain — but such a script already
  * holds the full agent bridge, so this is defence in depth, not a sandbox.)
+ *
+ * GRACE-PERIOD COMPATIBILITY (`CONSENT_TOKEN_ENFORCEMENT`, default 'grace'):
+ * we cannot control when users' extensions update, so the web app may talk
+ * to an extension build that predates consent tokens. Requests WITHOUT a
+ * token are therefore ACCEPTED during the grace period (legacy path, the
+ * pre-token behaviour), each one logged via console.warn (ua + timestamp)
+ * so the extension-update rollout can be measured. Requests WITH a token
+ * are always validated strictly — a present-but-wrong token signals
+ * tampering, not an old extension, and is rejected. There is deliberately
+ * NO version probing / capability negotiation: the page (untrusted side)
+ * supplies the fields, so a forged "I'm legacy" version string would be
+ * indistinguishable from a real one — token presence is the only honest
+ * discriminator.
+ *
+ * THREAT MODEL of the grace period: while 'grace' is active, a malicious
+ * page could call the enable method without a token — but that is exactly
+ * the behaviour shipped before this PR, so the grace period is NOT a new
+ * exposure surface; it merely keeps the old water level until every
+ * extension has updated. Flipping the switch to 'strict' (TODO: after the
+ * extension auto-update rollout has reached the fleet) closes the legacy
+ * path for good.
  *
  * The enable path also re-derives the candidate from the LIVE tab URL and
  * re-checks it immediately before writing the config, so a navigation that
@@ -31,7 +52,7 @@
 
 import { findPackageOptInCandidate, type PackageOptInCandidate } from './package-optin'
 import { readBuiltinWebMCPCatalog } from './package-repository'
-import { getBuiltinStorage, readBuiltinConfig, setBuiltinConfig } from './builtin-storage'
+import { readBuiltinConfig, setBuiltinConfig } from './builtin-storage'
 
 export interface PackageOptInStatus {
   ok: boolean
@@ -59,11 +80,32 @@ export interface PackageOptInDependencies {
  * Consent tokens live for the status→modal→confirm window only. The service
  * worker may be killed between status and enable — an expired/unknown token
  * then yields CONSENT_REQUIRED and the side panel re-probes, which is the
- * correct (fail-closed) behaviour.
+ * correct (fail-closed) behaviour for a caller that HAS a token.
  */
 export const CONSENT_TOKEN_TTL_MS = 10 * 60 * 1000
 /** A human needs a moment to read the modal; a scripted chain does not. */
 export const CONSENT_TOKEN_MIN_AGE_MS = 600
+
+/**
+ * Consent-token enforcement mode. Flip this to 'strict' (TODO: once the
+ * extension auto-update rollout has reached the fleet — check the
+ * `[PackageOptIn] legacy enable (no consent token)` warn volume first) to
+ * reject tokenless enable requests and close the legacy path for good.
+ * See the module docblock for the full threat-model trade-off.
+ */
+export const CONSENT_TOKEN_ENFORCEMENT: 'grace' | 'strict' = 'grace'
+
+/**
+ * Test-only seam: `CONSENT_TOKEN_ENFORCEMENT` is a compile-time const, so
+ * tests flip 'strict' through this override instead (null = use the const).
+ */
+let enforcementOverride: 'grace' | 'strict' | null = null
+export function setConsentTokenEnforcementForTests(mode: 'grace' | 'strict' | null): void {
+  enforcementOverride = mode
+}
+function activeEnforcement(): 'grace' | 'strict' {
+  return enforcementOverride ?? CONSENT_TOKEN_ENFORCEMENT
+}
 
 interface ConsentTokenRecord {
   tabId: number
@@ -178,19 +220,39 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
 
     if (message.type === 'webmcp_package_optin_enable') {
       const packageId = typeof message.packageId === 'string' ? message.packageId : ''
-      const consentToken = typeof message.consentToken === 'string' ? message.consentToken : ''
-      if (!packageId || !consentToken) {
+      const hasConsentToken = typeof message.consentToken === 'string' && message.consentToken !== ''
+      const consentToken = hasConsentToken ? (message.consentToken as string) : ''
+      // Token-less requests come from extension builds that predate consent
+      // tokens (the legacy path). 'strict' rejects them once the fleet has
+      // updated; 'grace' accepts them exactly as the pre-token build did,
+      // with a warn log so the migration can be measured. A PRESENT but
+      // wrong token is never downgraded to legacy — a supplied token means
+      // the caller claims the token protocol, so a bad one is tampering.
+      if (!packageId || (!hasConsentToken && activeEnforcement() === 'strict')) {
         sendResponse({
           ok: false,
           errorCode: 'CONSENT_REQUIRED',
-          error: 'packageId and a consent token from webmcp_package_optin_status are required.',
+          error: hasConsentToken
+            ? 'packageId is required.'
+            : 'packageId and a consent token from webmcp_package_optin_status are required.',
         })
         return false
       }
+      if (!hasConsentToken) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[PackageOptIn] legacy enable (no consent token) — old extension pre-consent build',
+          {
+            packageId,
+            timestamp: new Date().toISOString(),
+            userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+          },
+        )
+      }
       try {
         // Consume first (fail-closed): an invalid/expired/replayed token must
-        // never reach the config write.
-        if (!consumeConsentToken(consentToken, tabId)) {
+        // never reach the config write. Only reached with a token present.
+        if (hasConsentToken && !consumeConsentToken(consentToken, tabId)) {
           sendResponse({
             ok: false,
             errorCode: 'CONSENT_REQUIRED',
