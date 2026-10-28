@@ -65,14 +65,7 @@ function FragmentSpan({ fragment }: { fragment: InlineFragment }) {
     return (
       <span
         data-testid="track-changes-removed"
-        style={{
-          backgroundColor: '#f8514940',
-          color: '#ffc0bd',
-          textDecorationLine: 'line-through',
-          textDecorationColor: '#f85149cc',
-          textDecorationThickness: '1.5px',
-          borderRadius: '3px',
-        }}
+        className="bg-red-50 text-red-700 line-through decoration-red-500/80 [text-decoration-thickness:1.5px] rounded-[3px] dark:bg-[#f8514940] dark:text-[#ffc0bd] dark:decoration-[#f85149cc]"
       >
         {fragment.value}
       </span>
@@ -82,12 +75,7 @@ function FragmentSpan({ fragment }: { fragment: InlineFragment }) {
     return (
       <span
         data-testid="track-changes-added"
-        style={{
-          backgroundColor: '#2ea04355',
-          color: '#7ee787',
-          fontWeight: 600,
-          borderRadius: '3px',
-        }}
+        className="bg-green-50 text-green-700 font-semibold rounded-[3px] dark:bg-[#2ea04355] dark:text-[#7ee787]"
       >
         {fragment.value}
       </span>
