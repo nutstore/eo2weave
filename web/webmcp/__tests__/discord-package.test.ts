@@ -52,7 +52,12 @@ it('validates every package contract and stays below the package snapshot limit'
   const discordSources = Object.values(sources) as string[]
   expect(discordSources).toHaveLength(8)
   for (const source of discordSources) {
-    expect(source).not.toContain('location.assign(')
+    // Navigation-free contract: reject every known page-navigation API,
+    // not just location.assign. Navigation belongs to browser.goto.
+    expect(source).not.toMatch(/location\s*\.\s*(assign|replace|reload)\s*\(/)
+    expect(source).not.toMatch(/location\s*\.\s*href\s*=/)
+    expect(source).not.toMatch(/window\s*\.\s*open\s*\(/)
+    expect(source).not.toMatch(/document\s*\.\s*write\s*\(/)
     expect(source).toContain('webpackChunkdiscord_app')
     expect(source).toContain('credentials')
   }
@@ -65,10 +70,18 @@ it('localizes every tool description across the four supported locales', async (
     'utf8'
   )
   for (const locale of ['zh-CN', 'en-US', 'ja-JP', 'ko-KR']) {
-    const section = readme.split(`### ${locale}`)[1]
-    expect(section, locale).toBeDefined()
+    // Bound the locale section at the next heading so a description
+    // leaking from a later locale cannot satisfy this locale's coverage.
+    const section = (readme.split(`### ${locale}`)[1] ?? '').split(/\n### /)[0]
+    expect(section, locale).not.toBe('')
     for (const tool of manifest.tools as Array<{ name: string }>) {
-      expect(section, `${locale} ${tool.name}`).toContain(`\`${tool.name}\``)
+      // Every tool needs its own entry in THIS section with a non-empty
+      // description; a bare tool-name mention elsewhere no longer passes.
+      const line = section
+        .split('\n')
+        .find((l) => l.startsWith(`- \`${tool.name}\`:`))
+      expect(line, `${locale} ${tool.name} entry`).toBeDefined()
+      expect(line!.slice(`- \`${tool.name}\`:`.length).trim().length, `${locale} ${tool.name} description`).toBeGreaterThan(0)
     }
   }
 })
@@ -214,20 +227,25 @@ it('extracts the token through the webpack walk and reads channel messages', asy
   })
 })
 
-it('caches the token on the page across calls', async () => {
+it('falls back to the cached token when the webpack walk yields nothing', async () => {
   const page = fixture()
-  let walkCount = 0
+  let walkYieldsToken = true
   ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
-    walkCount++
     const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
     requireCallback({
-      c: { mod: { exports: { default: { getToken: () => 'discord-token-xyz' } } } },
+      c: walkYieldsToken
+        ? { mod: { exports: { default: { getToken: () => 'discord-token-xyz' } } } }
+        : {},
     })
   }
   await page.execute('list_guilds', {})
+  // The walk now returns nothing; the cached token from call 1 keeps the
+  // session working instead of degrading to UNAUTHENTICATED.
+  walkYieldsToken = false
   await page.execute('list_guilds', {})
-  expect(walkCount).toBe(1)
   expect(page.fetches).toHaveLength(2)
+  expect(page.fetches[0].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
+  expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
   expect(page.fetches.every((f) => f.url === 'https://discord.com/api/v9/users/@me/guilds?limit=200&with_counts=true')).toBe(true)
 })
 
@@ -246,6 +264,7 @@ it('sends messages and reactions through the right methods and bodies', async ()
   expect(JSON.parse(page.fetches[0].init.body!)).toEqual({
     content: 'hello world',
     nonce: expect.any(String),
+    enforce_nonce: true,
     message_reference: { message_id: 'm0' },
   })
 
@@ -300,8 +319,10 @@ it('maps guild, channel, profile and search responses', async () => {
   expect(profile.value.result.data.profile_source).toBe('users/:id/profile')
   const me = await page.execute('get_user_profile', { user_id: '@me' })
   expect(me.value.result.data.user).toMatchObject({ id: 'self', username: 'me' })
-  expect(me.value.result.data.email).toBe('me@example.com')
-  expect(me.value.result.data.mfa_enabled).toBe(true)
+  // Private account fields never reach tool output, even for '@me'.
+  expect(me.value.result.data).not.toHaveProperty('email')
+  expect(me.value.result.data).not.toHaveProperty('mfa_enabled')
+  expect(me.value.result.data).not.toHaveProperty('verified')
   expect(me.value.result.data.profile_source).toBe('users/@me')
   const search = await page.execute('search_messages', { guild_id: 'g1', content: 'hit' })
   expect(search.value.result.data).toMatchObject({ total_results: 1 })
@@ -377,19 +398,20 @@ it('classifies Discord API error codes into stable error codes', async () => {
   expect(bad.value.result.message).toContain('(code 50013)')
 })
 
-it('keeps the cached token on a coded 403 but clears it on an uncoded 401', async () => {
+it('keeps the cached token on a coded 403 but clears it on any 401', async () => {
   const page = fixture({
     respond: (url) =>
       url.includes('/channels/forbidden/')
         ? { status: 403, body: { code: 50013, message: 'Missing Permissions' } }
-        : { status: 401, body: { message: 'Unauthorized' } },
+        : { status: 401, body: { code: 50012, message: 'Unknown session' } },
   })
-  let walkCount = 0
+  let walkYieldsToken = true
   ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
-    walkCount++
     const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
     requireCallback({
-      c: { mod: { exports: { default: { getToken: () => 'discord-token-xyz' } } } },
+      c: walkYieldsToken
+        ? { mod: { exports: { default: { getToken: () => 'discord-token-xyz' } } } }
+        : {},
     })
   }
   await page.window.happyDOM.setURL('https://discord.com/channels/forbidden')
@@ -399,19 +421,23 @@ it('keeps the cached token on a coded 403 but clears it on an uncoded 401', asyn
     value: { result: { status: 'error', error_code: 'VALIDATION' } },
   })
   expect(denied.value.result.message).toContain('(code 50013)')
-  // Permission denial keeps the token cached: no second webpack walk.
-  expect(walkCount).toBe(1)
+  // Permission denial keeps the token cached: no re-auth, no walk needed.
 
+  // Now the session is gone entirely: the walk yields nothing, so the
+  // cached token is sent and Discord rejects it with a coded 401. The
+  // cache must still be cleared even though 50012 is not in AUTH_ERRORS.
+  walkYieldsToken = false
   await page.window.happyDOM.setURL('https://discord.com/channels/expired')
   const expired = await page.execute('read_messages', { channel: 'expired' })
   expect(expired).toMatchObject({
     ok: true,
-    value: { result: { status: 'error', error_code: 'AUTH' } },
+    value: { result: { status: 'error', error_code: 'API' } },
   })
-  // Uncoded 401 cleared the cache: the next call re-walks webpack.
+  expect(expired.value.result.message).toContain('(code 50012)')
+  // The cached token was cleared: the next call has no token at all.
   const again = await page.execute('read_messages', { channel: 'expired' })
-  expect(again.value.result.error_code).toBe('AUTH')
-  expect(walkCount).toBe(2)
+  expect(again.value.result.error_code).toBe('UNAUTHENTICATED')
+  expect(again.value.result.message).toContain('log in')
 })
 
 it('threads a caller-supplied nonce through send_message', async () => {
@@ -432,4 +458,63 @@ it('rejects malformed inputs at the schema boundary without touching the tab', a
   expect((await page.execute('list_guilds', { limit: 0 })).ok).toBe(false)
   expect((await page.execute('list_guilds', { unexpected: true })).ok).toBe(false)
   expect(page.fetches).toHaveLength(0)
+})
+
+it('rejects empty searches and mutually exclusive guild cursors before the API', async () => {
+  const page = fixture()
+  const empty = await page.execute('search_messages', { guild_id: 'g1' })
+  expect(empty).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'VALIDATION' } },
+  })
+  expect(empty.value.result.message).toContain('at least one search criterion')
+  const both = await page.execute('list_guilds', { before: '10', after: '20' })
+  expect(both).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'VALIDATION' } },
+  })
+  expect(both.value.result.message).toContain('single cursor')
+  expect(page.fetches).toHaveLength(0)
+  const fine = await page.execute('list_guilds', { before: '10' })
+  expect(fine.value.result.status).toBe('ok')
+  expect(page.fetches[0].url).toContain('before=10')
+})
+
+it('re-reads the webpack token so an account switch is picked up immediately', async () => {
+  const page = fixture()
+  let currentToken = 'token-account-a'
+  ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
+    const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
+    requireCallback({
+      c: { mod: { exports: { default: { getToken: () => currentToken } } } },
+    })
+  }
+  await page.execute('list_guilds', {})
+  expect(page.fetches[0].init.headers).toMatchObject({ Authorization: 'token-account-a' })
+  // User switches accounts in the still-loaded tab: the next call must
+  // send the NEW credential, not the cached one.
+  currentToken = 'token-account-b'
+  await page.execute('list_guilds', {})
+  expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'token-account-b' })
+})
+
+it('maps a browser.eval rejection to a stable TAB_UNAVAILABLE error result', async () => {
+  const tool = manifest.tools.find((tool: { name: string }) => tool.name === 'read_messages')
+  const failingBrowser = async (request: BrowserRequest): Promise<JsonValue> => {
+    if (request.command === 'eval') throw new Error('Target tab closed')
+    return { tabId: 9 }
+  }
+  const result: any = await executeAdapterWorkflow(
+    wasm,
+    builtinResources[prefix + tool.path],
+    { channel: '123' } as JsonValue,
+    failingBrowser,
+    new AbortController().signal,
+    { tabId: 9, url: 'https://discord.com/channels/@me' },
+  )
+  expect(result).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'TAB_UNAVAILABLE' } },
+  })
+  expect(result.value.result.message).toContain('Target tab closed')
 })
