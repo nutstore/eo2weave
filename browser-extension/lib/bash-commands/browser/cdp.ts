@@ -22,6 +22,8 @@ const ACTIVITY_PERSIST_RETRY_MS = 5_000
 
 export const attachedTabs = new Set<number>()
 const attachInFlight = new Map<number, Promise<void>>()
+/** Tabs whose activity was cleared this worker's lifetime — hydration must not resurrect them. */
+const clearedTabs = new Set<number>()
 
 export type DebuggerSession = {
     tabId: number
@@ -82,6 +84,11 @@ async function loadPersistedActivity(): Promise<boolean> {
                 const tabId = Number(tab)
                 const value = Number(at)
                 if (!Number.isSafeInteger(tabId) || !Number.isFinite(value)) continue
+                // A tab cleared this worker's lifetime must stay cleared: the
+                // stored row predates the removal, and a hydration racing
+                // clearDebuggerState would otherwise resurrect it and let a
+                // later sweep detach the (possibly reused) tab's new session.
+                if (clearedTabs.has(tabId)) continue
                 // Never overwrite fresher in-memory activity with an older snapshot.
                 const known = lastActivity.get(tabId)
                 if (known === undefined || value > known) lastActivity.set(tabId, value)
@@ -138,16 +145,22 @@ function scheduleTabPersist(tabId: number): void {
 function writePersistedActivity(): void {
     const store = sessionStore()
     if (!store) return
-    const snapshot: Record<string, number> = {}
-    for (const [tabId, at] of lastActivity) snapshot[String(tabId)] = at
-    void store.set({ [ACTIVITY_STORAGE_KEY]: snapshot }).catch(() => {
+    void store.set({ [ACTIVITY_STORAGE_KEY]: currentSnapshot() }).catch(() => {
         // A dropped write could leave a discarded worker without cleanup
         // records; retry once shortly rather than losing the snapshot for
-        // good.
+        // good. The retry re-reads lastActivity so it can never restore a
+        // timestamp that newer activity or a detach has already superseded.
         setTimeout(() => {
-            void store.set({ [ACTIVITY_STORAGE_KEY]: snapshot }).catch(() => {})
+            void store.set({ [ACTIVITY_STORAGE_KEY]: currentSnapshot() }).catch(() => {})
         }, ACTIVITY_PERSIST_RETRY_MS)
     })
+}
+
+/** The latest in-memory activity as a storage-ready snapshot. */
+function currentSnapshot(): Record<string, number> {
+    const snapshot: Record<string, number> = {}
+    for (const [tabId, at] of lastActivity) snapshot[String(tabId)] = at
+    return snapshot
 }
 
 function clearIdleTimer(tabId: number): void {
@@ -170,6 +183,7 @@ function armIdleTimer(tabId: number): void {
 /** Record CDP activity for a tab and restart its idle window. */
 export function noteCdpActivity(tabId: number): void {
     lastActivity.set(tabId, Date.now())
+    clearedTabs.delete(tabId)
     // Hydrate before the first write of this worker's lifetime: persisting a
     // snapshot from an empty in-memory map right after a restart would erase
     // the saved timestamps of every other attached tab.
@@ -317,6 +331,7 @@ export function detachDebugger(tabId: number): Promise<void> {
             attachedTabs.delete(tabId)
             attachInFlight.delete(tabId)
             lastActivity.delete(tabId)
+            clearedTabs.add(tabId)
             tabPersistedAt.delete(tabId)
             clearIdleTimer(tabId)
             persistActivity(true)
@@ -381,6 +396,7 @@ export function clearDebuggerState(tabId: number): void {
     attachedTabs.delete(tabId)
     attachInFlight.delete(tabId)
     lastActivity.delete(tabId)
+    clearedTabs.add(tabId)
     tabPersistedAt.delete(tabId)
     const pending = pendingPersists.get(tabId)
     if (pending !== undefined) { clearTimeout(pending); pendingPersists.delete(tabId) }

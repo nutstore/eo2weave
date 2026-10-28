@@ -156,10 +156,54 @@ describe('CDP idle auto-detach', () => {
     // The coalesced persist fires and fails.
     await vi.advanceTimersByTimeAsync(10)
     expect(data.has('cw_cdp_activity')).toBe(false)
-    // The retry lands.
-    await vi.advanceTimersByTimeAsync(cdp.CDP_IDLE_TIMEOUT_MS)
+    // The retry lands within its own short window — well before the idle
+    // timeout — and is not postponed to it.
+    await vi.advanceTimersByTimeAsync(6_000)
     expect(data.get('cw_cdp_activity')).toMatchObject({ 7: expect.any(Number) })
     expect(set).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not restore a detached tab through the write retry', async () => {
+    // The write fails, then the tab detaches before the retry fires. The
+    // retry must persist the CURRENT (empty) snapshot, not resurrect the
+    // stale timestamp from the failed attempt.
+    const data = new Map<string, unknown>()
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}))
+    const set = vi.fn()
+      .mockRejectedValueOnce(new Error('quota exceeded'))
+      .mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
+    ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(set)
+    const cdp = await loadModule()
+    await cdp.ensureAttached(7)
+    cdp.noteCdpActivity(7)
+    // The coalesced persist fires and fails; the tab then detaches.
+    await vi.advanceTimersByTimeAsync(10)
+    await cdp.detachDebugger(7)
+    // The retry must write the empty snapshot, not the stale one.
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(data.get('cw_cdp_activity')).toEqual({})
+  })
+
+  it('does not resurrect a cleared tab when hydration races the clear', async () => {
+    // A stored timestamp for tab 5; a pending hydration read lands AFTER
+    // tab 7 was cleared — the cleared tab must stay cleared even though the
+    // storage snapshot still carries its row.
+    const data = new Map<string, unknown>([['cw_cdp_activity', { 7: Date.now() }]])
+    let releaseRead!: () => void
+    const gate = new Promise<void>(resolve => { releaseRead = resolve })
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => {
+      await gate
+      return data.has(key) ? { [key]: data.get(key) } : {}
+    })
+    ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
+    const cdp = await loadModule()
+    cdp.noteCdpActivity(7)
+    cdp.clearDebuggerState(7)
+    // Let the hydration read (started before the clear) complete now.
+    releaseRead()
+    await vi.advanceTimersByTimeAsync(10)
+    await cdp.sweepIdleTabs()
+    expect(chrome.debugger.detach).not.toHaveBeenCalled()
   })
 
   it('detaches our orphaned sessions with no activity record during a sweep', async () => {
@@ -190,6 +234,10 @@ describe('CDP idle auto-detach', () => {
     ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
     const cdp = await loadModule()
     await cdp.ensureAttached(7)
+    // Flush the attach's own queued persist first, so the detach-triggered
+    // empty-snapshot write below is exercised and not just this leftover.
+    await vi.advanceTimersByTimeAsync(10)
+    expect(await chrome.storage.session.get('cw_cdp_activity')).toMatchObject({ cw_cdp_activity: { 7: expect.any(Number) } })
     await cdp.detachDebugger(7)
     // Flush the coalesced persist: the stale timestamp must not linger.
     await vi.advanceTimersByTimeAsync(10)
