@@ -571,6 +571,15 @@ describe('LazyDiffViewer content-type split', () => {
       expect(fragment.hasAttribute('hidden')).toBe(false)
       expect(fragment.style.display).not.toBe('none')
       expect(fragment.style.visibility).not.toBe('hidden')
+      // The fragment's TEXT must be exposed too — hiding the text in an
+      // aria-hidden descendant would leave the wrapper visible to the a11y
+      // tree while assistive technology still gets none of the content.
+      // toHaveTextContent walks the rendered text, and the a11y-tree role
+      // queries above would miss a text hidden only in a descendant.
+      expect(fragment).toHaveTextContent(fragment.textContent!)
+      expect(
+        fragment.querySelectorAll('[aria-hidden="true"]').length,
+      ).toBe(0)
     }
   })
 
