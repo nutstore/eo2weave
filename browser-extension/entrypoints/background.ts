@@ -2036,6 +2036,30 @@ export default defineBackground(() => {
               (action as { type?: string }).type === 'evaluate'
             ) {
               const expression = (action as { expression?: unknown }).expression
+              // The runner pins the failing document's URL (`pageUrl`). The
+              // tab must STILL show that URL when the CDP fallback runs:
+              // a navigation in the gap would otherwise execute the stale
+              // expression in the new document, reading or mutating the
+              // wrong page. Fail closed on a missing/mismatched URL.
+              const compilePageUrl = (result as Record<string, unknown>).pageUrl
+              let urlStillMatches = false
+              if (typeof compilePageUrl === 'string' && compilePageUrl) {
+                try {
+                  const tab = await chrome.tabs.get(targetTabId)
+                  urlStillMatches = tab.url === compilePageUrl
+                } catch {
+                  // Tab gone — treat as mismatched; the structured error below
+                  // tells the caller why the fallback did not run.
+                }
+              }
+              if (!urlStillMatches) {
+                sendResponse({
+                  ok: false,
+                  errorCode: 'CSP_FALLBACK_STALE_DOCUMENT',
+                  error: 'The tab navigated after the CSP compile failure; the expression was NOT re-run in the new document. Retry the action if still needed.',
+                })
+                return
+              }
               if (typeof expression === 'string' && expression.trim()) {
                 result = await evaluateBoundExpressionViaCdp(targetTabId, expression)
               }

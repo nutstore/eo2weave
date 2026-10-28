@@ -704,23 +704,39 @@ export default defineContentScript({
           // Execute arbitrary JS in page context. Intentionally strict:
           // only used for diagnostics / data extraction, NOT for DOM
           // mutation. The agent layer is expected to gate this on authorization.
+          // COMPILE AND EXECUTE IN SEPARATE STAGES: only a throw from the
+          // Function CONSTRUCTOR itself is provably pre-side-effect, so it
+          // is the ONLY error eligible for the CSP fallback re-run. A user
+          // error thrown during execution whose message happens to start
+          // with the CSP wording must NEVER carry the tag — the expression
+          // may already have mutated the page, and the background's CDP
+          // re-run would duplicate the side effect.
+          let fn: () => unknown
           try {
             // eslint-disable-next-line no-new-func
-            const fn = new Function(action.expression)
+            fn = new Function(action.expression) as () => unknown
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            if (isCspCompileRejection(message)) {
+              return {
+                ok: false,
+                errorCode: 'CSP_BLOCKED_COMPILE',
+                compileError: true,
+                // Bind the failure to THIS document: the background re-runs
+                // the expression via CDP only while the tab still shows this
+                // URL, so a navigation in between cannot route the stale
+                // expression into the wrong page.
+                pageUrl: location.href,
+                error: message,
+              }
+            }
+            return { ok: false, error: message }
+          }
+          try {
             const result = await Promise.resolve(fn())
             return { ok: true, result }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
-            // A CSP rejection is thrown by `new Function` BEFORE any user code
-            // ran, so the expression is side-effect-free and safe to re-run
-            // elsewhere. Tag it (compileError) so the background handler can
-            // fall back to the CSP-exempt CDP path (#106); a message from the
-            // user's own code that happens to mention CSP wording must NOT
-            // trigger a second execution, so only genuine compile throws
-            // (thrown by the constructor itself) carry the tag.
-            if (isCspCompileRejection(message)) {
-              return { ok: false, errorCode: 'CSP_BLOCKED_COMPILE', compileError: true, error: message }
-            }
             return { ok: false, error: message }
           }
         }

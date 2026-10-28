@@ -72,9 +72,12 @@ describe('isCspCompileRejection signature (shared by #105 + #106)', () => {
 describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
   it('attaches the debugger and returns the by-value result', async () => {
     const dbg = debuggerApi()
-    dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
-      if (method === 'Runtime.evaluate') done({ result: { value: 'page-title' } })
-      else done({ result: { value: null } })
+    let capturedExpression: unknown
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        capturedExpression = params.expression
+        done({ result: { value: 'page-title' } })
+      } else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
       debugger: dbg,
@@ -91,6 +94,90 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       expect.objectContaining({ returnByValue: true, awaitPromise: true }),
       expect.any(Function),
     )
+    // The caller's expression must actually reach Runtime.evaluate — the
+    // body-wrapper IIFE must CONTAIN it verbatim, not just any expression.
+    expect(typeof capturedExpression).toBe('string')
+    expect(capturedExpression as string).toContain('document.title')
+  })
+
+  it('wraps function-body syntax (return / top-level await) so it parses as a script', async () => {
+    const dbg = debuggerApi()
+    let captured: Record<string, unknown> | undefined
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        captured = params
+        done({ result: { value: 'the-title' } })
+      } else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    // `return` at top level is a SyntaxError in raw script source (Runtime.
+    // evaluate parses SCRIPT source) but valid inside `new Function` — the
+    // wrapper must make it legal again.
+    const result = await evaluateBoundExpressionViaCdp(7, 'return document.title')
+    expect(result).toEqual({ ok: true, result: 'the-title' })
+    const expr = String(captured?.expression)
+    expect(expr.startsWith('(async () => {')).toBe(true)
+    expect(expr).toContain('return document.title')
+    expect(expr.trimEnd().endsWith('})()')).toBe(true)
+  })
+
+  it('maps unserializable results (NaN / Infinity / -0 / BigInt) back to JS values', async () => {
+    const dbg = debuggerApi()
+    const cases: Array<{ unserializableValue: string; expected: unknown }> = [
+      { unserializableValue: 'NaN', expected: Number.NaN },
+      { unserializableValue: 'Infinity', expected: Number.POSITIVE_INFINITY },
+      { unserializableValue: '-Infinity', expected: Number.NEGATIVE_INFINITY },
+      { unserializableValue: '-0', expected: -0 },
+      { unserializableValue: '42n', expected: BigInt(42) },
+    ]
+    for (const c of cases) {
+      dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+        if (method === 'Runtime.evaluate') done({ result: { unserializableValue: c.unserializableValue } })
+        else done({ result: { value: null } })
+      })
+      vi.stubGlobal('chrome', {
+        debugger: dbg,
+        tabs: tabsApi(),
+        storage: storageApi(),
+        runtime: { onDetach: dbg.onDetach },
+      })
+      // eslint-disable-next-line no-await-in-loop
+      const result = await evaluateBoundExpressionViaCdp(7, '0/0')
+      if (typeof c.expected === 'number' && Number.isNaN(c.expected as number)) {
+        expect((result as { ok: boolean; result?: unknown }).ok).toBe(true)
+        expect((result as { result?: unknown }).result).toBeNaN()
+      } else {
+        expect(result).toEqual({ ok: true, result: c.expected })
+      }
+    }
+  })
+
+  it('surfaces thrown primitives (no exception.description) as the thrown value', async () => {
+    const dbg = debuggerApi()
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        done({
+          result: { value: undefined },
+          exceptionDetails: {
+            text: 'Uncaught',
+            exception: { value: 'custom failure', subtype: 'string' },
+          },
+        })
+      } else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await evaluateBoundExpressionViaCdp(7, "throw 'custom failure'")
+    expect(result).toEqual({ ok: false, error: 'custom failure' })
   })
 
   it('awaits promises in the page before returning', async () => {
