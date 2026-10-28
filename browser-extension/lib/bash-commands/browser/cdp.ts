@@ -30,8 +30,11 @@ export type DebuggerSession = {
 const lastActivity = new Map<number, number>()
 /** Pending idle-detach timers per tab (alive while the SW is running). */
 const idleTimers = new Map<number, ReturnType<typeof setTimeout>>()
+/** Last persisted epoch per tab (persist throttle). */
+const tabPersistedAt = new Map<number, number>()
+/** In-flight detaches — a command must not skip attaching while one runs. */
+const detachInFlight = new Map<number, Promise<void>>()
 let activityLoaded: Promise<void> | undefined
-let lastPersistedAt = 0
 
 // Per-tab operation queue — serialises concurrent click/fill actions on the same tab.
 const tabOpQueue = new Map<number, Promise<void>>()
@@ -81,14 +84,39 @@ async function loadPersistedActivity(): Promise<void> {
             const known = lastActivity.get(tabId)
             if (known === undefined || value > known) lastActivity.set(tabId, value)
         }
-    })().catch(() => {})
+    })().catch(() => {
+        // Allow a later sweep to retry the read instead of caching the failure.
+        activityLoaded = undefined
+    })
     return activityLoaded
 }
 
 function persistActivity(force = false): void {
     const now = Date.now()
-    if (!force && now - lastPersistedAt < ACTIVITY_PERSIST_INTERVAL_MS) return
-    lastPersistedAt = now
+    // A per-tab guard, not a global one: throttling globally could drop a
+    // just-activated tab from the stored snapshot, and a discarded service
+    // worker would then leave its debugger attached forever (banner stays).
+    for (const tabId of lastActivity.keys()) {
+        if (!force && now - (tabPersistedAt.get(tabId) ?? 0) < ACTIVITY_PERSIST_INTERVAL_MS) continue
+        tabPersistedAt.set(tabId, now)
+        scheduleTabPersist(tabId)
+    }
+}
+
+const pendingPersists = new Map<number, ReturnType<typeof setTimeout>>()
+
+/** Coalesce a tab's storage write; only the newest timestamp per tab lands. */
+function scheduleTabPersist(tabId: number): void {
+    const pending = pendingPersists.get(tabId)
+    if (pending !== undefined) clearTimeout(pending)
+    const timer = setTimeout(() => {
+        pendingPersists.delete(tabId)
+        writePersistedActivity()
+    }, 0)
+    pendingPersists.set(tabId, timer)
+}
+
+function writePersistedActivity(): void {
     const store = sessionStore()
     if (!store) return
     const snapshot: Record<string, number> = {}
@@ -120,26 +148,36 @@ export function noteCdpActivity(tabId: number): void {
     armIdleTimer(tabId)
 }
 
+/**
+ * Detach a tab that is still idle at fire time. The timestamp is re-checked
+ * after the async attach check: a command that started meanwhile must not be
+ * interrupted mid-operation.
+ */
 async function detachIfIdle(tabId: number): Promise<void> {
     if (!(attachedTabs.has(tabId) || await isDebuggerAttached(tabId))) return
-    await loadPersistedActivity()
-    const last = lastActivity.get(tabId)
-    if (last === undefined) return
-    if (Date.now() - last < CDP_IDLE_TIMEOUT_MS) {
+    if (!isIdle(tabId)) {
         armIdleTimer(tabId)
         return
     }
     await detachDebugger(tabId)
 }
 
+function isIdle(tabId: number): boolean {
+    const last = lastActivity.get(tabId)
+    return last !== undefined && Date.now() - last >= CDP_IDLE_TIMEOUT_MS
+}
+
 /**
  * True when this extension's debugger is attached to the tab. The in-memory
  * attachedTabs set dies with a discarded service worker; getTargets survives.
+ * Foreign sessions (devTools, other extensions) do not count — treating those
+ * as ours would send commands into a session we cannot control.
  */
 async function isDebuggerAttached(tabId: number): Promise<boolean> {
     try {
         const targets = await chrome.debugger.getTargets()
-        return targets.some(target => target.tabId === tabId && target.attached)
+        return targets.some(target => target.tabId === tabId && target.attached
+            && (!target.extensionId || target.extensionId === chrome.runtime.id))
     } catch {
         return false
     }
@@ -148,12 +186,13 @@ async function isDebuggerAttached(tabId: number): Promise<boolean> {
 /** Detach every tab that has been idle past the timeout. */
 export async function sweepIdleTabs(): Promise<void> {
     await loadPersistedActivity()
-    const now = Date.now()
-    for (const [tabId, last] of [...lastActivity]) {
-        if (now - last < CDP_IDLE_TIMEOUT_MS) continue
+    for (const tabId of [...lastActivity.keys()]) {
+        if (!isIdle(tabId)) continue
         // A discarded service worker loses attachedTabs while the debugger
         // stays attached — consult the browser, not the stale set.
         if (!(attachedTabs.has(tabId) || await isDebuggerAttached(tabId))) continue
+        // A command may have started while the attach check was in flight.
+        if (!isIdle(tabId)) continue
         await detachDebugger(tabId)
     }
 }
@@ -180,11 +219,19 @@ export function attachDebugger(tabId: number): Promise<void> {
             const err = getLastErrorMessage()
             if (err) {
                 // A discarded service worker loses its attach bookkeeping while
-                // the debugger stays attached — treat that as already attached.
+                // the debugger stays attached — treat that as already attached,
+                // but only when the attached debugger is OURS (devTools or
+                // another extension owning the tab must surface as a failure).
                 if (/already attached/i.test(err)) {
-                    attachedTabs.add(tabId)
-                    noteCdpActivity(tabId)
-                    resolve()
+                    void isDebuggerAttached(tabId).then(ours => {
+                        if (!ours) {
+                            reject(new Error(err))
+                            return
+                        }
+                        attachedTabs.add(tabId)
+                        noteCdpActivity(tabId)
+                        resolve()
+                    })
                     return
                 }
                 reject(new Error(err))
@@ -198,16 +245,28 @@ export function attachDebugger(tabId: number): Promise<void> {
 }
 
 export function detachDebugger(tabId: number): Promise<void> {
-    return new Promise((resolve) => {
+    const detaching = detachInFlight.get(tabId)
+    if (detaching) return detaching
+    const promise = new Promise<void>((resolve) => {
         chrome.debugger.detach({ tabId }, () => {
+            detachInFlight.delete(tabId)
+            // On failure the debugger may still be attached: keep activity and
+            // the idle timer so cleanup can retry on the next sweep.
+            if (getLastErrorMessage() && attachedTabs.has(tabId)) {
+                resolve()
+                return
+            }
             attachedTabs.delete(tabId)
             attachInFlight.delete(tabId)
             lastActivity.delete(tabId)
+            tabPersistedAt.delete(tabId)
             clearIdleTimer(tabId)
             persistActivity(true)
             resolve()
         })
     })
+    detachInFlight.set(tabId, promise)
+    return promise
 }
 
 export function sendCommand<T = any>(
@@ -234,6 +293,10 @@ export function sendCommand<T = any>(
 }
 
 export async function ensureAttached(tabId: number) {
+    // An idle-detach (or explicit detach) may be mid-flight for this tab:
+    // waiting it out prevents sending CDP commands during detachment.
+    const detaching = detachInFlight.get(tabId)
+    if (detaching) await detaching.catch(() => {})
     if (attachedTabs.has(tabId)) return
     let attaching = attachInFlight.get(tabId)
     if (!attaching) {
@@ -259,6 +322,9 @@ export function clearDebuggerState(tabId: number): void {
     attachedTabs.delete(tabId)
     attachInFlight.delete(tabId)
     lastActivity.delete(tabId)
+    tabPersistedAt.delete(tabId)
+    const pending = pendingPersists.get(tabId)
+    if (pending !== undefined) { clearTimeout(pending); pendingPersists.delete(tabId) }
     clearIdleTimer(tabId)
     persistActivity(true)
 }

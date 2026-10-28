@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runBrowserRequest } from '../../../browser-extension/lib/bash-commands/browser/runtime'
+import { clearDebuggerState } from '../../../browser-extension/lib/bash-commands/browser/cdp'
 
 /**
  * Eval routing tests: the no-ref form must go through chrome.scripting
@@ -49,14 +50,22 @@ const storageApi = () => {
   }
 }
 
-/** Runs the serialized evaluationFunction wrapper like Chrome would. */
-const runWrapper = async (details: { args?: unknown[] }) => {
-  const wrapper = String(details.args?.[0])
-  const fn = new Function(`return (${wrapper})`)() as (arg: unknown) => Promise<{ ok: boolean; message?: string; logs: unknown[]; result: unknown; exception?: unknown }>
-  return await fn(undefined)
+/** Runs the injected function exactly like Chrome: serialize func, pass args. */
+const runInjected = async (details: { func?: unknown; args?: unknown[] }) => {
+  if (typeof details.func !== 'function') throw new Error('func must be a function')
+  const serialized = `(${details.func.toString()})(${details.args?.map(a => JSON.stringify(a)).join(', ') ?? ''})`
+  // new Function("return (func)(args)") invokes the injected function and
+  // yields its (possibly async) result.
+  const invoke = new Function(`return ${serialized}`) as () => Promise<unknown>
+  return await invoke()
 }
 
-beforeEach(() => { vi.clearAllMocks() })
+beforeEach(() => {
+  vi.clearAllMocks()
+  // The cdp module keeps module-level attach state; reset it between tests
+  // so attach assertions observe each test's own commands.
+  clearDebuggerState(7)
+})
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('browser eval routing', () => {
@@ -66,7 +75,7 @@ describe('browser eval routing', () => {
       expect(details.world).toBe('MAIN')
       expect(typeof details.func).toBe('function')
       expect(details.args).toHaveLength(1)
-      const outcome = await runWrapper(details)
+      const outcome = await runInjected(details)
       expect(outcome).toMatchObject({ ok: true, result: 6 })
       return [{ result: outcome }]
     })
@@ -89,7 +98,7 @@ describe('browser eval routing', () => {
 
   it('reads eval source from stdin and honors async page functions', async () => {
     const executeScript = vi.fn(async (details: { args?: unknown[] }) => {
-      const outcome = await runWrapper(details)
+      const outcome = await runInjected(details)
       return [{ result: outcome }]
     })
     const dbg = debuggerApi()
@@ -109,7 +118,7 @@ describe('browser eval routing', () => {
 
   it('surfaces page exceptions and console logs from the scripting path without attaching', async () => {
     const executeScript = vi.fn(async (details: { args?: unknown[] }) => {
-      const outcome = await runWrapper(details)
+      const outcome = await runInjected(details) as { ok?: boolean }
       expect(outcome.ok).toBe(false)
       return [{ result: outcome }]
     })
@@ -145,6 +154,39 @@ describe('browser eval routing', () => {
     })).rejects.toThrow('eval requires')
     expect(executeScript).not.toHaveBeenCalled()
     expect(dbg.attach).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the CDP evaluation path when the page CSP rejects the compile', async () => {
+    const executeScript = vi.fn(async () => {
+      throw new Error('Refused to evaluate a string as JavaScript because \'unsafe-eval\' is not an allowed source of script in the following Content Security Policy directive')
+    })
+    const dbg = debuggerApi()
+    const storage = storageApi()
+    await storage.session.set({ 'cw_browser_selected:owner': 7 })
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        // evaluatePage runs `(${wrapper}).call(undefined)` — the wrapper
+        // handles the user function; the compile itself is debugger-injected
+        // (CSP-free). The stub page function reads a stub document.title.
+        const expression = String(params.expression).replace(/document\.title/g, '"fallback-title"')
+        const invoke = new Function(`return ${expression}`) as () => Promise<{ ok: boolean; logs: unknown[]; result: unknown }>
+        return invoke().then(outcome => done({ result: { value: outcome } }))
+      }
+      done({ result: { value: 42 } })
+    })
+    vi.stubGlobal('chrome', {
+      scripting: { executeScript },
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage,
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await runBrowserRequest('owner', {
+      command: 'eval', positionals: ['() => document.title'], options: { tab: '7' }, stdin: '',
+    })
+    expect(result).toEqual({ tabId: 7, logs: [], result: 'fallback-title' })
+    expect(dbg.attach).toHaveBeenCalled()
+    expect(dbg.sendCommand).toHaveBeenCalledWith(expect.objectContaining({ tabId: 7 }), 'Runtime.evaluate', expect.anything(), expect.any(Function))
   })
 
   it('keeps snapshot-ref eval on the CDP path with Runtime.callFunctionOn', async () => {

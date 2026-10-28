@@ -119,6 +119,7 @@ describe('CDP idle auto-detach', () => {
     const cdp = await loadModule()
     await cdp.ensureAttached(7)
     const revived = await loadModule()
+    ;(chrome.debugger.getTargets as ReturnType<typeof vi.fn>).mockResolvedValue([{ tabId: 7, attached: true }])
     ;(chrome.debugger.attach as ReturnType<typeof vi.fn>).mockImplementationOnce((_t: unknown, _v: string, done: () => void) => {
       chrome.runtime.lastError = { message: 'Another debugger is already attached' }
       done()
@@ -127,6 +128,45 @@ describe('CDP idle auto-detach', () => {
     await revived.ensureAttached(7)
     expect(revived.attachedTabs.has(7)).toBe(true)
     expect(chrome.debugger.detach).not.toHaveBeenCalled()
+  })
+
+  it('rejects an "already attached" error when the debugger belongs to someone else', async () => {
+    const cdp = await loadModule()
+    ;(chrome.debugger.attach as ReturnType<typeof vi.fn>).mockImplementationOnce((_t: unknown, _v: string, done: () => void) => {
+      chrome.runtime.lastError = { message: 'Another debugger is already attached' }
+      done()
+      Reflect.deleteProperty(chrome.runtime, 'lastError')
+    })
+    // getTargets reports the tab attached by a DIFFERENT debugger.
+    ;(chrome.debugger.getTargets as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { tabId: 7, attached: true, extensionId: 'someone-else' },
+    ])
+    await expect(cdp.ensureAttached(7)).rejects.toThrow('already attached')
+    expect(cdp.attachedTabs.has(7)).toBe(false)
+  })
+
+  it('does not detach a tab that receives activity while the sweep checks attachment', async () => {
+    // Seed a persisted stale timestamp directly (as a previous SW would have
+    // left it), with no in-memory state — the discarded-SW scenario.
+    const data = new Map<string, unknown>([['cw_cdp_activity', { 7: Date.now() }]])
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}))
+    ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
+    const cdp = await loadModule()
+    cdp.installCdpIdleWatch()
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    ;(chrome.debugger.getTargets as ReturnType<typeof vi.fn>).mockImplementationOnce(() => gate.then(() => [{ tabId: 7, attached: true }]))
+    // Expire the persisted timestamp.
+    await vi.advanceTimersByTimeAsync(cdp.CDP_IDLE_TIMEOUT_MS + 1000)
+    const listener = [...alarmListeners].at(-1)!
+    const sweeping = listener({ name: 'cw-cdp-idle-sweep' })
+    // A command attaches through the same module while the check hangs,
+    // recording fresh activity.
+    await cdp.ensureAttached(7)
+    release()
+    await sweeping
+    expect(chrome.debugger.detach).not.toHaveBeenCalled()
+    expect(cdp.attachedTabs.has(7)).toBe(true)
   })
 
   it('clears idle state on explicit detach and debugger-state resets', async () => {
