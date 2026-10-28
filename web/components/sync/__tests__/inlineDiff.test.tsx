@@ -31,6 +31,7 @@ import {
   exceedsInlineDiffLimit,
   createInlineDiffBudget,
   MAX_INLINE_DIFF_LENGTH,
+  INLINE_DIFF_TIMEOUT_MS,
 } from '@/components/sync/inlineDiff'
 import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 
@@ -345,6 +346,34 @@ describe('computeInlineFragments over-limit guard', () => {
       { type: 'equal', value: 'alpha ' },
       { type: 'removed', value: 'beta' },
       { type: 'added', value: 'gamma' },
+    ])
+    expect(vi.mocked(diffWordsWithSpace)).toHaveBeenCalledTimes(1)
+    // The call must still carry a per-pair timeout bound — a regression that
+    // drops the option would let an under-limit pair block unbounded.
+    expect(vi.mocked(diffWordsWithSpace)).toHaveBeenCalledWith(
+      'alpha beta',
+      'alpha gamma',
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    )
+    expect(
+      (vi.mocked(diffWordsWithSpace).mock.calls[0]?.[2] as { timeout: number } | undefined)
+        ?.timeout,
+    ).toBeLessThanOrEqual(INLINE_DIFF_TIMEOUT_MS)
+  })
+
+  it('falls back to whole-line fragments when jsdiff times out', () => {
+    const budget = createInlineDiffBudget(60_000)
+    // jsdiff returns `undefined` when the per-call timeout is hit.
+    vi.mocked(diffWordsWithSpace).mockReturnValueOnce(
+      undefined as unknown as ReturnType<typeof diffWordsWithSpace>,
+    )
+
+    const fragments = computeInlineFragments('alpha beta', 'alpha gamma', budget)
+
+    // The timed-out diff degrades to whole-line styling, not garbage output.
+    expect(fragments).toEqual([
+      { type: 'removed', value: 'alpha beta' },
+      { type: 'added', value: 'alpha gamma' },
     ])
     expect(vi.mocked(diffWordsWithSpace)).toHaveBeenCalledTimes(1)
   })
