@@ -684,15 +684,22 @@ it('does not let a stale in-flight 401 re-enable a newer rejected token', async 
   currentToken = 'token-account-b'
   const asB = await page.execute('read_messages', { channel: 'expired' })
   expect(asB.value.result.error_code).toBe('AUTH')
-  // NOW A's stale 401 lands. It must NOT overwrite the rejection marker.
+  // NOW A's stale 401 lands. It must NOT erase B's rejection: B is still
+  // suppressed, and BOTH tokens stay in the rejected set.
   releaseStale!()
   const stale = await staleA
   expect(stale.value.result.error_code).toBe('AUTH')
-  // The marker still holds B: with the live walk finding B again, the
-  // token stays suppressed (UNAUTHENTICATED, no fetch) instead of B being
-  // resent. Then a genuinely fresh token is accepted immediately.
+  // The rejected set still holds B: with the live walk finding B again,
+  // the token stays suppressed (UNAUTHENTICATED, no fetch) instead of B
+  // being resent. Reverting to A is ALSO blocked — A was rejected too
+  // (per-token tracking keeps both rejections). Only a genuinely fresh
+  // token is accepted.
   const resent = await page.execute('read_messages', { channel: 'ok' })
   expect(resent.value.result.error_code).toBe('UNAUTHENTICATED')
+  expect(page.fetches).toHaveLength(3)
+  currentToken = 'token-account-a'
+  const backToA = await page.execute('read_messages', { channel: 'ok' })
+  expect(backToA.value.result.error_code).toBe('UNAUTHENTICATED')
   expect(page.fetches).toHaveLength(3)
   currentToken = 'token-account-c'
   const fresh = await page.execute('read_messages', { channel: 'ok' })

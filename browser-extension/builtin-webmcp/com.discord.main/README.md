@@ -35,9 +35,13 @@ classified the same way as OpenTabs
 10014/10015, forbidden 50001/50013, validation 50003/50006/50007/50008/
 50035/50109). Every HTTP 401 is classified `AUTH` regardless of the
 Discord code (an unrecognized code stays in the message as diagnostic
-detail) and clears the cached token AND suppresses the webpack-exposed
-token until the page offers a fresh credential (Discord has rejected that
-exact credential, so re-reading it would keep sending a dead token), an
+detail) and removes the exact rejected credential from the page's
+per-token rejected set AND from the cache, suppressing the
+webpack-exposed token until the page offers a fresh one (Discord has
+rejected that exact credential, so re-reading it would keep sending a
+dead token; overlapping 401s for different tokens are tracked
+independently so a stale in-flight 401 can neither re-enable another
+rejected token nor block a fresh rejection). An
 uncoded 403 clears the cache, a coded 403 (e.g. 50013 Missing
 Permissions) is a permission denial that keeps it, and HTTP 429 is
 reported as `RATE_LIMITED` without touching the cache — rate limiting
@@ -85,8 +89,9 @@ previous account's credential), so such calls return
 and finds no token, the page genuinely has no credential and the cache
 is dropped — this is what keeps a previous account's token from being
 sent after logout or an account switch. A 401 additionally marks the
-credential as rejected so the webpack-exposed token is suppressed until
-the page exposes a fresh one. Unclassified Discord error codes surface
+exact rejected credential in a per-token rejected set so the
+webpack-exposed token is suppressed until the page exposes a fresh one.
+Unclassified Discord error codes surface
 as `API` (a coded HTTP 401 is always classified `AUTH` regardless of the
 code; the code stays in the message as diagnostic detail).
 

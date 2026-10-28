@@ -126,9 +126,9 @@ export default {
             // without a confirmed live token the caller sees
             // UNAUTHENTICATED instead of risking the previous account's
             // credential.
-            var rejectedValue = null
+            var rejectedSet = null
             try {
-              rejectedValue = globalThis.__eo2DiscordTokenRejected
+              rejectedSet = globalThis.__eo2DiscordRejectedTokens
             } catch (e) {}
             var ran = false
             var completed = true
@@ -142,13 +142,18 @@ export default {
               }
             } catch (e) {}
             if (ran && token) {
-              // The page exposes a live credential. If it is the exact
-              // string Discord rejected with 401, keep it suppressed; a
-              // DIFFERENT token means a fresh session (re-login, account
-              // switch) and replaces the rejection.
-              if (rejectedValue && token === rejectedValue) return null
+              // The page exposes a live credential. If the exact string was
+              // already rejected with 401, keep it suppressed; a DIFFERENT
+              // token means a fresh session (re-login, account switch).
+              if (
+                rejectedSet &&
+                typeof rejectedSet.has === 'function' &&
+                rejectedSet.has(token)
+              )
+                return null
               try {
-                globalThis.__eo2DiscordTokenRejected = null
+                if (rejectedSet && typeof rejectedSet.delete === 'function')
+                  rejectedSet.delete(token)
                 globalThis.__eo2DiscordToken = token
               } catch (e) {}
               return token
@@ -295,15 +300,24 @@ export default {
                   } catch (e) {}
                   // A 401 means Discord rejected this credential: suppress
                   // it even if the webpack module still exposes it, until
-                  // a fresh (different) token appears. The marker is only
-                  // overwritten when it is empty or already holds THIS
-                  // token: a stale in-flight 401 from an older token must
-                  // not replace the marker for a newer already-rejected
-                  // token, which would re-enable that rejected credential.
+                  // a fresh (different) token appears. Rejections are
+                  // tracked per token VALUE in a bounded set, so two
+                  // overlapping 401s for different tokens each suppress
+                  // their own credential and neither can erase the other's
+                  // rejection (a stale in-flight 401 can neither
+                  // re-enable a newer rejected token nor block a fresh
+                  // rejection from being recorded). The set holds at most
+                  // 8 values; the oldest is dropped when it overflows.
                   try {
-                    var currentRejected = globalThis.__eo2DiscordTokenRejected
-                    if (typeof currentRejected !== 'string' || !currentRejected || currentRejected === token)
-                      globalThis.__eo2DiscordTokenRejected = token
+                    var set =
+                      (globalThis.__eo2DiscordRejectedTokens =
+                        globalThis.__eo2DiscordRejectedTokens || new Set())
+                    set.delete(token)
+                    set.add(token)
+                    while (set.size > 8) {
+                      var oldestVal = set.values().next().value
+                      set.delete(oldestVal)
+                    }
                   } catch (e) {}
                 }
                 return {
@@ -329,14 +343,18 @@ export default {
                 } catch (e) {}
                 if (response.status === 401)
                   try {
-                    // Same guard as the coded branch: only an empty
-                    // marker or one already holding THIS token may be
-                    // (re)written, so a stale in-flight 401 from an older
-                    // token cannot overwrite the marker for a newer
-                    // already-rejected token.
-                    var currentRejected = globalThis.__eo2DiscordTokenRejected
-                    if (typeof currentRejected !== 'string' || !currentRejected || currentRejected === token)
-                      globalThis.__eo2DiscordTokenRejected = token
+                    // Same per-token set as the coded branch: overlapping
+                    // 401s for different tokens are tracked independently,
+                    // so neither can erase the other's rejection.
+                    var set =
+                      (globalThis.__eo2DiscordRejectedTokens =
+                        globalThis.__eo2DiscordRejectedTokens || new Set())
+                    set.delete(token)
+                    set.add(token)
+                    while (set.size > 8) {
+                      var oldestVal2 = set.values().next().value
+                      set.delete(oldestVal2)
+                    }
                   } catch (e) {}
                 return {
                   ok: false,
