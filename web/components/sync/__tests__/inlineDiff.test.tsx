@@ -304,6 +304,18 @@ describe('computeInlineFragments over-limit guard', () => {
 
     expect(rows).toHaveLength(2)
     expect(rows.every((r) => r.kind === 'fused')).toBe(true)
+    // The budget is exhausted → each fused row must carry the whole-line
+    // fallback fragments, not empty fragments.
+    expect(rows.map((r) => (r.kind === 'fused' ? r.fragments : null))).toEqual([
+      [
+        { type: 'removed', value: 'alpha beta' },
+        { type: 'added', value: 'alpha gamma' },
+      ],
+      [
+        { type: 'removed', value: 'delta epsilon' },
+        { type: 'added', value: 'delta zeta' },
+      ],
+    ])
     expect(vi.mocked(diffWordsWithSpace)).not.toHaveBeenCalled()
   })
 
