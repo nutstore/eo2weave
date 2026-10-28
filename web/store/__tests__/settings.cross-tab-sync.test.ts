@@ -164,6 +164,86 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     expect(useSettingsStore.getState().maxIterations).toBe(42)
   })
 
+  it('preserves BOTH tabs edits when concurrent tabs change different settings (three-way merge)', async () => {
+    // Whole-snapshot LWW loses non-conflicting work: two tabs starting from
+    // the same snapshot, each editing a DIFFERENT setting, produced snapshots
+    // where the higher-ordered one replaced the entire state — reverting the
+    // other tab's field. With a per-writer base the receiver merges only
+    // the fields the peer actually changed.
+    seedStorage({ temperature: 0.7, maxIterations: 20 })
+    const { useSettingsStore } = await importStore()
+
+    // Tab A (this simulated peer) edited temperature only.
+    dispatchStorageEvent(
+      performance.now() + 10,
+      revSnapshot({ temperature: 0.5, maxIterations: 20 }, 1, 4, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+    )
+    expect(useSettingsStore.getState().temperature).toBe(0.5)
+    expect(useSettingsStore.getState().maxIterations).toBe(20)
+
+    // This tab (B) concurrently edits maxIterations and persists (stamped
+    // above the merged clock).
+    useSettingsStore.getState().setMaxIterations(42)
+    const localState = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as {
+      state: { __settingsWriteRevision: number }
+    }
+
+    // A's NEXT write still carries ITS stale maxIterations:20 copy — but
+    // A did not change maxIterations relative to the base, so the local 42
+    // must survive the merge.
+    dispatchStorageEvent(
+      performance.now() + 20,
+      revSnapshot({ temperature: 0.4, maxIterations: 20 }, localState.state.__settingsWriteRevision + 1, 4, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+    )
+    expect(useSettingsStore.getState().temperature).toBe(0.4)
+    expect(useSettingsStore.getState().maxIterations).toBe(42)
+  })
+
+  it('resolves a conflicting field to the incoming (later-ordered) snapshot', async () => {
+    // Both tabs changed the SAME field concurrently: field-level merge falls
+    // back to the LWW outcome for that field — the incoming snapshot orders
+    // later under the Lamport stamp, so its value wins.
+    seedStorage({ temperature: 0.7 })
+    const { useSettingsStore } = await importStore()
+
+    dispatchStorageEvent(
+      performance.now() + 10,
+      revSnapshot({ temperature: 0.5 }, 1, 4, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+    )
+    expect(useSettingsStore.getState().temperature).toBe(0.5)
+
+    // This tab conflicts on temperature (also 0.9 in the peer's next write).
+    useSettingsStore.getState().setTemperature(0.9)
+    const localState = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as {
+      state: { __settingsWriteRevision: number }
+    }
+
+    // The peer's next write changed temperature (0.5 → 0.3) relative to the
+    // base AND this tab changed it too (0.5 → 0.9): incoming wins.
+    dispatchStorageEvent(
+      performance.now() + 20,
+      revSnapshot({ temperature: 0.3 }, localState.state.__settingsWriteRevision + 1, 4, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+    )
+    expect(useSettingsStore.getState().temperature).toBe(0.3)
+  })
+
+  it('falls back to whole-snapshot apply on the FIRST snapshot from a writer (no base)', async () => {
+    // A writer this tab has never processed carries no merge base — the
+    // whole-snapshot apply must stay the behavior there (zustand persist's
+    // standard semantics).
+    seedStorage({ temperature: 0.7, maxIterations: 20 })
+    const { useSettingsStore } = await importStore()
+
+    dispatchStorageEvent(
+      performance.now() + 10,
+      revSnapshot({ temperature: 0.5, maxIterations: 33 }, 1, 4, 'tab-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),
+    )
+    // maxIterations:33 is NOT a peer edit relative to any base — with no
+    // base the snapshot applies wholesale.
+    expect(useSettingsStore.getState().temperature).toBe(0.5)
+    expect(useSettingsStore.getState().maxIterations).toBe(33)
+  })
+
   it('accepts peer writes from CONCURRENT tabs (Lamport merge, no divergence)', async () => {
     // Regression for the per-tab-counter bug: two tabs editing concurrently
     // each bumped their OWN counter, so each rejected the other's snapshot

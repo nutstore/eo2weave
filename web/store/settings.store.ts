@@ -423,6 +423,58 @@ function recordAppliedSnapshot(revision: number, writerId: string | null): void 
   if (writerId != null) lastSeenWriterId = writerId
 }
 
+// ── Three-way merge base (per peer writer, in-memory only) ──────────────────
+// Whole-snapshot LWW loses non-conflicting work: two tabs that start from the
+// same snapshot and edit DIFFERENT settings concurrently produce snapshots
+// where each writer changed only its own field, yet the higher-ordered
+// snapshot replaces the entire state and reverts the other tab's edit. For
+// every peer writer we remember the last snapshot PROCESSED from it (the
+// base) — purely in memory, nothing extra persisted. A newer snapshot from a
+// writer we hold a base for is merged field-wise:
+//   base     = last processed snapshot from that writer
+//   current  = this tab's in-memory state
+//   incoming = the arriving snapshot
+// A field is taken from incoming only when the PEER changed it relative to
+// base; fields the peer did not touch keep the current (possibly locally
+// edited) value. A field both sides changed (conflict) resolves to incoming —
+// the writer that ordered later wins, the same outcome whole-snapshot LWW
+// would give the conflicting field. No base (first snapshot from a writer, or
+// a legacy revisionless peer carrying no id) falls back to the previous
+// whole-snapshot apply.
+const peerBaseSnapshots = new Map<string, Record<string, unknown>>()
+
+/**
+ * Merge `incoming` over `current` using `base` (the last snapshot processed
+ * from this writer). Returns the merged record; write-order metadata always
+ * rides with the incoming snapshot.
+ */
+function mergeSnapshotOverCurrent(
+  base: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+  current: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...current }
+  // A field present in the base but gone from the incoming snapshot was
+  // removed by the peer (the persisted projection is fixed, so this is
+  // defensive — it does not occur with today's partialize shape).
+  for (const key of Object.keys(base)) {
+    if (!isSyncMetadataKey(key)) continue
+    if (!(key in incoming)) delete merged[key]
+  }
+  for (const [key, incomingValue] of Object.entries(incoming)) {
+    if (!isSyncMetadataKey(key)) {
+      merged[key] = incomingValue
+      continue
+    }
+    // Peer did not touch this field relative to base — keep the current
+    // (possibly locally edited) value instead of the peer's stale copy.
+    if (base[key] === incomingValue) continue
+    // Peer changed it, or both sides did (conflict): incoming wins.
+    merged[key] = incomingValue
+  }
+  return merged
+}
+
 // StorageEvent.timeStamp watermark for revisionless snapshots only (peers on
 // an older deploy). Receiving-tab timing cannot order writes across tabs,
 // so this is a weak fallback — but two revisionless snapshots delivered out
@@ -1645,16 +1697,27 @@ function setupCrossTabSettingsSync(): void {
     try {
       const incoming = parsed.state
       const current = useSettingsStore.getState() as unknown as Record<string, unknown>
-      // No-op guard: identical snapshot — nothing to apply, and skipping
-      // avoids a pointless re-render plus provider-registry churn.
-      if (shallowEqualRecord(current, incoming)) {
+      // Three-way merge: when we hold a base (the last snapshot this peer
+      // writer produced), apply only the fields the peer changed relative to
+      // that base — a whole-snapshot replace here would revert this tab's
+      // concurrent edits to fields the peer did not touch. Without a base
+      // (first snapshot from this writer, or a legacy revisionless peer)
+      // fall back to the whole-snapshot apply, zustand persist's standard
+      // semantics.
+      let applied: Record<string, unknown> = incoming
+      if (incomingWriterId != null && incomingWriterId !== TAB_WRITER_ID) {
+        const base = peerBaseSnapshots.get(incomingWriterId)
+        if (base) {
+          applied = mergeSnapshotOverCurrent(base, incoming, current)
+        }
+      }
+      // No-op guard: the (possibly merged) snapshot changes nothing —
+      // skipping avoids a pointless re-render plus provider-registry churn.
+      if (shallowEqualRecord(applied, current)) {
         return
       }
       // Re-read the persisted snapshot into memory. This mirrors zustand's
       // own rehydrate(): merge the persisted partial over current state.
-      // Snapshot-shaped keys are replaced wholesale (same as initial load);
-      // per-key merging is not attempted because every persisted write is a
-      // full partialize() snapshot anyway.
       //
       // setState is wrapped by persist — suppress its storage write so the
       // snapshot is applied WITHOUT re-persisting it (storage already holds
@@ -1666,25 +1729,36 @@ function setupCrossTabSettingsSync(): void {
       }
       suppressPersistWrites++
       try {
-        useSettingsStore.setState(incoming as Partial<SettingsState>)
+        useSettingsStore.setState(applied as Partial<SettingsState>)
       } finally {
         suppressPersistWrites--
       }
+      // This snapshot is now the merge base for this writer: the next one
+      // diffs against what we processed here (the raw incoming snapshot, NOT
+      // the merged result — this tab's own edits must not be attributed to
+      // the peer).
+      if (incomingWriterId != null && incomingWriterId !== TAB_WRITER_ID) {
+        peerBaseSnapshots.set(incomingWriterId, { ...incoming })
+      }
       // Keep the dynamic provider registry in step with the incoming
       // snapshot so cross-tab custom-provider edits are usable here.
-      if (Array.isArray(incoming.customProviders)) {
-        syncDynamicRegistryWithSnapshot(incoming.customProviders as CustomProviderConfig[])
+      // Keep the dynamic provider registry in step with the APPLIED snapshot
+      // (a merge may have dropped peer provider fields this writer never
+      // touched) so cross-tab custom-provider edits are usable here.
+      if (Array.isArray(applied.customProviders)) {
+        syncDynamicRegistryWithSnapshot(applied.customProviders as CustomProviderConfig[])
       }
       // Runtime-only credential state is NOT part of the persisted snapshot,
       // so applying a peer's provider/model switch leaves this tab holding
       // the PREVIOUS provider's hasApiKey and modelCredentialStatus —
       // sendMessage then rejects sends against the now-active provider
-      // (or sends with a stale key assumption). Re-evaluate when the
-      // snapshot switched provider or model, mirroring what
-      // switchProviderAndModel does for a local switch.
+      // (or sends with a stale key assumption). Re-evaluate when the APPLIED
+      // snapshot switched provider or model (a merge can filter a peer's
+      // untouched provider copy out — only a real switch counts), mirroring
+      // what switchProviderAndModel does for a local switch.
       if (
-        incoming.providerType !== credentialsBefore.providerType ||
-        incoming.modelName !== credentialsBefore.modelName
+        applied.providerType !== credentialsBefore.providerType ||
+        applied.modelName !== credentialsBefore.modelName
       ) {
         const next = useSettingsStore.getState()
         // Invalidate by the EFFECTIVE credential key, not providerType:
@@ -1704,7 +1778,7 @@ function setupCrossTabSettingsSync(): void {
         // possibly already-superseded) snapshot over a newer peer write.
         suppressPersistWrites++
         try {
-          if (incoming.providerType !== credentialsBefore.providerType) {
+          if (applied.providerType !== credentialsBefore.providerType) {
             useSettingsStore.setState({ modelCredentialStatus: 'unknown' })
           }
         } finally {
