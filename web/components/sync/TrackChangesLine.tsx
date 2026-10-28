@@ -7,6 +7,12 @@
  * `<ins>` spans, unchanged fragments as plain text. Wraps naturally with
  * long lines (no line pairing, no fixed row heights).
  *
+ * Accessibility: removed/added fragments render as the semantic `<del>` /
+ * `<ins>` elements (implicit roles `deletion` / `insertion`), so screen
+ * readers can distinguish deleted from inserted text. The `<ins>` element
+ * carries a UA-default underline, which is cancelled with `no-underline`
+ * so the visual styling stays exactly as designed.
+ *
  * Visual spec (issue #96 DESIGN FINAL, approved mockup 2026-10-28):
  * - Row: `~` gutter marker, neutral `#1c2128` tint (dark) — inline
  *   highlights carry the information, no full-line green/red
@@ -62,23 +68,28 @@ export const TRACK_CHANGES_LINE_TESTID = 'track-changes-line'
 
 function FragmentSpan({ fragment }: { fragment: InlineFragment }) {
   if (fragment.type === 'removed') {
+    // `<del>` exposes the implicit `deletion` role to assistive technology;
+    // its UA line-through matches the designed strike-through styling.
     return (
-      <span
+      <del
         data-testid="track-changes-removed"
         className="bg-red-50 text-red-700 line-through decoration-red-500/80 [text-decoration-thickness:1.5px] rounded-[3px] dark:bg-[#f8514940] dark:text-[#ffc0bd] dark:decoration-[#f85149cc]"
       >
         {fragment.value}
-      </span>
+      </del>
     )
   }
   if (fragment.type === 'added') {
+    // `<ins>` exposes the implicit `insertion` role to assistive technology;
+    // `no-underline` cancels the UA-default underline so the highlight
+    // background/weight styling is unchanged visually.
     return (
-      <span
+      <ins
         data-testid="track-changes-added"
-        className="bg-green-50 text-green-700 font-semibold rounded-[3px] dark:bg-[#2ea04355] dark:text-[#7ee787]"
+        className="no-underline bg-green-50 text-green-700 font-semibold rounded-[3px] dark:bg-[#2ea04355] dark:text-[#7ee787]"
       >
         {fragment.value}
-      </span>
+      </ins>
     )
   }
   // Unchanged text sits on the dark row surface in both themes — it needs
