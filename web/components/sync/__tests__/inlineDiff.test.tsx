@@ -597,28 +597,36 @@ describe('LazyDiffViewer content-type split', () => {
     ])
 
     for (const fragment of [...removed, ...added]) {
-      expect(fragment.getAttribute('aria-hidden')).toBeNull()
       expect(fragment.hasAttribute('hidden')).toBe(false)
       expect(fragment.style.display).not.toBe('none')
       expect(fragment.style.visibility).not.toBe('hidden')
       // The fragment's TEXT must be exposed too — hiding the text in a
-      // descendant (aria-hidden, `hidden` attribute or CSS) would leave the
-      // wrapper visible to the a11y tree while assistive technology still
-      // gets none of the content. Every descendant of the fragment must be
+      // descendant (`hidden` attribute, aria-hidden, inline style or a
+      // computed display/visibility) would leave the wrapper visible to
+      // the a11y tree while assistive technology still gets none of the
+      // content. Every node below — the fragment itself included — must be
       // free of ANY hiding mechanism, and the text must be non-empty, so
       // the whole visible text lives in a11y-visible nodes.
       expect(fragment.textContent!.length).toBeGreaterThan(0)
-      expect(
-        fragment.querySelectorAll('[aria-hidden="true"]').length,
-      ).toBe(0)
-      expect(
-        fragment.querySelectorAll('[hidden]').length,
-      ).toBe(0)
-      for (const child of fragment.querySelectorAll<HTMLElement>('*')) {
-        expect(child.hasAttribute('hidden')).toBe(false)
-        expect(child.getAttribute('aria-hidden')).toBeNull()
-        expect(child.style.display).not.toBe('none')
-        expect(child.style.visibility).not.toBe('hidden')
+      for (const node of [fragment, ...fragment.querySelectorAll<HTMLElement>('*')]) {
+        // `aria-hidden="false"` is valid and keeps content exposed; only
+        // the literal "true" hides a node. Match case-insensitively so
+        // `aria-hidden="TRUE"` cannot slip through.
+        expect((node.getAttribute('aria-hidden') ?? '').toLowerCase()).not.toBe('true')
+        expect(node.hasAttribute('hidden')).toBe(false)
+        expect(node.style.display).not.toBe('none')
+        expect(node.style.visibility).not.toBe('hidden')
+        // Computed-style guard: the inline `style` checks above only see
+        // inline declarations, so also read each node's computed display
+        // and visibility to catch hiding applied via the CSSOM (e.g.
+        // programmatic style or class changes). NOTE: jsdom does not apply
+        // stylesheet rules, so this cannot detect stylesheet-only hiding
+        // in this environment — in a real browser the same check would.
+        // `opacity: 0` is deliberately not checked: it does not remove
+        // content from the accessibility tree.
+        const computed = window.getComputedStyle(node)
+        expect(computed.display).not.toBe('none')
+        expect(computed.visibility).not.toBe('hidden')
       }
     }
   })
