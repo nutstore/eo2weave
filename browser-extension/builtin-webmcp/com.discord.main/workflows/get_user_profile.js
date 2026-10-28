@@ -296,23 +296,23 @@ export default {
                   // A 401 means Discord rejected this credential: suppress
                   // it even if the webpack module still exposes it, until
                   // a fresh (different) token appears. Rejections are
-                  // tracked per token VALUE in a bounded set, so two
+                  // tracked per token VALUE in an insert-only set, so two
                   // overlapping 401s for different tokens each suppress
                   // their own credential and neither can erase the other's
                   // rejection (a stale in-flight 401 can neither
                   // re-enable a newer rejected token nor block a fresh
-                  // rejection from being recorded). The set holds at most
-                  // 8 values; the oldest is dropped when it overflows.
+                  // rejection from being recorded). The set is never
+                  // truncated: a truncated entry would let webpack
+                  // re-expose an old credential Discord already refused,
+                  // so every 401'd token stays recognizable for the
+                  // tab's lifetime (tokens are short strings and a tab
+                  // sees only a handful of credentials).
                   try {
                     var set =
                       (globalThis.__eo2DiscordRejectedTokens =
                         globalThis.__eo2DiscordRejectedTokens || new Set())
                     set.delete(token)
                     set.add(token)
-                    while (set.size > 8) {
-                      var oldestVal = set.values().next().value
-                      set.delete(oldestVal)
-                    }
                   } catch (e) {}
                 }
                 return {
@@ -340,16 +340,15 @@ export default {
                   try {
                     // Same per-token set as the coded branch: overlapping
                     // 401s for different tokens are tracked independently,
-                    // so neither can erase the other's rejection.
+                    // so neither can erase the other's rejection. No
+                    // truncation here either: webpack may re-expose any
+                    // token it ever exposed, and every rejected value
+                    // must stay recognizable.
                     var set =
                       (globalThis.__eo2DiscordRejectedTokens =
                         globalThis.__eo2DiscordRejectedTokens || new Set())
                     set.delete(token)
                     set.add(token)
-                    while (set.size > 8) {
-                      var oldestVal2 = set.values().next().value
-                      set.delete(oldestVal2)
-                    }
                   } catch (e) {}
                 return {
                   ok: false,

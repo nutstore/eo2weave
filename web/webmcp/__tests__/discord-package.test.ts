@@ -913,20 +913,36 @@ it('aborts a queued reaction fetch by its queue time, not its start time', async
 }, 15000)
 
 it("bounds automatic nonce reuse to Discord's enforce_nonce window", async () => {
+  // Control the clock by seeding the retry-nonce map with timestamps
+  // relative to now, so both bounds are exercised BEHAVIORALLY: a runtime
+  // TTL that drifts in either direction fails these assertions, where the
+  // previous source-text matches kept passing.
   const page = fixture()
   const input = { channel: '555', content: 'window test' }
+  // The workflow's retry key is channel|reply_to|content.
+  const retryKey = '555||window test'
+  const now = Date.now()
+  // A nonce remembered 299s ago is inside the 5-minute dedupe window
+  // Discord's enforce_nonce guarantees, so the retry reuses it.
+  ;(page.sandbox as Record<string, unknown>).__eo2DiscordRetryNonces = new Map([
+    [retryKey, { nonce: 'seeded-young', at: now - 299000 }],
+  ])
   await page.execute('send_message', input)
-  const firstNonce = JSON.parse(page.fetches[0].init.body!).nonce as string
-  // Within the window a retry reuses the nonce (Discord dedupes it).
+  expect(JSON.parse(page.fetches[0].init.body!).nonce).toBe('seeded-young')
+  // A nonce remembered exactly AT the 300s boundary is no longer reused:
+  // the window is strictly < 300000 ms, so a runtime TTL >= 300000
+  // (e.g. 360000) regenerates this case and fails the test.
+  ;(page.sandbox as Record<string, unknown>).__eo2DiscordRetryNonces = new Map([
+    [retryKey, { nonce: 'seeded-expired', at: now - 300000 }],
+  ])
   await page.execute('send_message', input)
-  expect(JSON.parse(page.fetches[1].init.body!).nonce).toBe(firstNonce)
-  // Source-level: the remember window must not exceed the dedup window
-  // Discord guarantees ("uniqueness ... over the past few minutes") —
-  // 5 minutes, set once at creation and never refreshed by retries.
-  const tool = manifest.tools.find((t: { name: string }) => t.name === 'send_message')
-  const source = builtinResources[prefix + tool.path] as string
-  expect(source).not.toContain('600000')
-  expect(source).toMatch(/300000/)
-  expect(source).toMatch(/if \(!existing\)/)
-  expect(source).toMatch(/5-minute reuse window cannot be extended/)
-})
+  const regenerated = JSON.parse(page.fetches[1].init.body!).nonce as string
+  expect(regenerated).not.toBe('seeded-expired')
+  // The regenerated entry is stored ONCE: an immediate retry reuses the
+  // nonce WITHOUT refreshing its timestamp, so retries cannot extend the
+  // window past Discord's dedupe guarantee.
+  const storedAt = (page.sandbox.__eo2DiscordRetryNonces as Map<string, { nonce: string; at: number }>).get(retryKey)!.at
+  await page.execute('send_message', input)
+  expect(JSON.parse(page.fetches[2].init.body!).nonce).toBe(regenerated)
+  expect((page.sandbox.__eo2DiscordRetryNonces as Map<string, { nonce: string; at: number }>).get(retryKey)!.at).toBe(storedAt)
+}, 15000)
