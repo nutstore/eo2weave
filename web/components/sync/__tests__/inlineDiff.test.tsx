@@ -617,8 +617,8 @@ describe('LazyDiffViewer content-type split', () => {
       expect(fragment.textContent!.length).toBeGreaterThan(0)
       // The ancestors matter as much as the descendants: an `inert`,
       // `hidden` or `aria-hidden="true"` ANCESTOR hides the whole subtree
-      // for AT, and an ancestor with an accessible name (aria-label /
-      // aria-labelledby) announces that name instead of the subtree text.
+      // for AT, and an ancestor that is an atomic text replacement
+      // announces its own name instead of the subtree text.
       for (
         let ancestor = fragment.parentElement;
         ancestor && ancestor !== document.body;
@@ -629,19 +629,39 @@ describe('LazyDiffViewer content-type split', () => {
         // `aria-hidden="false"` (or absent) keeps content exposed; only
         // the literal "true" hides it (matched case-insensitively).
         expect((ancestor.getAttribute('aria-hidden') ?? '').toLowerCase()).not.toBe('true')
-        // Only roles that REPLACE the subtree text matter here: any role
-        // combined with an accessible name makes the ancestor an atomic
-        // replacement. A semantically neutral `role="presentation"` or
-        // `role="none"` WITHOUT a label still exposes the text, so it is
-        // allowed.
-        if (
+        // Ancestor roles: a role makes the subtree a text REPLACEMENT for
+        // AT when the role is a "text container" role combined with a
+        // name from any source, or when the role is inherently atomic.
+        // Checking is split so neither direction can slip through:
+        // - a role that suppresses subtree text (`presentation`/`none`
+        //   keep the text, everything else is treated as replacement-
+        //   capable) is only allowed when it is `presentation`/`none`;
+        // - any accessible name (`aria-label`, `aria-labelledby`, or the
+        //   `title` attribute fallback) combined with a replacement-
+        //   capable role is rejected even without explicit ARIA label
+        //   attributes.
+        const ancestorRole = ancestor.getAttribute('role')
+        const hasName =
           ancestor.getAttribute('aria-label') !== null ||
-          ancestor.getAttribute('aria-labelledby') !== null
-        ) {
-          expect(ancestor.getAttribute('role')).toBeNull()
-          expect(ancestor.getAttribute('aria-label')).toBeNull()
-          expect(ancestor.getAttribute('aria-labelledby')).toBeNull()
+          ancestor.getAttribute('aria-labelledby') !== null ||
+          ancestor.getAttribute('title') !== null
+        if (ancestorRole !== null) {
+          expect(['presentation', 'none']).toContain(ancestorRole)
+          expect(hasName).toBe(false)
         }
+        // Computed-style guard on ancestors too: a hidden ancestor hides
+        // everything below it even when the fragment itself is clean.
+        // Same environment limits as below: happy-dom resolves rules
+        // present in the test document; the production Tailwind
+        // stylesheet is not loaded here, so production-only utility-class
+        // hiding on ancestors is covered by build-time review, not by
+        // this assertion.
+        const ancestorComputed = window.getComputedStyle(ancestor)
+        expect(ancestorComputed.display).not.toBe('none')
+        expect(
+          ancestorComputed.visibility === 'hidden' || ancestorComputed.visibility === 'collapse'
+        ).toBe(false)
+        expect(ancestorComputed.contentVisibility).not.toBe('hidden')
       }
       for (const node of [fragment, ...fragment.querySelectorAll<HTMLElement>('*')]) {
         // `aria-hidden="false"` is valid and keeps content exposed; only
