@@ -392,6 +392,36 @@ describe('service worker fetch routing (issue #94)', () => {
     devSandbox.dispatch('fetch', { request: makeRequest('https://localhost/', { headers: { accept: 'text/html' } }), respondWith: devSandbox.respondWith })
     expect(devSandbox.respondWith).not.toHaveBeenCalled()
   })
+
+  it('CACHE_URLS refuses API/MCP and cross-origin URLs', async () => {
+    await evalWorker(await getWorkerSource(), sandbox)
+    // Pre-create the cache so we can hold a reference to the entries map the
+    // handler will write into (open() returns a fresh facade each call).
+    await sandbox.cachesMock.open(APPSHELL_CACHE)
+    const entries = sandbox.cacheNames.get(APPSHELL_CACHE) as Map<string, Response>
+    const port = { postMessage: vi.fn() }
+    sandbox.dispatch('message', {
+      waitUntil: vi.fn(async (p: Promise<unknown>) => {
+        await p
+      }),
+      data: {
+        type: 'CACHE_URLS',
+        urls: [
+          '/some/page',
+          'https://eo2weave.example.com/api/conversations',
+          'https://eo2weave.example.com/mcp/tools',
+          'https://evil.example.com/payload',
+        ],
+      },
+      ports: [port],
+    })
+    await vi.waitFor(() => {
+      expect(entries.has('/some/page')).toBe(true)
+    })
+    expect(entries.has('https://eo2weave.example.com/api/conversations')).toBe(false)
+    expect(entries.has('https://eo2weave.example.com/mcp/tools')).toBe(false)
+    expect(entries.has('https://evil.example.com/payload')).toBe(false)
+  })
 })
 
 let workerSourcePromise: Promise<string> | null = null

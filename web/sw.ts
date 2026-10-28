@@ -345,6 +345,13 @@ self.addEventListener('message', (event) => {
         const urls = Array.isArray(event.data?.urls) ? event.data.urls : []
         for (const url of urls) {
           try {
+            // Only same-origin, non-API/MCP URLs may enter the app-shell
+            // cache: this mirrors the fetch handler's own rules so a
+            // stray CACHE_URLS message can never stash API/MCP (or
+            // cross-origin) responses the SW deliberately passes through.
+            const parsed = new URL(url, self.location.origin)
+            if (parsed.origin !== self.location.origin) continue
+            if (API_PATTERNS.some((pattern) => pattern.test(parsed.pathname))) continue
             await cache.add(url)
           } catch (error) {
             console.warn('[ServiceWorker] Failed to cache URL:', url, error)
