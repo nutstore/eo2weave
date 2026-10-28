@@ -144,6 +144,46 @@ describe('CDP idle auto-detach', () => {
     expect(chrome.debugger.detach).toHaveBeenCalledTimes(2)
   })
 
+  it('retries a failed activity write once shortly after the failure', async () => {
+    const data = new Map<string, unknown>()
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}))
+    const set = vi.fn()
+      .mockRejectedValueOnce(new Error('quota exceeded'))
+      .mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
+    ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(set)
+    const cdp = await loadModule()
+    cdp.noteCdpActivity(7)
+    // The coalesced persist fires and fails.
+    await vi.advanceTimersByTimeAsync(10)
+    expect(data.has('cw_cdp_activity')).toBe(false)
+    // The retry lands.
+    await vi.advanceTimersByTimeAsync(cdp.CDP_IDLE_TIMEOUT_MS)
+    expect(data.get('cw_cdp_activity')).toMatchObject({ 7: expect.any(Number) })
+    expect(set).toHaveBeenCalledTimes(2)
+  })
+
+  it('detaches our orphaned sessions with no activity record during a sweep', async () => {
+    // A failed persist left the worker without the tab's timestamp (both the
+    // eager load and the persist-time hydrate fail); getTargets still shows
+    // OUR debugger attached — the sweep's recovery pass must detach it so the
+    // banner cannot outlive the lost record.
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('storage unavailable'))
+    ;(chrome.runtime as { id?: string }).id = 'ext-id'
+    ;(chrome.debugger.getTargets as ReturnType<typeof vi.fn>).mockResolvedValue([{ tabId: 7, attached: true, extensionId: 'ext-id' }])
+    const cdp = await loadModule()
+    await cdp.sweepIdleTabs()
+    expect(chrome.debugger.detach).toHaveBeenCalledWith({ tabId: 7 }, expect.any(Function))
+  })
+
+  it('does not touch foreign debugger sessions in the recovery sweep', async () => {
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('storage unavailable'))
+    ;(chrome.runtime as { id?: string }).id = 'ext-id'
+    ;(chrome.debugger.getTargets as ReturnType<typeof vi.fn>).mockResolvedValue([{ tabId: 7, attached: true, extensionId: 'someone-else' }])
+    const cdp = await loadModule()
+    await cdp.sweepIdleTabs()
+    expect(chrome.debugger.detach).not.toHaveBeenCalled()
+  })
+
   it('persists an empty activity snapshot when the last tracked tab is detached', async () => {
     const data = new Map<string, unknown>()
     ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}))
@@ -170,12 +210,20 @@ describe('CDP idle auto-detach', () => {
     expect(revived.attachedTabs.size).toBe(0)
     // The browser still reports the debugger attached (getTargets survives).
     ;(chrome.debugger.getTargets as ReturnType<typeof vi.fn>).mockResolvedValue([{ tabId: 7, attached: true }])
-    // The frozen clock keeps the persisted timestamp fresh; let the idle
-    // window elapse, then the alarm sweep (with storage recovered) detaches.
-    // Drive sweepIdleTabs directly — the alarm listener discards the sweep's
-    // promise, so awaiting the listener would race the assertions.
+    // Flush the pre-discard persist, then clear the ORIGINAL worker's timers:
+    // a discarded SW freezes timers, so its 120s idle timer must not fire
+    // during the advance below and detach the tab before the revived sweep
+    // gets its turn (the assertion would pass without the sweep doing work).
+    await vi.advanceTimersByTimeAsync(10)
+    vi.clearAllTimers()
+    // Revive the alarm wiring for the new worker and let the idle window
+    // elapse. Drive sweepIdleTabs directly — the alarm listener discards the
+    // sweep's promise, so awaiting the listener would race the assertions.
+    const detachCallsBefore = (chrome.debugger.detach as ReturnType<typeof vi.fn>).mock.calls.length
     await vi.advanceTimersByTimeAsync(cdp.CDP_IDLE_TIMEOUT_MS + 1000)
+    expect(chrome.debugger.detach).toHaveBeenCalledTimes(detachCallsBefore)
     await revived.sweepIdleTabs()
+    expect(chrome.debugger.detach).toHaveBeenCalledTimes(detachCallsBefore + 1)
     expect(chrome.debugger.detach).toHaveBeenCalledWith({ tabId: 7 }, expect.any(Function))
     expect(revived.attachedTabs.has(7)).toBe(false)
   })

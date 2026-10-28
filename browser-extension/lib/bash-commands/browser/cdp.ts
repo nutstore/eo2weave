@@ -17,6 +17,8 @@ const IDLE_SWEEP_MINUTES = 1
 const ACTIVITY_STORAGE_KEY = "cw_cdp_activity"
 /** Storage writes are throttled — activity is recorded on every command. */
 const ACTIVITY_PERSIST_INTERVAL_MS = 5_000
+/** Retry window for a failed session-storage write. */
+const ACTIVITY_PERSIST_RETRY_MS = 5_000
 
 export const attachedTabs = new Set<number>()
 const attachInFlight = new Map<number, Promise<void>>()
@@ -138,7 +140,14 @@ function writePersistedActivity(): void {
     if (!store) return
     const snapshot: Record<string, number> = {}
     for (const [tabId, at] of lastActivity) snapshot[String(tabId)] = at
-    void store.set({ [ACTIVITY_STORAGE_KEY]: snapshot }).catch(() => {})
+    void store.set({ [ACTIVITY_STORAGE_KEY]: snapshot }).catch(() => {
+        // A dropped write could leave a discarded worker without cleanup
+        // records; retry once shortly rather than losing the snapshot for
+        // good.
+        setTimeout(() => {
+            void store.set({ [ACTIVITY_STORAGE_KEY]: snapshot }).catch(() => {})
+        }, ACTIVITY_PERSIST_RETRY_MS)
+    })
 }
 
 function clearIdleTimer(tabId: number): void {
@@ -215,6 +224,24 @@ export async function sweepIdleTabs(): Promise<void> {
         // A command may have started while the attach check was in flight.
         if (!isIdle(tabId)) continue
         await detachDebugger(tabId)
+    }
+    // Recovery pass: a failed persist (or a discarded worker that never
+    // rewrote the snapshot) can leave OUR sessions without any activity
+    // record, so the loop above never visits them and the banner would stay
+    // up indefinitely. Detach those sessions — a fresh command re-attaches
+    // transparently, while a session this extension does not own is skipped
+    // by the isDebuggerAttached ownership check.
+    try {
+        const targets = await chrome.debugger.getTargets()
+        for (const target of targets) {
+            const orphanTabId = target.tabId
+            if (orphanTabId === undefined) continue
+            if (!target.attached || !chrome.runtime.id || target.extensionId !== chrome.runtime.id) continue
+            if (lastActivity.has(orphanTabId) || detachInFlight.has(orphanTabId)) continue
+            await detachDebugger(orphanTabId)
+        }
+    } catch {
+        // getTargets unavailable — nothing the recovery pass can do.
     }
 }
 

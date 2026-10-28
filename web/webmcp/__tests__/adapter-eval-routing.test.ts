@@ -94,6 +94,8 @@ describe('browser eval routing', () => {
     expect(executeScript).toHaveBeenCalledTimes(1)
     expect(dbg.attach).not.toHaveBeenCalled()
     expect(dbg.sendCommand).not.toHaveBeenCalled()
+    // The scripting path must not disturb an existing CDP session either.
+    expect(dbg.detach).not.toHaveBeenCalled()
   })
 
   it('reads eval source from stdin and honors async page functions', async () => {
