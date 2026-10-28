@@ -147,16 +147,22 @@ describe('PackageOptInModal', () => {
     })
   })
 
-  it('confirm with timeout: shows the dedicated timeout toast', async () => {
+  it('confirm with timeout: shows the timeout guidance and KEEPS the modal open for the late outcome', async () => {
     enablePackageAndReloadMock.mockResolvedValue({ ok: false, errorCode: 'TIMEOUT' })
-    render(<PackageOptInModal packageInfo={packageInfo} onClose={vi.fn()} />)
+    const onClose = vi.fn()
+    render(<PackageOptInModal packageInfo={packageInfo} onClose={onClose} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
-        expect.stringContaining('timed out'),
-      )
-      expect(toast.error).not.toHaveBeenCalledWith(ENABLE_FAILED_TOAST)
+      // The timeout message is shown INSIDE the modal (role=alert), not as a
+      // transient toast: the enable call may still land, and the modal must
+      // stay up so the late-settle callback can correct the picture.
+      expect(screen.getByRole('alert').textContent).toContain('timed out')
+      // Finding "Late success appears as failure": no dismissal cooldown and
+      // no unmount on timeout — the enable may still succeed in background.
+      expect(onClose).not.toHaveBeenCalled()
+      expect(dismissPackagePromptMock).not.toHaveBeenCalled()
+      expect(screen.getByRole('dialog')).toBeTruthy()
     })
   })
 
@@ -168,9 +174,16 @@ describe('PackageOptInModal', () => {
         return { ok: false, errorCode: 'TIMEOUT' }
       },
     )
-    const { container } = render(<PackageOptInModal packageInfo={packageInfo} onClose={vi.fn()} />)
+    const onClose = vi.fn()
+    render(<PackageOptInModal packageInfo={packageInfo} onClose={onClose} />)
     fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
-    await waitFor(() => expect(toast.error).toHaveBeenCalled())
+    // Finding "Late success appears as failure": on timeout the modal must
+    // stay open (no dismissal cooldown, no unmount) so the late outcome can
+    // still reach the user.
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('timed out'))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(dismissPackagePromptMock).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeTruthy()
     // Late ok WITH reload → plain success notice.
     lateCallback?.({ ok: true, reloaded: true })
     await waitFor(() => {
@@ -183,7 +196,6 @@ describe('PackageOptInModal', () => {
       expect(screen.getByRole('status').textContent).toContain('reload it manually')
     })
     expect(toast.success).not.toHaveBeenCalled()
-    expect(container).toBeTruthy()
   })
 
   it('a CONSENT_REQUIRED failure is retryable: no dismissal cooldown, retry guidance shown', async () => {

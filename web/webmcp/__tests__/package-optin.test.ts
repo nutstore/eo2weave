@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { findPackageOptInCandidate, toolIsReadOnly } from '../../../browser-extension/entrypoints/webmcp/package-optin'
 import { createPackageOptInHandler, CONSENT_TOKEN_MIN_AGE_MS, setConsentTokenEnforcementForTests } from '../../../browser-extension/entrypoints/webmcp/package-optin-handler'
-import { readWebMCPCatalog } from '../../../browser-extension/entrypoints/webmcp/package-repository'
+import { readWebMCPCatalog, readWebMCPCatalogDetailed } from '../../../browser-extension/entrypoints/webmcp/package-repository'
 import { setBuiltinConfig, readBuiltinConfig } from '../../../browser-extension/entrypoints/webmcp/builtin-storage'
 import type { WebMCPPackageEntry } from '@creatorweave/shared/webmcp-package-catalog'
 
 vi.mock('../../../browser-extension/entrypoints/webmcp/package-repository', () => ({
   readBuiltinWebMCPCatalog: vi.fn(),
   readWebMCPCatalog: vi.fn(),
+  readWebMCPCatalogDetailed: vi.fn(),
 }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/builtin-storage', () => ({
   setBuiltinConfig: vi.fn(),
@@ -151,6 +152,7 @@ describe('createPackageOptInHandler', () => {
       tabs: { get, reload },
     })
     vi.mocked(readWebMCPCatalog).mockResolvedValue([entry()])
+    vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[entry()], { userMountComplete: true }])
     vi.mocked(setBuiltinConfig).mockResolvedValue(undefined)
     vi.mocked(readBuiltinConfig).mockResolvedValue({ activation: 'enabled' })
   })
@@ -340,8 +342,105 @@ describe('createPackageOptInHandler', () => {
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     await handle({ type: 'webmcp_package_optin_enable', packageId: 'world.jmail.archive', consentToken: token }, respond)
     expect(setBuiltinConfig).toHaveBeenCalled()
-    expect(reload).not.toHaveBeenCalled()
+    // The reload happens BEFORE the final verification (finding: "Disabled
+    // package reported enabled") so a disable racing the enable can never be
+    // carried to the page unobserved; the verification then reports honestly.
+    expect(reload).toHaveBeenCalledWith(7)
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'ENABLE_REVERTED' }))
+  })
+
+  it('offers only DISABLED alternatives, each with its own package-bound consent token', async () => {
+    const enabledSibling = entry({
+      directory: 'com.douban.movie',
+      activation: 'enabled',
+      package: {
+        manifest: {
+          id: 'com.douban.movie',
+          version: '1.0.0',
+          description: 'Movie tools (already enabled).',
+          tools: [{ name: 'list_movies', description: '', urlRegex: '^https://jmail\\.world/.*$', path: 'a.js' }],
+        },
+        sources: { 'a.js': READ_ONLY_SOURCE },
+      },
+    })
+    const disabledSibling = entry({
+      directory: 'com.douban.search',
+      package: {
+        manifest: {
+          id: 'com.douban.search',
+          version: '1.0.0',
+          description: 'Douban search tools.',
+          tools: [{ name: 'search_douban', description: '', urlRegex: '^https://jmail\\.world/.*$', path: 'a.js' }],
+        },
+        sources: { 'a.js': READ_ONLY_SOURCE },
+      },
+    })
+    vi.mocked(readWebMCPCatalog).mockResolvedValue([entry(), enabledSibling, disabledSibling])
+    vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([
+      [entry(), enabledSibling, disabledSibling],
+      { userMountComplete: true },
+    ])
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_status' }, respond)
+    const body = respond.mock.calls[0][0] as {
+      alternatives: Array<{ id: string; activation: string; consentToken?: string }>
+    }
+    // The enabled sibling must NOT be offered as an alternative (finding:
+    // "Enabled sibling gets an opt-in prompt").
+    expect(body.alternatives.map(item => item.id)).toEqual(['com.douban.search'])
+    // …and each offered sibling carries a token bound to ITS OWN package id
+    // (findings: "Sibling consent cannot complete" / "Sibling opt-in is
+    // rejected").
+    expect(typeof body.alternatives[0].consentToken).toBe('string')
+    expect(body.alternatives[0].consentToken).not.toBe('')
+  })
+
+  it('enables a SIBLING candidate (not just the best candidate) when its own token is presented', async () => {
+    const sibling = entry({
+      directory: 'com.douban.search',
+      package: {
+        manifest: {
+          id: 'com.douban.search',
+          version: '1.0.0',
+          description: 'Douban search tools.',
+          tools: [{ name: 'search_douban', description: '', urlRegex: '^https://jmail\\.world/.*$', path: 'a.js' }],
+        },
+        sources: { 'a.js': READ_ONLY_SOURCE },
+      },
+    })
+    vi.mocked(readWebMCPCatalog).mockResolvedValue([entry(), sibling])
+    vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[entry(), sibling], { userMountComplete: true }])
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_status' }, respond)
+    const body = respond.mock.calls[0][0] as {
+      package: { id: string }
+      alternatives: Array<{ id: string; consentToken?: string }>
+    }
+    expect(body.package.id).toBe('world.jmail.archive') // primary wins the status probe
+    const siblingToken = body.alternatives.find(item => item.id === 'com.douban.search')!.consentToken!
+    await new Promise(resolve => setTimeout(resolve, CONSENT_TOKEN_MIN_AGE_MS + 50))
+
+    const respond2 = vi.fn()
+    await handle(
+      { type: 'webmcp_package_optin_enable', packageId: 'com.douban.search', consentToken: siblingToken },
+      respond2,
+    )
+    expect(setBuiltinConfig).toHaveBeenCalledWith('com.douban.search', { activation: 'enabled' })
+    expect(reload).toHaveBeenCalledWith(7)
+    expect(respond2).toHaveBeenCalledWith(expect.objectContaining({ ok: true }))
+  })
+
+  it('refuses to enable from an INCOMPLETE catalog (user mount could not be listed)', async () => {
+    const { token } = await mintToken()
+    vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[entry()], { userMountComplete: false }])
+    const respond = vi.fn()
+    const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    await handle({ type: 'webmcp_package_optin_enable', packageId: 'world.jmail.archive', consentToken: token }, respond)
+    expect(setBuiltinConfig).not.toHaveBeenCalled()
+    expect(reload).not.toHaveBeenCalled()
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'PACKAGE_CONFLICT' }))
   })
 
   it('rejects a package id that does not match the consent-bound package', async () => {

@@ -267,11 +267,16 @@ export async function getPendingPackagePrompt(): Promise<
       applicable: true,
       package: {
         ...alternative,
-        // A sibling has no consent token of its own: the token in the status
-        // payload belongs to the dismissed candidate and is bound to its
-        // package id, so the enable would be rejected. The sibling flow
-        // re-probes on confirm (CONSENT_REQUIRED handling in the modal).
-        consentToken: undefined,
+        // The sibling's OWN consent token (finding: "Sibling consent cannot
+        // complete"): the extension mints one per disabled alternative, bound
+        // to the sibling's package id. The status-level token belongs to the
+        // dismissed primary and must NOT be reused; older extension builds
+        // send no per-sibling token at all (undefined) and rely on the grace
+        // path until the fleet updates.
+        consentToken:
+          typeof alternative.consentToken === 'string' && alternative.consentToken !== ''
+            ? alternative.consentToken
+            : undefined,
         totalTools: typeof alternative.totalTools === 'number' ? alternative.totalTools : undefined,
       },
       enabled: false,

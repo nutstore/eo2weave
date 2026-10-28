@@ -105,6 +105,10 @@ describe('getPendingPackagePrompt', () => {
       hostname: 'jmail.world',
       activation: 'disabled' as const,
       tools: [{ name: 'list_movies', description: '', readOnly: true }],
+      // The extension mints a token PER DISABLED alternative, bound to the
+      // sibling's own package id (findings: "Sibling consent cannot
+      // complete" / "Sibling opt-in is rejected").
+      consentToken: 'token-sibling',
     }
     setAgentWeb({
       webMCPPackageOptInStatus: vi.fn().mockResolvedValue({
@@ -117,8 +121,30 @@ describe('getPendingPackagePrompt', () => {
     expect(result?.applicable).toBe(true)
     if (!result?.applicable) throw new Error('expected a sibling prompt')
     expect(result.package.id).toBe('com.douban.movie')
-    // A sibling has no consent token of its own — the token is bound to the
-    // dismissed candidate's package id.
+    // The sibling's OWN token is passed through — the status-level token
+    // belongs to the dismissed primary and must never be reused for it.
+    expect(result.package.consentToken).toBe('token-sibling')
+  })
+
+  it('passes NO token for a sibling when an older extension build omits per-sibling tokens', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockResolvedValue({
+        ...okStatus(),
+        alternatives: [{
+          id: 'com.douban.movie',
+          description: 'Movie tools.',
+          hostname: 'jmail.world',
+          activation: 'disabled',
+          tools: [{ name: 'list_movies', description: '', readOnly: true }],
+        }],
+      }),
+    })
+    dismissPackagePrompt('world.jmail.archive')
+    const result = await getPendingPackagePrompt()
+    if (!result?.applicable) throw new Error('expected a sibling prompt')
+    // Legacy build: no per-sibling token exists, and the status-level token
+    // (bound to the dismissed primary) must NOT leak into the sibling prompt.
     expect(result.package.consentToken).toBeUndefined()
   })
 

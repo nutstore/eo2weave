@@ -55,7 +55,7 @@ import {
   findPackageOptInCandidates,
   type PackageOptInCandidate,
 } from './package-optin'
-import { readWebMCPCatalog } from './package-repository'
+import { readWebMCPCatalog, readWebMCPCatalogDetailed } from './package-repository'
 import { readBuiltinConfig, setBuiltinConfig } from './builtin-storage'
 
 export interface PackageOptInStatus {
@@ -250,10 +250,28 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         // hides other package prompts"): the web client picks the best
         // NON-dismissed alternative instead of hiding every prompt for the
         // site. Bounded to the two next candidates; metadata only, same as
-        // the primary payload.
+        // the primary payload. ALREADY-ENABLED siblings are excluded
+        // (finding: "Enabled sibling gets an opt-in prompt"): the prompt
+        // exists to enable packages, so offering an enabled sibling as an
+        // alternative either re-enables and reloads it redundantly (grace
+        // mode) or fails the consent check (strict mode).
         const alternatives = findPackageOptInCandidates(entries, statusUrl)
           .filter(item => item.directory !== candidate.directory)
+          .filter(item => item.activation === 'disabled')
           .slice(0, 2)
+          // Each DISABLED sibling gets its OWN package-bound consent token
+          // (findings: "Sibling consent cannot complete" / "Sibling opt-in
+          // is rejected"): a token never enables a package other than the
+          // one it was minted for, so the client must be able to echo a
+          // sibling-bound token back on confirm.
+          .map(item => ({
+            ...item,
+            consentToken:
+              item.activation === 'disabled' ? issueConsentToken(tabId, item.id) : undefined,
+          }))
+        // Tokens minted for alternatives the client may never offer would
+        // linger until TTL expiry; acceptable (bounded, in-memory, single
+        // use) and far cheaper than a callback channel for revocation.
         sendResponse({
           ok: true,
           applicable: true,
@@ -319,10 +337,12 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           })
           return false
         }
-        // Re-derive the candidate from the LIVE tab URL — never trust the
-        // web-app-supplied id alone. This proves the package matches what
-        // the bound tab actually hosts before flipping the config. The read
-        // covers BOTH mounts (finding: "Conflicting packages can be
+        // Re-derive the candidates from the LIVE tab URL — never trust the
+        // web-app-supplied id alone. The requested package must be AMONG the
+        // candidates the bound tab actually hosts (finding: "Sibling opt-in
+        // is rejected"): the best-candidate pick alone would reject a
+        // legitimately offered sibling whose id differs from the primary's.
+        // The read covers BOTH mounts (finding: "Conflicting packages can be
         // enabled"): a user-mounted package sharing the builtin candidate's
         // manifest id produces a duplicate-namespace diagnostic, and the
         // combined catalog excludes conflicting entries from active tools —
@@ -337,9 +357,24 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           })
           return false
         }
-        const entries = await readWebMCPCatalog()
-        const candidate = findPackageOptInCandidate(entries, url)
-        if (!candidate || candidate.id !== packageId) {
+        // SAFETY-critical read: an INCOMPLETE catalog (the user mount could
+        // not be listed) cannot prove the requested package is conflict-free
+        // (finding: "Conflicting package activates without tools") — refuse
+        // instead of enabling a builtin whose user-mounted twin may be hidden
+        // by the degraded read. This is deliberately stricter than the status
+        // probe, which may degrade to builtin-only for DISPLAY.
+        const [entries, { userMountComplete }] = await readWebMCPCatalogDetailed()
+        if (!userMountComplete) {
+          sendResponse({
+            ok: false,
+            errorCode: 'PACKAGE_CONFLICT',
+            error: 'User packages could not be listed; resolve the conflict risk in package management first.',
+          })
+          return false
+        }
+        const candidates = findPackageOptInCandidates(entries, url)
+        const candidate = candidates.find(item => item.id === packageId)
+        if (!candidate) {
           sendResponse({
             ok: false,
             errorCode: 'PACKAGE_MISMATCH',
@@ -383,28 +418,14 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           return false
         }
         await setBuiltinConfig(candidate.directory, { activation: 'enabled' })
-        // Verify the write actually stuck (findings: "Disable choice gets
-        // overwritten" / "Success reported after disable"): a queued
-        // package-management disable must still be able to win AFTER our
-        // write commits. Hold the check open for a short window so a disable
-        // racing the enable lands inside it — the last state observed wins,
-        // and a disable observed here is reported, never overridden again.
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          const stored = await readBuiltinConfig(candidate.directory)
-          if (stored?.activation !== 'enabled') {
-            sendResponse({
-              ok: false,
-              errorCode: 'ENABLE_REVERTED',
-              error: 'The package was disabled again while enabling; nothing was enabled.',
-            })
-            return false
-          }
-          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000))
-        }
-        // Reload the page that hosted the package, guarded by a final URL
-        // check INSIDE the reload path (finding: "Unrelated page gets
-        // reloaded"): a navigation after verification must not be interrupted
-        // by a reload the user never consented to for that site.
+        // Reload FIRST, then verify, then respond (finding: "Disabled package
+        // reported enabled"): a disable that commits after our enable write
+        // must be OBSERVED before success is reported, and the reload must
+        // not carry a post-verification disable to the page unobserved. The
+        // order enable → reload → verify closes both windows as far as an
+        // out-of-transaction read protocol allows: any disable that commits
+        // before the FINAL read below is caught; one committing after it is
+        // a user action concurrent with — and after — the consented enable.
         let reloaded = false
         try {
           const preReload = await chrome.tabs.get(tabId)
@@ -430,6 +451,24 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
             reloadErr instanceof Error ? reloadErr.message : String(reloadErr),
           )
           scheduleRecoveryReload(tabId, url)
+        }
+        // Verify the write actually stuck AFTER the reload (findings: "Disable
+        // choice gets overwritten" / "Success reported after disable"): a
+        // queued package-management disable must still be able to win AFTER
+        // our write commits. Hold the check open for a short window so a
+        // disable racing the enable lands inside it — the last state observed
+        // wins, and a disable observed here is reported, never overridden.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const stored = await readBuiltinConfig(candidate.directory)
+          if (stored?.activation !== 'enabled') {
+            sendResponse({
+              ok: false,
+              errorCode: 'ENABLE_REVERTED',
+              error: 'The package was disabled again while enabling; nothing was enabled.',
+            })
+            return false
+          }
+          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000))
         }
         sendResponse({ ok: true, packageId, hostname: candidate.hostname, reloaded })
       } catch (err: unknown) {

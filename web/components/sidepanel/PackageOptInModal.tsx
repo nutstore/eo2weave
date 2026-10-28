@@ -112,14 +112,16 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
     setErrorMessage(null)
     // The 8s timeout may fire while the bridge call is still in flight; the
     // late-completion callback corrects the picture (success / manual-reload
-    // toast) instead of leaving the user with an error while the package
-    // enables silently.
+    // notice) instead of leaving the user with an error while the package
+    // enables silently. On TIMEOUT the modal stays OPEN, so this callback can
+    // actually reach the user (finding: "Late success appears as failure").
     const result = await enablePackageAndReload(packageInfo.id, packageInfo.consentToken ?? '', late => {
       if (late.ok) {
         // Findings "Late success hides reload failure" / "Enabled package
         // skips page reload": a late ok with reloaded:false means the tools
         // are NOT active — direct the user to reload manually instead of
         // claiming plain success.
+        setErrorMessage(null)
         if (late.reloaded === false) {
           setLateNotice(t('sidePanelPackage.enabledReloadFailedToast', { name: packageInfo.id }))
         } else {
@@ -127,7 +129,8 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
         }
       }
       // A late FAILURE stays silent: the modal already showed the failure
-      // path and closed; re-toasting an error after the fact would only nag.
+      // path and the user can retry or close; re-toasting an error after the
+      // fact would only nag.
     })
     setSubmitting(false)
     if (result.ok) {
@@ -138,6 +141,7 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
       } else {
         toast.success(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
       }
+      onClose()
     } else if (result.errorCode === 'CONSENT_REQUIRED') {
       // Findings "Expired consent blocks retry" / "Failed opt-ins block
       // retry": a lost/expired token (service-worker restart, slow confirm)
@@ -150,6 +154,20 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
         error: result.error,
       })
       setErrorMessage(t('sidePanelPackage.consentRetryToast'))
+      onClose()
+    } else if (result.errorCode === 'TIMEOUT') {
+      // Finding "Late success appears as failure": a timeout is NOT the final
+      // answer — the bridge call keeps running and its real outcome arrives
+      // through the late callback. Keep the modal open (no dismissal
+      // cooldown, no unmount), show retry guidance, and let the late callback
+      // correct the picture when the enable actually lands. A retry clears
+      // the message; the Not-now button remains available.
+      // eslint-disable-next-line no-console
+      console.warn('[PackageOptInModal] enable timed out — waiting for the late outcome; the modal stays open', {
+        packageId: packageInfo.id,
+      })
+      setErrorMessage(t('sidePanelPackage.enableTimeoutToast'))
+      return
     } else {
       // Structured failure: log for diagnosis, cool the prompt down so it
       // does not reappear immediately in a broken state, surface the toast.
@@ -160,13 +178,12 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
         error: result.error,
       })
       dismissPackagePrompt(packageInfo.id)
-      toast.error(
-        result.errorCode === 'TIMEOUT'
-          ? t('sidePanelPackage.enableTimeoutToast')
-          : t('sidePanelPackage.enableFailedToast'),
-      )
+      toast.error(t('sidePanelPackage.enableFailedToast'))
+      onClose()
     }
-    onClose()
+    // Reached only by the non-timeout paths above (all of which already
+    // closed the modal); the TIMEOUT branch returns early to keep the modal
+    // open for the late-settle outcome.
   }
 
   const handleDismiss = () => {

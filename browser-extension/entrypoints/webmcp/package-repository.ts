@@ -1,5 +1,5 @@
 import { FsError, type FsProvider } from '@creatorweave/fs-provider'
-import { activeWebMCPPackages, readMountedWebMCPCatalog, type WebMCPMount } from '@creatorweave/shared/webmcp-package-catalog'
+import { activeWebMCPPackages, readMountedWebMCPCatalog, type WebMCPMount, type WebMCPPackageEntry } from '@creatorweave/shared/webmcp-package-catalog'
 import { getAdapterStorage } from './provider-storage'
 import { getBuiltinStorage } from './builtin-storage'
 
@@ -24,12 +24,26 @@ export async function getWebMCPMounts() {
   const [builtin, user] = await Promise.all([getBuiltinStorage(), getAdapterStorage()])
   return [providerMount('builtin-webmcp', builtin), providerMount('webmcp', user)]
 }
-export async function readWebMCPCatalog() {
+export async function readWebMCPCatalog(): Promise<WebMCPPackageEntry[]> {
   // The USER mount may fail to initialize or list (OPFS unavailable, quota,
   // corrupted handle). A failed user mount must degrade to a builtin-only
   // catalog (logged) — letting it reject would clear every adapter route on
   // refresh (finding: "Enabled package tools remain unavailable") and hide
   // healthy builtin packages from the opt-in probe.
+  const [entries] = await readWebMCPCatalogDetailed()
+  return entries
+}
+
+/**
+ * Catalog read WITH mount-completeness information. Identical to
+ * `readWebMCPCatalog` but reports whether the user mount was omitted because
+ * it could not be listed. Callers whose decision SAFETY depends on seeing
+ * every package (the opt-in enable: a user-mounted twin sharing the builtin
+ * candidate's manifest id must never be missed) must refuse to act on an
+ * incomplete catalog instead of silently enabling a conflicting package
+ * (finding: "Conflicting package activates without tools").
+ */
+export async function readWebMCPCatalogDetailed(): Promise<[WebMCPPackageEntry[], { userMountComplete: boolean }]> {
   const mounts: WebMCPMount[] = [providerMount('builtin-webmcp', await getBuiltinStorage())]
   try {
     const user = providerMount('webmcp', await getAdapterStorage())
@@ -37,8 +51,9 @@ export async function readWebMCPCatalog() {
     mounts.push(user)
   } catch (error) {
     console.warn('[WebMCP catalog] user package storage unavailable; serving builtin packages only:', error)
+    return [await readMountedWebMCPCatalog(mounts), { userMountComplete: false }]
   }
-  return readMountedWebMCPCatalog(mounts)
+  return [await readMountedWebMCPCatalog(mounts), { userMountComplete: true }]
 }
 /**
  * Builtin-only catalog read. The combined `readWebMCPCatalog` already
