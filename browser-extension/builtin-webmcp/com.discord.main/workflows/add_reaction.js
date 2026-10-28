@@ -117,7 +117,12 @@ export default {
             // credential (logged out, account switched), so the cached
             // token from a previous account must NOT be used. A token that
             // Discord rejected with 401 is also suppressed until the page
-            // exposes a fresh credential.
+            // exposes a fresh credential. Because a cached token cannot be
+            // attributed to the current account when the probe is
+            // unavailable or incomplete, the fallback below is REMOVED:
+            // without a confirmed live token the caller sees
+            // UNAUTHENTICATED instead of risking the previous account's
+            // credential.
             var rejectedValue = null
             try {
               rejectedValue = globalThis.__eo2DiscordTokenRejected
@@ -159,18 +164,11 @@ export default {
             }
             // The walk itself failed or never completed (webpack not
             // loaded, or the chunk global was swapped mid-update and the
-            // probe callback did not run): fall back to the cache unless
-            // that cached token is the rejected one. A completed walk that
-            // found no token is handled above and can never reach here.
-            try {
-              var cached = globalThis.__eo2DiscordToken
-              if (
-                typeof cached === 'string' &&
-                cached &&
-                cached !== rejectedValue
-              )
-                return cached
-            } catch (e) {}
+            // probe callback did not run): the cached token can no longer
+            // be confirmed to belong to the CURRENT account — an account
+            // switch exactly when the probe is unavailable would silently
+            // reuse the previous account's credential. Fail closed with
+            // UNAUTHENTICATED until a fresh token can be read.
             return null
           }
           async function discordApi(endpoint, options) {
@@ -209,12 +207,21 @@ export default {
               try {
                 abortController = new AbortController()
               } catch (e) {}
-            // One absolute deadline from the START of the request (not
-            // restarted when headers arrive): headers + a stalled body must
-            // never outlive the 25s browser-eval timeout. The timer is
-            // cleared exactly once, when the response is fully consumed.
+            // One absolute deadline per REQUEST measured from the moment
+            // the call was QUEUED (not restarted when headers arrive and
+            // not reset when a queued entry finally starts running):
+            // headers + a stalled body must never outlive the 25s
+            // browser-eval timeout. withReactionLock passes its queue
+            // timestamp through discordApi's options.queued_at, and the
+            // fetch only gets the REMAINING budget from that timestamp —
+            // a queued call that starts late cannot get a fresh deadline
+            // that outlives the eval. The timer is cleared exactly once,
+            // when the response is fully consumed.
             var deadlineMs = 18000
-            var startedAt = Date.now()
+            var queuedAtMs =
+              options && typeof options.queued_at === 'number'
+                ? options.queued_at
+                : Date.now()
             var abortTimer =
               abortController !== null
                 ? setTimeout(
@@ -223,7 +230,7 @@ export default {
                         abortController.abort()
                       } catch (e) {}
                     },
-                    Math.max(1, deadlineMs - (Date.now() - startedAt)),
+                    Math.max(1, deadlineMs - (Date.now() - queuedAtMs)),
                   )
                 : null
             var response
@@ -276,12 +283,15 @@ export default {
               if (code !== undefined) {
                 // A coded 403 (e.g. 50013 Missing Permissions) is a
                 // permission denial, not a login failure: classify it and
-                // keep the cached token. A coded 401 always means the
-                // credential itself was rejected, so clear the cache no
-                // matter how the code classifies (see below); uncoded
-                // 401/403 bodies fall through to the generic AUTH branch.
+                // keep the cached token. Every HTTP 401 is an auth failure
+                // in the caller-visible contract regardless of the Discord
+                // code (an unknown code such as 50012 must not degrade to a
+                // generic API error), so override the classification and
+                // clear the cache; the code stays in the message and in
+                // discord_code as diagnostic detail.
                 var classified = classify(code, message)
-                if (classified === 'AUTH' || response.status === 401) {
+                if (response.status === 401) classified = 'AUTH'
+                if (classified === 'AUTH') {
                   // Evict only if the cache still holds THIS rejected
                   // token: a newer credential cached by a concurrent call
                   // (account switch) must survive this stale 401.
@@ -310,6 +320,9 @@ export default {
                 }
               }
               if (response.status === 401 || response.status === 403) {
+                // Uncoded bodies: 401 keeps its AUTH classification here,
+                // while an uncoded 403 falls through to the generic HTTP
+                // branch below (only coded 403s are permission denials).
                 try {
                   if (globalThis.__eo2DiscordToken === token)
                     delete globalThis.__eo2DiscordToken
@@ -461,16 +474,23 @@ export default {
               locks = globalThis.__eo2ReactionLocks =
                 globalThis.__eo2ReactionLocks || {}
             } catch (e) {
-              return run()
+              return run(Date.now())
             }
             var previous = locks[key] || Promise.resolve()
             var queuedAt = Date.now()
             var entry = previous.then(function () {
-              if (Date.now() - queuedAt > 25000)
+              // The dispatch cutoff AND the fetch deadline both derive from
+              // this queue timestamp (passed to the run callback and on to
+              // discordApi's options.queued_at): a dispatched entry always
+              // has the full remaining budget of the caller's 25s eval
+              // window, and an entry that could only start after the 18s
+              // in-page deadline is skipped so it can never touch Discord
+              // after the caller has already seen TAB_UNAVAILABLE.
+              if (Date.now() - queuedAt > 15000)
                 throw new Error(
                   'eo2 reaction lock entry expired (caller already timed out)',
                 )
-              return run()
+              return run(queuedAt)
             })
             var settled = entry.then(function () {}, function () {})
             // Only hand the slot to this entry if it is still the latest
@@ -492,7 +512,7 @@ export default {
               var emoji = encodeURIComponent(args.emoji)
               var response = await withReactionLock(
                 args.channel + ':' + args.message_id + ':' + args.emoji,
-                function () {
+                function (queuedAt) {
                   return discordApi(
                     '/channels/' +
                       encodeURIComponent(args.channel) +
@@ -501,7 +521,7 @@ export default {
                       '/reactions/' +
                       emoji +
                       '/@me',
-                    { method: 'PUT' },
+                    { method: 'PUT', queued_at: queuedAt },
                   )
                 },
               )
