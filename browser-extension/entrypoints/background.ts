@@ -2036,12 +2036,15 @@ export default defineBackground(() => {
               (action as { type?: string }).type === 'evaluate'
             ) {
               const expression = (action as { expression?: unknown }).expression
-              // The runner pins the failing document's URL (`pageUrl`). The
-              // tab must STILL show that URL when the CDP fallback runs:
-              // a navigation in the gap would otherwise execute the stale
-              // expression in the new document, reading or mutating the
-              // wrong page. Fail closed on a missing/mismatched URL.
+              // The runner pins the failing document's identity (`pageDocId`)
+              // and URL (`pageUrl`). The CDP fallback re-checks BOTH at
+              // evaluation time: a reload or same-URL navigation between the
+              // compile failure and the CDP run would otherwise execute the
+              // stale expression in the replacement document, reading or
+              // mutating the wrong page. Fail closed on a missing/mismatched
+              // document identity.
               const compilePageUrl = (result as Record<string, unknown>).pageUrl
+              const compilePageDocId = (result as Record<string, unknown>).pageDocId
               let urlStillMatches = false
               if (typeof compilePageUrl === 'string' && compilePageUrl) {
                 try {
@@ -2061,7 +2064,14 @@ export default defineBackground(() => {
                 return
               }
               if (typeof expression === 'string' && expression.trim()) {
-                result = await evaluateBoundExpressionViaCdp(targetTabId, expression)
+                // Evaluation-time document check inside `evaluateBoundExpressionViaCdp`:
+                // the URL guard above closes the pre-check gap; the docId check
+                // below closes the same-URL replacement-document race.
+                result = await evaluateBoundExpressionViaCdp(
+                  targetTabId,
+                  expression,
+                  typeof compilePageDocId === 'string' ? compilePageDocId : undefined,
+                )
               }
             }
             sendResponse(result ?? { ok: false, errorCode: 'NO_RESULT', error: 'executeScript returned no result' })

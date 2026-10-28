@@ -722,10 +722,12 @@ export default defineContentScript({
                 ok: false,
                 errorCode: 'CSP_BLOCKED_COMPILE',
                 compileError: true,
-                // Bind the failure to THIS document: the background re-runs
-                // the expression via CDP only while the tab still shows this
-                // URL, so a navigation in between cannot route the stale
-                // expression into the wrong page.
+                // Pin THIS document's identity (not just its URL): the
+                // background re-runs the expression via CDP only while the
+                // tab's CURRENT document still exposes this same docId, so a
+                // reload / same-URL navigation in between cannot route the
+                // stale expression into the replacement document.
+                pageDocId: docId,
                 pageUrl: location.href,
                 error: message,
               }
@@ -748,8 +750,21 @@ export default defineContentScript({
     // --------------------------------------------------------------
     // Public API
     // --------------------------------------------------------------
+    // docId is a per-document identity: `main()` runs once per document and
+    // the double-injection guard above preserves the existing object, so a
+    // reload or navigation to the SAME URL still gets a fresh docId. The
+    // background passes it back to the CDP fallback evaluator, which refuses
+    // to run the stale expression unless the tab's CURRENT document still
+    // carries this exact id (URL equality alone cannot distinguish a
+    // replacement document).
+    const cryptoObj = globalThis.crypto as Crypto | undefined
+    const docId =
+      typeof cryptoObj?.randomUUID === 'function'
+        ? cryptoObj.randomUUID()
+        : `cwdoc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
     ;(window as any).__cwPageAction = {
       ready: true,
+      docId,
       run: (action: Action) => runAction(action).catch((err) => ({
         ok: false,
         errorCode: 'RUNNER_ERROR',

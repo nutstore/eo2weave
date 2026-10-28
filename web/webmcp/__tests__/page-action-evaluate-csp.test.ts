@@ -240,4 +240,102 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
     const result = await evaluateBoundExpressionViaCdp(7, '1+1')
     expect(result).toEqual({ ok: false, error: 'No tab with id: 7' })
   })
+
+  it('refuses to run the expression when the document identity changed (reload / same-URL navigation)', async () => {
+    const dbg = debuggerApi()
+    const evaluated: string[] = []
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        evaluated.push(String(params.expression))
+        // The identity probe resolves; the CURRENT document reports a FRESH
+        // docId — i.e. the tab reloaded (same URL) after the compile failure.
+        if (String(params.expression).includes('__cwPageAction')) {
+          done({ result: { value: 'fresh-doc-id' } })
+        } else {
+          done({ result: { value: 'should-never-run' } })
+        }
+      } else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await evaluateBoundExpressionViaCdp(7, 'window.__staleMarker = true', 'original-doc-id')
+    expect(result.ok).toBe(false)
+    expect((result as { error: string }).error).toContain('CSP_FALLBACK_STALE_DOCUMENT')
+    // The user expression must never have been sent to the page.
+    expect(evaluated.some((e) => e.includes('__staleMarker'))).toBe(false)
+  })
+
+  it('runs the expression when the document identity still matches', async () => {
+    const dbg = debuggerApi()
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        if (String(params.expression).includes('__cwPageAction')) {
+          done({ result: { value: 'same-doc-id' } })
+        } else {
+          done({ result: { value: 'ran-in-original-document' } })
+        }
+      } else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await evaluateBoundExpressionViaCdp(7, 'document.title', 'same-doc-id')
+    expect(result).toEqual({ ok: true, result: 'ran-in-original-document' })
+  })
+
+  it('formats a thrown BigInt (no exception.description) instead of crashing on JSON.stringify', async () => {
+    const dbg = debuggerApi()
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        done({
+          result: { value: undefined },
+          exceptionDetails: {
+            text: 'Uncaught',
+            exception: { unserializableValue: '42n', subtype: 'bigint' },
+          },
+        })
+      } else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await evaluateBoundExpressionViaCdp(7, 'throw 42n')
+    expect(result).toEqual({ ok: false, error: '42' })
+  })
+
+  it('formats a thrown cyclic object without a description crash', async () => {
+    const dbg = debuggerApi()
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        const cyclic: Record<string, unknown> = { code: 'E_CYCLIC' }
+        cyclic.self = cyclic
+        done({
+          result: { value: undefined },
+          exceptionDetails: {
+            text: 'Uncaught',
+            exception: { value: cyclic, subtype: 'object' },
+          },
+        })
+      } else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await evaluateBoundExpressionViaCdp(7, 'throw cyclic')
+    expect(result.ok).toBe(false)
+    expect((result as { error: string }).error).toContain('E_CYCLIC')
+  })
 })
