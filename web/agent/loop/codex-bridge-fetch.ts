@@ -11,6 +11,8 @@
  * Installation is idempotent — call installCodexBridgeFetch() once at app startup.
  */
 
+import { AGENT_ABORT_PREFIX } from '@/lib/agent-abort'
+
 interface AgentWebBridge {
   ready: boolean
   codexProxyFetchStream(body: Record<string, unknown>): AsyncIterable<string> & { cancel: () => void }
@@ -83,7 +85,12 @@ async function handleCodexRequest(
         const abortStream = () => sseIterable.cancel()
         if (requestSignal?.aborted) {
           abortStream()
-          controller.error(requestSignal.reason ?? new DOMException('Request aborted', 'AbortError'))
+          // Forward the loop's semantic reason when present; the fallback keeps
+          // the agent-cancelled prefix so the rejection filter recognizes it.
+          controller.error(
+            requestSignal.reason ??
+              new DOMException(`Request aborted (${AGENT_ABORT_PREFIX})`, 'AbortError'),
+          )
           return
         }
         requestSignal?.addEventListener('abort', abortStream, { once: true })

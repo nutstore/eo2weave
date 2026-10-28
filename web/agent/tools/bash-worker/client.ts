@@ -29,6 +29,10 @@ import type {
 import { handleVfsRpc, type VfsRpcHandlerConfig } from './vfs-rpc-handler'
 import { ToolTimeoutError } from '../tool-utils'
 import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from '../agent-file-protection'
+import { AGENT_ABORT_PREFIX } from '@/lib/agent-abort'
+
+/** Error used to reject in-flight bash work when the run signal aborts. */
+const bashAbortedError = () => new Error(`${AGENT_ABORT_PREFIX}: bash execution aborted`)
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -209,7 +213,7 @@ export function createBashWorkerClient(): BashWorkerClient {
           cleanup()
           const remaining = deadline - Date.now()
           if (opts.abortSignal?.aborted || remaining <= 0) {
-            reject(opts.abortSignal?.aborted ? new Error('bash execution aborted') : new ToolTimeoutError('bash', opts.timeoutMs))
+            reject(opts.abortSignal?.aborted ? bashAbortedError() : new ToolTimeoutError('bash', opts.timeoutMs))
             drainExecutionQueue()
             return
           }
@@ -220,7 +224,7 @@ export function createBashWorkerClient(): BashWorkerClient {
           })
         },
       }
-      const abort = () => entry.cancel(new Error('bash execution aborted'))
+      const abort = () => entry.cancel(bashAbortedError())
       const timer = setTimeout(() => entry.cancel(new ToolTimeoutError('bash', opts.timeoutMs)), opts.timeoutMs)
       executionQueue.push(entry)
       opts.abortSignal?.addEventListener('abort', abort, { once: true })
@@ -262,7 +266,7 @@ export function createBashWorkerClient(): BashWorkerClient {
       const pending = pendingExec
       terminateWorker()
       if (pending && pending.requestId === requestId) {
-        pending.reject(new Error('bash execution aborted'))
+        pending.reject(bashAbortedError())
         pendingExec = null
       }
     }

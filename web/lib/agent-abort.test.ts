@@ -1,0 +1,151 @@
+/**
+ * Tests for agent abort-reason utilities and the reasoned abort chain:
+ * - AgentLoop.cancel() attaches a semantic agent-cancelled reason to the signal
+ * - isExpectedAgentAbort recognizes only our own prefixed AbortErrors
+ * - the unhandledrejection filter suppresses only our own prefix
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import {
+  AGENT_ABORT_PREFIX,
+  AgentAbortReasonName,
+  createAgentAbortReason,
+  isExpectedAgentAbort,
+  installAgentAbortRejectionFilter,
+} from '@/lib/agent-abort'
+import { AgentLoop } from '@/agent/agent-loop'
+import type { Message } from '@/agent/message-types'
+import type { ToolContext } from '@/agent/tools/tool-types'
+
+describe('createAgentAbortReason', () => {
+  it('creates an AbortError DOMException with the agent-cancelled prefix', () => {
+    const reason = createAgentAbortReason(AgentAbortReasonName.ByUser)
+    expect(reason).toBeInstanceOf(DOMException)
+    expect(reason.name).toBe('AbortError')
+    expect(reason.message).toBe('agent-cancelled-by-user')
+    expect(reason.message.startsWith(AGENT_ABORT_PREFIX)).toBe(true)
+  })
+
+  it('supports every semantic reason name with the prefix', () => {
+    for (const name of Object.values(AgentAbortReasonName)) {
+      const reason = createAgentAbortReason(name)
+      expect(reason.name).toBe('AbortError')
+      expect(reason.message.startsWith(AGENT_ABORT_PREFIX)).toBe(true)
+    }
+  })
+})
+
+describe('isExpectedAgentAbort', () => {
+  it('returns true for our own agent-cancelled reasons', () => {
+    for (const name of Object.values(AgentAbortReasonName)) {
+      expect(isExpectedAgentAbort(createAgentAbortReason(name))).toBe(true)
+    }
+  })
+
+  it('returns false for AbortErrors without the agent-cancelled prefix', () => {
+    expect(isExpectedAgentAbort(new DOMException('signal is aborted without reason', 'AbortError'))).toBe(false)
+    expect(isExpectedAgentAbort(new DOMException('The operation was aborted. TimeoutError', 'AbortError'))).toBe(false)
+    expect(isExpectedAgentAbort(new DOMException('agent-cancelled-by-user', 'TimeoutError'))).toBe(false)
+    expect(isExpectedAgentAbort(new Error('agent-cancelled-by-user'))).toBe(false)
+    expect(isExpectedAgentAbort('agent-cancelled-by-user')).toBe(false)
+    expect(isExpectedAgentAbort(undefined)).toBe(false)
+  })
+})
+
+describe('AgentLoop reasoned aborts', () => {
+  function createLoop(): AgentLoop {
+    const provider = {
+      name: 'mock',
+      maxContextTokens: 128000,
+      getModel: vi.fn(() => ({ id: 'mock-model', provider: 'mock', api: 'openai-completions' })),
+      getApiKey: vi.fn(() => 'key'),
+      estimateTokens: vi.fn(() => 1),
+    } as any
+    const toolRegistry = {
+      getToolDefinitions: vi.fn(() => []),
+      getToolDefinitionsForMode: vi.fn(() => []),
+    } as any
+    const contextManager = {
+      setSystemPrompt: vi.fn(),
+      getSystemPrompt: vi.fn(() => ''),
+      trimToTokenWindow: vi.fn((m: Message[]) => m),
+    } as any
+    const toolContext = { sessionId: 'test-session' } as unknown as ToolContext
+    return new AgentLoop({ provider, toolRegistry, contextManager, toolContext })
+  }
+
+  it('cancel() attaches a semantic agent-cancelled-by-user reason to the signal', () => {
+    const loop = createLoop()
+    // Reach into the loop's AbortController the same way run() creates it.
+    const controller = new AbortController()
+    ;(loop as unknown as { abortController: AbortController | null }).abortController = controller
+
+    loop.cancel()
+
+    expect(controller.signal.aborted).toBe(true)
+    const reason = controller.signal.reason as DOMException
+    expect(reason).toBeInstanceOf(DOMException)
+    expect(reason.name).toBe('AbortError')
+    expect(reason.message).toBe('agent-cancelled-by-user')
+  })
+
+  it('reason strings always carry the agent-cancelled prefix', () => {
+    const loop = createLoop()
+    const controller = new AbortController()
+    ;(loop as unknown as { abortController: AbortController | null }).abortController = controller
+
+    loop.cancel()
+    expect((controller.signal.reason as DOMException).message.startsWith(AGENT_ABORT_PREFIX)).toBe(true)
+  })
+})
+
+describe('installAgentAbortRejectionFilter', () => {
+  // happy-dom doesn't propagate preventDefault() to `defaultPrevented` for
+  // synthetic non-cancelable events, so track the call instead.
+  let prevented = false
+
+  function dispatchUnhandledRejection(reason: unknown): void {
+    prevented = false
+    const event = new Event('unhandledrejection') as PromiseRejectionEvent
+    Object.defineProperty(event, 'reason', { value: reason })
+    Object.defineProperty(event, 'promise', { value: Promise.resolve() })
+    const original = event.preventDefault.bind(event)
+    event.preventDefault = () => { original(); prevented = true }
+    window.dispatchEvent(event)
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, 'debug').mockImplementation(() => {})
+    installAgentAbortRejectionFilter(window)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('suppresses (preventDefault) rejections carrying our agent-cancelled AbortError', () => {
+    dispatchUnhandledRejection(createAgentAbortReason(AgentAbortReasonName.ByUser))
+    expect(prevented).toBe(true)
+  })
+
+  it('suppresses all our semantic reasons', () => {
+    for (const name of Object.values(AgentAbortReasonName)) {
+      dispatchUnhandledRejection(createAgentAbortReason(name))
+      expect(prevented).toBe(true)
+    }
+  })
+
+  it('lets foreign AbortErrors surface (no preventDefault)', () => {
+    dispatchUnhandledRejection(new DOMException('signal is aborted without reason', 'AbortError'))
+    expect(prevented).toBe(false)
+    dispatchUnhandledRejection(new DOMException('The operation was aborted.', 'AbortError'))
+    expect(prevented).toBe(false)
+  })
+
+  it('lets non-abort errors surface', () => {
+    dispatchUnhandledRejection(new Error('boom'))
+    expect(prevented).toBe(false)
+    dispatchUnhandledRejection(undefined)
+    expect(prevented).toBe(false)
+  })
+})

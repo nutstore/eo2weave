@@ -1,6 +1,7 @@
 'use client'
 
 import { installBashCommandAPI } from '@/agent/bash-commands/public-api'
+import { installAgentAbortRejectionFilter } from '@/lib/agent-abort'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast, Toaster } from 'sonner'
@@ -39,6 +40,9 @@ import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
  */
 export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   useEffect(() => { installBashCommandAPI() }, [])
+  // Suppress unhandled rejections that carry our own agent-cancelled AbortError
+  // reasons (raw "signal is aborted without reason" would hit the dev overlay).
+  useEffect(() => { installAgentAbortRejectionFilter() }, [])
   const [isRuntimeSupported, setIsRuntimeSupported] = useState(true)
   const [isStorageReady, setIsStorageReady] = useState(false)
   const [loadingProgress, setLoadingProgress] = useState<number | undefined>(undefined)

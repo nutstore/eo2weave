@@ -23,6 +23,7 @@ import { generateContextSummaryWithLLM } from './loop/context-summary'
 import { getCompressionCutoffTimestamp, type CompressionBaselineState } from './loop/context-compression'
 import { buildRuntimeEnhancedPrompt, triggerPrefetchForMessages } from './loop/enhancements'
 import { executePiCoreLoop } from './loop/pi-core-runner'
+import { createAgentAbortReason, AgentAbortReasonName } from '@/lib/agent-abort'
 import { extractTextContent } from './loop/message-mappers'
 import type { AgentCallbacks, AgentLoopConfig } from './loop/types'
 import { generateId } from './message-types'
@@ -131,7 +132,7 @@ export class AgentLoop {
 
   /** Cancel the current agent loop */
   cancel(): void {
-    this.abortController?.abort()
+    this.abortController?.abort(createAgentAbortReason(AgentAbortReasonName.ByUser))
   }
 
   private async runWithPiAgentCore(
@@ -177,7 +178,7 @@ export class AgentLoop {
             maxSummaryTokens,
             compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
           }),
-        onAbortRequested: () => this.abortController?.abort(),
+        onAbortRequested: () => this.abortController?.abort(createAgentAbortReason(AgentAbortReasonName.Internal)),
         initialCompressionBaseline: this.compressionBaseline,
         disableThinking: this.disableThinking,
         shouldYieldForQueue: this.shouldYieldForQueue,
@@ -196,7 +197,7 @@ export class AgentLoop {
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] aborted_during_pi_core_run', {
-          reason: 'signal_aborted',
+          reason: signal.reason instanceof Error ? signal.reason.message : 'signal_aborted',
           messagesCount: allMessages.length,
         })
         const patched = ensureToolCallResults(allMessages)
@@ -225,7 +226,7 @@ export class AgentLoop {
       // Abort the signal to stop any in-flight LLM requests inside the
       // pi-agent-core generator (especially the push-based cw-openai-fetch
       // stream whose async IIFE would otherwise keep running).
-      this.abortController?.abort()
+      this.abortController?.abort(createAgentAbortReason(AgentAbortReasonName.IterationLimit))
       callbacks?.onIterationLimitReached?.(this.maxIterations)
     }
 
@@ -410,7 +411,7 @@ export class AgentLoop {
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] run_aborted', {
-          reason: 'signal_aborted_outer',
+          reason: signal.reason instanceof Error ? signal.reason.message : 'signal_aborted_outer',
           messagesCount: messages.length,
         })
         callbacks?.onComplete?.(messages)
@@ -429,7 +430,7 @@ export class AgentLoop {
       // Without this, requests left unconsumed when the loop ends (aborted,
       // errored, or completed while a prompt-level auth was still queued)
       // survive as stale popups that keep surfacing across later loops.
-      this.abortController?.abort()
+      this.abortController?.abort(createAgentAbortReason(AgentAbortReasonName.LifecycleTeardown))
       this.abortController = null
     }
   }
