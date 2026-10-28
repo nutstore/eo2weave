@@ -1,0 +1,95 @@
+# Discord WebMCP package pilot (com.discord.main 0.1.0)
+
+Pilot port of a representative 8-tool subset of the OpenTabs Discord plugin
+(MIT, https://github.com/opentabs-dev/opentabs/tree/main/plugins/discord) into
+the builtin WebMCP package format. Tracked by nutstore/eo2weave#91.
+
+All page interaction stays inside the discord.com tab: the auth token is
+extracted from `webpackChunkdiscord_app` by `browser.eval` (same webpack walk
+as OpenTabs' `getTokenFromWebpack`) and every Discord API v9 call runs as an
+in-page `fetch` with `credentials: 'include'` plus an `Authorization` header.
+The token never leaves the page context.
+
+## Tools
+
+| Tool | Mechanics | Discord endpoint |
+| --- | --- | --- |
+| `read_messages` | GET + query params + collection mapping | `GET /channels/:id/messages` |
+| `send_message` | POST + body mapping, optional reply | `POST /channels/:id/messages` |
+| `add_reaction` | PUT endpoint | `PUT /channels/:id/messages/:mid/reactions/:emoji/@me` |
+| `remove_reaction` | DELETE endpoint | `DELETE /channels/:id/messages/:mid/reactions/:emoji/@me` |
+| `list_guilds` | collection mapping, `with_counts` | `GET /users/@me/guilds` |
+| `list_channels` | nested resource | `GET /guilds/:id/channels` |
+| `get_user_profile` | user-shaped output | `GET /users/:id` (`@me` supported) |
+| `search_messages` | grouped search results | `GET /guilds/:id/messages/search` |
+
+Every workflow returns `{ status: 'ok'|'error', data, message }`. Error
+results carry a stable `error_code`: `UNSUPPORTED_PAGE`, `UNAUTHENTICATED`,
+`AUTH`, `VALIDATION`, `NOT_FOUND`, `RATE_LIMITED`, `NETWORK`, `HTTP` or
+`UNKNOWN`. Discord error codes are classified the same way as OpenTabs
+(auth 0/40001/40002/50014, not-found 10003/10004/10006/10008/10013/10011/
+10014/10015, validation 50001/50003/50006/50007/50008/50013/50035/50109).
+
+## Readiness gating
+
+If the current tab is not on discord.com, or the Discord app has not
+hydrated its webpack modules yet, tools return
+`status: 'error'` with `error_code: 'UNAUTHENTICATED'` immediately instead of
+hanging. A successful token extraction is cached on the page
+(`globalThis.__eo2DiscordToken`) to skip the webpack walk on subsequent
+calls; a 401/403 clears the cache.
+
+## Tool descriptions (i18n)
+
+The manifest schema stores one English description per tool. The four-locale
+translations below are the authoritative wording for localized surfaces.
+
+### zh-CN
+
+- `read_messages`: 读取 Discord 频道的最近消息，支持 before/after/around 分页。使用当前 discord.com 标签页的登录态。
+- `send_message`: 向 Discord 频道发送消息，可通过 reply_to 回复指定消息。
+- `add_reaction`: 为 Discord 消息添加 emoji 表情回应（Unicode 或 name:id 自定义表情）。
+- `remove_reaction`: 移除自己在 Discord 消息上的 emoji 表情回应。
+- `list_guilds`: 列出当前登录账号所在的 Discord 服务器及大致成员数。
+- `list_channels`: 列出 Discord 服务器的频道（id、类型、名称、主题、排序、父分类、NSFW）。
+- `get_user_profile`: 按 ID 读取 Discord 用户资料，传 '@me' 查询当前登录账号。
+- `search_messages`: 在 Discord 服务器内按内容搜索消息，支持作者、频道与附件过滤。
+
+### en-US
+
+- `read_messages`: Read recent messages from a Discord channel with optional pagination (before/after/around). Uses the logged-in session of the current discord.com tab.
+- `send_message`: Send a message to a Discord channel in the logged-in discord.com tab, optionally replying to a message ID.
+- `add_reaction`: Add an emoji reaction to a Discord message. Accepts Unicode emoji or custom emoji in name:id form.
+- `remove_reaction`: Remove your own emoji reaction from a Discord message.
+- `list_guilds`: List the Discord guilds your logged-in account belongs to, with approximate member counts.
+- `list_channels`: List the channels of a Discord guild with type, topic, position, parent and NSFW metadata.
+- `get_user_profile`: Read a Discord user profile by user ID, or pass '@me' for the logged-in account.
+- `search_messages`: Search messages in a Discord guild by content with optional author, channel and attachment filters.
+
+### ja-JP
+
+- `read_messages`: Discord チャンネルの最近のメッセージを before/after/around ページネーション付きで読み取ります。現在の discord.com タブのログインセッションを使用します。
+- `send_message`: ログイン中の discord.com タブで Discord チャンネルにメッセージを送信します。メッセージ ID への返信も可能です。
+- `add_reaction`: Discord メッセージに絵文字リアクションを追加します（Unicode 絵文字または name:id 形式のカスタム絵文字）。
+- `remove_reaction`: 自分の絵文字リアクションを Discord メッセージから削除します。
+- `list_guilds`: ログイン中のアカウントが所属する Discord サーバー（ギルド）と概算メンバー数を一覧表示します。
+- `list_channels`: Discord サーバーのチャンネル（id・種類・名前・トピック・並び順・親カテゴリ・NSFW）を一覧表示します。
+- `get_user_profile`: ユーザー ID で Discord のプロフィールを取得します。'@me' でログイン中アカウントを指定できます。
+- `search_messages`: Discord サーバー内のメッセージを内容で検索し、作者・チャンネル・添付ファイルでフィルターできます。
+
+### ko-KR
+
+- `read_messages`: Discord 채널의 최근 메시지를 before/after/around 페이지네이션과 함께 읽어옵니다. 현재 discord.com 탭의 로그인 세션을 사용합니다.
+- `send_message`: 로그인된 discord.com 탭에서 Discord 채널에 메시지를 보냅니다. 메시지 ID로 답장할 수 있습니다.
+- `add_reaction`: Discord 메시지에 이모지 반응을 추가합니다(유니코드 이모지 또는 name:id 형식의 커스텀 이모지).
+- `remove_reaction`: Discord 메시지에서 내 이모지 반응을 제거합니다.
+- `list_guilds`: 로그인한 계정이 속한 Discord 서버와 대략적인 멤버 수를 나열합니다.
+- `list_channels`: Discord 서버의 채널(id, 유형, 이름, 주제, 정렬, 상위 카테고리, NSFW)을 나열합니다.
+- `get_user_profile`: 사용자 ID로 Discord 프로필을 조회합니다. '@me'로 로그인 계정을 조회할 수 있습니다.
+- `search_messages`: Discord 서버에서 메시지 내용을 검색하고 작성자·채널·첨부 파일로 필터링합니다.
+
+## Scope and ToS posture
+
+Same posture as the upstream OpenTabs plugin: the tools operate on the
+user's own logged-in session and quota. The remaining ~18 OpenTabs tools are
+out of scope for this pilot (mechanical ports once the pattern lands).

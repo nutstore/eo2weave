@@ -1,0 +1,55 @@
+{
+  "id": "com.discord.main",
+  "version": "0.1.0",
+  "description": "Read messages, guilds, channels and user profiles, search messages, send messages and manage your reactions on discord.com in your current tab. Uses your own logged-in Discord session.",
+  "tools": [
+    {
+      "name": "read_messages",
+      "description": "Read recent messages from a Discord channel with optional pagination (before/after/around). Uses the logged-in session of the current discord.com tab.",
+      "urlRegex": "^https://discord\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/read_messages.js"
+    },
+    {
+      "name": "send_message",
+      "description": "Send a message to a Discord channel in the logged-in discord.com tab, optionally replying to a message ID. Posts through the channel messages endpoint of your own session.",
+      "urlRegex": "^https://discord\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/send_message.js"
+    },
+    {
+      "name": "add_reaction",
+      "description": "Add an emoji reaction to a Discord message. Accepts Unicode emoji or custom emoji in name:id form.",
+      "urlRegex": "^https://discord\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/add_reaction.js"
+    },
+    {
+      "name": "remove_reaction",
+      "description": "Remove your own emoji reaction from a Discord message. Accepts Unicode emoji or custom emoji in name:id form.",
+      "urlRegex": "^https://discord\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/remove_reaction.js"
+    },
+    {
+      "name": "list_guilds",
+      "description": "List the Discord guilds (servers) your logged-in account belongs to, with approximate member counts.",
+      "urlRegex": "^https://discord\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/list_guilds.js"
+    },
+    {
+      "name": "list_channels",
+      "description": "List the channels of a Discord guild (server): id, type, name, topic, position, parent category and NSFW flag.",
+      "urlRegex": "^https://discord\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/list_channels.js"
+    },
+    {
+      "name": "get_user_profile",
+      "description": "Read a Discord user profile by user ID, or pass '@me' for the logged-in account.",
+      "urlRegex": "^https://discord\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/get_user_profile.js"
+    },
+    {
+      "name": "search_messages",
+      "description": "Search messages in a Discord guild by content with optional author, channel and attachment filters. Results come grouped by context.",
+      "urlRegex": "^https://discord\\.com/[^?#]*(?:\\?[^#]*)?(?:#.*)?$",
+      "path": "workflows/search_messages.js"
+    }
+  ]
+}
