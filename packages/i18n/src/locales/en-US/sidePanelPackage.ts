@@ -20,4 +20,5 @@ export const sidePanelPackage = {
   enableTimeoutToast: "The enable request timed out. Please try again in a moment.",
   enabledToast: "{name} enabled — the page will reload to activate the tools",
   enableFailedToast: "Failed to enable. Please make sure the extension is up to date and try again.",
+  consentRetryToast: "The confirmation expired before it could be used. Close this dialog and try again — no cooldown was recorded.",
 }

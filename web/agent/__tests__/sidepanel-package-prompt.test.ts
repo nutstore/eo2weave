@@ -16,7 +16,7 @@ import {
   isPackagePromptDismissed,
   resetPackagePromptDismissals,
   type PackageOptInStatus,
-} from '../sidepanel-package-prompt'
+} from '@/agent/sidepanel-package-prompt'
 
 type AgentWebShape = {
   webMCPPackageOptInStatus?: (binding: string) => Promise<PackageOptInStatus>
@@ -86,6 +86,59 @@ describe('getPendingPackagePrompt', () => {
     })
     const result = await getPendingPackagePrompt()
     expect(result).toEqual({ applicable: false, retryable: false })
+  })
+
+  it('marks a STATUS_FAILED bridge answer as retryable (transient tab/storage/catalog error)', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockResolvedValue({ ok: false, applicable: false, errorCode: 'STATUS_FAILED', error: 'storage hiccup' }),
+    })
+    const result = await getPendingPackagePrompt()
+    expect(result).toEqual({ applicable: false, retryable: true })
+  })
+
+  it('offers a NON-dismissed sibling when the best candidate is within its cooldown', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    const sibling = {
+      id: 'com.douban.movie',
+      description: 'Movie tools.',
+      hostname: 'jmail.world',
+      activation: 'disabled' as const,
+      tools: [{ name: 'list_movies', description: '', readOnly: true }],
+    }
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockResolvedValue({
+        ...okStatus(),
+        alternatives: [sibling],
+      }),
+    })
+    dismissPackagePrompt('world.jmail.archive')
+    const result = await getPendingPackagePrompt()
+    expect(result?.applicable).toBe(true)
+    if (!result?.applicable) throw new Error('expected a sibling prompt')
+    expect(result.package.id).toBe('com.douban.movie')
+    // A sibling has no consent token of its own — the token is bound to the
+    // dismissed candidate's package id.
+    expect(result.package.consentToken).toBeUndefined()
+  })
+
+  it('returns null when the best candidate AND every sibling are dismissed', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockResolvedValue({
+        ...okStatus(),
+        alternatives: [{
+          id: 'com.douban.movie',
+          description: '',
+          hostname: 'jmail.world',
+          activation: 'disabled',
+          tools: [],
+        }],
+      }),
+    })
+    dismissPackagePrompt('world.jmail.archive')
+    dismissPackagePrompt('com.douban.movie')
+    expect(await getPendingPackagePrompt()).toBeNull()
   })
 
   it('returns null when the package is already enabled', async () => {

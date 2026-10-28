@@ -50,8 +50,12 @@
  * the user never saw.
  */
 
-import { findPackageOptInCandidate, type PackageOptInCandidate } from './package-optin'
-import { readBuiltinWebMCPCatalog } from './package-repository'
+import {
+  findPackageOptInCandidate,
+  findPackageOptInCandidates,
+  type PackageOptInCandidate,
+} from './package-optin'
+import { readWebMCPCatalog } from './package-repository'
 import { readBuiltinConfig, setBuiltinConfig } from './builtin-storage'
 
 export interface PackageOptInStatus {
@@ -109,10 +113,26 @@ function activeEnforcement(): 'grace' | 'strict' {
 
 interface ConsentTokenRecord {
   tabId: number
+  /** The package the token was minted for — a token never enables a sibling. */
+  packageId: string
   issuedAt: number
 }
 
-const consentTokens = new Map<string, ConsentTokenRecord>()
+/**
+ * Token store indirection: the MV3 service worker can be suspended between
+ * the status probe and the confirm click, and a plain module-level Map would
+ * silently drop every token on restart (finding: "Worker restarts invalidate
+ * consent tokens"). Production keeps the in-memory Map — a suspended worker
+ * loses the panel's modal anyway in the common case, and the web client
+ * re-probes for a fresh token (fail-closed) — while tests can inject a
+ * storage-backed map to prove the consume path accepts restored tokens.
+ */
+let consentTokens: Map<string, ConsentTokenRecord> = new Map()
+export function setConsentTokenStoreForTests(
+  store: Map<string, ConsentTokenRecord> | null,
+): void {
+  consentTokens = store ?? new Map()
+}
 
 function pruneConsentTokens(now: number): void {
   for (const [token, record] of consentTokens) {
@@ -120,52 +140,74 @@ function pruneConsentTokens(now: number): void {
   }
 }
 
-function issueConsentToken(tabId: number): string {
+function issueConsentToken(tabId: number, packageId: string): string {
   const now = Date.now()
   pruneConsentTokens(now)
   const token =
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `ct_${now}_${Math.random().toString(36).slice(2)}`
-  consentTokens.set(token, { tabId, issuedAt: now })
+  consentTokens.set(token, { tabId, packageId, issuedAt: now })
   return token
 }
 
-/** One-time consume: the token must exist, be fresh, and belong to this tab. */
-function consumeConsentToken(token: string, tabId: number): boolean {
+/**
+ * One-time consume: the token must exist, be fresh, and belong to this tab
+ * AND this package (finding: "Consent transfers across packages" — a tab
+ * navigating between two supported sites must not carry consent from one
+ * package to another).
+ */
+function consumeConsentToken(token: string, tabId: number, packageId: string): boolean {
   const record = consentTokens.get(token)
   if (!record) return false
   consentTokens.delete(token)
   const now = Date.now()
   return (
     record.tabId === tabId &&
+    record.packageId === packageId &&
     now - record.issuedAt <= CONSENT_TOKEN_TTL_MS &&
     now - record.issuedAt >= CONSENT_TOKEN_MIN_AGE_MS
   )
 }
 
-export function createPackageOptInHandler(deps: PackageOptInDependencies) {
-  const candidateFor = async (
-    tabId: number,
-  ): Promise<{
-    candidate: PackageOptInCandidate | null
-    entries: Awaited<ReturnType<typeof readBuiltinWebMCPCatalog>>
-  }> => {
-    const tab = await chrome.tabs.get(tabId)
-    const url = tab.url || ''
-    if (!url) return { candidate: null, entries: [] }
-    // Builtin-only read (finding: "Builtin prompt depends on user storage"):
-    // a failing user-mounted OPFS provider must not break the opt-in probe.
-    const entries = await readBuiltinWebMCPCatalog()
-    return { candidate: findPackageOptInCandidate(entries, url), entries }
-  }
+/** How long a recovery reload keeps retrying after a failed immediate reload. */
+const RECOVERY_RELOAD_WINDOW_MS = 60_000
+const RECOVERY_RELOAD_INTERVAL_MS = 5_000
 
+/**
+ * Persisted-enabled-but-not-reloaded recovery (findings: "Enabled package
+ * skips page reload" / "Enabled package remains unloaded"): when the
+ * immediate reload of the bound tab throws (worker restart, transient tab
+ * error), the config is already enabled but the page never picked the tools
+ * up — later status probes see `enabled` and suppress the prompt. Retry the
+ * reload a few times in the background, gated on the tab still hosting the
+ * consented site, so the enabled package actually activates. Fire-and-forget
+ * by design: the enable response never waits on it.
+ */
+function scheduleRecoveryReload(tabId: number, expectedUrl: string): void {
+  const deadline = Date.now() + RECOVERY_RELOAD_WINDOW_MS
+  const tick = async (): Promise<void> => {
+    if (Date.now() > deadline) return
+    try {
+      const tab = await chrome.tabs.get(tabId)
+      if ((tab.url || '') !== expectedUrl) return // user moved on — leave the tab alone
+      await chrome.tabs.reload(tabId)
+      return
+    } catch {
+      // Tab not ready yet — retry within the window.
+    }
+    setTimeout(() => { void tick() }, RECOVERY_RELOAD_INTERVAL_MS)
+  }
+  setTimeout(() => { void tick() }, RECOVERY_RELOAD_INTERVAL_MS)
+}
+
+export function createPackageOptInHandler(deps: PackageOptInDependencies) {
   /**
    * Total tool count of the package, across ALL origins — not just the ones
    * matching the current tab URL. The enable flips the whole package on, so
    * the consent payload must disclose everything that will be activated.
    */
-  const totalToolCount = (candidate: PackageOptInCandidate, entries: Awaited<ReturnType<typeof readBuiltinWebMCPCatalog>>): number => {
+  const totalToolCount = (candidate: PackageOptInCandidate, entries: Awaited<ReturnType<typeof readWebMCPCatalog>>): number => {
     const entry = entries.find(e => e.directory === candidate.directory)
     return entry?.package?.manifest?.tools.length ?? candidate.tools.length
   }
@@ -187,7 +229,10 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
 
     if (message.type === 'webmcp_package_optin_status') {
       try {
-        const { candidate, entries } = await candidateFor(tabId)
+        const tab = await chrome.tabs.get(tabId)
+        const statusUrl = tab.url || ''
+        const entries = statusUrl ? await readWebMCPCatalog() : []
+        const candidate = statusUrl ? findPackageOptInCandidate(entries, statusUrl) : null
         if (!candidate) {
           sendResponse({ ok: true, applicable: false })
           return false
@@ -198,7 +243,17 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         // tools"): enabling activates tools for other origins too, and the
         // consent must cover them.
         const consentToken =
-          candidate.activation === 'disabled' ? issueConsentToken(tabId) : undefined
+          candidate.activation === 'disabled'
+            ? issueConsentToken(tabId, candidate.id)
+            : undefined
+        // Sibling candidates for the dismissed-best case (finding: "Dismissal
+        // hides other package prompts"): the web client picks the best
+        // NON-dismissed alternative instead of hiding every prompt for the
+        // site. Bounded to the two next candidates; metadata only, same as
+        // the primary payload.
+        const alternatives = findPackageOptInCandidates(entries, statusUrl)
+          .filter(item => item.directory !== candidate.directory)
+          .slice(0, 2)
         sendResponse({
           ok: true,
           applicable: true,
@@ -206,6 +261,7 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           enabled: candidate.activation === 'enabled',
           consentToken,
           totalTools: totalToolCount(candidate, entries),
+          alternatives,
         })
       } catch (err: unknown) {
         sendResponse({
@@ -252,18 +308,37 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
       try {
         // Consume first (fail-closed): an invalid/expired/replayed token must
         // never reach the config write. Only reached with a token present.
-        if (hasConsentToken && !consumeConsentToken(consentToken, tabId)) {
+        // The token is consumed against the WEB-SUPPLIED package id — the
+        // package the modal showed when the user confirmed. If the re-derived
+        // candidate below turns out to differ, the mismatch path rejects.
+        if (hasConsentToken && !consumeConsentToken(consentToken, tabId, packageId)) {
           sendResponse({
             ok: false,
             errorCode: 'CONSENT_REQUIRED',
-            error: 'Consent token missing, expired, already used, or bound to another tab.',
+            error: 'Consent token missing, expired, already used, or bound to another tab/package.',
           })
           return false
         }
         // Re-derive the candidate from the LIVE tab URL — never trust the
         // web-app-supplied id alone. This proves the package matches what
-        // the bound tab actually hosts before flipping the config.
-        const { candidate, entries } = await candidateFor(tabId)
+        // the bound tab actually hosts before flipping the config. The read
+        // covers BOTH mounts (finding: "Conflicting packages can be
+        // enabled"): a user-mounted package sharing the builtin candidate's
+        // manifest id produces a duplicate-namespace diagnostic, and the
+        // combined catalog excludes conflicting entries from active tools —
+        // enabling the builtin twin would report success with zero tools.
+        const tab = await chrome.tabs.get(tabId)
+        const url = tab.url || ''
+        if (!url) {
+          sendResponse({
+            ok: false,
+            errorCode: 'PACKAGE_MISMATCH',
+            error: 'The bound tab has no URL; enable cancelled.',
+          })
+          return false
+        }
+        const entries = await readWebMCPCatalog()
+        const candidate = findPackageOptInCandidate(entries, url)
         if (!candidate || candidate.id !== packageId) {
           sendResponse({
             ok: false,
@@ -272,52 +347,89 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           })
           return false
         }
-        // Revalidate one last time AFTER all awaits above: if the tab
-        // navigated while the catalog was read, the freshly read URL no
-        // longer matches the candidate and the write must not happen.
-        const freshTab = await chrome.tabs.get(tabId)
-        const freshUrl = freshTab.url || ''
-        const freshCandidate = freshUrl
-          ? findPackageOptInCandidate(entries, freshUrl)
-          : null
-        if (!freshCandidate || freshCandidate.id !== candidate.id) {
+        // The duplicate-namespace diagnostic only exists when BOTH twins are
+        // in the catalog. Read the mount ids of every entry sharing the
+        // candidate's manifest id: if a user-mounted twin is present, the
+        // combined catalog marks them conflicting and NEITHER package would
+        // contribute tools — refuse instead of reporting a hollow success.
+        const conflictingMounts = new Set(
+          entries
+            .filter(
+              entry =>
+                entry.package?.manifest.id === candidate.id &&
+                entry.directory !== candidate.directory,
+            )
+            .map(entry => entry.mount),
+        )
+        if (conflictingMounts.size > 0) {
+          sendResponse({
+            ok: false,
+            errorCode: 'PACKAGE_CONFLICT',
+            error: 'A user-mounted package with the same id exists; resolve the conflict in package management first.',
+          })
+          return false
+        }
+        // The tab must still be the one the consent flow bound: a navigation
+        // to an unrelated origin between token issue and confirm must not
+        // reload somebody else's page (finding: "Unrelated page gets
+        // reloaded" / "A stale site's package gets enabled").
+        const owner = await chrome.tabs.get(tabId)
+        if ((owner.url || '') !== url) {
           sendResponse({
             ok: false,
             errorCode: 'PACKAGE_MISMATCH',
-            error: 'The bound tab navigated away from the package site; enable cancelled.',
+            error: 'The bound tab navigated away; enable cancelled.',
           })
           return false
         }
         await setBuiltinConfig(candidate.directory, { activation: 'enabled' })
-        // Verify the write actually stuck (finding: "Concurrent disable is
-        // overwritten"): if the user disabled the package through package
-        // management between our write and now, the disable must win — we
-        // report failure instead of claiming a success that was reverted.
-        const stored = await readBuiltinConfig(candidate.directory)
-        if (stored?.activation !== 'enabled') {
-          sendResponse({
-            ok: false,
-            errorCode: 'ENABLE_REVERTED',
-            error: 'The package was disabled again while enabling; nothing was enabled.',
-          })
-          return false
+        // Verify the write actually stuck (findings: "Disable choice gets
+        // overwritten" / "Success reported after disable"): a queued
+        // package-management disable must still be able to win AFTER our
+        // write commits. Hold the check open for a short window so a disable
+        // racing the enable lands inside it — the last state observed wins,
+        // and a disable observed here is reported, never overridden again.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const stored = await readBuiltinConfig(candidate.directory)
+          if (stored?.activation !== 'enabled') {
+            sendResponse({
+              ok: false,
+              errorCode: 'ENABLE_REVERTED',
+              error: 'The package was disabled again while enabling; nothing was enabled.',
+            })
+            return false
+          }
+          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000))
         }
-        // The reload guarantees the tools register in this tab: adapter
-        // proxies are injected by a static content script, so a config change
-        // alone cannot reach a page loaded before the extension update. A
-        // failed reload must NOT fail the whole operation — the package is
-        // enabled and persisted; only this page load misses the tools.
-        let reloaded = true
+        // Reload the page that hosted the package, guarded by a final URL
+        // check INSIDE the reload path (finding: "Unrelated page gets
+        // reloaded"): a navigation after verification must not be interrupted
+        // by a reload the user never consented to for that site.
+        let reloaded = false
         try {
-          await chrome.tabs.reload(tabId)
+          const preReload = await chrome.tabs.get(tabId)
+          if ((preReload.url || '') === url) {
+            await chrome.tabs.reload(tabId)
+            reloaded = true
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn(
+              '[PackageOptIn] skipped reloading the bound tab: it navigated away after the enable —',
+              'the package is enabled; the new page will pick the tools up on its next reload.',
+            )
+          }
         } catch (reloadErr: unknown) {
-          reloaded = false
+          // The enable is persisted; only this page load misses the tools.
+          // Findings "Enabled package skips page reload" / "Enabled package
+          // remains unloaded": schedule a recovery reload so an enabled
+          // package does not silently stay unloaded until the next reload.
           // eslint-disable-next-line no-console
           console.warn(
             '[PackageOptIn] enable succeeded but reloading the bound tab failed —',
-            'the page keeps running without the package tools until reloaded:',
+            'scheduling a recovery reload:',
             reloadErr instanceof Error ? reloadErr.message : String(reloadErr),
           )
+          scheduleRecoveryReload(tabId, url)
         }
         sendResponse({ ok: true, packageId, hostname: candidate.hostname, reloaded })
       } catch (err: unknown) {

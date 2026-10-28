@@ -20,4 +20,5 @@ export const sidePanelPackage = {
   enableTimeoutToast: "开启请求超时，请稍后重试",
   enabledToast: "已开启 {name}，网页将自动刷新以加载工具",
   enableFailedToast: "开启失败，请确认插件为最新版本后重试",
+  consentRetryToast: "确认凭据已过期，关闭本窗口后即可重试（不会计入冷却时间）。",
 }

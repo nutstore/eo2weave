@@ -21,7 +21,7 @@ vi.mock('sonner', () => ({
 }))
 
 import { toast } from 'sonner'
-import { PackageOptInModal } from '../PackageOptInModal'
+import { PackageOptInModal } from '@/components/sidepanel/PackageOptInModal'
 
 const ENABLED_TOAST = 'world.jmail.archive enabled — the page will reload to activate the tools'
 const ENABLE_FAILED_TOAST =
@@ -160,19 +160,47 @@ describe('PackageOptInModal', () => {
     })
   })
 
-  it('a late enable success (after the timeout answer) still shows the success toast', async () => {
-    let lateCallback: ((result: { ok: boolean }) => void) | undefined
+  it('a late enable success still shows the success notice, and a late ok with reloaded:false demands a manual reload', async () => {
+    let lateCallback: ((result: { ok: boolean; reloaded?: boolean }) => void) | undefined
     enablePackageAndReloadMock.mockImplementation(
       async (_id: string, _token: string, onSettledLate: unknown) => {
-        lateCallback = onSettledLate as (result: { ok: boolean }) => void
+        lateCallback = onSettledLate as (result: { ok: boolean; reloaded?: boolean }) => void
         return { ok: false, errorCode: 'TIMEOUT' }
       },
     )
-    render(<PackageOptInModal packageInfo={packageInfo} onClose={vi.fn()} />)
+    const { container } = render(<PackageOptInModal packageInfo={packageInfo} onClose={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
     await waitFor(() => expect(toast.error).toHaveBeenCalled())
-    lateCallback?.({ ok: true })
-    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(ENABLED_TOAST))
+    // Late ok WITH reload → plain success notice.
+    lateCallback?.({ ok: true, reloaded: true })
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('world.jmail.archive enabled')
+    })
+    // Late ok WITHOUT reload (finding: "Late success hides reload failure") —
+    // the user must be told to reload manually, never shown plain success.
+    lateCallback?.({ ok: true, reloaded: false })
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('reload it manually')
+    })
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(container).toBeTruthy()
+  })
+
+  it('a CONSENT_REQUIRED failure is retryable: no dismissal cooldown, retry guidance shown', async () => {
+    enablePackageAndReloadMock.mockResolvedValue({
+      ok: false,
+      errorCode: 'CONSENT_REQUIRED',
+      error: 'Consent token missing, expired, already used, or bound to another tab/package.',
+    })
+    render(<PackageOptInModal packageInfo={packageInfo} onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain('expired')
+    })
+    // Retryable → the 1-day cooldown must NOT be recorded (finding: "Failed
+    // opt-ins block retry"); AppBootstrap re-probes for a fresh token.
+    expect(dismissPackagePromptMock).not.toHaveBeenCalled()
+    expect(toast.error).not.toHaveBeenCalled()
   })
 
   it('"not now" records the dismissal cooldown and closes without enabling', () => {

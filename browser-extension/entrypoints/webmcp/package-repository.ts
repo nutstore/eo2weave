@@ -25,14 +25,25 @@ export async function getWebMCPMounts() {
   return [providerMount('builtin-webmcp', builtin), providerMount('webmcp', user)]
 }
 export async function readWebMCPCatalog() {
-  return readMountedWebMCPCatalog(await getWebMCPMounts())
+  // The USER mount may fail to initialize or list (OPFS unavailable, quota,
+  // corrupted handle). A failed user mount must degrade to a builtin-only
+  // catalog (logged) — letting it reject would clear every adapter route on
+  // refresh (finding: "Enabled package tools remain unavailable") and hide
+  // healthy builtin packages from the opt-in probe.
+  const mounts: WebMCPMount[] = [providerMount('builtin-webmcp', await getBuiltinStorage())]
+  try {
+    const user = providerMount('webmcp', await getAdapterStorage())
+    await user.files.directories()
+    mounts.push(user)
+  } catch (error) {
+    console.warn('[WebMCP catalog] user package storage unavailable; serving builtin packages only:', error)
+  }
+  return readMountedWebMCPCatalog(mounts)
 }
 /**
- * Builtin-only catalog read for the opt-in prompt: the user-mounted provider
- * (OPFS adapter storage) can fail to initialize independently, and a failing
- * USER mount must not hide healthy BUILTIN packages from the opt-in status
- * probe. The opt-in flow only ever offers/enables builtin packages, so it
- * reads this narrower catalog.
+ * Builtin-only catalog read. The combined `readWebMCPCatalog` already
+ * degrades gracefully when the user mount fails; this narrower read remains
+ * for callers that must not touch user storage at all.
  */
 export async function readBuiltinWebMCPCatalog() {
   return readMountedWebMCPCatalog([providerMount('builtin-webmcp', await getBuiltinStorage())])

@@ -70,6 +70,13 @@ export interface PackageOptInStatus {
   consentToken?: string
   /** Package-wide tool count across all origins (consent disclosure). */
   totalTools?: number
+  /**
+   * Bounded list of OTHER builtin packages hosting the same tab (best
+   * candidate first, excluding the primary package). Used when the primary
+   * candidate is within its dismissal cooldown so a dismissed package does
+   * not shadow its siblings. Absent on older extension builds.
+   */
+  alternatives?: PackageOptInInfo[]
 }
 
 const DISMISS_STORAGE_KEY_PREFIX = 'cw_webmcp_package_prompt_dismissed_v1'
@@ -168,8 +175,12 @@ const PROBE_TIMEOUT_MS = 4000
  *
  * Bridge failures resolve `null` as well (never throw) — this prompt is a
  * nice-to-have and must not disturb side-panel startup. Transient failures
- * (timeout / bridge error) return a reason so callers can retry; only the
- * terminal "nothing to offer" outcomes report `retryable: false`.
+ * (timeout / bridge error / STATUS_FAILED) return a reason so callers can
+ * retry (findings: "Transient probe errors hide prompt" / "Transient status
+ * failures hide the prompt" — a transient tab/storage/catalog error must not
+ * suppress the prompt for the whole session); only the terminal "nothing to
+ * offer" outcomes report `retryable: false`. A dismissed best candidate is
+ * retried against its non-dismissed siblings before giving up.
  */
 export async function getPendingPackagePrompt(): Promise<
   | (PackageOptInStatus & { applicable: true; package: PackageOptInInfo; enabled: false })
@@ -219,10 +230,15 @@ export async function getPendingPackagePrompt(): Promise<
       status,
       hint: 'UNAUTHORIZED_TARGET = binding/trusted-origin check failed in background; null = 4s probe timeout',
     })
-    // The bridge-level {ok:false} answers are structural (bad binding, bad
-    // origin) — retrying cannot fix them. A timeout CAN recover once the
-    // service worker wakes up, so that case stays retryable.
-    return { applicable: false, retryable: timedOut || status === null }
+    // Structural bridge answers (bad binding, bad origin) cannot heal —
+    // retrying them is pointless. A timeout CAN recover once the service
+    // worker wakes up, and STATUS_FAILED covers transient tab/storage/
+    // catalog errors inside the background probe, so both stay retryable
+    // (bounded by the caller's retry budget).
+    return {
+      applicable: false,
+      retryable: timedOut || status === null || status?.errorCode === 'STATUS_FAILED',
+    }
   }
   if (!status.applicable || !status.package || typeof status.package.id !== 'string') {
     // eslint-disable-next-line no-console
@@ -234,12 +250,44 @@ export async function getPendingPackagePrompt(): Promise<
     console.info('[SidePanelPackagePrompt] skip: package already enabled', status.package.id)
     return null
   }
-  if (isPackagePromptDismissed(status.package.id)) {
-    // eslint-disable-next-line no-console
-    console.info('[SidePanelPackagePrompt] skip: within dismissal cooldown', status.package.id)
-    return null
+  if (!isPackagePromptDismissed(status.package.id)) {
+    return toPrompt(status)
   }
+  // The best candidate is in its dismissal cooldown. Other builtin packages
+  // may host the same tab — offer the best NON-dismissed sibling (finding:
+  // "Dismissal hides other package prompts") from the status payload's
+  // bounded `alternatives` list instead of hiding every prompt for the site.
+  const alternatives = Array.isArray(status.alternatives) ? status.alternatives : []
+  for (const alternative of alternatives) {
+    if (!alternative || typeof alternative.id !== 'string') continue
+    if (isPackagePromptDismissed(alternative.id)) continue
+    // eslint-disable-next-line no-console
+    console.info('[SidePanelPackagePrompt] best candidate dismissed; offering sibling', alternative.id)
+    return {
+      applicable: true,
+      package: {
+        ...alternative,
+        // A sibling has no consent token of its own: the token in the status
+        // payload belongs to the dismissed candidate and is bound to its
+        // package id, so the enable would be rejected. The sibling flow
+        // re-probes on confirm (CONSENT_REQUIRED handling in the modal).
+        consentToken: undefined,
+        totalTools: typeof alternative.totalTools === 'number' ? alternative.totalTools : undefined,
+      },
+      enabled: false,
+      ok: true,
+    }
+  }
+  // eslint-disable-next-line no-console
+  console.info('[SidePanelPackagePrompt] skip: within dismissal cooldown', status.package.id)
+  return null
+}
 
+/** Wrap a status payload into the prompt shape the modal consumes. */
+function toPrompt(
+  status: PackageOptInStatus,
+): (PackageOptInStatus & { applicable: true; package: PackageOptInInfo; enabled: false }) | null {
+  if (!status.package) return null
   // Attach the status-level consent token and package-wide tool count to the
   // payload the modal consumes (token echoed back on enable; totalTools
   // drives the multi-origin consent disclosure).

@@ -55,26 +55,42 @@ const MUTATING_BROWSER_COMMANDS = [
   'browser.evalElement(',
 ]
 
-/** DOM/storage mutations performed from evaluated page scripts. */
-const MUTATING_DOM_PATTERNS = [
-  '.click()',
-  'dispatchEvent(',
-  'innerHTML =',
-  'outerHTML =',
-  'textContent =',
-  'localStorage.setItem',
-  'sessionStorage.setItem',
-]
+/** Stored workflow sources are tiny; a cap keeps this linear and cheap. */
+const READ_ONLY_SOURCE_MAX_LENGTH = 20_000
 
 /**
- * Conservative read-only detection from the workflow source. When in doubt
- * the tool is treated as a write tool — the badge must never claim "read only"
- * for a workflow that can change the site.
+ * Generic mutation markers checked against the WHOLE workflow source,
+ * including inside `browser.eval` payloads (finding: "Mutating tools labeled
+ * read-only" — the old fixed list missed unlisted write operations). Three
+ * scans: (1) property assignment (`.x =`) — the classic page-write shape,
+ * (2) method calls outside a read-only allowlist, (3) storage / cookie /
+ * network-send primitives. A pure `browser.eval("() => document.title")`
+ * read matches none of them and stays read-only; anything not provably
+ * clean falls to write.
+ */
+const READ_ONLY_CALL_ALLOWLIST =
+  'getElementById|querySelector|querySelectorAll|closest|matches|getAttribute|hasAttribute|contains|innerText|textContent|title|tagName|nodeType|dataset|toString|toJSON|trim|split|join|slice|substring|replace|toLowerCase|toUpperCase|includes|indexOf|startsWith|endsWith|charAt|at|find|filter|map|forEach|some|every|reduce|keys|values|entries|isArray|from|of|stringify|parse|test|exec|match|matchAll|replaceAll|padStart|padEnd|repeat|concat|flat|flatMap|sort|reverse|has|get|set|delete|clear|add|then|catch|finally|json|text|blob|arrayBuffer|reload|decodeURIComponent|encodeURIComponent|eval|inputSchema|outputSchema|tree|run|result|type|name|description|tools|sources|manifest|version|id|path|urlRegex|send|wait|poll|call|dispose|abort|throwIfAborted|removeEventListener|addEventListener|resolve|reject|randomUUID|now|error|message|body|clone|headers|status|ok|statusText|formData'
+
+const MUTATION_MARKER_PATTERN = new RegExp(
+  `\\.\\s*[A-Za-z_$][\\w$]*\\s*=[^=>]` +
+    `|\\.\\s*(?!${READ_ONLY_CALL_ALLOWLIST}\\b)[A-Za-z_$][\\w$]*\\s*\\(` +
+    `|document\\.cookie|localStorage|sessionStorage|indexedDB|\\bcaches\\b|fetch\\s*\\(|XMLHttpRequest|WebSocket|postMessage\\s*\\(|navigator\\.clipboard`,
+)
+
+/**
+ * Conservative read-only detection from the workflow source. Read-only is a
+ * POSITIVE verdict (finding: "Mutating tools labeled read-only"): absence of
+ * ONE known pattern is not proof, so the marker scan above covers structural
+ * DOM mutation, storage, network sends and generic property assignment. A
+ * tool is labelled read-only only when its auditable source survives the
+ * whole scan; unknown code, missing source and oversized sources are write.
  */
 export function toolIsReadOnly(source: string): boolean {
   if (typeof source !== 'string' || !source) return false
+  if (source.length > READ_ONLY_SOURCE_MAX_LENGTH) return false
+  // Direct interaction-capable browser commands always disqualify.
   if (MUTATING_BROWSER_COMMANDS.some(command => source.includes(command))) return false
-  if (MUTATING_DOM_PATTERNS.some(pattern => source.includes(pattern))) return false
+  if (MUTATION_MARKER_PATTERN.test(source)) return false
   return true
 }
 
@@ -87,19 +103,19 @@ function hostnameOf(url: string): string {
 }
 
 /**
- * The package the opt-in prompt should offer. "Best" = most matching tools
- * (a site hosting two packages keeps the more specific one), ties broken by
- * package id for a stable result — BUT a DISABLED package always wins over
- * an enabled one: the prompt exists to offer disabled packages, so a more
- * popular enabled package on the same site must not shadow it.
+ * All builtin packages hosting this URL, best first (finding: "Dismissal
+ * hides other package prompts" — a site can host SEVERAL packages, and a
+ * dismissed best match must not shadow its siblings). Order: disabled before
+ * enabled (the prompt exists to offer disabled packages), then by matching
+ * tool count, then id for stability.
  */
-export function findPackageOptInCandidate(
+export function findPackageOptInCandidates(
   entries: WebMCPPackageEntry[],
   url: string,
-): PackageOptInCandidate | null {
-  if (!url) return null
+): PackageOptInCandidate[] {
+  if (!url) return []
   const hostname = hostnameOf(url)
-  let best: PackageOptInCandidate | null = null
+  const candidates: PackageOptInCandidate[] = []
   for (const entry of entries) {
     if (entry.mount !== BUILTIN_MOUNT) continue
     const manifest = entry.package?.manifest
@@ -124,26 +140,32 @@ export function findPackageOptInCandidate(
       }
     }
     if (tools.length === 0) continue
-    const candidate: PackageOptInCandidate = {
+    candidates.push({
       id: manifest.id,
       directory: entry.directory,
       description: manifest.description,
       hostname,
       activation: entry.activation === 'enabled' ? 'enabled' : 'disabled',
       tools,
-    }
-    if (!best) {
-      best = candidate
-      continue
-    }
-    const candidateDisabled = candidate.activation === 'disabled'
-    const bestDisabled = best.activation === 'disabled'
-    if (candidateDisabled !== bestDisabled) {
-      // Disabled first: the prompt only exists to offer disabled packages.
-      if (candidateDisabled) best = candidate
-      continue
-    }
-    if (candidate.tools.length > best.tools.length) best = candidate
+    })
   }
-  return best
+  return candidates.sort((a, b) => {
+    const aDisabled = a.activation === 'disabled' ? 0 : 1
+    const bDisabled = b.activation === 'disabled' ? 0 : 1
+    if (aDisabled !== bDisabled) return aDisabled - bDisabled
+    if (a.tools.length !== b.tools.length) return b.tools.length - a.tools.length
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
+}
+
+/**
+ * The package the opt-in prompt should offer: the first of
+ * `findPackageOptInCandidates` — a DISABLED package always wins over an
+ * enabled one, then the most matching tools, id as the stable tiebreaker.
+ */
+export function findPackageOptInCandidate(
+  entries: WebMCPPackageEntry[],
+  url: string,
+): PackageOptInCandidate | null {
+  return findPackageOptInCandidates(entries, url)[0] ?? null
 }

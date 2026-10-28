@@ -85,6 +85,13 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
   const [enableOnConfirm, setEnableOnConfirm] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [showTools, setShowTools] = useState(false)
+  // Late-arriving enable outcomes and retryable consent failures surface
+  // here (not as toasts): the modal stays open until the user closes it, so
+  // the correction is actually read (finding: "Late success hides reload
+  // failure"). Reset on every confirm attempt — a stale message from a
+  // previous attempt must never bleed into the next one.
+  const [lateNotice, setLateNotice] = useState<string | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   // id for the toggle: an explicit htmlFor association instead of a wrapping
   // <label> — Switch renders its own <label> around the checkbox, and a label
   // cannot activate a control nested inside another label.
@@ -101,12 +108,23 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
       return
     }
     setSubmitting(true)
+    setLateNotice(null)
+    setErrorMessage(null)
     // The 8s timeout may fire while the bridge call is still in flight; the
-    // late-completion callback corrects the picture (success toast) instead
-    // of leaving the user with an error while the package enables silently.
+    // late-completion callback corrects the picture (success / manual-reload
+    // toast) instead of leaving the user with an error while the package
+    // enables silently.
     const result = await enablePackageAndReload(packageInfo.id, packageInfo.consentToken ?? '', late => {
       if (late.ok) {
-        toast.success(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
+        // Findings "Late success hides reload failure" / "Enabled package
+        // skips page reload": a late ok with reloaded:false means the tools
+        // are NOT active — direct the user to reload manually instead of
+        // claiming plain success.
+        if (late.reloaded === false) {
+          setLateNotice(t('sidePanelPackage.enabledReloadFailedToast', { name: packageInfo.id }))
+        } else {
+          setLateNotice(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
+        }
       }
       // A late FAILURE stays silent: the modal already showed the failure
       // path and closed; re-toasting an error after the fact would only nag.
@@ -120,6 +138,18 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
       } else {
         toast.success(t('sidePanelPackage.enabledToast', { name: packageInfo.id }))
       }
+    } else if (result.errorCode === 'CONSENT_REQUIRED') {
+      // Findings "Expired consent blocks retry" / "Failed opt-ins block
+      // retry": a lost/expired token (service-worker restart, slow confirm)
+      // is RETRYABLE, not a user decision — no 1-day dismissal, or the
+      // prompt could never come back to try with a fresh token. Ask the user
+      // to reopen the prompt (AppBootstrap re-probes when the modal closes).
+      // eslint-disable-next-line no-console
+      console.warn('[PackageOptInModal] consent token rejected — the prompt can be retried', {
+        packageId: packageInfo.id,
+        error: result.error,
+      })
+      setErrorMessage(t('sidePanelPackage.consentRetryToast'))
     } else {
       // Structured failure: log for diagnosis, cool the prompt down so it
       // does not reappear immediately in a broken state, surface the toast.
@@ -256,6 +286,17 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
           <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
             {t('sidePanelPackage.privacyNote')}
           </p>
+
+          {errorMessage && (
+            <p role="alert" className="mt-2 text-xs leading-relaxed text-red-600 dark:text-red-400">
+              {errorMessage}
+            </p>
+          )}
+          {lateNotice && (
+            <p role="status" className="mt-2 text-xs leading-relaxed text-emerald-600 dark:text-emerald-400">
+              {lateNotice}
+            </p>
+          )}
 
           {typeof packageInfo.totalTools === 'number' && packageInfo.totalTools > tools.length && (
             <p className="mt-2 text-xs leading-relaxed text-amber-600 dark:text-amber-400">

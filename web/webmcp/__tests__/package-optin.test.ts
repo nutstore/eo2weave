@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { findPackageOptInCandidate, toolIsReadOnly } from '../../../browser-extension/entrypoints/webmcp/package-optin'
 import { createPackageOptInHandler, CONSENT_TOKEN_MIN_AGE_MS, setConsentTokenEnforcementForTests } from '../../../browser-extension/entrypoints/webmcp/package-optin-handler'
-import { readBuiltinWebMCPCatalog } from '../../../browser-extension/entrypoints/webmcp/package-repository'
+import { readWebMCPCatalog } from '../../../browser-extension/entrypoints/webmcp/package-repository'
 import { setBuiltinConfig, readBuiltinConfig } from '../../../browser-extension/entrypoints/webmcp/builtin-storage'
 import type { WebMCPPackageEntry } from '@creatorweave/shared/webmcp-package-catalog'
 
-vi.mock('../../../browser-extension/entrypoints/webmcp/package-repository', () => ({ readBuiltinWebMCPCatalog: vi.fn() }))
+vi.mock('../../../browser-extension/entrypoints/webmcp/package-repository', () => ({
+  readBuiltinWebMCPCatalog: vi.fn(),
+  readWebMCPCatalog: vi.fn(),
+}))
 vi.mock('../../../browser-extension/entrypoints/webmcp/builtin-storage', () => ({
   setBuiltinConfig: vi.fn(),
   readBuiltinConfig: vi.fn(),
@@ -147,7 +150,7 @@ describe('createPackageOptInHandler', () => {
     vi.stubGlobal('chrome', {
       tabs: { get, reload },
     })
-    vi.mocked(readBuiltinWebMCPCatalog).mockResolvedValue([entry()])
+    vi.mocked(readWebMCPCatalog).mockResolvedValue([entry()])
     vi.mocked(setBuiltinConfig).mockResolvedValue(undefined)
     vi.mocked(readBuiltinConfig).mockResolvedValue({ activation: 'enabled' })
   })
@@ -179,7 +182,7 @@ describe('createPackageOptInHandler', () => {
   })
 
   it('issues NO consent token when the matching package is already enabled', async () => {
-    vi.mocked(readBuiltinWebMCPCatalog).mockResolvedValue([entry({ activation: 'enabled' })])
+    vi.mocked(readWebMCPCatalog).mockResolvedValue([entry({ activation: 'enabled' })])
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     await handle({ type: 'webmcp_package_optin_status' }, respond)
@@ -321,7 +324,7 @@ describe('createPackageOptInHandler', () => {
         },
       },
     })
-    vi.mocked(readBuiltinWebMCPCatalog).mockResolvedValue([multiOrigin])
+    vi.mocked(readWebMCPCatalog).mockResolvedValue([multiOrigin])
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     await handle({ type: 'webmcp_package_optin_status' }, respond)
@@ -341,14 +344,17 @@ describe('createPackageOptInHandler', () => {
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'ENABLE_REVERTED' }))
   })
 
-  it('rejects a package id that does not match the bound tab url', async () => {
+  it('rejects a package id that does not match the consent-bound package', async () => {
     const { token } = await mintToken()
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+    // The token was minted for world.jmail.archive; presenting it for a
+    // different package fails the token's package binding (finding: "Consent
+    // transfers across packages") before any candidate matching happens.
     await handle({ type: 'webmcp_package_optin_enable', packageId: 'com.douban.movie', consentToken: token }, respond)
     expect(setBuiltinConfig).not.toHaveBeenCalled()
     expect(reload).not.toHaveBeenCalled()
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'PACKAGE_MISMATCH' }))
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'CONSENT_REQUIRED' }))
   })
 
   it('revalidates the LIVE tab url after reading the catalog and cancels on navigation', async () => {

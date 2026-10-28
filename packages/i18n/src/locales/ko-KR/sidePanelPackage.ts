@@ -20,4 +20,5 @@ export const sidePanelPackage = {
   enableTimeoutToast: "활성화 요청이 시간 초과되었습니다. 잠시 후 다시 시도해 주세요.",
   enabledToast: "{name}이(가) 활성화되었습니다. 도구를 적용하기 위해 페이지를 새로고침합니다",
   enableFailedToast: "활성화에 실패했습니다. 확장 프로그램이 최신 버전인지 확인 후 다시 시도해 주세요.",
+  consentRetryToast: "확인 토큰이 만료되었습니다. 이 대화상자를 닫으면 다시 시도할 수 있습니다(쿨다운이 기록되지 않음).",
 }
