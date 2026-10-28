@@ -632,71 +632,85 @@ describe('LazyDiffViewer content-type split', () => {
         // the literal "true" hides it (matched case-insensitively).
         expect((ancestor.getAttribute('aria-hidden') ?? '').toLowerCase()).not.toBe('true')
         // Ancestor roles: a role makes the subtree a text REPLACEMENT for
-        // AT when the role is a "text container" role combined with a
-        // name from any source, or when the role is inherently atomic.
-        // Checking is split so neither direction can slip through:
-        // - a role that SUPPRESSES subtree text must be limited to
-        //   `presentation`/`none` (which keep the text exposed);
-        // - non-suppressing semantic wrappers (`group`, `region`, `list`,
-        //   `table` …) KEEP descendant text in the a11y tree and are
-        //   allowed without a name;
-        // - any accessible name (`aria-label`, `aria-labelledby`, or the
-        //   `title` attribute fallback — the title becomes the accName
-        //   for many roles) combined with a replacement-capable role is
-        //   rejected even without explicit ARIA label attributes.
-        // IMPLICIT native roles count too: an element can be atomic for AT
-        // without any `role` attribute (e.g. `<button>`, `<option>`,
-        // `<img alt=…>`, `<progress>`) — the tag-based replacement list
-        // below catches those where an explicit-role check would not.
+        // AT when the role is an atomic / name-replacing role, regardless
+        // of whether an explicit name attribute is present — an atomic
+        // ancestor (button, img, menuitem…) announces its own accName (or
+        // nothing) INSTEAD of walking the subtree, so the diff semantics
+        // are lost either way. Explicit naming attributes are checked
+        // separately so the failure message names the cause.
+        // `figure` is deliberately NOT here: it is a nameable
+        // group-style container that keeps its descendants in the
+        // accessibility tree (the name is announced in addition to the
+        // content), so a named figure with diff text inside is valid.
         const ancestorRole = ancestor.getAttribute('role')
-        const hasName =
-          ancestor.getAttribute('aria-label') !== null ||
-          ancestor.getAttribute('aria-labelledby') !== null ||
-          ancestor.getAttribute('title') !== null
-        // Roles/elements whose accName REPLACES the subtree text for AT
-        // when one is present. `group`/`region` are nameable but NOT
-        // text-replacing (their name is announced in addition to content).
+        // Atomic / name-replacing ARIA roles: AT announces the role's
+        // accessible name INSTEAD of the subtree text. The list includes
+        // the whole name-from-content widget family (checkbox/radio/
+        // switch/menuitem*, option, tab, treeitem, button, link, …),
+        // inherently atomic roles (img, progressbar, meter, …) and
+        // single-value text roles (heading, term, cell, time, …).
         const REPLACEMENT_ROLES = new Set([
-          'button', 'link', 'menuitem', 'option', 'tab', 'checkbox',
-          'radio', 'switch', 'progressbar', 'scrollbar', 'slider',
-          'spinbutton', 'tooltip', 'img', 'heading', 'term', 'cell',
-          'columnheader', 'rowheader', 'gridcell', 'caption', 'figure',
-          'blockquote', 'code', 'time', 'meter', 'status', 'alert',
-          'log', 'marquee', 'timer',
+          'button', 'link', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+          'option', 'tab', 'checkbox', 'radio', 'switch', 'menu',
+          'menubar', 'progressbar', 'scrollbar', 'slider', 'spinbutton',
+          'textbox', 'searchbox', 'combobox', 'listbox', 'tooltip',
+          'treeitem', 'rowheader', 'columnheader', 'gridcell', 'cell',
+          'img', 'heading', 'term', 'time', 'meter', 'status', 'alert',
+          'log', 'marquee', 'timer', 'caption', 'code',
         ])
+        // Native tags with the same implicit atomic / name-replacing
+        // behavior when no explicit `role` overrides them. Text-preserving
+        // wrappers (`pre`, `code`, `blockquote`, headings, `dt`/`dd`,
+        // `figcaption`) keep descendant text in the a11y tree — they are
+        // semantic emphasis, not replacements — so they are deliberately
+        // excluded (see NODE_TEXT_KEEPING_TAGS below).
         const IMPLICIT_REPLACEMENT_TAGS = new Set([
           'button', 'a', 'option', 'img', 'progress', 'meter', 'select',
-          'textarea', 'label', 'output', 'data', 'time', 'summary',
-          'fieldset', 'legend', 'caption', 'th', 'td', 'dt', 'dd',
-          'figcaption', 'blockquote', 'pre', 'code', 'h1', 'h2', 'h3',
-          'h4', 'h5', 'h6',
+          'textarea', 'input', 'label', 'output', 'data', 'time',
+          'summary', 'optgroup', 'td', 'th',
         ])
         const roleIsReplacement =
           (ancestorRole !== null && REPLACEMENT_ROLES.has(ancestorRole)) ||
           (ancestorRole === null && IMPLICIT_REPLACEMENT_TAGS.has(ancestor.tagName.toLowerCase()))
         if (roleIsReplacement) {
-          // A text-replacing ancestor must not carry any accessible name —
+          // An atomic ancestor must not carry an explicit name either —
           // with one, AT announces the name and the diff text vanishes.
-          expect(hasName).toBe(false)
           expect(ancestor.getAttribute('aria-label')).toBeNull()
           expect(ancestor.getAttribute('aria-labelledby')).toBeNull()
           expect(ancestor.getAttribute('title')).toBeNull()
         }
         // Computed-style guard on ancestors too: a hidden ancestor hides
         // everything below it even when the fragment itself is clean.
+        // `visibility` is inheritable-with-override: a descendant that
+        // re-declares `visibility: visible` under a `visibility: hidden`
+        // ancestor IS rendered and exposed, so a hidden ancestor alone is
+        // not a violation. What matters is that every text-bearing node
+        // (fragment + descendants) is VISIBLY rendered: either it carries
+        // its own `visibility: visible`, or its nearest visibility-
+        // declaring ancestor is visible. That effective-visibility check
+        // happens below, once the full node set is known. `display: none`
+        // and `content-visibility: hidden` are NOT overridable — they
+        // unconditionally remove the subtree — so they stay forbidden on
+        // every ancestor.
         // happy-dom cannot resolve the production Tailwind stylesheet, so
-        // utility-class hiding is checked by CLASS NAME instead: any
-        // known hiding utility (`hidden`, `invisible`, `sr-only`,
-        // `content-*`/`collapse`…) on the ancestor chain would remove the
-        // subtree from AT regardless of what computed style resolves to.
+        // utility-class hiding is checked by CLASS NAME instead: only
+        // classes that REMOVE content from AT are rejected. `sr-only`
+        // is deliberately NOT rejected: it visually hides text but keeps
+        // it EXPOSED to assistive technology, and `not-sr-only` /
+        // `sr-only-focusable` restore or extend that exposure — none of
+        // them hide diff text from AT. `overflow-hidden` clips painting
+        // but keeps the text in the a11y tree, so plain `hidden` is
+        // matched only as a standalone Tailwind utility token
+        // (`\bhidden\b` does not match `overflow-hidden`, whose `hidden`
+        // is not a word-boundary-preceded standalone token — hence the
+        // explicit negative lookbehind for `overflow-`).
         const HIDING_CLASS_PATTERNS = [
-          /\bhidden\b/,
+          /(?<!overflow-)\bhidden\b/,
           /\binvisible\b/,
-          /\bsr-only\b/,
-          /\bnot-sr-only\b/,
           /\bcollapse\b/,
           /\bcontent-hidden\b/,
-          /\bsr-only-focusable\b/,
+          /\bcontents\b/,
+          /\bof-hidden\b/,
         ]
         const ancestorClasslistHasHiding = HIDING_CLASS_PATTERNS.some((p) =>
           p.test(ancestor.className),
@@ -704,9 +718,6 @@ describe('LazyDiffViewer content-type split', () => {
         expect(ancestorClasslistHasHiding).toBe(false)
         const ancestorComputed = window.getComputedStyle(ancestor)
         expect(ancestorComputed.display).not.toBe('none')
-        expect(
-          ancestorComputed.visibility === 'hidden' || ancestorComputed.visibility === 'collapse'
-        ).toBe(false)
         expect(ancestorComputed.contentVisibility).not.toBe('hidden')
       }
       for (const node of [fragment, ...fragment.querySelectorAll<HTMLElement>('*')]) {
@@ -731,19 +742,26 @@ describe('LazyDiffViewer content-type split', () => {
         // text exposed are allowed; `presentation`/`none` strip the
         // node's own semantics but keep the text, so they are allowed too.
         const nodeRole = node.getAttribute('role')
+        // Text-keeping roles KEEP descendant text in the accessibility
+        // tree: the diff fragment roles themselves (deletion/insertion
+        // expose the semantics AND the text, which is the whole point),
+        // inline semantic emphasis (mark/sub/sup), plus neutral and
+        // container roles. `figure`/`figure`-like nameable groups belong
+        // here too: their name is announced in ADDITION to the content,
+        // so a labelled figure/group with diff text inside is valid. Any
+        // other explicit role is rejected — an allow-list cannot be
+        // snuck past by an unlisted replacement role.
         const NODE_TEXT_KEEPING_ROLES = [
-          // The diff fragment roles themselves: deletion/insertion expose
-          // the semantics AND the text, which is the whole point.
           'deletion',
           'insertion',
           'mark',
           'sub',
           'sup',
-          // Text-keeping container/neutral roles.
           'presentation',
           'none',
           'generic',
           'group',
+          'figure',
           'list',
           'listitem',
           'region',
@@ -758,15 +776,23 @@ describe('LazyDiffViewer content-type split', () => {
         // for AT without any `role` attribute (e.g. `<img>`, `<button>`,
         // `<option>`, `<progress>`) — the tag-based replacement list
         // catches those where an explicit-role check would not.
+        // Text-preserving native wrappers (`code`, `blockquote`, `pre`,
+        // headings, `dt`/`dd`, `figcaption`, `caption`) KEEP their text in
+        // the a11y tree — they are semantic emphasis, not replacements —
+        // so a diff fragment inside an unroled `<code>`/`<blockquote>`/
+        // `<pre>`/`<h1>`… is valid and must not be rejected.
         const IMPLICIT_REPLACEMENT_TAGS = new Set([
           'button', 'a', 'option', 'img', 'progress', 'meter', 'select',
-          'textarea', 'label', 'output', 'data', 'time', 'summary',
-          'fieldset', 'legend', 'caption', 'th', 'td', 'dt', 'dd',
-          'figcaption', 'blockquote', 'pre', 'code', 'h1', 'h2', 'h3',
-          'h4', 'h5', 'h6',
+          'textarea', 'input', 'label', 'output', 'data', 'time',
+          'summary', 'optgroup', 'td', 'th',
+        ])
+        const NODE_TEXT_KEEPING_TAGS = new Set([
+          'code', 'blockquote', 'pre', 'figcaption', 'caption',
+          'dt', 'dd', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'del', 'ins',
         ])
         if (nodeRole === null) {
           expect(IMPLICIT_REPLACEMENT_TAGS.has(node.tagName.toLowerCase())).toBe(false)
+          expect(NODE_TEXT_KEEPING_TAGS.has(node.tagName.toLowerCase())).toBe(true)
         }
         // A name from ANY source makes the node a labelled atomic
         // replacement for AT: announce the label, skip the content. Diff
@@ -777,51 +803,57 @@ describe('LazyDiffViewer content-type split', () => {
         expect(node.getAttribute('aria-labelledby')).toBeNull()
         expect(node.getAttribute('title')).toBeNull()
         expect(node.style.display).not.toBe('none')
-        expect(node.style.visibility).not.toBe('hidden')
         expect(node.style.visibility).not.toBe('collapse')
         expect(node.style.contentVisibility).not.toBe('hidden')
         // Computed-style guard: the inline `style` checks above only see
-        // inline declarations, so also read each node's computed display,
-        // visibility and content-visibility to catch hiding applied via
-        // the CSSOM (e.g. programmatic style or class changes). happy-dom
-        // (this suite's test environment) resolves class-based rules from
-        // stylesheets in the document — including any stylesheet the test
-        // injects — but it is NOT a full CSS engine and the app's
-        // production Tailwind stylesheet is not loaded here, so
-        // production-only hiding classes (e.g. Tailwind `hidden`) are
-        // detected by the className-independent assertions above plus
-        // build-time review, not by getComputedStyle. The check
-        // complements rather than replaces the markup assertions.
+        // inline declarations, so also read each node's computed display
+        // and content-visibility. happy-dom (this suite's test
+        // environment) resolves class-based rules from stylesheets in the
+        // document — including any stylesheet the test injects — but it
+        // is NOT a full CSS engine and the app's production Tailwind
+        // stylesheet is not loaded here, so production-only hiding
+        // classes (e.g. Tailwind `hidden`) are detected by the
+        // class-name assertions below plus build-time review, not by
+        // getComputedStyle. The check complements rather than replaces
+        // the markup assertions.
         // `opacity: 0` is deliberately not checked: it does not remove
-        // content from the accessibility tree. `visibility: collapse` is
-        // treated like `hidden`: AT removes collapsed content that is not
-        // table rows/columns. `content-visibility: hidden` is rejected
-        // like `display: none`: the subtree is skipped for rendering and
-        // AT. NOTE on effective vs. per-node visibility: `visibility` is
-        // inheritable-with-override (`hidden` wrapper + `visible` child
-        // exposes the child). This loop asserts per-node values, so a
-        // nested `visibility: visible` under a `hidden` ancestor is
-        // rejected even though a browser would expose it — the diff
-        // renderer never emits such nesting, and rejecting it is the
-        // conservative direction for a regression test (false alarms on
-        // exotic markup, never a missed hiding).
+        // content from the accessibility tree. `content-visibility:
+        // hidden` is rejected like `display: none`: the subtree is
+        // skipped for rendering and AT.
+        // EFFECTIVE visibility instead of per-node values: `visibility`
+        // is inheritable-with-override, so `visibility: hidden` on a
+        // wrapper does NOT hide a descendant that re-declares
+        // `visibility: visible` — browsers render and expose it. The
+        // correct question for a text-bearing node is "is THIS node
+        // visibly rendered", which is exactly what the computed
+        // visibility of the node itself answers: happy-dom computes the
+        // inherited value, so an un-overridden descendant of a hidden
+        // wrapper resolves to `hidden` and fails here, while an explicit
+        // override resolves to `visible` and passes. `collapse` is
+        // treated like `hidden` for non-table content.
         const computed = window.getComputedStyle(node)
         expect(computed.display).not.toBe('none')
         expect(computed.visibility === 'hidden' || computed.visibility === 'collapse').toBe(false)
         expect(computed.contentVisibility).not.toBe('hidden')
-        // Utility-class hiding by CLASS NAME: computed style cannot see the
-        // production Tailwind stylesheet in this environment, so a `hidden`
-        // / `invisible` / `sr-only` class on the fragment or a descendant
-        // would escape the computed-style assertions. Reject the known
-        // hiding utilities directly on the class list.
+        // Utility-class hiding by CLASS NAME: computed style cannot see
+        // the production Tailwind stylesheet in this environment, so a
+        // Tailwind `hidden` / `invisible` / `collapse` class on the
+        // fragment or a descendant would escape the computed-style
+        // assertions. Reject the utilities that REMOVE content from AT
+        // directly on the class list. `sr-only` is deliberately NOT
+        // rejected — it visually hides text but keeps it exposed to
+        // assistive technology, and `not-sr-only` / `sr-only-focusable`
+        // restore or extend that exposure; `overflow-hidden` clips
+        // painting only. The negative lookbehind keeps the standalone
+        // Tailwind `hidden` utility from matching inside
+        // `overflow-hidden`.
         const HIDING_CLASS_PATTERNS = [
-          /\bhidden\b/,
+          /(?<!overflow-)\bhidden\b/,
           /\binvisible\b/,
-          /\bsr-only\b/,
-          /\bnot-sr-only\b/,
           /\bcollapse\b/,
           /\bcontent-hidden\b/,
-          /\bsr-only-focusable\b/,
+          /\bcontents\b/,
+          /\bof-hidden\b/,
         ]
         expect(
           HIDING_CLASS_PATTERNS.some((p) => p.test(node.className)),
