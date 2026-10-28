@@ -5,15 +5,31 @@
  * mixed-language degradation, fragment-stream ordering, code-file
  * non-interference, pure add/remove fallback, and long-line (200+ chars)
  * fragment integrity.
+ *
+ * The `diff` module is mocked so the suite can assert that over-long lines
+ * never reach jsdiff at all (the second pass must not block the reviewer).
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+
+vi.mock('diff', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('diff')>()
+  return {
+    ...actual,
+    diffChars: vi.fn(actual.diffChars),
+    diffWordsWithSpace: vi.fn(actual.diffWordsWithSpace),
+  }
+})
+
+import { diffChars, diffWordsWithSpace } from 'diff'
 import {
   containsCJK,
   detectInlineStrategy,
   computeInlineFragments,
   fuseHunkLines,
+  exceedsInlineDiffLimit,
+  MAX_INLINE_DIFF_LENGTH,
 } from '../inlineDiff'
 import LazyDiffViewer from '../LazyDiffViewer'
 
@@ -54,6 +70,11 @@ describe('detectInlineStrategy', () => {
 // ── Fragment computation ───────────────────────────────────────────────────
 
 describe('computeInlineFragments', () => {
+  beforeEach(() => {
+    vi.mocked(diffChars).mockClear()
+    vi.mocked(diffWordsWithSpace).mockClear()
+  })
+
   it('segments CJK sentences at char level (no whole-sentence collapse)', () => {
     // A diffWords* tokenizer would collapse the spaceless Chinese sentence
     // into a single token; diffChars must isolate the edited run.
@@ -132,6 +153,105 @@ describe('computeInlineFragments', () => {
   })
 })
 
+// ── Over-limit lines (issue #96 Sourcery review — freeze guard) ───────────
+
+describe('computeInlineFragments over-limit guard', () => {
+  beforeEach(() => {
+    vi.mocked(diffChars).mockClear()
+    vi.mocked(diffWordsWithSpace).mockClear()
+  })
+
+  it('never calls jsdiff for lines above the length limit', () => {
+    const oldLine = 'x'.repeat(MAX_INLINE_DIFF_LENGTH + 1)
+    const newLine = 'y'.repeat(MAX_INLINE_DIFF_LENGTH + 1)
+
+    computeInlineFragments(oldLine, newLine)
+
+    // The whole point: the second pass must not run on huge lines.
+    expect(vi.mocked(diffChars)).not.toHaveBeenCalled()
+    expect(vi.mocked(diffWordsWithSpace)).not.toHaveBeenCalled()
+  })
+
+  it('does not call jsdiff when only one side exceeds the limit', () => {
+    const oldLine = 'short line'
+    const newLine = 'z'.repeat(MAX_INLINE_DIFF_LENGTH + 1)
+
+    computeInlineFragments(oldLine, newLine)
+
+    expect(vi.mocked(diffChars)).not.toHaveBeenCalled()
+    expect(vi.mocked(diffWordsWithSpace)).not.toHaveBeenCalled()
+  })
+
+  it('degrades an over-limit line to whole-line removed/added fragments', () => {
+    const oldLine = 'x'.repeat(MAX_INLINE_DIFF_LENGTH + 1)
+    const newLine = 'y'.repeat(MAX_INLINE_DIFF_LENGTH + 1)
+
+    const fragments = computeInlineFragments(oldLine, newLine)
+
+    // Exactly two fragments: the whole old line, then the whole new line.
+    expect(fragments).toEqual([
+      { type: 'removed', value: oldLine },
+      { type: 'added', value: newLine },
+    ])
+    // Both sides are preserved verbatim.
+    const old = fragments.map((f) => (f.type === 'added' ? '' : f.value)).join('')
+    const neu = fragments.map((f) => (f.type === 'removed' ? '' : f.value)).join('')
+    expect(old).toBe(oldLine)
+    expect(neu).toBe(newLine)
+  })
+
+  it('still diffs lines exactly at the limit (boundary is inclusive)', () => {
+    const oldLine = 'x'.repeat(MAX_INLINE_DIFF_LENGTH)
+    const newLine = 'y'.repeat(MAX_INLINE_DIFF_LENGTH)
+
+    computeInlineFragments(oldLine, newLine)
+
+    // At the limit the normal second pass still applies. (Latin-only
+    // content → word-level strategy.)
+    expect(vi.mocked(diffWordsWithSpace)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(diffChars)).not.toHaveBeenCalled()
+  })
+
+  it('exceedsInlineDiffLimit reports the bound correctly', () => {
+    expect(exceedsInlineDiffLimit('a'.repeat(MAX_INLINE_DIFF_LENGTH))).toBe(false)
+    expect(exceedsInlineDiffLimit('a'.repeat(MAX_INLINE_DIFF_LENGTH + 1))).toBe(true)
+    expect(exceedsInlineDiffLimit('short', 'a'.repeat(MAX_INLINE_DIFF_LENGTH + 1))).toBe(true)
+  })
+
+  it('does not freeze the caller on an adversarial over-limit line', () => {
+    // The pathological shape for jsdiff: two long lines sharing no chunks.
+    // Before the guard this took multiple seconds on the main thread.
+    const oldLine = 'a'.repeat(MAX_INLINE_DIFF_LENGTH + 500)
+    const newLine = 'b'.repeat(MAX_INLINE_DIFF_LENGTH + 500)
+
+    const started = Date.now()
+    const fragments = computeInlineFragments(oldLine, newLine)
+    const elapsed = Date.now() - started
+
+    expect(fragments).toHaveLength(2)
+    expect(elapsed).toBeLessThan(1000)
+  })
+
+  it('keeps a fused row for an over-limit pair (whole-line styling, not dropped)', () => {
+    const oldLine = 'a'.repeat(MAX_INLINE_DIFF_LENGTH + 1)
+    const newLine = 'b'.repeat(MAX_INLINE_DIFF_LENGTH + 1)
+
+    const rows = fuseHunkLines([
+      { type: 'removed', content: oldLine, oldLineNo: 1 },
+      { type: 'added', content: newLine, newLineNo: 1 },
+    ])
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].kind).toBe('fused')
+    if (rows[0].kind === 'fused') {
+      expect(rows[0].fragments).toEqual([
+        { type: 'removed', value: oldLine },
+        { type: 'added', value: newLine },
+      ])
+    }
+  })
+})
+
 // ── Hunk fusion ────────────────────────────────────────────────────────────
 
 describe('fuseHunkLines', () => {
@@ -167,18 +287,38 @@ describe('fuseHunkLines', () => {
   })
 
   it('falls back to all-plain rows for pure additions', () => {
-    const rows = fuseHunkLines([
-      { type: 'added', content: 'line one', newLineNo: 5 },
-      { type: 'added', content: 'line two', newLineNo: 6 },
-    ])
+    const input = [
+      { type: 'added' as const, content: 'line one', newLineNo: 5 },
+      { type: 'added' as const, content: 'line two', newLineNo: 6 },
+    ]
+    const rows = fuseHunkLines(input)
+
     expect(rows.every((r) => r.kind === 'line')).toBe(true)
+    // No input line may be dropped: `every` is vacuously true for an
+    // empty array, so the row count and the per-row content are asserted.
+    expect(rows).toHaveLength(input.length)
+    expect(rows.map((r) => (r.kind === 'line' ? r.line.content : null))).toEqual([
+      'line one',
+      'line two',
+    ])
+    expect(rows.map((r) => (r.kind === 'line' ? r.line.newLineNo : null))).toEqual([5, 6])
   })
 
   it('falls back to all-plain rows for pure removals', () => {
-    const rows = fuseHunkLines([
-      { type: 'removed', content: 'line one', oldLineNo: 5 },
-    ])
+    const input = [
+      { type: 'removed' as const, content: 'line one', oldLineNo: 5 },
+      { type: 'removed' as const, content: 'line two', oldLineNo: 6 },
+    ]
+    const rows = fuseHunkLines(input)
+
     expect(rows.every((r) => r.kind === 'line')).toBe(true)
+    // Same anti-vacuous-truth guard as the pure-addition case.
+    expect(rows).toHaveLength(input.length)
+    expect(rows.map((r) => (r.kind === 'line' ? r.line.content : null))).toEqual([
+      'line one',
+      'line two',
+    ])
+    expect(rows.map((r) => (r.kind === 'line' ? r.line.oldLineNo : null))).toEqual([5, 6])
   })
 })
 
@@ -206,6 +346,68 @@ describe('LazyDiffViewer content-type split', () => {
     // Fused rows are NOT full-line green/red — no '−'/'+' markers for the pairs.
     expect(screen.queryByText('−')).toBeNull()
     expect(screen.queryByText('+')).toBeNull()
+  })
+
+  it('keeps the removed and added fragments in the SAME track-changes row', () => {
+    render(
+      <LazyDiffViewer
+        original={original}
+        modified={modified}
+        path="notes.md"
+      />,
+    )
+
+    // The fixture has two fused rows; check the first one.
+    const rows = screen.getAllByTestId('track-changes-line')
+    expect(rows.length).toBeGreaterThan(0)
+    const firstRow = rows[0]
+
+    const removed = firstRow.querySelector('[data-testid="track-changes-removed"]')
+    const added = firstRow.querySelector('[data-testid="track-changes-added"]')
+    expect(removed).not.toBeNull()
+    expect(added).not.toBeNull()
+
+    // Both fragments must live under the same row container — rendering
+    // them in two separate rows would still satisfy the text/gutter
+    // assertions above, so the shared ancestor is asserted explicitly.
+    const removedRow = removed!.closest('[data-testid="track-changes-line"]')
+    const addedRow = added!.closest('[data-testid="track-changes-line"]')
+    expect(removedRow).not.toBeNull()
+    expect(addedRow).not.toBeNull()
+    expect(removedRow).toBe(addedRow)
+    expect(removedRow).toBe(firstRow)
+
+    // They also share the SAME content-flow parent — a renderer that
+    // splits the fragments into sibling rows (or sibling content boxes)
+    // must fail here.
+    expect(removed!.parentElement).toBe(added!.parentElement)
+
+    // And they are different fragments of that one row.
+    expect(removed).not.toBe(added)
+  })
+
+  it('gives unchanged fragments an explicit foreground color', () => {
+    render(
+      <LazyDiffViewer
+        original={original}
+        modified={modified}
+        path="notes.md"
+      />,
+    )
+
+    const equal = screen.getAllByTestId('track-changes-equal')
+    expect(equal.length).toBeGreaterThan(0)
+
+    for (const fragment of equal) {
+      // The row surface is a dark tint in BOTH themes, so unchanged text
+      // must carry its own foreground instead of inheriting the theme's
+      // (near-black in light mode) foreground color.
+      const className = fragment.className
+      expect(className).toMatch(/text-(neutral|foreground)/)
+      // Tailwind's `text-neutral-100` resolves to a light value in light
+      // mode (#F3F4F6) and in dark mode (#E8ECEF).
+      expect(className).toContain('text-neutral-100')
+    }
   })
 
   it('keeps full-line −/+ markers for pure-removed/pure-added blocks in markdown', () => {
@@ -287,5 +489,32 @@ describe('LazyDiffViewer content-type split', () => {
     )
     expect(screen.getByText('original')).toBeDefined()
     expect(screen.getByText('revised')).toBeDefined()
+  })
+
+  it('renders an over-limit markdown line as one whole-line pair without freezing', () => {
+    // A huge line must still render (as whole-line added/removed styling)
+    // and must not block the main thread.
+    const oldLine = 'a'.repeat(MAX_INLINE_DIFF_LENGTH + 100)
+    const newLine = 'b'.repeat(MAX_INLINE_DIFF_LENGTH + 100)
+
+    const started = Date.now()
+    render(
+      <LazyDiffViewer
+        original={oldLine}
+        modified={newLine}
+        path="huge.md"
+      />,
+    )
+    const elapsed = Date.now() - started
+
+    // The row is rendered...
+    expect(screen.getAllByTestId('track-changes-line').length).toBeGreaterThan(0)
+    // ...with the whole line as one removed fragment and one added fragment.
+    const removed = screen.getByTestId('track-changes-removed')
+    const added = screen.getByTestId('track-changes-added')
+    expect(removed.textContent).toBe(oldLine)
+    expect(added.textContent).toBe(newLine)
+    // ...and it did not take seconds.
+    expect(elapsed).toBeLessThan(5000)
   })
 })

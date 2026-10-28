@@ -12,6 +12,14 @@
  *   highlights carry the information, no full-line green/red
  * - Deleted span: bg #f8514940, color #ffc0bd, line-through 1.5px #f85149cc
  * - Added span: bg #2ea04355, color #7ee787, font-weight 600
+ *
+ * The row surface is a fixed dark tint in BOTH themes (the deleted/added
+ * span colors above are tuned for it), so unchanged text needs an
+ * explicitly light foreground — inheriting `--foreground` (#171717 in
+ * light mode) would be nearly invisible. `text-neutral-100` is a
+ * theme-token class that resolves to a light value in light mode
+ * (#F3F4F6) and in dark mode (#E8ECEF), giving >13:1 contrast against
+ * the row surface in either theme.
  */
 
 import React from 'react'
@@ -32,10 +40,14 @@ interface TrackChangesLineProps {
 const GUTTER_CELL =
   'w-12 shrink-0 select-none text-right pr-3 font-mono text-[13px] leading-[20px]'
 
+/** Test hook: marks the track-changes row container */
+export const TRACK_CHANGES_LINE_TESTID = 'track-changes-line'
+
 function FragmentSpan({ fragment }: { fragment: InlineFragment }) {
   if (fragment.type === 'removed') {
     return (
       <span
+        data-testid="track-changes-removed"
         style={{
           backgroundColor: '#f8514940',
           color: '#ffc0bd',
@@ -52,6 +64,7 @@ function FragmentSpan({ fragment }: { fragment: InlineFragment }) {
   if (fragment.type === 'added') {
     return (
       <span
+        data-testid="track-changes-added"
         style={{
           backgroundColor: '#2ea04355',
           color: '#7ee787',
@@ -63,7 +76,13 @@ function FragmentSpan({ fragment }: { fragment: InlineFragment }) {
       </span>
     )
   }
-  return <span>{fragment.value}</span>
+  // Unchanged text sits on the dark row surface in both themes — it needs
+  // its own light foreground rather than the inherited theme foreground.
+  return (
+    <span data-testid="track-changes-equal" className="text-neutral-100">
+      {fragment.value}
+    </span>
+  )
 }
 
 const TrackChangesLine: React.FC<TrackChangesLineProps> = ({
@@ -74,7 +93,7 @@ const TrackChangesLine: React.FC<TrackChangesLineProps> = ({
   clickable = false,
 }) => {
   return (
-    <div className="flex bg-[#1c2128]">
+    <div className="flex bg-[#1c2128]" data-testid={TRACK_CHANGES_LINE_TESTID}>
       {/* Old line number cell — fused row shows the NEW number only */}
       <span className={`${GUTTER_CELL} text-neutral-500`} />
       <span

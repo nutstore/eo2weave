@@ -8,6 +8,10 @@
  * - CJK text (no whitespace tokenization) → `diffChars`
  * - Latin-only text → `diffWordsWithSpace`
  *
+ * Lines longer than `MAX_INLINE_DIFF_LENGTH` skip the second pass
+ * entirely and keep the whole-line added/removed styling — jsdiff is
+ * synchronous and would freeze the reviewer's tab on huge lines.
+ *
  * Code files never enter this path (content-type split is decided by the
  * caller via file extension). The fragment stream is mode-agnostic —
  * fusing into one track-changes row vs paired rows is a render-layer
@@ -80,19 +84,78 @@ export function detectInlineStrategy(
 // ── Fragment computation ───────────────────────────────────────────────────
 
 /**
+ * Maximum line length (in characters) that may enter the second-pass
+ * inline diff.
+ *
+ * jsdiff runs synchronously on the main thread: diffing a single line with
+ * tens of thousands of characters can burn seconds of CPU and freeze the
+ * reviewer's tab. Lines above this bound skip inline splitting entirely
+ * and keep the whole-line added/removed styling.
+ */
+export const MAX_INLINE_DIFF_LENGTH = 5000
+
+/**
+ * Wall-clock budget (milliseconds) for one inline diff.
+ *
+ * jsdiff's Myers implementation is O(N·D) — two lines that share no
+ * comparable chunks are the worst case, and even a line under
+ * `MAX_INLINE_DIFF_LENGTH` can take seconds to diff. `diffChars` /
+ * `diffWordsWithSpace` accept a `timeout` and return `undefined` when the
+ * budget is exhausted, which keeps the main thread responsive.
+ */
+export const INLINE_DIFF_TIMEOUT_MS = 200
+
+/**
+ * True when any of the given lines is too long to be diffed inline.
+ * Callers MUST NOT invoke `diffChars` / `diffWordsWithSpace` for lines
+ * that exceed the bound.
+ */
+export function exceedsInlineDiffLimit(...lines: string[]): boolean {
+  return lines.some((line) => line.length > MAX_INLINE_DIFF_LENGTH)
+}
+
+/**
+ * Whole-line fallback for a pair that must not be split inline.
+ * The old side renders as one removed fragment, the new side as one
+ * added fragment — the same styling as any other changed run, just
+ * covering the entire line.
+ */
+function wholeLineFragments(oldLine: string, newLine: string): InlineFragment[] {
+  return [
+    { type: 'removed', value: oldLine },
+    { type: 'added', value: newLine },
+  ]
+}
+
+/**
  * Compute the ordered fragment stream for one modified line pair.
  * Fragments preserve jsdiff output order (removed before its added
  * counterpart), so rendering them in one content flow reads naturally.
+ *
+ * Over-limit lines never reach jsdiff — they degrade to a whole-line
+ * removed/added pair (see `MAX_INLINE_DIFF_LENGTH`). Lines within the
+ * limit that still exceed the time budget degrade the same way.
  */
 export function computeInlineFragments(
   oldLine: string,
   newLine: string,
 ): InlineFragment[] {
+  // Guard first: never hand an over-limit line to jsdiff.
+  if (exceedsInlineDiffLimit(oldLine, newLine)) {
+    return wholeLineFragments(oldLine, newLine)
+  }
+
   const strategy = detectInlineStrategy(oldLine, newLine)
   const changes =
     strategy === 'chars'
-      ? diffChars(oldLine, newLine)
-      : diffWordsWithSpace(oldLine, newLine)
+      ? diffChars(oldLine, newLine, { timeout: INLINE_DIFF_TIMEOUT_MS })
+      : diffWordsWithSpace(oldLine, newLine, { timeout: INLINE_DIFF_TIMEOUT_MS })
+
+  // `undefined` means jsdiff hit the time budget — fall back to
+  // whole-line styling instead of blocking the reviewer.
+  if (!changes) {
+    return wholeLineFragments(oldLine, newLine)
+  }
 
   return changes.map((change) => ({
     type: change.added ? 'added' : change.removed ? 'removed' : 'equal',
