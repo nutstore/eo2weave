@@ -4,28 +4,19 @@ export {}
 
 declare const self: ServiceWorkerGlobalScope & typeof globalThis
 
-interface PrecacheEntry {
-  url: string
-  revision?: string | null
-  integrity?: string
-}
+const APPSHELL_CACHE = 'appshell-v3'
+// Caches from previous service worker versions. The activate handler deletes
+// any cache whose name is not APPSHELL_CACHE:
+// - 'static-v2': hashed static assets (now owned by the browser HTTP cache)
+// - 'dynamic-v2': API/MCP + subresources (now pass-through)
 
-declare global {
-  interface ServiceWorkerGlobalScope {
-    __WB_MANIFEST: Array<string | PrecacheEntry>
-  }
-}
-
-const STATIC_CACHE = 'static-v2'
-const DYNAMIC_CACHE = 'dynamic-v2'
-
-// Keep this dependency-free: the development SW middleware transpiles this
-// file without bundling imports, and browser workers do not provide require().
+// Keep this dependency-free: esbuild compiles this file directly with no
+// bundling of imports, and browser workers do not provide require().
 function buildConversationNotificationUrl(projectId: string, conversationId: string): string {
   return `/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(conversationId)}`
 }
 
-// In local development, bypass precaching and fetch interception so Next HMR
+// In local development, bypass all caching and fetch interception so Next HMR
 // and WASM bundles (Pyodide, SQLite) keep working. The SW is still
 // registered (so showNotification / notificationclick work), but acts as a
 // pass-through.
@@ -34,43 +25,15 @@ const IS_DEV =
   self.location.hostname === '127.0.0.1' ||
   self.location.hostname === ''
 
-const STATIC_RESOURCES = ['/', '/manifest.json']
-
 const API_PATTERNS = [/\/api\//, /\/mcp\//]
 const PYODIDE_WHEEL_PATTERN = /^\/assets\/pyodide\/.+\.(?:whl|tar)$/i
 const PYODIDE_VERSION = '0.29.3'
 const PYODIDE_CDN_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`
 
-const IMMUTABLE_ASSET_PATTERN =
-  /^\/assets\/.+-[A-Za-z0-9_-]{6,}\.(?:js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|wasm)$/i
-
-const PRECACHE_URLS = (self.__WB_MANIFEST ?? [])
-  .map((entry) => (typeof entry === 'string' ? entry : entry.url))
-  .filter((url) => typeof url === 'string' && url.startsWith('/'))
-
 self.addEventListener('install', (event) => {
-  if (IS_DEV) {
-    // Dev mode: skip precaching entirely (avoid HMR/WASM cache conflicts)
-    event.waitUntil(self.skipWaiting())
-    return
-  }
-
-  event.waitUntil(
-    (async () => {
-      const cache = await caches.open(STATIC_CACHE)
-      const urlsToCache = Array.from(new Set([...STATIC_RESOURCES, ...PRECACHE_URLS]))
-
-      for (const url of urlsToCache) {
-        try {
-          await cache.add(url)
-        } catch (error) {
-          console.warn('[ServiceWorker] Failed to precache:', url, error)
-        }
-      }
-    })()
-  )
-
-  self.skipWaiting()
+  // No precache: the offline shell is cached on first navigation (fetch
+  // handler). Old-version caches are removed by the activate handler below.
+  event.waitUntil(self.skipWaiting())
 })
 
 self.addEventListener('activate', (event) => {
@@ -78,7 +41,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) =>
       Promise.all(
         cacheNames
-          .filter((name) => name !== STATIC_CACHE && name !== DYNAMIC_CACHE)
+          .filter((name) => name !== APPSHELL_CACHE)
           .map((name) => caches.delete(name))
       )
     )
@@ -98,82 +61,35 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return
   if (url.protocol === 'ws:' || url.protocol === 'wss:') return
 
-  if (url.origin !== self.location.origin) {
-    if (url.hostname.includes('cdn') || url.hostname.includes('unpkg') || url.hostname.includes('jsdelivr')) {
-      event.respondWith(networkFirstStrategy(request))
-    }
-    return
-  }
+  // Everything not handled below is a deliberate pass-through: no
+  // respondWith() means the request flows exactly as if no SW existed.
+  // Static assets (/_next/static/**, /assets/*-hash.*) are content-hashed
+  // and immutable — the browser HTTP cache owns them; API/MCP responses
+  // must never be served stale from Cache Storage; everything else has no
+  // offline requirement. This deletes the entire SW-failure class
+  // (synthetic 503s breaking webpack's chunk loader) at the root.
 
-  if (API_PATTERNS.some((pattern) => pattern.test(url.pathname))) {
-    event.respondWith(networkFirstStrategy(request))
-    return
-  }
+  // Business data: freshness belongs to the app layer.
+  if (API_PATTERNS.some((pattern) => pattern.test(url.pathname))) return
 
+  // The real SW job: offline app shell.
   if (isNavigationRequest(request)) {
     event.respondWith(networkFirstWithCacheFallback(request))
     return
   }
 
+  // Offline cold-start of the Python runtime.
   if (isPyodideWheel(url.pathname)) {
     event.respondWith(pyodideWheelCacheWithCdnFallback(request, url))
     return
   }
-
-  if (isImmutableAsset(url.pathname)) {
-    event.respondWith(cacheFirstStrategy(request))
-    return
-  }
-
-  if (isStaticResource(url.pathname)) {
-    event.respondWith(networkFirstStrategy(request))
-    return
-  }
-
-  event.respondWith(networkFirstStrategy(request))
 })
-
-async function cacheFirstStrategy(request: Request): Promise<Response> {
-  const cached = await caches.match(request)
-  if (cached) return cached
-
-  try {
-    const networkResponse = await fetch(request)
-    if (networkResponse.ok) {
-      const cache = await caches.open(STATIC_CACHE)
-      await cache.put(request, networkResponse.clone())
-    }
-    return networkResponse
-  } catch (error) {
-    console.error('[ServiceWorker] Cache first failed:', error)
-    return new Response('Offline', { status: 503 })
-  }
-}
-
-async function networkFirstStrategy(request: Request): Promise<Response> {
-  try {
-    const networkResponse = await fetch(request)
-    if (networkResponse.ok) {
-      const cache = await caches.open(DYNAMIC_CACHE)
-      await cache.put(request, networkResponse.clone())
-    }
-    return networkResponse
-  } catch {
-    const cached = await caches.match(request)
-    if (cached) return cached
-
-    return new Response(JSON.stringify({ error: 'Offline', cached: false }), {
-      status: 503,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }
-}
 
 async function networkFirstWithCacheFallback(request: Request): Promise<Response> {
   try {
     const networkResponse = await fetch(request)
     if (networkResponse.ok) {
-      const cache = await caches.open(DYNAMIC_CACHE)
+      const cache = await caches.open(APPSHELL_CACHE)
       await cache.put(request, networkResponse.clone())
     }
     return networkResponse
@@ -191,7 +107,7 @@ async function networkFirstWithCacheFallback(request: Request): Promise<Response
 }
 
 async function pyodideWheelCacheWithCdnFallback(request: Request, url: URL): Promise<Response> {
-  const cache = await caches.open(DYNAMIC_CACHE)
+  const cache = await caches.open(APPSHELL_CACHE)
   const cached = await cache.match(request)
   if (cached) return cached
 
@@ -215,28 +131,6 @@ async function pyodideWheelCacheWithCdnFallback(request: Request, url: URL): Pro
       headers: { 'Content-Type': 'application/json' },
     })
   }
-}
-
-function isStaticResource(pathname: string): boolean {
-  const staticExtensions = [
-    '.js',
-    '.css',
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.gif',
-    '.svg',
-    '.ico',
-    '.woff',
-    '.woff2',
-    '.ttf',
-    '.wasm',
-  ]
-  return staticExtensions.some((ext) => pathname.endsWith(ext))
-}
-
-function isImmutableAsset(pathname: string): boolean {
-  return IMMUTABLE_ASSET_PATTERN.test(pathname)
 }
 
 function isPyodideWheel(pathname: string): boolean {
@@ -356,7 +250,7 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'CACHE_URLS') {
     event.waitUntil(
       (async () => {
-        const cache = await caches.open(DYNAMIC_CACHE)
+        const cache = await caches.open(APPSHELL_CACHE)
         const urls = Array.isArray(event.data?.urls) ? event.data.urls : []
         for (const url of urls) {
           try {
