@@ -717,21 +717,65 @@ describe('LazyDiffViewer content-type split', () => {
         // `hidden` and `inert` both remove a subtree from the a11y tree.
         expect(node.hasAttribute('hidden')).toBe(false)
         expect(node.hasAttribute('inert')).toBe(false)
-        // `role` + an accessible name makes a node an atomic replacement:
-        // AT announces the name instead of the subtree text, so a diff
-        // fragment must not be wrapped in one. `aria-labelledby` is
-        // rejected for the same reason — a referenced label overrides the
-        // announced text just like `aria-label` does. A bare
-        // `role="presentation"`/`role="none"` WITHOUT a name is allowed:
-        // it strips the node's own semantics but keeps the text exposed.
-        if (
-          node.getAttribute('aria-label') !== null ||
-          node.getAttribute('aria-labelledby') !== null
-        ) {
-          expect(node.getAttribute('role')).toBeNull()
-          expect(node.getAttribute('aria-label')).toBeNull()
-          expect(node.getAttribute('aria-labelledby')).toBeNull()
+        // Descendant roles: a role or native tag that makes a node a text
+        // REPLACEMENT for AT is rejected regardless of whether an
+        // accessible name is present — atomic roles (img, button with a
+        // label, checkbox, etc.) make AT announce the name INSTEAD of the
+        // diff text, and named or not, the fragment text then goes
+        // unannounced. The role check is deliberately UNGATED on the
+        // presence of an explicit ARIA label: a labelled AND an unlabelled
+        // atomic descendant both suppress the subtree text, so both must
+        // fail. `title` counts too — it is an accessible-name fallback for
+        // many roles, so a title-named atomic element hides the diff text
+        // just like an aria-label would. Container roles that keep the
+        // text exposed are allowed; `presentation`/`none` strip the
+        // node's own semantics but keep the text, so they are allowed too.
+        const nodeRole = node.getAttribute('role')
+        const NODE_TEXT_KEEPING_ROLES = [
+          // The diff fragment roles themselves: deletion/insertion expose
+          // the semantics AND the text, which is the whole point.
+          'deletion',
+          'insertion',
+          'mark',
+          'sub',
+          'sup',
+          // Text-keeping container/neutral roles.
+          'presentation',
+          'none',
+          'generic',
+          'group',
+          'list',
+          'listitem',
+          'region',
+          'table',
+          'row',
+          'cell',
+        ]
+        if (nodeRole !== null) {
+          expect(NODE_TEXT_KEEPING_ROLES).toContain(nodeRole)
         }
+        // IMPLICIT native roles count as well: an element can be atomic
+        // for AT without any `role` attribute (e.g. `<img>`, `<button>`,
+        // `<option>`, `<progress>`) — the tag-based replacement list
+        // catches those where an explicit-role check would not.
+        const IMPLICIT_REPLACEMENT_TAGS = new Set([
+          'button', 'a', 'option', 'img', 'progress', 'meter', 'select',
+          'textarea', 'label', 'output', 'data', 'time', 'summary',
+          'fieldset', 'legend', 'caption', 'th', 'td', 'dt', 'dd',
+          'figcaption', 'blockquote', 'pre', 'code', 'h1', 'h2', 'h3',
+          'h4', 'h5', 'h6',
+        ])
+        if (nodeRole === null) {
+          expect(IMPLICIT_REPLACEMENT_TAGS.has(node.tagName.toLowerCase())).toBe(false)
+        }
+        // A name from ANY source makes the node a labelled atomic
+        // replacement for AT: announce the label, skip the content. Diff
+        // fragment nodes must not carry one, whatever their role. `title`
+        // is included because it is an accessible-name fallback, not just
+        // a tooltip.
+        expect(node.getAttribute('aria-label')).toBeNull()
+        expect(node.getAttribute('aria-labelledby')).toBeNull()
+        expect(node.getAttribute('title')).toBeNull()
         expect(node.style.display).not.toBe('none')
         expect(node.style.visibility).not.toBe('hidden')
         expect(node.style.visibility).not.toBe('collapse')
