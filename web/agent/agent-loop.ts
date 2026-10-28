@@ -175,8 +175,8 @@ export class AgentLoop {
         toolExecutionTimeout: this.toolExecutionTimeout,
         toolTimeoutExemptions: TOOL_TIMEOUT_EXEMPTIONS,
         maxIterations: this.maxIterations,
-        convertCallCount: invocationCompression?.convertCallCount ?? this.convertCallCount,
-        lastSummaryConvertCall: invocationCompression?.lastSummaryConvertCall ?? this.lastSummaryConvertCall,
+        convertCallCount: invocationCompression ? invocationCompression.convertCallCount : this.convertCallCount,
+        lastSummaryConvertCall: invocationCompression ? invocationCompression.lastSummaryConvertCall : this.lastSummaryConvertCall,
         compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
         generateContextSummaryWithLLM: (droppedContent, maxSummaryTokens) =>
           generateContextSummaryWithLLM({
@@ -187,9 +187,10 @@ export class AgentLoop {
           }),
         onAbortRequested: () => controller?.abort(createAgentAbortReason(AgentAbortReasonName.Internal)),
         // Per-invocation compression state: captured by run() BEFORE any await
-        // point, so an overlapping run's commits can never leak into this
-        // invocation's trimming/compaction input.
-        initialCompressionBaseline: invocationCompression?.baseline ?? this.compressionBaseline,
+        // point (including an explicitly captured null), so an overlapping
+        // run's commits can never leak into this invocation's
+        // trimming/compaction input.
+        initialCompressionBaseline: invocationCompression ? invocationCompression.baseline : this.compressionBaseline,
         disableThinking: this.disableThinking,
         shouldYieldForQueue: this.shouldYieldForQueue,
         sessionId: this.sessionId,
@@ -412,6 +413,8 @@ export class AgentLoop {
     // newer run's signal or null out its controller.
     const controller = this.abortController
     const signal = controller.signal
+    // Capture ALL per-invocation state BEFORE the first await so an
+    // overlapping run's commits can never leak into this invocation.
     const latestSummary = [...messages].reverse().find(message => message.kind === 'context_summary')
     if (latestSummary?.content) {
       this.compressionBaseline = {
@@ -419,6 +422,11 @@ export class AgentLoop {
         cutoffTimestamp: latestSummary.compressionBoundary?.cutoffTimestamp ?? latestSummary.timestamp + 1,
         throughMessageId: latestSummary.compressionBoundary?.throughMessageId,
       }
+    }
+    const invocationCompression = {
+      baseline: this.compressionBaseline,
+      convertCallCount: this.convertCallCount,
+      lastSummaryConvertCall: this.lastSummaryConvertCall,
     }
 
     if (this.skipEnhancements) {
@@ -440,11 +448,7 @@ export class AgentLoop {
     }
 
     try {
-      return await this.runWithPiAgentCore(messages, callbacks, controller, {
-        baseline: this.compressionBaseline,
-        convertCallCount: this.convertCallCount,
-        lastSummaryConvertCall: this.lastSummaryConvertCall,
-      })
+      return await this.runWithPiAgentCore(messages, callbacks, controller, invocationCompression)
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] run_aborted', {
