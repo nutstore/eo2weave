@@ -35,6 +35,157 @@ import {
 } from '@/components/sync/inlineDiff'
 import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 
+// ── A11y sweep constants (module scope: shared by the ancestor and
+// descendant passes of the accessibility sweep test below) ──────────────────
+
+// Atomic / name-replacing ARIA roles: AT announces the role's accessible
+// name INSTEAD of the subtree text. The list includes the whole
+// name-from-content widget family (checkbox/radio/switch/menuitem*,
+// option, tab, treeitem, button, link, …), inherently atomic roles (img,
+// progressbar, meter, …) and single-value text roles (heading, term,
+// cell, time, …).
+const REPLACEMENT_ROLES = new Set([
+  'button',
+  'link',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'option',
+  'tab',
+  'checkbox',
+  'radio',
+  'switch',
+  'menu',
+  'menubar',
+  'progressbar',
+  'scrollbar',
+  'slider',
+  'spinbutton',
+  'textbox',
+  'searchbox',
+  'combobox',
+  'listbox',
+  'tooltip',
+  'treeitem',
+  'rowheader',
+  'columnheader',
+  'gridcell',
+  'cell',
+  'img',
+  'heading',
+  'term',
+  'time',
+  'meter',
+  'status',
+  'alert',
+  'log',
+  'marquee',
+  'timer',
+  'caption',
+  'code',
+])
+// Native tags with the same implicit atomic / name-replacing behavior when
+// no explicit `role` overrides them. Text-preserving wrappers (`pre`,
+// `code`, `blockquote`, headings, `dt`/`dd`, `figcaption`) keep descendant
+// text in the a11y tree — they are semantic emphasis, not replacements —
+// so they are deliberately excluded (see NODE_TEXT_KEEPING_TAGS below).
+const IMPLICIT_REPLACEMENT_TAGS = new Set([
+  'button',
+  'a',
+  'option',
+  'img',
+  'progress',
+  'meter',
+  'select',
+  'textarea',
+  'input',
+  'label',
+  'output',
+  'data',
+  'time',
+  'summary',
+  'optgroup',
+  'td',
+  'th',
+])
+// Unroled native tags whose implicit `generic` role keeps their text in
+// the accessibility tree: inline semantic emphasis and neutral wrappers.
+// A diff fragment may legitimately be wrapped in any of these.
+const NODE_TEXT_KEEPING_TAGS = new Set([
+  'span',
+  'em',
+  'strong',
+  'mark',
+  'i',
+  'b',
+  'u',
+  's',
+  'small',
+  'sub',
+  'sup',
+  'abbr',
+  'bdi',
+  'bdo',
+  'q',
+  'cite',
+  'dfn',
+  'kbd',
+  'samp',
+  'var',
+  'code',
+  'blockquote',
+  'pre',
+  'figcaption',
+  'caption',
+  'dt',
+  'dd',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'del',
+  'ins',
+])
+// Tailwind utility class-name TOKENS that REMOVE content from assistive
+// technology. Matching is token-exact (whole class token, or the token
+// after a `variant:` prefix) instead of substring/regex so that
+// text-preserving utilities are never flagged:
+// - `overflow-hidden` / `overflow-x-hidden` / `overflow-y-hidden` clip
+//   painting but keep the text in the a11y tree;
+// - `border-collapse` is a table-borders utility, not hiding;
+// - `contents` (display:contents) removes only the element's own box —
+//   its TEXT is promoted to the a11y tree, so it preserves exposure.
+// Responsive/conditional variants (`md:hidden`, `hover:invisible`) still
+// hide in production, so a token ending in `:<token>` is rejected too.
+// `sr-only` is deliberately NOT rejected: it visually hides text but
+// keeps it EXPOSED to assistive technology, and `not-sr-only` /
+// `sr-only-focusable` restore or extend that exposure.
+const HIDING_CLASS_TOKENS = new Set([
+  'hidden',
+  'invisible',
+  'collapse',
+  'content-hidden',
+  'of-hidden',
+])
+const hasHidingUtilityClass = (className: string): boolean =>
+  className
+    .split(/\s+/)
+    .filter(Boolean)
+    .some((token) => [...HIDING_CLASS_TOKENS].some((t) => token === t || token.endsWith(`:${t}`)))
+// Tailwind arbitrary-property classes bypass the class-name check above:
+// `[display:none]` / `[visibility:hidden]` / `[content-visibility:hidden]`
+// (optionally with the trailing `!` / `!important` marker) hide or remove
+// content in production even though no computed stylesheet is loaded in
+// this environment. The property list is closed — only the three subtree-
+// removing declarations — so unrelated arbitrary properties
+// (`[text-decoration-thickness:1.5px]`, `[--x:1]`) are never flagged.
+const ARBITRARY_HIDING_CLASS_PATTERN =
+  /\[\s*(?:display|visibility|content-visibility)\s*:\s*(?:none|hidden)\b(?:\s*!)?[^\]]*\]/i
+const hasHidingClass = (className: string): boolean =>
+  hasHidingUtilityClass(className) || ARBITRARY_HIDING_CLASS_PATTERN.test(className)
+
 // ── Strategy detection ─────────────────────────────────────────────────────
 
 describe('containsCJK', () => {
@@ -105,8 +256,14 @@ describe('computeInlineFragments', () => {
     expect(changedChars).toBeLessThan(oldLine.length)
 
     // Reconstruction preserves both sides exactly.
-    const removed = fragments.filter((f) => f.type === 'removed').map((f) => f.value).join('')
-    const added = fragments.filter((f) => f.type === 'added').map((f) => f.value).join('')
+    const removed = fragments
+      .filter((f) => f.type === 'removed')
+      .map((f) => f.value)
+      .join('')
+    const added = fragments
+      .filter((f) => f.type === 'added')
+      .map((f) => f.value)
+      .join('')
     const old = fragments.map((f) => (f.type === 'added' ? '' : f.value)).join('')
     const neu = fragments.map((f) => (f.type === 'removed' ? '' : f.value)).join('')
     expect(old).toBe(oldLine)
@@ -116,10 +273,7 @@ describe('computeInlineFragments', () => {
   })
 
   it('uses word-level segments for Latin text', () => {
-    const fragments = computeInlineFragments(
-      'The quick brown fox',
-      'The quick red fox',
-    )
+    const fragments = computeInlineFragments('The quick brown fox', 'The quick red fox')
     // Word-level diff keeps 'brown' → 'red' as whole-word fragments.
     expect(fragments).toEqual([
       { type: 'equal', value: 'The quick ' },
@@ -140,8 +294,14 @@ describe('computeInlineFragments', () => {
     const oldLine = 'use the update button 更新'
     const newLine = 'use the refresh button 更新'
     const fragments = computeInlineFragments(oldLine, newLine)
-    const removed = fragments.filter((f) => f.type === 'removed').map((f) => f.value).join('')
-    const added = fragments.filter((f) => f.type === 'added').map((f) => f.value).join('')
+    const removed = fragments
+      .filter((f) => f.type === 'removed')
+      .map((f) => f.value)
+      .join('')
+    const added = fragments
+      .filter((f) => f.type === 'added')
+      .map((f) => f.value)
+      .join('')
     // The changed run is cut inside the word, not at the word boundary.
     expect(removed).toBe('updat')
     expect(added).toBe('rfresh')
@@ -171,8 +331,14 @@ describe('computeInlineFragments', () => {
 
     const fragments = computeInlineFragments(oldLine, newLine)
 
-    const removed = fragments.filter((f) => f.type === 'removed').map((f) => f.value).join('')
-    const added = fragments.filter((f) => f.type === 'added').map((f) => f.value).join('')
+    const removed = fragments
+      .filter((f) => f.type === 'removed')
+      .map((f) => f.value)
+      .join('')
+    const added = fragments
+      .filter((f) => f.type === 'added')
+      .map((f) => f.value)
+      .join('')
     // The changed run is cut inside the word, not at the word boundary.
     expect(removed).toBe('updat')
     expect(added).toBe('rfresh')
@@ -193,8 +359,10 @@ describe('computeInlineFragments', () => {
 
   it('handles 200+ char lines: the edit stays isolated and fragments reconstruct both sides', () => {
     const prefix = 'This is a long introductory sentence that pads the line. '.repeat(4) // ~240 chars
-    const oldLine = prefix + 'original' + ' trailing context that also pads the line beyond wrap width.'
-    const newLine = prefix + 'revised' + ' trailing context that also pads the line beyond wrap width.'
+    const oldLine =
+      prefix + 'original' + ' trailing context that also pads the line beyond wrap width.'
+    const newLine =
+      prefix + 'revised' + ' trailing context that also pads the line beyond wrap width.'
     expect(oldLine.length).toBeGreaterThan(200)
 
     const fragments = computeInlineFragments(oldLine, newLine)
@@ -316,7 +484,7 @@ describe('computeInlineFragments over-limit guard', () => {
         { type: 'removed', content: 'delta epsilon', oldLineNo: 2 },
         { type: 'added', content: 'delta zeta', newLineNo: 2 },
       ],
-      budget,
+      budget
     )
 
     expect(rows).toHaveLength(2)
@@ -353,11 +521,10 @@ describe('computeInlineFragments over-limit guard', () => {
     expect(vi.mocked(diffWordsWithSpace)).toHaveBeenCalledWith(
       'alpha beta',
       'alpha gamma',
-      expect.objectContaining({ timeout: expect.any(Number) }),
+      expect.objectContaining({ timeout: expect.any(Number) })
     )
     expect(
-      (vi.mocked(diffWordsWithSpace).mock.calls[0]?.[2] as { timeout: number } | undefined)
-        ?.timeout,
+      (vi.mocked(diffWordsWithSpace).mock.calls[0]?.[2] as { timeout: number } | undefined)?.timeout
     ).toBeLessThanOrEqual(INLINE_DIFF_TIMEOUT_MS)
   })
 
@@ -365,7 +532,7 @@ describe('computeInlineFragments over-limit guard', () => {
     const budget = createInlineDiffBudget(60_000)
     // jsdiff returns `undefined` when the per-call timeout is hit.
     vi.mocked(diffWordsWithSpace).mockReturnValueOnce(
-      undefined as unknown as ReturnType<typeof diffWordsWithSpace>,
+      undefined as unknown as ReturnType<typeof diffWordsWithSpace>
     )
 
     const fragments = computeInlineFragments('alpha beta', 'alpha gamma', budget)
@@ -475,13 +642,7 @@ describe('LazyDiffViewer content-type split', () => {
   const modified = 'The quick red fox\nkept line\nadded entirely'
 
   it('renders a single fused track-changes row for markdown modified pairs', () => {
-    render(
-      <LazyDiffViewer
-        original={original}
-        modified={modified}
-        path="notes.md"
-      />,
-    )
+    render(<LazyDiffViewer original={original} modified={modified} path="notes.md" />)
     // The fused row contains both sides in one content flow.
     const row = screen.getByText('red')
     expect(row).toBeDefined()
@@ -495,13 +656,7 @@ describe('LazyDiffViewer content-type split', () => {
   })
 
   it('keeps the removed and added fragments in the SAME track-changes row', () => {
-    render(
-      <LazyDiffViewer
-        original={original}
-        modified={modified}
-        path="notes.md"
-      />,
-    )
+    render(<LazyDiffViewer original={original} modified={modified} path="notes.md" />)
 
     // The fixture has two fused rows; check the first one.
     const rows = screen.getAllByTestId('track-changes-line')
@@ -533,13 +688,7 @@ describe('LazyDiffViewer content-type split', () => {
   })
 
   it('exposes removed and added fragments to assistive technology', () => {
-    render(
-      <LazyDiffViewer
-        original={original}
-        modified={modified}
-        path="notes.md"
-      />
-    )
+    render(<LazyDiffViewer original={original} modified={modified} path="notes.md" />)
 
     // Removed/added fragments must expose their semantics to AT. The
     // renderer emits the semantic <del>/<ins> elements (implicit
@@ -551,17 +700,13 @@ describe('LazyDiffViewer content-type split', () => {
     const removed = screen.getAllByTestId('track-changes-removed')
     expect(removed.length).toBeGreaterThan(0)
     for (const fragment of removed) {
-      expect(
-        fragment.tagName === 'DEL' || fragment.getAttribute('role') === 'deletion',
-      ).toBe(true)
+      expect(fragment.tagName === 'DEL' || fragment.getAttribute('role') === 'deletion').toBe(true)
     }
 
     const added = screen.getAllByTestId('track-changes-added')
     expect(added.length).toBeGreaterThan(0)
     for (const fragment of added) {
-      expect(
-        fragment.tagName === 'INS' || fragment.getAttribute('role') === 'insertion',
-      ).toBe(true)
+      expect(fragment.tagName === 'INS' || fragment.getAttribute('role') === 'insertion').toBe(true)
     }
 
     // The fragments must actually be VISIBLE to the accessibility tree —
@@ -579,10 +724,7 @@ describe('LazyDiffViewer content-type split', () => {
     // textContent (which a hidden descendant would trivially satisfy).
     // `brown fox`/`red fox` is a modified pair (inline fragments); the
     // `removed`/`added entirely` lines fall back to whole-line styling.
-    const pairFragments = computeInlineFragments(
-      'The quick brown fox',
-      'The quick red fox',
-    )
+    const pairFragments = computeInlineFragments('The quick brown fox', 'The quick red fox')
     const expectedRemoved = pairFragments
       .filter((f) => f.type === 'removed')
       .map((f) => f.value)
@@ -593,14 +735,8 @@ describe('LazyDiffViewer content-type split', () => {
       .join('')
     // The whole-line removal/addition rows render exactly one <del>/<ins>
     // carrying the full line text — include them in the oracle.
-    expect([...removed.map((n) => n.textContent)]).toEqual([
-      expectedRemoved,
-      'removed',
-    ])
-    expect([...added.map((n) => n.textContent)]).toEqual([
-      expectedAdded,
-      'added',
-    ])
+    expect([...removed.map((n) => n.textContent)]).toEqual([expectedRemoved, 'removed'])
+    expect([...added.map((n) => n.textContent)]).toEqual([expectedAdded, 'added'])
 
     for (const fragment of [...removed, ...added]) {
       expect(fragment.hasAttribute('hidden')).toBe(false)
@@ -621,60 +757,40 @@ describe('LazyDiffViewer content-type split', () => {
       // announces its own name instead of the subtree text. `document.body`
       // is included: an `inert`/`hidden` body hides every fragment, and the
       // loop must not stop just before it.
-      for (
-        let ancestor = fragment.parentElement;
-        ancestor;
-        ancestor = ancestor.parentElement
-      ) {
+      for (let ancestor = fragment.parentElement; ancestor; ancestor = ancestor.parentElement) {
         expect(ancestor.hasAttribute('inert')).toBe(false)
         expect(ancestor.hasAttribute('hidden')).toBe(false)
         // `aria-hidden="false"` (or absent) keeps content exposed; only
         // the literal "true" hides it (matched case-insensitively).
         expect((ancestor.getAttribute('aria-hidden') ?? '').toLowerCase()).not.toBe('true')
-        // Ancestor roles: a role makes the subtree a text REPLACEMENT for
-        // AT when the role is an atomic / name-replacing role, regardless
-        // of whether an explicit name attribute is present — an atomic
-        // ancestor (button, img, menuitem…) announces its own accName (or
-        // nothing) INSTEAD of walking the subtree, so the diff semantics
-        // are lost either way. Explicit naming attributes are checked
-        // separately so the failure message names the cause.
+        // Ancestor roles: a role (or unroled native tag) that makes the
+        // subtree a text REPLACEMENT for AT is rejected outright — an
+        // atomic ancestor (button, img, menuitem…) announces its own
+        // accName (or nothing) INSTEAD of walking the subtree, so the diff
+        // deletion/insertion semantics are lost even when the ancestor
+        // carries NO naming attribute (AT suppresses or flattens the
+        // fragment's semantics either way). Naming attributes alone do not
+        // make an ancestor atomic, and their absence does not rescue an
+        // atomic one — so the ROLE is the failing assertion, and the
+        // explicit naming attributes are checked separately below so the
+        // failure message names the cause when a named generic wrapper is
+        // the problem.
         // `figure` is deliberately NOT here: it is a nameable
         // group-style container that keeps its descendants in the
         // accessibility tree (the name is announced in addition to the
         // content), so a named figure with diff text inside is valid.
         const ancestorRole = ancestor.getAttribute('role')
-        // Atomic / name-replacing ARIA roles: AT announces the role's
-        // accessible name INSTEAD of the subtree text. The list includes
-        // the whole name-from-content widget family (checkbox/radio/
-        // switch/menuitem*, option, tab, treeitem, button, link, …),
-        // inherently atomic roles (img, progressbar, meter, …) and
-        // single-value text roles (heading, term, cell, time, …).
-        const REPLACEMENT_ROLES = new Set([
-          'button', 'link', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
-          'option', 'tab', 'checkbox', 'radio', 'switch', 'menu',
-          'menubar', 'progressbar', 'scrollbar', 'slider', 'spinbutton',
-          'textbox', 'searchbox', 'combobox', 'listbox', 'tooltip',
-          'treeitem', 'rowheader', 'columnheader', 'gridcell', 'cell',
-          'img', 'heading', 'term', 'time', 'meter', 'status', 'alert',
-          'log', 'marquee', 'timer', 'caption', 'code',
-        ])
-        // Native tags with the same implicit atomic / name-replacing
-        // behavior when no explicit `role` overrides them. Text-preserving
-        // wrappers (`pre`, `code`, `blockquote`, headings, `dt`/`dd`,
-        // `figcaption`) keep descendant text in the a11y tree — they are
-        // semantic emphasis, not replacements — so they are deliberately
-        // excluded (see NODE_TEXT_KEEPING_TAGS below).
-        const IMPLICIT_REPLACEMENT_TAGS = new Set([
-          'button', 'a', 'option', 'img', 'progress', 'meter', 'select',
-          'textarea', 'input', 'label', 'output', 'data', 'time',
-          'summary', 'optgroup', 'td', 'th',
-        ])
-        const roleIsReplacement =
+        const ancestorIsReplacement =
           (ancestorRole !== null && REPLACEMENT_ROLES.has(ancestorRole)) ||
           (ancestorRole === null && IMPLICIT_REPLACEMENT_TAGS.has(ancestor.tagName.toLowerCase()))
-        if (roleIsReplacement) {
-          // An atomic ancestor must not carry an explicit name either —
-          // with one, AT announces the name and the diff text vanishes.
+        expect(ancestorIsReplacement).toBe(false)
+        // A text-PRESERVING ancestor (group/figure-style) may still carry
+        // a name whose name source would turn it into a labelled
+        // replacement for AT: `aria-label`/`aria-labelledby`/`title`
+        // override name-from-content. On text-keeping elements the name
+        // merely supplements the subtree text, so those attributes are
+        // allowed there and rejected only where the role replaces content.
+        if (ancestorIsReplacement) {
           expect(ancestor.getAttribute('aria-label')).toBeNull()
           expect(ancestor.getAttribute('aria-labelledby')).toBeNull()
           expect(ancestor.getAttribute('title')).toBeNull()
@@ -693,29 +809,12 @@ describe('LazyDiffViewer content-type split', () => {
         // unconditionally remove the subtree — so they stay forbidden on
         // every ancestor.
         // happy-dom cannot resolve the production Tailwind stylesheet, so
-        // utility-class hiding is checked by CLASS NAME instead: only
-        // classes that REMOVE content from AT are rejected. `sr-only`
-        // is deliberately NOT rejected: it visually hides text but keeps
-        // it EXPOSED to assistive technology, and `not-sr-only` /
-        // `sr-only-focusable` restore or extend that exposure — none of
-        // them hide diff text from AT. `overflow-hidden` clips painting
-        // but keeps the text in the a11y tree, so plain `hidden` is
-        // matched only as a standalone Tailwind utility token
-        // (`\bhidden\b` does not match `overflow-hidden`, whose `hidden`
-        // is not a word-boundary-preceded standalone token — hence the
-        // explicit negative lookbehind for `overflow-`).
-        const HIDING_CLASS_PATTERNS = [
-          /(?<!overflow-)\bhidden\b/,
-          /\binvisible\b/,
-          /\bcollapse\b/,
-          /\bcontent-hidden\b/,
-          /\bcontents\b/,
-          /\bof-hidden\b/,
-        ]
-        const ancestorClasslistHasHiding = HIDING_CLASS_PATTERNS.some((p) =>
-          p.test(ancestor.className),
-        )
-        expect(ancestorClasslistHasHiding).toBe(false)
+        // utility-class hiding is checked by CLASS NAME instead (see
+        // hasHidingClass / HIDING_CLASS_TOKENS at module scope): only
+        // classes that REMOVE content from AT are rejected, matched as
+        // whole class tokens so `overflow-hidden`, `overflow-x-hidden`,
+        // `border-collapse` and `contents` never produce false positives.
+        expect(hasHidingClass(ancestor.className)).toBe(false)
         const ancestorComputed = window.getComputedStyle(ancestor)
         expect(ancestorComputed.display).not.toBe('none')
         expect(ancestorComputed.contentVisibility).not.toBe('hidden')
@@ -742,11 +841,18 @@ describe('LazyDiffViewer content-type split', () => {
         // text exposed are allowed; `presentation`/`none` strip the
         // node's own semantics but keep the text, so they are allowed too.
         const nodeRole = node.getAttribute('role')
+        // Name-replacing roles: AT announces the accessible name INSTEAD of
+        // the subtree text, so a NODE with one of these roles (or an
+        // implicit-replacement native tag) is rejected regardless of naming
+        // — text goes unannounced either way. Only on these roles do the
+        // name-attribute assertions below apply; group-style containers
+        // whose names SUPPLEMENT the content (figure, group, region…) are
+        // exempt from the name-attribute rejection.
         // Text-keeping roles KEEP descendant text in the accessibility
         // tree: the diff fragment roles themselves (deletion/insertion
         // expose the semantics AND the text, which is the whole point),
         // inline semantic emphasis (mark/sub/sup), plus neutral and
-        // container roles. `figure`/`figure`-like nameable groups belong
+        // container roles. `figure`/`group`-style nameable groups belong
         // here too: their name is announced in ADDITION to the content,
         // so a labelled figure/group with diff text inside is valid. Any
         // other explicit role is rejected — an allow-list cannot be
@@ -780,28 +886,36 @@ describe('LazyDiffViewer content-type split', () => {
         // headings, `dt`/`dd`, `figcaption`, `caption`) KEEP their text in
         // the a11y tree — they are semantic emphasis, not replacements —
         // so a diff fragment inside an unroled `<code>`/`<blockquote>`/
-        // `<pre>`/`<h1>`… is valid and must not be rejected.
-        const IMPLICIT_REPLACEMENT_TAGS = new Set([
-          'button', 'a', 'option', 'img', 'progress', 'meter', 'select',
-          'textarea', 'input', 'label', 'output', 'data', 'time',
-          'summary', 'optgroup', 'td', 'th',
-        ])
-        const NODE_TEXT_KEEPING_TAGS = new Set([
-          'code', 'blockquote', 'pre', 'figcaption', 'caption',
-          'dt', 'dd', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'del', 'ins',
-        ])
+        // `<pre>`/`<h1>`… is valid and must not be rejected. Unroled
+        // generic inline text-preserving elements (`span`, `em`, `mark`,
+        // …) belong here as well (see the module-scope NODE_TEXT_KEEPING_TAGS).
+        const nodeIsImplicitReplacement =
+          nodeRole === null && IMPLICIT_REPLACEMENT_TAGS.has(node.tagName.toLowerCase())
+        expect(nodeIsImplicitReplacement).toBe(false)
         if (nodeRole === null) {
-          expect(IMPLICIT_REPLACEMENT_TAGS.has(node.tagName.toLowerCase())).toBe(false)
           expect(NODE_TEXT_KEEPING_TAGS.has(node.tagName.toLowerCase())).toBe(true)
         }
         // A name from ANY source makes the node a labelled atomic
-        // replacement for AT: announce the label, skip the content. Diff
-        // fragment nodes must not carry one, whatever their role. `title`
-        // is included because it is an accessible-name fallback, not just
-        // a tooltip.
-        expect(node.getAttribute('aria-label')).toBeNull()
-        expect(node.getAttribute('aria-labelledby')).toBeNull()
-        expect(node.getAttribute('title')).toBeNull()
+        // replacement for AT — but ONLY where the node's role makes the
+        // name REPLACE the content: on a group-style container (figure,
+        // group, region, list…) the accessible name is announced IN
+        // ADDITION to the subtree text, so a named figure with diff text
+        // inside stays valid. `title` is included because it is an
+        // accessible-name fallback, not just a tooltip. For text-replacing
+        // roles, the name is the only thing AT announces — the diff text
+        // vanishes — so any name source is rejected there. For explicit
+        // roles that keep text, generic containers without names, the
+        // name attributes are still forbidden: an unroled wrapper with an
+        // `aria-label` is a wrapper being used AS a label, and hiding the
+        // diff text inside a plain span is exactly the regression this
+        // suite guards against.
+        const nameReplacesContents =
+          (nodeRole !== null && REPLACEMENT_ROLES.has(nodeRole)) || nodeIsImplicitReplacement
+        if (nameReplacesContents) {
+          expect(node.getAttribute('aria-label')).toBeNull()
+          expect(node.getAttribute('aria-labelledby')).toBeNull()
+          expect(node.getAttribute('title')).toBeNull()
+        }
         expect(node.style.display).not.toBe('none')
         expect(node.style.visibility).not.toBe('collapse')
         expect(node.style.contentVisibility).not.toBe('hidden')
@@ -839,37 +953,20 @@ describe('LazyDiffViewer content-type split', () => {
         // the production Tailwind stylesheet in this environment, so a
         // Tailwind `hidden` / `invisible` / `collapse` class on the
         // fragment or a descendant would escape the computed-style
-        // assertions. Reject the utilities that REMOVE content from AT
-        // directly on the class list. `sr-only` is deliberately NOT
-        // rejected — it visually hides text but keeps it exposed to
-        // assistive technology, and `not-sr-only` / `sr-only-focusable`
-        // restore or extend that exposure; `overflow-hidden` clips
-        // painting only. The negative lookbehind keeps the standalone
-        // Tailwind `hidden` utility from matching inside
-        // `overflow-hidden`.
-        const HIDING_CLASS_PATTERNS = [
-          /(?<!overflow-)\bhidden\b/,
-          /\binvisible\b/,
-          /\bcollapse\b/,
-          /\bcontent-hidden\b/,
-          /\bcontents\b/,
-          /\bof-hidden\b/,
-        ]
-        expect(
-          HIDING_CLASS_PATTERNS.some((p) => p.test(node.className)),
-        ).toBe(false)
+        // assertions — as would an arbitrary-property class like
+        // `[display:none]`. Reject the utilities that REMOVE content from
+        // AT via the shared token-exact matcher (see module scope), which
+        // never flags text-preserving utilities such as `overflow-hidden`,
+        // `overflow-x-hidden`, `border-collapse` or `contents`. `sr-only`
+        // is deliberately NOT rejected — it visually hides text but keeps
+        // it exposed to assistive technology.
+        expect(hasHidingClass(node.className)).toBe(false)
       }
     }
   })
 
   it('gives unchanged fragments an explicit foreground color', () => {
-    render(
-      <LazyDiffViewer
-        original={original}
-        modified={modified}
-        path="notes.md"
-      />,
-    )
+    render(<LazyDiffViewer original={original} modified={modified} path="notes.md" />)
 
     const equal = screen.getAllByTestId('track-changes-equal')
     expect(equal.length).toBeGreaterThan(0)
@@ -892,7 +989,7 @@ describe('LazyDiffViewer content-type split', () => {
         original={'kept\nremove me a\nremove me b'}
         modified={'kept\nbrand new line'}
         path="notes.md"
-      />,
+      />
     )
     // 2 removed vs 1 added: one pair fuses only if adjacent — here the diff
     // yields a pure-removed block, so full-line styling applies.
@@ -904,13 +1001,7 @@ describe('LazyDiffViewer content-type split', () => {
     // with a 1:1 modified pair that fuses.
     const orig = 'alpha beta\nkept\nold one'
     const mod = 'alpha gamma\nkept\nnew one\npure add a\npure add b'
-    render(
-      <LazyDiffViewer
-        original={orig}
-        modified={mod}
-        path="notes.md"
-      />,
-    )
+    render(<LazyDiffViewer original={orig} modified={mod} path="notes.md" />)
     // Pure-added block keeps full-line '+' markers; the fused pair shows none.
     expect(screen.getAllByText('+')).toHaveLength(2)
     expect(screen.queryByText('−')).toBeNull()
@@ -922,20 +1013,14 @@ describe('LazyDiffViewer content-type split', () => {
         original={'kept\nremove me a\nremove me b'}
         modified={'kept'}
         path="notes.md"
-      />,
+      />
     )
     expect(screen.getAllByText('−')).toHaveLength(2)
     expect(screen.queryByText('~')).toBeNull()
   })
 
   it('renders code files with the existing line-level view (no fusion)', () => {
-    render(
-      <LazyDiffViewer
-        original={original}
-        modified={modified}
-        path="src/example.ts"
-      />,
-    )
+    render(<LazyDiffViewer original={original} modified={modified} path="src/example.ts" />)
     // Line-level: paired −/+ rows for each modified line, no fused marker.
     expect(screen.getAllByText('−')).toHaveLength(2)
     expect(screen.getAllByText('+')).toHaveLength(2)
@@ -944,11 +1029,7 @@ describe('LazyDiffViewer content-type split', () => {
 
   it('detects .mdx as markdown too', () => {
     render(
-      <LazyDiffViewer
-        original={'alpha beta'}
-        modified={'alpha gamma'}
-        path="docs/guide.mdx"
-      />,
+      <LazyDiffViewer original={'alpha beta'} modified={'alpha gamma'} path="docs/guide.mdx" />
     )
     expect(screen.queryByText('−')).toBeNull()
     expect(screen.getByText('~')).toBeDefined()
@@ -957,11 +1038,7 @@ describe('LazyDiffViewer content-type split', () => {
   it('renders 200+ char markdown line with the edit highlight intact', () => {
     const prefix = 'Long prose line that keeps going and going for wrap testing. '.repeat(4)
     render(
-      <LazyDiffViewer
-        original={prefix + 'original'}
-        modified={prefix + 'revised'}
-        path="long.md"
-      />,
+      <LazyDiffViewer original={prefix + 'original'} modified={prefix + 'revised'} path="long.md" />
     )
     expect(screen.getByText('original')).toBeDefined()
     expect(screen.getByText('revised')).toBeDefined()
@@ -972,7 +1049,9 @@ describe('LazyDiffViewer content-type split', () => {
     expect(rows).toHaveLength(1)
     const equal = rows[0].querySelectorAll('[data-testid="track-changes-equal"]')
     expect(equal.length).toBeGreaterThan(0)
-    const equalText = Array.from(equal).map((e) => e.textContent).join('')
+    const equalText = Array.from(equal)
+      .map((e) => e.textContent)
+      .join('')
     expect(equalText).toContain('Long prose line that keeps going')
     // The whole unchanged prefix is preserved, not just its start.
     expect(equalText).toBe(prefix)
@@ -984,13 +1063,7 @@ describe('LazyDiffViewer content-type split', () => {
     const oldLine = 'a'.repeat(MAX_INLINE_DIFF_LENGTH + 100)
     const newLine = 'b'.repeat(MAX_INLINE_DIFF_LENGTH + 100)
 
-    render(
-      <LazyDiffViewer
-        original={oldLine}
-        modified={newLine}
-        path="huge.md"
-      />,
-    )
+    render(<LazyDiffViewer original={oldLine} modified={newLine} path="huge.md" />)
 
     // The row is rendered...
     const rows = screen.getAllByTestId('track-changes-line')
@@ -1019,7 +1092,7 @@ describe('LazyDiffViewer content-type split', () => {
         modified={'alpha gamma\nkept'}
         path="notes.md"
         selectedTarget={{ side: 'modified', startLine: 1, endLine: 1 }}
-      />,
+      />
     )
 
     const rows = screen.getAllByTestId('track-changes-line')
@@ -1044,7 +1117,7 @@ describe('LazyDiffViewer content-type split', () => {
           { side: 'original', startLine: 1, endLine: 1 },
           { side: 'modified', startLine: 1, endLine: 1 },
         ]}
-      />,
+      />
     )
 
     const rows = screen.getAllByTestId('track-changes-line')
@@ -1067,7 +1140,9 @@ describe('LazyDiffViewer content-type split', () => {
     expect(row.contains(oldMarker)).toBe(true)
     expect(row.contains(newMarker)).toBe(true)
     // No separate comment row was rendered underneath.
-    expect(row.parentElement!.querySelectorAll('[data-testid="track-changes-line"]')).toHaveLength(1)
+    expect(row.parentElement!.querySelectorAll('[data-testid="track-changes-line"]')).toHaveLength(
+      1
+    )
   })
 
   it('routes clicks on the original gutter cell to the original side', () => {
@@ -1078,7 +1153,7 @@ describe('LazyDiffViewer content-type split', () => {
         modified={'alpha gamma\nkept'}
         path="notes.md"
         onLineSelectForComment={onLineSelectForComment}
-      />,
+      />
     )
 
     const rows = screen.getAllByTestId('track-changes-line')
