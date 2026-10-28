@@ -4,12 +4,12 @@
  * neither aborts a newer run's signal nor nulls the newer controller.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { AgentLoop } from '../agent-loop'
-import type { Message } from '../message-types'
-import type { ToolContext } from '../tools/tool-types'
-import type { ChatMessage } from '../llm/llm-provider'
-import { PiAIProvider } from '../llm/pi-ai-provider'
-import { AGENT_ABORT_PREFIX } from '@/lib/agent-abort'
+import { AgentLoop } from '@/agent/agent-loop'
+import type { Message } from '@/agent/message-types'
+import type { ToolContext } from '@/agent/tools/tool-types'
+import type { ChatMessage } from '@/agent/llm/llm-provider'
+import { PiAIProvider } from '@/agent/llm/pi-ai-provider'
+import { AgentAbortReasonName } from '@/lib/agent-abort'
 
 vi.mock('@/skills/skill-manager', () => ({
   getSkillManager: vi.fn(() => ({
@@ -157,7 +157,9 @@ describe('AgentLoop.run teardown isolation', () => {
     await run
     // Normal path: the run's own controller was aborted for queue cleanup and cleared.
     expect(controller.signal.aborted).toBe(true)
-    expect(controller.signal.reason?.message?.startsWith(AGENT_ABORT_PREFIX)).toBe(true)
+    expect(controller.signal.reason).toBeInstanceOf(DOMException)
+    expect((controller.signal.reason as DOMException).name).toBe('AbortError')
+    expect((controller.signal.reason as DOMException).message).toBe(AgentAbortReasonName.LifecycleTeardown)
     expect(internals.abortController).toBeNull()
   })
 })

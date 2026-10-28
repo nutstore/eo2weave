@@ -27,10 +27,11 @@ describe('createAgentAbortReason', () => {
     expect(reason.message.startsWith(AGENT_ABORT_PREFIX)).toBe(true)
   })
 
-  it('supports every semantic reason name with the prefix', () => {
+  it('supports every semantic reason name, mapping it verbatim to the message', () => {
     for (const name of Object.values(AgentAbortReasonName)) {
       const reason = createAgentAbortReason(name)
       expect(reason.name).toBe('AbortError')
+      expect(reason.message).toBe(name) // exact, not just prefixed
       expect(reason.message.startsWith(AGENT_ABORT_PREFIX)).toBe(true)
     }
   })
@@ -161,5 +162,39 @@ describe('installAgentAbortRejectionFilter', () => {
     expect(prevented).toBe(false)
     dispatchUnhandledRejection(undefined)
     expect(prevented).toBe(false)
+  })
+
+  it('stops propagation for owned aborts but still delivers foreign errors to later listeners', () => {
+    // Guards the stopImmediatePropagation() behavior the Next.js dev-overlay
+    // suppression relies on: a regression that drops stopImmediatePropagation
+    // lets owned aborts reach the overlay; one that stops propagation for
+    // everything would silence genuine errors.
+    let laterListenerSawEvent = false
+    const laterListener = (): void => { laterListenerSawEvent = true }
+    window.addEventListener('unhandledrejection', laterListener)
+    try {
+      dispatchUnhandledRejection(createAgentAbortReason(AgentAbortReasonName.ByUser))
+      expect(laterListenerSawEvent).toBe(false)
+
+      dispatchUnhandledRejection(new DOMException('signal is aborted without reason', 'AbortError'))
+      expect(laterListenerSawEvent).toBe(true)
+    } finally {
+      window.removeEventListener('unhandledrejection', laterListener)
+    }
+  })
+
+  it('installing twice for the same window does not stack listeners', () => {
+    let calls = 0
+    const countingListener = (): void => { calls += 1 }
+    window.addEventListener('unhandledrejection', countingListener)
+    try {
+      installAgentAbortRejectionFilter(window) // second install must be a no-op
+      dispatchUnhandledRejection(createAgentAbortReason(AgentAbortReasonName.ByUser))
+      // If installs stacked, the counting listener would fire once per
+      // un-suppressed pass — with dedup it never sees the owned abort at all.
+      expect(calls).toBe(0)
+    } finally {
+      window.removeEventListener('unhandledrejection', countingListener)
+    }
   })
 })

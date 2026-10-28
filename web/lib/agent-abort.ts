@@ -65,6 +65,17 @@ export function isExpectedAgentAbort(reason: unknown): reason is DOMException {
   )
 }
 
+/**
+ * Extract a human-readable message from an abort reason. DOMException does
+ * NOT reliably pass `instanceof Error` in every browser engine, so both
+ * shapes are handled explicitly.
+ */
+export function abortReasonMessage(reason: unknown): string | null {
+  if (reason instanceof Error) return reason.message
+  if (typeof DOMException !== 'undefined' && reason instanceof DOMException) return reason.message
+  return null
+}
+
 /** Windows that already have the unhandledrejection filter attached. */
 const installedTargets = new WeakSet<Window>()
 

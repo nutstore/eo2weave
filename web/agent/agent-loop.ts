@@ -23,7 +23,7 @@ import { generateContextSummaryWithLLM } from './loop/context-summary'
 import { getCompressionCutoffTimestamp, type CompressionBaselineState } from './loop/context-compression'
 import { buildRuntimeEnhancedPrompt, triggerPrefetchForMessages } from './loop/enhancements'
 import { executePiCoreLoop } from './loop/pi-core-runner'
-import { createAgentAbortReason, AgentAbortReasonName } from '@/lib/agent-abort'
+import { abortReasonMessage, createAgentAbortReason, AgentAbortReasonName } from '@/lib/agent-abort'
 import { extractTextContent } from './loop/message-mappers'
 import type { AgentCallbacks, AgentLoopConfig } from './loop/types'
 import { generateId } from './message-types'
@@ -130,16 +130,19 @@ export class AgentLoop {
     this.contextManager.setSystemPrompt(prompt)
   }
 
-  /** Cancel the current agent loop */
-  cancel(): void {
-    this.abortController?.abort(createAgentAbortReason(AgentAbortReasonName.ByUser))
+  /** Cancel the current agent loop. Internal (non-user) paths pass their own semantic reason. */
+  cancel(reason: AgentAbortReasonName = AgentAbortReasonName.ByUser): void {
+    this.abortController?.abort(createAgentAbortReason(reason))
   }
 
   private async runWithPiAgentCore(
     messages: Message[],
     callbacks?: AgentCallbacks
   ): Promise<Message[]> {
-    const signal = this.abortController?.signal
+    // Capture this invocation's controller: overlapping runs must abort and
+    // read THEIR OWN signal, not whichever run is currently the latest.
+    const controller = this.abortController
+    const signal = controller?.signal
     if (!signal) return messages
 
     let allMessages = messages
@@ -178,7 +181,7 @@ export class AgentLoop {
             maxSummaryTokens,
             compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
           }),
-        onAbortRequested: () => this.abortController?.abort(createAgentAbortReason(AgentAbortReasonName.Internal)),
+        onAbortRequested: () => controller?.abort(createAgentAbortReason(AgentAbortReasonName.Internal)),
         initialCompressionBaseline: this.compressionBaseline,
         disableThinking: this.disableThinking,
         shouldYieldForQueue: this.shouldYieldForQueue,
@@ -197,7 +200,7 @@ export class AgentLoop {
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] aborted_during_pi_core_run', {
-          reason: signal.reason instanceof Error ? signal.reason.message : 'signal_aborted',
+          reason: abortReasonMessage(signal.reason) ?? 'signal_aborted',
           messagesCount: allMessages.length,
         })
         const patched = ensureToolCallResults(allMessages)
@@ -223,10 +226,10 @@ export class AgentLoop {
       console.warn('[#LoopStop] stop_for_max_iterations', {
         maxIterations: this.maxIterations,
       })
-      // Abort the signal to stop any in-flight LLM requests inside the
+      // Abort this run's signal to stop any in-flight LLM requests inside the
       // pi-agent-core generator (especially the push-based cw-openai-fetch
       // stream whose async IIFE would otherwise keep running).
-      this.abortController?.abort(createAgentAbortReason(AgentAbortReasonName.IterationLimit))
+      controller?.abort(createAgentAbortReason(AgentAbortReasonName.IterationLimit))
       callbacks?.onIterationLimitReached?.(this.maxIterations)
     }
 
@@ -253,7 +256,9 @@ export class AgentLoop {
    */
   async runCompactOnly(messages: Message[], callbacks?: AgentCallbacks): Promise<Message[]> {
     this.abortController = new AbortController()
-    const signal = this.abortController.signal
+    // Same overlapping-run guard as run(): only this invocation's controller.
+    const controller = this.abortController
+    const signal = controller.signal
 
     try {
       // Extract content from non-summary messages for summarization
@@ -368,7 +373,9 @@ export class AgentLoop {
       callbacks?.onError?.(err)
       throw err
     } finally {
-      this.abortController = null
+      // Clear the instance reference only if a newer run has not already
+      // replaced it — otherwise we would orphan the newer run's controller.
+      if (this.abortController === controller) this.abortController = null
     }
   }
 
@@ -415,7 +422,7 @@ export class AgentLoop {
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] run_aborted', {
-          reason: signal.reason instanceof Error ? signal.reason.message : 'signal_aborted_outer',
+          reason: abortReasonMessage(signal.reason) ?? 'signal_aborted_outer',
           messagesCount: messages.length,
         })
         callbacks?.onComplete?.(messages)

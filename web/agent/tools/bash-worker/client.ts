@@ -29,7 +29,7 @@ import type {
 import { handleVfsRpc, type VfsRpcHandlerConfig } from './vfs-rpc-handler'
 import { ToolTimeoutError } from '../tool-utils'
 import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from '../agent-file-protection'
-import { AGENT_ABORT_PREFIX, registerAgentAbortError } from '@/lib/agent-abort'
+import { AGENT_ABORT_PREFIX, isExpectedAgentAbort, registerAgentAbortError } from '@/lib/agent-abort'
 
 /** Error used to reject in-flight bash work when the run signal aborts. */
 const bashAbortedError = () =>
@@ -264,12 +264,18 @@ export function createBashWorkerClient(): BashWorkerClient {
       }, opts.timeoutMs)
     })
 
-    // Abort: also terminate.
+    // Abort: also terminate. Reject with the signal's semantic reason (user
+    // Stop vs internal teardown) when the signal carries one, so callers can
+    // distinguish cancellation causes in the tool failure they receive.
     const onAbort = () => {
       const pending = pendingExec
       terminateWorker()
       if (pending && pending.requestId === requestId) {
-        pending.reject(bashAbortedError())
+        pending.reject(
+          opts.abortSignal?.reason && isExpectedAgentAbort(opts.abortSignal.reason)
+            ? opts.abortSignal.reason
+            : bashAbortedError(),
+        )
         pendingExec = null
       }
     }
