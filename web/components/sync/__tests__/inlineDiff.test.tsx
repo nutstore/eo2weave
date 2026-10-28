@@ -601,16 +601,25 @@ describe('LazyDiffViewer content-type split', () => {
       expect(fragment.hasAttribute('hidden')).toBe(false)
       expect(fragment.style.display).not.toBe('none')
       expect(fragment.style.visibility).not.toBe('hidden')
-      // The fragment's TEXT must be exposed too — hiding the text in an
-      // aria-hidden / CSS-hidden / `hidden`-attribute descendant would leave
-      // the wrapper visible to the a11y tree while assistive technology
-      // still gets none of the content. The textContent equality check
-      // above uses the `computeInlineFragments` oracle, so an empty or
-      // hidden text node fails instead of self-satisfying.
+      // The fragment's TEXT must be exposed too — hiding the text in a
+      // descendant (aria-hidden, `hidden` attribute or CSS) would leave the
+      // wrapper visible to the a11y tree while assistive technology still
+      // gets none of the content. Every descendant of the fragment must be
+      // free of ANY hiding mechanism, and the text must be non-empty, so
+      // the whole visible text lives in a11y-visible nodes.
       expect(fragment.textContent!.length).toBeGreaterThan(0)
       expect(
         fragment.querySelectorAll('[aria-hidden="true"]').length,
       ).toBe(0)
+      expect(
+        fragment.querySelectorAll('[hidden]').length,
+      ).toBe(0)
+      for (const child of fragment.querySelectorAll<HTMLElement>('*')) {
+        expect(child.hasAttribute('hidden')).toBe(false)
+        expect(child.getAttribute('aria-hidden')).toBeNull()
+        expect(child.style.display).not.toBe('none')
+        expect(child.style.visibility).not.toBe('hidden')
+      }
     }
   })
 
