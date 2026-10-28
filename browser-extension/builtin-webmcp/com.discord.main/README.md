@@ -50,8 +50,13 @@ criterion (`content`, `author_id`, `channel_id` or `has`) alongside
 retrying a timed-out send with the SAME `nonce` input makes Discord dedupe
 it, and when the caller omits `nonce` the auto-generated value (max 25
 chars, like every caller-supplied nonce enforced by the schema) is
-remembered for 10 minutes so a retry of the same send reuses it and is
-deduped instead of posting twice; it is echoed back in `data.nonce`.
+remembered per send (a bounded per-key map, 10-minute expiry) so a retry
+of the same send reuses it and is deduped instead of posting twice, while
+retries of different sends do not evict each other; it is echoed back in
+`data.nonce`. Note: two intentionally identical sends to the same channel
+and reply target within the 10-minute window share a nonce and are
+deduped by Discord — vary the content or pass an explicit `nonce` to
+force a new message.
 
 ## Readiness gating
 

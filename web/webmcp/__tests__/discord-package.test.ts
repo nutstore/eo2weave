@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeAll, expect, it } from 'vitest'
+import { beforeAll, expect, it, vi } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -60,6 +60,10 @@ it('validates every package contract and stays below the package snapshot limit'
     expect(source).not.toMatch(/document\s*\.\s*write\s*\(/)
     expect(source).toContain('webpackChunkdiscord_app')
     expect(source).toContain('credentials')
+    // Round 3: one absolute abort deadline per request — the timer must
+    // never be re-created after headers arrive (a slow-headers + stalled
+    // body request would then outlive the 25s browser-eval timeout).
+    expect(source).not.toMatch(/abortTimer\s*=\s*setTimeout/)
   }
 
 })
@@ -95,6 +99,7 @@ function fixture(options: {
   url?: string
   token?: string | null
   respond?: (url: string, init: FetchLog['init']) => { status: number; body: unknown }
+  gate?: (url: string) => Promise<void> | void
 } = {}) {
   const window = new Window({ url: options.url ?? 'https://discord.com/channels/@me' })
   window.document.write('<html><body></body></html>')
@@ -123,6 +128,7 @@ function fixture(options: {
   const pageGlobals: Record<string, unknown> = {
     fetch: async (url: string, init: FetchLog['init'] = {}) => {
       fetches.push({ url, init })
+      if (options.gate) await options.gate(url)
       const outcome = respond(url, init)
       const headers = new Map<string, string>([['content-type', 'application/json']])
       return {
@@ -270,6 +276,51 @@ it('does not use a stale cached token after logout or account switch', async () 
   const loggedOut = await page.execute('list_guilds', {})
   expect(loggedOut.value.result.error_code).toBe('UNAUTHENTICATED')
   expect(page.fetches).toHaveLength(1)
+  // The logout must also drop the cache: if webpack then disappears
+  // entirely (next call's walk cannot even run), the previous account's
+  // token must NOT come back via the missing-webpack fallback.
+  delete page.sandbox.webpackChunkdiscord_app
+  const gone = await page.execute('list_guilds', {})
+  expect(gone.value.result.error_code).toBe('UNAUTHENTICATED')
+  expect(page.fetches).toHaveLength(1)
+})
+
+it('falls back to the cache when the probe chunk callback never runs', async () => {
+  const page = fixture()
+  // First call: normal walk caches the live token.
+  await page.execute('list_guilds', {})
+  expect(page.fetches[0].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
+  // Webpack is mid-update: the chunk global is present and push works,
+  // but the injected callback never runs (getTokenFromWebpack.done stays
+  // false). This is a transient lookup failure, not a logout — the cached
+  // token must keep the tool working instead of returning UNAUTHENTICATED.
+  ;(page.window as any).webpackChunkdiscord_app.push = () => {}
+  const stuck = await page.execute('list_guilds', {})
+  expect(stuck.value.result.status).toBe('ok')
+  expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'discord-token-xyz' })
+})
+
+it('removes its probe chunk so repeated lookups do not accumulate entries', async () => {
+  const page = fixture()
+  // Real Discord's webpackChunkdiscord_app is a plain array whose push()
+  // invokes the injected callback and RETAINS the entry for the tab
+  // lifetime. Model exactly that: a real array (so indexOf/splice behave)
+  // with webpack's push semantics.
+  const chunks: unknown[] = []
+  chunks.push = function (this: unknown[], entry: unknown) {
+    Array.prototype.push.call(this, entry)
+    const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
+    requireCallback({ c: { mod: { exports: { default: { getToken: () => 'discord-token-xyz' } } } } })
+  } as typeof chunks.push
+  ;(page.window as any).webpackChunkdiscord_app = chunks
+  ;(page.sandbox as any).webpackChunkdiscord_app = chunks
+  for (let i = 0; i < 3; i++) await page.execute('list_guilds', {})
+  // Each walk pushed one probe chunk and the workflow spliced its own
+  // entry back out, so the array returns to empty: nothing accumulates
+  // and no callback closure keeps the token string alive.
+  expect(chunks).toHaveLength(0)
+  // All three calls still succeeded with the live token.
+  expect(page.fetches).toHaveLength(3)
 })
 
 it('sends messages and reactions through the right methods and bodies', async () => {
@@ -519,6 +570,54 @@ it('does not reuse a rejected webpack token but accepts a fresh one', async () =
   expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'fresh-account-token' })
 })
 
+it('keeps a newer cached token when a stale in-flight 401 arrives', async () => {
+  // The stale request resolves only when this gate is opened, so the 401
+  // lands AFTER the newer token has been cached.
+  let releaseStale: (() => void) | null = null
+  const staleGate = new Promise<void>((resolve) => {
+    releaseStale = resolve
+  })
+  const page = fixture({
+    respond: (url) =>
+      url.includes('/channels/stale/')
+        ? { status: 401, body: { code: 50012, message: 'Unknown session' } }
+        : { status: 200, body: [] },
+    gate: (url) => (url.includes('/channels/stale/') ? staleGate : undefined),
+  })
+  let currentToken = 'token-account-a'
+  ;(page.window as any).webpackChunkdiscord_app.push = (entry: unknown) => {
+    const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
+    requireCallback({
+      c: { mod: { exports: { default: { getToken: () => currentToken } } } },
+    })
+  }
+  // Cache account A's token.
+  await page.execute('read_messages', { channel: 'ok' })
+  expect(page.fetches[0].init.headers).toMatchObject({ Authorization: 'token-account-a' })
+  // An older request still authenticated as account A is IN FLIGHT: it has
+  // passed token lookup (sent with A) but is held at the gate.
+  const staleA = page.execute('read_messages', { channel: 'stale' })
+  await vi.waitFor(() => {
+    expect(page.fetches).toHaveLength(2)
+    expect(page.fetches[1].init.headers).toMatchObject({ Authorization: 'token-account-a' })
+  })
+  // Account switch: token B is now the cached live credential.
+  currentToken = 'token-account-b'
+  const asB = await page.execute('read_messages', { channel: 'ok' })
+  expect(asB.value.result.status).toBe('ok')
+  expect(page.fetches[2].init.headers).toMatchObject({ Authorization: 'token-account-b' })
+  // NOW the stale A request resolves with a coded 401. The eviction must
+  // remove only A's token and leave B's cache entry intact.
+  releaseStale!()
+  const stale = await staleA
+  expect(stale.value.result.message).toContain('(code 50012)')
+  // B is still cached and usable when webpack disappears entirely.
+  delete page.sandbox.webpackChunkdiscord_app
+  const after = await page.execute('read_messages', { channel: 'ok' })
+  expect(after.value.result.status).toBe('ok')
+  expect(page.fetches[3].init.headers).toMatchObject({ Authorization: 'token-account-b' })
+})
+
 it('keeps the cached token and the auth state on HTTP 429', async () => {
   let rateLimited = true
   const page = fixture({
@@ -580,6 +679,14 @@ it('reuses the auto-generated nonce when a send is retried with identical input'
   // A caller-supplied nonce always wins over the remembered one.
   await page.execute('send_message', { ...input, nonce: 'caller-nonce' })
   expect(JSON.parse(page.fetches[3].init.body!).nonce).toBe('caller-nonce')
+  // Retries of different sends do not evict each other: the nonce map is
+  // keyed per (channel, reply, content), not one last-send slot.
+  const inputB = { channel: '555', content: 'second message', reply_to: 'm0' }
+  await page.execute('send_message', inputB)
+  const nonceB = JSON.parse(page.fetches[4].init.body!).nonce as string
+  expect(nonceB).not.toBe(firstNonce)
+  await page.execute('send_message', input)
+  expect(JSON.parse(page.fetches[5].init.body!).nonce).toBe(firstNonce)
 })
 
 it('rejects malformed inputs at the schema boundary without touching the tab', async () => {

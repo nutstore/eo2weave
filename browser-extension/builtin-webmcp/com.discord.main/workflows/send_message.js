@@ -63,10 +63,16 @@ export default {
               var chunks = globalThis.webpackChunkdiscord_app
               if (!chunks || typeof chunks.push !== 'function') return null
               var token = null
-              chunks.push([
+              var self = getTokenFromWebpack
+              self.done = false
+              var entry = [
                 [Math.random().toString(36).slice(2)],
                 {},
                 function (require) {
+                  // Mark the probe as having actually run so a caller can
+                  // tell a completed walk that found nothing from one whose
+                  // callback never ran (webpack mid-update).
+                  self.done = true
                   var modules
                   try {
                     modules = Object.values(require.c || {})
@@ -89,7 +95,16 @@ export default {
                     }
                   }
                 },
-              ])
+              ]
+              chunks.push(entry)
+              // Drop the probe chunk right away: webpack retains pushed
+              // entries for the tab lifetime, and each entry's callback
+              // would otherwise keep a token string alive. Splicing our own
+              // entry out does not touch webpack's real chunk bookkeeping.
+              try {
+                var idx = chunks.indexOf(entry)
+                if (idx !== -1) chunks.splice(idx, 1)
+              } catch (e) {}
               return token
             } catch (e) {
               return null
@@ -111,12 +126,14 @@ export default {
               rejectedValue = globalThis.__eo2DiscordTokenRejected
             } catch (e) {}
             var ran = false
+            var completed = true
             var token = null
             try {
               var chunks = globalThis.webpackChunkdiscord_app
               if (chunks && typeof chunks.push === 'function') {
                 ran = true
                 token = getTokenFromWebpack()
+                completed = getTokenFromWebpack.done !== false
               }
             } catch (e) {}
             if (ran && token) {
@@ -131,11 +148,23 @@ export default {
               } catch (e) {}
               return token
             }
-            // The walk ran and found no token: the page really has no
-            // credential (logged out), so never fall back to the cache.
-            if (ran) return null
-            // The walk itself failed (webpack not loaded): fall back to
-            // the cache unless that cached token is the rejected one.
+            // The walk RAN and COMPLETED but found no token: the page
+            // really has no credential (logged out), so drop the cached
+            // token and record the logged-out state — otherwise a later
+            // call whose probe fails to run would fall back to the
+            // previous account's cached token.
+            if (ran && completed) {
+              try {
+                delete globalThis.__eo2DiscordToken
+                globalThis.__eo2DiscordLoggedOut = true
+              } catch (e) {}
+              return null
+            }
+            // The walk itself failed or never completed (webpack not
+            // loaded, or the chunk global was swapped mid-update and the
+            // probe callback did not run): fall back to the cache unless
+            // that cached token is the rejected one. A completed walk that
+            // found no token is handled above and can never reach here.
             try {
               var cached = globalThis.__eo2DiscordToken
               if (
@@ -183,13 +212,22 @@ export default {
               try {
                 abortController = new AbortController()
               } catch (e) {}
+            // One absolute deadline from the START of the request (not
+            // restarted when headers arrive): headers + a stalled body must
+            // never outlive the 25s browser-eval timeout. The timer is
+            // cleared exactly once, when the response is fully consumed.
+            var deadlineMs = 18000
+            var startedAt = Date.now()
             var abortTimer =
               abortController !== null
-                ? setTimeout(function () {
-                    try {
-                      abortController.abort()
-                    } catch (e) {}
-                  }, 20000)
+                ? setTimeout(
+                    function () {
+                      try {
+                        abortController.abort()
+                      } catch (e) {}
+                    },
+                    Math.max(1, deadlineMs - (Date.now() - startedAt)),
+                  )
                 : null
             var response
             try {
@@ -212,15 +250,10 @@ export default {
                   : 'Network error calling Discord API: ' + String(e),
               }
             }
-            // Keep the in-page deadline armed while the response body is
-            // consumed: headers can arrive while the body stalls forever,
-            // and the browser eval would time out with the read un-aborted.
-            if (abortTimer !== null)
-              abortTimer = setTimeout(function () {
-                try {
-                  abortController.abort()
-                } catch (e) {}
-              }, 20000)
+            // The abort timer stays armed across body consumption: the
+            // absolute deadline above already covers headers + body, so it
+            // must NOT be restarted here (that would let a slow-headers
+            // request outlive the browser-eval timeout).
             if (!response.ok) {
               var text = ''
               try {
@@ -252,8 +285,12 @@ export default {
                 // 401/403 bodies fall through to the generic AUTH branch.
                 var classified = classify(code, message)
                 if (classified === 'AUTH' || response.status === 401) {
+                  // Evict only if the cache still holds THIS rejected
+                  // token: a newer credential cached by a concurrent call
+                  // (account switch) must survive this stale 401.
                   try {
-                    delete globalThis.__eo2DiscordToken
+                    if (globalThis.__eo2DiscordToken === token)
+                      delete globalThis.__eo2DiscordToken
                   } catch (e) {}
                   // A 401 means Discord rejected this credential: suppress
                   // it even if the webpack module still exposes it, until a
@@ -277,7 +314,8 @@ export default {
               }
               if (response.status === 401 || response.status === 403) {
                 try {
-                  delete globalThis.__eo2DiscordToken
+                  if (globalThis.__eo2DiscordToken === token)
+                    delete globalThis.__eo2DiscordToken
                 } catch (e) {}
                 if (response.status === 401)
                   try {
@@ -420,16 +458,21 @@ export default {
               // nonce lets Discord dedupe a retried POST after a lost
               // response, and enforce_nonce makes Discord itself reject a
               // duplicate. Callers retrying after a timeout should pass the
-              // SAME nonce again; when the caller omitted one, remember the
-              // auto-generated value per (channel, reply, content) so a
-              // retry whose result was lost reuses it and Discord dedupes
-              // instead of posting twice. The entry expires after 10
-              // minutes, and a different message always gets a fresh nonce,
-              // so two sends in the same millisecond never collide. The
-              // generated value is echoed back in data.nonce for reuse.
+              // SAME nonce again for exact retry control; when the caller
+              // omitted one, the auto-generated value is remembered per
+              // (channel, reply, content) key in a bounded map, so retries
+              // of DIFFERENT sends do not evict each other the way a single
+              // last-send slot would. Entries expire after 10 minutes and
+              // the map holds at most 32 keys (oldest evicted first).
+              // Known trade-off: two intentionally identical sends to the
+              // same channel/reply target within the 10-minute window share
+              // a nonce and Discord dedupes the second one — vary the
+              // content or pass an explicit nonce to force a new message.
+              // A different message always gets a fresh nonce, so two sends
+              // in the same millisecond never collide. The generated value
+              // is echoed back in data.nonce for reuse.
               var nonce = args.nonce
               var retryKey = null
-              var remembered = null
               if (nonce === undefined) {
                 retryKey =
                   args.channel +
@@ -438,12 +481,19 @@ export default {
                   '|' +
                   args.content
                 try {
-                  remembered = globalThis.__eo2DiscordLastSend
+                  var retries =
+                    (globalThis.__eo2DiscordRetryNonces =
+                      globalThis.__eo2DiscordRetryNonces || new Map())
+                  // Lazily drop expired entries instead of timing each one.
+                  var now = Date.now()
+                  retries.forEach(function (value, k) {
+                    if (now - value.at >= 600000) retries.delete(k)
+                  })
+                  var remembered = retries.get(retryKey)
                   if (
                     remembered &&
-                    remembered.key === retryKey &&
                     typeof remembered.nonce === 'string' &&
-                    Date.now() - remembered.at < 600000
+                    now - remembered.at < 600000
                   )
                     nonce = remembered.nonce
                 } catch (e) {}
@@ -455,10 +505,15 @@ export default {
                   Math.random().toString(36).slice(2, 10)
               if (retryKey !== null)
                 try {
-                  globalThis.__eo2DiscordLastSend = {
-                    key: retryKey,
-                    nonce: nonce,
-                    at: Date.now(),
+                  var store =
+                    (globalThis.__eo2DiscordRetryNonces =
+                      globalThis.__eo2DiscordRetryNonces || new Map())
+                  store.delete(retryKey)
+                  store.set(retryKey, { nonce: nonce, at: Date.now() })
+                  // Bounded: keep the map at 32 keys, evicting the oldest.
+                  while (store.size > 32) {
+                    var oldest = store.keys().next().value
+                    store.delete(oldest)
                   }
                 } catch (e) {}
               var body = {
