@@ -137,11 +137,14 @@ export class AgentLoop {
 
   private async runWithPiAgentCore(
     messages: Message[],
-    callbacks?: AgentCallbacks
+    callbacks?: AgentCallbacks,
+    invocationController?: AbortController | null
   ): Promise<Message[]> {
-    // Capture this invocation's controller: overlapping runs must abort and
-    // read THEIR OWN signal, not whichever run is currently the latest.
-    const controller = this.abortController
+    // Use the CALLER's captured controller when provided (run() captured it
+    // right after creating it); fall back to the instance field otherwise.
+    // Overlapping runs must abort and read THEIR OWN signal, not whichever
+    // run is currently the latest.
+    const controller = invocationController !== undefined ? invocationController : this.abortController
     const signal = controller?.signal
     if (!signal) return messages
 
@@ -187,16 +190,21 @@ export class AgentLoop {
         shouldYieldForQueue: this.shouldYieldForQueue,
         sessionId: this.sessionId,
       })
-      this.compressionBaseline = result.compressionBaseline ?? this.compressionBaseline
+      // Commit compression state only while this invocation still owns the
+      // instance (a newer overlapping run must not have its baseline or
+      // counters clobbered by an older, slower run finishing last).
+      if (this.abortController === controller) {
+        this.compressionBaseline = result.compressionBaseline ?? this.compressionBaseline
+        this.convertCallCount = result.convertCallCount
+        this.lastSummaryConvertCall = result.lastSummaryConvertCall
+        this.onCompressionStateUpdate?.({
+          convertCallCount: this.convertCallCount,
+          lastSummaryConvertCall: this.lastSummaryConvertCall,
+        })
+      }
       allMessages = result.allMessages
       shouldStopForElicitation = result.shouldStopForElicitation
       reachedMaxIterations = result.reachedMaxIterations
-      this.convertCallCount = result.convertCallCount
-      this.lastSummaryConvertCall = result.lastSummaryConvertCall
-      this.onCompressionStateUpdate?.({
-        convertCallCount: this.convertCallCount,
-        lastSummaryConvertCall: this.lastSummaryConvertCall,
-      })
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] aborted_during_pi_core_run', {
@@ -418,7 +426,7 @@ export class AgentLoop {
     }
 
     try {
-      return await this.runWithPiAgentCore(messages, callbacks)
+      return await this.runWithPiAgentCore(messages, callbacks, controller)
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] run_aborted', {

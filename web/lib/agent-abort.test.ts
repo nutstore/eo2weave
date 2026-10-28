@@ -183,18 +183,26 @@ describe('installAgentAbortRejectionFilter', () => {
     }
   })
 
-  it('installing twice for the same window does not stack listeners', () => {
-    let calls = 0
-    const countingListener = (): void => { calls += 1 }
-    window.addEventListener('unhandledrejection', countingListener)
-    try {
-      installAgentAbortRejectionFilter(window) // second install must be a no-op
-      dispatchUnhandledRejection(createAgentAbortReason(AgentAbortReasonName.ByUser))
-      // If installs stacked, the counting listener would fire once per
-      // un-suppressed pass — with dedup it never sees the owned abort at all.
-      expect(calls).toBe(0)
-    } finally {
-      window.removeEventListener('unhandledrejection', countingListener)
+  it('installing twice for the same window does not add a second filter pass', () => {
+    // Count FILTER passes rather than deliveries: a naive duplicate-listener
+    // check would pass even with dedup removed, because the FIRST filter's
+    // stopImmediatePropagation hides a second duplicate from any downstream
+    // listener. Wrap preventDefault on the EVENT before dispatching — every
+    // registered filter instance calls it once for an owned abort, so the
+    // call count equals the number of installed filter listeners.
+    let preventDefaultCalls = 0
+    const event = new Event('unhandledrejection') as PromiseRejectionEvent
+    Object.defineProperty(event, 'reason', { value: createAgentAbortReason(AgentAbortReasonName.ByUser) })
+    Object.defineProperty(event, 'promise', { value: Promise.resolve() })
+    const original = event.preventDefault.bind(event)
+    event.preventDefault = (): void => {
+      original()
+      preventDefaultCalls += 1
     }
+    installAgentAbortRejectionFilter(window) // second install must be a no-op
+    window.dispatchEvent(event)
+    // Exactly one filter pass ran (the beforeEach install); a stacked
+    // duplicate would call preventDefault twice.
+    expect(preventDefaultCalls).toBe(1)
   })
 })

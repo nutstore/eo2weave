@@ -17,7 +17,7 @@ vi.mock('@/skills/skill-manager', () => ({
   })),
 }))
 
-vi.mock('../intelligence-coordinator', () => ({
+vi.mock('@/agent/intelligence-coordinator', () => ({
   getIntelligenceCoordinator: vi.fn(() => ({
     enhanceSystemPrompt: vi.fn((prompt: string) => Promise.resolve({ systemPrompt: prompt })),
   })),
@@ -29,7 +29,7 @@ vi.mock('@/mcp', () => ({
   })),
 }))
 
-vi.mock('../prefetch', () => ({
+vi.mock('@/agent/prefetch', () => ({
   triggerPrefetch: vi.fn(() => Promise.resolve()),
 }))
 
