@@ -1,7 +1,7 @@
 /**
  * First-run thinking default tests (issue #88)
  *
- * Fresh installs must get enableThinking=true at 'high'; existing installs
+ * Fresh installs must get enableThinking=true at 'medium'; existing installs
  * with persisted settings must keep whatever they stored (including an
  * explicit false).
  */
@@ -51,7 +51,7 @@ describe('first-run thinking default (#88)', () => {
     // zustand persist rehydrates synchronously from localStorage at creation.
     const state = useSettingsStore.getState()
     expect(state.enableThinking).toBe(true)
-    expect(state.thinkingLevel).toBe('high')
+    expect(state.thinkingLevel).toBe('medium')
   })
 
   it('existing install with stored enableThinking:false is NOT flipped', async () => {
@@ -102,7 +102,7 @@ describe('first-run thinking default (#88)', () => {
     const { useSettingsStore } = await importStore()
 
     expect(useSettingsStore.getState().enableThinking).toBe(true)
-    expect(useSettingsStore.getState().thinkingLevel).toBe('high')
+    expect(useSettingsStore.getState().thinkingLevel).toBe('medium')
 
     // Force a state change so zustand persist writes to localStorage.
     useSettingsStore.getState().setEnableThinking(false)
@@ -112,6 +112,6 @@ describe('first-run thinking default (#88)', () => {
     const parsed = JSON.parse(raw as string) as { state: PersistedShape & { __settingsWriteRevision?: number }; version: number }
     expect(parsed.version).toBe(4)
     expect(parsed.state.enableThinking).toBe(false)
-    expect(parsed.state.thinkingLevel).toBe('high')
+    expect(parsed.state.thinkingLevel).toBe('medium')
   })
 })

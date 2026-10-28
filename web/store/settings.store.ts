@@ -503,7 +503,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       // their persisted values — the persist migrate (version < 4) restores
       // whatever was stored, so these defaults only apply to fresh installs.
       enableThinking: true,
-      thinkingLevel: 'high' as ExtendedThinkingLevel,
+      thinkingLevel: 'medium' as ExtendedThinkingLevel,
       enableBatchSpawn: false,
       enableWebMCP: true,
       snapshotHighWatermark: 100,
