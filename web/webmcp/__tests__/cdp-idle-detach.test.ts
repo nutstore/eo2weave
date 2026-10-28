@@ -81,8 +81,9 @@ describe('CDP idle auto-detach', () => {
 
   it('keeps persisted timestamps for other tabs when a new tab persists activity', async () => {
     // Tab A's timestamp exists in storage (previous SW); the current worker
-    // only knows tab B. A B-activity persist must not erase A's record.
-    const data = new Map<string, unknown>([['cw_cdp_activity', { 5: Date.now() }]])
+    // only knows tab B. A B-activity persist must not erase or alter A's record.
+    const tab5Timestamp = Date.now() - 90_000
+    const data = new Map<string, unknown>([['cw_cdp_activity', { 5: tab5Timestamp }]])
     ;(chrome.storage.session.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}))
     ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
     const cdp = await loadModule()
@@ -90,7 +91,35 @@ describe('CDP idle auto-detach', () => {
     // Flush the coalesced persist.
     await vi.advanceTimersByTimeAsync(10)
     const stored = await chrome.storage.session.get('cw_cdp_activity')
-    expect(stored.cw_cdp_activity).toEqual({ 5: expect.any(Number), 7: expect.any(Number) })
+    expect(stored.cw_cdp_activity).toEqual({ 5: tab5Timestamp, 7: expect.any(Number) })
+  })
+
+  it('skips the persist write after a failed storage read, keeping other tabs', async () => {
+    // Tab A's timestamp exists in storage; the read fails, so the worker only
+    // knows tab 7. Writing the partial map would erase A's cleanup record.
+    const data = new Map<string, unknown>([['cw_cdp_activity', { 5: Date.now() }]])
+    // Both the eager load and the persist-time hydrate must fail so the write
+    // path sees a failed read.
+    ;(chrome.storage.session.get as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('storage unavailable'))
+      .mockRejectedValueOnce(new Error('storage unavailable'))
+      .mockImplementation(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}))
+    ;(chrome.storage.session.set as ReturnType<typeof vi.fn>).mockImplementation(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) })
+    const cdp = await loadModule()
+    cdp.noteCdpActivity(7)
+    // The failed read must leave storage untouched — a partial write would
+    // erase tab 5's cleanup record.
+    await vi.advanceTimersByTimeAsync(10)
+    const stored = await chrome.storage.session.get('cw_cdp_activity')
+    expect(stored.cw_cdp_activity).toEqual({ 5: expect.any(Number) })
+    // Once the read recovers, the next activity note's persist lands with
+    // both tabs. Move past the per-tab persist throttle first so the note
+    // schedules a fresh write.
+    await vi.advanceTimersByTimeAsync(6_000)
+    cdp.noteCdpActivity(7)
+    await vi.advanceTimersByTimeAsync(cdp.CDP_IDLE_TIMEOUT_MS + 10)
+    const recovered = await chrome.storage.session.get('cw_cdp_activity')
+    expect(recovered.cw_cdp_activity).toEqual({ 5: expect.any(Number), 7: expect.any(Number) })
   })
 
   it('keeps the activity record when a detach fails after a SW restart, so sweeps retry', async () => {

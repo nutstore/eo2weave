@@ -71,24 +71,28 @@ function sessionStore(): chrome.storage.StorageArea | undefined {
 }
 
 /** Restore activity recorded before the service worker was discarded. */
-async function loadPersistedActivity(): Promise<void> {
-    if (activityLoaded) return activityLoaded
-    activityLoaded = (async () => {
+async function loadPersistedActivity(): Promise<boolean> {
+    if (activityLoaded) return true
+    const attempt = (async () => {
         const stored = (await sessionStore()?.get(ACTIVITY_STORAGE_KEY))?.[ACTIVITY_STORAGE_KEY]
-        if (!stored || typeof stored !== "object") return
-        for (const [tab, at] of Object.entries(stored as Record<string, unknown>)) {
-            const tabId = Number(tab)
-            const value = Number(at)
-            if (!Number.isSafeInteger(tabId) || !Number.isFinite(value)) continue
-            // Never overwrite fresher in-memory activity with an older snapshot.
-            const known = lastActivity.get(tabId)
-            if (known === undefined || value > known) lastActivity.set(tabId, value)
+        if (stored && typeof stored === "object") {
+            for (const [tab, at] of Object.entries(stored as Record<string, unknown>)) {
+                const tabId = Number(tab)
+                const value = Number(at)
+                if (!Number.isSafeInteger(tabId) || !Number.isFinite(value)) continue
+                // Never overwrite fresher in-memory activity with an older snapshot.
+                const known = lastActivity.get(tabId)
+                if (known === undefined || value > known) lastActivity.set(tabId, value)
+            }
         }
+        return true
     })().catch(() => {
         // Allow a later sweep to retry the read instead of caching the failure.
         activityLoaded = undefined
+        return false
     })
-    return activityLoaded
+    activityLoaded = attempt.then(() => {})
+    return attempt
 }
 
 function persistActivity(force = false): void {
@@ -122,7 +126,9 @@ function scheduleTabPersist(tabId: number): void {
     if (pending !== undefined) clearTimeout(pending)
     const timer = setTimeout(() => {
         pendingPersists.delete(tabId)
-        void loadPersistedActivity().then(writePersistedActivity)
+        // A failed hydrate must not overwrite other tabs' stored timestamps
+        // with this worker's partial map — retry the read instead.
+        void loadPersistedActivity().then(ok => { if (ok) writePersistedActivity() })
     }, 0)
     pendingPersists.set(tabId, timer)
 }
