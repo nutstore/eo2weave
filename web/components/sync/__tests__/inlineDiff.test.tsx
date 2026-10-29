@@ -42,8 +42,12 @@ import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 // name INSTEAD of the subtree text. The list includes the whole
 // name-from-content widget family (checkbox/radio/switch/menuitem*,
 // option, tab, treeitem, button, link, …) and inherently atomic roles
-// (img, progressbar, meter, …). Roles whose descendant text STAYS
-// exposed live in TEXT_KEEPING_ROLES below instead.
+// (img, progressbar, meter, …). Structural CONTAINER roles (menu,
+// menubar, gridcell, rowheader, columnheader) and separator are NOT here:
+// their descendants stay exposed to AT, so they live in
+// TEXT_KEEPING_ROLES below — a role belongs here only when it suppresses
+// descendant exposure, not merely because it is interactive or
+// "single-value".
 const REPLACEMENT_ROLES = new Set([
   'button',
   'link',
@@ -55,8 +59,6 @@ const REPLACEMENT_ROLES = new Set([
   'checkbox',
   'radio',
   'switch',
-  'menu',
-  'menubar',
   'progressbar',
   'meter',
   'scrollbar',
@@ -68,19 +70,21 @@ const REPLACEMENT_ROLES = new Set([
   'listbox',
   'tooltip',
   'treeitem',
-  'rowheader',
-  'columnheader',
-  'gridcell',
   'img',
 ])
 // Roles that PRESERVE descendant text in the accessibility tree: live
 // regions (status/alert/log/marquee/timer) announce their CONTENT — that
 // is their entire purpose — and semantic text roles (code, heading,
-// term, time, caption, cell) expose their subtree text. None of them
-// replaces descendant text with an accessible name, so diff fragments
-// inside them remain announced and must not be rejected: they are
-// classified by whether the role keeps text, not by whether it is
-// "single-value".
+// term, time, caption, cell) expose their subtree text. Structural
+// container roles (menu, menubar, gridcell, rowheader, columnheader)
+// belong here too: they organize descendants but never replace their
+// text with an accessible name, so diff fragments inside them remain
+// announced and must not be rejected. `separator` is also text-keeping
+// in the only case this sweep can observe: children-presentational
+// semantics apply to the separator's own rendering, while a separator
+// that CONTAINS content — which is exactly what an ancestor wrapping a
+// diff fragment is — keeps that text exposed (an empty separator has no
+// text to hide in the first place).
 const TEXT_KEEPING_ROLES = new Set([
   'status',
   'alert',
@@ -93,12 +97,24 @@ const TEXT_KEEPING_ROLES = new Set([
   'term',
   'time',
   'cell',
+  'menu',
+  'menubar',
+  'gridcell',
+  'rowheader',
+  'columnheader',
+  'separator',
 ])
 // Native tags with the same implicit atomic / name-replacing behavior when
 // no explicit `role` overrides them. Text-preserving wrappers (`pre`,
 // `code`, `blockquote`, headings, `dt`/`dd`, `figcaption`) keep descendant
 // text in the a11y tree — they are semantic emphasis, not replacements —
 // so they are deliberately excluded (see NODE_TEXT_KEEPING_TAGS below).
+// The same applies to the text-bearing native elements `time`, `data`,
+// `output`, `td` and `th`: each exposes its CONTENT to AT (`<time>` and
+// `<data>` wrap the text they annotate, `<output>` and table header/data
+// cells render their subtree), so a diff fragment inside them stays
+// announced — they are text-keeping, not name-replacements, and live in
+// NODE_TEXT_KEEPING_TAGS below.
 const IMPLICIT_REPLACEMENT_TAGS = new Set([
   'button',
   'a',
@@ -110,17 +126,15 @@ const IMPLICIT_REPLACEMENT_TAGS = new Set([
   'textarea',
   'input',
   'label',
-  'output',
-  'data',
-  'time',
   'summary',
   'optgroup',
-  'td',
-  'th',
 ])
 // Unroled native tags whose implicit `generic` role keeps their text in
 // the accessibility tree: inline semantic emphasis and neutral wrappers.
-// A diff fragment may legitimately be wrapped in any of these.
+// A diff fragment may legitimately be wrapped in any of these. The
+// text-bearing natives `time`, `data`, `output`, `td` and `th` belong
+// here: their implicit roles (`time`, `data`, `status` for `output`,
+// `cell`/`columnheader` for `td`/`th`) all expose their subtree text.
 const NODE_TEXT_KEEPING_TAGS = new Set([
   'span',
   'em',
@@ -157,6 +171,38 @@ const NODE_TEXT_KEEPING_TAGS = new Set([
   'h6',
   'del',
   'ins',
+  'time',
+  'data',
+  'output',
+  'td',
+  'th',
+])
+// Explicit roles that KEEP descendant text in the accessibility tree.
+// Used by the descendant pass (every node role must be in this set) and
+// by the ancestor pass (a text-keeping token stops fallback resolution —
+// see resolveAncestorIsReplacement below). Includes the diff roles
+// themselves (deletion/insertion expose the semantics AND the text),
+// inline emphasis (mark/sub/sup), presentational roles (which strip the
+// node's own semantics but keep the text), neutral containers, and
+// TEXT_KEEPING_ROLES.
+const NODE_TEXT_KEEPING_ROLES = new Set([
+  'deletion',
+  'insertion',
+  'mark',
+  'sub',
+  'sup',
+  'presentation',
+  'none',
+  'generic',
+  'group',
+  'figure',
+  'list',
+  'listitem',
+  'region',
+  'table',
+  'row',
+  'cell',
+  ...TEXT_KEEPING_ROLES,
 ])
 // Tailwind utility class-name TOKENS that REMOVE content from assistive
 // technology. Matching is token-exact (whole class token, or the token
@@ -187,8 +233,22 @@ const HIDING_CLASS_TOKENS = new Set([
 // is still judged by its bare token name.
 const normalizeUtilityToken = (token: string): string => {
   // Split off any responsive/state variant prefix (`md:hidden!` →
-  // `hidden!`), then remove leading and trailing `!` markers.
-  const bare = token.slice(token.lastIndexOf(':') + 1)
+  // `hidden!`), then remove leading and trailing `!` markers. The split
+  // colon must be OUTSIDE arbitrary-property brackets: a class like
+  // `dark:[color:hover:red]` or `[--x:1]` carries colons INSIDE the
+  // bracket that are part of the property syntax, not variant
+  // separators — splitting there would leave only the trailing value
+  // (`red]`) and the hiding class check would test the wrong token.
+  // Only a colon at bracket depth 0 separates variants.
+  let depth = 0
+  let splitAt = -1
+  for (let i = 0; i < token.length; i++) {
+    const ch = token[i]
+    if (ch === '[') depth++
+    else if (ch === ']') depth = Math.max(0, depth - 1)
+    else if (ch === ':' && depth === 0) splitAt = i
+  }
+  const bare = splitAt === -1 ? token : token.slice(splitAt + 1)
   return bare.replace(/^!+/, '').replace(/!+$/, '')
 }
 // Tailwind arbitrary-property classes bypass the class-name check above:
@@ -807,20 +867,68 @@ describe('LazyDiffViewer content-type split', () => {
         // group-style container that keeps its descendants in the
         // accessibility tree (the name is announced in addition to the
         // content), so a named figure with diff text inside is valid.
-        const ancestorRole = ancestor.getAttribute('role')
-        const ancestorIsReplacement =
-          (ancestorRole !== null && REPLACEMENT_ROLES.has(ancestorRole)) ||
-          (ancestorRole === null && IMPLICIT_REPLACEMENT_TAGS.has(ancestor.tagName.toLowerCase()))
+        const ancestorRoleAttr = ancestor.getAttribute('role')
+        // The `role` attribute is a SPACE-SEPARATED fallback list
+        // (`role="gridcell button"`): AT picks the FIRST token it knows.
+        // Comparing the whole attribute string to the list would miss an
+        // effective replacement token hidden after a text-keeping or
+        // unknown one, so resolve token by token, in order:
+        // - a token with replacement semantics wins immediately — the
+        //   subtree text is suppressed;
+        // - a token with text-keeping semantics (including
+        //   `presentation`/`none`, which strip the node's own semantics
+        //   but KEEP the text) stops the fallback — the effective role
+        //   keeps the text exposed;
+        // - an unknown token means AT would fall through to the next
+        //   token, and ultimately to the native tag's implicit role — so
+        //   the loop continues.
+        // When the attribute is absent, null, or entirely unknown, the
+        // NATIVE semantics apply: an implicit-replacement tag (`button`,
+        // `img`, …) is a replacement, everything else keeps its text.
+        // A focusable native control (`<button role="presentation">`,
+        // `<input role="bogus">`) RETAINS its semantics per the ARIA in
+        // HTML spec — presentational-role conflict resolution — so its
+        // implicit tag must still be checked when the explicit role does
+        // not change the outcome.
+        const roleTokens =
+          ancestorRoleAttr === null ? [] : ancestorRoleAttr.trim().split(/\s+/).filter(Boolean)
+        let ancestorIsReplacement: boolean
+        if (roleTokens.length === 0) {
+          ancestorIsReplacement = IMPLICIT_REPLACEMENT_TAGS.has(ancestor.tagName.toLowerCase())
+        } else {
+          let resolved: boolean | null = null
+          for (const token of roleTokens) {
+            if (REPLACEMENT_ROLES.has(token)) {
+              resolved = true
+              break
+            }
+            if (NODE_TEXT_KEEPING_ROLES.has(token)) {
+              resolved = false
+              break
+            }
+          }
+          // No recognized token: the explicit role is ignored/invalid and
+          // the native tag's semantics remain in effect.
+          ancestorIsReplacement =
+            resolved === null
+              ? IMPLICIT_REPLACEMENT_TAGS.has(ancestor.tagName.toLowerCase())
+              : resolved
+        }
         expect(ancestorIsReplacement).toBe(false)
         // A text-PRESERVING ancestor (group/figure-style) may still carry
         // a name whose name source would turn it into a labelled
         // replacement for AT: `aria-label`/`aria-labelledby`/`title`
-        // override name-from-content. On text-keeping elements the name
-        // merely supplements the subtree text, so those attributes are
-        // allowed there and rejected only where the role replaces content.
+        // override name-from-content. On text-keeping elements
+        // `aria-label`/`title` merely supplement the subtree text, so
+        // those are allowed there — but `aria-labelledby` NAMES the
+        // element from other nodes regardless of role, and a labelled
+        // node is announced BY its name wherever the label applies, so it
+        // is rejected on every ancestor (and on every diff fragment /
+        // text-preserving descendant in the descendant pass below)
+        // independently of the replacement classification.
+        expect(ancestor.getAttribute('aria-labelledby')).toBeNull()
         if (ancestorIsReplacement) {
           expect(ancestor.getAttribute('aria-label')).toBeNull()
-          expect(ancestor.getAttribute('aria-labelledby')).toBeNull()
           expect(ancestor.getAttribute('title')).toBeNull()
         }
         // Computed-style guard on ancestors too: a hidden ancestor hides
@@ -884,32 +992,14 @@ describe('LazyDiffViewer content-type split', () => {
         // here too: their name is announced in ADDITION to the content,
         // so a labelled figure/group with diff text inside is valid.
         // TEXT_KEEPING_ROLES (status/alert/log/marquee/timer, code,
-        // heading, term, time, caption, cell) are here for the same
+        // heading, term, time, caption, cell, menu/menubar/gridcell/
+        // rowheader/columnheader, separator) are here for the same
         // reason: those roles EXPOSE their subtree text instead of
         // replacing it with a name, so valid diff markup using them
         // passes. Any other explicit role is rejected — an allow-list
         // cannot be snuck past by an unlisted replacement role.
-        const NODE_TEXT_KEEPING_ROLES = [
-          'deletion',
-          'insertion',
-          'mark',
-          'sub',
-          'sup',
-          'presentation',
-          'none',
-          'generic',
-          'group',
-          'figure',
-          'list',
-          'listitem',
-          'region',
-          'table',
-          'row',
-          'cell',
-          ...TEXT_KEEPING_ROLES,
-        ]
         if (nodeRole !== null) {
-          expect(NODE_TEXT_KEEPING_ROLES).toContain(nodeRole)
+          expect(NODE_TEXT_KEEPING_ROLES.has(nodeRole)).toBe(true)
         }
         // IMPLICIT native roles count as well: an element can be atomic
         // for AT without any `role` attribute (e.g. `<img>`, `<button>`,
@@ -931,22 +1021,28 @@ describe('LazyDiffViewer content-type split', () => {
         // A name from ANY source makes the node a labelled atomic
         // replacement for AT — but ONLY where the node's role makes the
         // name REPLACE the content: on a group-style container (figure,
-        // group, region, list…) the accessible name is announced IN
-        // ADDITION to the subtree text, so a named figure with diff text
-        // inside stays valid. `title` is included because it is an
-        // accessible-name fallback, not just a tooltip. For text-replacing
-        // roles, the name is the only thing AT announces — the diff text
-        // vanishes — so any name source is rejected there. For explicit
-        // roles that keep text, generic containers without names, the
-        // name attributes are still forbidden: an unroled wrapper with an
+        // group, region, list…) `aria-label` and `title` are announced
+        // IN ADDITION to the subtree text, so a named figure with diff
+        // text inside stays valid. For text-replacing roles, the name is
+        // the only thing AT announces — the diff text vanishes — so any
+        // name source is rejected there. For explicit roles that keep
+        // text, generic containers without names, the `aria-label`/`title`
+        // attributes are still forbidden: an unroled wrapper with an
         // `aria-label` is a wrapper being used AS a label, and hiding the
         // diff text inside a plain span is exactly the regression this
         // suite guards against.
+        // `aria-labelledby` is DIFFERENT: it names the element from OTHER
+        // nodes and the referenced name REPLACES the element's contents
+        // wherever a name applies — including on text-preserving roles
+        // and plain generic wrappers, where AT announces the referenced
+        // text instead of the subtree. It is therefore checked on EVERY
+        // diff fragment and descendant, independently of the
+        // `nameReplacesContents` classification.
         const nameReplacesContents =
           (nodeRole !== null && REPLACEMENT_ROLES.has(nodeRole)) || nodeIsImplicitReplacement
+        expect(node.getAttribute('aria-labelledby')).toBeNull()
         if (nameReplacesContents) {
           expect(node.getAttribute('aria-label')).toBeNull()
-          expect(node.getAttribute('aria-labelledby')).toBeNull()
           expect(node.getAttribute('title')).toBeNull()
         }
         expect(node.style.display).not.toBe('none')
