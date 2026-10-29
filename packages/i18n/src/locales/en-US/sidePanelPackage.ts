@@ -21,4 +21,5 @@ export const sidePanelPackage = {
   enabledToast: "{name} enabled — the page will reload to activate the tools",
   enableFailedToast: "Failed to enable. Please make sure the extension is up to date and try again.",
   consentRetryToast: "The confirmation expired before it could be used. Close this dialog and try again — no cooldown was recorded.",
+  enabledVerificationUnavailableToast: "{name} was enabled and the page reloaded, but the change could not be verified — check the extension's Supported Sites page if the tools do not appear.",
 }

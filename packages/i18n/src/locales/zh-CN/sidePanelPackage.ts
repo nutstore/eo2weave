@@ -21,4 +21,5 @@ export const sidePanelPackage = {
   enabledToast: "已开启 {name}，网页将自动刷新以加载工具",
   enableFailedToast: "开启失败，请确认插件为最新版本后重试",
   consentRetryToast: "确认凭据已过期，关闭本窗口后即可重试（不会计入冷却时间）。",
+  enabledVerificationUnavailableToast: "已开启 {name} 并刷新了网页，但未能完成写入校验——若工具未出现，请到插件的「支持的网站」管理页确认。",
 }
