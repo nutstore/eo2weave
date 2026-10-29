@@ -125,6 +125,9 @@ export const conversation = {
     error: {
       gatewayReloginTitle: "Nutstore AI 로그인이 만료되었습니다",
       gatewayRelogin: "Nutstore AI 다시 로그인",
+      gatewayInsufficientCredit: "Nutstore AI 크레딧 잔액이 소진되었습니다. 충전 후 다시 시도하세요",
+      gatewayRecharge: "충전하기",
+      gatewayRechargeTitle: "Nutstore AI 크레딧 부족",
       gatewayReloginSuccess: "로그인 성공 — 메시지를 다시 보내주세요",
       gatewayClientIdMissing: "Nutstore AI Client ID가 설정되지 않아 로그인할 수 없습니다",
       gatewayLoginFailed: "Nutstore AI 로그인에 실패했습니다",

@@ -125,6 +125,9 @@ export const conversation = {
     error: {
       gatewayReloginTitle: "Nutstore AI のログインが期限切れです",
       gatewayRelogin: "Nutstore AI に再ログイン",
+      gatewayInsufficientCredit: "Nutstore AI のクレジット残高を使い切りしました。チャージしてください",
+      gatewayRecharge: "チャージする",
+      gatewayRechargeTitle: "Nutstore AI のクレジット不足",
       gatewayReloginSuccess: "ログイン成功 — メッセージを再送信してください",
       gatewayClientIdMissing: "Nutstore AI の Client ID が未設定のためログインできません",
       gatewayLoginFailed: "Nutstore AI ログインに失敗しました",

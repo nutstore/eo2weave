@@ -12,7 +12,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react'
-import { AlertTriangle, RefreshCw, WifiOff, KeyRound } from 'lucide-react'
+import { AlertTriangle, RefreshCw, WifiOff, KeyRound, Wallet } from 'lucide-react'
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
 import { presentLlmError } from './llm-error'
@@ -662,6 +662,42 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
   // automatic refresh definitively expired — transient refresh failures
   // keep the generic presentation below.
   const isGatewayCredentialsExpired = errorCode === 'GATEWAY_CREDENTIALS_EXPIRED'
+  // Gateway credit exhausted (429 + code "insufficient_credit", stamped by
+  // the fetch layer): retrying can never succeed (retriable: false) — the
+  // only recovery is topping up, so offer the Recharge entry instead of the
+  // generic "继续" retry. Distinguished from the SAME 429 carrying code
+  // "rate_limited" (unsettled-request window), which keeps the generic
+  // presentation.
+  const isGatewayInsufficientCredit = errorCode === 'GATEWAY_INSUFFICIENT_CREDIT'
+  if (isGatewayInsufficientCredit) {
+    return (
+      <div className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+        <div className="mx-auto max-w-3xl">
+          <div className="flex items-start gap-2.5">
+            <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-amber-500 dark:text-amber-400" />
+            <div className="min-w-0 flex-1">
+              <p className="font-medium">
+                {t('conversation.error.gatewayRechargeTitle')}
+              </p>
+              <p className="mt-0.5 text-amber-700 dark:text-amber-300">
+                {error.replace(/^\[GATEWAY_INSUFFICIENT_CREDIT\]\s*/, '')}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  window.open('https://ai.jianguoyun.com/', '_blank', 'noopener,noreferrer')
+                }}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-700"
+              >
+                <Wallet className="h-3 w-3" />
+                {t('conversation.error.gatewayRecharge')} →
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
   if (isGatewayCredentialsExpired) {
     return (
       <div className="border-t border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">

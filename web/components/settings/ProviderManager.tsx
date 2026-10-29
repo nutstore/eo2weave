@@ -1757,6 +1757,16 @@ export function LLMGatewayCard({
                     >
                       {rateLimitsLoading ? t('settings.gatewayRateLimits.refreshing') : t('settings.gatewayRateLimits.refresh')}
                     </BrandButton>
+                    {/* Recharge entry: opens the Nutstore AI console where the
+                        credit balance is managed (next to the refresh/logout
+                        row; the console is also where login lives). */}
+                    <BrandButton
+                      variant="outline"
+                      className="flex-1 h-8 text-[11px]"
+                      onClick={() => window.open('https://ai.jianguoyun.com/', '_blank', 'noopener,noreferrer')}
+                    >
+                      {t('settings.gateway.recharge')}
+                    </BrandButton>
                     <BrandButton
                       variant="outline"
                       className="flex-1 h-8 text-[11px]"

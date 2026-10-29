@@ -510,6 +510,7 @@ export const settings = {
       loginAgain: "Log in again",
       serviceUrl: "Service URL",
       logout: "Log out",
+      recharge: "Top up",
       creatingSession: "Creating authorization session...",
       enterCodeHint: "Enter this code on the authorization page",
       copy: "Copy",

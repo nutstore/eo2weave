@@ -153,6 +153,9 @@ export const conversation = {
     error: {
       gatewayReloginTitle: "Nutstore AI login expired",
       gatewayRelogin: "Log in to Nutstore AI",
+      gatewayInsufficientCredit: "Nutstore AI credit balance is exhausted — top up to continue",
+      gatewayRecharge: "Top up",
+      gatewayRechargeTitle: "Nutstore AI credit exhausted",
       gatewayReloginSuccess: "Logged in — please re-send your message",
       gatewayClientIdMissing: "Nutstore AI client ID is not configured — cannot log in",
       gatewayLoginFailed: "Nutstore AI login failed",

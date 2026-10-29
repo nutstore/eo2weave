@@ -506,6 +506,7 @@ export const settings = {
       loginAgain: "다시 로그인",
       serviceUrl: "서비스 URL",
       logout: "로그아웃",
+      recharge: "충전",
       creatingSession: "인증 세션 생성 중...",
       enterCodeHint: "인증 페이지에 아래 코드를 입력하세요",
       copy: "복사",

@@ -513,6 +513,7 @@ export const settings = {
       loginAgain: "再ログイン",
       serviceUrl: "サービスURL",
       logout: "ログアウト",
+      recharge: "チャージ",
       creatingSession: "認可セッションを作成中...",
       enterCodeHint: "認可ページで以下のコードを入力してください",
       copy: "コピー",
