@@ -2,64 +2,145 @@
 import { describe, expect, it } from 'vitest'
 import {
   PAGE_ACTION_REQUEST_ID_KEY,
-  stablePageActionRequestId,
+  PAGE_ACTION_CAPTURE_CAP_MS,
+  createPageActionRequestId,
+  boundedCaptureTimeoutMs,
+  clampPageActionDeadline,
 } from '../../../browser-extension/lib/bash-commands/browser/page-action-request-identity'
 
 /**
- * Sourcery follow-up on PR #110: a retry of the same logical page action
- * (the realistic case after a bridge timeout) must derive the SAME
- * request identity so the background's in-flight dedupe joins the first
- * execution instead of queueing a duplicate one. The id is therefore
- * content-addressed, and stable across callers, invocations and
- * property insertion order.
+ * Sourcery round-2 follow-ups on PR #110:
+ *   - #1: request ids are UNIQUE per submission (never content-derived) —
+ *     two independent submissions of an IDENTICAL payload must never
+ *     share an id (a content hash would silently swallow the second one);
+ *     only a retry threads the same id.
+ *   - #2: no identity API mutates caller-owned objects — frozen/nested
+ *     frozen payloads must not throw (the old stableSerialize stamped a
+ *     temporary marker onto them).
+ *   - #3: the loader capture wait is bounded by the caller's shared
+ *     deadline (capped at the fixed debugger-callback timeout).
+ *   - #4: the page-supplied deadline is clamped so it can never EXTEND
+ *     the background's receipt-based budget.
  */
 
-describe('stablePageActionRequestId (retry identity)', () => {
-  it('gives the SAME id to a retry of the same logical action', () => {
-    const action = { type: 'click', locator: { selector: '#submit' } }
-    const first = stablePageActionRequestId(action)
-    // A fresh object, as a retried caller would build it.
-    const retry = { type: 'click', locator: { selector: '#submit' } }
-    expect(stablePageActionRequestId(retry)).toBe(first)
-    expect(first).not.toBe('')
-  })
-
-  it('gives DIFFERENT ids to different actions', () => {
-    const a = stablePageActionRequestId({ type: 'click', locator: { selector: '#a' } })
-    const b = stablePageActionRequestId({ type: 'click', locator: { selector: '#b' } })
-    const c = stablePageActionRequestId({ type: 'fill', locator: { selector: '#a' }, value: 'x' })
+describe('createPageActionRequestId (#1: unique per submission)', () => {
+  it('gives INDEPENDENT submissions different ids — even with identical payloads', () => {
+    const submit = () => ({ type: 'click', locator: { selector: '#submit' } })
+    const ids = Array.from({ length: 50 }, () => createPageActionRequestId())
+    expect(new Set(ids).size).toBe(50)
+    // Byte-identical payloads too: identity comes from the submission,
+    // not the content — a content-hash id would collide here.
+    const a = createPageActionRequestId()
+    const b = createPageActionRequestId()
     expect(a).not.toBe(b)
-    expect(a).not.toBe(c)
+    expect(submit()).toEqual(submit())
   })
 
-  it('is insertion-order independent for structurally identical actions', () => {
-    const a = stablePageActionRequestId({ type: 'fill', value: 'hi', locator: { selector: '#f', role: 'textbox' } })
-    const b = stablePageActionRequestId({ locator: { role: 'textbox', selector: '#f' }, type: 'fill', value: 'hi' })
-    expect(a).toBe(b)
-  })
-
-  it('distinguishes value types and array order', () => {
-    expect(stablePageActionRequestId({ type: 'fill', value: '1' })).not.toBe(
-      stablePageActionRequestId({ type: 'fill', value: 1 }),
-    )
-    expect(stablePageActionRequestId({ type: 'type', text: ['a', 'b'] })).not.toBe(
-      stablePageActionRequestId({ type: 'type', text: ['b', 'a'] }),
-    )
-  })
-
-  it('returns empty string for non-object actions and unserializable (cyclic) actions', () => {
-    expect(stablePageActionRequestId(null)).toBe('')
-    expect(stablePageActionRequestId('click')).toBe('')
-    expect(stablePageActionRequestId(42)).toBe('')
-    const cyclic: Record<string, unknown> = { type: 'click' }
-    cyclic.self = cyclic
-    expect(stablePageActionRequestId(cyclic)).toBe('')
-  })
-
-  it('exposes the stamp key the background dedupe reads', () => {
+  it('stamps a unique id per submission; a RETRY threads the SAME id', () => {
+    // Retry wrapper semantics (injected.content.ts runBoundPageAction):
+    // generate once at the original send site, reuse on resubmission.
+    const original = createPageActionRequestId()
+    const action = { type: 'fill', locator: { selector: '#f' }, value: 'hi' }
+    const stamped = { ...action, [PAGE_ACTION_REQUEST_ID_KEY]: original }
+    // The retry re-sends the SAME stamped payload (same id), not a
+    // re-derived content hash.
+    const retryStamp = stamped[PAGE_ACTION_REQUEST_ID_KEY]
+    expect(retryStamp).toBe(original)
+    // A NEW submission gets a fresh id.
+    const next = { ...action, [PAGE_ACTION_REQUEST_ID_KEY]: createPageActionRequestId() }
+    expect(next[PAGE_ACTION_REQUEST_ID_KEY]).not.toBe(original)
+    // The stamp key stays compatible with the background reader.
     expect(PAGE_ACTION_REQUEST_ID_KEY).toBe('__cwRequestId')
+    expect(typeof original).toBe('string')
+    expect(original.length).toBeGreaterThan(0)
+  })
+})
+
+describe('no caller-object mutation (#2: frozen actions)', () => {
+  it('stamps a DEEP-FROZEN action without throwing', () => {
+    const action = Object.freeze({
+      type: 'click',
+      locator: Object.freeze({ selector: Object.freeze('#locked') }),
+    })
+    // The old stableSerialize assigned a temporary cyclic marker onto the
+    // frozen objects and threw TypeError here, rejecting the action
+    // before it ever reached the bridge. The new flow shallow-copies.
+    expect(() => Object.freeze({ ...action, [PAGE_ACTION_REQUEST_ID_KEY]: createPageActionRequestId() })).not.toThrow()
+    expect(Object.isFrozen(action)).toBe(true)
+    expect(Object.isFrozen(action.locator)).toBe(true)
+  })
+
+  it('derives identity WITHOUT touching the action object at all', () => {
     const action = { type: 'snapshot' }
-    const stamped = { ...action, [PAGE_ACTION_REQUEST_ID_KEY]: stablePageActionRequestId(action) }
-    expect(stamped.__cwRequestId).toBe(stablePageActionRequestId({ type: 'snapshot' }))
+    const before = Reflect.ownKeys(action)
+    // Identity no longer inspects/serializes the payload: nothing may be
+    // assigned onto (or deleted from) caller-owned objects.
+    void createPageActionRequestId()
+    expect(Reflect.ownKeys(action)).toEqual(before)
+    expect(action).not.toHaveProperty('__cwCyclic')
+  })
+})
+
+describe('boundedCaptureTimeoutMs (#3: caller-deadline-bounded capture)', () => {
+  const CAP = PAGE_ACTION_CAPTURE_CAP_MS
+
+  it('caps at the fixed debugger-callback timeout when the deadline is far', () => {
+    const now = 1_000_000
+    expect(boundedCaptureTimeoutMs(now + 10 * CAP, now)).toBe(CAP)
+    expect(boundedCaptureTimeoutMs(undefined, now)).toBe(CAP)
+    expect(boundedCaptureTimeoutMs(Number.NaN, now)).toBe(CAP)
+  })
+
+  it('shrinks to the caller’s remaining budget — never past the deadline', () => {
+    const now = 1_000_000
+    expect(boundedCaptureTimeoutMs(now + 5_000, now)).toBe(5_000)
+    expect(boundedCaptureTimeoutMs(now + 1, now)).toBe(1)
+    // Expired deadline: the capture must not wait at all (fail closed),
+    // instead of the old fixed 15s hold on the tab lock.
+    expect(boundedCaptureTimeoutMs(now, now)).toBe(0)
+    expect(boundedCaptureTimeoutMs(now - 1, now)).toBe(0)
+    expect(boundedCaptureTimeoutMs(now - 60_000, now)).toBe(0)
+  })
+})
+
+describe('clampPageActionDeadline (#4: no forged-deadline budget extension)', () => {
+  const WINDOW = 300_000
+  const received = 10_000_000
+
+  it('uses the receipt-based budget when no deadline is supplied', () => {
+    const r = clampPageActionDeadline(undefined, received, WINDOW)
+    expect(r.deadlineAt).toBe(received + WINDOW)
+    expect(r.expiredInTransit).toBe(false)
+  })
+
+  it('caps a page-supplied deadline at receipt + window (never extends the budget)', () => {
+    // THE INVARIANT: the effective budget never exceeds receipt + WINDOW,
+    // whatever the page supplies (Sourcery #4 — the old code honored any
+    // in-window value verbatim, letting a stamp at the window edge grant
+    // the full extra window on top of preflight/delivery time).
+    const forged = received + WINDOW - 1
+    const r = clampPageActionDeadline(forged, received, WINDOW)
+    expect(r.deadlineAt).toBeLessThanOrEqual(received + WINDOW)
+    expect(r.expiredInTransit).toBe(false)
+    // A stamp beyond the window is clamped to exactly the receipt budget.
+    expect(clampPageActionDeadline(received + WINDOW + 5_000, received, WINDOW).deadlineAt).toBe(received + WINDOW)
+    // A stamp in the (accepted, window] range can only make the budget
+    // SHORTER than or equal to receipt + WINDOW — never longer.
+    expect(clampPageActionDeadline(received + WINDOW + 1, received, WINDOW).deadlineAt)
+      .toBeLessThanOrEqual(received + WINDOW)
+  })
+
+  it('honors a legitimate in-window deadline (can only shorten the budget)', () => {
+    const legit = received - 60_000
+    const r = clampPageActionDeadline(legit, received, WINDOW)
+    expect(r.deadlineAt).toBe(legit)
+    expect(r.expiredInTransit).toBe(false)
+  })
+
+  it('rejects a stamp older than the window as expired-in-transit', () => {
+    const stale = received - WINDOW - 1
+    const r = clampPageActionDeadline(stale, received, WINDOW)
+    expect(r.expiredInTransit).toBe(true)
+    expect(r.deadlineAt).toBe(received + WINDOW)
   })
 })

@@ -1,89 +1,92 @@
 /**
- * Stable request identity for page actions.
+ * Request identity for page actions.
  *
- * The page-side bridge caller (`runBoundPageAction` in
- * injected.content.ts) stamps every submission with a `__cwRequestId`
- * before the action crosses the bridge. The background keys its retry
- * dedupe on that id, so a RETRY of the same logical action — e.g. a
- * caller that resubmits after a bridge timeout while the first
- * execution is still in flight — must carry the SAME id to join the
- * first run instead of queueing a duplicate execution.
+ * Every submission gets a UNIQUE request id, generated at the ORIGINAL
+ * send site (the page-side bridge caller `runBoundPageAction` in
+ * injected.content.ts) and stamped into the action payload before it
+ * crosses the bridge. The background keys its retry dedupe on
+ * `tabId:requestId`, so:
+ *   - two INDEPENDENT submissions — even of byte-identical payloads —
+ *     carry different ids and always run separately (a content-hash id
+ *     would silently swallow the second one);
+ *   - a RETRY of the same submission (the bridge caller's retry wrapper
+ *     re-sends after a BRIDGE_TIMEOUT) threads the SAME id, so the
+ *     background joins the first run's in-flight promise, or — if that
+ *     run already SETTLED — returns the recorded outcome from a
+ *     short-TTL settled cache instead of executing a second time.
  *
- * A per-invocation counter cannot do that (every call gets a fresh
- * id), so the id is derived from the action's CONTENT: the same
- * logical action always yields the same id, and different actions
- * yield different ids. Combined with the background's settlement-based
- * entry removal (the dedupe entry is deleted as soon as the run
- * settles), this gives exactly the desired split:
- *   - a retry while the first run is in flight → joins it;
- *   - a LATER, independent submission of an identical action (the
- *     first run already settled) → runs again, as it should.
+ * The id deliberately does NOT derive from the action's content: content
+ * addressing both collides genuinely independent identical submissions
+ * and required serializing (and mutating) caller-owned objects. Both
+ * hazards are gone: the id is opaque, and the action object is never
+ * touched (the stamp is applied on a shallow copy).
  */
 
 /** The transport-only key carrying the request identity. */
 export const PAGE_ACTION_REQUEST_ID_KEY = '__cwRequestId'
 
+let submissionSeq = 0
+
 /**
- * Deterministically serialize a value (object keys sorted) so that two
- * structurally identical actions produce identical strings regardless
- * of property insertion order. Returns null when the value cannot be
- * serialized (cyclic structure) — the caller then skips stamping and
- * the action simply runs without dedupe, as a legacy caller would.
+ * A fresh, unique request id for ONE submission. Two calls never return
+ * the same id — independent submissions must never join each other's
+ * dedupe entry, and no content hash (with its collision class) is
+ * involved.
  */
-function stableSerialize(value: unknown): string | null {
-  if (value === null) return 'null'
-  const t = typeof value
-  if (t === 'number') return Number.isFinite(value as number) ? String(value) : 'null'
-  if (t === 'boolean' || t === 'undefined') return String(value)
-  if (t === 'string') return JSON.stringify(value)
-  if (t === 'function') return 'undefined'
-  if (t !== 'object') return 'undefined'
-  const seen = value as { __cwCyclic?: boolean }
-  if (seen.__cwCyclic) return null
-  try {
-    ;(value as { __cwCyclic?: boolean }).__cwCyclic = true
-    if (Array.isArray(value)) {
-      const parts: string[] = []
-      for (const item of value) {
-        const s = stableSerialize(item)
-        if (s === null) return null
-        parts.push(s)
-      }
-      return '[' + parts.join(',') + ']'
-    }
-    const obj = value as Record<string, unknown>
-    const keys = Object.keys(obj).sort()
-    const parts: string[] = []
-    for (const k of keys) {
-      if (k === '__cwCyclic') continue
-      const s = stableSerialize(obj[k])
-      if (s === null) return null
-      parts.push(JSON.stringify(k) + ':' + s)
-    }
-    return '{' + parts.join(',') + '}'
-  } finally {
-    delete (value as { __cwCyclic?: boolean }).__cwCyclic
-  }
+export function createPageActionRequestId(): string {
+  submissionSeq = (submissionSeq + 1) % 0xffffffff
+  const random =
+    typeof globalThis.crypto?.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID().slice(0, 13)
+      : Math.random().toString(36).slice(2, 12)
+  return `__cw_${Date.now().toString(36)}_${submissionSeq.toString(36)}_${random}`
 }
 
-/** FNV-1a 32-bit hash, hex-encoded. */
-function fnv1a(input: string): string {
-  let h = 0x811c9dc5
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return (h >>> 0).toString(16).padStart(8, '0')
+/** Upper bound for any single debugger-callback wait (matches cdp-evaluate). */
+export const PAGE_ACTION_CAPTURE_CAP_MS = 15_000
+
+/**
+ * Budget for a debugger-callback wait (frame loader capture) that runs
+ * while the handler HOLDS the tab lock: whichever is smaller of the
+ * fixed callback cap and the caller's remaining deadline. A stalled
+ * debugger callback must not keep the lock after the caller's deadline
+ * has passed — the caller is gone and can never receive the result. A
+ * returned 0 fails closed (the capture returns null → mismatch → the
+ * CSP fallback is refused).
+ */
+export function boundedCaptureTimeoutMs(
+  deadlineAt: number | undefined,
+  now: number = Date.now(),
+  capMs: number = PAGE_ACTION_CAPTURE_CAP_MS,
+): number {
+  if (deadlineAt === undefined || !Number.isFinite(deadlineAt)) return capMs
+  return Math.max(0, Math.min(capMs, deadlineAt - now))
 }
 
 /**
- * Derive the stable request id for a logical action. Returns '' for
- * non-object actions or actions that cannot be deterministically
- * serialized — those are never deduped by the background.
+ * Clamp the page-supplied absolute deadline into the background's
+ * receipt-based budget. The stamp is advisory (a liveness hint the page
+ * ships with the request), never a trust boundary:
+ *   - absent / non-finite → receipt + maxWindowMs (the plain budget);
+ *   - OLDER than receipt - maxWindowMs → the request was delayed past
+ *     its own lifetime and its caller has already given up:
+ *     `expiredInTransit` (the caller rejects it outright);
+ *   - otherwise → min(supplied, receipt + maxWindowMs). THE CAP: an
+ *     unauthenticated page value can only SHORTEN the background's
+ *     receipt-based budget (make it give up earlier — its own action,
+ *     its own budget), never extend it past receipt + maxWindowMs.
  */
-export function stablePageActionRequestId(action: unknown): string {
-  if (!action || typeof action !== 'object') return ''
-  const serialized = stableSerialize(action)
-  if (serialized === null) return ''
-  return '__cw_' + fnv1a(serialized) + '_' + serialized.length
+export function clampPageActionDeadline(
+  callerDeadlineAt: number | undefined,
+  requestReceivedAt: number,
+  maxWindowMs: number,
+): { deadlineAt: number; expiredInTransit: boolean } {
+  const receiptBudget = requestReceivedAt + maxWindowMs
+  if (callerDeadlineAt === undefined || !Number.isFinite(callerDeadlineAt)) {
+    return { deadlineAt: receiptBudget, expiredInTransit: false }
+  }
+  if (callerDeadlineAt <= requestReceivedAt - maxWindowMs) {
+    return { deadlineAt: receiptBudget, expiredInTransit: true }
+  }
+  return { deadlineAt: Math.min(callerDeadlineAt, receiptBudget), expiredInTransit: false }
 }

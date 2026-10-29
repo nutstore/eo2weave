@@ -7,30 +7,43 @@ const PAGE_ACTION_QUEUE_WAIT_MS = 300_000
 /**
  * Dedupe for retried page actions. A bridge timeout does NOT cancel an
  * action that already started (an in-flight executeScript cannot be
- * interrupted) — when the caller retries the same action after a timeout,
- * the retry would queue behind the first run and execute it a SECOND time,
- * duplicating side effects.
+ * interrupted) — when the caller retries the same submission after a
+ * timeout, the retry would queue behind the first run and execute it a
+ * SECOND time, duplicating side effects.
  *
- * The key carries a REQUEST IDENTITY, not just (tab, serialized action):
- * a RETRY of the same logical action (same requestId — the page caller
- * derives it from the action's content, so a resubmission after a bridge
- * timeout re-derives the identical id) joins the first run's in-flight
- * promise, while two different actions (different requestIds) run
- * separately. Two INDEPENDENT submissions of an IDENTICAL action also run
- * separately: the map entry is deleted in a `finally` when the run
- * SETTLES (resolve or reject), never by age — by the time a genuinely new
- * submission arrives the earlier run has settled and its entry is gone,
- * so the new submission executes normally. Entries therefore live at most
- * as long as the action itself, and a caller that retries a still-running
- * action always joins it, no matter how long it takes. Actions without a
- * recognizable requestId are never deduped.
+ * The key carries the CALLER-STAMPED REQUEST ID (unique per submission,
+ * threaded through retries by the bridge caller's retry wrapper — see
+ * page-action-request-identity.ts), never a content hash: two
+ * independent submissions — even of byte-identical payloads — always get
+ * different ids and never join each other. A retry of the same
+ * submission (same id) gets exactly-once semantics on both sides of
+ * settlement:
+ *   - the first run still IN FLIGHT → the retry joins its promise;
+ *   - the first run already SETTLED → the retry reads the recorded
+ *     outcome from a short-TTL settled-result cache instead of
+ *     re-executing. Without the cache, the classic
+ *     "started-before-deadline, settled-after-caller-timeout" race
+ *     would let a late retry re-run the action.
+ * Settled entries expire after PAGE_ACTION_SETTLED_TTL_MS, so the cache
+ * stays bounded and never suppresses a genuinely new submission (every
+ * submission has a unique id anyway). Actions without a recognizable
+ * requestId (legacy callers) are never deduped.
  */
+const PAGE_ACTION_SETTLED_TTL_MS = 30_000
 const pageActionInFlight = new Map<string, Promise<unknown>>()
+/** Settled outcomes by dedupe key, replayed to a late retry within the TTL. */
+const pageActionSettled = new Map<string, { outcome: unknown; settledAt: number }>()
+
+function prunePageActionSettled(now: number = Date.now()): void {
+  for (const [key, entry] of pageActionSettled) {
+    if (now - entry.settledAt > PAGE_ACTION_SETTLED_TTL_MS) pageActionSettled.delete(key)
+  }
+}
+
 /**
  * Extract the caller's request identity from the action payload. The page
- * bridge caller stamps every submission with a CONTENT-ADDRESSED
- * `__cwRequestId`: a retry of the SAME logical action re-derives the same
- * id, a different action gets a different one. Absent (legacy caller) →
+ * bridge caller stamps every submission with a UNIQUE `__cwRequestId` and
+ * threads the same id through its own retries. Absent (legacy caller) →
  * no dedupe.
  */
 function pageActionRequestId(action: unknown): string {
@@ -56,6 +69,7 @@ function stripPageActionRequestId(action: unknown): unknown {
 /** Test hook: drop all dedupe entries. */
 export function resetPageActionDedupeForTest(): void {
   pageActionInFlight.clear()
+  pageActionSettled.clear()
 }
 
 // ============================================================
@@ -72,6 +86,10 @@ import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
 import { createTabWebMCPApi } from './webmcp/tab-api'
+import {
+  clampPageActionDeadline,
+  boundedCaptureTimeoutMs,
+} from '../lib/bash-commands/browser/page-action-request-identity'
 import {
   getHostAuthorizationMap,
   setHostEnabled as setWebMCPHostEnabled,
@@ -2054,25 +2072,29 @@ export default defineBackground(() => {
           const callerDeadlineAt = typeof callerDeadlineRaw === 'number' && Number.isFinite(callerDeadlineRaw)
             ? callerDeadlineRaw
             : undefined
-          // Plausibility window for the page-supplied deadline stamp. A value
-          // within ±PAGE_ACTION_QUEUE_WAIT_MS of receipt time is honored
-          // verbatim (the stamp is advisory: a hostile value can only make
-          // the background give up EARLIER — its own action, its own
-          // budget — never extend past receipt + PAGE_ACTION_QUEUE_WAIT_MS).
-          // A stamp OLDER than the window means the request was delayed in
-          // delivery past its own lifetime: its caller armed a 300s timeout
-          // that has already fired and abandoned the action, so the request
-          // is REJECTED outright — replacing the stale deadline with a fresh
-          // receipt-based budget would let an abandoned action wait for the
-          // lock and execute against the tab with no listener left.
-          const deadlineAt = callerDeadlineAt !== undefined
-            && callerDeadlineAt > requestReceivedAt - PAGE_ACTION_QUEUE_WAIT_MS
-            && callerDeadlineAt <= requestReceivedAt + PAGE_ACTION_QUEUE_WAIT_MS
-            ? callerDeadlineAt
-            : callerDeadlineAt !== undefined && callerDeadlineAt <= requestReceivedAt - PAGE_ACTION_QUEUE_WAIT_MS
-              ? null
-              : requestReceivedAt + PAGE_ACTION_QUEUE_WAIT_MS
-          if (deadlineAt === null) {
+          // Plausibility window for the page-supplied deadline stamp, clamped
+          // by clampPageActionDeadline (page-action-request-identity.ts). The
+          // stamp is advisory (a liveness hint), never a trust boundary:
+          //   - within the window → HONORED BUT CAPPED: an unauthenticated
+          //     page value can only make the background give up EARLIER (its
+          //     own action, its own budget) — it can never extend the budget
+          //     past receipt + PAGE_ACTION_QUEUE_WAIT_MS (the cap is
+          //     min(supplied, receipt + window), so a page-supplied value
+          //     near the window edge cannot revive an abandoned action into
+          //     a longer wait);
+          //   - OLDER than the window → the request was delayed in delivery
+          //     past its own lifetime: its caller armed a 300s timeout that
+          //     has already fired and abandoned the action, so the request
+          //     is REJECTED outright (expiredInTransit) — replacing the
+          //     stale deadline with a fresh receipt-based budget would let
+          //     an abandoned action wait for the lock and execute against
+          //     the tab with no listener left.
+          const { deadlineAt, expiredInTransit } = clampPageActionDeadline(
+            callerDeadlineAt,
+            requestReceivedAt,
+            PAGE_ACTION_QUEUE_WAIT_MS,
+          )
+          if (expiredInTransit) {
             sendResponse({
               ok: false,
               errorCode: 'PAGE_ACTION_EXPIRED_IN_TRANSIT',
@@ -2136,22 +2158,35 @@ export default defineBackground(() => {
             // withTabLock rejects BEFORE racing the queue — an abandoned
             // action can never acquire the lock and start.
             const queueWaitBudget = deadlineAt - Date.now()
-            // RETRY DEDUPE: a caller that retried after a bridge timeout
-            // must not re-execute an action that already started. While the
-            // same REQUEST (tab + caller-stamped request id) is in flight,
-            // the retry joins the FIRST run's promise instead of queueing a
-            // second execution; an independent submission (different request
-            // id) runs separately.
+            // RETRY DEDUPE (unique request id per submission, threaded
+            // through retries by the bridge caller): while the same
+            // REQUEST (tab + caller-stamped request id) is in flight, the
+            // retry joins the FIRST run's promise; if that run has
+            // already SETTLED (started before the deadline, settled after
+            // the caller timed out — its in-flight entry is gone), the
+            // short-TTL settled cache still returns the recorded outcome
+            // instead of executing the action a second time. Independent
+            // submissions never collide: each has a unique id, and the
+            // settled cache is keyed by that id (never by payload
+            // content).
             const dedupeKey = pageActionDedupeKey(targetTabId, action)
             const inflight = dedupeKey ? pageActionInFlight.get(dedupeKey) : undefined
             if (inflight) {
-              // Join until SETTLEMENT, never by age: the entry is removed
-              // when the run settles (below), so any entry found here is a
+              // Join until SETTLEMENT: the entry is removed when the run
+              // settles (below), so any entry found here is a
               // still-running action — a retry joins it regardless of how
               // long it has been going.
               const shared = await inflight
               sendResponse(shared)
               return
+            }
+            if (dedupeKey) {
+              prunePageActionSettled()
+              const recorded = pageActionSettled.get(dedupeKey)
+              if (recorded) {
+                sendResponse(recorded.outcome as Parameters<typeof sendResponse>[0])
+                return
+              }
             }
             const executeAction = stripPageActionRequestId(action)
             // UNFORGABLE INJECTION OUTCOME: everything inside the MAIN-world
@@ -2288,7 +2323,18 @@ export default defineBackground(() => {
               // tagged. Route it through the fallback too: the CDP evaluation
               // of an empty body returns undefined, matching new Function.
               if (typeof expression === 'string') {
-                const compileLoaderId = await captureFrameLoaderId(targetTabId)
+                // The capture waits on a debugger callback while HOLDING the
+                // tab lock. Bound it by the caller's shared deadline (capped
+                // at the fixed debugger-callback timeout): a stalled callback
+                // must not keep the lock after the caller's deadline — the
+                // caller is gone and can never receive the result. A zero
+                // budget gives up immediately (null → the evaluator treats
+                // it as a document mismatch and the fallback is refused,
+                // fail closed).
+                const compileLoaderId = await captureFrameLoaderId(
+                  targetTabId,
+                  boundedCaptureTimeoutMs(deadlineAt),
+                )
                 result = await evaluateBoundExpressionViaCdpUnlocked(
                   targetTabId,
                   expression,
@@ -2301,15 +2347,19 @@ export default defineBackground(() => {
             }, { maxQueueWaitMs: Math.max(0, queueWaitBudget) })
             // Register the in-flight run for retry dedupe BEFORE awaiting it:
             // a retry that arrives while this run holds the lock joins the
-            // shared promise instead of queueing a duplicate execution. The
-            // entry is removed in a `finally` — when the run SETTLES, not by
-            // age — so the map never outlives the action.
+            // shared promise instead of queueing a duplicate execution. On
+            // SETTLEMENT the in-flight entry is removed and the outcome is
+            // recorded in the short-TTL settled cache — a late retry (caller
+            // timed out just before the run settled) replays the recorded
+            // outcome instead of re-executing the action.
             if (dedupeKey) {
               pageActionInFlight.set(dedupeKey, runPromise)
-              void runPromise.catch(() => {}).then(() => {
+              void runPromise.catch(() => {}).then((outcome) => {
                 if (pageActionInFlight.get(dedupeKey) === runPromise) {
                   pageActionInFlight.delete(dedupeKey)
                 }
+                prunePageActionSettled()
+                pageActionSettled.set(dedupeKey, { outcome, settledAt: Date.now() })
               })
             }
             const result: unknown = await runPromise
