@@ -100,7 +100,7 @@ it('localizes every tool description across the four supported locales', async (
 
 type FetchLog = {
   url: string
-  init: { method?: string; headers?: Record<string, string>; body?: string; credentials?: string }
+  init: { method?: string; headers?: Record<string, string>; body?: string; credentials?: string; signal?: AbortSignal }
 }
 
 function fixture(options: {
@@ -108,6 +108,13 @@ function fixture(options: {
   token?: string | null
   respond?: (url: string, init: FetchLog['init']) => { status: number; body: unknown }
   gate?: (url: string) => Promise<void> | void
+  gateBody?: (url: string, init: FetchLog['init']) => Promise<void> | void
+  // Per-eval sandbox overrides for tests that must control the in-page
+  // clock/timers (the workflow source is untouched; only the sandbox
+  // bindings are swapped).
+  overrideTimers?: () =>
+    | { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout; Date?: DateConstructor }
+    | undefined
 } = {}) {
   const window = new Window({ url: options.url ?? 'https://discord.com/channels/@me' })
   window.document.write('<html><body></body></html>')
@@ -139,12 +146,30 @@ function fixture(options: {
       if (options.gate) await options.gate(url)
       const outcome = respond(url, init)
       const headers = new Map<string, string>([['content-type', 'application/json']])
+      const signal = init.signal
+      const throwIfAborted = () => {
+        if (signal?.aborted) {
+          const e = new Error('The operation was aborted')
+          e.name = 'AbortError'
+          throw e
+        }
+      }
       return {
         ok: outcome.status >= 200 && outcome.status < 300,
         status: outcome.status,
         headers: { get: (key: string) => headers.get(key) ?? null },
-        text: async () => JSON.stringify(outcome.body),
-        json: async () => outcome.body,
+        // Body consumption checks the abort signal, like a real stalled
+        // body does: a fired deadline abort rejects even after headers.
+        text: async () => {
+          if (options.gateBody) await options.gateBody(url, init)
+          throwIfAborted()
+          return JSON.stringify(outcome.body)
+        },
+        json: async () => {
+          if (options.gateBody) await options.gateBody(url, init)
+          throwIfAborted()
+          return outcome.body
+        },
       }
     },
     AbortSignal: globalThis.AbortSignal,
@@ -164,8 +189,10 @@ function fixture(options: {
   const pageSandbox: Record<string, unknown> = {
     webpackChunkdiscord_app: (window as unknown as { webpackChunkdiscord_app?: unknown[] }).webpackChunkdiscord_app,
   }
+  let evalCount = 0
   const execute = async (name: string, input: Record<string, unknown> = {}): Promise<any> => {
     const tool = manifest.tools.find((tool: { name: string }) => tool.name === name)
+    evalCount++
     return executeAdapterWorkflow(
       wasm,
       builtinResources[prefix + tool.path],
@@ -178,10 +205,11 @@ function fixture(options: {
   const browser = async (request: BrowserRequest): Promise<JsonValue> => {
     expect(request.options.tab).toBe('9')
     if (request.command === 'eval') {
+      const overrides = options.overrideTimers?.() ?? undefined
       const result = await runInNewContext(`(${request.positionals[0]})()`, {
         window,
-        setTimeout,
-        clearTimeout,
+        setTimeout: overrides?.setTimeout ?? setTimeout,
+        clearTimeout: overrides?.clearTimeout ?? clearTimeout,
         document: window.document,
         location: window.location,
         URL,
@@ -197,7 +225,7 @@ function fixture(options: {
         String,
         Number,
         Boolean,
-        Date,
+        Date: overrides?.Date ?? Date,
         Promise,
         Error,
         globalThis: pageSandbox,
@@ -206,7 +234,7 @@ function fixture(options: {
     }
     return { tabId: 9 }
   }
-  return { execute, window, fetches, sandbox: pageSandbox }
+  return { execute, window, fetches, sandbox: pageSandbox, browser, evalCount: () => evalCount }
 }
 
 it('extracts the token through the webpack walk and reads channel messages', async () => {
@@ -966,6 +994,245 @@ it('aborts a queued reaction fetch by its queue time, not its start time', async
   // Non-reaction workflows keep their own start-of-request deadline.
   expect(sourceOf('read_messages')).toMatch(/var startedAt = Date\.now\(\)/)
 }, 15000)
+
+// Deterministic in-page clock for behavioral timer tests. setTimeout is
+// recorded and fired manually; Date.now follows a controllable offset.
+// The workflow sources are untouched — the sandbox bindings are swapped
+// per eval via the fixture's overrideTimers hook.
+function makeFakeClock() {
+  const timers = new Map<number, { delay: number; fire: () => void; installedAt: number }>()
+  let nextId = 1
+  let offsetMs = 0
+  const fired = new Set<number>()
+  const cleared = new Set<number>()
+  const fakeDateNow = () => 1_700_000_000_000 + offsetMs
+  const RealDate = Date
+  // The workflows only ever call Date.now(); the constructor fallback is
+  // a plain real Date for anything else.
+  const FakeDate = ((ms?: number) =>
+    new RealDate(typeof ms === 'number' ? ms : fakeDateNow())) as unknown as DateConstructor
+  Object.assign(FakeDate, {
+    now: fakeDateNow,
+    parse: RealDate.parse,
+    UTC: RealDate.UTC,
+  })
+  return {
+    setTimeout: ((fn: () => void, delay?: number) => {
+      const id = nextId++
+      timers.set(id, { delay: delay ?? 0, fire: fn, installedAt: offsetMs })
+      return id
+    }) as unknown as typeof setTimeout,
+    clearTimeout: ((id: number) => {
+      timers.delete(id)
+      cleared.add(id)
+    }) as unknown as typeof clearTimeout,
+    dateConstructor: FakeDate,
+    /** Number of live (installed, not fired/cleared) timers. */
+    liveCount: () => timers.size,
+    /** Fire every timer whose deadline (install time + delay) has passed. */
+    advance: (ms: number) => {
+      offsetMs += ms
+      for (const [id, timer] of [...timers]) {
+        if (offsetMs - timer.installedAt >= timer.delay && !fired.has(id)) {
+          fired.add(id)
+          timers.delete(id)
+          timer.fire()
+        }
+      }
+    },
+    /** Delays of timers installed so far, in install order. */
+    installedDelays: () => [...timers.values()].map((t) => t.delay),
+    /** Delay of every timer ever installed, in install order. */
+    allInstalledDelays: (() => {
+      const all: number[] = []
+      const origSet = timers.set.bind(timers)
+      timers.set = (id: number, t: { delay: number; fire: () => void; installedAt: number }) => {
+        all.push(t.delay)
+        return origSet(id, t)
+      }
+      return () => all
+    })(),
+    firedIds: () => [...fired],
+    clearedCount: () => cleared.size,
+    now: fakeDateNow,
+  }
+}
+
+it('arms the queued reaction abort timer with the remaining budget, not a fresh constant', async () => {
+  // Behavioral companion to the source-fragment contract above: the lock
+  // hands its queue timestamp to discordApi (options.queued_at) and the
+  // fetch timer is armed with deadlineMs minus the time already spent in
+  // the queue. Entry 2 queues behind entry 1's held slot; the in-page
+  // clock then shifts +8s before entry 2 dispatches, so a workflow
+  // deriving the delay from the QUEUE timestamp arms ≈10000 — one arming
+  // a fresh constant at DISPATCH time arms 18000 and fails this test.
+  const clock = makeFakeClock()
+  let releaseFirst: (() => void) | null = null
+  const firstStalled = new Promise<void>((resolveStall) => {
+    releaseFirst = resolveStall
+  })
+  const page = fixture({
+    // Every in-page body of this fixture shares the fake clock (it stays
+    // monotonic across evals), while Node's real timers keep driving the
+    // adapter/quickjs machinery.
+    overrideTimers: () => ({
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      Date: clock.dateConstructor,
+    }),
+    // Headers resolve immediately; entry 1's BODY consumption stalls so
+    // its lock slot stays held while the clock is shifted.
+    gateBody: (url) => (url.includes('/reactions/') ? firstStalled : undefined),
+  })
+  const input = { channel: 'c', message_id: 'm', emoji: '👍' }
+  // Entry 1 takes the lock slot (uncontended: armed with the full 18s).
+  const first = page.execute('add_reaction', input)
+  await vi.waitFor(() => expect(page.fetches).toHaveLength(1))
+  // Entry 2 queues behind entry 1's slot at fake-time T0. Wait until its
+  // eval has SYNCHRONOUSLY captured queuedAt — observable as the lock
+  // slot being re-keyed to entry 2's own settled promise — before
+  // shifting the clock.
+  const slotBefore = (page.sandbox as any).__eo2ReactionLocks?.['c:m:👍']
+  const second = page.execute('add_reaction', input)
+  await vi.waitFor(
+    () => expect((page.sandbox as any).__eo2ReactionLocks?.['c:m:👍']).not.toBe(slotBefore),
+  )
+  // Shift the clock +8s while entry 2 is still queued, then let entry 1
+  // finish so entry 2 dispatches with only ≈10s of budget left.
+  clock.advance(8000)
+  releaseFirst!()
+  expect(await first).toMatchObject({
+    ok: true,
+    value: { result: { status: 'ok', data: { added: true } } },
+  })
+  await second
+  const delays = clock.allInstalledDelays()
+  expect(delays, 'abort timer delays across both entries').toHaveLength(2)
+  expect(delays[0]).toBeGreaterThanOrEqual(17000)
+  expect(delays[1]).toBeGreaterThanOrEqual(9000)
+  expect(delays[1]).toBeLessThanOrEqual(11000)
+  expect(page.fetches).toHaveLength(2)
+  expect(page.fetches[1].init.method).toBe('PUT')
+}, 15000)
+
+it('keeps the deadline armed and aborts a stalled response BODY after headers', async () => {
+  // A workflow clearing the abort timer as soon as HEADERS arrive would
+  // let a stalled BODY hang past the eval deadline. Here entry 2's body
+  // consumption stalls indefinitely after headers; the queue-derived
+  // deadline timer (armed ≈10000 after the +8s queue wait) must still be
+  // live at that moment and must fire, unwinding the stalled body into
+  // the workflow's NETWORK abort result.
+  const clock = makeFakeClock()
+  let releaseFirst: (() => void) | null = null
+  const firstStalled = new Promise<void>((resolveStall) => {
+    releaseFirst = resolveStall
+  })
+  const page = fixture({
+    overrideTimers: () => ({
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      Date: clock.dateConstructor,
+    }),
+    gateBody: (url, init) => {
+      if (!url.includes('/reactions/')) return
+      if (page.fetches.length === 1) return firstStalled
+      // Entry 2: stalled forever unless the deadline abort unwinds it —
+      // exactly what a real stalled body stream does on signal.abort().
+      return new Promise<never>((_, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          const e = new Error('The operation was aborted')
+          e.name = 'AbortError'
+          reject(e)
+        })
+      })
+    },
+  })
+  const input = { channel: 'c', message_id: 'm', emoji: '👍' }
+  const first = page.execute('add_reaction', input)
+  await vi.waitFor(() => expect(page.fetches).toHaveLength(1))
+  // Entry 2 queues behind entry 1's slot at fake-time T0. Wait until its
+  // eval has SYNCHRONOUSLY captured queuedAt — observable as the lock
+  // slot being re-keyed to entry 2's own settled promise — before
+  // shifting the clock.
+  const slotBefore = (page.sandbox as any).__eo2ReactionLocks?.['c:m:👍']
+  const second = page.execute('add_reaction', input)
+  await vi.waitFor(
+    () => expect((page.sandbox as any).__eo2ReactionLocks?.['c:m:👍']).not.toBe(slotBefore),
+  )
+  clock.advance(8000)
+  releaseFirst!()
+  expect(await first).toMatchObject({
+    ok: true,
+    value: { result: { status: 'ok', data: { added: true } } },
+  })
+  // Entry 2 dispatched; its body is stalled at the gate with headers in.
+  await vi.waitFor(() => expect(page.fetches).toHaveLength(2))
+  // The deadline timer is STILL ARMED while the body is being consumed
+  // (only entry 1's timer has been cleared, after its body completed).
+  expect(clock.installedDelays()).toHaveLength(1)
+  expect(clock.clearedCount()).toBe(1)
+  // Advance past the remaining ≈10s budget: the abort fires and unwinds
+  // the stalled body (a premature clearTimeout right after headers would
+  // leave nothing to fire and hang the eval).
+  clock.advance(10000)
+  const secondResult = await second
+  expect(secondResult).toMatchObject({
+    ok: true,
+    value: { result: { status: 'error', error_code: 'NETWORK' } },
+  })
+  expect(secondResult.value.result.message).toContain('deadline')
+  expect(clock.firedIds()).toHaveLength(1)
+  expect(page.fetches[1].init.signal?.aborted).toBe(true)
+}, 15000)
+
+it('reports a same-key reaction lock expiry as LOCK_TIMEOUT, not TAB_UNAVAILABLE', async () => {
+  // Behavioral: hold the shared reaction lock past the 15s wait cutoff,
+  // then let the queued entry start. The expiry must surface as a
+  // distinct LOCK_TIMEOUT error result — the tab is alive — NOT the
+  // TAB_UNAVAILABLE the outer browser.eval catch maps every escaped
+  // rejection to. The expired entry must not fetch Discord and must not
+  // leak its lock slot.
+  let releaseFirst: (() => void) | null = null
+  const firstStalled = new Promise<void>((resolveStall) => {
+    releaseFirst = resolveStall
+  })
+  const held = fixture({
+    gate: () => firstStalled,
+  })
+  const input = { channel: 'c', message_id: 'm', emoji: '👍' }
+  // Entry 1 takes the lock slot; its fetch stalls at the gate.
+  const first = held.execute('add_reaction', input)
+  await vi.waitFor(() => expect(held.fetches).toHaveLength(1))
+  // Entry 2 queues behind the held slot (queue timestamp ≈ now), then
+  // the wall clock waits past the 15s cutoff before entry 1 releases.
+  const second = held.execute('add_reaction', input)
+  await vi.waitFor(() => expect(held.evalCount()).toBe(2))
+  await new Promise((resolve) => setTimeout(resolve, 15400))
+  releaseFirst!()
+  expect(await first).toMatchObject({
+    ok: true,
+    value: { result: { status: 'ok', data: { added: true } } },
+  })
+  const secondResult = await second
+  expect(secondResult).toMatchObject({
+    ok: true,
+    value: {
+      result: {
+        status: 'error',
+        data: null,
+        error_code: 'LOCK_TIMEOUT',
+      },
+    },
+  })
+  expect(secondResult.value.result.message).toContain('15s lock wait')
+  // The queued entry never touched Discord.
+  expect(held.fetches).toHaveLength(1)
+  // The expired entry's lock slot was cleaned up.
+  const locks = (held.sandbox as any).__eo2ReactionLocks as
+    | Record<string, unknown>
+    | undefined
+  expect(locks === undefined || Object.keys(locks).length === 0).toBe(true)
+}, 30000)
 
 it("bounds automatic nonce reuse to Discord's enforce_nonce window", async () => {
   // Control the clock by seeding the retry-nonce map with timestamps
