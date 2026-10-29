@@ -189,6 +189,24 @@ function fixture(options: {
   const pageSandbox: Record<string, unknown> = {
     webpackChunkdiscord_app: (window as unknown as { webpackChunkdiscord_app?: unknown[] }).webpackChunkdiscord_app,
   }
+  // In-memory localStorage shim shared by every eval of this fixture: it
+  // emulates the per-origin storage the workflow uses as the cross-tab
+  // retry store. Created EAGERLY so tests can seed it before the first
+  // eval; a test that needs two "tabs" seeds a SECOND fixture's shim with
+  // the first one's snapshot via page.sandbox.__localStorage.
+  {
+    const backing = new Map<string, string>()
+    pageSandbox.__localStorage = {
+      getItem: (key: string) => (backing.has(key) ? backing.get(key)! : null),
+      setItem: (key: string, value: string) => {
+        backing.set(key, String(value))
+      },
+      removeItem: (key: string) => {
+        backing.delete(key)
+      },
+      clear: () => backing.clear(),
+    }
+  }
   let evalCount = 0
   const execute = async (name: string, input: Record<string, unknown> = {}): Promise<any> => {
     const tool = manifest.tools.find((tool: { name: string }) => tool.name === name)
@@ -215,6 +233,7 @@ function fixture(options: {
         URL,
         URLSearchParams,
         navigator: window.navigator,
+        localStorage: pageSandbox.__localStorage,
         fetch: pageGlobals.fetch,
         AbortController,
         AbortSignal: globalThis.AbortSignal,
@@ -1273,4 +1292,85 @@ it("bounds automatic nonce reuse to Discord's enforce_nonce window", async () =>
   await failing.execute('send_message', input)
   expect(JSON.parse(failing.fetches[1].init.body!).nonce).toBe(regenerated)
   expect((failing.sandbox.__eo2DiscordRetryNonces as Map<string, { nonce: string; at: number }>).get(retryKey)!.at).toBe(storedAt)
+}, 15000)
+
+it('a retry routed to a DIFFERENT discord.com tab reuses the original nonce via the shared localStorage store', async () => {
+  // Finding: the retry nonce map lives in one page's globalThis, so a retry
+  // executed in ANOTHER discord.com tab could not find the original nonce
+  // and would post a DUPLICATE. The workflow now mirrors unconfirmed
+  // nonces into localStorage (shared per discord.com origin across tabs of
+  // the same profile): the second tab must adopt the remembered nonce so
+  // Discord's enforce_nonce dedupes the retry instead of posting twice.
+  const respond500 = () => ({ status: 500, body: 'Internal Server Error' })
+  // Tab 1: the send FAILS (outcome unknown) — its nonce must be remembered.
+  const tab1 = fixture({ respond: respond500 })
+  const input = { channel: '555', content: 'cross tab' }
+  await tab1.execute('send_message', input)
+  const originalNonce = JSON.parse(tab1.fetches[0].init.body!).nonce as string
+  // Tab 2 is a FRESH fixture: brand-new globalThis (empty in-tab nonce map)
+  // but the SAME origin storage — seeded with tab 1's localStorage snapshot,
+  // exactly what a real second tab of the same profile would observe.
+  const tab2 = fixture({ respond: respond500 })
+  ;(tab2.sandbox.__localStorage as { setItem: (k: string, v: string) => void }).setItem(
+    '__eo2DiscordRetryNonces',
+    (tab1.sandbox.__localStorage as { getItem: (k: string) => string | null }).getItem('__eo2DiscordRetryNonces')!,
+  )
+  await tab2.execute('send_message', input)
+  // The cross-tab retry reused the ORIGINAL nonce → Discord dedupes it.
+  expect(JSON.parse(tab2.fetches[0].init.body!).nonce).toBe(originalNonce)
+  // Store-once across tabs: the retried send in tab 2 did NOT refresh the
+  // stored timestamp (the 5-minute window stays anchored to the first send).
+  const storedAfterRetry = JSON.parse(
+    (tab2.sandbox.__localStorage as { getItem: (k: string) => string | null }).getItem('__eo2DiscordRetryNonces')!,
+  ) as Record<string, { nonce: string; at: number }>
+  const storedBefore = JSON.parse(
+    (tab1.sandbox.__localStorage as { getItem: (k: string) => string | null }).getItem('__eo2DiscordRetryNonces')!,
+  ) as Record<string, { nonce: string; at: number }>
+  expect(storedAfterRetry['555||cross tab'].at).toBe(storedBefore['555||cross tab'].at)
+
+  // Delivery drops the shared entry: tab 3 (fresh globalThis, same storage)
+  // succeeds — a later identical send in tab 4 must NOT be deduped against
+  // the delivered nonce (it would be silently swallowed and never posted).
+  const tab3 = fixture()
+  await tab3.execute('send_message', input)
+  // Delivery dropped the shared entry (the store holds no unconfirmed key).
+  const storedAfterDelivery = JSON.parse(
+    (tab3.sandbox.__localStorage as { getItem: (k: string) => string | null }).getItem('__eo2DiscordRetryNonces') ?? '{}',
+  ) as Record<string, unknown>
+  expect(storedAfterDelivery['555||cross tab']).toBeUndefined()
+  const tab4 = fixture({ respond: respond500 })
+  await tab4.execute('send_message', input)
+  expect(JSON.parse(tab4.fetches[0].init.body!).nonce).not.toBe(JSON.parse(tab3.fetches[0].init.body!).nonce)
+}, 15000)
+
+it('the cross-tab nonce store is bounded and expires with the same 5-minute window', async () => {
+  // Backlog bound: after 128 unconfirmed sends the shared store holds at
+  // most 128 keys (same cap as the in-tab map), so a large backlog cannot
+  // grow localStorage unboundedly across tabs.
+  const respond500 = () => ({ status: 500, body: 'Internal Server Error' })
+  const page = fixture({ respond: respond500 })
+  for (let i = 0; i < 130; i++) {
+    await page.execute('send_message', { channel: '555', content: `backlog ${i}` })
+  }
+  const stored = JSON.parse(
+    (page.sandbox.__localStorage as { getItem: (k: string) => string | null }).getItem('__eo2DiscordRetryNonces')!,
+  ) as Record<string, unknown>
+  expect(Object.keys(stored).length).toBeLessThanOrEqual(128)
+
+  // Window bound: a storage entry older than 300s is not adopted (a fresh
+  // nonce is minted and, store-once, replaces the expired entry).
+  const oldTab = fixture({ respond: respond500 })
+  const input = { channel: '555', content: 'expired entry' }
+  const now = Date.now()
+  ;(oldTab.sandbox.__localStorage as { setItem: (k: string, v: string) => void }).setItem(
+    '__eo2DiscordRetryNonces',
+    JSON.stringify({ '555||expired entry': { nonce: 'stale-nonce', at: now - 300000 } }),
+  )
+  await oldTab.execute('send_message', input)
+  const regenerated = JSON.parse(oldTab.fetches[0].init.body!).nonce as string
+  expect(regenerated).not.toBe('stale-nonce')
+  const rewritten = JSON.parse(
+    (oldTab.sandbox.__localStorage as { getItem: (k: string) => string | null }).getItem('__eo2DiscordRetryNonces')!,
+  ) as Record<string, { nonce: string; at: number }>
+  expect(rewritten['555||expired entry'].nonce).not.toBe('stale-nonce')
 }, 15000)

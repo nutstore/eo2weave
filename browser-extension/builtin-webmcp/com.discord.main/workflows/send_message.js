@@ -482,6 +482,39 @@ export default {
               page_url: location.href,
             }
           }
+          // Cross-tab retry store. The in-tab nonce map
+          // (globalThis.__eo2DiscordRetryNonces) lives in ONE page's
+          // globalThis, so a retry routed to a DIFFERENT discord.com tab
+          // could not find the original nonce and would double-post.
+          // localStorage on the discord.com origin is shared by every tab of
+          // the same browser profile, so it is the cross-tab source of truth;
+          // the per-tab map stays as a fallback for contexts where
+          // localStorage is unavailable or throws (sandboxed frames,
+          // storage-disabled modes). Same 5-minute window, store-once and
+          // delete-on-delivery semantics as the map.
+          var RETRY_NONCES_STORAGE_KEY = '__eo2DiscordRetryNonces'
+          function readRetryNoncesFromStorage() {
+            var raw = localStorage.getItem(RETRY_NONCES_STORAGE_KEY)
+            if (typeof raw !== 'string' || raw === '') return null
+            var parsed = JSON.parse(raw)
+            var out = {}
+            for (var k in parsed) {
+              if (!Object.prototype.hasOwnProperty.call(parsed, k)) continue
+              var v = parsed[k]
+              if (v && typeof v.nonce === 'string' && typeof v.at === 'number')
+                out[k] = { nonce: v.nonce, at: v.at }
+            }
+            return out
+          }
+          function writeRetryNoncesToStorage(entries) {
+            localStorage.setItem(RETRY_NONCES_STORAGE_KEY, JSON.stringify(entries))
+          }
+          function deleteRetryNonceFromStorage(retryKey) {
+            var entries = readRetryNoncesFromStorage()
+            if (!entries || !entries[retryKey]) return
+            delete entries[retryKey]
+            writeRetryNoncesToStorage(entries)
+          }
           var discordToolImplementations = {
             async send_message(args) {
               if (location.hostname !== 'discord.com')
@@ -547,6 +580,28 @@ export default {
                     now - remembered.at < 300000
                   )
                     nonce = remembered.nonce
+                  // Cross-tab lookup: another discord.com tab may hold the
+                  // original nonce (same origin → shared localStorage).
+                  // The map is only a fallback, so a remembered entry wins
+                  // and a storage entry is adopted when the map has none.
+                  if (nonce === undefined) {
+                    var stored = readRetryNoncesFromStorage()
+                    if (stored) {
+                      for (var sk in stored) {
+                        if (!Object.prototype.hasOwnProperty.call(stored, sk)) continue
+                        var sv = stored[sk]
+                        if (now - sv.at < 300000) {
+                          if (sk === retryKey) {
+                            nonce = sv.nonce
+                          } else {
+                            // Refresh the in-tab map from storage so its
+                            // lazy expiry and eviction see the shared state.
+                            retries.set(sk, { nonce: sv.nonce, at: sv.at })
+                          }
+                        }
+                      }
+                    }
+                  }
                 } catch (e) {}
               }
               if (nonce === undefined)
@@ -554,6 +609,10 @@ export default {
                   String(Date.now()) +
                   '-' +
                   Math.random().toString(36).slice(2, 10)
+              // Creation timestamp for the store-once contract: captured ONCE
+              // here, never re-read on retry attempts, so the 5-minute reuse
+              // window cannot be extended by retries.
+              var now2 = Date.now()
               if (retryKey !== null)
                 try {
                   var store =
@@ -566,6 +625,32 @@ export default {
                   if (!existing) {
                     store.delete(retryKey)
                     store.set(retryKey, { nonce: nonce, at: Date.now() })
+                    // Mirror the fresh nonce into localStorage so a retry
+                    // that lands on ANOTHER discord.com tab finds it (the
+                    // per-tab map is invisible across tabs). Store-once:
+                    // only write when no entry exists yet — or when the
+                    // stored entry has EXPIRED (it would never be adopted,
+                    // so it must not block the fresh entry) — keeping the
+                    // original creation timestamp — and the 5-minute
+                    // window — anchored to the FIRST send, not the retry.
+                    var persisted = readRetryNoncesFromStorage()
+                    var persistedEntry = persisted ? persisted[retryKey] : undefined
+                    var persistedExpired =
+                      persistedEntry && now2 - persistedEntry.at >= 300000
+                    if (!persistedEntry || persistedExpired) {
+                      persisted = persisted || {}
+                      // Keep the shared store bounded too (same 128-key
+                      // cap as the map, oldest entries dropped first) so a
+                      // backlog of unconfirmed sends cannot grow it
+                      // unboundedly across tabs.
+                      var pkeys = Object.keys(persisted)
+                      while (pkeys.length >= 128) {
+                        var pk = pkeys.shift()
+                        if (pk !== undefined) delete persisted[pk]
+                      }
+                      persisted[retryKey] = { nonce: nonce, at: now2 }
+                      writeRetryNoncesToStorage(persisted)
+                    }
                   }
                   // Bounded: keep the map at 128 keys, evicting the oldest.
                   while (store.size > 128) {
@@ -595,6 +680,11 @@ export default {
                     (globalThis.__eo2DiscordRetryNonces =
                       globalThis.__eo2DiscordRetryNonces || new Map())
                   delivered.delete(retryKey)
+                  // Also drop the cross-tab copy: a retry landing on a
+                  // DIFFERENT tab must not reuse a nonce whose send already
+                  // succeeded (it would be silently deduped by Discord and
+                  // never posted).
+                  deleteRetryNonceFromStorage(retryKey)
                 } catch (e) {}
               return ok({ message: mapMessage(response.data), nonce: nonce })
             },

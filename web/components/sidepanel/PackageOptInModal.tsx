@@ -44,6 +44,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useT } from '@/i18n'
+import { localizedToolDescription } from '@/i18n/webmcp-tools'
 import {
   dismissPackagePrompt,
   enableLegacyRecipeAndReload,
@@ -329,7 +330,16 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
                         <span className="min-w-0 flex-1">
                           <span className="font-mono text-foreground">{tool.name}</span>
                           {tool.description ? (
-                            <span className="text-muted-foreground"> — {tool.description}</span>
+                            <span className="text-muted-foreground"> — {localizedToolDescription({
+                              source: 'webmcp',
+                              // The opt-in payload keys translations by the
+                              // package's site hostname — the same key the
+                              // webmcpTools i18n namespace uses (see
+                              // getWebMCPToolDescription).
+                              sourceId: packageInfo.hostname,
+                              name: tool.name,
+                              description: tool.description,
+                            })}</span>
                           ) : null}
                         </span>
                         <span
