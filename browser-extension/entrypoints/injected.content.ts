@@ -15,6 +15,10 @@ import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
 import { installAdapterCommand } from '../lib/bash-commands/adapter'
 import { installBrowserCommand } from '../lib/bash-commands/browser/provider'
+import {
+  PAGE_ACTION_REQUEST_ID_KEY,
+  stablePageActionRequestId,
+} from '../lib/bash-commands/browser/page-action-request-identity'
 
 // Build-time Codex OAuth feature flag (see wxt.config.ts). Store builds
 // (CW_CODEX_OAUTH=0) fold the guards below and treeshake the bridge names.
@@ -897,12 +901,13 @@ export default defineContentScript({
        * Returns the raw runner result, always with an `ok` boolean. On
        * failure, includes `errorCode` and `error` string.
        *
-       * REQUEST IDENTITY: every submission is stamped with a unique
+       * REQUEST IDENTITY: every submission is stamped with a stable
        * `__cwRequestId` inside the action payload before it crosses the
        * bridge. The background keys its retry dedupe on that id:
-       *   - a RETRY of the same logical request reuses the SAME id, so the
-       *     background joins the already-running execution instead of
-       *     running the action a second time;
+       *   - a RETRY of the same logical action (e.g. after a bridge
+       *     timeout) reuses the SAME id, so the background joins the
+       *     already-running execution instead of running the action a
+       *     second time;
        *   - two INDEPENDENT submissions of an identical action get
        *     different ids, so each runs its own execution.
        * The stamp is stripped by the background before the action reaches
@@ -920,8 +925,16 @@ export default defineContentScript({
        // never extend the budget).
        const timeoutMs = 300000
        const deadlineAt = Date.now() + timeoutMs
+       // The id is CONTENT-ADDRESSED (see stablePageActionRequestId): a
+       // retry of the same logical action — the realistic case after a
+       // bridge timeout — re-derives the identical id and the background's
+       // dedupe joins the first, still-in-flight execution. Two
+       // independent submissions of an identical action still run
+       // separately: the background deletes its dedupe entry as soon as
+       // the first run settles, so a later submission finds no in-flight
+       // promise and executes normally.
        const stampedAction = action && typeof action === 'object'
-         ? { ...action, __cwRequestId: '__cw_' + (++_requestId) + '_' + Date.now() }
+         ? { ...action, [PAGE_ACTION_REQUEST_ID_KEY]: stablePageActionRequestId(action) }
          : action
        return sendToBridge('runBoundPageAction', { binding, action: stampedAction, deadlineAt }, timeoutMs)
        },

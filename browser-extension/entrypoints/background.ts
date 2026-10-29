@@ -11,22 +11,27 @@ const PAGE_ACTION_QUEUE_WAIT_MS = 300_000
  * the retry would queue behind the first run and execute it a SECOND time,
  * duplicating side effects.
  *
- * The key carries a REQUEST IDENTITY, not just (tab, serialized action): a
- * RETRY of the same logical request (same requestId, stamped by the page
- * caller into the action payload) joins the first run's in-flight promise,
- * while two INDEPENDENT submissions (different requestIds) run separately —
- * each caller gets its own execution. The map entry is deleted in a
- * `finally` when the run SETTLES (resolve or reject), never by age: entries
- * therefore live at most as long as the action itself, and a caller that
- * retries a still-running action always joins it, no matter how long it
- * takes. Actions without a recognizable requestId are never deduped.
+ * The key carries a REQUEST IDENTITY, not just (tab, serialized action):
+ * a RETRY of the same logical action (same requestId — the page caller
+ * derives it from the action's content, so a resubmission after a bridge
+ * timeout re-derives the identical id) joins the first run's in-flight
+ * promise, while two different actions (different requestIds) run
+ * separately. Two INDEPENDENT submissions of an IDENTICAL action also run
+ * separately: the map entry is deleted in a `finally` when the run
+ * SETTLES (resolve or reject), never by age — by the time a genuinely new
+ * submission arrives the earlier run has settled and its entry is gone,
+ * so the new submission executes normally. Entries therefore live at most
+ * as long as the action itself, and a caller that retries a still-running
+ * action always joins it, no matter how long it takes. Actions without a
+ * recognizable requestId are never deduped.
  */
 const pageActionInFlight = new Map<string, Promise<unknown>>()
 /**
  * Extract the caller's request identity from the action payload. The page
- * bridge caller (`sendToBridge`) stamps every submission with a unique
- * `__cwRequestId`; a retry of the SAME submission reuses the id, a NEW
- * submission gets a fresh one. Absent (legacy caller) → no dedupe.
+ * bridge caller stamps every submission with a CONTENT-ADDRESSED
+ * `__cwRequestId`: a retry of the SAME logical action re-derives the same
+ * id, a different action gets a different one. Absent (legacy caller) →
+ * no dedupe.
  */
 function pageActionRequestId(action: unknown): string {
   if (!action || typeof action !== 'object') return ''
