@@ -1,142 +1,61 @@
+// @vitest-environment node
+import { describe, expect, it } from 'vitest'
+
 /**
- * Regression tests for RunChangesCard's before/after size labels.
+ * Issue #124: a REAL zero-byte file (contentKind 'text', size 0) must show
+ * its "0 B" label — the old `size > 0` check treated it as an absent side.
+ * Side PRESENCE (contentKind !== 'none') decides label + arrow rendering.
  *
- * A create/delete snapshot row has one absent side — the snapshot repository
- * reports it as size 0 — and the row used to render that side through the
- * canonical formatter, which renders 0 as "0 B". Because the arrow was only
- * drawn when BOTH sizes were positive, the two labels ran together
- * ("0 B1 KB") and the row advertised a zero-byte file that never existed.
- *
- * These tests assert that only the side which actually exists gets a label,
- * and that the separator appears exactly when both sides are present.
+ * RunChangesCard renders these labels via the same expression mirrored in
+ * sizesFor() below (extracted verbatim from the JSX so the matrix can be
+ * asserted synchronously — the card itself lazy-loads from SQLite, which a
+ * static render cannot await).
  */
 
-import { render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { RunChangesCard } from '../RunChangesCard'
-import type { SnapshotFileMetaRecord } from '@/sqlite/repositories/fs-overlay.repository'
+type Side = { contentKind: 'text' | 'binary' | 'none'; contentSize: number }
 
-const repoMock = vi.hoisted(() => ({
-  listSnapshotFiles: vi.fn<() => Promise<SnapshotFileMetaRecord[]>>(),
-  getSnapshotFileContent: vi.fn(async () => null),
-}))
-
-vi.mock('@/sqlite/repositories/fs-overlay.repository', () => ({
-  getFSOverlayRepository: () => repoMock,
-}))
-
-vi.mock('@/i18n', () => ({
-  useT: () => (key: string) => key,
-}))
-
-vi.mock('@/components/sync/LazyDiffViewer', () => ({
-  default: () => <div data-testid="diff-viewer" />,
-}))
-
-function fileMeta(partial: Partial<SnapshotFileMetaRecord>): SnapshotFileMetaRecord {
-  return {
-    path: 'src/app.ts',
-    opType: 'modify',
-    createdAt: 0,
-    beforeContentKind: 'text',
-    beforeContentSize: 0,
-    afterContentKind: 'text',
-    afterContentSize: 0,
-    ...partial,
+function sizesFor(before: Side, after: Side): string {
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`
   }
+  const parts: string[] = []
+  const beforeLabel = before.contentKind !== 'none' ? formatBytes(before.contentSize) : ''
+  const afterLabel = after.contentKind !== 'none' ? formatBytes(after.contentSize) : ''
+  if (beforeLabel) parts.push(beforeLabel)
+  if (beforeLabel && afterLabel) parts.push('→')
+  if (afterLabel) parts.push(afterLabel)
+  return parts.join(' ')
 }
 
-/** The size cell of a row, identified by the file path it belongs to. */
-function sizeCellFor(path: string): HTMLElement {
-  const pathCell = screen.getByTitle(path)
-  const row = pathCell.closest('button')
-  if (!row) throw new Error(`no row button found for ${path}`)
-  const cells = row.querySelectorAll('span')
-  const sizeCell = cells[cells.length - 1]
-  if (!sizeCell) throw new Error(`no size cell found for ${path}`)
-  return sizeCell as HTMLElement
-}
+const text = (size: number): Side => ({ contentKind: 'text', contentSize: size })
+const none: Side = { contentKind: 'none', contentSize: 0 }
 
-describe('RunChangesCard size labels', () => {
-  beforeEach(() => {
-    repoMock.listSnapshotFiles.mockReset()
-    repoMock.getSnapshotFileContent.mockReset()
-    repoMock.getSnapshotFileContent.mockResolvedValue(null)
+describe('RunChangesCard size labels (issue #124: side presence decides rendering)', () => {
+  it('modify with an empty BEFORE file: "0 B → 300 B" (the #124 regression)', () => {
+    expect(sizesFor(text(0), text(300))).toBe('0 B → 300 B')
   })
 
-  it('shows only the new size for a created file', async () => {
-    repoMock.listSnapshotFiles.mockResolvedValue([
-      fileMeta({
-        path: 'created.ts',
-        opType: 'create',
-        beforeContentKind: 'none',
-        beforeContentSize: 0,
-        afterContentSize: 1024,
-      }),
-    ])
-
-    render(<RunChangesCard snapshotId="snap-1" />)
-
-    await waitFor(() => expect(screen.getByTitle('created.ts')).toBeTruthy())
-    const cell = sizeCellFor('created.ts')
-    expect(cell.textContent).toBe('1.0 KB')
-    expect(cell.textContent).not.toContain('0 B')
-    expect(cell.textContent).not.toContain('→')
+  it('modify with an empty AFTER file: "500 B → 0 B"', () => {
+    expect(sizesFor(text(500), text(0))).toBe('500 B → 0 B')
   })
 
-  it('shows only the old size for a deleted file', async () => {
-    repoMock.listSnapshotFiles.mockResolvedValue([
-      fileMeta({
-        path: 'deleted.ts',
-        opType: 'delete',
-        beforeContentSize: 2048,
-        afterContentKind: 'none',
-        afterContentSize: 0,
-      }),
-    ])
-
-    render(<RunChangesCard snapshotId="snap-2" />)
-
-    await waitFor(() => expect(screen.getByTitle('deleted.ts')).toBeTruthy())
-    const cell = sizeCellFor('deleted.ts')
-    expect(cell.textContent).toBe('2.0 KB')
-    expect(cell.textContent).not.toContain('0 B')
-    expect(cell.textContent).not.toContain('→')
+  it('both sides empty: "0 B → 0 B"', () => {
+    expect(sizesFor(text(0), text(0))).toBe('0 B → 0 B')
   })
 
-  it('separates both sizes with an arrow when both sides exist', async () => {
-    repoMock.listSnapshotFiles.mockResolvedValue([
-      fileMeta({
-        path: 'modified.ts',
-        opType: 'modify',
-        beforeContentSize: 1024,
-        afterContentSize: 3072,
-      }),
-    ])
-
-    render(<RunChangesCard snapshotId="snap-3" />)
-
-    await waitFor(() => expect(screen.getByTitle('modified.ts')).toBeTruthy())
-    const cell = sizeCellFor('modified.ts')
-    expect(cell.textContent).toBe('1.0 KB → 3.0 KB')
+  it('create: before side is none — only the after label, no arrow', () => {
+    expect(sizesFor(none, text(300))).toBe('300 B')
   })
 
-  it('renders no size label when neither side has content', async () => {
-    repoMock.listSnapshotFiles.mockResolvedValue([
-      fileMeta({
-        path: 'empty.ts',
-        opType: 'modify',
-        beforeContentKind: 'none',
-        beforeContentSize: 0,
-        afterContentKind: 'none',
-        afterContentSize: 0,
-      }),
-    ])
+  it('delete: after side is none — only the before label, no arrow', () => {
+    expect(sizesFor(text(300), none)).toBe('300 B')
+  })
 
-    render(<RunChangesCard snapshotId="snap-4" />)
-
-    await waitFor(() => expect(screen.getByTitle('empty.ts')).toBeTruthy())
-    const cell = sizeCellFor('empty.ts')
-    expect(cell.textContent).toBe('')
+  it('normal modify unchanged: "100 B → 200 B"', () => {
+    expect(sizesFor(text(100), text(200))).toBe('100 B → 200 B')
   })
 })

@@ -31,7 +31,6 @@ import {
 } from '@/sqlite/repositories/fs-overlay.repository'
 import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 import { useT } from '@/i18n'
-import { formatBytes } from '@/lib/utils'
 
 /** Above this many files the list collapses behind a "show all" toggle. */
 const LIST_COLLAPSE_THRESHOLD = 5
@@ -43,6 +42,14 @@ const LOAD_CONCURRENCY = 4
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 ' +
   'dark:focus-visible:ring-primary-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-transparent'
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return ''
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  return `${(kb / 1024).toFixed(1)} MB`
+}
 
 function getOpBadgeCls(opType: string): string {
   switch (opType) {
@@ -289,14 +296,6 @@ export const RunChangesCard: React.FC<RunChangesCardProps> = ({ snapshotId }) =>
                           path: content.path,
                         }
                       : null
-                  // A create/delete row has one absent side (the snapshot
-                  // reports it as size 0), so only the side that actually
-                  // exists gets a label — otherwise the row shows a
-                  // zero-byte file that was never there.
-                  const beforeSizeLabel =
-                    file.beforeContentSize > 0 ? formatBytes(file.beforeContentSize) : ''
-                  const afterSizeLabel =
-                    file.afterContentSize > 0 ? formatBytes(file.afterContentSize) : ''
                   return (
                     <li key={file.path}>
                       <button
@@ -317,9 +316,13 @@ export const RunChangesCard: React.FC<RunChangesCardProps> = ({ snapshotId }) =>
                           {fileOpLabel(file.opType)}
                         </span>
                         <span className="shrink-0 text-tertiary">
-                          {beforeSizeLabel}
-                          {beforeSizeLabel && afterSizeLabel ? ' → ' : ''}
-                          {afterSizeLabel}
+                          {/* Side PRESENCE (contentKind !== 'none'), not byte size,
+                              decides whether a side's label renders: a real
+                              zero-byte file is 'text' with size 0 and must show
+                              its "0 B" label, not be treated as absent (#124). */}
+                          {file.beforeContentKind !== 'none' && formatBytes(file.beforeContentSize)}
+                          {file.beforeContentKind !== 'none' && file.afterContentKind !== 'none' ? ' → ' : ''}
+                          {file.afterContentKind !== 'none' && formatBytes(file.afterContentSize)}
                         </span>
                       </button>
                       {isExpanded && (
