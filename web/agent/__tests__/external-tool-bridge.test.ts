@@ -2,12 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   refreshCatalog: vi.fn(),
+  discoverCatalog: vi.fn(),
+  expireDiscovery: vi.fn(),
   getMCPManager: vi.fn(),
   getWebMCPBridge: vi.fn(),
   getWebMCPState: vi.fn(),
 }))
 
-vi.mock('@/webmcp/manager', () => ({ refreshWebMCPCatalog: mocks.refreshCatalog }))
+vi.mock('@/webmcp/manager', () => ({
+  refreshWebMCPCatalog: mocks.refreshCatalog,
+  discoverWebMCPCatalog: mocks.discoverCatalog,
+  expireWebMCPDiscovery: mocks.expireDiscovery,
+}))
 
 vi.mock('@/mcp/mcp-manager', () => ({
   getMCPManager: mocks.getMCPManager,
@@ -27,7 +33,9 @@ vi.mock('../policy-engine', () => ({
   authorize: vi.fn().mockResolvedValue({ decision: 'allow', via: 'auto' }),
 }))
 
-import { callToolExecutor } from '../external-tool-bridge'
+import { callToolExecutor, collectAllExternalTools } from '../external-tool-bridge'
+import { useSettingsStore } from '@/store/settings.store'
+import { authorize } from '../policy-engine'
 
 const inputSchema = { type: 'object' as const, properties: {} }
 const toolContext = { directoryHandle: null }
@@ -476,6 +484,7 @@ describe('WebMCP legacy extension compatibility', () => {
       const result = JSON.parse(await pending)
       expect(invoke).toHaveBeenCalledTimes(1)
       expect(result.error.code).toBe('INVALID_TOOL_NAME')
+      expect(mocks.expireDiscovery).toHaveBeenCalledOnce()
     } finally {
       vi.useRealTimers()
     }
@@ -526,6 +535,7 @@ describe('WebMCP catalog lookup recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.refreshCatalog.mockReset()
+    mocks.discoverCatalog.mockReset()
   })
 
   it('refreshes once when a previously discovered tab tool is temporarily absent', async () => {
@@ -541,7 +551,7 @@ describe('WebMCP catalog lookup recovery', () => {
       getEnabledTools: () => available ? [tool] : [],
       getToolByCallName: () => available ? tool : undefined,
     }))
-    mocks.refreshCatalog.mockImplementation(async () => { available = true; return [tool] })
+    mocks.discoverCatalog.mockImplementation(async () => { available = true; return [tool] })
     const invoke = vi.fn().mockResolvedValue({ ok: true, tabId: 1, result: { count: 2 } })
     mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
 
@@ -551,8 +561,74 @@ describe('WebMCP catalog lookup recovery', () => {
       args: {},
     }, toolContext))
 
-    expect(mocks.refreshCatalog).toHaveBeenCalledOnce()
+    expect(mocks.discoverCatalog).toHaveBeenCalledOnce()
     expect(invoke).toHaveBeenCalledOnce()
     expect(result.data.result).toEqual({ count: 2 })
+  })
+
+  it('rechecks the selected tab after a transient instance miss', async () => {
+    const tool = {
+      name: 'read', origin: 'https://example.com', fullName: 'https_example_com__read',
+      hostname: 'example.com', description: '', inputSchema,
+      apiMode: 'documentModelContext' as const,
+      tabs: [{ tabId: 2, title: 'Other', url: 'https://example.com', lastSeenAt: 1 }],
+    }
+    let restored = false
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockImplementation(() => ({
+      getEnabledTools: () => [{ ...tool, tabs: restored ? [...tool.tabs, { ...tool.tabs[0], tabId: 1 }] : tool.tabs }],
+      getToolByCallName: () => ({ ...tool, tabs: restored ? [...tool.tabs, { ...tool.tabs[0], tabId: 1 }] : tool.tabs }),
+    }))
+    mocks.discoverCatalog.mockImplementation(async () => { restored = true; return [] })
+    const invoke = vi.fn().mockResolvedValue({ ok: true, tabId: 1, result: { value: 1 } })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(mocks.discoverCatalog).toHaveBeenCalledOnce()
+    expect(invoke).toHaveBeenCalledOnce()
+    expect(result.ok).toBe(true)
+  })
+
+  it('does not expose cached WebMCP tools while globally disabled', () => {
+    const previous = useSettingsStore.getState().enableWebMCP
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [{ fullName: 'https_example_com__read', tabs: [{ tabId: 1 }] }],
+    })
+    try {
+      useSettingsStore.setState({ enableWebMCP: false })
+      expect(collectAllExternalTools()).toEqual([])
+    } finally {
+      useSettingsStore.setState({ enableWebMCP: previous })
+    }
+  })
+
+  it('does not invoke a tool if WebMCP is disabled during authorization', async () => {
+    const tool = {
+      name: 'read', origin: 'https://example.com', fullName: 'https_example_com__read',
+      hostname: 'example.com', description: '', inputSchema,
+      apiMode: 'documentModelContext' as const,
+      tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
+    }
+    const previous = useSettingsStore.getState().enableWebMCP
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({ getEnabledTools: () => [tool], getToolByCallName: () => tool })
+    const invoke = vi.fn()
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+    let approve!: (value: { decision: 'allow'; via: 'auto' }) => void
+    vi.mocked(authorize).mockImplementationOnce(() => new Promise((resolve) => { approve = resolve }))
+
+    try {
+      useSettingsStore.setState({ enableWebMCP: true })
+      const pending = callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext)
+      await vi.waitFor(() => expect(approve).toBeTypeOf('function'))
+      useSettingsStore.setState({ enableWebMCP: false })
+      approve({ decision: 'allow', via: 'auto' })
+      const result = JSON.parse(await pending)
+      expect(invoke).not.toHaveBeenCalled()
+      expect(result.error.code).toBe('WEBMCP_DISABLED')
+    } finally {
+      useSettingsStore.setState({ enableWebMCP: previous })
+    }
   })
 })
