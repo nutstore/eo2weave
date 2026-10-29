@@ -1971,6 +1971,15 @@ export default defineBackground(() => {
         // untrusted webpages from invoking MAIN-world page actions. The agent
         // layer remains responsible for UI confirmation of write actions.
         if (message.type === 'runBoundPageAction') {
+          // Total deadline = the page-side bridge timeout (sendToBridge, 300s
+          // in injected.content.ts) measured from REQUEST RECEIPT — preflight
+          // (binding + side-panel checks) must consume from the SAME budget
+          // the caller's timer does, or a queued action could acquire the
+          // lock after its caller has already timed out. Date.now() is the
+          // only monotonic-enough clock available in an MV3 worker that can
+          // also survive a mid-request service-worker restart well enough
+          // for a 5-minute budget (restart resets are minutes-scale).
+          const requestReceivedAt = Date.now()
           const targetTabId = await resolveBoundSidePanelTab(_sender, message.binding)
           if (targetTabId === null) {
             sendResponse({
@@ -2020,6 +2029,12 @@ export default defineBackground(() => {
             // therefore never acquire the lock and start.
             let settled = false
             try {
+            // Remaining budget for the queue wait = the caller's total
+            // 300s budget minus whatever preflight already consumed. If the
+            // caller's timeout has already passed, the remaining budget is
+            // <= 0 and withTabLock rejects immediately without starting
+            // the action — an abandoned action can never acquire the lock.
+            const queueWaitBudget = PAGE_ACTION_QUEUE_WAIT_MS - (Date.now() - requestReceivedAt)
             const result: unknown = await withTabLock(targetTabId, async () => {
               settled = true
               const results = await chrome.scripting.executeScript({
@@ -2088,7 +2103,7 @@ export default defineBackground(() => {
               }
             }
             return result
-            }, { maxQueueWaitMs: PAGE_ACTION_QUEUE_WAIT_MS })
+            }, { maxQueueWaitMs: Math.max(0, queueWaitBudget) })
             settled = true
             sendResponse(result ?? { ok: false, errorCode: 'NO_RESULT', error: 'executeScript returned no result' })
             } catch (err: any) {

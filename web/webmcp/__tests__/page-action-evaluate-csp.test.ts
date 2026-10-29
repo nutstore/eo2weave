@@ -242,10 +242,19 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
   it('awaits promises in the page before returning', async () => {
     const dbg = debuggerApi()
     let captured: Record<string, unknown> | undefined
+    let respondedAt = 0
+    let calledAt = 0
     dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
       if (method === 'Runtime.evaluate') {
         captured = params
-        done({ result: { value: 'late' } })
+        calledAt = Date.now()
+        // Genuinely DELAY the response: only an evaluator that actually
+        // awaits the in-flight promise observes the settled value; one that
+        // fires done() immediately would capture respondedAt < promiseSettledAt.
+        void new Promise((r) => setTimeout(r, 100)).then(() => {
+          respondedAt = Date.now()
+          done({ result: { value: 'late' } })
+        })
       } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
       else done({ result: { value: null } })
     })
@@ -260,6 +269,9 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
     // The resolved CDP value must actually come back — an evaluator that sent
     // awaitPromise but dropped the response would fail this assertion.
     expect(result).toEqual({ ok: true, result: 'late' })
+    // And the evaluator must have WAITED for the delayed response: its result
+    // cannot be available before the promise settled.
+    expect(respondedAt).toBeGreaterThanOrEqual(calledAt + 90)
   })
 
   it('surfaces page exceptions as structured failures', async () => {
@@ -343,14 +355,19 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
 
   it('runs the expression when the frame loader id still matches (same document after pushState / hash change)', async () => {
     const dbg = debuggerApi()
-    dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
       if (method === IDENTITY_PROBE) {
         // pushState / location.hash changes keep the SAME document — and the
         // same loader id — so the guard must allow the fallback here even
         // though the tab's URL changed.
         done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
       } else if (method === 'Runtime.evaluate') {
-        done({ result: { value: 'ran-in-original-document' } })
+        // Execute the EXACT captured source (the async-IIFE wrapper): a
+        // wrapper that embeds the input as inert text resolves undefined,
+        // not 'ran-in-original-document'.
+        const source = String(params.expression)
+        const fn = new Function(`return ${source}`) as () => Promise<unknown>
+        void fn().then((v) => done({ result: { value: v } }))
       } else done({ result: { value: null } })
     })
     vi.stubGlobal('chrome', {
@@ -359,7 +376,7 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       storage: storageApi(),
       runtime: { onDetach: dbg.onDetach },
     })
-    const result = await evaluateBoundExpressionViaCdp(7, 'document.title', 'same-loader-id')
+    const result = await evaluateBoundExpressionViaCdp(7, "return 'ran-in-' + 'original-document'", 'same-loader-id')
     expect(result).toEqual({ ok: true, result: 'ran-in-original-document' })
   })
 
