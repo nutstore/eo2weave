@@ -700,6 +700,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       {packagePrompt?.package && (
         <PackageOptInModal
           packageInfo={packagePrompt.package}
+          legacy={packagePrompt.legacy === true}
           onClose={() => setPackagePrompt(null)}
         />
       )}

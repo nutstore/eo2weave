@@ -5,11 +5,14 @@ const dismissPackagePromptMock = vi.fn()
 const enablePackageAndReloadMock = vi.fn<
   (id: string, token: string, late: unknown) => Promise<unknown>
 >()
+const enableLegacyRecipeAndReloadMock = vi.fn<(id: string) => Promise<unknown>>()
 
 vi.mock('@/agent/sidepanel-package-prompt', () => ({
   dismissPackagePrompt: (...args: unknown[]) => dismissPackagePromptMock(...args),
   enablePackageAndReload: (...args: unknown[]) =>
     enablePackageAndReloadMock(...(args as [string, string, unknown])),
+  enableLegacyRecipeAndReload: (...args: unknown[]) =>
+    enableLegacyRecipeAndReloadMock(...(args as [string])),
 }))
 
 vi.mock('sonner', () => ({
@@ -45,6 +48,7 @@ describe('PackageOptInModal', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     enablePackageAndReloadMock.mockResolvedValue({ ok: true, reloaded: true })
+    enableLegacyRecipeAndReloadMock.mockResolvedValue({ ok: true, reloaded: true })
   })
 
   it('renders the hostname, package id and tool count', () => {
@@ -264,5 +268,58 @@ describe('PackageOptInModal', () => {
     const backdrop = container.querySelector('[role="dialog"]') as HTMLElement
     fireEvent.click(backdrop)
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  // ── Legacy protocol (pre-#102 extension, issue #113) ──
+
+  const legacyPackageInfo = {
+    ...packageInfo,
+    consentToken: undefined,
+    displayName: 'JMessage',
+    totalTools: 4,
+    tools: [],
+  }
+
+  it('legacy confirm: calls recipeEnable via enableLegacyRecipeAndReload (NO consent token), success toast + close', async () => {
+    const onClose = vi.fn()
+    render(
+      <PackageOptInModal packageInfo={legacyPackageInfo} legacy onClose={onClose} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
+    await waitFor(() => {
+      // Exactly one arg — the recipe/package id. No token, no late callback.
+      expect(enableLegacyRecipeAndReloadMock).toHaveBeenCalledTimes(1)
+      expect(enableLegacyRecipeAndReloadMock).toHaveBeenCalledWith('world.jmail.archive')
+      expect(enablePackageAndReloadMock).not.toHaveBeenCalled()
+      expect(toast.success).toHaveBeenCalledWith(ENABLED_TOAST)
+      expect(onClose).toHaveBeenCalledTimes(1)
+    })
+    expect(dismissPackagePromptMock).not.toHaveBeenCalled()
+  })
+
+  it('legacy confirm with failure: existing error toast + cooldown, and the new-protocol path is untouched', async () => {
+    enableLegacyRecipeAndReloadMock.mockResolvedValue({ ok: false, errorCode: 'RECIPE_MISMATCH' })
+    const onClose = vi.fn()
+    render(
+      <PackageOptInModal packageInfo={legacyPackageInfo} legacy onClose={onClose} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(ENABLE_FAILED_TOAST)
+      expect(dismissPackagePromptMock).toHaveBeenCalledWith('world.jmail.archive')
+      expect(onClose).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('non-legacy modal never calls the legacy enable', async () => {
+    render(<PackageOptInModal packageInfo={packageInfo} onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
+    await waitFor(() => {
+      expect(enablePackageAndReloadMock).toHaveBeenCalledTimes(1)
+      expect(enableLegacyRecipeAndReloadMock).not.toHaveBeenCalled()
+    })
   })
 })

@@ -11,10 +11,13 @@ vi.mock('@/agent/workspace-assistant-context', () => ({
 
 import {
   dismissPackagePrompt,
+  enableLegacyRecipeAndReload,
   enablePackageAndReload,
   getPendingPackagePrompt,
   isPackagePromptDismissed,
   resetPackagePromptDismissals,
+  resetPackagePromptProtocolCache,
+  type LegacyRecipeStatus,
   type PackageOptInStatus,
 } from '@/agent/sidepanel-package-prompt'
 
@@ -24,6 +27,11 @@ type AgentWebShape = {
     binding: string,
     packageId: string,
     consentToken: string,
+  ) => Promise<{ ok?: boolean; error?: string; errorCode?: string; reloaded?: boolean }>
+  recipeCheckStatus?: (binding: string) => Promise<LegacyRecipeStatus>
+  recipeEnable?: (
+    binding: string,
+    recipeId: string,
   ) => Promise<{ ok?: boolean; error?: string; errorCode?: string; reloaded?: boolean }>
 }
 
@@ -53,11 +61,30 @@ function okStatus(overrides: Partial<PackageOptInStatus> = {}): PackageOptInStat
 
 const BINDING = '7b0a2c66-6b1d-4a2e-9f0c-1c2d3e4f5a6b'
 
+/** Legacy (1.1.7) recipe status payload, as the old background answers it. */
+function legacyStatus(overrides: Partial<LegacyRecipeStatus> = {}): LegacyRecipeStatus {
+  return {
+    ok: true,
+    applicable: true,
+    recipe: {
+      id: 'world.jmail.messages',
+      displayName: 'JMessage',
+      description: 'Send and read JMessage conversations.',
+      glyph: 'message',
+      hostname: 'jmail.world',
+      toolCount: 4,
+    },
+    enabled: false,
+    ...overrides,
+  }
+}
+
 describe('getPendingPackagePrompt', () => {
   beforeEach(() => {
     getSidePanelBindingIdMock.mockReturnValue(null)
     setAgentWeb(undefined)
     resetPackagePromptDismissals()
+    resetPackagePromptProtocolCache()
   })
 
   it('returns null when not in side-panel mode (no binding)', async () => {
@@ -249,6 +276,136 @@ describe('getPendingPackagePrompt', () => {
       vi.useRealTimers()
     }
   })
+
+  it('falls back to the legacy recipe probe when the new bridge call rejects, and maps the payload (issue #113)', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    const checkStatus = vi.fn().mockResolvedValue(legacyStatus())
+    setAgentWeb({
+      // Old extension: the new message type is unknown → the relay throws.
+      webMCPPackageOptInStatus: vi.fn().mockRejectedValue(new Error('unknown message type')),
+      recipeCheckStatus: checkStatus,
+    })
+
+    const result = await getPendingPackagePrompt()
+    expect(checkStatus).toHaveBeenCalledWith(BINDING)
+    expect(result?.applicable).toBe(true)
+    if (!result?.applicable || !('package' in result) || !result.package) {
+      throw new Error('expected a legacy fallback prompt')
+    }
+    // Old payload mapped onto the new modal shape.
+    expect(result.package.id).toBe('world.jmail.messages')
+    expect(result.package.displayName).toBe('JMessage')
+    expect(result.package.description).toBe('Send and read JMessage conversations.')
+    expect(result.package.hostname).toBe('jmail.world')
+    expect(result.package.totalTools).toBe(4)
+    expect(result.package.tools).toEqual([])
+    expect(result.package.consentToken).toBeUndefined()
+    expect(result.enabled).toBe(false)
+    expect(result.legacy).toBe(true)
+  })
+
+  it('caches the legacy-only verdict: a later probe skips the new bridge entirely', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    const newProbe = vi.fn().mockRejectedValue(new Error('unknown message type'))
+    const checkStatus = vi.fn().mockResolvedValue(legacyStatus({ applicable: false }))
+    setAgentWeb({
+      webMCPPackageOptInStatus: newProbe,
+      recipeCheckStatus: checkStatus,
+    })
+
+    // First probe: new fails → legacy answers definitively → cache settles.
+    expect(await getPendingPackagePrompt()).toBeNull()
+    expect(newProbe).toHaveBeenCalledTimes(1)
+    expect(checkStatus).toHaveBeenCalledTimes(1)
+
+    // Second probe: the cached verdict short-circuits the new protocol.
+    expect(await getPendingPackagePrompt()).toBeNull()
+    expect(newProbe).toHaveBeenCalledTimes(1)
+    expect(checkStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('caches the new-protocol verdict: a working new bridge never touches the legacy path', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    const checkStatus = vi.fn().mockResolvedValue(legacyStatus())
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockResolvedValue(okStatus()),
+      recipeCheckStatus: checkStatus,
+    })
+
+    const result = await getPendingPackagePrompt()
+    expect(checkStatus).not.toHaveBeenCalled()
+    if (!result?.applicable || !('package' in result) || !result.package) {
+      throw new Error('expected a new-protocol prompt')
+    }
+    expect(result.package.id).toBe('world.jmail.archive')
+    expect(result.legacy).toBeUndefined()
+
+    // Second probe stays on the new protocol (cache hit, no legacy attempt).
+    await getPendingPackagePrompt()
+    expect(checkStatus).not.toHaveBeenCalled()
+  })
+
+  it('caches the none verdict: with no bridge at all, later probes are silent nulls', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    const consoleInfo = vi.spyOn(console, 'info').mockImplementation(() => {})
+    try {
+      expect(await getPendingPackagePrompt()).toBeNull()
+      expect(await getPendingPackagePrompt()).toBeNull()
+      expect(consoleInfo).toHaveBeenCalledTimes(1) // decided once, then silent
+    } finally {
+      consoleInfo.mockRestore()
+    }
+  })
+
+  it('does NOT cache legacy-only when the legacy probe itself is transiently failing', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    const newProbe = vi.fn().mockRejectedValue(new Error('relay choked'))
+    const checkStatus = vi.fn().mockRejectedValue(new Error('service worker asleep'))
+    setAgentWeb({
+      webMCPPackageOptInStatus: newProbe,
+      recipeCheckStatus: checkStatus,
+    })
+
+    // Both protocols transiently fail → retryable, cache stays undetermined
+    // (a recovering NEW extension must not be locked out of its protocol).
+    expect(await getPendingPackagePrompt()).toEqual({ applicable: false, retryable: true })
+    expect(newProbe).toHaveBeenCalledTimes(1)
+    expect(checkStatus).toHaveBeenCalledTimes(1)
+
+    // The new bridge recovers: the next probe tries it again and succeeds.
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockResolvedValue(okStatus()),
+      recipeCheckStatus: checkStatus,
+    })
+    const result = await getPendingPackagePrompt()
+    expect(result?.applicable).toBe(true)
+  })
+
+  it('maps a legacy applicable:false or already-enabled recipe to null', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockRejectedValue(new Error('unknown message type')),
+      recipeCheckStatus: vi.fn().mockResolvedValue(legacyStatus({ applicable: false })),
+    })
+    expect(await getPendingPackagePrompt()).toBeNull()
+
+    resetPackagePromptProtocolCache()
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockRejectedValue(new Error('unknown message type')),
+      recipeCheckStatus: vi.fn().mockResolvedValue(legacyStatus({ enabled: true })),
+    })
+    expect(await getPendingPackagePrompt()).toBeNull()
+  })
+
+  it('honors the shared dismissal cooldown on the legacy path (key = recipe/package id)', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    setAgentWeb({
+      webMCPPackageOptInStatus: vi.fn().mockRejectedValue(new Error('unknown message type')),
+      recipeCheckStatus: vi.fn().mockResolvedValue(legacyStatus()),
+    })
+    dismissPackagePrompt('world.jmail.messages')
+    expect(await getPendingPackagePrompt()).toBeNull()
+  })
 })
 
 describe('dismissPackagePrompt (concurrency-safe storage)', () => {
@@ -417,5 +574,66 @@ describe('enablePackageAndReload', () => {
     } finally {
       consoleError.mockRestore()
     }
+  })
+})
+
+describe('enableLegacyRecipeAndReload (pre-#102 protocol, issue #113)', () => {
+  beforeEach(() => {
+    getSidePanelBindingIdMock.mockReturnValue(BINDING)
+    setAgentWeb(undefined)
+  })
+
+  it('calls recipeEnable with binding + recipeId and NO consent token; maps ok/reloaded', async () => {
+    const recipeEnable = vi.fn().mockResolvedValue({ ok: true, recipeId: 'world.jmail.messages', reloaded: true })
+    setAgentWeb({ recipeEnable })
+    const result = await enableLegacyRecipeAndReload('world.jmail.messages')
+    // Exactly two args — the legacy protocol has no consent token slot.
+    expect(recipeEnable).toHaveBeenCalledTimes(1)
+    expect(recipeEnable).toHaveBeenCalledWith(BINDING, 'world.jmail.messages')
+    expect(result).toEqual({ ok: true, errorCode: undefined, error: undefined, reloaded: true })
+  })
+
+  it('maps a legacy failure to the structured error shape', async () => {
+    setAgentWeb({
+      recipeEnable: vi.fn().mockResolvedValue({
+        ok: false,
+        errorCode: 'RECIPE_MISMATCH',
+        error: 'Recipe does not match the bound tab location.',
+      }),
+    })
+    const result = await enableLegacyRecipeAndReload('world.jmail.messages')
+    expect(result.ok).toBe(false)
+    expect(result.errorCode).toBe('RECIPE_MISMATCH')
+    expect(result.error).toContain('does not match')
+  })
+
+  it('reports BRIDGE_UNAVAILABLE without the legacy method and TIMEOUT on a stalled bridge', async () => {
+    setAgentWeb({})
+    expect(await enableLegacyRecipeAndReload('world.jmail.messages')).toMatchObject({
+      ok: false,
+      errorCode: 'BRIDGE_UNAVAILABLE',
+    })
+
+    vi.useFakeTimers()
+    try {
+      setAgentWeb({
+        recipeEnable: () => new Promise(() => {}),
+      })
+      const pending = enableLegacyRecipeAndReload('world.jmail.messages')
+      const assertion = pending.then(result => {
+        expect(result).toMatchObject({ ok: false, errorCode: 'TIMEOUT' })
+      })
+      await vi.advanceTimersByTimeAsync(8_100)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns NO_BINDING outside side-panel mode', async () => {
+    getSidePanelBindingIdMock.mockReturnValue(null)
+    setAgentWeb({ recipeEnable: vi.fn() })
+    const result = await enableLegacyRecipeAndReload('world.jmail.messages')
+    expect(result).toMatchObject({ ok: false, errorCode: 'NO_BINDING' })
   })
 })

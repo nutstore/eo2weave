@@ -39,6 +39,12 @@ export interface PackageOptInInfo {
   activation: 'enabled' | 'disabled'
   tools: PackageOptInToolInfo[]
   /**
+   * Human-readable package name. Present only on legacy-protocol payloads
+   * (pre-#102 extensions report `recipe.displayName`); the modal keys its
+   * visuals off `id`, so this stays informational.
+   */
+  displayName?: string
+  /**
    * Package-WIDE tool count across all origins (the enable activates every
    * tool of the package, including ones not matching the current tab URL).
    * Used for the consent copy; `tools` above lists only the tools matching
@@ -77,6 +83,58 @@ export interface PackageOptInStatus {
    * not shadow its siblings. Absent on older extension builds.
    */
   alternatives?: PackageOptInInfo[]
+  /**
+   * True when this status came from the LEGACY (pre-#102) recipe protocol
+   * (`window.__agentWeb.recipeCheckStatus`) rather than the new bridge
+   * `getPendingPackagePrompt`. Legacy payloads carry no consent token, so
+   * the confirm path must call `recipeEnable(binding, recipeId)` instead of
+   * the consent-token enable (protocol-level analog of grace mode).
+   */
+  legacy?: boolean
+}
+
+/**
+ * The pre-#102 extension surface (shipped 1.1.7, store rollout pending).
+ * Types mirror the legacy injected.content relay verbatim — the web app
+ * never sends anything the old extension would not recognize.
+ */
+interface AgentWebLegacyRecipeBridge {
+  recipeCheckStatus?: (binding: string) => Promise<LegacyRecipeStatus>
+  recipeEnable?: (
+    binding: string,
+    recipeId: string,
+  ) => Promise<{ ok?: boolean; error?: string; errorCode?: string; reloaded?: boolean }>
+}
+
+/** Legacy (pre-#102) recipe status payload, as sent by the 1.1.7 background. */
+export interface LegacyRecipeStatus {
+  ok?: boolean
+  applicable: boolean
+  recipe?: {
+    id: string
+    displayName: string
+    description: string
+    glyph: string
+    hostname: string
+    toolCount: number
+  }
+  enabled?: boolean
+  errorCode?: string
+  error?: string
+}
+
+/**
+ * Per-session verdict on which opt-in protocol the installed extension
+ * speaks, so repeated probes do not double-try both paths on every poll
+ * (AppBootstrap re-probes on a 60s late-bound interval + bounded startup
+ * retries). `null` = not yet determined (first probe tries new → legacy).
+ */
+type ProtocolSupport = 'new' | 'legacy-only' | 'none'
+let protocolSupport: ProtocolSupport | null = null
+
+/** Test seam: forget the per-session protocol verdict. */
+export function resetPackagePromptProtocolCache(): void {
+  protocolSupport = null
 }
 
 const DISMISS_STORAGE_KEY_PREFIX = 'cw_webmcp_package_prompt_dismissed_v1'
@@ -184,14 +242,25 @@ const PROBE_TIMEOUT_MS = 4000
  *   - the package is already enabled
  *   - the user dismissed the prompt within the cooldown window
  *
- * Bridge failures resolve `null` as well (never throw) — this prompt is a
- * nice-to-have and must not disturb side-panel startup. Transient failures
- * (timeout / bridge error / STATUS_FAILED) return a reason so callers can
- * retry (findings: "Transient probe errors hide prompt" / "Transient status
- * failures hide the prompt" — a transient tab/storage/catalog error must not
- * suppress the prompt for the whole session); only the terminal "nothing to
- * offer" outcomes report `retryable: false`. A dismissed best candidate is
- * retried against its non-dismissed siblings before giving up.
+ * Two protocols are tried, in order (issue #113):
+ *   1. NEW (#102): bridge `webMCPPackageOptInStatus` (consent-token flow)
+ *   2. LEGACY (1.1.7): `window.__agentWeb.recipeCheckStatus`, mapped onto
+ *      the same status shape (`legacy: true`; the confirm path then calls
+ *      `recipeEnable` without a consent token — the old protocol's grace)
+ *
+ * Which protocol speaks is cached per session (see `protocolSupport`) so a
+ * legacy-only extension is not re-probed with the new bridge (and vice
+ * versa) on every startup retry / 60s late-bound poll. When NEITHER is
+ * available (plain web, no extension) the result is a silent `null` — this
+ * prompt is a nice-to-have and must never throw or log an error.
+ *
+ * Transient failures (timeout / bridge error / STATUS_FAILED) return a
+ * reason so callers can retry (findings: "Transient probe errors hide
+ * prompt" / "Transient status failures hide the prompt" — a transient
+ * tab/storage/catalog error must not suppress the prompt for the whole
+ * session); only the terminal "nothing to offer" outcomes report
+ * `retryable: false`. A dismissed best candidate is retried against its
+ * non-dismissed siblings before giving up.
  */
 export async function getPendingPackagePrompt(): Promise<
   | (PackageOptInStatus & { applicable: true; package: PackageOptInInfo; enabled: false })
@@ -206,17 +275,78 @@ export async function getPendingPackagePrompt(): Promise<
     return null
   }
 
-  const agentWeb = (globalThis as { __agentWeb?: AgentWebPackageOptInBridge }).__agentWeb
-  if (!agentWeb?.webMCPPackageOptInStatus) {
-    // eslint-disable-next-line no-console
-    console.warn('[SidePanelPackagePrompt] skip: extension bridge unavailable', {
-      hasAgentWeb: !!agentWeb,
-      hasStatus: !!agentWeb?.webMCPPackageOptInStatus,
-      hint: 'Extension needs a rebuild/update (package opt-in bridge added 2026-10-28)',
-    })
-    return null
+  const agentWeb = (
+    globalThis as { __agentWeb?: AgentWebPackageOptInBridge & AgentWebLegacyRecipeBridge }
+  ).__agentWeb
+  const legacyProbe = () => probeLegacyProtocol(binding, agentWeb?.recipeCheckStatus)
+
+  // A cached 'new' verdict skips the legacy path entirely; 'legacy-only'
+  // and 'none' skip the new-protocol probe. null (undetermined) tries
+  // new first, then legacy — settling the cache on the way.
+  if (protocolSupport === 'none') return null
+  if (protocolSupport === 'legacy-only') return legacyProbe()
+
+  if (agentWeb?.webMCPPackageOptInStatus) {
+    const outcome = await probeNewProtocol(binding, agentWeb.webMCPPackageOptInStatus)
+    if (outcome.verdict !== 'legacy') {
+      // The new bridge ANSWERED (success, structured failure, or timeout —
+      // only new extensions expose the method at all): cache it.
+      if (protocolSupport === null) protocolSupport = 'new'
+      return outcome.result
+    }
+    // The new probe call itself REJECTED — ambiguous between an old
+    // extension whose relay chokes on the unknown message type and a new
+    // extension whose service worker is mid-restart. Try legacy right away,
+    // but only commit the session cache to 'legacy-only' when the legacy
+    // surface DEFINITIVELY answers (a legacy transient failure must keep
+    // the cache undetermined, or a recovering new extension would be
+    // locked out of its own protocol for the whole session).
+    const legacy = await legacyProbe()
+    const legacyAnsweredDefinitively =
+      !!agentWeb.recipeCheckStatus && !(legacy !== null && 'retryable' in legacy && legacy.retryable)
+    if (legacyAnsweredDefinitively) protocolSupport = 'legacy-only'
+    // null from a REAL legacy probe is a legitimate terminal answer
+    // (dismissed / no matching recipe) — only an entirely missing legacy
+    // surface substitutes the new probe's retryable outcome.
+    if (agentWeb.recipeCheckStatus) return legacy
+    return legacy ?? { applicable: false, retryable: true }
   }
 
+  // No new bridge method at all: an old extension (or no extension) —
+  // decide the session verdict from the legacy surface alone.
+  if (protocolSupport === null) {
+    protocolSupport = agentWeb?.recipeCheckStatus ? 'legacy-only' : 'none'
+    if (protocolSupport === 'none') {
+      // eslint-disable-next-line no-console
+      console.info(
+        '[SidePanelPackagePrompt] skip: extension bridge unavailable (no opt-in protocol; plain web or pre-1.1.7 extension)',
+      )
+    }
+  }
+  if (protocolSupport === 'none') return null
+  return legacyProbe()
+}
+
+interface NewProtocolOutcome {
+  /** 'legacy' = the new bridge rejected the probe → try the old protocol. */
+  verdict: 'done' | 'legacy'
+  result:
+    | (PackageOptInStatus & { applicable: true; package: PackageOptInInfo; enabled: false })
+    | { applicable: false; retryable: boolean }
+    | null
+}
+
+/**
+ * Probe the NEW (#102) bridge method. Maps every terminal outcome onto the
+ * prompt shapes above; a probe that the bridge could not answer AT ALL
+ * (missing method → throw, timeout, or {ok:false} rejection — i.e. an old
+ * extension whose service worker does not recognize the message type)
+ * yields verdict 'legacy' so the caller falls back to the 1.1.7 protocol.
+ */
+async function probeNewProtocol(
+  binding: string,
+  probe: (binding: string) => Promise<PackageOptInStatus>,
+): Promise<NewProtocolOutcome> {
   let status: PackageOptInStatus | null = null
   let timedOut = false
   try {
@@ -224,7 +354,7 @@ export async function getPendingPackagePrompt(): Promise<
     // bridge itself has a 35s timeout; 4s covers cold service-worker starts
     // without stalling the modal long when the extension is half-dead.
     status = await Promise.race([
-      agentWeb.webMCPPackageOptInStatus(binding),
+      probe(binding),
       new Promise<null>(resolve => {
         setTimeout(() => {
           timedOut = true
@@ -233,7 +363,7 @@ export async function getPendingPackagePrompt(): Promise<
       }),
     ])
   } catch {
-    return { applicable: false, retryable: true }
+    return { verdict: 'legacy', result: { applicable: false, retryable: true } }
   }
   if (!status || status.ok === false) {
     // eslint-disable-next-line no-console
@@ -247,22 +377,25 @@ export async function getPendingPackagePrompt(): Promise<
     // catalog errors inside the background probe, so both stay retryable
     // (bounded by the caller's retry budget).
     return {
-      applicable: false,
-      retryable: timedOut || status === null || status?.errorCode === 'STATUS_FAILED',
+      verdict: 'done',
+      result: {
+        applicable: false,
+        retryable: timedOut || status === null || status?.errorCode === 'STATUS_FAILED',
+      },
     }
   }
   if (!status.applicable || !status.package || typeof status.package.id !== 'string') {
     // eslint-disable-next-line no-console
     console.info('[SidePanelPackagePrompt] skip: no package matches bound tab URL', { status })
-    return null
+    return { verdict: 'done', result: null }
   }
   if (status.enabled || status.package.activation === 'enabled') {
     // eslint-disable-next-line no-console
     console.info('[SidePanelPackagePrompt] skip: package already enabled', status.package.id)
-    return null
+    return { verdict: 'done', result: null }
   }
   if (!isPackagePromptDismissed(status.package.id)) {
-    return toPrompt(status)
+    return { verdict: 'done', result: toPrompt(status) }
   }
   // The best candidate is in its dismissal cooldown. Other builtin packages
   // may host the same tab — offer the best NON-dismissed sibling (finding:
@@ -275,28 +408,112 @@ export async function getPendingPackagePrompt(): Promise<
     // eslint-disable-next-line no-console
     console.info('[SidePanelPackagePrompt] best candidate dismissed; offering sibling', alternative.id)
     return {
-      applicable: true,
-      package: {
-        ...alternative,
-        // The sibling's OWN consent token (finding: "Sibling consent cannot
-        // complete"): the extension mints one per disabled alternative, bound
-        // to the sibling's package id. The status-level token belongs to the
-        // dismissed primary and must NOT be reused; older extension builds
-        // send no per-sibling token at all (undefined) and rely on the grace
-        // path until the fleet updates.
-        consentToken:
-          typeof alternative.consentToken === 'string' && alternative.consentToken !== ''
-            ? alternative.consentToken
-            : undefined,
-        totalTools: typeof alternative.totalTools === 'number' ? alternative.totalTools : undefined,
+      verdict: 'done',
+      result: {
+        applicable: true,
+        package: {
+          ...alternative,
+          // The sibling's OWN consent token (finding: "Sibling consent cannot
+          // complete"): the extension mints one per disabled alternative, bound
+          // to the sibling's package id. The status-level token belongs to the
+          // dismissed primary and must NOT be reused; older extension builds
+          // send no per-sibling token at all (undefined) and rely on the grace
+          // path until the fleet updates.
+          consentToken:
+            typeof alternative.consentToken === 'string' && alternative.consentToken !== ''
+              ? alternative.consentToken
+              : undefined,
+          totalTools: typeof alternative.totalTools === 'number' ? alternative.totalTools : undefined,
+        },
+        enabled: false,
+        ok: true,
       },
-      enabled: false,
-      ok: true,
     }
   }
   // eslint-disable-next-line no-console
   console.info('[SidePanelPackagePrompt] skip: within dismissal cooldown', status.package.id)
-  return null
+  return { verdict: 'done', result: null }
+}
+
+/**
+ * Probe the LEGACY (pre-#102) recipe protocol (`recipeCheckStatus`, shipped
+ * in 1.1.7) and map the old payload onto the new modal's status shape:
+ * package.id = recipe.id, displayName/description/toolCount straight over,
+ * `enabled` passthrough; `applicable` means the same thing on both
+ * protocols. Never throws — an old extension without the method (or one
+ * that fails the probe) resolves to a silent null so ordinary web sessions
+ * (no extension at all) stay clean.
+ */
+async function probeLegacyProtocol(
+  binding: string,
+  checkStatus?: (binding: string) => Promise<LegacyRecipeStatus>,
+): Promise<
+  | (PackageOptInStatus & { applicable: true; package: PackageOptInInfo; enabled: false })
+  | { applicable: false; retryable: boolean }
+  | null
+> {
+  if (!checkStatus) return null
+  let status: LegacyRecipeStatus | null = null
+  try {
+    status = await Promise.race([
+      checkStatus(binding),
+      new Promise<null>(resolve => {
+        setTimeout(() => resolve(null), PROBE_TIMEOUT_MS)
+      }),
+    ])
+  } catch {
+    // Old bridge broke mid-probe: keep it retryable (the caller's bounded
+    // backoff will re-probe) without ever throwing into startup.
+    return { applicable: false, retryable: true }
+  }
+  if (!status || status.ok === false) {
+    // eslint-disable-next-line no-console
+    console.warn('[SidePanelPackagePrompt] skip: legacy bridge returned failure/timeout', { status })
+    return null
+  }
+  const recipe = status.recipe
+  if (!status.applicable || !recipe || typeof recipe.id !== 'string') {
+    // eslint-disable-next-line no-console
+    console.info('[SidePanelPackagePrompt] skip: no legacy recipe matches bound tab URL', { status })
+    return null
+  }
+  if (status.enabled) {
+    // eslint-disable-next-line no-console
+    console.info('[SidePanelPackagePrompt] skip: legacy recipe already enabled', recipe.id)
+    return null
+  }
+  if (isPackagePromptDismissed(recipe.id)) {
+    // eslint-disable-next-line no-console
+    console.info('[SidePanelPackagePrompt] skip: within dismissal cooldown (legacy)', recipe.id)
+    return null
+  }
+  // eslint-disable-next-line no-console
+  console.info('[SidePanelPackagePrompt] showing opt-in modal from legacy probe for', recipe.id)
+  return {
+    applicable: true,
+    enabled: false,
+    ok: true,
+    legacy: true,
+    package: {
+      // The old recipe ids ARE the new package ids (world.jmail.messages,
+      // …) — the modal's icon map and dismissal keys work unchanged.
+      id: recipe.id,
+      description: typeof recipe.description === 'string' ? recipe.description : '',
+      hostname: typeof recipe.hostname === 'string' ? recipe.hostname : '',
+      // The legacy protocol has no per-origin activation split; a recipe is
+      // either enabled or not (mirrored above).
+      activation: 'disabled',
+      // The legacy payload has NO per-tool list — only the count. The modal
+      // hides the tool list when empty and falls back to the summary copy.
+      tools: [],
+      displayName: recipe.displayName,
+      totalTools:
+        typeof recipe.toolCount === 'number' && Number.isFinite(recipe.toolCount)
+          ? recipe.toolCount
+          : undefined,
+      // No consentToken: the legacy enable path is tokenless by design.
+    },
+  }
 }
 
 /** Wrap a status payload into the prompt shape the modal consumes. */
@@ -421,6 +638,53 @@ export async function enablePackageAndReload(
     // belt-and-braces guard so the flow can never throw into the modal.
     // eslint-disable-next-line no-console
     console.error('[SidePanelPackagePrompt] enable flow crashed:', err, { packageId })
+    return {
+      ok: false,
+      errorCode: 'ENABLE_FAILED',
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
+/**
+ * Legacy (pre-#102) enable flow, used when the prompt status carries the
+ * `legacy` flag: the old extension only speaks
+ * `recipeEnable(binding, recipeId)` — there is NO consent token (the old
+ * protocol predates token minting; its binding/tab re-validation in the
+ * background is the protocol-level analog of grace mode). The bridge
+ * reloads the upstream tab itself and reports `reloaded`, mirrored onto
+ * the same `PackageOptInEnableResult` the new flow returns so the modal's
+ * toast/retry logic stays identical.
+ */
+export async function enableLegacyRecipeAndReload(
+  recipeId: string,
+): Promise<PackageOptInEnableResult> {
+  const { getSidePanelBindingId } = await import('@/agent/workspace-assistant-context')
+  const binding = getSidePanelBindingId()
+  if (!binding) return { ok: false, errorCode: 'NO_BINDING' }
+
+  const agentWeb = (
+    globalThis as { __agentWeb?: AgentWebPackageOptInBridge & AgentWebLegacyRecipeBridge }
+  ).__agentWeb
+  if (!agentWeb?.recipeEnable) return { ok: false, errorCode: 'BRIDGE_UNAVAILABLE' }
+
+  try {
+    const raw = await Promise.race([
+      agentWeb.recipeEnable(binding, recipeId),
+      new Promise<null>(resolve => {
+        setTimeout(() => resolve(null), ENABLE_TIMEOUT_MS)
+      }),
+    ])
+    if (!raw) return { ok: false, errorCode: 'TIMEOUT' }
+    return {
+      ok: raw.ok === true,
+      errorCode: raw.ok === true ? undefined : (raw.errorCode ?? 'ENABLE_FAILED'),
+      error: raw.error,
+      reloaded: raw.reloaded,
+    }
+  } catch (err: unknown) {
+    // eslint-disable-next-line no-console
+    console.error('[SidePanelPackagePrompt] legacy enable bridge call failed:', err, { recipeId })
     return {
       ok: false,
       errorCode: 'ENABLE_FAILED',
