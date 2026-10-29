@@ -900,7 +900,16 @@ export default defineContentScript({
       async runBoundPageAction(binding: string, action: Record<string, unknown>) {
         // Page actions (especially fill on ProseMirror/Yjs editors) can take
         // unbounded time. Use 5 min timeout instead of the default 35s.
-        return sendToBridge('runBoundPageAction', { binding, action }, 300000)
+        // The ABSOLUTE timeout epoch rides along with the request: the
+        // background's own clock starts only after the bridge delivery, so
+        // without this stamp a slow delivery would shift the background's
+        // budget later than the caller's and let an action start after this
+        // side has already timed out. The background clamps the value into a
+        // plausible window (it can only make the background give up earlier,
+        // never extend the budget).
+        const timeoutMs = 300000
+        const deadlineAt = Date.now() + timeoutMs
+        return sendToBridge('runBoundPageAction', { binding, action, deadlineAt }, timeoutMs)
       },
 
       /**

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isCspCompileRejection } from '../../../browser-extension/lib/bash-commands/browser/csp-rejection'
 import { evaluateBoundExpressionViaCdp } from '../../../browser-extension/lib/bash-commands/browser/cdp-evaluate'
-import { clearDebuggerState } from '../../../browser-extension/lib/bash-commands/browser/cdp'
+import { clearDebuggerState, TabLockWaitTimeoutError, withTabLock } from '../../../browser-extension/lib/bash-commands/browser/cdp'
 
 /**
  * Issue #106: the page-action runner's `evaluate` action compiles arbitrary JS
@@ -117,7 +117,9 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
   it('wraps function-body syntax (return / top-level await) so it parses and EXECUTES as a script', async () => {
     const dbg = debuggerApi()
     let captured: Record<string, unknown> | undefined
-    const WRAPPER_RE = new RegExp('^\\(async \\(\\) => \\{\\n([\\s\\S]*)\\n\\}\\)\\(\\)$')
+    // PLAIN async FUNCTION wrapper (not an arrow): matches the MAIN-world
+    // `new Function(body)` semantics for `arguments` and strict-mode `this`.
+    const WRAPPER_RE = new RegExp('^\\(async function \\(\\) \\{\\n([\\s\\S]*)\\n\\}\\)\\(\\)$')
     dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
       if (method === 'Runtime.evaluate') {
         captured = params
@@ -151,7 +153,7 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
     const result = await evaluateBoundExpressionViaCdp(7, "return 'executed:' + (1 + 1)")
     expect(result).toEqual({ ok: true, result: 'executed:2' })
     const expr = String(captured?.expression)
-    expect(expr.startsWith('(async () => {')).toBe(true)
+    expect(expr.startsWith('(async function () {')).toBe(true)
     expect(expr).toContain("return 'executed:' + (1 + 1)")
     expect(expr.trimEnd().endsWith('})()')).toBe(true)
   })
@@ -248,12 +250,22 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       if (method === 'Runtime.evaluate') {
         captured = params
         calledAt = Date.now()
-        // Genuinely DELAY the response: only an evaluator that actually
-        // awaits the in-flight promise observes the settled value; one that
-        // fires done() immediately would capture respondedAt < promiseSettledAt.
+        // Genuinely DELAY the response, and derive the value from the
+        // CAPTURED EXPRESSION: a mock that returns a hardcoded 'late' after
+        // a timer would pass even if the evaluator dropped or mis-wrapped
+        // the expression. Executing the exact wrapper source makes the
+        // resolved value prove the expression really ran.
+        const source = String(params.expression)
+        const fn = new Function(`return ${source}`) as () => Promise<unknown>
         void new Promise((r) => setTimeout(r, 100)).then(() => {
           respondedAt = Date.now()
-          done({ result: { value: 'late' } })
+          return fn().then(
+            (v) => done({ result: { value: v } }),
+            (e) => done({
+              result: { value: undefined },
+              exceptionDetails: { text: 'Uncaught', exception: { description: e instanceof Error ? e.message : String(e) } },
+            }),
+          )
         })
       } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
       else done({ result: { value: null } })
@@ -264,7 +276,10 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       storage: storageApi(),
       runtime: { onDetach: dbg.onDetach },
     })
-    const result = await evaluateBoundExpressionViaCdp(7, '(async () => "late")()')
+    // The expression itself resolves 'late' only after a 100ms timer — the
+    // evaluator must await the in-page promise (awaitPromise) AND the
+    // wrapper must really run it: the result cannot come from anywhere else.
+    const result = await evaluateBoundExpressionViaCdp(7, "return await new Promise((r) => setTimeout(() => r('late'), 100))")
     expect(captured?.awaitPromise).toBe(true)
     // The resolved CDP value must actually come back — an evaluator that sent
     // awaitPromise but dropped the response would fail this assertion.
@@ -452,5 +467,142 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
     const result = await evaluateBoundExpressionViaCdp(7, 'throw cyclic')
     expect(result.ok).toBe(false)
     expect((result as { error: string }).error).toContain('E_CYCLIC')
+  })
+
+  it('preserves `arguments` and strict-mode `this` like the MAIN-world new Function path', async () => {
+    const dbg = debuggerApi()
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        // Execute the EXACT captured wrapper source the way Runtime.evaluate
+        // would — as SCRIPT source (indirect eval), not via new Function. An
+        // arrow wrapper has no own `arguments`, so at script level the body
+        // throws 'arguments is not defined'; the plain async function
+        // wrapper binds its own arguments object (length 0) exactly like the
+        // MAIN-world new Function path called with zero args.
+        const source = String(params.expression)
+        void Promise.resolve().then(async () => {
+          try {
+            // eslint-disable-next-line no-eval
+            const v = await (0, eval)(source)
+            done({ result: { value: v } })
+          } catch (e) {
+            done({
+              result: { value: undefined },
+              exceptionDetails: { text: 'Uncaught', exception: { description: e instanceof Error ? e.message : String(e) } },
+            })
+          }
+        })
+      } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
+      else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    // The MAIN-world path compiles the same body with `new Function` and
+    // calls it with zero args: `arguments` is the function's own (empty)
+    // arguments object. The fallback wrapper must bind the same — an arrow
+    // wrapper would leave `arguments` unbound at script level and throw.
+    const result = await evaluateBoundExpressionViaCdp(7, 'return arguments.length === 0 ? "bound-empty" : "bound-nonempty"', 'same-loader-id')
+    expect(result).toEqual({ ok: true, result: 'bound-empty' })
+  })
+
+  it('rejects a zero / expired queue-wait budget BEFORE the lock race (no start after caller timeout)', async () => {
+    // The tab is FREE (no queue) — exactly the case where Promise.race let an
+    // already-resolved predecessor beat a zero-delay timer and start `fn`.
+    const started: string[] = []
+    await expect(withTabLock(41, async () => {
+      started.push('ran')
+      return 'ran'
+    }, { maxQueueWaitMs: 0 })).rejects.toBeInstanceOf(TabLockWaitTimeoutError)
+    await expect(withTabLock(41, async () => {
+      started.push('ran')
+      return 'ran'
+    }, { maxQueueWaitMs: -5 })).rejects.toBeInstanceOf(TabLockWaitTimeoutError)
+    // Yield a macrotask: a raced predecessor could only start `fn` async.
+    await new Promise((r) => setTimeout(r, 10))
+    expect(started).toEqual([])
+    // A positive budget still works and cleans the queue entry up.
+    await expect(withTabLock(41, async () => 'ok', { maxQueueWaitMs: 1000 })).resolves.toBe('ok')
+  })
+
+  it('refuses to dispatch anything when the caller deadline already expired', async () => {
+    const dbg = debuggerApi()
+    const commands: string[] = []
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      commands.push(method)
+      done({ result: { value: null } })
+    })
+    dbg.attach.mockImplementation((_t: { tabId: number }, _v: string, done: Callback<void>) => done())
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    // Expired deadline: withTabLock rejects on the non-positive queue budget
+    // (TabLockWaitTimeoutError) and nothing at all reaches the tab.
+    await expect(
+      evaluateBoundExpressionViaCdp(7, 'window.__never = true', 'loader', Date.now() - 1),
+    ).rejects.toBeInstanceOf(TabLockWaitTimeoutError)
+    // No Page.getFrameTree, no Runtime.evaluate — nothing reached the tab.
+    expect(commands).toEqual([])
+    expect(dbg.attach).not.toHaveBeenCalled()
+  })
+
+  it('does NOT dispatch Runtime.evaluate when the loader query resolves after the deadline', async () => {
+    const dbg = debuggerApi()
+    const evaluated: string[] = []
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === IDENTITY_PROBE) {
+        // The loader query stalls past the (very short) caller deadline and
+        // only then resolves — the continuation must abort, not evaluate.
+        setTimeout(() => done({ frameTree: { frame: { loaderId: 'same-loader-id' } } }), 80)
+      } else if (method === 'Runtime.evaluate') {
+        evaluated.push(String(params.expression))
+        done({ result: { value: 'should-never-run' } })
+      } else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const result = await evaluateBoundExpressionViaCdp(7, 'window.__late = true', 'same-loader-id', Date.now() + 30)
+    expect(result.ok).toBe(false)
+    // The run ends through the deadline path (termination confirmed before
+    // the lock is released). The critical assertion is `evaluated` below:
+    // the stale continuation never dispatched Runtime.evaluate.
+    expect((result as { error: string }).error).toContain('timed out')
+    expect(evaluated).toEqual([])
+  })
+
+  it('uses the shared caller deadline instead of a fresh evaluation window', async () => {
+    const dbg = debuggerApi()
+    dbg.sendCommand.mockImplementation((_target: unknown, method: string, _params: Record<string, unknown>, done: (r?: unknown) => void) => {
+      if (method === 'Runtime.evaluate') {
+        // Never responds — only the deadline machinery can end this run.
+        // (Intentionally no done() call: the callback never fires.)
+      } else if (method === IDENTITY_PROBE) done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
+      else done({ result: { value: null } })
+    })
+    vi.stubGlobal('chrome', {
+      debugger: dbg,
+      tabs: tabsApi(),
+      storage: storageApi(),
+      runtime: { onDetach: dbg.onDetach },
+    })
+    const startedAt = Date.now()
+    // The caller deadline lands ~120ms out; the default EVALUATE_DEADLINE_MS
+    // would be 300s — if the evaluator restarted a fresh window, this test
+    // would hang until vitest's own timeout instead of finishing in ~150ms.
+    const result = await evaluateBoundExpressionViaCdp(7, 'while (true) {}', undefined, Date.now() + 120)
+    const elapsed = Date.now() - startedAt
+    expect(result.ok).toBe(false)
+    expect((result as { error: string }).error).toContain('timed out')
+    expect(elapsed).toBeLessThan(5000)
   })
 })

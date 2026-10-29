@@ -4,6 +4,38 @@
 // requester has given up can never run later against the tab.
 const PAGE_ACTION_QUEUE_WAIT_MS = 300_000
 
+/**
+ * Dedupe window for retried page actions. A bridge timeout does NOT cancel
+ * an action that already started (an in-flight executeScript cannot be
+ * interrupted) — when the caller retries the same action after a timeout,
+ * the retry would queue behind the first run and execute it a SECOND time,
+ * duplicating side effects. While a (tab, action) pair is executing, a retry
+ * with the identical serialized action on the same tab is answered with the
+ * first run's in-flight promise instead of being queued again. The window
+ * is bounded by the maximum possible action duration (the caller's own
+ * deadline caps the background's lock hold), so entries cannot accumulate.
+ */
+const PAGE_ACTION_DEDUPE_TTL_MS = PAGE_ACTION_QUEUE_WAIT_MS
+const pageActionInFlight = new Map<string, {
+  startedAt: number
+  promise: Promise<unknown>
+}>()
+function pageActionDedupeKey(tabId: number, action: unknown): string {
+  let serialized: string
+  try {
+    serialized = JSON.stringify(action) ?? 'null'
+  } catch {
+    // Cyclic action payloads cannot repeat verbatim from a caller retry —
+    // skip dedupe for them rather than throwing.
+    return ''
+  }
+  return `${tabId}:${serialized.length}:${serialized}`
+}
+/** Test hook: drop all dedupe entries. */
+export function resetPageActionDedupeForTest(): void {
+  pageActionInFlight.clear()
+}
+
 // ============================================================
 // Background Service Worker
 // ============================================================
@@ -11,7 +43,7 @@ import { installAdapterBackground } from './webmcp/adapter-background'
 import { serializeError as serializeBrowserError } from '../lib/bash-commands/browser/errors'
 import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
 import { installCdpIdleWatch } from '../lib/bash-commands/browser/cdp'
-import { captureFrameLoaderId, evaluateBoundExpressionViaCdpUnlocked } from '../lib/bash-commands/browser/cdp-evaluate'
+import { captureFrameLoaderId, evaluateBoundExpressionViaCdpUnlocked, isCallerDeadlineExpired as isExpired } from '../lib/bash-commands/browser/cdp-evaluate'
 import { TabLockWaitTimeoutError, withTabLock } from '../lib/bash-commands/browser/cdp'
 import { isCspCompileRejection } from '../lib/bash-commands/browser/csp-rejection'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
@@ -1981,6 +2013,30 @@ export default defineBackground(() => {
           // also survive a mid-request service-worker restart well enough
           // for a 5-minute budget (restart resets are minutes-scale).
           const requestReceivedAt = Date.now()
+          // The caller arms its own 300s bridge timeout in the PAGE world
+          // (injected.content.ts sendToBridge) BEFORE the message crosses
+          // postMessage → content script → chrome.runtime.sendMessage. When
+          // that delivery takes measurable time, `requestReceivedAt` starts
+          // the background's budget LATE and the background could acquire
+          // the lock and start the action after the caller has already timed
+          // out. The page therefore ships its absolute timeout epoch in the
+          // payload; the background clamps the received value into a
+          // plausible window (rejects far-past stamps as untrustworthy and
+          // bounds the future slack) and uses the caller's deadline when
+          // available, falling back to receipt + PAGE_ACTION_QUEUE_WAIT_MS.
+          // The stamp is advisory (a liveness hint), not a trust boundary:
+          // an attacker-controlled page value can only make the background
+          // give up EARLIER (its own action, its own budget) — it can never
+          // extend the budget past PAGE_ACTION_QUEUE_WAIT_MS from receipt.
+          const callerDeadlineRaw = (message as { deadlineAt?: unknown }).deadlineAt
+          const callerDeadlineAt = typeof callerDeadlineRaw === 'number' && Number.isFinite(callerDeadlineRaw)
+            ? callerDeadlineRaw
+            : undefined
+          const deadlineAt = callerDeadlineAt !== undefined
+            && callerDeadlineAt > requestReceivedAt - PAGE_ACTION_QUEUE_WAIT_MS
+            && callerDeadlineAt <= requestReceivedAt + PAGE_ACTION_QUEUE_WAIT_MS
+            ? callerDeadlineAt
+            : requestReceivedAt + PAGE_ACTION_QUEUE_WAIT_MS
           const targetTabId = await resolveBoundSidePanelTab(_sender, message.binding)
           if (targetTabId === null) {
             sendResponse({
@@ -2030,13 +2086,25 @@ export default defineBackground(() => {
             // therefore never acquire the lock and start.
             let settled = false
             try {
-            // Remaining budget for the queue wait = the caller's total
-            // 300s budget minus whatever preflight already consumed. If the
-            // caller's timeout has already passed, the remaining budget is
-            // <= 0 and withTabLock rejects immediately without starting
-            // the action — an abandoned action can never acquire the lock.
-            const queueWaitBudget = PAGE_ACTION_QUEUE_WAIT_MS - (Date.now() - requestReceivedAt)
-            const result: unknown = await withTabLock(targetTabId, async () => {
+            // Remaining budget for the queue wait = the caller's deadline
+            // (see `deadlineAt` above) minus whatever the bridge delivery
+            // AND preflight have already consumed. If the caller's timeout
+            // has already passed, the remaining budget is <= 0 and
+            // withTabLock rejects BEFORE racing the queue — an abandoned
+            // action can never acquire the lock and start.
+            const queueWaitBudget = deadlineAt - Date.now()
+            // RETRY DEDUPE: a caller that retried after a bridge timeout
+            // must not re-execute an action that already started. While the
+            // identical (tab, action) pair is in flight, the retry joins the
+            // FIRST run's promise instead of queueing a second execution.
+            const dedupeKey = pageActionDedupeKey(targetTabId, action)
+            const inflight = dedupeKey ? pageActionInFlight.get(dedupeKey) : undefined
+            if (inflight && Date.now() - inflight.startedAt < PAGE_ACTION_DEDUPE_TTL_MS) {
+              const shared = await inflight.promise
+              sendResponse(shared)
+              return
+            }
+            const runPromise: Promise<unknown> = withTabLock(targetTabId, async () => {
               settled = true
               const results = await chrome.scripting.executeScript({
               target: { tabId: targetTabId },
@@ -2066,6 +2134,19 @@ export default defineBackground(() => {
               args: [action],
             })
             let result = Array.isArray(results) ? results[0]?.result : null
+            // If the caller's deadline expired while the FIRST executeScript
+            // was in flight, stop here: the CDP fallback below would hold
+            // the lock for another full evaluation, and the caller has
+            // already gone. (Note: `result` is discarded — the requester is
+            // no longer listening.)
+            if (isExpired(deadlineAt)) {
+              sendResponse({
+                ok: false,
+                errorCode: 'PAGE_ACTION_ABANDONED',
+                error: 'Page action abandoned: the caller\'s deadline expired while the action was in flight; the CSP fallback was not started.',
+              })
+              return
+            }
             // Strict-CSP pages: the runner's `evaluate` action compiles the
             // expression with `new Function` in the page's MAIN world, which
             // the page's CSP can refuse. The runner tags that compile-stage
@@ -2104,17 +2185,36 @@ export default defineBackground(() => {
               // capture-after-failure window navigations can exploit is
               // inherent to any post-hoc capture and is bounded by the same
               // trust boundary as the executeScript round-trip itself.
-              if (typeof expression === 'string' && expression.trim()) {
+              // An empty / whitespace-only expression is a VALID function
+              // body (an empty body compiles fine and returns undefined) —
+              // the MAIN-world path would have succeeded with it, so it must
+              // NOT be refused here just because its compile error arrived
+              // tagged. Route it through the fallback too: the CDP evaluation
+              // of an empty body returns undefined, matching new Function.
+              if (typeof expression === 'string') {
                 const compileLoaderId = await captureFrameLoaderId(targetTabId)
                 result = await evaluateBoundExpressionViaCdpUnlocked(
                   targetTabId,
                   expression,
                   compileLoaderId ?? undefined,
+                  deadlineAt,
                 )
               }
             }
             return result
             }, { maxQueueWaitMs: Math.max(0, queueWaitBudget) })
+            // Register the in-flight run for retry dedupe BEFORE awaiting it:
+            // a retry that arrives while this run holds the lock joins the
+            // shared promise instead of queueing a duplicate execution.
+            if (dedupeKey) {
+              pageActionInFlight.set(dedupeKey, { startedAt: Date.now(), promise: runPromise })
+              void runPromise.catch(() => {}).then(() => {
+                if (pageActionInFlight.get(dedupeKey)?.promise === runPromise) {
+                  pageActionInFlight.delete(dedupeKey)
+                }
+              })
+            }
+            const result: unknown = await runPromise
             settled = true
             sendResponse(result ?? { ok: false, errorCode: 'NO_RESULT', error: 'executeScript returned no result' })
             } catch (err: any) {

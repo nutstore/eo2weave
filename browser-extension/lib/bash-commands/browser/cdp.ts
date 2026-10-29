@@ -61,6 +61,15 @@ export async function withTabLock<T>(
     fn: () => Promise<T>,
     opts?: { maxQueueWaitMs?: number },
 ): Promise<T> {
+    // A non-positive queue-wait budget means the requester's deadline has
+    // already passed (or was exhausted before this call). Reject BEFORE
+    // touching the queue: `Promise.race([prev, deadline])` with a zero-delay
+    // timer would let an already-resolved `prev` beat the timer and START
+    // `fn` for a caller that has already timed out. Bailing out here never
+    // enqueues a barrier, so the existing queue chain is untouched.
+    if (opts?.maxQueueWaitMs !== undefined && opts.maxQueueWaitMs <= 0) {
+        throw new TabLockWaitTimeoutError(Math.max(0, opts.maxQueueWaitMs))
+    }
     const prev = tabOpQueue.get(tabId) ?? Promise.resolve()
     let release!: () => void
     const barrier = new Promise<void>((r) => {

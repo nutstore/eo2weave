@@ -2,6 +2,43 @@
 import { ensureAttached, sendCommand, withTabLock, noteCdpActivity } from './cdp'
 
 /**
+ * Wall-clock deadline shared across one page-action request: the background
+ * computes it from the CALLER's bridge timeout (sendToBridge, 300s from
+ * request receipt) and hands it down through the queue-wait budget and the
+ * CDP fallback, so no stage — including the fallback evaluation — can hold
+ * the tab lock past the point its requester has already given up.
+ *
+ * Bounded wait applied to debugger callbacks (attach, terminateExecution)
+ * that may simply never fire: an unbounded await would hold the tab lock
+ * forever even though the deadline has passed.
+ */
+export const DEBUGGER_CALLBACK_TIMEOUT_MS = 15_000
+
+/**
+ * Resolve with `value` unless `p` settles first; resolves `value` on a `p`
+ * win... i.e. returns the fallback `value` when the timeout fires, otherwise
+ * `p`'s own settlement. Callers distinguish the timeout via a sentinel value.
+ */
+async function orTimeout<T>(p: Promise<T>, timeoutMs: number, value: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const fallback = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(value as T), timeoutMs)
+  })
+  try {
+    return await Promise.race([p, fallback])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/** True when the wall-clock deadline has passed. */
+function isExpired(deadlineAt?: number): boolean {
+  return deadlineAt !== undefined && Date.now() >= deadlineAt
+}
+
+export { isExpired as isCallerDeadlineExpired }
+
+/**
  * Evaluate an expression in the page's MAIN world through the CDP debugger
  * path, which injects via the debugger and is NOT bound by the page's CSP.
  *
@@ -139,7 +176,14 @@ function stringifyThrownValue(thrown: unknown, fallback: string): string {
  * way the MAIN-world path would have returned it.
  */
 function wrapAsAsyncBody(expression: string): string {
-  return `(async () => {\n${expression}\n})()`
+  // PLAIN FUNCTION form, not an arrow: `new Function(body)` compiles the body
+  // as a non-arrow function, so the MAIN-world path gives user code its own
+  // `arguments` object and dynamic `this` (global in sloppy mode, undefined
+  // in strict mode). An arrow wrapper has neither — it would break expressions
+  // referencing `arguments` and change strict-mode `this` semantics on the
+  // CSP-fallback path. The wrapper is still async (it awaits the IIFE's
+  // promise via awaitPromise) and returns the body's completion value.
+  return `(async function () {\n${expression}\n})()`
 }
 
 /**
@@ -176,8 +220,33 @@ async function runBoundEvaluation(
   tabId: number,
   expression: string,
   expectedLoaderId?: string,
+  deadlineAt?: number,
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
-  await ensureAttached(tabId)
+  // An already-expired caller deadline must never reach the page: neither
+  // the attach nor any command below is dispatched, and the lock acquired
+  // for this run is released immediately. (The evaluateDeadlineMs === 0
+  // timer below is only a backstop for the boundary race — this check is
+  // the authoritative gate.)
+  if (isExpired(deadlineAt)) {
+    return {
+      ok: false,
+      error: 'CSP fallback evaluation aborted: the caller\'s deadline had already expired; nothing was dispatched to the tab.',
+    }
+  }
+  // Bounded attach: a debugger attach callback that never fires must not
+  // hold the tab lock forever — cap the wait so the deadline machinery
+  // below always gets a chance to run and release the lock.
+  let attachTimer: ReturnType<typeof setTimeout> | undefined
+  const attachWon = await Promise.race([
+    ensureAttached(tabId).then(() => true as const),
+    new Promise<false>((resolve) => {
+      attachTimer = setTimeout(() => resolve(false), DEBUGGER_CALLBACK_TIMEOUT_MS)
+    }),
+  ])
+  if (attachTimer !== undefined) clearTimeout(attachTimer)
+  if (!attachWon) {
+    return { ok: false, error: 'CSP fallback evaluation aborted: the debugger attach did not complete within the bounded wait; the tab lock is released.' }
+  }
   // The evaluation may outlive any single idle window (awaitPromise on a
   // slow page promise). Keep the CDP session marked active for the whole
   // wait — sendCommand only notes activity at callback completion, so
@@ -192,26 +261,43 @@ async function runBoundEvaluation(
   // Runtime.terminateExecution was attempted AND its outcome confirmed (see
   // the deadline handler below) — releasing earlier would let later tab
   // commands overlap page work the deadline failed to stop.
+  const evaluateDeadlineMs = deadlineAt !== undefined
+    ? Math.max(0, deadlineAt - Date.now())
+    : EVALUATE_DEADLINE_MS
   let reportTimeout: ((terminated: boolean) => void) | undefined
   const timeoutOutcome = new Promise<{ ok: false; error: string }>((resolve) => {
     reportTimeout = (terminated: boolean) =>
       resolve({
         ok: false,
         error: terminated
-          ? `CSP fallback evaluation timed out after ${EVALUATE_DEADLINE_MS}ms (page promise never settled); the evaluation was terminated and confirmed stopped before the tab lock was released.`
-          : `CSP fallback evaluation timed out after ${EVALUATE_DEADLINE_MS}ms (page promise never settled); termination could not be confirmed (debugger session gone — the evaluation cannot resume without it).`,
+          ? `CSP fallback evaluation timed out after ${evaluateDeadlineMs}ms (page promise never settled); the evaluation was terminated and confirmed stopped before the tab lock was released.`
+          : `CSP fallback evaluation timed out after ${evaluateDeadlineMs}ms (page promise never settled); termination could not be confirmed (debugger session gone — the evaluation cannot resume without it).`,
       })
   })
+  // Fire the deadline handler no later than the shared deadline. When the
+  // budget is already exhausted (evaluateDeadlineMs === 0) the timer fires
+  // on the next macrotask — the termination attempt below still runs and is
+  // awaited before the lock is released, so a stale evaluation (e.g. one
+  // whose Runtime.evaluate dispatch was queued) is stopped, not leaked.
+  let deadlineFired = false
+  let terminationAcked: Promise<void> = Promise.resolve()
   const deadline = setTimeout(() => {
+    deadlineFired = true
     const attempt = async (): Promise<boolean> => {
       try {
-        await sendCommand(tabId, 'Runtime.terminateExecution')
-        return true
+        // Bounded termination: the terminateExecution callback may stall;
+        // race it against a cap so the deadline handler itself cannot hang.
+        const acked = await orTimeout(
+          sendCommand(tabId, 'Runtime.terminateExecution'),
+          DEBUGGER_CALLBACK_TIMEOUT_MS,
+          false,
+        )
+        return acked
       } catch {
         return false
       }
     }
-    void (async () => {
+    terminationAcked = (async () => {
       // One retry covers a transient transport error; a double failure means
       // the debugger detached, and with it the session the evaluation needs
       // to ever resume — release the lock in that case too.
@@ -222,7 +308,7 @@ async function runBoundEvaluation(
       }
       reportTimeout?.(terminated)
     })()
-  }, EVALUATE_DEADLINE_MS)
+  }, evaluateDeadlineMs)
   try {
     const evaluation = (async () => {
       if (expectedLoaderId !== undefined) {
@@ -232,12 +318,29 @@ async function runBoundEvaluation(
         // while pushState/hash changes keep it (same document — allowed).
         // Transport errors here also fail closed via the catch below.
         const currentLoaderId = await queryFrameLoaderId(tabId)
+        // The loader query may resolve long after the caller timed out (a
+        // stalled Page.getFrameTree that finally completes). Once the
+        // deadline has fired, the continuation must NOT dispatch
+        // Runtime.evaluate: the expression would run after its requester is
+        // gone and could overlap a later tab operation.
+        if (deadlineFired) {
+          return {
+            ok: false as const,
+            error: 'CSP fallback evaluation aborted: the caller\'s deadline expired while the frame-identity check was pending; Runtime.evaluate was NOT dispatched.',
+          }
+        }
         if (currentLoaderId === null || currentLoaderId !== expectedLoaderId) {
           return {
             ok: false as const,
             error:
               'CSP_FALLBACK_STALE_DOCUMENT: the tab navigated or reloaded after the CSP compile failure; the expression was NOT run in the new document. Retry the action if still needed.',
           }
+        }
+      }
+      if (deadlineFired) {
+        return {
+          ok: false as const,
+          error: 'CSP fallback evaluation aborted: the caller\'s deadline expired before Runtime.evaluate was dispatched.',
         }
       }
       const response = await sendCommand<{
@@ -287,7 +390,17 @@ async function runBoundEvaluation(
     // later reject (detached debugger, etc.) — pre-attach a handler so that
     // cannot surface as an unhandled rejection.
     evaluation.catch(() => {})
-    return await Promise.race([evaluation, timeoutOutcome])
+    const raced = await Promise.race([evaluation, timeoutOutcome])
+    // LATE-TERMINATION LOCK HOLD: once the deadline has fired, the
+    // termination attempt (with its retry) may still be in flight even if
+    // the evaluation settled first. Runtime.terminateExecution targets the
+    // CURRENT or NEXT execution on the debuggee, so releasing the tab lock
+    // while it is unacknowledged could let it interrupt the NEXT page
+    // action's executeScript or evaluation. Await the termination outcome
+    // (bounded by DEBUGGER_CALLBACK_TIMEOUT_MS inside the handler) before
+    // returning — the caller releases the lock only after this resolves.
+    await terminationAcked
+    return raced
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   } finally {
@@ -303,13 +416,18 @@ async function runBoundEvaluation(
  * provided, the evaluation only runs if the tab's CURRENT frame loader id
  * still matches — a reload or same-URL navigation fails closed instead of
  * executing the stale expression in the replacement document.
+ * `deadlineAt` is the caller's absolute wall-clock deadline (epoch ms): the
+ * evaluation budget shrinks to the caller's remaining time instead of
+ * restarting a fresh {@link EVALUATE_DEADLINE_MS} window that would hold the
+ * tab lock long after the requester has timed out.
  */
 export async function evaluateBoundExpressionViaCdp(
   tabId: number,
   expression: string,
   expectedLoaderId?: string,
+  deadlineAt?: number,
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
-  return withTabLock(tabId, () => runBoundEvaluation(tabId, expression, expectedLoaderId))
+  return withTabLock(tabId, () => runBoundEvaluation(tabId, expression, expectedLoaderId, deadlineAt), deadlineAt !== undefined ? { maxQueueWaitMs: Math.max(0, deadlineAt - Date.now()) } : undefined)
 }
 
 /**
@@ -322,6 +440,7 @@ export async function evaluateBoundExpressionViaCdpUnlocked(
   tabId: number,
   expression: string,
   expectedLoaderId?: string,
+  deadlineAt?: number,
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
-  return runBoundEvaluation(tabId, expression, expectedLoaderId)
+  return runBoundEvaluation(tabId, expression, expectedLoaderId, deadlineAt)
 }
