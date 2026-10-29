@@ -9,6 +9,7 @@ import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
 import { createTabWebMCPApi } from './webmcp/tab-api'
+import { createPackageOptInHandler, handlePackageOptInRecoveryAlarm } from './webmcp/package-optin-handler'
 import {
   getHostAuthorizationMap,
   setHostEnabled as setWebMCPHostEnabled,
@@ -1143,6 +1144,12 @@ export default defineBackground(() => {
   if (CODEX_OAUTH_ENABLED) chrome.alarms.create(CODEX_TOKEN_REFRESH_ALARM, { periodInMinutes: 5 });
 
   chrome.alarms.onAlarm.addListener(async (alarm) => {
+    // Side-panel package opt-in recovery reload (findings: "Recovery reload
+    // is lost" / "Enabled state persists without reload"): durable reload
+    // retries for an enabled-but-unloaded package. Returns true when the
+    // alarm belonged to this feature.
+    if (await handlePackageOptInRecoveryAlarm(alarm)) return;
+
     if (CODEX_OAUTH_ENABLED && alarm.name === CODEX_TOKEN_REFRESH_ALARM) {
       await proactiveRefreshIfNeeded();
       await refreshCodexUsageThrottled();
@@ -1817,6 +1824,20 @@ export default defineBackground(() => {
         // Return shape: { url, title, selectedText, providerContext } | null
         // The split makes responsibility clear: url/title/selectedText are
         // "what we recorded", providerContext is "what the upstream site told us".
+        if (message.type === 'webmcp_package_optin_status' || message.type === 'webmcp_package_optin_enable') {
+          // ── Side-panel package opt-in (issue #100) ──
+          // The side panel asks whether the BOUND upstream tab hosts a
+          // builtin WebMCP package that is still disabled, and offers a
+          // one-time opt-in. Package metadata only crosses the bridge; the
+          // enable path re-derives the package from the live tab URL.
+          const targetTabId = await resolveBoundSidePanelTab(_sender, message.binding)
+          const handlePackageOptIn = createPackageOptInHandler({
+            resolveBoundTab: async () => targetTabId,
+          })
+          await handlePackageOptIn(message as unknown as Record<string, unknown>, sendResponse)
+          return
+        }
+
         if (message.type === 'requestPageBodyText') {
           // Page-mode slash commands (/summary /titles on a page without a
           // selection): pull readable body text from the FOLLOWED tab (the

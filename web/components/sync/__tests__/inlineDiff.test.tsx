@@ -768,18 +768,16 @@ describe('LazyDiffViewer content-type split', () => {
     expect([...removed.map((n) => n.textContent)]).toEqual([expectedRemoved, 'removed'])
     expect([...added.map((n) => n.textContent)]).toEqual([expectedAdded, 'added'])
 
+    // Direct hiding mechanisms on the fragment itself stay cheap to check
+    // here; deeper hypotheticals (CSSOM-hidden descendants, inert, clip
+    // tricks) are covered for real by the browser e2e suite — axe-core
+    // audits the actual computed styles and accessibility tree in
+    // tests/e2e/a11y/track-changes-a11y.spec.ts (issue #109).
     for (const fragment of [...removed, ...added]) {
       expect(fragment.hasAttribute('hidden')).toBe(false)
+      expect(fragment.getAttribute('aria-hidden')).not.toBe('true')
       expect(fragment.style.display).not.toBe('none')
       expect(fragment.style.visibility).not.toBe('hidden')
-      // The fragment's TEXT must be exposed too — hiding the text in a
-      // descendant (`hidden`, `inert` or aria-hidden attributes, inline
-      // style, or a computed display/visibility) would leave the wrapper
-      // visible to the a11y tree while assistive technology still gets
-      // none of the content. Every node below — the fragment itself
-      // included — must be free of ANY hiding mechanism, and the text
-      // must be non-empty, so the whole visible text lives in
-      // a11y-visible nodes.
       expect(fragment.textContent!.length).toBeGreaterThan(0)
       // The ancestors matter as much as the descendants: an `inert`,
       // `hidden` or `aria-hidden="true"` ANCESTOR hides the whole subtree

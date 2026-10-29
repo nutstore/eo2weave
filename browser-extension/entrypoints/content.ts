@@ -74,6 +74,9 @@ export default defineContentScript({
       'requestPageBodyText',
       'runBoundPageAction',
       'captureBoundTab',
+      // Side-panel package opt-in prompt (binding-gated in background)
+      'webmcp_package_optin_status',
+      'webmcp_package_optin_enable',
       // Settle protocol (extension-page sender gated in background)
       'cw_side_panel_settle',
       'cw_side_panel_get_launch_metadata',

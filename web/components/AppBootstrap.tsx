@@ -21,6 +21,8 @@ import { ExtensionInstallGuide } from '@/components/extension'
 // ExecAuthModal. They now forward into the shared tool-auth.store queue.
 import { ToolAuthModal } from '@/components/agent/ToolAuthModal'
 import { DeviceCodeFlowDialog } from '@/components/agent/DeviceCodeFlowDialog'
+import { PackageOptInModal } from '@/components/sidepanel/PackageOptInModal'
+import type { PackageOptInStatus } from '@/agent/sidepanel-package-prompt'
 import { useGatewayReloginStore } from '@/store/gateway-relogin.store'
 import { ServiceWorkerBridge } from '@/components/ServiceWorkerBridge'
 import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
@@ -529,6 +531,103 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     })
   }, [initialized, isStorageReady, router])
 
+  // ── Side-panel package opt-in prompt (issue #100) ──
+  // When the side panel opens on a site hosted by a builtin WebMCP package
+  // (jmail.world, douban, …) whose activation is still off, offer a one-time
+  // enable (writes the extension-side package config + reloads the upstream
+  // page so the tools register). Non-side-panel sessions never even reach
+  // the bridge probe (getPendingPackagePrompt returns null without a
+  // binding).
+  const [packagePrompt, setPackagePrompt] = useState<PackageOptInStatus | null>(null)
+  useEffect(() => {
+    if (!initialized || !isStorageReady) return
+    if (packagePrompt) return
+    let cancelled = false
+    // Retry bookkeeping (findings: "a slow probe hides the prompt" +
+    // "recovery skips the opt-in prompt"): transient probe failures
+    // (timeout / bridge error) come back with `retryable: true` and are
+    // re-probed with capped backoff. A terminal `null` (no binding yet) is
+    // also re-probed a bounded number of times — clean-URL side-panel
+    // recovery can restore the binding AFTER the first probe ran, and the
+    // re-probe picks the session up then. Terminal outcomes that stay null
+    // (no matching package, enabled, dismissed) just burn two cheap extra
+    // probes and stop.
+    const startedAt = Date.now()
+    const MAX_RETRY_MS = 5 * 60 * 1000
+    const MAX_NULL_PROBES = 3
+    // Late-binding safety net (finding: "Late binding never gets a prompt"):
+    // the bounded null probes above stop after MAX_NULL_PROBES, but the
+    // bridge (`window.__agentWeb`) or the side-panel binding can appear at
+    // ANY time — a slow extension handshake, a clean-URL session recovery.
+    // A slow periodic re-probe (60s, unbounded but nearly free: one bridge
+    // call a minute while no modal is shown) re-offers the prompt whenever
+    // the binding appears, without keeping the aggressive startup backoff
+    // alive forever.
+    const LATE_PROBE_INTERVAL_MS = 60 * 1000
+    let nullProbes = 0
+    let lateTimer: ReturnType<typeof setInterval> | undefined
+    const attempt = (delayMs: number) => {
+      const timer = setTimeout(() => {
+        if (cancelled) return
+        // eslint-disable-next-line no-console
+        console.info('[SidePanelPackagePrompt] probing for pending package opt-in…')
+        import('@/agent/sidepanel-package-prompt')
+          .then(({ getPendingPackagePrompt }) => getPendingPackagePrompt())
+          .then(status => {
+            if (cancelled) return
+            if (status && 'package' in status && status.package) {
+              // eslint-disable-next-line no-console
+              console.info('[SidePanelPackagePrompt] showing opt-in modal for', status.package.id)
+              setPackagePrompt(status as PackageOptInStatus)
+              if (lateTimer) clearInterval(lateTimer)
+              return
+            }
+            if (status && 'retryable' in status && status.retryable) {
+              if (Date.now() - startedAt < MAX_RETRY_MS) {
+                attempt(Math.min((Date.now() - startedAt) / 4, 8000))
+              }
+              return
+            }
+            // null (nothing to offer) — bounded re-probes for late binding
+            // recovery; give up after MAX_NULL_PROBES. The slow periodic
+            // probe below keeps watching for the binding afterwards.
+            nullProbes += 1
+            if (nullProbes < MAX_NULL_PROBES) attempt(5000)
+          })
+          .catch(() => {
+            // probe failure must never surface — best-effort by design
+          })
+      }, delayMs)
+      activeTimer = timer
+    }
+    let activeTimer: ReturnType<typeof setTimeout> | undefined
+    // Delay past the project-route navigation so the workspace UI settles
+    // first; a consent dialog popping over the loading screen reads as a bug.
+    attempt(1200)
+    lateTimer = setInterval(() => {
+      if (cancelled) return
+      import('@/agent/sidepanel-package-prompt')
+        .then(({ getPendingPackagePrompt }) => getPendingPackagePrompt())
+        .then(status => {
+          if (cancelled) return
+          if (status && 'package' in status && status.package) {
+            // eslint-disable-next-line no-console
+            console.info('[SidePanelPackagePrompt] late-bound probe found a prompt for', status.package.id)
+            setPackagePrompt(status as PackageOptInStatus)
+            if (lateTimer) clearInterval(lateTimer)
+          }
+        })
+        .catch(() => {
+          // probe failure must never surface — best-effort by design
+        })
+    }, LATE_PROBE_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      if (activeTimer) clearTimeout(activeTimer)
+      if (lateTimer) clearInterval(lateTimer)
+    }
+  }, [initialized, isStorageReady, packagePrompt])
+
   // --- Service Worker update prompt (was in AppReady) ---
   const swUpdateToastShownRef = useRef(false)
 
@@ -598,6 +697,12 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         onOpenChange={(open) => { if (!open) extensionCloseGuide() }}
       />
       <ToolAuthModal />
+      {packagePrompt?.package && (
+        <PackageOptInModal
+          packageInfo={packagePrompt.package}
+          onClose={() => setPackagePrompt(null)}
+        />
+      )}
       {/* Gateway re-login dialog (issue #75) — driven by the relogin store so
           the credential-expired error card can open it from anywhere (chat
           view, side panel) without prop threading. Mounted at this stable root

@@ -15,6 +15,19 @@ async function readOverrides(): Promise<Record<string, unknown>> {
   return stored[BUILTIN_CONFIG_STORAGE_KEY] ?? {}
 }
 
+/**
+ * Stored activation for one builtin package (`null` = default/no override).
+ * Used by the opt-in handler to verify that the enable write actually stuck
+ * (a concurrent disable must win over an in-flight opt-in enable).
+ */
+export async function readBuiltinConfig(directory: string): Promise<WebMCPConfig | null> {
+  const path = `${directory}/config.json`
+  if (!configs.has(path)) return null
+  const overrides = await readOverrides()
+  if (!Object.prototype.hasOwnProperty.call(overrides, path)) return null
+  return parseWebMCPConfig(overrides[path])
+}
+
 /** Configuration is a persistent overlay; both reads expose the same package tree. */
 export function getBuiltinStorage(): Promise<FsProvider> {
   storage ??= createResourceProvider(paths, async path => {

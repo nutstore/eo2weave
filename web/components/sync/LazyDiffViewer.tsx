@@ -358,7 +358,10 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
   function renderToolbar() {
     return (
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-subtle bg-neutral-50/50 px-2 dark:bg-neutral-900/50">
-        <span className="text-[11px] text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500">
+        <span
+          data-testid="diff-toolbar-stats"
+          className="text-[11px] text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500"
+        >
           {stats.hunks === 1
             ? t('sidebar.lazyDiffViewer.oneChangeBlock', { additions: stats.additions, deletions: stats.deletions })
             : t('sidebar.lazyDiffViewer.changeBlocks', { count: stats.hunks, additions: stats.additions, deletions: stats.deletions })
@@ -523,7 +526,10 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
             <span className="w-5 shrink-0 select-none text-center text-neutral-300 text-neutral-600 text-neutral-600 dark:text-neutral-600">
               {commented && <MessageSquare className="inline h-2.5 w-2.5 text-amber-400 dark:text-amber-500" />}
             </span>
-            <span className="whitespace-pre-wrap break-all text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400">
+            <span
+              data-testid="diff-context-line"
+              className="whitespace-pre-wrap break-all text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400"
+            >
               {oldLines[idx]}
             </span>
           </div>
@@ -558,7 +564,10 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
             <span className="w-5 shrink-0 select-none text-center text-neutral-300 text-neutral-600 text-neutral-600 dark:text-neutral-600">
               {commented && <MessageSquare className="inline h-2.5 w-2.5 text-amber-400 dark:text-amber-500" />}
             </span>
-            <span className="whitespace-pre-wrap break-all text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400">
+            <span
+              data-testid="diff-context-line"
+              className="whitespace-pre-wrap break-all text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400"
+            >
               {oldLines[idx]}
             </span>
           </div>
@@ -664,7 +673,10 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
         {renderContextLines('above', hunkIndex)}
 
         {/* Hunk header */}
-        <div className="flex items-center bg-blue-50/50 px-2 py-0.5 font-mono text-[11px] text-blue-500 dark:bg-blue-950/20 dark:text-blue-400">
+        <div
+          data-testid="diff-hunk-header"
+          className="flex items-center bg-blue-50/50 px-2 py-0.5 font-mono text-[11px] text-blue-500 dark:bg-blue-950/20 dark:text-blue-400"
+        >
           <span className="opacity-60">
             @@ -{hunk.origStartLine},{hunk.origEndLine - hunk.origStartLine + 1} +{hunk.modStartLine},{hunk.modEndLine - hunk.modStartLine + 1} @@
           </span>

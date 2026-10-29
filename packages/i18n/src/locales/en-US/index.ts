@@ -32,6 +32,7 @@ import { goToFile } from './goToFile'
 import { keyboardShortcuts } from './keyboardShortcuts'
 import { extension } from './extension'
 import { sidePanelRecipe } from './sidePanelRecipe'
+import { sidePanelPackage } from './sidePanelPackage'
 import { execPolicy } from './execPolicy'
 import { assets } from './assets'
 import { processes } from './processes'
@@ -92,6 +93,7 @@ export const enUS = {
   runChanges,
   extension,
   sidePanelRecipe,
+  sidePanelPackage,
   execPolicy,
   assets,
   processes,
