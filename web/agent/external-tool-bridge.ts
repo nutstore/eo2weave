@@ -24,6 +24,7 @@ import { getMCPManager } from '@/mcp/mcp-manager'
 import { useWebMCPStore } from '@/webmcp/store'
 import { useSettingsStore } from '@/store/settings.store'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
+import { localizedToolDescription } from '@/i18n/webmcp-tools'
 import { consumeAndSavePluginDownload } from '@/webmcp/plugin-download'
 import {
   getSidePanelBindingId,
@@ -882,8 +883,10 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
     toolArgs: toolArgs,
     // Show the tool's own description from its provider (MCP server / WebMCP
     // page) so users can tell what an unfamiliar tool name actually does
-    // before authorizing. Display-only.
-    toolDescription: tool.description?.trim() || null,
+    // before authorizing. Display-only. Localized WebMCP builtin-package
+    // tools use their translated copy (see web/i18n/webmcp-tools.ts); the
+    // manifest's English description remains the LLM-facing protocol text.
+    toolDescription: localizedToolDescription(tool),
     // Origin for the settings-side "always trust" list (webmcp hostname /
     // mcp serverId). Trusted origins skip the modal in plan AND act mode;
     // untrusted-content tools still never qualify (see policy-engine 3.5).

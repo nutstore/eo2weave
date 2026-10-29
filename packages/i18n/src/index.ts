@@ -72,3 +72,30 @@ export function t(
 
   return params ? interpolate(value, params) : value
 }
+
+/**
+ * Localized WebMCP builtin package tool description (display-only).
+ *
+ * Builtin package manifests (browser-extension/builtin-webmcp/) carry one
+ * English description per tool for the LLM; the localized copies for
+ * user-facing surfaces (auth modal, search_tools results panel) live in the
+ * webmcpTools namespace, keyed by the package's site hostname then the raw
+ * tool name. Hostnames contain dots, so this walks the object directly
+ * instead of using dotted-path getNested.
+ *
+ * Returns undefined when the host/tool has no translation for the locale —
+ * callers fall back to the manifest's English description.
+ */
+export function getWebMCPToolDescription(
+  locale: Locale,
+  sourceId: string,
+  toolName: string
+): string | undefined {
+  const table = (
+    translations[locale] as unknown as Record<string, unknown>
+  ).webmcpTools as Record<string, Record<string, string>> | undefined
+  const description = table?.[sourceId]?.[toolName]
+  return typeof description === 'string' && description.length > 0
+    ? description
+    : undefined
+}

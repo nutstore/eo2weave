@@ -9,6 +9,7 @@ import { CopyIconButton } from '../CopyIconButton'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
 import { formatBytes } from '@/lib/utils'
+import { localizedToolDescription } from '@/i18n/webmcp-tools'
 
 // ── search_tools ──
 
@@ -88,12 +89,21 @@ registerRenderer({
                 </span>
                 {tool.name}
               </div>
-              {/* Description */}
-              {tool.description && (
-                <div className="text-[12px] text-neutral-600 text-neutral-300 text-neutral-300 dark:text-neutral-300 mb-1.5 leading-relaxed">
-                  {tool.description}
-                </div>
-              )}
+              {/* Description — localized for WebMCP builtin-package tools,
+                  provider's English text otherwise */}
+              {(() => {
+                const description = localizedToolDescription({
+                  source: tool.source,
+                  sourceId: tool.sourceId,
+                  name: tool.name,
+                  description: tool.description,
+                })
+                return description ? (
+                  <div className="text-[12px] text-neutral-600 text-neutral-300 text-neutral-300 dark:text-neutral-300 mb-1.5 leading-relaxed">
+                    {description}
+                  </div>
+                ) : null
+              })()}
               {/* Parameter schema */}
               <SchemaParamsPreview inputSchema={tool.inputSchema} />
             </div>
