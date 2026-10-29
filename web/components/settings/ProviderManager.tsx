@@ -1504,7 +1504,21 @@ export function LLMGatewayCard({
       {isExpanded && (
         <div className="border-t border-border/60 px-3.5 py-3 space-y-3">
           <div>
-            <p className="text-[11px] font-medium text-secondary">{t('settings.gateway.serviceUrl')}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] font-medium text-secondary">{t('settings.gateway.serviceUrl')}</p>
+              {/* Recharge entry: opens the Nutstore AI console, where the
+                  credit balance is managed (and where login lives too).
+                  Always visible — a user who is out of credit may well be
+                  logged out as well, and the console is the single place
+                  that handles both. */}
+              <button
+                type="button"
+                onClick={() => window.open('https://ai.jianguoyun.com/', '_blank', 'noopener,noreferrer')}
+                className="shrink-0 rounded-md border border-[var(--brand-border,rgba(13,148,136,0.25))] px-2 py-1 text-[11px] font-medium text-[var(--brand-light,#14b8a6)] transition-colors hover:bg-[var(--brand-bg,rgba(13,148,136,0.06))]"
+              >
+                {t('settings.gateway.recharge')} →
+              </button>
+            </div>
             <p className="mt-0.5 font-mono text-[11px] text-tertiary">
               {process.env.NEXT_PUBLIC_JIANGUOYUN_AI_BASE_URL || 'https://ai.jianguoyun.com'}
             </p>
