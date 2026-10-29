@@ -41,9 +41,9 @@ import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 // Atomic / name-replacing ARIA roles: AT announces the role's accessible
 // name INSTEAD of the subtree text. The list includes the whole
 // name-from-content widget family (checkbox/radio/switch/menuitem*,
-// option, tab, treeitem, button, link, …), inherently atomic roles (img,
-// progressbar, meter, …) and single-value text roles (heading, term,
-// cell, time, …).
+// option, tab, treeitem, button, link, …) and inherently atomic roles
+// (img, progressbar, meter, …). Roles whose descendant text STAYS
+// exposed live in TEXT_KEEPING_ROLES below instead.
 const REPLACEMENT_ROLES = new Set([
   'button',
   'link',
@@ -58,6 +58,7 @@ const REPLACEMENT_ROLES = new Set([
   'menu',
   'menubar',
   'progressbar',
+  'meter',
   'scrollbar',
   'slider',
   'spinbutton',
@@ -70,12 +71,17 @@ const REPLACEMENT_ROLES = new Set([
   'rowheader',
   'columnheader',
   'gridcell',
-  'cell',
   'img',
-  'heading',
-  'term',
-  'time',
-  'meter',
+])
+// Roles that PRESERVE descendant text in the accessibility tree: live
+// regions (status/alert/log/marquee/timer) announce their CONTENT — that
+// is their entire purpose — and semantic text roles (code, heading,
+// term, time, caption, cell) expose their subtree text. None of them
+// replaces descendant text with an accessible name, so diff fragments
+// inside them remain announced and must not be rejected: they are
+// classified by whether the role keeps text, not by whether it is
+// "single-value".
+const TEXT_KEEPING_ROLES = new Set([
   'status',
   'alert',
   'log',
@@ -83,6 +89,10 @@ const REPLACEMENT_ROLES = new Set([
   'timer',
   'caption',
   'code',
+  'heading',
+  'term',
+  'time',
+  'cell',
 ])
 // Native tags with the same implicit atomic / name-replacing behavior when
 // no explicit `role` overrides them. Text-preserving wrappers (`pre`,
@@ -169,22 +179,42 @@ const HIDING_CLASS_TOKENS = new Set([
   'content-hidden',
   'of-hidden',
 ])
-const hasHidingUtilityClass = (className: string): boolean =>
-  className
-    .split(/\s+/)
-    .filter(Boolean)
-    .some((token) => [...HIDING_CLASS_TOKENS].some((t) => token === t || token.endsWith(`:${t}`)))
+// Tailwind's important modifier comes in two syntaxes: trailing `!` in
+// v4 (`hidden!`, `md:hidden!`) and leading `!` in v3 (`!hidden`,
+// `!md:hidden`). Normalize BOTH away before matching so an
+// important-prefixed hiding utility can never slip past the token
+// check, while a NON-hiding utility carrying `!` (`!overflow-hidden`)
+// is still judged by its bare token name.
+const normalizeUtilityToken = (token: string): string => {
+  // Split off any responsive/state variant prefix (`md:hidden!` →
+  // `hidden!`), then remove leading and trailing `!` markers.
+  const bare = token.slice(token.lastIndexOf(':') + 1)
+  return bare.replace(/^!+/, '').replace(/!+$/, '')
+}
 // Tailwind arbitrary-property classes bypass the class-name check above:
 // `[display:none]` / `[visibility:hidden]` / `[content-visibility:hidden]`
 // (optionally with the trailing `!` / `!important` marker) hide or remove
 // content in production even though no computed stylesheet is loaded in
-// this environment. The property list is closed — only the three subtree-
-// removing declarations — so unrelated arbitrary properties
-// (`[text-decoration-thickness:1.5px]`, `[--x:1]`) are never flagged.
+// this environment. The important modifier may also be a LEADING `!`
+// (`![display:none]`, v3 syntax) — so the class string is normalized the
+// same way as utility tokens before matching. The property list is
+// closed — only the three subtree-removing declarations — so unrelated
+// arbitrary properties (`[text-decoration-thickness:1.5px]`, `[--x:1]`)
+// are never flagged.
 const ARBITRARY_HIDING_CLASS_PATTERN =
   /\[\s*(?:display|visibility|content-visibility)\s*:\s*(?:none|hidden)\b(?:\s*!)?[^\]]*\]/i
 const hasHidingClass = (className: string): boolean =>
-  hasHidingUtilityClass(className) || ARBITRARY_HIDING_CLASS_PATTERN.test(className)
+  className
+    .split(/\s+/)
+    .filter(Boolean)
+    .some((token) => {
+      const bare = normalizeUtilityToken(token)
+      if ([...HIDING_CLASS_TOKENS].some((t) => bare === t)) return true
+      // An arbitrary-property class with a leading `!` (`![display:none]`,
+      // `!md:[display:none]`) hides the subtree while evading the
+      // pattern above; normalize the modifier away before matching.
+      return ARBITRARY_HIDING_CLASS_PATTERN.test(bare)
+    })
 
 // ── Strategy detection ─────────────────────────────────────────────────────
 
@@ -854,9 +884,13 @@ describe('LazyDiffViewer content-type split', () => {
         // inline semantic emphasis (mark/sub/sup), plus neutral and
         // container roles. `figure`/`group`-style nameable groups belong
         // here too: their name is announced in ADDITION to the content,
-        // so a labelled figure/group with diff text inside is valid. Any
-        // other explicit role is rejected — an allow-list cannot be
-        // snuck past by an unlisted replacement role.
+        // so a labelled figure/group with diff text inside is valid.
+        // TEXT_KEEPING_ROLES (status/alert/log/marquee/timer, code,
+        // heading, term, time, caption, cell) are here for the same
+        // reason: those roles EXPOSE their subtree text instead of
+        // replacing it with a name, so valid diff markup using them
+        // passes. Any other explicit role is rejected — an allow-list
+        // cannot be snuck past by an unlisted replacement role.
         const NODE_TEXT_KEEPING_ROLES = [
           'deletion',
           'insertion',
@@ -874,6 +908,7 @@ describe('LazyDiffViewer content-type split', () => {
           'table',
           'row',
           'cell',
+          ...TEXT_KEEPING_ROLES,
         ]
         if (nodeRole !== null) {
           expect(NODE_TEXT_KEEPING_ROLES).toContain(nodeRole)
