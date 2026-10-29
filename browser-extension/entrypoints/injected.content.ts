@@ -896,21 +896,35 @@ export default defineContentScript({
        *
        * Returns the raw runner result, always with an `ok` boolean. On
        * failure, includes `errorCode` and `error` string.
+       *
+       * REQUEST IDENTITY: every submission is stamped with a unique
+       * `__cwRequestId` inside the action payload before it crosses the
+       * bridge. The background keys its retry dedupe on that id:
+       *   - a RETRY of the same logical request reuses the SAME id, so the
+       *     background joins the already-running execution instead of
+       *     running the action a second time;
+       *   - two INDEPENDENT submissions of an identical action get
+       *     different ids, so each runs its own execution.
+       * The stamp is stripped by the background before the action reaches
+       * the page runner.
        */
-      async runBoundPageAction(binding: string, action: Record<string, unknown>) {
-        // Page actions (especially fill on ProseMirror/Yjs editors) can take
-        // unbounded time. Use 5 min timeout instead of the default 35s.
-        // The ABSOLUTE timeout epoch rides along with the request: the
-        // background's own clock starts only after the bridge delivery, so
-        // without this stamp a slow delivery would shift the background's
-        // budget later than the caller's and let an action start after this
-        // side has already timed out. The background clamps the value into a
-        // plausible window (it can only make the background give up earlier,
-        // never extend the budget).
-        const timeoutMs = 300000
-        const deadlineAt = Date.now() + timeoutMs
-        return sendToBridge('runBoundPageAction', { binding, action, deadlineAt }, timeoutMs)
-      },
+       async runBoundPageAction(binding: string, action: Record<string, unknown>) {
+       // Page actions (especially fill on ProseMirror/Yjs editors) can take
+       // unbounded time. Use 5 min timeout instead of the default 35s.
+       // The ABSOLUTE timeout epoch rides along with the request: the
+       // background's own clock starts only after the bridge delivery, so
+       // without this stamp a slow delivery would shift the background's
+       // budget later than the caller's and let an action start after this
+       // side has already timed out. The background clamps the value into a
+       // plausible window (it can only make the background give up earlier,
+       // never extend the budget).
+       const timeoutMs = 300000
+       const deadlineAt = Date.now() + timeoutMs
+       const stampedAction = action && typeof action === 'object'
+         ? { ...action, __cwRequestId: '__cw_' + (++_requestId) + '_' + Date.now() }
+         : action
+       return sendToBridge('runBoundPageAction', { binding, action: stampedAction, deadlineAt }, timeoutMs)
+       },
 
       /**
        * Capture the visible viewport of the upstream tab as a PNG/JPEG data URL.

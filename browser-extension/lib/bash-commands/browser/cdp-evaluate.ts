@@ -206,11 +206,29 @@ async function queryFrameLoaderId(tabId: number): Promise<string | null> {
  * re-verify document identity at execution time. Returns null when the tab
  * cannot be inspected (gone, restricted, transport error) — the caller must
  * treat null as a mismatch (fail closed).
+ *
+ * BOUNDED: the caller invokes this while HOLDING the tab-op lock, so an
+ * attach or Page.getFrameTree callback that never fires would block every
+ * later command on the tab forever. Each stage is raced against
+ * DEBUGGER_CALLBACK_TIMEOUT_MS (the same bound the evaluator applies to its
+ * own attach), after which the capture gives up and returns null — which the
+ * caller treats as a mismatch (fail closed), never as a green light.
  */
-export async function captureFrameLoaderId(tabId: number): Promise<string | null> {
+export async function captureFrameLoaderId(tabId: number, timeoutMs: number = DEBUGGER_CALLBACK_TIMEOUT_MS): Promise<string | null> {
   try {
-    await ensureAttached(tabId)
-    return await queryFrameLoaderId(tabId)
+    const captured = (async () => {
+      await ensureAttached(tabId)
+      return await queryFrameLoaderId(tabId)
+    })()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const capped = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs)
+    })
+    try {
+      return await Promise.race([captured, capped])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
   } catch {
     return null
   }

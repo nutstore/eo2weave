@@ -76,19 +76,57 @@ export async function withTabLock<T>(
         release = r
     })
     tabOpQueue.set(tabId, barrier)
+    // Absolute wall-clock moment at which this waiter must have acquired the
+    // queue slot. The relative `maxQueueWaitMs` drives the rejection timer,
+    // but the timer can be DELAYED by a busy event loop (MV3 workers share
+    // one thread): a predecessor that resolves after the budget expired can
+    // then win `Promise.race` and hand control to this waiter even though its
+    // deadline has passed. The absolute deadline is therefore re-checked
+    // after the slot is acquired, BEFORE `fn` is invoked.
+    const waitDeadlineAt = opts?.maxQueueWaitMs !== undefined
+        ? Date.now() + opts.maxQueueWaitMs
+        : undefined
+    // Hand the still-closed chain to the next queue entry and stop tracking
+    // this waiter. Shared by the timer-rejection path and the post-acquire
+    // absolute-deadline re-check — both abandon `fn` BEFORE it starts.
+    const abandonBeforeStart = () => {
+        // A timed-out waiter must not release its barrier (later operations
+        // queued behind it would start early and overlap a still-running
+        // predecessor) — instead it TRANSFERS the still-closed chain to the
+        // next queue entry. `prev.then(...)` (`queuedAfter`) is exactly the
+        // completion signal of the remaining chain: it settles when every
+        // operation ahead of this waiter has finished. Handing
+        // `queuedAfter` to the next caller restores the precise
+        // serialization this waiter would have provided had it run.
+        const queuedAfter = prev.then(() => {})
+        const next = tabOpQueue.get(tabId)
+        if (next === barrier) {
+            // No third caller has re-queued in between: hand the chain on.
+            tabOpQueue.set(tabId, queuedAfter)
+        }
+        // If a third caller re-queued in the meantime (`next !== barrier`),
+        // it already chained itself behind THIS entry's barrier — which
+        // settles via `queuedAfter` below — so the chain is still correct
+        // and the map entry must be left untouched.
+        void queuedAfter.then(() => {
+            // This entry abandoned its slot: nothing to run, but the chain
+            // handed to the next caller (or the re-queuing third caller)
+            // must still OPEN once the predecessors are done.
+            release()
+            // Entry cleanup: when no third caller re-queued, the map now
+            // points at `queuedAfter`, which the predecessor's own cleanup
+            // cannot remove (it compares against ITS barrier, not ours).
+            // Left alone, the settled entry lingers for the service worker's
+            // lifetime on tabs that receive no further operation — drop it
+            // once the handed-on chain has opened and it is still the
+            // current entry.
+            if (tabOpQueue.get(tabId) === queuedAfter) tabOpQueue.delete(tabId)
+        })
+    }
     if (opts?.maxQueueWaitMs !== undefined) {
         // Deadline applies to the WAIT only: once `fn` starts it always runs
         // to completion (an in-flight executeScript cannot be cancelled).
         // A waiter that exceeds the deadline rejects WITHOUT starting `fn`.
-        //
-        // Handing the lock over: a timed-out waiter must not release its
-        // barrier (later operations queued behind it would start early and
-        // overlap a still-running predecessor) — instead it TRANSFERS the
-        // still-closed chain to the next queue entry. `prev.then(...)`
-        // (`queuedAfter`) is exactly the completion signal of the remaining
-        // chain: it settles when every operation ahead of this waiter has
-        // finished. Handing `queuedAfter` to the next caller restores the
-        // precise serialization this waiter would have provided had it run.
         let timer: ReturnType<typeof setTimeout> | undefined
         const deadline = new Promise<never>((_, reject) => {
             timer = setTimeout(() => reject(new TabLockWaitTimeoutError(opts!.maxQueueWaitMs!)), opts!.maxQueueWaitMs)
@@ -100,28 +138,22 @@ export async function withTabLock<T>(
             // queue chain must stay intact for operations queued behind this
             // waiter: transfer the still-closed predecessor chain to the next
             // queue entry instead of releasing this entry's barrier.
-            const queuedAfter = prev.then(() => {})
-            const next = tabOpQueue.get(tabId)
-            if (next === barrier) {
-                // No third caller has re-queued in between: hand the chain on.
-                tabOpQueue.set(tabId, queuedAfter)
-            }
-            // If a third caller re-queued in the meantime (`next !== barrier`),
-            // it already chained itself behind THIS entry's barrier — which
-            // settles via `queuedAfter` below — so the chain is still correct
-            // and the map entry must be left untouched.
-            void queuedAfter.then(() => {
-                // This entry abandoned its slot: nothing to run, but the chain
-                // handed to the next caller (or the re-queuing third caller)
-                // must still OPEN once the predecessors are done.
-                release()
-            })
+            abandonBeforeStart()
             throw err
         } finally {
             if (timer !== undefined) clearTimeout(timer)
         }
     } else {
         await prev
+    }
+    // The rejection timer above can be delayed by a busy event loop while the
+    // predecessor resolves after the budget expired: the predecessor wins
+    // `Promise.race` and control lands HERE after the deadline. Re-check the
+    // absolute deadline and abandon before `fn` runs — work must never start
+    // once its requester has timed out.
+    if (waitDeadlineAt !== undefined && Date.now() >= waitDeadlineAt) {
+        abandonBeforeStart()
+        throw new TabLockWaitTimeoutError(opts!.maxQueueWaitMs!)
     }
     try {
         return await fn()

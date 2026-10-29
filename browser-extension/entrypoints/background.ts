@@ -5,31 +5,48 @@
 const PAGE_ACTION_QUEUE_WAIT_MS = 300_000
 
 /**
- * Dedupe window for retried page actions. A bridge timeout does NOT cancel
- * an action that already started (an in-flight executeScript cannot be
+ * Dedupe for retried page actions. A bridge timeout does NOT cancel an
+ * action that already started (an in-flight executeScript cannot be
  * interrupted) — when the caller retries the same action after a timeout,
  * the retry would queue behind the first run and execute it a SECOND time,
- * duplicating side effects. While a (tab, action) pair is executing, a retry
- * with the identical serialized action on the same tab is answered with the
- * first run's in-flight promise instead of being queued again. The window
- * is bounded by the maximum possible action duration (the caller's own
- * deadline caps the background's lock hold), so entries cannot accumulate.
+ * duplicating side effects.
+ *
+ * The key carries a REQUEST IDENTITY, not just (tab, serialized action): a
+ * RETRY of the same logical request (same requestId, stamped by the page
+ * caller into the action payload) joins the first run's in-flight promise,
+ * while two INDEPENDENT submissions (different requestIds) run separately —
+ * each caller gets its own execution. The map entry is deleted in a
+ * `finally` when the run SETTLES (resolve or reject), never by age: entries
+ * therefore live at most as long as the action itself, and a caller that
+ * retries a still-running action always joins it, no matter how long it
+ * takes. Actions without a recognizable requestId are never deduped.
  */
-const PAGE_ACTION_DEDUPE_TTL_MS = PAGE_ACTION_QUEUE_WAIT_MS
-const pageActionInFlight = new Map<string, {
-  startedAt: number
-  promise: Promise<unknown>
-}>()
+const pageActionInFlight = new Map<string, Promise<unknown>>()
+/**
+ * Extract the caller's request identity from the action payload. The page
+ * bridge caller (`sendToBridge`) stamps every submission with a unique
+ * `__cwRequestId`; a retry of the SAME submission reuses the id, a NEW
+ * submission gets a fresh one. Absent (legacy caller) → no dedupe.
+ */
+function pageActionRequestId(action: unknown): string {
+  if (!action || typeof action !== 'object') return ''
+  const id = (action as { __cwRequestId?: unknown }).__cwRequestId
+  return typeof id === 'string' && id ? id : ''
+}
 function pageActionDedupeKey(tabId: number, action: unknown): string {
-  let serialized: string
-  try {
-    serialized = JSON.stringify(action) ?? 'null'
-  } catch {
-    // Cyclic action payloads cannot repeat verbatim from a caller retry —
-    // skip dedupe for them rather than throwing.
-    return ''
-  }
-  return `${tabId}:${serialized.length}:${serialized}`
+  const requestId = pageActionRequestId(action)
+  if (!requestId) return ''
+  return `${tabId}:${requestId}`
+}
+/**
+ * Remove the transport-only request-identity stamp before the action is
+ * handed to the page runner — the runner must see the original shape.
+ */
+function stripPageActionRequestId(action: unknown): unknown {
+  if (!action || typeof action !== 'object') return action
+  if ((action as { __cwRequestId?: unknown }).__cwRequestId === undefined) return action
+  const { __cwRequestId: _stripped, ...rest } = action as Record<string, unknown>
+  return rest
 }
 /** Test hook: drop all dedupe entries. */
 export function resetPageActionDedupeForTest(): void {
@@ -2032,11 +2049,32 @@ export default defineBackground(() => {
           const callerDeadlineAt = typeof callerDeadlineRaw === 'number' && Number.isFinite(callerDeadlineRaw)
             ? callerDeadlineRaw
             : undefined
+          // Plausibility window for the page-supplied deadline stamp. A value
+          // within ±PAGE_ACTION_QUEUE_WAIT_MS of receipt time is honored
+          // verbatim (the stamp is advisory: a hostile value can only make
+          // the background give up EARLIER — its own action, its own
+          // budget — never extend past receipt + PAGE_ACTION_QUEUE_WAIT_MS).
+          // A stamp OLDER than the window means the request was delayed in
+          // delivery past its own lifetime: its caller armed a 300s timeout
+          // that has already fired and abandoned the action, so the request
+          // is REJECTED outright — replacing the stale deadline with a fresh
+          // receipt-based budget would let an abandoned action wait for the
+          // lock and execute against the tab with no listener left.
           const deadlineAt = callerDeadlineAt !== undefined
             && callerDeadlineAt > requestReceivedAt - PAGE_ACTION_QUEUE_WAIT_MS
             && callerDeadlineAt <= requestReceivedAt + PAGE_ACTION_QUEUE_WAIT_MS
             ? callerDeadlineAt
-            : requestReceivedAt + PAGE_ACTION_QUEUE_WAIT_MS
+            : callerDeadlineAt !== undefined && callerDeadlineAt <= requestReceivedAt - PAGE_ACTION_QUEUE_WAIT_MS
+              ? null
+              : requestReceivedAt + PAGE_ACTION_QUEUE_WAIT_MS
+          if (deadlineAt === null) {
+            sendResponse({
+              ok: false,
+              errorCode: 'PAGE_ACTION_EXPIRED_IN_TRANSIT',
+              error: 'Page action rejected: the request arrived after its own deadline (delayed delivery past the caller\'s timeout window). The caller has already given up; nothing was executed.',
+            })
+            return
+          }
           const targetTabId = await resolveBoundSidePanelTab(_sender, message.binding)
           if (targetTabId === null) {
             sendResponse({
@@ -2095,18 +2133,45 @@ export default defineBackground(() => {
             const queueWaitBudget = deadlineAt - Date.now()
             // RETRY DEDUPE: a caller that retried after a bridge timeout
             // must not re-execute an action that already started. While the
-            // identical (tab, action) pair is in flight, the retry joins the
-            // FIRST run's promise instead of queueing a second execution.
+            // same REQUEST (tab + caller-stamped request id) is in flight,
+            // the retry joins the FIRST run's promise instead of queueing a
+            // second execution; an independent submission (different request
+            // id) runs separately.
             const dedupeKey = pageActionDedupeKey(targetTabId, action)
             const inflight = dedupeKey ? pageActionInFlight.get(dedupeKey) : undefined
-            if (inflight && Date.now() - inflight.startedAt < PAGE_ACTION_DEDUPE_TTL_MS) {
-              const shared = await inflight.promise
+            if (inflight) {
+              // Join until SETTLEMENT, never by age: the entry is removed
+              // when the run settles (below), so any entry found here is a
+              // still-running action — a retry joins it regardless of how
+              // long it has been going.
+              const shared = await inflight
               sendResponse(shared)
               return
             }
+            const executeAction = stripPageActionRequestId(action)
+            // UNFORGABLE INJECTION OUTCOME: everything inside the MAIN-world
+            // `run()` result is page-controlled — a hostile page can wrap
+            // `window.__cwPageAction.run` and return a hand-crafted
+            // { compileError, errorCode, error } triple (the wording is
+            // public) AFTER executing the expression, trying to bait the
+            // background into the CDP fallback and duplicate the side
+            // effects. The page can never forge, though, whether OUR
+            // injected function completed at all: executeScript either
+            // RESOLVES (our function ran to completion inside the isolated
+            // chrome.scripting machinery) or REJECTS with chrome's own error
+            // text. That outcome is captured here, browser-side, and is the
+            // sole gate for the CSP fallback below: the page's tagged result
+            // fields corroborate WHICH failure occurred, but a fallback re-run
+            // additionally requires our function to have COMPLETED — a page
+            // that executed the expression and returned a forged tag does so
+            // from inside a run() that resolved normally, so it can no longer
+            // claim a compile-stage failure.
+            let injectionFailedWithCspRejection = false
             const runPromise: Promise<unknown> = withTabLock(targetTabId, async () => {
               settled = true
-              const results = await chrome.scripting.executeScript({
+              let results: Array<{ result?: unknown }> | undefined
+              try {
+                results = await chrome.scripting.executeScript({
               target: { tabId: targetTabId },
               world: 'MAIN',
               func: async (a: unknown) => {
@@ -2131,8 +2196,23 @@ export default defineBackground(() => {
                   }
                 }
               },
-              args: [action],
-            })
+              args: [executeAction],
+                })
+              } catch (injectionErr: any) {
+                // Our injected function never completed — the failure is
+                // chrome's own (frame gone, host permission, or the CSP
+                // refusal surfaced as an executeScript rejection). Only in
+                // this browser-reported rejection can a CSP compile failure
+                // be considered real; the message check below keeps ordinary
+                // injection failures (closed tab, restricted URL) out.
+                const message = injectionErr?.message || String(injectionErr)
+                injectionFailedWithCspRejection = isCspCompileRejection(message)
+                return {
+                  ok: false,
+                  errorCode: 'EXECUTE_SCRIPT_FAILED',
+                  error: message,
+                }
+              }
             let result = Array.isArray(results) ? results[0]?.result : null
             // If the caller's deadline expired while the FIRST executeScript
             // was in flight, stop here: the CDP fallback below would hold
@@ -2158,7 +2238,18 @@ export default defineBackground(() => {
             // price of evaluating at all on such pages. User-code errors whose
             // message merely mentions CSP wording never carry the tag, so they
             // can never trigger a duplicate execution.
+            //
+            // FORGED-RESULT GUARD: the tagged fields live in the page's return
+            // value and are therefore forgeable by a wrapped `run`. The
+            // fallback additionally requires `injectionFailedWithCspRejection`
+            // — the browser-side outcome of OUR executeScript call (an
+            // injection rejection whose message matches the CSP wording).
+            // A page that executed the expression and returned a forged tag
+            // resolved our injected function normally, so the browser-side
+            // flag stays false and the CDP re-run never happens: the decision
+            // to re-run rests on a signal the page cannot fabricate.
             if (
+              injectionFailedWithCspRejection &&
               result &&
               typeof result === 'object' &&
               (result as Record<string, unknown>).compileError === true &&
@@ -2205,11 +2296,13 @@ export default defineBackground(() => {
             }, { maxQueueWaitMs: Math.max(0, queueWaitBudget) })
             // Register the in-flight run for retry dedupe BEFORE awaiting it:
             // a retry that arrives while this run holds the lock joins the
-            // shared promise instead of queueing a duplicate execution.
+            // shared promise instead of queueing a duplicate execution. The
+            // entry is removed in a `finally` — when the run SETTLES, not by
+            // age — so the map never outlives the action.
             if (dedupeKey) {
-              pageActionInFlight.set(dedupeKey, { startedAt: Date.now(), promise: runPromise })
+              pageActionInFlight.set(dedupeKey, runPromise)
               void runPromise.catch(() => {}).then(() => {
-                if (pageActionInFlight.get(dedupeKey)?.promise === runPromise) {
+                if (pageActionInFlight.get(dedupeKey) === runPromise) {
                   pageActionInFlight.delete(dedupeKey)
                 }
               })
