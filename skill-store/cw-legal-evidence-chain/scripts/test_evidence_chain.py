@@ -415,6 +415,73 @@ def case_atomic_write_no_partial_dir() -> None:
         assert not list((tmp / "rounds").glob("*.tmp-partial")), "staging cleaned up"
 
 
+def case_mid_write_failure_cleans_staging() -> None:
+    """Inject a failure after staging starts: partial artifacts must be removed
+    and the final output directory must remain unpublished."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        before, after, rinput = write_round_files(tmp, valid_chain(), "open", "unmet")
+        out = tmp / "rounds" / "round_0001"
+        script = f"""
+import sys, json
+from pathlib import Path
+sys.path.insert(0, {str(SCRIPTS)!r})
+import record_evidence_round as rec
+
+original_replace = rec.os.replace
+def failing_replace(src, dst):
+    raise OSError("injected mid-write failure")
+rec.os.replace = failing_replace
+try:
+    rec.record_round(Path({str(before)!r}), Path({str(after)!r}), Path({str(rinput)!r}), Path({str(out)!r}))
+except OSError as exc:
+    print("EXPECTED_FAILURE:", exc)
+    sys.exit(7)
+sys.exit(0)
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.returncode == 7 and "EXPECTED_FAILURE" in result.stdout, \
+            f"injected failure must trigger cleanup path: {result.stdout} {result.stderr}"
+        assert not out.exists(), "final directory must not be published on failure"
+        assert not out.with_name(out.name + ".tmp-partial").exists(), "staging must be cleaned on failure"
+        assert not list((tmp / "rounds").glob("*.tmp-partial*")), "no partial residue"
+        # retry after the failure must succeed without manual intervention
+        assert run_cli(RECORD_PATH, "--before", str(before), "--after", str(after),
+                       "--round", str(rinput), "--output-dir", str(out)) == 0, \
+            "retry after mid-write failure must succeed"
+
+
+def case_stale_staging_autorecovered() -> None:
+    """A stale staging directory holding only this script's artifacts is discarded on retry."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        before, after, rinput = write_round_files(tmp, valid_chain(), "open", "unmet")
+        out = tmp / "rounds" / "round_0001"
+        staging = out.with_name(out.name + ".tmp-partial")
+        staging.mkdir(parents=True)
+        (staging / "round-record.json").write_text('{"half": true}', encoding="utf-8")
+        assert run_cli(RECORD_PATH, "--before", str(before), "--after", str(after),
+                       "--round", str(rinput), "--output-dir", str(out)) == 0, \
+            "retry must auto-recover a stale staging directory"
+        assert out.exists() and not staging.exists()
+        # foreign content must still be refused (use a fresh round_id so the
+        # duplicate-ID guard doesn't fire before the staging check)
+        staging2 = out.with_name(out.name + "2.tmp-partial")
+        staging2.mkdir(parents=True)
+        (staging2 / "unrelated.txt").write_text("user data", encoding="utf-8")
+        round_input_foreign = json.loads(rinput.read_text(encoding="utf-8"))
+        round_input_foreign["round_id"] = "round_0002"
+        rinput_foreign = tmp / "round-input-foreign.json"
+        rinput_foreign.write_text(json.dumps(round_input_foreign, ensure_ascii=False), encoding="utf-8")
+        result = subprocess.run([sys.executable, str(RECORD_PATH), "--before", str(before),
+                                 "--after", str(after), "--round", str(rinput_foreign),
+                                 "--output-dir", str(out.with_name(out.name + "2"))],
+                                capture_output=True, text=True)
+        assert result.returncode == 1 and "unrecognized files" in result.stdout, \
+            "staging with foreign content must not be silently discarded"
+        assert (staging2 / "unrelated.txt").exists(), "foreign staging files must be preserved"
+
+
 def case_demand_change_requires_reassessment() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -476,6 +543,8 @@ CASES = [
     case_open_request_targeting_met_criterion,
     case_competing_round_id_rejected,
     case_atomic_write_no_partial_dir,
+    case_mid_write_failure_cleans_staging,
+    case_stale_staging_autorecovered,
     case_demand_change_requires_reassessment,
     case_demand_change_with_reassessment_passes,
 ]

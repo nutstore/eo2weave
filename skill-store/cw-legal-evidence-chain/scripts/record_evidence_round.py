@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 from datetime import datetime
 import hashlib
 import json
@@ -386,11 +387,15 @@ def record_round(before_path: Path, after_path: Path, input_path: Path, output_d
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = output_dir.with_name(output_dir.name + ".tmp-partial")
     if staging.exists():
-        require(
-            not any(staging.iterdir()) or all(p.name.endswith((".tmp", ".partial")) for p in staging.iterdir()),
-            f"staging directory {staging} already exists; remove it before retrying",
+        stale_entries = list(staging.iterdir())
+        # Only staging files written by this script are safe to discard on retry;
+        # anything else means someone else is using that path, so refuse to touch it.
+        staging_owned = all(
+            p.name in {"A-before.json", "A-after.json", "round-record.json", "round-update.md"}
+            for p in stale_entries
         )
-        staging.rmdir()
+        require(staging_owned, f"staging directory {staging} contains unrecognized files; remove it before retrying")
+        shutil.rmtree(staging)
     staging.mkdir(parents=True)
     try:
         (staging / "A-before.json").write_bytes(old_raw)
@@ -399,8 +404,6 @@ def record_round(before_path: Path, after_path: Path, input_path: Path, output_d
         (staging / "round-update.md").write_text(report, encoding="utf-8")
         os.replace(staging, output_dir)
     except BaseException:
-        import shutil
-
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return result
