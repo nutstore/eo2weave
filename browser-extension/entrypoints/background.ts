@@ -24,20 +24,43 @@ const PAGE_ACTION_QUEUE_WAIT_MS = 300_000
  *     re-executing. Without the cache, the classic
  *     "started-before-deadline, settled-after-caller-timeout" race
  *     would let a late retry re-run the action.
- * Settled entries expire after PAGE_ACTION_SETTLED_TTL_MS, so the cache
- * stays bounded and never suppresses a genuinely new submission (every
- * submission has a unique id anyway). Actions without a recognizable
- * requestId (legacy callers) are never deduped.
+ * Settled entries expire after PAGE_ACTION_RETRY_MEMORY_MS, which covers
+ * the bridge caller's ENTIRE retry window (one retry at full 300s
+ * budget): a settled outcome is retained for as long as a legitimate
+ * retry of that submission can still arrive, so the retry replays the
+ * recorded outcome instead of re-executing the action. Only after the
+ * window — when the original caller's retry chain is provably dead —
+ * is the entry dropped, and a same-id submission can only be a new run
+ * (every submission has a unique id anyway). Actions without a
+ * recognizable requestId (legacy callers) are never deduped.
  */
-const PAGE_ACTION_SETTLED_TTL_MS = 30_000
+import {
+  describeSettledOutcome,
+  replayedSettledOutcome,
+  pruneSettledEntries,
+  PAGE_ACTION_RETRY_MEMORY_MS,
+  type PageActionSettledEntry,
+} from '../lib/bash-commands/browser/page-action-settled-outcome'
+import {
+  forgetTabNavigationEpoch,
+  installTabNavigationEpochListener,
+  navigationEpochChanged,
+  tabNavigationEpoch,
+} from '../lib/bash-commands/browser/page-action-navigation-epoch'
+
 const pageActionInFlight = new Map<string, Promise<unknown>>()
-/** Settled outcomes by dedupe key, replayed to a late retry within the TTL. */
-const pageActionSettled = new Map<string, { outcome: unknown; settledAt: number }>()
+/**
+ * Settled outcomes by dedupe key, replayed to a late retry within the
+ * retry-memory window. Entries are ENVELOPES ({status, outcome}), not
+ * bare values: a rejected run caches a structured failure (never a
+ * swallowed `undefined`), and a resolved-but-lost `undefined` result is
+ * flagged as a corrupt entry (explicit retryable error) instead of
+ * being replayed as if the action had produced `undefined`.
+ */
+const pageActionSettled = new Map<string, PageActionSettledEntry & { settledAt: number }>()
 
 function prunePageActionSettled(now: number = Date.now()): void {
-  for (const [key, entry] of pageActionSettled) {
-    if (now - entry.settledAt > PAGE_ACTION_SETTLED_TTL_MS) pageActionSettled.delete(key)
-  }
+  pruneSettledEntries(pageActionSettled, PAGE_ACTION_RETRY_MEMORY_MS, now)
 }
 
 /**
@@ -1372,7 +1395,12 @@ export default defineBackground(() => {
     // Tab closed → its WebMCP registry entry is stale; drop it so the
     // popup/discover snapshot never lists tools from dead tabs.
     unregisterTab(tabId).catch(() => {})
+    forgetTabNavigationEpoch(tabId)
   })
+
+  // Feed the per-tab navigation epochs used by the page-action CSP
+  // fallback's replacement-document guard (see tabNavigationEpoch above).
+  installTabNavigationEpochListener()
 
   /**
    * Forward a schedule trigger to the CreatorWeave page.
@@ -2184,7 +2212,13 @@ export default defineBackground(() => {
               prunePageActionSettled()
               const recorded = pageActionSettled.get(dedupeKey)
               if (recorded) {
-                sendResponse(recorded.outcome as Parameters<typeof sendResponse>[0])
+                // Replay the stored ENVELOPE: an 'ok' entry replays the
+                // recorded value verbatim; an 'error' entry (cached
+                // rejection or corrupt/lost result) replays the
+                // structured ok:false failure — never a bare undefined.
+                sendResponse(replayedSettledOutcome(recorded) as Parameters<
+                  typeof sendResponse
+                >[0])
                 return
               }
             }
@@ -2207,6 +2241,13 @@ export default defineBackground(() => {
             // from inside a run() that resolved normally, so it can no longer
             // claim a compile-stage failure.
             let injectionFailedWithCspRejection = false
+            // Pin the tab's navigation epoch BEFORE the executeScript: the
+            // CSP fallback below re-checks it to prove the document that
+            // reported the compile failure is still the one in the tab
+            // (a cross-document navigation in between replaces it — the
+            // post-hoc loaderId capture would otherwise capture the
+            // REPLACEMENT document's identity and bless the stale run).
+            const fallbackEpoch = tabNavigationEpoch(targetTabId)
             const runPromise: Promise<unknown> = withTabLock(targetTabId, async () => {
               settled = true
               let results: Array<{ result?: unknown }> | undefined
@@ -2299,23 +2340,31 @@ export default defineBackground(() => {
               (action as { type?: string }).type === 'evaluate'
             ) {
               const expression = (action as { expression?: unknown }).expression
-              // Document identity guard: pin the frame loader id captured at
-              // compile-failure time (below). The loader id comes from the
-              // browser (Page.getFrameTree) — page scripts can neither read
-              // nor forge it, so a hostile page cannot replay a stolen window
-              // token into a replacement document. It changes on every
-              // cross-document navigation or reload (fail closed) but stays
-              // stable across same-document history changes (pushState / hash
-              // — same document, allowed), which strict URL equality would
-              // abort.
-              // CAPTURE FAILS CLOSED: a null capture (navigation in flight,
-              // tab gone, transport error) means the failed document's
-              // identity could not be pinned — the fallback is refused
-              // outright (undefined loaderId → the evaluator's mismatch
-              // branch), never run against an unverified document. The tiny
-              // capture-after-failure window navigations can exploit is
-              // inherent to any post-hoc capture and is bounded by the same
-              // trust boundary as the executeScript round-trip itself.
+              // Document identity guard — TWO pinned signals, one for each
+              // side of the compile failure:
+              //
+              // 1. EXECUTION EPOCH (this fix): the tab's navigation epoch is
+              //    pinned BEFORE the executeScript that produced the compile
+              //    failure and re-checked here. The epoch increments on every
+              //    cross-document commit (tabs.onUpdated status=loading), so
+              //    a navigation between the failed compile and this point —
+              //    the window where the POST-HOC loaderId capture below can
+              //    observe the REPLACEMENT document and bless it — fails
+              //    closed. Same-document history changes (pushState / hash)
+              //    never fire status=loading and never touch the epoch.
+              //
+              // 2. FRAME LOADER ID (existing): pinned right before the CDP
+              //    dispatch and re-verified inside the evaluator at
+              //    execution time — page scripts can neither read nor forge
+              //    it (Page.getFrameTree).
+              // The two pins bracket the whole compile→execute gap: the
+              // epoch closes the post-failure capture window, the loader id
+              // closes the capture-to-dispatch window.
+              // CAPTURE STILL FAILS CLOSED: a null capture (navigation in
+              // flight, tab gone, transport error) means the failed
+              // document's identity could not be pinned — the fallback is
+              // refused outright (undefined loaderId → the evaluator's
+              // mismatch branch), never run against an unverified document.
               // An empty / whitespace-only expression is a VALID function
               // body (an empty body compiles fine and returns undefined) —
               // the MAIN-world path would have succeeded with it, so it must
@@ -2323,6 +2372,14 @@ export default defineBackground(() => {
               // tagged. Route it through the fallback too: the CDP evaluation
               // of an empty body returns undefined, matching new Function.
               if (typeof expression === 'string') {
+                if (navigationEpochChanged(targetTabId, fallbackEpoch)) {
+                  result = {
+                    ok: false,
+                    errorCode: 'PAGE_ACTION_FALLBACK_REPLACED_DOCUMENT',
+                    error:
+                      'CSP fallback refused: the tab navigated or reloaded after the compile failure (the failed document was replaced); the expression was NOT run in the new document. Retry the action if still needed.',
+                  }
+                } else {
                 // The capture waits on a debugger callback while HOLDING the
                 // tab lock. Bound it by the caller's shared deadline (capped
                 // at the fixed debugger-callback timeout): a stalled callback
@@ -2341,6 +2398,7 @@ export default defineBackground(() => {
                   compileLoaderId ?? undefined,
                   deadlineAt,
                 )
+                }
               }
             }
             return result
@@ -2354,13 +2412,33 @@ export default defineBackground(() => {
             // outcome instead of re-executing the action.
             if (dedupeKey) {
               pageActionInFlight.set(dedupeKey, runPromise)
-              void runPromise.catch(() => {}).then((outcome) => {
-                if (pageActionInFlight.get(dedupeKey) === runPromise) {
-                  pageActionInFlight.delete(dedupeKey)
-                }
-                prunePageActionSettled()
-                pageActionSettled.set(dedupeKey, { outcome, settledAt: Date.now() })
-              })
+              // SETTLEMENT RECORD — both branches cache an ENVELOPE:
+              //   - rejection → a structured ok:false failure. The old
+              //     `catch(() => {})` turned a rejected run into
+              //     `undefined` and CACHED that; a retry then replayed
+              //     a meaningless undefined as if the action had
+              //     succeeded. The failure text keeps the root cause.
+              //   - resolve → the recorded value wrapped by
+              //     describeSettledOutcome, which flags a
+              //     resolved-to-undefined run as a CORRUPT entry
+              //     (explicit retryable error) instead of replaying
+              //     `undefined` as a legitimate result: the runner
+              //     always resolves with an object, so a bare
+              //     undefined means the value was lost in transit.
+              void runPromise
+                .catch((err: unknown) => ({
+                  ok: false,
+                  errorCode: 'PAGE_ACTION_RUN_FAILED',
+                  error: err instanceof Error ? err.message : String(err),
+                }))
+                .then((outcome) => {
+                  const envelope = describeSettledOutcome(outcome)
+                  if (pageActionInFlight.get(dedupeKey) === runPromise) {
+                    pageActionInFlight.delete(dedupeKey)
+                  }
+                  prunePageActionSettled()
+                  pageActionSettled.set(dedupeKey, { ...envelope, settledAt: Date.now() })
+                })
             }
             const result: unknown = await runPromise
             settled = true

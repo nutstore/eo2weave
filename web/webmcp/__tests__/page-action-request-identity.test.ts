@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeEach } from 'vitest'
 import {
   PAGE_ACTION_REQUEST_ID_KEY,
   PAGE_ACTION_CAPTURE_CAP_MS,
@@ -7,6 +7,11 @@ import {
   boundedCaptureTimeoutMs,
   clampPageActionDeadline,
 } from '../../../browser-extension/lib/bash-commands/browser/page-action-request-identity'
+import {
+  bumpTabNavigationEpoch,
+  navigationEpochChanged,
+  resetTabNavigationEpochsForTest,
+} from '../../../browser-extension/lib/bash-commands/browser/page-action-navigation-epoch'
 
 /**
  * Sourcery round-2 follow-ups on PR #110:
@@ -142,5 +147,57 @@ describe('clampPageActionDeadline (#4: no forged-deadline budget extension)', ()
     const r = clampPageActionDeadline(stale, received, WINDOW)
     expect(r.expiredInTransit).toBe(true)
     expect(r.deadlineAt).toBe(received + WINDOW)
+  })
+})
+
+/**
+ * Sourcery round-4 fix 1 (fallback accepts a replacement document):
+ * the tab's navigation epoch is pinned BEFORE the executeScript that
+ * produced the compile failure and re-checked before the CDP fallback
+ * dispatch. The epoch advances on every cross-document navigation
+ * commit (tabs.onUpdated status='loading'), so a navigation between the
+ * failed compile and the fallback — the window where the post-hoc
+ * loaderId capture observes the REPLACEMENT document and would bless
+ * the stale run — fails closed. pushState/hash changes never touch the
+ * epoch (same document), so legitimate same-document fallbacks still
+ * run.
+ */
+describe('tab navigation epoch (fix 1: replacement-document guard)', () => {
+  beforeEach(() => {
+    resetTabNavigationEpochsForTest()
+  })
+
+  it('is monotonic per tab and independent across tabs', () => {
+    expect(bumpTabNavigationEpoch(7)).toBe(1)
+    expect(bumpTabNavigationEpoch(7)).toBe(2)
+    expect(bumpTabNavigationEpoch(9)).toBe(1) // other tabs unaffected
+    expect(bumpTabNavigationEpoch(7)).toBe(3)
+  })
+
+  it('pins before executeScript, mismatch after a navigation → fallback refused', () => {
+    // The handler pins the epoch before its executeScript:
+    const pinned = bumpTabNavigationEpoch(7)
+    // A cross-document navigation commits BEFORE the fallback branch:
+    bumpTabNavigationEpoch(7)
+    // The fallback's re-check no longer matches the pin → refused.
+    expect(navigationEpochChanged(7, pinned)).toBe(true)
+  })
+
+  it('same document (no navigation commit) → epoch unchanged → fallback allowed', () => {
+    const pinned = bumpTabNavigationEpoch(5)
+    // pushState / hash changes fire NO status='loading' event: the
+    // counter is untouched, the re-check matches the pin.
+    expect(navigationEpochChanged(5, pinned)).toBe(false)
+    // A different tab's navigation never affects this tab's guard.
+    bumpTabNavigationEpoch(6)
+    expect(navigationEpochChanged(5, pinned)).toBe(false)
+  })
+
+  it('reset clears all epochs (test-hook isolation)', () => {
+    bumpTabNavigationEpoch(11)
+    bumpTabNavigationEpoch(12)
+    resetTabNavigationEpochsForTest()
+    // After reset the counter starts from scratch.
+    expect(bumpTabNavigationEpoch(11)).toBe(1)
   })
 })
