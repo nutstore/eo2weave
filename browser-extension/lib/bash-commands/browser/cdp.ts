@@ -71,14 +71,21 @@ export async function withTabLock<T>(
         // Deadline applies to the WAIT only: once `fn` starts it always runs
         // to completion (an in-flight executeScript cannot be cancelled).
         // A waiter that exceeds the deadline rejects WITHOUT starting `fn` —
-        // later actions are not blocked either, because this entry's barrier
-        // is released in the finally below.
+        // and this entry's barrier is released below, so later operations are
+        // not stranded behind a waiter that never acquired the lock.
         let timer: ReturnType<typeof setTimeout> | undefined
         const deadline = new Promise<never>((_, reject) => {
             timer = setTimeout(() => reject(new TabLockWaitTimeoutError(opts!.maxQueueWaitMs!)), opts!.maxQueueWaitMs)
         })
         try {
             await Promise.race([prev, deadline])
+        } catch (err) {
+            // Wait-timeout (the queue barrier itself never rejects): release
+            // THIS entry's barrier so the next queued operation proceeds, then
+            // propagate. `fn` never started — nothing to run.
+            release()
+            if (tabOpQueue.get(tabId) === barrier) tabOpQueue.delete(tabId)
+            throw err
         } finally {
             if (timer !== undefined) clearTimeout(timer)
         }
