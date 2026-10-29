@@ -488,16 +488,28 @@ export default {
               page_url: location.href,
             }
           }
+          // Lock-expiry rejections are flagged so both the in-page guard
+          // and the outer eval catch can pass them through as LOCK_TIMEOUT
+          // instead of TAB_UNAVAILABLE: the tab answered the eval, so
+          // "tab unavailable" would mislead the caller into reopening a
+          // tab that is fine. The marker is an own enumerable property so
+          // it survives the QuickJS host-call failure() metadata crossing.
+          function makeLockTimeoutError(message) {
+            var e = new Error(message)
+            e.name = 'LOCK_TIMEOUT'
+            e.lockTimeout = true
+            return e
+          }
           // Page-global lock keyed by channel:message:emoji. add_reaction
           // and remove_reaction share it, so opposing mutations for the
           // same reaction are serialized and cannot land out of order.
           // Two lifetime rules keep the map and the queue honest:
           // 1. A settled slot is removed (unless a newer call already
           //    re-keyed it), so the map does not grow for the tab lifetime.
-          // 2. A queued entry that only starts running after the 25s
-          //    browser-eval deadline has passed is skipped: its caller has
-          //    already received TAB_UNAVAILABLE, so running it would turn
-          //    a reported failure into a surprise reaction change.
+          // 2. A queued entry that only starts running after the 15s
+          //    wait cutoff has passed is skipped: its caller's eval window
+          //    is nearly spent, so running it would turn a reported
+          //    failure into a surprise reaction change.
           function withReactionLock(key, run) {
             var locks
             try {
@@ -513,12 +525,15 @@ export default {
               // this queue timestamp (passed to the run callback and on to
               // discordApi's options.queued_at): a dispatched entry always
               // has the full remaining budget of the caller's 25s eval
-              // window, and an entry that could only start after the 18s
-              // in-page deadline is skipped so it can never touch Discord
-              // after the caller has already seen TAB_UNAVAILABLE.
+              // window, and an entry that could only start after the 15s
+              // wait cutoff is skipped so it can never touch Discord after
+              // its caller has nearly exhausted the eval window. The
+              // expiry is flagged on the error itself; the outer eval
+              // catch passes it through as LOCK_TIMEOUT — the tab is
+              // alive, so TAB_UNAVAILABLE would misreport the failure.
               if (Date.now() - queuedAt > 15000)
-                throw new Error(
-                  'eo2 reaction lock entry expired (caller already timed out)',
+                throw makeLockTimeoutError(
+                  'Reaction request queued behind another reaction on the same target and gave up after the 15s lock wait (the tab is still available).',
                 )
               return run(queuedAt)
             })
@@ -554,7 +569,13 @@ export default {
                     { method: 'DELETE', queued_at: queuedAt },
                   )
                 },
-              )
+              ).catch(function (e) {
+                // The lock expiry must not escape the page: the outer
+                // browser.eval catch maps every rejection to
+                // TAB_UNAVAILABLE, which would misreport a live tab.
+                if (e && e.lockTimeout) return error('LOCK_TIMEOUT', String(e.message || e))
+                throw e
+              })
               if (!response.ok) return response
               return ok({ removed: true })
             },
@@ -575,6 +596,19 @@ export default {
           options,
         )
       } catch (error) {
+        // A reaction queued behind a same-key request can exhaust its 15s
+        // lock wait while the tab is perfectly alive; that rejection is
+        // flagged LOCK_TIMEOUT and passes through unmapped so callers do
+        // not misread it as a dead tab.
+        if (error instanceof Error && error.name === 'LOCK_TIMEOUT') {
+          state.result = {
+            status: 'error',
+            data: null,
+            message: String(error.message || error),
+            error_code: 'LOCK_TIMEOUT',
+          }
+          return 'success'
+        }
         // Tab closed/navigated or the eval timed out: surface a stable
         // workflow error instead of letting the adapter rejection escape.
         state.result = {
