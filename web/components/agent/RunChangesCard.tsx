@@ -289,6 +289,14 @@ export const RunChangesCard: React.FC<RunChangesCardProps> = ({ snapshotId }) =>
                           path: content.path,
                         }
                       : null
+                  // A create/delete row has one absent side (the snapshot
+                  // reports it as size 0), so only the side that actually
+                  // exists gets a label — otherwise the row shows a
+                  // zero-byte file that was never there.
+                  const beforeSizeLabel =
+                    file.beforeContentSize > 0 ? formatBytes(file.beforeContentSize) : ''
+                  const afterSizeLabel =
+                    file.afterContentSize > 0 ? formatBytes(file.afterContentSize) : ''
                   return (
                     <li key={file.path}>
                       <button
@@ -309,9 +317,9 @@ export const RunChangesCard: React.FC<RunChangesCardProps> = ({ snapshotId }) =>
                           {fileOpLabel(file.opType)}
                         </span>
                         <span className="shrink-0 text-tertiary">
-                          {formatBytes(file.beforeContentSize)}
-                          {file.beforeContentSize > 0 && file.afterContentSize > 0 ? ' → ' : ''}
-                          {formatBytes(file.afterContentSize)}
+                          {beforeSizeLabel}
+                          {beforeSizeLabel && afterSizeLabel ? ' → ' : ''}
+                          {afterSizeLabel}
                         </span>
                       </button>
                       {isExpanded && (

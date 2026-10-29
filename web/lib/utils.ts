@@ -9,6 +9,11 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
+ * Human-readable byte units, smallest first.
+ */
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const
+
+/**
  * Format file size (alias for formatBytes for compatibility)
  */
 export function formatSize(bytes: number): string {
@@ -16,16 +21,36 @@ export function formatSize(bytes: number): string {
 }
 
 /**
- * Format bytes to human-readable format
+ * Format bytes to human-readable format.
+ *
+ * One decimal place (always shown above the byte unit) matches the per-module
+ * formatters this canonical implementation replaced, so deduplicating them
+ * does not change any displayed size: byte counts stay whole ("512 B") and
+ * larger units render as "1.0 KB" / "1.5 MB". The few pre-PR two-decimal
+ * branches (the skill-download progress and the storage diagnostics labels)
+ * read better with one decimal and are the only displayed sizes that change.
+ *
+ * Invalid input is handled here rather than at each call site: a non-finite
+ * count falls back to "0 B", and a negative count keeps the plain signed byte
+ * label its callers used to show ("-2048 B") instead of deriving an invalid
+ * unit from a negative logarithm.
+ *
+ * Units run up to TB. A few replaced formatters stopped at MB or GB (and two
+ * of them rendered "undefined" past their cap); escalating the unit is the
+ * same behavior the pre-existing callers of this formatter already had.
  */
 export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes)) return '0 B'
+  if (bytes < 0) return `-${Math.abs(bytes)} B`
   if (bytes === 0) return '0 B'
 
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  const unitIndex = Math.min(
+    Math.max(Math.floor(Math.log(bytes) / Math.log(1024)), 0),
+    BYTE_UNITS.length - 1
+  )
+  const value = bytes / 1024 ** unitIndex
 
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`
+  return unitIndex === 0 ? `${value} B` : `${value.toFixed(1)} ${BYTE_UNITS[unitIndex]}`
 }
 
 /**
