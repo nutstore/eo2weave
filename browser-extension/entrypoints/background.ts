@@ -8,7 +8,7 @@ import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
 import { createTabWebMCPApi } from './webmcp/tab-api'
-import { createPackageOptInHandler } from './webmcp/package-optin-handler'
+import { createPackageOptInHandler, handlePackageOptInRecoveryAlarm } from './webmcp/package-optin-handler'
 import {
   getHostAuthorizationMap,
   setHostEnabled as setWebMCPHostEnabled,
@@ -1142,6 +1142,12 @@ export default defineBackground(() => {
   if (CODEX_OAUTH_ENABLED) chrome.alarms.create(CODEX_TOKEN_REFRESH_ALARM, { periodInMinutes: 5 });
 
   chrome.alarms.onAlarm.addListener(async (alarm) => {
+    // Side-panel package opt-in recovery reload (findings: "Recovery reload
+    // is lost" / "Enabled state persists without reload"): durable reload
+    // retries for an enabled-but-unloaded package. Returns true when the
+    // alarm belonged to this feature.
+    if (await handlePackageOptInRecoveryAlarm(alarm)) return;
+
     if (CODEX_OAUTH_ENABLED && alarm.name === CODEX_TOKEN_REFRESH_ALARM) {
       await proactiveRefreshIfNeeded();
       await refreshCodexUsageThrottled();

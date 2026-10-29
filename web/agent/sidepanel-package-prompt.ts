@@ -104,24 +104,35 @@ function readDismissedAt(packageId: string): number | null {
   }
 }
 
-/** In-memory fallback: suppresses re-prompting within the current session. */
-const sessionDismissals = new Set<string>()
+/**
+ * In-memory fallback: suppresses re-prompting within the current session.
+ * Stores the DISMISSAL TIMESTAMP (not just the id): a side panel left open
+ * for days must not keep suppressing a package whose 1-day cooldown has
+ * expired (finding: "Dismissal lasts beyond one day") — the fallback obeys
+ * the same cooldown-age rule as the persisted record.
+ */
+const sessionDismissals = new Map<string, number>()
 
 /** True when the user said "not now" for this package within the cooldown window. */
 export function isPackagePromptDismissed(packageId: string): boolean {
-  if (sessionDismissals.has(packageId)) return true
-  const dismissedAt = readDismissedAt(packageId)
-  if (dismissedAt === null) return false
-  return Date.now() - dismissedAt < DISMISS_COOLDOWN_MS
+  const dismissedAt = sessionDismissals.get(packageId)
+  if (dismissedAt !== undefined) {
+    if (Date.now() - dismissedAt < DISMISS_COOLDOWN_MS) return true
+    // Expired: drop it so the map cannot grow unbounded across long sessions.
+    sessionDismissals.delete(packageId)
+  }
+  const persistedAt = readDismissedAt(packageId)
+  if (persistedAt === null) return false
+  return Date.now() - persistedAt < DISMISS_COOLDOWN_MS
 }
 
 /** Record a "not now" answer for the package (1-day cooldown). */
 export function dismissPackagePrompt(packageId: string): void {
   // Session fallback recorded BEFORE the storage attempt: when localStorage
-  // is unavailable (quota / privacy mode / thrown write), the in-memory set
-  // still suppresses the prompt for this panel session, so a "not now" is
-  // never immediately followed by the same modal again.
-  sessionDismissals.add(packageId)
+  // is unavailable (quota / privacy mode / thrown write), the in-memory
+  // record still suppresses the prompt for this panel session, so a "not
+  // now" is never immediately followed by the same modal again.
+  sessionDismissals.set(packageId, Date.now())
   try {
     localStorage.setItem(dismissKeyFor(packageId), JSON.stringify(Date.now()))
   } catch {

@@ -170,35 +170,98 @@ function consumeConsentToken(token: string, tabId: number, packageId: string): b
   )
 }
 
-/** How long a recovery reload keeps retrying after a failed immediate reload. */
-const RECOVERY_RELOAD_WINDOW_MS = 60_000
-const RECOVERY_RELOAD_INTERVAL_MS = 5_000
+/**
+ * Durable recovery for an enabled-but-unreloaded tab (findings: "Recovery
+ * reload is lost" / "Enabled state persists without reload"): the immediate
+ * reload may fail (transient tab error), be skipped (the tab navigated away
+ * between the enable write and the reload), or never run at all (the MV3
+ * service worker is suspended between the config write and the reload). A
+ * `setTimeout` retry chain lives only in worker memory — suspension drops it
+ * and the enabled package stays unloaded while later status probes suppress
+ * the prompt. `chrome.alarms` survive suspension and restart, so recovery is
+ * scheduled as a periodic alarm that reloads the tab ONLY while it still
+ * shows the consented URL, then clears itself. There is deliberately no
+ * in-worker `setTimeout` fallback: a double mechanism would need cross-
+ * restart coordination to avoid double reloads, and a ≤30s activation delay
+ * is acceptable for a background recovery.
+ */
+export const RECOVERY_RELOAD_ALARM_PREFIX = 'webmcp-optin-recovery'
+/** Recovery gives up after this window (the user probably moved on). */
+const RECOVERY_RELOAD_WINDOW_MS = 5 * 60_000
+/** 30s — Chrome's minimum alarm period. */
+const RECOVERY_RELOAD_PERIOD_MINUTES = 0.5
+
+/** Test seam: the scheduler itself (exported read-only for assertions). */
+export function scheduleRecoveryReload(tabId: number, expectedUrl: string): void {
+  try {
+    // The alarm name carries tabId, issue time AND the consented URL: the
+    // handler re-derives everything from the name alone after a restart.
+    chrome.alarms?.create(
+      `${RECOVERY_RELOAD_ALARM_PREFIX}:${tabId}:${Date.now()}:${expectedUrl}`,
+      {
+        delayInMinutes: RECOVERY_RELOAD_PERIOD_MINUTES,
+        periodInMinutes: RECOVERY_RELOAD_PERIOD_MINUTES,
+      },
+    )
+  } catch (err: unknown) {
+    // eslint-disable-next-line no-console
+    console.warn('[PackageOptIn] could not schedule the recovery alarm:', err)
+  }
+}
+
+/** Cancel every pending recovery alarm for a tab (called after a good reload). */
+export async function cancelRecoveryReloadAlarms(tabId: number): Promise<void> {
+  try {
+    const all = (await chrome.alarms?.getAll()) ?? []
+    for (const alarm of all) {
+      if (alarm.name.startsWith(`${RECOVERY_RELOAD_ALARM_PREFIX}:${tabId}:`)) {
+        await chrome.alarms.clear(alarm.name)
+      }
+    }
+  } catch {
+    // Alarms unavailable (tests / exotic embeds) — nothing durable to cancel.
+  }
+}
 
 /**
- * Persisted-enabled-but-not-reloaded recovery (findings: "Enabled package
- * skips page reload" / "Enabled package remains unloaded"): when the
- * immediate reload of the bound tab throws (worker restart, transient tab
- * error), the config is already enabled but the page never picked the tools
- * up — later status probes see `enabled` and suppress the prompt. Retry the
- * reload a few times in the background, gated on the tab still hosting the
- * consented site, so the enabled package actually activates. Fire-and-forget
- * by design: the enable response never waits on it.
+ * Alarm-listener half of the recovery flow. Registered ONCE by the
+ * background; returns true when the alarm belonged to this feature so the
+ * caller can stop processing it.
  */
-function scheduleRecoveryReload(tabId: number, expectedUrl: string): void {
-  const deadline = Date.now() + RECOVERY_RELOAD_WINDOW_MS
-  const tick = async (): Promise<void> => {
-    if (Date.now() > deadline) return
-    try {
-      const tab = await chrome.tabs.get(tabId)
-      if ((tab.url || '') !== expectedUrl) return // user moved on — leave the tab alone
-      await chrome.tabs.reload(tabId)
-      return
-    } catch {
-      // Tab not ready yet — retry within the window.
-    }
-    setTimeout(() => { void tick() }, RECOVERY_RELOAD_INTERVAL_MS)
+export async function handlePackageOptInRecoveryAlarm(alarm: { name: string }): Promise<boolean> {
+  const prefix = `${RECOVERY_RELOAD_ALARM_PREFIX}:`
+  if (!alarm.name.startsWith(prefix)) return false
+  const rest = alarm.name.slice(prefix.length)
+  const sep1 = rest.indexOf(':')
+  const sep2 = rest.indexOf(':', sep1 + 1)
+  const tabId = Number(rest.slice(0, sep1))
+  const issuedAt = Number(rest.slice(sep1 + 1, sep2))
+  const expectedUrl = rest.slice(sep2 + 1)
+  if (
+    !Number.isInteger(tabId) ||
+    !Number.isFinite(issuedAt) ||
+    !expectedUrl ||
+    Date.now() - issuedAt > RECOVERY_RELOAD_WINDOW_MS
+  ) {
+    void chrome.alarms.clear(alarm.name)
+    return true
   }
-  setTimeout(() => { void tick() }, RECOVERY_RELOAD_INTERVAL_MS)
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if ((tab.url || '') !== expectedUrl) {
+      // The user moved on — never reload a page they did not consent to.
+      void chrome.alarms.clear(alarm.name)
+      return true
+    }
+    await chrome.tabs.reload(tabId)
+  } catch {
+    // Tab not ready yet (cold start / transient error) — the alarm re-fires
+    // within the window; suspension between fires loses nothing.
+    return true
+  }
+  // Reload landed — the tools are active; stop the periodic alarm.
+  void chrome.alarms.clear(alarm.name)
+  return true
 }
 
 export function createPackageOptInHandler(deps: PackageOptInDependencies) {
@@ -249,16 +312,22 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
         // Sibling candidates for the dismissed-best case (finding: "Dismissal
         // hides other package prompts"): the web client picks the best
         // NON-dismissed alternative instead of hiding every prompt for the
-        // site. Bounded to the two next candidates; metadata only, same as
-        // the primary payload. ALREADY-ENABLED siblings are excluded
-        // (finding: "Enabled sibling gets an opt-in prompt"): the prompt
-        // exists to enable packages, so offering an enabled sibling as an
-        // alternative either re-enables and reloads it redundantly (grace
-        // mode) or fails the consent check (strict mode).
+        // site. The list is NOT capped at two: when a tab hosts ≥4 builtin
+        // packages and the first three are within their dismissal cooldowns,
+        // a capped list would leave `getPendingPackagePrompt` without a
+        // non-dismissed candidate and hide an available opt-in (finding:
+        // "Dismissed packages hide later options"). Every DISABLED sibling is
+        // returned (bounded at 8 — a tab hosting more builtin packages than
+        // that is pathological, and each payload is metadata-only, same as
+        // the primary). ALREADY-ENABLED siblings are excluded (finding:
+        // "Enabled sibling gets an opt-in prompt"): the prompt exists to
+        // enable packages, so offering an enabled sibling as an alternative
+        // either re-enables and reloads it redundantly (grace mode) or fails
+        // the consent check (strict mode).
         const alternatives = findPackageOptInCandidates(entries, statusUrl)
           .filter(item => item.directory !== candidate.directory)
           .filter(item => item.activation === 'disabled')
-          .slice(0, 2)
+          .slice(0, 8)
           // Each DISABLED sibling gets its OWN package-bound consent token
           // (findings: "Sibling consent cannot complete" / "Sibling opt-in
           // is rejected"): a token never enables a package other than the
@@ -452,14 +521,40 @@ export function createPackageOptInHandler(deps: PackageOptInDependencies) {
           )
           scheduleRecoveryReload(tabId, url)
         }
+        // The reload landed — the tools are active, so any recovery alarm
+        // from an EARLIER failed enable of this tab is now obsolete.
+        if (reloaded) await cancelRecoveryReloadAlarms(tabId)
         // Verify the write actually stuck AFTER the reload (findings: "Disable
         // choice gets overwritten" / "Success reported after disable"): a
         // queued package-management disable must still be able to win AFTER
         // our write commits. Hold the check open for a short window so a
         // disable racing the enable lands inside it — the last state observed
         // wins, and a disable observed here is reported, never overridden.
+        // A verification read that THROWS (transient storage error) is kept
+        // apart from an observed `disabled` (finding: "Enabled package
+        // reported failed"): the config write and the reload already
+        // succeeded, so reporting ENABLE_FAILED would record a 1-day
+        // cooldown and tell the user the enable failed even though the
+        // package is active. VERIFY_INCOMPLETE reports the uncertainty
+        // without the cooldown; the package stays enabled and revocable.
         for (let attempt = 0; attempt < 3; attempt += 1) {
-          const stored = await readBuiltinConfig(candidate.directory)
+          let stored: { activation?: string } | null
+          try {
+            stored = await readBuiltinConfig(candidate.directory)
+          } catch (verifyErr: unknown) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              '[PackageOptIn] post-enable verification read failed — the package is enabled but unverified:',
+              verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
+            )
+            sendResponse({
+              ok: false,
+              errorCode: 'VERIFY_INCOMPLETE',
+              error:
+                'The package was enabled and the page reloaded, but the final check could not be read. Check the Supported Sites page.',
+            })
+            return false
+          }
           if (stored?.activation !== 'enabled') {
             sendResponse({
               ok: false,

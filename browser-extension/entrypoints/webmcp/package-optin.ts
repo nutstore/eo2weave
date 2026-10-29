@@ -55,6 +55,14 @@ const MUTATING_BROWSER_COMMANDS = [
   'browser.evalElement(',
 ]
 
+/**
+ * Navigation with an explicit target is a page READ, not a page write
+ * (finding: "Read-only tools are labeled writable"): `browser.goto` loads a
+ * URL in the tab the workflow targets — the same effect as the user typing
+ * the address — and does not touch the DOM of the page being read.
+ */
+const NON_MUTATING_BROWSER_COMMANDS = ['browser.goto(']
+
 /** Stored workflow sources are tiny; a cap keeps this linear and cheap. */
 const READ_ONLY_SOURCE_MAX_LENGTH = 20_000
 
@@ -78,6 +86,16 @@ const MUTATION_MARKER_PATTERN = new RegExp(
 )
 
 /**
+ * Internal workflow-state writes (`state.result = …`, optionally nested,
+ * e.g. `state.foo.bar = …` or `state["x"] = …`): the `state` object is the
+ * workflow's OWN output channel, not page state (finding: "Read-only tools
+ * are labeled writable") — writing it never touches the page. Stripped
+ * before the marker scan so the generic property-assignment rule cannot
+ * misread it as a page write.
+ */
+const INTERNAL_STATE_WRITE = /\bstate(?:\.[\w$]+|\[[^\]]*\])*\s*=[^=>]/g
+
+/**
  * Conservative read-only detection from the workflow source. Read-only is a
  * POSITIVE verdict (finding: "Mutating tools labeled read-only"): absence of
  * ONE known pattern is not proof, so the marker scan above covers structural
@@ -90,7 +108,17 @@ export function toolIsReadOnly(source: string): boolean {
   if (source.length > READ_ONLY_SOURCE_MAX_LENGTH) return false
   // Direct interaction-capable browser commands always disqualify.
   if (MUTATING_BROWSER_COMMANDS.some(command => source.includes(command))) return false
-  if (MUTATION_MARKER_PATTERN.test(source)) return false
+  // `browser.goto` navigation with an explicit target is a read, not a write
+  // (finding: "Read-only tools are labeled writable") — remove it so the
+  // generic unlisted-call scan cannot flag it as an unknown mutating call.
+  const withoutNavigation = NON_MUTATING_BROWSER_COMMANDS.reduce(
+    (text, command) => text.split(command).join(''),
+    source,
+  )
+  // Internal `state.* =` writes are the workflow's own output channel; strip
+  // them so the generic property-assignment rule cannot flag them.
+  const scanned = withoutNavigation.replace(INTERNAL_STATE_WRITE, '')
+  if (MUTATION_MARKER_PATTERN.test(scanned)) return false
   return true
 }
 

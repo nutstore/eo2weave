@@ -53,7 +53,21 @@ export async function readWebMCPCatalogDetailed(): Promise<[WebMCPPackageEntry[]
     console.warn('[WebMCP catalog] user package storage unavailable; serving builtin packages only:', error)
     return [await readMountedWebMCPCatalog(mounts), { userMountComplete: false }]
   }
-  return [await readMountedWebMCPCatalog(mounts), { userMountComplete: true }]
+  try {
+    return [await readMountedWebMCPCatalog(mounts), { userMountComplete: true }]
+  } catch (error) {
+    // The preflight listing above succeeded, but `readMountedWebMCPCatalog`
+    // lists the user mount AGAIN — and that second listing can fail even
+    // when the first succeeded (transient OPFS / quota error). Letting it
+    // reject would make the catalog refresh clear EVERY adapter route,
+    // including healthy builtins (finding: "Transient listing failure
+    // removes routes"). Degrade to the builtin-only read instead: a package
+    // that momentarily cannot be listed is no worse than a mount that could
+    // not be listed at all.
+    console.warn('[WebMCP catalog] combined catalog read failed after a successful user-mount listing; serving builtin packages only:', error)
+    const builtinOnly = mounts.slice(0, 1)
+    return [await readMountedWebMCPCatalog(builtinOnly), { userMountComplete: false }]
+  }
 }
 /**
  * Builtin-only catalog read. The combined `readWebMCPCatalog` already

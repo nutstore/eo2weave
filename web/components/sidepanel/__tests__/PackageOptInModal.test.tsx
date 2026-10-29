@@ -62,11 +62,20 @@ describe('PackageOptInModal', () => {
     expect(screen.getByText('read_page')).toBeTruthy()
     expect(screen.getByText('search_emails')).toBeTruthy()
     // Emoji regression guard (Sourcery finding): pictographs, dingbats,
-    // CJK-symbol emoji, keycaps and modifiers must never appear.
+    // CJK-symbol emoji, keycaps and modifiers must never appear. The keycap
+    // arm covers U+20E3 BOTH with and without a preceding VS16 (finding:
+    // "Keycap emoji slips through test" — `1\u{20E3}` alone is still a
+    // keycap emoji, so the combining sequence is matched directly).
     const EMOJI =
-      /[\u{1F000}-\u{1FAFF}]|[\u{2190}-\u{2BFF}]|[\u{FE00}-\u{FE0F}]|[\u{1F1E6}-\u{1F1FF}]|\u200d/u
+      /[\u{1F000}-\u{1FAFF}]|[\u{2190}-\u{2BFF}]|[\u{FE00}-\u{FE0F}]|[\u{1F1E6}-\u{1F1FF}]|\u200d|\u{20E3}/u
     const text = container.textContent ?? ''
     expect(EMOJI.test(text)).toBe(false)
+    // The guard itself must be able to catch a VS16-less keycap sequence.
+    expect(
+      /[\u{1F000}-\u{1FAFF}]|[\u{2190}-\u{2BFF}]|[\u{FE00}-\u{FE0F}]|[\u{1F1E6}-\u{1F1FF}]|\u200d|\u{20E3}/u.test(
+        '1\u{20E3}',
+      ),
+    ).toBe(true)
   })
 
   it('marks read-only and write tools with their own badges', () => {
@@ -198,13 +207,14 @@ describe('PackageOptInModal', () => {
     expect(toast.success).not.toHaveBeenCalled()
   })
 
-  it('a CONSENT_REQUIRED failure is retryable: no dismissal cooldown, retry guidance shown', async () => {
+  it('a CONSENT_REQUIRED failure is retryable: no dismissal cooldown, guidance STAYS in the open modal', async () => {
+    const onClose = vi.fn()
     enablePackageAndReloadMock.mockResolvedValue({
       ok: false,
       errorCode: 'CONSENT_REQUIRED',
       error: 'Consent token missing, expired, already used, or bound to another tab/package.',
     })
-    render(<PackageOptInModal packageInfo={packageInfo} onClose={vi.fn()} />)
+    render(<PackageOptInModal packageInfo={packageInfo} onClose={onClose} />)
     fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toContain('expired')
@@ -213,6 +223,11 @@ describe('PackageOptInModal', () => {
     // opt-ins block retry"); AppBootstrap re-probes for a fresh token.
     expect(dismissPackagePromptMock).not.toHaveBeenCalled()
     expect(toast.error).not.toHaveBeenCalled()
+    // Finding "Retry guidance disappears": the modal used to close() right
+    // after setErrorMessage, unmounting the guidance before it could be
+    // read. It must stay open with the message visible.
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeTruthy()
   })
 
   it('"not now" records the dismissal cooldown and closes without enabling', () => {

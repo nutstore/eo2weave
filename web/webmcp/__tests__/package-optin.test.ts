@@ -137,19 +137,50 @@ describe('toolIsReadOnly', () => {
   it('treats an empty source as a write (never claim read-only without evidence)', () => {
     expect(toolIsReadOnly('')).toBe(false)
   })
+
+  it('treats browser.goto navigation as read-only (a page read, not a write)', () => {
+    // Finding: "Read-only tools are labeled writable" — browse_chart and
+    // other navigation workflows were badged Write because goto looked like
+    // an unknown mutating call.
+    expect(
+      toolIsReadOnly(
+        'async run({ state, target }) { await browser.goto("https://movie.douban.com/chart", { tab: target.tabId }); return "success"; }',
+      ),
+    ).toBe(true)
+  })
+
+  it('treats internal workflow state writes as read-only', () => {
+    // `state` is the workflow's OWN output channel, not page state.
+    expect(toolIsReadOnly('async inspect({ state }) { state.result = { count: 1 }; return true; }')).toBe(true)
+    expect(toolIsReadOnly('state["chart"] = rows; const t = document.title')).toBe(true)
+  })
+
+  it('still flags page writes alongside state writes', () => {
+    // A state write must not whitewash a real page mutation in the same source.
+    expect(toolIsReadOnly('state.result = page; page.title = "x"')).toBe(false)
+  })
 })
 
 describe('createPackageOptInHandler', () => {
   const reload = vi.fn()
   const get = vi.fn()
+  const alarmCreate = vi.fn()
+  const alarmGetAll = vi.fn()
+  const alarmClear = vi.fn()
 
   beforeEach(() => {
     vi.resetAllMocks()
     // resetAllMocks clears implementations — re-arm the chrome stubs.
     reload.mockResolvedValue(undefined)
     get.mockResolvedValue({ id: 7, url: 'https://jmail.world/messages' })
+    alarmGetAll.mockResolvedValue([])
+    alarmClear.mockResolvedValue(undefined)
     vi.stubGlobal('chrome', {
       tabs: { get, reload },
+      // Recovery reloads are scheduled as DURABLE alarms (finding: "Reload
+      // test leaves retry timers running") — no setTimeout chains to leak
+      // into later tests; the stub records the scheduling instead.
+      alarms: { create: alarmCreate, getAll: alarmGetAll, clear: alarmClear },
     })
     vi.mocked(readWebMCPCatalog).mockResolvedValue([entry()])
     vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[entry()], { userMountComplete: true }])
@@ -337,11 +368,18 @@ describe('createPackageOptInHandler', () => {
 
   it('reports ENABLE_REVERTED when a concurrent disable undid the enable write', async () => {
     const { token } = await mintToken()
-    vi.mocked(readBuiltinConfig).mockResolvedValue({ activation: 'disabled' })
+    // The verification read is SEQUENCED (finding: "Concurrent-disable test
+    // accepts failed writes"): the first read proves the enable write
+    // committed (a broken write would still read disabled and make this test
+    // vacuous), later reads observe the concurrent disable winning.
+    vi.mocked(readBuiltinConfig)
+      .mockResolvedValueOnce({ activation: 'enabled' })
+      .mockResolvedValue({ activation: 'disabled' })
     const respond = vi.fn()
     const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
     await handle({ type: 'webmcp_package_optin_enable', packageId: 'world.jmail.archive', consentToken: token }, respond)
-    expect(setBuiltinConfig).toHaveBeenCalled()
+    // The enable write carried the enabled activation — not just any write.
+    expect(setBuiltinConfig).toHaveBeenCalledWith('world.jmail.archive', { activation: 'enabled' })
     // The reload happens BEFORE the final verification (finding: "Disabled
     // package reported enabled") so a disable racing the enable can never be
     // carried to the page unobserved; the verification then reports honestly.
@@ -477,7 +515,7 @@ describe('createPackageOptInHandler', () => {
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'PACKAGE_MISMATCH' }))
   })
 
-  it('still answers ok when the reload fails (the enable itself persisted)', async () => {
+  it('still answers ok when the reload fails, and schedules a DURABLE recovery alarm (no setTimeout chain)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       const { token } = await mintToken()
@@ -488,6 +526,32 @@ describe('createPackageOptInHandler', () => {
       expect(setBuiltinConfig).toHaveBeenCalledWith('world.jmail.archive', { activation: 'enabled' })
       expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: true, reloaded: false }))
       expect(warn).toHaveBeenCalled()
+      // The retry must survive service-worker suspension: a chrome.alarms
+      // entry (durable), not an in-worker setTimeout chain that dies with
+      // the worker (finding: "Recovery reload is lost" / "Reload test leaves
+      // retry timers running" — a real-timer chain here would keep retrying
+      // for 60s into later tests).
+      expect(alarmCreate).toHaveBeenCalledTimes(1)
+      expect(String(alarmCreate.mock.calls[0][0])).toContain('webmcp-optin-recovery:7:')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('reports VERIFY_INCOMPLETE (not ENABLE_FAILED) when the post-write verification read throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { token } = await mintToken()
+      // The write and reload SUCCEED; only the verification read fails
+      // (finding: "Enabled package reported failed" — ENABLE_FAILED here
+      // would record a 1-day cooldown while the package is actually on).
+      vi.mocked(readBuiltinConfig).mockRejectedValue(new Error('storage unavailable'))
+      const respond = vi.fn()
+      const handle = createPackageOptInHandler({ resolveBoundTab: async () => 7 })
+      await handle({ type: 'webmcp_package_optin_enable', packageId: 'world.jmail.archive', consentToken: token }, respond)
+      expect(setBuiltinConfig).toHaveBeenCalledWith('world.jmail.archive', { activation: 'enabled' })
+      expect(reload).toHaveBeenCalledWith(7)
+      expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: 'VERIFY_INCOMPLETE' }))
     } finally {
       warn.mockRestore()
     }

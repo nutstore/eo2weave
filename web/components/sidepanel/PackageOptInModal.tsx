@@ -146,15 +146,20 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
       // Findings "Expired consent blocks retry" / "Failed opt-ins block
       // retry": a lost/expired token (service-worker restart, slow confirm)
       // is RETRYABLE, not a user decision — no 1-day dismissal, or the
-      // prompt could never come back to try with a fresh token. Ask the user
-      // to reopen the prompt (AppBootstrap re-probes when the modal closes).
+      // prompt could never come back to try with a fresh token. The modal
+      // STAYS OPEN with the retry guidance (finding: "Retry guidance
+      // disappears"): closing immediately would unmount the message before
+      // the user reads it, and the re-probe would re-show a modal with no
+      // explanation. The Confirm button retries with the same token first
+      // (the background still accepts it within its TTL) and a fresh probe
+      // replaces the token when it is truly expired.
       // eslint-disable-next-line no-console
-      console.warn('[PackageOptInModal] consent token rejected — the prompt can be retried', {
+      console.warn('[PackageOptInModal] consent token rejected — retry guidance stays in the modal', {
         packageId: packageInfo.id,
         error: result.error,
       })
       setErrorMessage(t('sidePanelPackage.consentRetryToast'))
-      onClose()
+      return
     } else if (result.errorCode === 'TIMEOUT') {
       // Finding "Late success appears as failure": a timeout is NOT the final
       // answer — the bridge call keeps running and its real outcome arrives
@@ -182,8 +187,8 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
       onClose()
     }
     // Reached only by the non-timeout paths above (all of which already
-    // closed the modal); the TIMEOUT branch returns early to keep the modal
-    // open for the late-settle outcome.
+    // closed the modal); the CONSENT_REQUIRED and TIMEOUT branches return
+    // early to keep the modal open with their retry guidance.
   }
 
   const handleDismiss = () => {

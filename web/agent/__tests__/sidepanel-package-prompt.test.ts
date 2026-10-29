@@ -299,6 +299,31 @@ describe('dismissPackagePrompt (concurrency-safe storage)', () => {
       resetPackagePromptDismissals()
     }
   })
+
+  it('expires the in-memory fallback after the 1-day cooldown (panel open for days)', () => {
+    // Finding: "Dismissal lasts beyond one day" — the session fallback used
+    // to be a bare Set, so a side panel left open past the cooldown kept
+    // suppressing the prompt until the app restarted.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded')
+    })
+    try {
+      dismissPackagePrompt('world.jmail.archive')
+      expect(isPackagePromptDismissed('world.jmail.archive')).toBe(true)
+      // Age the in-memory record past the cooldown — with storage still
+      // broken (no persisted record to fall back to), the dismissal expires.
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(Date.now() + 25 * 60 * 60 * 1000)
+        expect(isPackagePromptDismissed('world.jmail.archive')).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    } finally {
+      setItem.mockRestore()
+      resetPackagePromptDismissals()
+    }
+  })
 })
 
 describe('enablePackageAndReload', () => {
