@@ -31,6 +31,7 @@ import {
 } from '@/sqlite/repositories/fs-overlay.repository'
 import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 import { useT } from '@/i18n'
+import { formatBytes } from '@/lib/utils'
 
 /** Above this many files the list collapses behind a "show all" toggle. */
 const LIST_COLLAPSE_THRESHOLD = 5
@@ -42,14 +43,6 @@ const LOAD_CONCURRENCY = 4
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 ' +
   'dark:focus-visible:ring-primary-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-transparent'
-
-function formatBytes(bytes: number): string {
-  if (!bytes || bytes <= 0) return ''
-  if (bytes < 1024) return `${bytes} B`
-  const kb = bytes / 1024
-  if (kb < 1024) return `${kb.toFixed(1)} KB`
-  return `${(kb / 1024).toFixed(1)} MB`
-}
 
 function getOpBadgeCls(opType: string): string {
   switch (opType) {

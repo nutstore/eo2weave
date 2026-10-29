@@ -4,6 +4,7 @@
  * fallback on iOS Safari and other browsers.
  */
 import { useCallback, useRef, useState } from 'react'
+import { formatBytes } from '@/lib/utils'
 
 export interface FileSelectOptions {
   accept?: string
@@ -37,10 +38,7 @@ export interface UseMobileUploadOptions {
 }
 
 export function formatFileSize(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  return `${Number((bytes / 1024 ** unit).toFixed(1))} ${units[unit]}`
+  return formatBytes(bytes)
 }
 
 export function isFilePickerSupported(): boolean {

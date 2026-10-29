@@ -11,6 +11,7 @@
  */
 
 import type { FormatHandler, FormatReadResult } from '../../format-registry'
+import { formatSize } from '@/lib/utils'
 
 /** Supported image extensions */
 const IMAGE_EXTENSIONS = new Set([
@@ -130,13 +131,6 @@ function getIcoDimensions(data: Uint8Array): { width: number; height: number } |
   const w = data[6] || 256
   const h = data[7] || 256
   return { width: w, height: h }
-}
-
-/** Format file size for display */
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 /** Get image dimensions from binary data based on extension */

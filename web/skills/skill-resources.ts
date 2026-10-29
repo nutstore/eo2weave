@@ -115,7 +115,14 @@ export function formatResourceList(resources: SkillResource[]): string {
 // Resource Size Formatting
 // ============================================================================
 
-/** Format file size in human-readable format */
+/**
+ * Format file size in human-readable format.
+ *
+ * NOTE (issue #14): intentionally kept local, not switched to the canonical
+ * `formatSize` in `@/lib/utils` — this variant renders whole-byte values as
+ * "N bytes" (canonical: "N B") and only supports up to MB. Callers rely on
+ * the "bytes" spelling in resource-limit messages.
+ */
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} bytes`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`

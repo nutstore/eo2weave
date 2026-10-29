@@ -16,6 +16,7 @@
  */
 
 import { getSQLiteDB } from '@/sqlite'
+import { formatBytes } from '@/lib/utils'
 
 export interface DiagnosticSection {
   label: string
@@ -49,12 +50,13 @@ async function safeAsync<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-function formatBytes(bytes?: number): string {
+/**
+ * Format a possibly-missing/invalid byte count, preserving the legacy
+ * 'unknown' fallback that the canonical formatter does not provide.
+ */
+function formatSize(bytes?: number): string {
   if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return 'unknown'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  return formatBytes(bytes)
 }
 
 async function collectSQLiteSection(): Promise<DiagnosticSection> {
@@ -190,7 +192,7 @@ async function collectStorageQuotaSection(): Promise<DiagnosticSection> {
     const usage = estimate.usage ?? 0
     const quota = estimate.quota ?? 0
     const pct = quota > 0 ? (usage / quota) * 100 : 0
-    lines.push(`- Usage: ${formatBytes(usage)} / ${formatBytes(quota)} (${pct.toFixed(1)}%)`)
+    lines.push(`- Usage: ${formatSize(usage)} / ${formatSize(quota)} (${pct.toFixed(1)}%)`)
     if (pct > 90) {
       status = 'warn'
       lines.push('  ⚠️ Near quota — browser may evict OPFS data.')

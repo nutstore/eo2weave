@@ -7,6 +7,10 @@
 
 import type { FileContent, FileMetadata, StorageEstimate, StorageStatus } from '../types/opfs-types'
 import { STORAGE_THRESHOLDS } from '../types/opfs-types'
+import { formatBytes } from '@/lib/utils'
+
+/** Re-export the canonical formatter so this module's public API is unchanged. */
+export { formatBytes }
 
 /**
  * Filesystem entries to skip during OPFS scans and sync.
@@ -407,21 +411,6 @@ export async function getDirectorySize(
   }
 
   return { size, fileCount }
-}
-
-/**
- * Format bytes to human readable format
- * @param bytes Bytes
- * @returns Formatted string (e.g., "1.5 MB")
- */
-export function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const k = 1024
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${units[i]}`
 }
 
 /**
