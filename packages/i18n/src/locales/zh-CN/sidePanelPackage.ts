@@ -12,7 +12,6 @@ export const sidePanelPackage = {
   additionalToolsNote: "开启后，该包还有 {count} 个工具会在其他支持的网站上生效。",
   privacyNote:
     "你可以随时在插件的「支持的网站」管理页关闭此授权。写入类操作仍会单独向你确认。",
-  enableToggle: "确认后立即开启并刷新网页",
   confirm: "开启并刷新页面",
   enabling: "正在开启…",
   notNow: "暂不开启（1 天内不再提示）",

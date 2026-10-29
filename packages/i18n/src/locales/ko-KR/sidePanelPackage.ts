@@ -12,7 +12,6 @@ export const sidePanelPackage = {
   additionalToolsNote: "활성화하면 이 패키지의 추가 도구 {count}개가 다른 지원 사이트에서도 활성화됩니다.",
   privacyNote:
     "이 권한은 확장 프로그램의 \"지원 사이트\" 관리 페이지에서 언제든 해제할 수 있습니다. 쓰기 작업은 별도로 확인을 요청합니다.",
-  enableToggle: "확인 시 즉시 활성화하고 페이지 새로고침",
   confirm: "활성화 후 페이지 새로고침",
   enabling: "활성화 중…",
   notNow: "나중에 (1일 동안 다시 알리지 않음)",

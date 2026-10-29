@@ -43,7 +43,6 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
-import { Switch } from '@/components/ui/switch'
 import { useT } from '@/i18n'
 import {
   dismissPackagePrompt,
@@ -82,7 +81,6 @@ export interface PackageOptInModalProps {
 
 export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalProps) {
   const t = useT()
-  const [enableOnConfirm, setEnableOnConfirm] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [showTools, setShowTools] = useState(false)
   // Late-arriving enable outcomes and retryable consent failures surface
@@ -92,21 +90,11 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
   // previous attempt must never bleed into the next one.
   const [lateNotice, setLateNotice] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  // id for the toggle: an explicit htmlFor association instead of a wrapping
-  // <label> — Switch renders its own <label> around the checkbox, and a label
-  // cannot activate a control nested inside another label.
-  const toggleId = `package-optin-toggle-${packageInfo.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`
 
   const Icon = packageIcon(packageInfo.id)
   const tools = packageInfo.tools ?? []
 
   const handleConfirm = async () => {
-    if (!enableOnConfirm) {
-      // User unticked the switch → treat as an explicit "not now".
-      dismissPackagePrompt(packageInfo.id)
-      onClose()
-      return
-    }
     setSubmitting(true)
     setLateNotice(null)
     setErrorMessage(null)
@@ -344,19 +332,6 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
               })}
             </p>
           )}
-
-          {/* htmlFor (not a wrapping label): Switch renders its own <label>,
-              and a nested label cannot activate the inner control. */}
-          <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
-            <label htmlFor={toggleId} className="cursor-pointer text-sm text-foreground">
-              {t('sidePanelPackage.enableToggle')}
-            </label>
-            <Switch
-              id={toggleId}
-              checked={enableOnConfirm}
-              onCheckedChange={setEnableOnConfirm}
-            />
-          </div>
         </div>
 
         {/* Footer */}

@@ -86,14 +86,6 @@ describe('PackageOptInModal', () => {
     expect(screen.getByText('Write')).toBeTruthy()
   })
 
-  it('clicking the toggle label text flips the switch (no nested-label dead zone)', () => {
-    const { container } = render(<PackageOptInModal packageInfo={packageInfo} onClose={vi.fn()} />)
-    const toggle = container.querySelector('input[type="checkbox"]') as HTMLInputElement
-    expect(toggle.checked).toBe(true)
-    fireEvent.click(screen.getByText('Enable and reload the page on confirm'))
-    expect(toggle.checked).toBe(false)
-  })
-
   it('discloses additional package-wide tools when the enable covers more origins', () => {
     render(
       <PackageOptInModal
@@ -263,21 +255,6 @@ describe('PackageOptInModal', () => {
     expect(dismissPackagePromptMock).toHaveBeenCalledWith('world.jmail.archive')
     expect(enablePackageAndReloadMock).not.toHaveBeenCalled()
     expect(onClose).toHaveBeenCalledTimes(1)
-  })
-
-  it('unticking the switch turns confirm into a dismissal (no enable call)', async () => {
-    const onClose = vi.fn()
-    const { container } = render(<PackageOptInModal packageInfo={packageInfo} onClose={onClose} />)
-
-    const toggle = container.querySelector('input[type="checkbox"]') as HTMLInputElement
-    fireEvent.click(toggle)
-    fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
-
-    await waitFor(() => {
-      expect(dismissPackagePromptMock).toHaveBeenCalledWith('world.jmail.archive')
-      expect(enablePackageAndReloadMock).not.toHaveBeenCalled()
-      expect(onClose).toHaveBeenCalledTimes(1)
-    })
   })
 
   it('a backdrop click does not close the modal', () => {

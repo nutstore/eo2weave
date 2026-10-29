@@ -12,7 +12,6 @@ export const sidePanelPackage = {
   additionalToolsNote: "Enabling also activates {count} additional tool(s) of this package on other supported sites.",
   privacyNote:
     "You can revoke this authorization anytime in the extension's Supported Sites page. Write actions still ask for your confirmation.",
-  enableToggle: "Enable and reload the page on confirm",
   confirm: "Enable & reload page",
   enabling: "Enabling…",
   notNow: "Not now (no reminder for 1 day)",
