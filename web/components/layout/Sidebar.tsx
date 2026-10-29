@@ -662,7 +662,11 @@ export const ResourceTabPanel = memo(function ResourceTabPanel({
           roots.length === 1 && roots[0]?.id === '__opfs__' && opfsDisplayableCount === 0 ? (
             <div className="flex h-full items-center justify-center p-6">
               <div className="max-w-sm text-sm leading-7 text-muted-foreground">
-                <h3 className="mb-4 text-center text-base font-semibold leading-6 text-secondary dark:text-secondary-foreground">
+                {/* text-balance: the title is long enough to wrap in a narrow
+                    sidebar; without balancing, the last character can end up
+                    alone on the second line (an orphan). Balance keeps the
+                    two lines even. */}
+                <h3 className="mb-4 text-center text-base font-semibold leading-6 text-balance text-secondary dark:text-secondary-foreground">
                   {t('sidebar.localFilesEmpty.title', { brand: t('projectHome.brand') })}
                 </h3>
                 <ul className="list-disc space-y-2 pl-5">
