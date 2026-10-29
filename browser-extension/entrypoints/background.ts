@@ -25,10 +25,11 @@ const PAGE_ACTION_QUEUE_WAIT_MS = 300_000
  *     "started-before-deadline, settled-after-caller-timeout" race
  *     would let a late retry re-run the action.
  * Settled entries expire after PAGE_ACTION_RETRY_MEMORY_MS, which covers
- * the bridge caller's ENTIRE retry window (one retry at full 300s
- * budget): a settled outcome is retained for as long as a legitimate
- * retry of that submission can still arrive, so the retry replays the
- * recorded outcome instead of re-executing the action. Only after the
+ * the bridge caller's ENTIRE retry horizon (first 300s window + the
+ * retry's own full 300s budget + slack): a settled outcome is retained
+ * for as long as a legitimate retry of that submission can still arrive,
+ * so the retry replays the recorded outcome instead of re-executing the
+ * action. Only after the
  * window — when the original caller's retry chain is provably dead —
  * is the entry dropped, and a same-id submission can only be a new run
  * (every submission has a unique id anyway). Actions without a
@@ -41,6 +42,10 @@ import {
   PAGE_ACTION_RETRY_MEMORY_MS,
   type PageActionSettledEntry,
 } from '../lib/bash-commands/browser/page-action-settled-outcome'
+import {
+  readDedupeRecord,
+  writeDedupeRecord,
+} from '../lib/bash-commands/browser/page-action-dedupe-store'
 import {
   forgetTabNavigationEpoch,
   installTabNavigationEpochListener,
@@ -2198,6 +2203,34 @@ export default defineBackground(() => {
             // settled cache is keyed by that id (never by payload
             // content).
             const dedupeKey = pageActionDedupeKey(targetTabId, action)
+            // RESTART-SAFE DEDUPE (chrome.storage.session): the in-memory
+            // maps die with the service worker. A retry that arrives
+            // after a SW restart would otherwise find no record and
+            // RE-EXECUTE the action. The persisted record is checked
+            // FIRST (it also covers the live-promise case): a settled
+            // record replays its outcome, a still-inflight record with
+            // no live promise means the run was INTERRUPTED by the
+            // restart (outcome unknown — the action MAY have executed)
+            // and fails structured instead of running again. Live-promise
+            // joins below keep the exact join-until-settlement semantics.
+            if (dedupeKey) {
+              const persisted = await readDedupeRecord(dedupeKey)
+              if (persisted?.kind === 'settled') {
+                sendResponse(replayedSettledOutcome(persisted.entry) as Parameters<
+                  typeof sendResponse
+                >[0])
+                return
+              }
+              if (persisted?.kind === 'inflight' && !pageActionInFlight.has(dedupeKey)) {
+                sendResponse({
+                  ok: false,
+                  errorCode: 'PAGE_ACTION_RUN_INTERRUPTED',
+                  error:
+                    'The extension service worker restarted while this action was in flight; its outcome is unknown (the action MAY have executed once). Retry the action if its effect is still needed.',
+                } as Parameters<typeof sendResponse>[0])
+                return
+              }
+            }
             const inflight = dedupeKey ? pageActionInFlight.get(dedupeKey) : undefined
             if (inflight) {
               // Join until SETTLEMENT: the entry is removed when the run
@@ -2418,6 +2451,12 @@ export default defineBackground(() => {
             // outcome instead of re-executing the action.
             if (dedupeKey) {
               pageActionInFlight.set(dedupeKey, runPromise)
+              // Persist the START so a retry arriving after a SW restart
+              // sees an 'inflight' record and NEVER re-executes the
+              // action (the run dies with the old worker; the retry gets
+              // the structured PAGE_ACTION_RUN_INTERRUPTED failure
+              // instead of a duplicate side effect).
+              void writeDedupeRecord(dedupeKey, { kind: 'inflight', startedAt: Date.now() })
               // SETTLEMENT RECORD — both branches cache an ENVELOPE:
               //   - rejection → a structured ok:false failure. The old
               //     `catch(() => {})` turned a rejected run into
@@ -2443,7 +2482,11 @@ export default defineBackground(() => {
                     pageActionInFlight.delete(dedupeKey)
                   }
                   prunePageActionSettled()
-                  pageActionSettled.set(dedupeKey, { ...envelope, settledAt: Date.now() })
+                  const settledAt = Date.now()
+                  pageActionSettled.set(dedupeKey, { ...envelope, settledAt })
+                  // Persist the SETTLED record (overwrites the inflight
+                  // one) so a post-restart retry replays the outcome.
+                  void writeDedupeRecord(dedupeKey, { kind: 'settled', entry: envelope, settledAt })
                 })
             }
             const result: unknown = await runPromise

@@ -32,6 +32,31 @@ export type PageActionSettledEntry =
   | { status: 'error'; outcome: PageActionSettledErrorOutcome }
 
 /**
+ * Convert a settled run promise into the outcome to record. Called on
+ * BOTH resolve and reject paths by the background's settlement handler:
+ *   - rejection → a structured ok:false failure (never a bare
+ *     undefined — the old `catch(() => {})` swallowed rejections and a
+ *     retry then replayed a meaningless `undefined` as if the action
+ *     had succeeded);
+ *   - resolve → the value verbatim; describeSettledOutcome flags a
+ *     resolved-`undefined` as a corrupt entry at recording time.
+ * Extracted here so tests exercise the REAL conversion, not a copy.
+ */
+export function settlementOutcomeFromRun(
+  settled: PromiseSettledResult<unknown>,
+): unknown {
+  if (settled.status === 'rejected') {
+    const err = settled.reason
+    return {
+      ok: false,
+      errorCode: 'PAGE_ACTION_RUN_FAILED',
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+  return settled.value
+}
+
+/**
  * Wrap a settled run outcome (the value the run resolved to) into the
  * stored envelope. Called on BOTH resolve and reject paths:
  *   - the caller catches the rejection and passes a
@@ -80,14 +105,20 @@ export function isPlausibleRunnerResult(value: unknown): boolean {
 
 /**
  * How long a settled outcome stays in the dedupe cache. It must cover
- * the bridge caller's ENTIRE retry window (one retry, full budget, see
- * injected.content.ts runBoundPageAction): the first run's bridge
- * request times out at T, the caller retries immediately, and that
- * retry's own request lives up to another full window. A shorter TTL
- * would let a late-but-legitimate retry find no record and execute the
- * SAME logical action a second time. 300s window + 5s scheduling slack.
+ * the bridge caller's ENTIRE retry horizon: the first run's bridge
+ * request lives up to a full 300s window (and the background may hold
+ * the action for all of it), the caller's retry is issued only AFTER
+ * that timeout fires — and it carries its OWN full 300s budget. A
+ * retry can therefore legitimately arrive at any point up to ~600s
+ * after the first run settled (the first run can settle at the very
+ * end of its window, and the caller's timeout timer — subject to
+ * browser timer throttling in backgrounded pages — can fire shortly
+ * after). A shorter TTL would let such a late-but-legitimate retry
+ * find no record and execute the SAME logical action a second time.
+ *
+ * 2 × 300s windows + 10s scheduling/timer-throttling slack.
  */
-export const PAGE_ACTION_RETRY_MEMORY_MS = 305_000
+export const PAGE_ACTION_RETRY_MEMORY_MS = 610_000
 
 /**
  * Drop settled entries older than the retry-memory window. Keeps the

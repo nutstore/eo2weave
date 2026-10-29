@@ -8,6 +8,10 @@ import {
   clampPageActionDeadline,
 } from '../../../browser-extension/lib/bash-commands/browser/page-action-request-identity'
 import {
+  submitPageActionWithRetry,
+  serializePageActionPayload,
+} from '../../../browser-extension/lib/bash-commands/browser/page-action-retry-wrapper'
+import {
   bumpTabNavigationEpoch,
   navigationEpochChanged,
   resetTabNavigationEpochsForTest,
@@ -58,6 +62,73 @@ describe('createPageActionRequestId (#1: unique per submission)', () => {
     expect(PAGE_ACTION_REQUEST_ID_KEY).toBe('__cwRequestId')
     expect(typeof original).toBe('string')
     expect(original.length).toBeGreaterThan(0)
+  })
+
+  it('the REAL wrapper threads the SAME id through the retry, read via the serialized payload (Sourcery round-6 #3)', async () => {
+    // The earlier form of this test read the id from a locally captured
+    // variable — a wrapper regression (fresh id on retry, or changed
+    // stamping) could not be detected. Here the id is read ONLY through
+    // the actual transport path: what the wrapper hands to `send`,
+    // serialized exactly as it crosses the bridge (JSON round-trip).
+    const action = { type: 'fill', locator: { selector: '#f' }, value: 'hi' }
+    const serializedPayloads: string[] = []
+    let sends = 0
+    const send = (type: string, payload: Record<string, unknown>) => {
+      expect(type).toBe('runBoundPageAction')
+      serializedPayloads.push(serializePageActionPayload(payload))
+      sends += 1
+      if (sends === 1) {
+        return Promise.resolve({ ok: false, errorCode: 'BRIDGE_TIMEOUT' })
+      }
+      return Promise.resolve({ ok: true, result: 'done' })
+    }
+    const result = (await submitPageActionWithRetry(send, 'b1', action)) as { ok: boolean }
+    expect(result.ok).toBe(true)
+    expect(sends).toBe(2)
+    expect(serializedPayloads.length).toBe(2)
+
+    // Parse the ids back out of the SERIALIZED payloads — the exact
+    // bytes the background receives on each attempt.
+    const ids = serializedPayloads.map((raw) => {
+      const parsed = JSON.parse(raw) as { action: Record<string, unknown> }
+      return parsed.action[PAGE_ACTION_REQUEST_ID_KEY]
+    })
+    // Both attempts carry a present, string id…
+    expect(typeof ids[0]).toBe('string')
+    expect((ids[0] as string).length).toBeGreaterThan(0)
+    // …and the RETRY re-sends the SAME id (regression = fresh id here).
+    expect(ids[1]).toBe(ids[0])
+
+    // The wrapper preserves the caller's action fields verbatim in the
+    // serialized payload (the stamp is additive on a shallow copy).
+    const firstParsed = JSON.parse(serializedPayloads[0]!) as {
+      action: Record<string, unknown>
+      binding: string
+      deadlineAt: number
+    }
+    expect(firstParsed.binding).toBe('b1')
+    expect(firstParsed.action.type).toBe('fill')
+    expect(firstParsed.action.value).toBe('hi')
+    expect(typeof firstParsed.deadlineAt).toBe('number')
+
+    // A NEW submission through the same wrapper gets a DIFFERENT id.
+    let secondId: unknown
+    await submitPageActionWithRetry(async (_type, payload) => {
+      secondId = (JSON.parse(serializePageActionPayload(payload)) as { action: Record<string, unknown> })
+        .action[PAGE_ACTION_REQUEST_ID_KEY]
+      return { ok: true }
+    }, 'b1', action)
+    expect(secondId).not.toBe(ids[0])
+
+    // Non-timeout failures resolve as-is (single send — a real outcome,
+    // not a transport failure, so no retry).
+    let sends2 = 0
+    const outcome = (await submitPageActionWithRetry(async () => {
+      sends2 += 1
+      return { ok: false, errorCode: 'RUNNER_NOT_READY' }
+    }, 'b1', action)) as { errorCode: string }
+    expect(sends2).toBe(1)
+    expect(outcome.errorCode).toBe('RUNNER_NOT_READY')
   })
 })
 

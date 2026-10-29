@@ -1,13 +1,20 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeEach } from 'vitest'
 import {
   describeSettledOutcome,
   replayedSettledOutcome,
   pruneSettledEntries,
+  settlementOutcomeFromRun,
   isPlausibleRunnerResult,
   PAGE_ACTION_RETRY_MEMORY_MS,
   type PageActionSettledEntry,
 } from '../../../browser-extension/lib/bash-commands/browser/page-action-settled-outcome'
+import {
+  readDedupeRecord,
+  writeDedupeRecord,
+  clearDedupeRecord,
+  resetDedupeStoreForTest,
+} from '../../../browser-extension/lib/bash-commands/browser/page-action-dedupe-store'
 
 /**
  * Sourcery round-4 follow-ups on PR #110 (fixes 2 + 3):
@@ -25,13 +32,17 @@ import {
  */
 
 describe('PAGE_ACTION_RETRY_MEMORY_MS (fix 2: covers the retry window)', () => {
-  it('is at least the bridge retry window (300s timeout + slack)', () => {
+  it('is at least the FULL retry horizon (first window + retry budget + slack)', () => {
     // injected.content.ts runBoundPageAction: timeoutMs = 300_000, ONE
-    // retry with a fresh full budget. The settled entry must outlive
-    // the whole chain.
-    expect(PAGE_ACTION_RETRY_MEMORY_MS).toBeGreaterThanOrEqual(300_000)
-    // Small slack so a retry issued exactly at the boundary is not racing.
-    expect(PAGE_ACTION_RETRY_MEMORY_MS).toBeGreaterThanOrEqual(305_000)
+    // retry with a fresh full budget. The retry is issued only AFTER the
+    // first window's timeout fires, and the first run can settle at the
+    // very END of its window — so a legitimate retry can arrive up to
+    // ~600s after the first run settled (Sourcery round-6 #2: the old
+    // 305s TTL pruned entries a retry could still need). The TTL must
+    // therefore cover BOTH windows plus slack.
+    expect(PAGE_ACTION_RETRY_MEMORY_MS).toBeGreaterThanOrEqual(600_000)
+    // Small slack so a throttled retry timer at the boundary is not racing.
+    expect(PAGE_ACTION_RETRY_MEMORY_MS).toBeGreaterThanOrEqual(610_000)
   })
 })
 
@@ -98,6 +109,64 @@ describe('describeSettledOutcome (fix 3: envelopes, never a bare undefined)', ()
     expect(replayed.errorCode).toBe('PAGE_ACTION_RUN_FAILED')
   })
 
+  it('the REAL settlement conversion maps a rejection to a structured failure (Sourcery round-6 #4)', async () => {
+    // Regression guard: if the background's rejection handler ever
+    // swallows errors again (`catch(() => {})`), the recorded outcome
+    // would be a bare `undefined` and the envelope would flag it as a
+    // CORRUPT entry — a retry would see "result lost" instead of the
+    // root cause. This exercises the REAL conversion function the
+    // settlement handler uses, so restoring a swallowing catch (or
+    // changing its shape) fails here.
+    const rejecting = Promise.reject(new Error('tab lock aborted'))
+    // Attach the handler the way the background does so the rejection
+    // is consumed (no unhandled-rejection noise), then convert.
+    const settled = await rejecting.then(
+      (v) => ({ status: 'fulfilled', value: v }) as PromiseSettledResult<unknown>,
+      (r) => ({ status: 'rejected', reason: r }) as PromiseSettledResult<unknown>,
+    )
+    const outcome = settlementOutcomeFromRun(settled) as {
+      ok: boolean
+      errorCode: string
+      error: string
+    }
+    // NEVER a swallowed undefined:
+    expect(outcome).not.toBe(undefined)
+    expect(outcome).toEqual({
+      ok: false,
+      errorCode: 'PAGE_ACTION_RUN_FAILED',
+      error: 'tab lock aborted',
+    })
+    // And the full pipeline (conversion → envelope → replay) preserves
+    // the structured failure for the retry.
+    const envelope = describeSettledOutcome(outcome)
+    expect(envelope.status).toBe('ok') // transport envelope; payload is the failure
+    const replayed = replayedSettledOutcome(envelope) as { ok: boolean; errorCode: string }
+    expect(replayed.ok).toBe(false)
+    expect(replayed.errorCode).toBe('PAGE_ACTION_RUN_FAILED')
+
+    // A NON-Error rejection reason also converts to a defined string.
+    const settled2 = { status: 'rejected', reason: 'boom' } as PromiseSettledResult<unknown>
+    const outcome2 = settlementOutcomeFromRun(settled2) as { error: string }
+    expect(outcome2.error).toBe('boom')
+
+    // A fulfilled run passes its value through verbatim (including
+    // legit falsy values — only `undefined` is corrupt-flagged later).
+    const settled3 = { status: 'fulfilled', value: { ok: true, result: 7 } } as PromiseSettledResult<unknown>
+    expect(settlementOutcomeFromRun(settled3)).toEqual({ ok: true, result: 7 })
+  })
+
+  it('a settled CORRUPT entry (lost undefined) never replays as success (Sourcery round-6 #4)', () => {
+    // If the background ever recorded a bare undefined again (e.g. an
+    // abandoned run returning bare), the corrupt-entry guard must still
+    // fail the retry closed — verified end-to-end through the REAL
+    // recording path.
+    const envelope = describeSettledOutcome(settlementOutcomeFromRun({ status: 'fulfilled', value: undefined } as PromiseSettledResult<unknown>))
+    expect(envelope.status).toBe('error')
+    const replayed = replayedSettledOutcome(envelope) as { ok: boolean; errorCode: string }
+    expect(replayed.ok).toBe(false)
+    expect(replayed.errorCode).toBe('PAGE_ACTION_SETTLED_ENTRY_CORRUPT')
+  })
+
   it('the deadline-abandoned branch returns a STRUCTURED outcome (never bare undefined)', () => {
     // Sourcery round-5, comment 2 residual: the shared run's deadline
     // branch used to `return` bare — the settlement handler cached
@@ -147,5 +216,112 @@ describe('envelope round-trip (what the background replays)', () => {
       settledAt: 1,
     }
     expect(replayedSettledOutcome(entry)).not.toBe(undefined)
+  })
+})
+
+/**
+ * Sourcery round-6 #1 (restart-safe dedupe): the module-scope maps die
+ * with the MV3 service worker — a retry arriving after a restart found
+ * no record and re-executed the action. The dedupe store now mirrors
+ * records into chrome.storage.session, which SURVIVES worker restarts.
+ * These tests fake that storage backend (a plain object) and drive the
+ * real read/write/clear functions against it.
+ */
+describe('page-action dedupe store (restart-safe via storage.session)', () => {
+  // Fake chrome.storage.session: in the real extension this survives SW
+  // restarts. Here the fake object plays that role: content written into
+  // it stays readable even after the store's in-memory mirror is reset
+  // (the restart simulation).
+  let backend: Record<string, unknown>
+  let failing: boolean
+
+  beforeEach(() => {
+    backend = {}
+    failing = false
+    resetDedupeStoreForTest()
+    ;(globalThis as { chrome?: unknown }).chrome = {
+      storage: {
+        session: {
+          get: async (key: string) => {
+            if (failing) throw new Error('storage unavailable')
+            return key in backend ? { [key]: backend[key] } : {}
+          },
+          set: async (items: Record<string, unknown>) => {
+            if (failing) throw new Error('storage unavailable')
+            Object.assign(backend, items)
+          },
+          remove: async (key: string) => {
+            if (failing) throw new Error('storage unavailable')
+            delete backend[key]
+          },
+        },
+      },
+    }
+  })
+
+  it('a SETTLED record written before the "restart" is replayed after it', async () => {
+    const envelope = describeSettledOutcome({ ok: true, result: 'first-run' })
+    await writeDedupeRecord('1:req-a', { kind: 'settled', entry: envelope, settledAt: 123 })
+    // Simulate the SW restart: in-memory mirror is gone, storage remains.
+    resetDedupeStoreForTest()
+    const record = await readDedupeRecord('1:req-a')
+    expect(record?.kind).toBe('settled')
+    if (record?.kind === 'settled') {
+      expect(replayedSettledOutcome(record.entry)).toEqual({ ok: true, result: 'first-run' })
+    }
+  })
+
+  it('an INFLIGHT record written before the "restart" survives as inflight (never re-executes)', async () => {
+    await writeDedupeRecord('2:req-b', { kind: 'inflight', startedAt: 5 })
+    resetDedupeStoreForTest()
+    const record = await readDedupeRecord('2:req-b')
+    // The background treats a persisted inflight record with no live
+    // promise as an INTERRUPTED run: structured failure, no re-execution.
+    expect(record?.kind).toBe('inflight')
+  })
+
+  it('settlement overwrites the inflight record (inflight → settled)', async () => {
+    await writeDedupeRecord('3:req-c', { kind: 'inflight', startedAt: 5 })
+    await writeDedupeRecord('3:req-c', {
+      kind: 'settled',
+      entry: describeSettledOutcome({ ok: false, errorCode: 'X' }),
+      settledAt: 9,
+    })
+    resetDedupeStoreForTest()
+    const record = await readDedupeRecord('3:req-c')
+    expect(record?.kind).toBe('settled')
+  })
+
+  it('clearDedupeRecord removes the record from BOTH memory and storage', async () => {
+    await writeDedupeRecord('4:req-d', { kind: 'inflight', startedAt: 1 })
+    await clearDedupeRecord('4:req-d')
+    expect(await readDedupeRecord('4:req-d')).toBeUndefined()
+    resetDedupeStoreForTest()
+    // After the "restart" the storage side is gone too.
+    expect(await readDedupeRecord('4:req-d')).toBeUndefined()
+  })
+
+  it('a storage failure degrades to in-memory-only behavior (never breaks the action)', async () => {
+    failing = true
+    // Writes and reads must not throw.
+    await writeDedupeRecord('5:req-e', { kind: 'inflight', startedAt: 1 })
+    expect(await readDedupeRecord('5:req-e')).toEqual({ kind: 'inflight', startedAt: 1 })
+    await clearDedupeRecord('5:req-e')
+  })
+
+  it('a MALFORMED stored record reads as absent (fail closed, no false dedupe)', async () => {
+    backend['pageActionDedupe:6:req-f'] = { kind: 'bogus' }
+    expect(await readDedupeRecord('6:req-f')).toBeUndefined()
+    backend['pageActionDedupe:6:req-f'] = 42
+    expect(await readDedupeRecord('6:req-f')).toBeUndefined()
+  })
+
+  it('absent chrome.storage.session (non-extension context) reads as absent', async () => {
+    ;(globalThis as { chrome?: unknown }).chrome = undefined
+    await writeDedupeRecord('7:req-g', { kind: 'settled', entry: describeSettledOutcome({ ok: true }), settledAt: 1 })
+    // In-memory mirror still answers; storage path is a silent no-op.
+    expect(await readDedupeRecord('7:req-g')).toBeDefined()
+    resetDedupeStoreForTest()
+    expect(await readDedupeRecord('7:req-g')).toBeUndefined()
   })
 })

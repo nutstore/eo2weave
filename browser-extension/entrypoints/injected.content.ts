@@ -16,9 +16,8 @@ import TurndownService from 'turndown'
 import { installAdapterCommand } from '../lib/bash-commands/adapter'
 import { installBrowserCommand } from '../lib/bash-commands/browser/provider'
 import {
-  PAGE_ACTION_REQUEST_ID_KEY,
-  createPageActionRequestId,
-} from '../lib/bash-commands/browser/page-action-request-identity'
+  submitPageActionWithRetry,
+} from '../lib/bash-commands/browser/page-action-retry-wrapper'
 
 // Build-time Codex OAuth feature flag (see wxt.config.ts). Store builds
 // (CW_CODEX_OAUTH=0) fold the guards below and treeshake the bridge names.
@@ -925,32 +924,22 @@ export default defineContentScript({
        // plausible window (it can only make the background give up earlier,
        // never extend the budget).
        const timeoutMs = 300000
-       const deadlineAt = Date.now() + timeoutMs
-       // REQUEST IDENTITY (unique per submission, threaded through retries):
-       // this submission gets a FRESH unique id — two independent
-       // submissions, even of identical payloads, never collide. The
-       // retry wrapper below threads the SAME id on resubmission, so the
-       // background's dedupe joins the first, still-in-flight execution
-       // (or replays its recorded outcome from the short-TTL settled
-       // cache — never a second execution). The stamp is applied on a
-       // shallow copy: the caller's action object is never mutated.
-       const requestId = createPageActionRequestId()
-       const stampedAction = action && typeof action === 'object'
-         ? { ...action, [PAGE_ACTION_REQUEST_ID_KEY]: requestId }
-         : action
-       // RETRY WRAPPER: a BRIDGE_TIMEOUT does not cancel an action that
-       // already started in the background. A single retry (one
-       // full-budget resubmission) carries the SAME request id so the
-       // background either joins the in-flight run or replays its
-       // settled result — the action's side effects happen exactly
-       // once. Anything other than a timeout resolves normally and is
-       // returned as-is (including the background's structured
-       // ok:false results — those are real outcomes, not transport
-       // failures).
-       const first = await sendToBridge('runBoundPageAction', { binding, action: stampedAction, deadlineAt }, timeoutMs)
-       if (first?.errorCode !== 'BRIDGE_TIMEOUT') return first
-       const retryDeadline = Date.now() + timeoutMs
-       return sendToBridge('runBoundPageAction', { binding, action: stampedAction, deadlineAt: retryDeadline }, timeoutMs)
+       // REQUEST IDENTITY + RETRY WRAPPER (unique id per submission,
+       // threaded through the retry): the wrapper (shared with the test
+       // suite — see page-action-retry-wrapper.ts) stamps a fresh unique
+       // id on a shallow copy at the original send site and REUSES that
+       // stamped payload on its single BRIDGE_TIMEOUT resubmission, so
+       // the background's dedupe joins the first, still-in-flight
+       // execution (or replays its recorded settled outcome) — never a
+       // second execution. The ABSOLUTE deadline epoch rides along with
+       // each request (fresh budget per attempt); the background clamps
+       // the value so it can only shorten its own receipt-based budget.
+       return submitPageActionWithRetry(
+         (type, payload, ms) => sendToBridge(type, payload, ms),
+         binding,
+         action,
+         timeoutMs,
+       )
        },
 
       /**
