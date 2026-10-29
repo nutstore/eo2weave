@@ -313,7 +313,9 @@ export async function getPendingPackagePrompt(): Promise<
     const legacy = await legacyProbe()
     const legacyAnsweredDefinitively =
       !!agentWeb.recipeCheckStatus && !(legacy !== null && 'retryable' in legacy && legacy.retryable)
-    if (legacyAnsweredDefinitively) protocolSupport = 'legacy-only'
+    // Guarded assignment: an overlapping probe may have established 'new'
+    // while this call awaited — never downgrade a working new bridge.
+    if (legacyAnsweredDefinitively && protocolSupport !== 'new') protocolSupport = 'legacy-only'
     // null from a REAL legacy probe is a legitimate terminal answer
     // (dismissed / no matching recipe) — only an entirely missing legacy
     // surface substitutes the new probe's retryable outcome.
