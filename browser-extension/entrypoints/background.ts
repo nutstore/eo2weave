@@ -13,6 +13,7 @@ import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands
 import { installCdpIdleWatch } from '../lib/bash-commands/browser/cdp'
 import { captureFrameLoaderId, evaluateBoundExpressionViaCdpUnlocked } from '../lib/bash-commands/browser/cdp-evaluate'
 import { TabLockWaitTimeoutError, withTabLock } from '../lib/bash-commands/browser/cdp'
+import { isCspCompileRejection } from '../lib/bash-commands/browser/csp-rejection'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
@@ -2080,6 +2081,9 @@ export default defineBackground(() => {
               result &&
               typeof result === 'object' &&
               (result as Record<string, unknown>).compileError === true &&
+              (result as Record<string, unknown>).errorCode === 'CSP_BLOCKED_COMPILE' &&
+              typeof (result as Record<string, unknown>).error === 'string' &&
+              isCspCompileRejection((result as Record<string, unknown>).error as string) &&
               (action as { type?: string }).type === 'evaluate'
             ) {
               const expression = (action as { expression?: unknown }).expression
@@ -2091,8 +2095,15 @@ export default defineBackground(() => {
               // cross-document navigation or reload (fail closed) but stays
               // stable across same-document history changes (pushState / hash
               // — same document, allowed), which strict URL equality would
-              // abort. captureFrameLoaderId returning null (tab gone /
-              // restricted / transport error) also fails closed.
+              // abort.
+              // CAPTURE FAILS CLOSED: a null capture (navigation in flight,
+              // tab gone, transport error) means the failed document's
+              // identity could not be pinned — the fallback is refused
+              // outright (undefined loaderId → the evaluator's mismatch
+              // branch), never run against an unverified document. The tiny
+              // capture-after-failure window navigations can exploit is
+              // inherent to any post-hoc capture and is bounded by the same
+              // trust boundary as the executeScript round-trip itself.
               if (typeof expression === 'string' && expression.trim()) {
                 const compileLoaderId = await captureFrameLoaderId(targetTabId)
                 result = await evaluateBoundExpressionViaCdpUnlocked(
