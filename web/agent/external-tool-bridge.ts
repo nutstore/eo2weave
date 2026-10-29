@@ -818,8 +818,14 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
     args?: Record<string, unknown>
   }
 
-  const allTools = collectAllExternalTools()
-  const tool = allTools.find(t => t.fullName === full_tool_name)
+  let tool = collectAllExternalTools().find(t => t.fullName === full_tool_name)
+
+  if (!tool && Number.isSafeInteger(tab_id) && tab_id! > 0 && !context.abortSignal?.aborted) {
+    // Discovery can replace the catalog between search_tools and call_tool.
+    // Recheck once against a fresh snapshot before declaring the tool gone.
+    await refreshCatalogWithinDeadline()
+    tool = collectAllExternalTools().find(t => t.fullName === full_tool_name)
+  }
 
   if (!tool) {
     return toolErrorJson(
@@ -1051,33 +1057,31 @@ async function navigationCatalog(tabId: number, rawToolName?: string) {
   }
 }
 
-/**
- * Re-discover the page catalog and return the current legacy route key
- * (`groupKey`) of `fullName` on `tabId`.
- *
- * Extension <= 1.1.7 routes invocations by a key that embeds the page's
- * toolset signature, so the key rotates whenever the page re-registers its
- * tools and the cached one goes stale. Returns undefined when the tool or
- * the tab is gone.
- */
-async function refreshLegacyRouteKey(
-  fullName: string,
-  tabId: number,
-): Promise<string | undefined> {
+/** Refresh the WebMCP catalog once, with a short deadline for failed calls. */
+async function refreshCatalogWithinDeadline(): Promise<boolean> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined
   try {
     const { refreshWebMCPCatalog } = await import('@/webmcp/manager')
     await Promise.race([
       refreshWebMCPCatalog(),
       new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error('Legacy route refresh timed out')), 3000)
+        timeoutId = setTimeout(() => reject(new Error('WebMCP catalog refresh timed out')), 3000)
       }),
     ])
+    return true
   } catch {
-    return undefined
+    return false
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
   }
+}
+
+/** Return the current legacy route key after rediscovering the selected tab. */
+async function refreshLegacyRouteKey(
+  fullName: string,
+  tabId: number,
+): Promise<string | undefined> {
+  if (!(await refreshCatalogWithinDeadline())) return undefined
   try {
     const refreshed = useWebMCPStore.getState().getToolByCallName(fullName)
     return refreshed?.tabs.find((tab) => tab.tabId === tabId)?.groupKey

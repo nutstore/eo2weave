@@ -3,10 +3,11 @@ import { describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   discover: vi.fn(),
   tools: [] as Array<Record<string, unknown>>,
+  bridgeAvailable: true,
 }))
 
 vi.mock('../bridge-client', () => ({
-  getWebMCPBridge: () => ({ webMCPDiscover: mocks.discover }),
+  getWebMCPBridge: () => mocks.bridgeAvailable ? { webMCPDiscover: mocks.discover } : null,
 }))
 vi.mock('../store', () => ({
   useWebMCPStore: {
@@ -58,5 +59,17 @@ describe('WebMCP catalog refresh', () => {
     finishFresh({ ok: true, tools: [makeTool('fresh')], discoveredAt: Date.now() })
 
     expect((await refreshed)[0].tabs[0].groupKey).toBe('fresh')
+  })
+
+  it('preserves the last catalog when the bridge is temporarily unavailable', async () => {
+    const cached = { fullName: 'https_example_com__read', tabs: [{ tabId: 1 }] }
+    mocks.tools = [cached]
+    mocks.bridgeAvailable = false
+    try {
+      expect(await discoverWebMCPCatalog(true)).toEqual([cached])
+      expect(mocks.tools).toEqual([cached])
+    } finally {
+      mocks.bridgeAvailable = true
+    }
   })
 })

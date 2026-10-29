@@ -521,3 +521,38 @@ describe('WebMCP legacy extension compatibility', () => {
     expect(result.error.code).toBe('LEGACY_EXACT_TAB_UNSUPPORTED')
   })
 })
+
+describe('WebMCP catalog lookup recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.refreshCatalog.mockReset()
+  })
+
+  it('refreshes once when a previously discovered tab tool is temporarily absent', async () => {
+    const tool = {
+      name: 'list_conversations', origin: 'https://example.com',
+      fullName: 'https_example_com__list_conversations', hostname: 'example.com',
+      description: '', inputSchema, apiMode: 'documentModelContext' as const,
+      tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
+    }
+    let available = false
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockImplementation(() => ({
+      getEnabledTools: () => available ? [tool] : [],
+      getToolByCallName: () => available ? tool : undefined,
+    }))
+    mocks.refreshCatalog.mockImplementation(async () => { available = true; return [tool] })
+    const invoke = vi.fn().mockResolvedValue({ ok: true, tabId: 1, result: { count: 2 } })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    const result = JSON.parse(await callToolExecutor({
+      full_tool_name: tool.fullName,
+      tab_id: 1,
+      args: {},
+    }, toolContext))
+
+    expect(mocks.refreshCatalog).toHaveBeenCalledOnce()
+    expect(invoke).toHaveBeenCalledOnce()
+    expect(result.data.result).toEqual({ count: 2 })
+  })
+})

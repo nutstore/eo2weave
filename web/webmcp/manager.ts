@@ -48,9 +48,11 @@ async function discoverAndCacheTools(force = false): Promise<WebMCPRegisteredToo
   discoveryInFlight = (async () => {
     const bridge = getWebMCPBridge()
     if (!bridge) {
-      useWebMCPStore.getState().clearCatalog()
+      if (cached.length > 0) {
+        console.warn('[WebMCP] Discovery skipped: bridge unavailable; keeping last catalog')
+      }
       lastDiscoveryAt = 0
-      return []
+      return useWebMCPStore.getState().getAllTools()
     }
 
     const response = await bridge.webMCPDiscover({
