@@ -492,6 +492,19 @@ export default {
           // localStorage is unavailable or throws (sandboxed frames,
           // storage-disabled modes). Same 5-minute window, store-once and
           // delete-on-delivery semantics as the map.
+          // Called with storage access suspended: if it throws, cross-tab
+          // dedup degrades to the per-tab map (documented in the result).
+          // Declared with var (not implicit): QuickJS rejects assignment
+          // to an undeclared identifier.
+          var __eo2StorageOk = true
+          function withoutStorage(tryBlock) {
+            __eo2StorageOk = true
+            try {
+              tryBlock()
+            } catch (e) {
+              __eo2StorageOk = false
+            }
+          }
           var RETRY_NONCES_STORAGE_KEY = '__eo2DiscordRetryNonces'
           function readRetryNoncesFromStorage() {
             var raw = localStorage.getItem(RETRY_NONCES_STORAGE_KEY)
@@ -584,24 +597,33 @@ export default {
                   // original nonce (same origin → shared localStorage).
                   // The map is only a fallback, so a remembered entry wins
                   // and a storage entry is adopted when the map has none.
+                  // If storage throws, __eo2StorageOk is false and the
+                  // result documents that dedup degraded to this tab only.
                   if (nonce === undefined) {
-                    var stored = readRetryNoncesFromStorage()
-                    if (stored) {
-                      for (var sk in stored) {
-                        if (!Object.prototype.hasOwnProperty.call(stored, sk)) continue
-                        var sv = stored[sk]
-                        if (now - sv.at < 300000) {
-                          if (sk === retryKey) {
-                            nonce = sv.nonce
-                          } else {
-                            // Refresh the in-tab map from storage so its
-                            // lazy expiry and eviction see the shared state.
-                            retries.set(sk, { nonce: sv.nonce, at: sv.at })
+                    withoutStorage(function () {
+                      var stored = readRetryNoncesFromStorage()
+                      if (stored) {
+                        for (var sk in stored) {
+                          if (!Object.prototype.hasOwnProperty.call(stored, sk)) continue
+                          var sv = stored[sk]
+                          if (now - sv.at < 300000) {
+                            if (sk === retryKey) {
+                              nonce = sv.nonce
+                            } else {
+                              // Refresh the in-tab map from storage so its
+                              // lazy expiry and eviction see the shared state.
+                              retries.set(sk, { nonce: sv.nonce, at: sv.at })
+                            }
                           }
                         }
                       }
-                    }
+                    })
                   }
+                  // Echo the flag into the in-page args so the adapter
+                  // (which sees only args) can surface it on every result
+                  // path, including unconfirmed-send errors where the
+                  // caller must retry.
+                  if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
                 } catch (e) {}
               }
               if (nonce === undefined)
@@ -633,24 +655,28 @@ export default {
                     // so it must not block the fresh entry) — keeping the
                     // original creation timestamp — and the 5-minute
                     // window — anchored to the FIRST send, not the retry.
-                    var persisted = readRetryNoncesFromStorage()
-                    var persistedEntry = persisted ? persisted[retryKey] : undefined
-                    var persistedExpired =
-                      persistedEntry && now2 - persistedEntry.at >= 300000
-                    if (!persistedEntry || persistedExpired) {
-                      persisted = persisted || {}
-                      // Keep the shared store bounded too (same 128-key
-                      // cap as the map, oldest entries dropped first) so a
-                      // backlog of unconfirmed sends cannot grow it
-                      // unboundedly across tabs.
-                      var pkeys = Object.keys(persisted)
-                      while (pkeys.length >= 128) {
-                        var pk = pkeys.shift()
-                        if (pk !== undefined) delete persisted[pk]
+                    // A storage failure here leaves the nonce tab-local;
+                    // __eo2StorageOk is false and the result says so.
+                    withoutStorage(function () {
+                      var persisted = readRetryNoncesFromStorage()
+                      var persistedEntry = persisted ? persisted[retryKey] : undefined
+                      var persistedExpired =
+                        persistedEntry && now2 - persistedEntry.at >= 300000
+                      if (!persistedEntry || persistedExpired) {
+                        persisted = persisted || {}
+                        // Keep the shared store bounded too (same 128-key
+                        // cap as the map, oldest entries dropped first) so a
+                        // backlog of unconfirmed sends cannot grow it
+                        // unboundedly across tabs.
+                        var pkeys = Object.keys(persisted)
+                        while (pkeys.length >= 128) {
+                          var pk = pkeys.shift()
+                          if (pk !== undefined) delete persisted[pk]
+                        }
+                        persisted[retryKey] = { nonce: nonce, at: now2 }
+                        writeRetryNoncesToStorage(persisted)
                       }
-                      persisted[retryKey] = { nonce: nonce, at: now2 }
-                      writeRetryNoncesToStorage(persisted)
-                    }
+                    })
                   }
                   // Bounded: keep the map at 128 keys, evicting the oldest.
                   while (store.size > 128) {
@@ -658,6 +684,12 @@ export default {
                     store.delete(oldest)
                   }
                 } catch (e) {}
+              // A storage failure at persist time left the nonce tab-local,
+              // so cross-tab dedup is degraded; it is surfaced via
+              // data.dedup_scope. Everything here is best-effort too:
+              // delivery still stands even if the cleanup throws.
+              var dedupScope = __eo2StorageOk === false ? 'tab' : 'cross-tab'
+              if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
               var body = {
                 content: args.content,
                 nonce: nonce,
@@ -686,7 +718,11 @@ export default {
                   // never posted).
                   deleteRetryNonceFromStorage(retryKey)
                 } catch (e) {}
-              return ok({ message: mapMessage(response.data), nonce: nonce })
+              return ok({
+                message: mapMessage(response.data),
+                nonce: nonce,
+                dedup_scope: dedupScope,
+              })
             },
           }
 
@@ -701,7 +737,11 @@ export default {
       let response
       try {
         response = await browser.eval(
-          '() => (' + execute.toString() + ')(' + JSON.stringify(input) + ')',
+          '() => { var __args = ' +
+            JSON.stringify(input) +
+            '; var __out = (' + execute.toString() + ')(__args); ' +
+            'return Promise.resolve(__out).then(function (o) { ' +
+            'if (__args.__eo2DedupDegraded === true) o.degradedDedup = true; return o; }) }',
           options,
         )
       } catch (error) {
@@ -743,6 +783,15 @@ export default {
           message: 'The discord.com tab returned no result',
           error_code: 'EMPTY_RESULT',
         }
+      // Storage was unavailable in the page: cross-tab dedup degraded to
+      // this tab's map. The in-page code echoes the flag back through the
+      // eval source so the adapter can annotate every result path — a
+      // caller retrying an unconfirmed send must know another tab cannot
+      // see the remembered nonce.
+      if (response.result.degradedDedup === true && state.result.message !== null) {
+        state.result.message +=
+          ' (cross-tab retry dedup is degraded: page storage was unavailable, so only this tab remembers the nonce)'
+      }
       return 'success'
     },
   },

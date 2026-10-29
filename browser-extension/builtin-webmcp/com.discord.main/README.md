@@ -61,7 +61,11 @@ chars, like every caller-supplied nonce enforced by the schema) is
 remembered per send (a bounded per-key map, 5-minute expiry) so a retry
 of the same send reuses it and is deduped instead of posting twice, while
 retries of different sends do not evict each other; it is echoed back in
-`data.nonce`. The 5-minute window matches Discord's `enforce_nonce`
+`data.nonce`. The auto nonce is mirrored into localStorage (shared per
+discord.com origin across tabs) so a retry landing on a different tab
+reuses it; each result carries `data.dedup_scope`: `cross-tab` normally,
+`tab` when storage access failed and dedup degraded to that tab only.
+The 5-minute window matches Discord's `enforce_nonce`
 guarantee (uniqueness is checked over the past few minutes): within it a
 retry IS deduped; a retry AFTER it re-sends the same nonce but Discord no
 longer enforces uniqueness, so it can post a duplicate — automatic

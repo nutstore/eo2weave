@@ -404,7 +404,12 @@ it('sends messages and reactions through the right methods and bodies', async ()
     content: 'hello world',
     reply_to: 'm0',
   })
-  expect(sent).toMatchObject({ ok: true, value: { result: { status: 'ok', data: { message: { id: 'm1' } } } } })
+  expect(sent).toMatchObject({
+    ok: true,
+    value: {
+      result: { status: 'ok', data: { message: { id: 'm1' }, dedup_scope: 'cross-tab' } },
+    },
+  })
   expect(page.fetches[0]).toMatchObject({
     url: 'https://discord.com/api/v9/channels/555/messages',
   })
@@ -844,6 +849,60 @@ it('rejects nonces longer than the Discord 25-char limit at the schema boundary'
   expect(page.fetches).toHaveLength(0)
   expect((await page.execute('send_message', { channel: '1', content: 'x', nonce: 'n'.repeat(25) })).ok).toBe(true)
 })
+
+it('reports degraded tab-only dedup when localStorage throws', async () => {
+  // Finding: the cross-tab mirror swallows localStorage failures, so a
+  // retry routed to a DIFFERENT tab silently loses dedup. Storage access
+  // is now suspender-wrapped and a storage throw surfaces as
+  // data.dedup_scope === 'tab' while the send itself still succeeds.
+  const page = fixture()
+  // Suspend storage: the FIRST setItem throws (at persist time, after the
+  // nonce lookup), then storage recovers.
+  const storage = page.sandbox.__localStorage as { setItem: (k: string, v: string) => void }
+  const originalSetItem = storage.setItem.bind(storage)
+  let threw = false
+  storage.setItem = (k: string, v: string) => {
+    if (!threw) {
+      threw = true
+      throw new Error('SecurityError: storage disabled')
+    }
+    originalSetItem(k, v)
+  }
+  const input = { channel: '555', content: 'degraded dedup' }
+  const result = await page.execute('send_message', input)
+  expect(result.ok).toBe(true)
+  expect(result.value.result.status).toBe('ok')
+  expect(result.value.result.data.dedup_scope).toBe('tab')
+  // The nonce was still minted and posted (visible through the fetch log;
+  // in-page globalThis writes stay inside QuickJS and are not host-visible).
+  const nonce = JSON.parse(page.fetches[0].init.body!).nonce as string
+  expect(nonce).toMatch(/.+-[0-9a-z]+/)
+  expect(page.fetches).toHaveLength(1)
+  // The page also echoes the degradation through args so the adapter
+  // annotates the result message of every path — verified on the ERROR
+  // (unconfirmed send) path, where a caller retry must know another tab
+  // cannot see the remembered nonce.
+  const failing = fixture({
+    respond: () => ({ status: 500, body: 'Internal Server Error' }),
+  })
+  const failingStorage = failing.sandbox.__localStorage as { setItem: (k: string, v: string) => void }
+  const failingOriginal = failingStorage.setItem.bind(failingStorage)
+  let failingThrew = false
+  failingStorage.setItem = (k: string, v: string) => {
+    if (!failingThrew) {
+      failingThrew = true
+      throw new Error('SecurityError: storage disabled')
+    }
+    failingOriginal(k, v)
+  }
+  const failingResult = await failing.execute('send_message', { channel: '555', content: 'degraded error path' })
+  expect(failingResult.value.result.status).toBe('error')
+  expect(failingResult.value.result.message).toContain('cross-tab retry dedup is degraded')
+  // With storage healthy, a normal delivery reports cross-tab and no note.
+  const healthy = await page.execute('send_message', { channel: '555', content: 'healthy dedup' })
+  expect(healthy.value.result.data.dedup_scope).toBe('cross-tab')
+  expect(healthy.value.result.message).toBeNull()
+}, 15000)
 
 it('reuses the auto-generated nonce on retry and mints a fresh one after a confirmed delivery', async () => {
   const page = fixture({
@@ -1328,17 +1387,24 @@ it('a retry routed to a DIFFERENT discord.com tab reuses the original nonce via 
   ) as Record<string, { nonce: string; at: number }>
   expect(storedAfterRetry['555||cross tab'].at).toBe(storedBefore['555||cross tab'].at)
 
-  // Delivery drops the shared entry: tab 3 (fresh globalThis, same storage)
-  // succeeds — a later identical send in tab 4 must NOT be deduped against
-  // the delivered nonce (it would be silently swallowed and never posted).
+  // Delivery drops the shared entry: tab 3 and tab 4 SHARE tab 1's storage
+  // backing (one Map, like tabs of the same profile) — the tab3 entry is
+  // visible there, delivery must delete it, and the tab4 send must NOT be
+  // deduped against the delivered nonce (it would be silently swallowed
+  // and never posted). Fresh-empty localStorage fixtures would pass these
+  // assertions even if delivery never cleaned up, hence the shared backing.
   const tab3 = fixture()
+  ;(tab3.sandbox as { __localStorage: unknown }).__localStorage = tab1.sandbox.__localStorage
   await tab3.execute('send_message', input)
   // Delivery dropped the shared entry (the store holds no unconfirmed key).
   const storedAfterDelivery = JSON.parse(
     (tab3.sandbox.__localStorage as { getItem: (k: string) => string | null }).getItem('__eo2DiscordRetryNonces') ?? '{}',
   ) as Record<string, unknown>
   expect(storedAfterDelivery['555||cross tab']).toBeUndefined()
+  // tab4 reads the same backing; after tab3's delivery it observes no
+  // unconfirmed nonce, so its retry must mint a fresh one.
   const tab4 = fixture({ respond: respond500 })
+  ;(tab4.sandbox as { __localStorage: unknown }).__localStorage = tab1.sandbox.__localStorage
   await tab4.execute('send_message', input)
   expect(JSON.parse(tab4.fetches[0].init.body!).nonce).not.toBe(JSON.parse(tab3.fetches[0].init.body!).nonce)
 }, 15000)
