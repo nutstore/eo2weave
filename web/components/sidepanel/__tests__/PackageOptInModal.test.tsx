@@ -17,6 +17,7 @@ vi.mock('sonner', () => ({
     success: vi.fn(),
     error: vi.fn(),
     info: vi.fn(),
+    warning: vi.fn(),
   },
 }))
 
@@ -228,6 +229,30 @@ describe('PackageOptInModal', () => {
     // read. It must stay open with the message visible.
     expect(onClose).not.toHaveBeenCalled()
     expect(screen.getByRole('dialog')).toBeTruthy()
+  })
+
+  it('a VERIFY_INCOMPLETE outcome is NOT a failure: warning toast, NO cooldown, closes', async () => {
+    // Finding "Enabled package reported failed": the background wrote the
+    // config and reloaded but the post-write verification read kept failing.
+    // VERIFY_INCOMPLETE must NOT fall into the generic failure branch (which
+    // records the 1-day cooldown and claims "Failed to enable") — the enable
+    // itself is committed.
+    enablePackageAndReloadMock.mockResolvedValue({
+      ok: false,
+      errorCode: 'VERIFY_INCOMPLETE',
+      error: 'The package was enabled and the page reloaded, but the final check could not be read.',
+    })
+    const onClose = vi.fn()
+    render(<PackageOptInModal packageInfo={packageInfo} onClose={onClose} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Enable & reload page' }))
+    await waitFor(() => {
+      expect(toast.warning).toHaveBeenCalled()
+    })
+    expect(String(vi.mocked(toast.warning).mock.calls[0][0])).toContain('could not be verified')
+    expect(dismissPackagePromptMock).not.toHaveBeenCalled()
+    expect(toast.error).not.toHaveBeenCalled()
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 
   it('"not now" records the dismissal cooldown and closes without enabling', () => {

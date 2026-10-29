@@ -173,6 +173,23 @@ export function PackageOptInModal({ packageInfo, onClose }: PackageOptInModalPro
       })
       setErrorMessage(t('sidePanelPackage.enableTimeoutToast'))
       return
+    } else if (result.errorCode === 'VERIFY_INCOMPLETE') {
+      // Finding "Enabled package reported failed": the background wrote the
+      // config AND reloaded the tab, but the post-write verification read
+      // kept failing transiently — the enable itself is committed and the
+      // outcome is explicitly NOT a failure. Treating it as one (the generic
+      // branch below) would record the 1-day cooldown for a done deal and
+      // claim "Failed to enable" while the tools are already active. Show
+      // honest guidance instead, no dismissal.
+      // eslint-disable-next-line no-console
+      console.warn('[PackageOptInModal] enable landed but could not be verified — no cooldown recorded', {
+        packageId: packageInfo.id,
+        error: result.error,
+      })
+      toast.warning(
+        t('sidePanelPackage.enabledVerificationUnavailableToast', { name: packageInfo.id }),
+      )
+      onClose()
     } else {
       // Structured failure: log for diagnosis, cool the prompt down so it
       // does not reappear immediately in a broken state, surface the toast.
