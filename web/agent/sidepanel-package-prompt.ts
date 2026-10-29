@@ -281,26 +281,35 @@ export async function getPendingPackagePrompt(): Promise<
   const legacyProbe = () => probeLegacyProtocol(binding, agentWeb?.recipeCheckStatus)
 
   // A cached 'new' verdict skips the legacy path entirely; 'legacy-only'
-  // and 'none' skip the new-protocol probe. null (undetermined) tries
-  // new first, then legacy — settling the cache on the way.
-  if (protocolSupport === 'none') return null
-  if (protocolSupport === 'legacy-only') return legacyProbe()
+  // and 'none' skip the new-protocol probe. 'none' stays SOFT: the bridge
+  // can appear at any time (slow extension handshake, late injection) and
+  // AppBootstrap keeps polling — re-derive when a surface shows up.
+  // 'legacy-only' is sticky for the session: a real pre-#102 bridge never
+  // exposes the new method, and extension updates reload the page anyway.
+  if (protocolSupport === 'none') {
+    if (!agentWeb?.webMCPPackageOptInStatus && !agentWeb?.recipeCheckStatus) return null
+    protocolSupport = null // a bridge showed up after the first probe — re-decide
+  } else if (protocolSupport === 'legacy-only') {
+    return legacyProbe()
+  }
 
   if (agentWeb?.webMCPPackageOptInStatus) {
     const outcome = await probeNewProtocol(binding, agentWeb.webMCPPackageOptInStatus)
     if (outcome.verdict !== 'legacy') {
-      // The new bridge ANSWERED (success, structured failure, or timeout —
-      // only new extensions expose the method at all): cache it.
+      // The new bridge ANSWERED (success or a structured failure it
+      // understands — only extensions that speak the protocol produce
+      // these): cache it.
       if (protocolSupport === null) protocolSupport = 'new'
       return outcome.result
     }
-    // The new probe call itself REJECTED — ambiguous between an old
-    // extension whose relay chokes on the unknown message type and a new
-    // extension whose service worker is mid-restart. Try legacy right away,
-    // but only commit the session cache to 'legacy-only' when the legacy
-    // surface DEFINITIVELY answers (a legacy transient failure must keep
-    // the cache undetermined, or a recovering new extension would be
-    // locked out of its own protocol for the whole session).
+    // The new probe could not be answered AT ALL (call rejected, timed out,
+    // or the relay's structured unknown-message rejection) — ambiguous
+    // between an old extension and a new one with a sleeping service
+    // worker. Try legacy right away, but only commit the session cache to
+    // 'legacy-only' when the legacy surface DEFINITIVELY answers (a legacy
+    // transient failure must keep the cache undetermined, or a recovering
+    // new extension would be locked out of its own protocol for the whole
+    // session).
     const legacy = await legacyProbe()
     const legacyAnsweredDefinitively =
       !!agentWeb.recipeCheckStatus && !(legacy !== null && 'retryable' in legacy && legacy.retryable)
@@ -338,10 +347,18 @@ interface NewProtocolOutcome {
 
 /**
  * Probe the NEW (#102) bridge method. Maps every terminal outcome onto the
- * prompt shapes above; a probe that the bridge could not answer AT ALL
- * (missing method → throw, timeout, or {ok:false} rejection — i.e. an old
- * extension whose service worker does not recognize the message type)
- * yields verdict 'legacy' so the caller falls back to the 1.1.7 protocol.
+ * prompt shapes above; a probe the bridge could not answer AT ALL yields
+ * verdict 'legacy' so the caller falls back to the 1.1.7 protocol:
+ *   - the call rejects (pre-#102 injected bridge without the method),
+ *   - the 4s race times out (1.1.7's background drops the unknown message
+ *     type on the floor — no reply ever comes), or
+ *   - the relay answers `UNAUTHORIZED_MESSAGE_TYPE` (1.1.7's content-script
+ *     allow-list resolves unknown types with a structured {ok:false}
+ *     instead of rejecting — finding: "Legacy fallback is skipped").
+ * A timeout is ambiguous with a sleeping service worker on a NEW extension,
+ * but falling back once is harmless: the legacy probe resolves null on a
+ * new extension (no recipe match / no method) and the caller's retry
+ * budget re-probes the new protocol afterwards.
  */
 async function probeNewProtocol(
   binding: string,
@@ -366,21 +383,26 @@ async function probeNewProtocol(
     return { verdict: 'legacy', result: { applicable: false, retryable: true } }
   }
   if (!status || status.ok === false) {
+    // The relay-level unknown-message rejection is how a pre-#102 extension
+    // says "I don't speak this protocol" — fall back to the legacy probe.
+    const relayRejectedType = status?.errorCode === 'UNAUTHORIZED_MESSAGE_TYPE'
+    if (relayRejectedType || timedOut || status === null) {
+      return { verdict: 'legacy', result: { applicable: false, retryable: true } }
+    }
     // eslint-disable-next-line no-console
-    console.warn('[SidePanelPackagePrompt] skip: bridge returned failure/timeout', {
+    console.warn('[SidePanelPackagePrompt] skip: bridge returned failure', {
       status,
-      hint: 'UNAUTHORIZED_TARGET = binding/trusted-origin check failed in background; null = 4s probe timeout',
+      hint: 'UNAUTHORIZED_TARGET = binding/trusted-origin check failed in background',
     })
     // Structural bridge answers (bad binding, bad origin) cannot heal —
-    // retrying them is pointless. A timeout CAN recover once the service
-    // worker wakes up, and STATUS_FAILED covers transient tab/storage/
-    // catalog errors inside the background probe, so both stay retryable
-    // (bounded by the caller's retry budget).
+    // retrying them is pointless. STATUS_FAILED covers transient tab/
+    // storage/catalog errors inside the background probe, so it stays
+    // retryable (bounded by the caller's retry budget).
     return {
       verdict: 'done',
       result: {
         applicable: false,
-        retryable: timedOut || status === null || status?.errorCode === 'STATUS_FAILED',
+        retryable: status?.errorCode === 'STATUS_FAILED',
       },
     }
   }

@@ -103,6 +103,17 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
 
   const Icon = packageIcon(packageInfo.id)
   const tools = packageInfo.tools ?? []
+  // Legacy (pre-#102) payloads carry a tool COUNT but no per-tool list, so
+  // `tools` is empty there. Disclose the real count instead of "0 tools":
+  // the summary falls back to the package-wide count, and (with no list to
+  // split against) the additional-tools note must NOT claim the tools are
+  // on other origins.
+  const disclosedToolCount =
+    tools.length > 0
+      ? tools.length
+      : typeof packageInfo.totalTools === 'number'
+        ? packageInfo.totalTools
+        : 0
 
   const handleConfirm = async () => {
     setSubmitting(true)
@@ -251,7 +262,7 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
         {/* Body */}
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <p className="text-sm leading-relaxed text-foreground">
-            {t('sidePanelPackage.description', { count: tools.length })}
+            {t('sidePanelPackage.description', { count: disclosedToolCount })}
           </p>
 
           {/* Package card */}
@@ -342,7 +353,7 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
             </p>
           )}
 
-          {typeof packageInfo.totalTools === 'number' && packageInfo.totalTools > tools.length && (
+          {tools.length > 0 && typeof packageInfo.totalTools === 'number' && packageInfo.totalTools > tools.length && (
             <p className="mt-2 text-xs leading-relaxed text-amber-600 dark:text-amber-400">
               {t('sidePanelPackage.additionalToolsNote', {
                 count: packageInfo.totalTools - tools.length,
