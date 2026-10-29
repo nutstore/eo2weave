@@ -638,6 +638,12 @@ it('keeps a newer cached token when a stale in-flight 401 arrives', async () => 
     value: { result: { status: 'error', error_code: 'AUTH' } },
   })
   expect(stale.value.result.message).toContain('(code 50012)')
+  // The eviction must have left the page-global cache holding B's token:
+  // value-keyed means A's stale 401 cannot touch B's entry, and the
+  // logged-out marker must NOT have been set (B is still the cached live
+  // credential, readable by any later call in this tab).
+  expect(page.sandbox.__eo2DiscordToken).toBe('token-account-b')
+  expect(page.sandbox.__eo2DiscordLoggedOut).toBeUndefined()
   // B is still cached — but the cache is now unreachable: a stale 401
   // recorded B's predecessor's token value... in fact the eviction is
   // value-keyed so B's entry survives, yet B can only be REUSED when the
@@ -729,6 +735,13 @@ it('keeps the cached token and the auth state on HTTP 429', async () => {
     ok: true,
     value: { result: { status: 'error', error_code: 'RATE_LIMITED' } },
   })
+  // The 429 must not have touched the page-global cache: the token stays
+  // cached and no logged-out marker was recorded, so the credential is
+  // intact for the next call (verify directly, before the walk is
+  // disabled — after that the cache becomes unreachable and a wrongly
+  // cleared cache would be indistinguishable from fail-closed).
+  expect(page.sandbox.__eo2DiscordToken).toBe('discord-token-xyz')
+  expect(page.sandbox.__eo2DiscordLoggedOut).toBeUndefined()
   // After the rate limit, the walk FAILS (transient hydration window). A
   // cached token cannot be confirmed to belong to the current account
   // while the probe is down, so the workflow fails closed — a 429 never
