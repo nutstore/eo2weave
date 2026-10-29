@@ -49,6 +49,59 @@ VALID_CRITERION_STATES = {"met", "partially_met", "unmet", "unclear"}
 VALID_INFERENCE_LEVELS = {"direct", "reasonable_inference", "speculative"}
 VALID_STRENGTHS = {"strong", "medium", "weak", "unclear"}
 VALID_SUPPLEMENT_STATES = {"open", "in_progress", "completed", "not_applicable"}
+VALID_PROOF_SCOPES = {
+    "statement_occurrence",
+    "content_truth",
+    "underlying_event",
+    "authenticity",
+    "identity",
+    "amount",
+    "time",
+    "continuing_state",
+    "other",
+}
+VALID_RELATION_TYPES = {
+    "temporal_before",
+    "temporal_after",
+    "causal",
+    "logical_support",
+    "condition",
+    "purpose_motive",
+    "performance_breach",
+    "funds_flow",
+    "goods_flow",
+    "information_flow",
+    "authority_agency",
+    "corroborates",
+    "contradicts",
+    "weakens",
+    "gap",
+}
+SECTION_TYPE_NAMES = {
+    "facts": "fact",
+    "proof_objects": "proof_object",
+    "evidence_items": "evidence_item",
+    "issues": "issue",
+    "contradictions": "contradiction",
+    "supplement_plan": "supplement",
+}
+NEGATIVE_CONTINUING_MARKERS = (
+    "从未",
+    "一直",
+    "至今",
+    "未曾",
+    "始终",
+    "不再",
+    "均未",
+    "再未",
+    "never",
+    "always",
+    "continuing",
+    "continues to",
+    "remains",
+    "to this day",
+    "up to now",
+)
 LINKABLE_SECTIONS = (
     "material_scope",
     "issues",
@@ -193,6 +246,7 @@ def validate(
     if not relations:
         warnings.append("relations is empty; evidence-chain output may be only an event list")
 
+    id_section = {item_id: section for section, ids in section_ids.items() for item_id in ids}
     fact_ids = section_ids["facts"]
     ev_ids = section_ids["evidence_items"]
     po_ids = section_ids["proof_objects"]
@@ -200,23 +254,31 @@ def validate(
     gap_ids = section_ids["evidence_gaps"]
     supp_ids = section_ids["supplement_plan"]
 
-    material_status_by_path = {
-        item.get("source_path"): item.get("review_status")
-        for item in materials
-        if isinstance(item, dict) and isinstance(item.get("source_path"), str)
-    }
+    unreadable_severity = {"unreadable": 2, "unavailable": 1}
+    material_derived_from: dict[str, set[str]] = {}
+    material_status_by_path: dict[str, Any] = {}
+    for item in materials:
+        if not isinstance(item, dict) or not isinstance(item.get("source_path"), str):
+            continue
+        path = item["source_path"]
+        status = item.get("review_status")
+        current = material_status_by_path.get(path)
+        if current is None or unreadable_severity.get(status, 0) > unreadable_severity.get(current, 0):
+            material_status_by_path[path] = status
     evidence_map = by_id(evidence_items)
 
     for item in materials:
         if not isinstance(item, dict):
             continue
         label = item.get("id", "mat<?>")
-        check_refs(
-            item,
-            "derived_from_material_ids",
-            section_ids["material_scope"],
-            label,
-            errors,
+        material_derived_from[str(label)] = set(
+            check_refs(
+                item,
+                "derived_from_material_ids",
+                section_ids["material_scope"],
+                label,
+                errors,
+            )
         )
 
     for item in facts:
@@ -235,23 +297,30 @@ def validate(
         if state == "supported" and item.get("unsupported_elements"):
             errors.append(f"{label}: supported fact cannot retain unsupported_elements")
 
-        if state == "supported" and supporting and item.get("fact_type") not in {
-            "statement",
-            "claim",
-            "defense",
-            "allegation",
-        }:
+        if state == "supported" and supporting and item.get("fact_type") != "statement":
             scopes = [
                 set(evidence_map.get(evidence_id, {}).get("proof_scope") or [])
                 for evidence_id in supporting
             ]
             if scopes and all(scope and scope <= {"statement_occurrence"} for scope in scopes):
                 errors.append(
-                    f"{label}: underlying fact cannot be supported only by evidence scoped to statement_occurrence"
+                    f"{label}: fact cannot be supported only by evidence scoped to statement_occurrence"
                 )
 
         fact_type = item.get("fact_type")
-        if fact_type == "negative_state":
+        statement_text = item.get("statement")
+        negative_continuing = fact_type == "negative_state" or (
+            isinstance(statement_text, str)
+            and any(marker in statement_text.lower() for marker in NEGATIVE_CONTINUING_MARKERS)
+        )
+        if negative_continuing:
+            if fact_type != "negative_state":
+                strict_issue(
+                    f"{label}: negative/continuing proposition must use fact_type 'negative_state'",
+                    strict,
+                    errors,
+                    warnings,
+                )
             time_scope = item.get("time_scope")
             has_cutoff = isinstance(time_scope, dict) and bool(
                 time_scope.get("as_of") or time_scope.get("end")
@@ -271,18 +340,29 @@ def validate(
                     warnings,
                 )
 
-        unavailable_sources = []
-        for evidence_id in supporting:
-            source_path = evidence_map.get(evidence_id, {}).get("source_path")
-            if material_status_by_path.get(source_path) in {"unreadable", "unavailable"}:
-                unavailable_sources.append(evidence_id)
+        unavailable_sources = [
+            evidence_id
+            for evidence_id in supporting
+            if material_status_by_path.get(evidence_map.get(evidence_id, {}).get("source_path"))
+            in {"unreadable", "unavailable"}
+        ]
         if unavailable_sources:
-            warnings.append(
+            message = (
                 f"{label}: cites evidence from unreadable/unavailable material {unavailable_sources}; "
                 "verify that only material existence, not content, is being proved"
             )
+            if state == "supported" and len(unavailable_sources) == len(supporting):
+                strict_issue(
+                    message + "; a supported fact cannot rest solely on unreadable/unavailable sources",
+                    strict,
+                    errors,
+                    warnings,
+                )
+            else:
+                warnings.append(message)
 
     missing_proof_scope: list[str] = []
+    evidence_derived_materials: dict[str, set[str]] = {}
     for item in evidence_items:
         if not isinstance(item, dict):
             continue
@@ -292,13 +372,33 @@ def validate(
         proof_scope = item.get("proof_scope")
         if strict and (not isinstance(proof_scope, list) or not proof_scope):
             missing_proof_scope.append(str(label))
-        check_refs(
+        if isinstance(proof_scope, list):
+            invalid_scopes = sorted(
+                {str(scope) for scope in proof_scope if not isinstance(scope, str) or scope not in VALID_PROOF_SCOPES}
+            )
+            if invalid_scopes:
+                strict_issue(
+                    f"{label}.proof_scope: invalid value(s) {invalid_scopes}; allowed: {sorted(VALID_PROOF_SCOPES)}",
+                    strict,
+                    errors,
+                    warnings,
+                )
+        if strict:
+            for provenance_field in ("source_path", "locator"):
+                provenance_value = item.get(provenance_field)
+                if not isinstance(provenance_value, str) or not provenance_value.strip():
+                    errors.append(
+                        f"{label}.{provenance_field}: strict output requires a non-empty value "
+                        "(use 'unknown' plus a limitation note when genuinely unavailable)"
+                    )
+        derived_material_refs = check_refs(
             item,
             "derived_from_material_ids",
             section_ids["material_scope"],
             label,
             errors,
         )
+        evidence_derived_materials[label] = set(derived_material_refs)
     if missing_proof_scope:
         errors.append(
             "evidence_items.proof_scope: strict output requires non-empty proof scope for "
@@ -324,7 +424,12 @@ def validate(
         related_facts = facts_by_po.get(label, [])
         if state == "supported":
             if not related_facts:
-                warnings.append(f"{label}: supported proof object has no related facts")
+                strict_issue(
+                    f"{label}: supported proof object has no related facts",
+                    strict,
+                    errors,
+                    warnings,
+                )
             else:
                 weak_fact_ids = [
                     str(fact.get("id", "fact<?>"))
@@ -372,6 +477,29 @@ def validate(
                 errors.append(f"{label}.{field}: unknown or invalid endpoint id {ref!r}")
         check_refs(item, "supporting_evidence_ids", ev_ids, label, errors)
 
+        relation_type = item.get("relation_type")
+        if relation_type not in VALID_RELATION_TYPES:
+            strict_issue(
+                f"{label}.relation_type: unknown value {relation_type!r}; allowed: {sorted(VALID_RELATION_TYPES)}",
+                strict,
+                errors,
+                warnings,
+            )
+        for type_field, ref_field in (("from_type", "from_id"), ("to_type", "to_id")):
+            declared_type = item.get(type_field)
+            endpoint_section = id_section.get(item.get(ref_field))
+            expected_type = SECTION_TYPE_NAMES.get(endpoint_section)
+            if expected_type is None:
+                continue
+            if declared_type not in {expected_type, endpoint_section}:
+                strict_issue(
+                    f"{label}.{type_field}: endpoint {item.get(ref_field)!r} is a {endpoint_section} entry; "
+                    f"expected {expected_type!r}, got {declared_type!r}",
+                    strict,
+                    errors,
+                    warnings,
+                )
+
         inference = item.get("inference_level")
         strength = item.get("strength")
         if inference not in VALID_INFERENCE_LEVELS:
@@ -393,6 +521,41 @@ def validate(
             alternatives = item.get("alternative_explanations")
             if not isinstance(alternatives, list):
                 warnings.append(f"{label}: causal relation should record alternative_explanations")
+
+        if relation_type == "corroborates":
+            path_to_material = {
+                m.get("source_path"): m.get("id") for m in materials if isinstance(m, dict)
+            }
+            endpoint_evidence = [
+                str(item.get(field))
+                for field in ("from_id", "to_id")
+                if id_section.get(item.get(field)) == "evidence_items"
+            ]
+            if len(endpoint_evidence) == 2:
+                derived_a = evidence_derived_materials.get(endpoint_evidence[0], set())
+                derived_b = evidence_derived_materials.get(endpoint_evidence[1], set())
+                source_material_a = path_to_material.get(by_id(evidence_items).get(endpoint_evidence[0], {}).get("source_path"))
+                source_material_b = path_to_material.get(by_id(evidence_items).get(endpoint_evidence[1], {}).get("source_path"))
+                roots_a = set(derived_a) | ({source_material_a} if source_material_a else set())
+                roots_b = set(derived_b) | ({source_material_b} if source_material_b else set())
+                dependent = bool(roots_a & roots_b)
+                for mat_id in derived_a:
+                    chain_origin = mat_id
+                    seen: set[str] = set()
+                    while chain_origin and chain_origin not in seen:
+                        seen.add(chain_origin)
+                        if chain_origin in roots_b:
+                            dependent = True
+                            break
+                        chain_origin = next(iter(material_derived_from.get(chain_origin, set())), None)
+                if dependent:
+                    strict_issue(
+                        f"{label}: corroboration endpoints {endpoint_evidence} derive from the same source "
+                        "material chain; derived copies are not independent corroboration",
+                        strict,
+                        errors,
+                        warnings,
+                    )
 
     for item in contradictions:
         if not isinstance(item, dict):
@@ -440,6 +603,7 @@ def validate(
             criteria = []
 
         criterion_states: list[str] = []
+        criterion_evidence: list[list[str]] = []
         for index, criterion in enumerate(criteria):
             criterion_label = f"{label}.closure_criteria[{index}]"
             if not isinstance(criterion, dict):
@@ -450,7 +614,7 @@ def validate(
                 errors.append(f"{criterion_label}.status: invalid or missing value {criterion_state!r}")
             else:
                 criterion_states.append(criterion_state)
-            check_refs(criterion, "evidence_ids", ev_ids, criterion_label, errors)
+            criterion_evidence.append(check_refs(criterion, "evidence_ids", ev_ids, criterion_label, errors))
 
         if closure_state == "closed":
             if criteria and any(state != "met" for state in criterion_states):
@@ -459,6 +623,30 @@ def validate(
                 errors.append(f"{label}: closed gap requires closure_evidence_ids")
             if isinstance(remaining, list) and remaining:
                 errors.append(f"{label}: closed gap cannot retain remaining_elements")
+            unevidenced = [
+                f"closure_criteria[{index}]"
+                for index, evidence_refs in enumerate(criterion_evidence)
+                if not evidence_refs
+            ]
+            if unevidenced:
+                strict_issue(
+                    f"{label}: closed gap has closure criteria without evidence_ids: " + ", ".join(unevidenced),
+                    strict,
+                    errors,
+                    warnings,
+                )
+            criteria_evidence_union: set[str] = set()
+            for evidence_refs in criterion_evidence:
+                criteria_evidence_union.update(evidence_refs)
+            if (
+                isinstance(closure_evidence, list)
+                and closure_evidence
+                and criteria_evidence_union
+                and not set(closure_evidence) & criteria_evidence_union
+            ):
+                errors.append(
+                    f"{label}: closure_evidence_ids do not support any closure criterion evidence"
+                )
         elif closure_state == "partially_closed":
             if criteria and all(state == "met" for state in criterion_states):
                 errors.append(f"{label}: partially_closed gap must retain a non-met criterion")
@@ -545,13 +733,29 @@ def validate_incremental(
         new_state = current_gaps[gap_id].get("closure_status")
         if old_state == new_state:
             continue
-        closure_evidence = set(current_gaps[gap_id].get("closure_evidence_ids") or [])
-        if not closure_evidence:
-            errors.append(f"{gap_id}: closure state changed without closure_evidence_ids")
-        elif not (closure_evidence & new_ev_ids):
-            warnings.append(
-                f"{gap_id}: closure state changed without newly added evidence; confirm this is an explicit reassessment"
-            )
+        if new_state == "closed":
+            closure_evidence = set(current_gaps[gap_id].get("closure_evidence_ids") or [])
+            if not closure_evidence:
+                errors.append(f"{gap_id}: gap closed without closure_evidence_ids")
+            elif not (closure_evidence & new_ev_ids):
+                warnings.append(
+                    f"{gap_id}: gap closed without newly added evidence; confirm this is an explicit reassessment"
+                )
+        elif old_state == "closed":
+            reopened = current_gaps[gap_id]
+            reopened_remaining = reopened.get("remaining_elements")
+            reopened_criteria = reopened.get("closure_criteria") or []
+            non_met_states = [
+                criterion.get("status")
+                for criterion in reopened_criteria
+                if isinstance(criterion, dict)
+                and criterion.get("status") in VALID_CRITERION_STATES
+                and criterion.get("status") != "met"
+            ]
+            if not (isinstance(reopened_remaining, list) and reopened_remaining) and not non_met_states:
+                errors.append(
+                    f"{gap_id}: gap reopened from closed without remaining_elements or a non-met closure criterion"
+                )
 
 
 def parse_args() -> argparse.Namespace:

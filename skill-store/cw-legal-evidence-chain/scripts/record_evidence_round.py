@@ -8,6 +8,7 @@ Subsequent rounds also pass --previous-record rounds/round_0001/round-record.jso
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import datetime
 import hashlib
 import json
@@ -105,14 +106,27 @@ def validate_record(record: Any, before: dict, after: dict, changes: list[dict],
     require("change_reason" in demand, "demand.change_reason is required")
     if previous:
         require(demand["before"] == previous["demand"]["after"], "demand.before must match prior demand.after")
-    if demand["before"] != demand["after"]:
+    demand_changed = demand["before"] != demand["after"]
+    if demand_changed:
         text_field(demand, "change_reason", "demand")
-        changes.append({"section": "demand", "id": "$demand", "kind": "changed",
-                        "before": demand["before"], "after": demand["after"]})
     inputs = rows(record, "inputs", "round")
     decisions = rows(record, "decisions", "round")
     requests = rows(record, "requests", "round")
     feedback = rows(record, "feedback", "round")
+    if demand_changed:
+        reassessment_decisions = [row for row in decisions if row.get("action") == "reassessment"]
+        require(
+            any("$demand" in (row.get("object_ids") or []) for row in reassessment_decisions),
+            "demand change requires a reassessment decision covering $demand",
+        )
+        for row in reassessment_decisions:
+            if "$demand" in (row.get("object_ids") or []):
+                require(
+                    "source" in row.get("reason", "").lower() or "来源" in row.get("reason", ""),
+                    f"{row['id']}: reassessment reason must identify the source of the changed demand",
+                )
+        changes.append({"section": "demand", "id": "$demand", "kind": "changed",
+                        "before": demand["before"], "after": demand["after"]})
     require(bool(inputs or feedback) or demand["before"] != demand["after"] or any(x.get("action") == "reassessment" for x in decisions) or previous is None,
             "no new input, feedback, demand change or explicit reassessment; wait rather than loop unchanged")
     input_ids = {x["id"] for x in inputs}
@@ -161,6 +175,16 @@ def validate_record(record: Any, before: dict, after: dict, changes: list[dict],
             text_field(row, key, label)
         require(row.get("priority") in {"high", "medium", "low"}, f"{label}: invalid priority")
         require(row.get("status") in STATUSES, f"{label}: invalid request status")
+        responding_inputs = {
+            input_id
+            for input_row in inputs
+            for input_id in input_row.get("response_to_request_ids") or []
+            if input_id == label
+        }
+        require(
+            row.get("status") != "answered" or bool(responding_inputs),
+            f"{label}: request marked answered requires a recorded input in response_to_request_ids",
+        )
         targets = set()
         for key, section in (("gap_ids", "evidence_gaps"), ("proof_object_ids", "proof_objects"), ("supplement_ids", "supplement_plan")):
             targets.update(refs(row, key, set(index(before, section)) | set(index(after, section)), label))
@@ -182,8 +206,14 @@ def validate_record(record: Any, before: dict, after: dict, changes: list[dict],
             current_targets = set().union(*(set(index(after, s)) for s in ("evidence_gaps", "proof_objects", "supplement_plan")))
             require(bool(targets & current_targets), f"{label}: open request only targets retired objects")
             for gap_id in live_targets:
+                gap_criteria = gap_map[gap_id]["closure_criteria"]
                 selected = {x["criterion"] for x in criteria if x["gap_id"] == gap_id}
-                require(any(x.get("criterion") in selected and x["status"] != "met" for x in gap_map[gap_id]["closure_criteria"]), f"{label}: open request requires an unresolved criterion for {gap_id}")
+                require(any(x.get("criterion") in selected and x["status"] != "met" for x in gap_criteria), f"{label}: open request requires an unresolved criterion for {gap_id}")
+                for criterion in criteria:
+                    if criterion["gap_id"] != gap_id:
+                        continue
+                    criterion_row = next((x for x in gap_criteria if x.get("criterion") == criterion.get("criterion")), None)
+                    require(criterion_row is None or criterion_row.get("status") != "met", f"{label}: criterion target '{criterion.get('criterion')}' for {gap_id} is already met")
     previous_targets = ({x["target_id"] for x in previous["review_queue"]} | {x["id"] for x in previous["decisions"]}) if previous else set()
     reviewed = set()
     for row in feedback:
@@ -310,9 +340,19 @@ def digest(raw: bytes) -> str:
 
 def record_round(before_path: Path, after_path: Path, input_path: Path, output_dir: Path, previous_path: Path | None = None) -> dict:
     require(not output_dir.exists(), "output directory already exists; historical rounds cannot be overwritten")
+    sibling_rounds = output_dir.parent.glob("*/round-record.json") if output_dir.parent.exists() else []
+    existing_round_ids = set()
+    for marker in sibling_rounds:
+        try:
+            existing_round_ids.add(json.loads(marker.read_text(encoding="utf-8-sig")).get("round_id"))
+        except (OSError, ValueError):
+            continue
     old_raw, before = read(before_path)
     new_raw, after = read(after_path)
     _, record = read(input_path)
+    round_id = record.get("round_id")
+    require(isinstance(round_id, str) and round_id not in existing_round_ids,
+            f"round_id {round_id!r} already exists in another round directory under {output_dir.parent}; competing rounds rejected")
     previous = read(previous_path)[1] if previous_path else None
     validation = {}
     for label, data, baseline in (("core_before_strict", before, None), ("core_after_strict", after, before)):
@@ -343,11 +383,26 @@ def record_round(before_path: Path, after_path: Path, input_path: Path, output_d
     if previous_path:
         result["previous_record"] = {"source_ref": str(previous_path.resolve()), "sha256": digest(previous_path.read_bytes())}
     report = render(result, after)
-    output_dir.mkdir(parents=True, exist_ok=False)
-    (output_dir / "A-before.json").write_bytes(old_raw)
-    (output_dir / "A-after.json").write_bytes(new_raw)
-    (output_dir / "round-record.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    (output_dir / "round-update.md").write_text(report, encoding="utf-8")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = output_dir.with_name(output_dir.name + ".tmp-partial")
+    if staging.exists():
+        require(
+            not any(staging.iterdir()) or all(p.name.endswith((".tmp", ".partial")) for p in staging.iterdir()),
+            f"staging directory {staging} already exists; remove it before retrying",
+        )
+        staging.rmdir()
+    staging.mkdir(parents=True)
+    try:
+        (staging / "A-before.json").write_bytes(old_raw)
+        (staging / "A-after.json").write_bytes(new_raw)
+        (staging / "round-record.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        (staging / "round-update.md").write_text(report, encoding="utf-8")
+        os.replace(staging, output_dir)
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return result
 
 

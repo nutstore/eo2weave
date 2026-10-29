@@ -75,7 +75,7 @@ def criteria_summary(gap: dict[str, Any], target_state: str) -> str:
     return cell(selected)
 
 
-def render(data: dict[str, Any], errors: list[str], warnings: list[str]) -> str:
+def render(data: dict[str, Any], errors: list[str], warnings: list[str], strict: bool = False) -> str:
     materials = data.get("material_scope") or []
     issues = data.get("issues") or []
     proof_objects = data.get("proof_objects") or []
@@ -102,6 +102,8 @@ def render(data: dict[str, Any], errors: list[str], warnings: list[str]) -> str:
     )
 
     lines += ["", "## 二、初步结论摘要", "", f"- 事实支持状态统计：{cell(dict(support_counts))}", f"- 缺口关闭状态统计：{cell(dict(gap_counts))}", "- 本报告由结构化 JSON 渲染；具体结论须结合下表证据范围、未支持要素与风险阅读。"]
+    if not strict:
+        lines.append("- ⚠️ 本报告未经严格校验（未执行 --strict 严格校验模式），仅通过兼容性检查；JSON 校验摘要不可标注为“通过/_passed_”。")
 
     lines += ["", "## 三、争议焦点与证明对象", ""]
     issue_titles = {item.get("id"): item.get("title") for item in issues if isinstance(item, dict)}
@@ -124,9 +126,9 @@ def render(data: dict[str, Any], errors: list[str], warnings: list[str]) -> str:
 
     lines += ["", "## 五、证据目录", ""]
     lines += table(
-        ["证据编号", "证据名称", "来源/定位", "类型", "形成时间", "证明目的/范围", "证明力", "风险"],
+        ["证据编号", "证据名称", "来源/定位", "类型", "形成时间", "真实性状态", "证明目的/范围", "证明力", "风险"],
         [
-            [item.get("id"), item.get("title"), f"{cell(item.get('source_path'))} / {cell(item.get('locator'))}", item.get("evidence_type"), item.get("formation_time"), {"目的": item.get("proof_purpose"), "范围": item.get("proof_scope")}, item.get("probative_strength"), item.get("risk_notes")]
+            [item.get("id"), item.get("title"), f"{cell(item.get('source_path'))} / {cell(item.get('locator'))}", item.get("evidence_type"), item.get("formation_time"), item.get("authenticity_status"), {"目的": item.get("proof_purpose"), "范围": item.get("proof_scope")}, item.get("probative_strength"), {"真实性状态": item.get("authenticity_status"), "风险提示": item.get("risk_notes")}]
             for item in evidence if isinstance(item, dict)
         ],
     )
@@ -179,7 +181,9 @@ def render(data: dict[str, Any], errors: list[str], warnings: list[str]) -> str:
         [[item.get("id"), item.get("time"), item.get("event"), item.get("fact_ids"), item.get("evidence_ids"), item.get("relation_notes")] for item in timeline if isinstance(item, dict)],
     )
 
-    lines += ["", "## 十一、结构化校验摘要", "", f"- JSON 校验：{'failed' if errors else 'passed'}", f"- 错误数：{len(errors)}", f"- 警告数：{len(warnings)}"]
+    verdict = "failed" if errors else ("passed（严格校验）" if strict else "passed（仅兼容性检查，未经严格校验）")
+    mode_label = "strict（严格校验）" if strict else "compatibility only（仅兼容性检查，未经严格校验）"
+    lines += ["", "## 十一、结构化校验摘要", "", f"- JSON 校验：{verdict}", f"- 校验模式：{mode_label}", f"- 错误数：{len(errors)}", f"- 警告数：{len(warnings)}"]
     if errors:
         lines.append(f"- 未解决错误：{cell(errors)}")
     if warnings:
@@ -216,8 +220,16 @@ def main() -> int:
         print("Rendering blocked because JSON validation failed")
         return 1
 
-    args.output_file.write_text(render(data, errors, warnings), encoding="utf-8")
-    print(f"Rendered {args.output_file} with {len(warnings)} warning(s)")
+    report = render(data, errors, warnings, strict=args.strict)
+    args.output_file.parent.mkdir(parents=True, exist_ok=True)
+    temp_output = args.output_file.with_name(args.output_file.name + ".tmp-partial")
+    try:
+        temp_output.write_text(report, encoding="utf-8")
+        temp_output.replace(args.output_file)
+    except BaseException:
+        temp_output.unlink(missing_ok=True)
+        raise
+    print(f"Rendered {args.output_file} with {len(warnings)} warning(s) ({'strict' if args.strict else 'compatibility-only'} validation)")
     return 0
 
 

@@ -67,11 +67,21 @@ If writing files in CreatorWeave, prefer:
 
 For a continuing case, create the round record and snapshots once per formal checkpoint, not once per chat turn. Do not re-render an unchanged report or create an empty round when no new input, consequential feedback, demand change, or justified reassessment to record.
 
-For file output, use this order when the runtime permits scripts:
+For file output, use this order when the runtime permits scripts. These lines are
+shell commands: run them in a shell runtime (CreatorWeave `run_shell`/terminal), not
+inside Python source — pasting them into `run_python` raises a syntax error. When
+only `run_python` is available, invoke the scripts from Python instead:
 
 ```text
 python scripts/validate_evidence_chain.py --strict evidence-chain.json
 python scripts/render_evidence_chain.py --strict evidence-chain.json evidence-chain-report.md
+```
+
+```python
+# run_python equivalent
+import subprocess, sys
+subprocess.run([sys.executable, "scripts/validate_evidence_chain.py", "--strict", "evidence-chain.json"], check=True)
+subprocess.run([sys.executable, "scripts/render_evidence_chain.py", "--strict", "evidence-chain.json", "evidence-chain-report.md"], check=True)
 ```
 
 Only this bundled validator counts as script validation. A JSON parse, field-count check, ID uniqueness check, or manual spot check is not a passed validation result. If scripts cannot run, perform the same checks explicitly and label the validation as manual. Do not claim that validation passed when it was not executed or when the strict validator returned errors.
