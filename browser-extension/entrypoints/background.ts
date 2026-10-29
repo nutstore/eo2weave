@@ -2010,7 +2010,14 @@ export default defineBackground(() => {
             // starting its executeScript (cancellation before the effect,
             // the only cancelable stage: an in-flight executeScript cannot
             // be interrupted). A started action still runs to completion —
-            // the lock ensures no later command overlaps it.
+            // the lock ensures no later command overlaps it. The deadline
+            // here is deliberately the SAME total budget as the bridge
+            // timeout and starts no later than it (the preflight above is
+            // bounded by fast, local checks — binding lookup + sidePanel
+            // options — so any preflight time only makes this deadline
+            // fire EARLIER in wall-clock terms than the caller's, never
+            // later): an action whose caller has already timed out can
+            // therefore never acquire the lock and start.
             let settled = false
             try {
             const result: unknown = await withTabLock(targetTabId, async () => {
