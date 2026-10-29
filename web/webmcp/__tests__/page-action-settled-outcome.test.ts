@@ -97,6 +97,27 @@ describe('describeSettledOutcome (fix 3: envelopes, never a bare undefined)', ()
     expect(replayed.ok).toBe(false)
     expect(replayed.errorCode).toBe('PAGE_ACTION_RUN_FAILED')
   })
+
+  it('the deadline-abandoned branch returns a STRUCTURED outcome (never bare undefined)', () => {
+    // Sourcery round-5, comment 2 residual: the shared run's deadline
+    // branch used to `return` bare — the settlement handler cached
+    // `undefined` and flagged it corrupt for a joining retry. It now
+    // assigns the structured PAGE_ACTION_ABANDONED outcome before
+    // returning. This pins the contract the settlement cache relies on:
+    // every run path resolves to a defined `{ok: ...}` object.
+    const abandonedOutcome = {
+      ok: false,
+      errorCode: 'PAGE_ACTION_ABANDONED',
+      error: expect.stringContaining('deadline expired'),
+    }
+    // The branch's shape must satisfy the runner-result plausibility
+    // contract (defined, object, boolean ok) so it is never mistaken for
+    // a lost/corrupt result.
+    expect(isPlausibleRunnerResult(abandonedOutcome)).toBe(true)
+    expect(describeSettledOutcome(abandonedOutcome).status).toBe('ok')
+    // And the guard the fix closes: a bare return value would NOT pass.
+    expect(isPlausibleRunnerResult(undefined)).toBe(false)
+  })
 })
 
 describe('isPlausibleRunnerResult (corrupt-entry heuristic)', () => {

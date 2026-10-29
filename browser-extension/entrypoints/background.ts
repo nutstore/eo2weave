@@ -2298,14 +2298,20 @@ export default defineBackground(() => {
             // If the caller's deadline expired while the FIRST executeScript
             // was in flight, stop here: the CDP fallback below would hold
             // the lock for another full evaluation, and the caller has
-            // already gone. (Note: `result` is discarded — the requester is
-            // no longer listening.)
+            // already gone. STRUCTURED, not bare: this value is also what
+            // the settlement handler caches for retry dedupe — a bare
+            // `undefined` here would be flagged as a corrupt entry and
+            // replayed to a joining retry as a meaningless failure. The
+            // abandoned branch returns an explicit ok:false outcome so a
+            // retry joining this shared run receives a real, structured
+            // answer (the action DID run once).
             if (isExpired(deadlineAt)) {
-              sendResponse({
+              result = {
                 ok: false,
                 errorCode: 'PAGE_ACTION_ABANDONED',
                 error: 'Page action abandoned: the caller\'s deadline expired while the action was in flight; the CSP fallback was not started.',
-              })
+              }
+              sendResponse(result)
               return
             }
             // Strict-CSP pages: the runner's `evaluate` action compiles the
