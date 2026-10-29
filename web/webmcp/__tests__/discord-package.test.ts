@@ -563,6 +563,10 @@ it('keeps the cached token on a coded 403 but clears it on any 401', async () =>
     value: { result: { status: 'error', error_code: 'AUTH' } },
   })
   expect(expired.value.result.message).toContain('(code 50012)')
+  // The 401 handler must EVICT the page-global cache, not merely record
+  // the token in the rejected set — a regression that only suppresses the
+  // token would still pass the behavioral assertions below.
+  expect(page.sandbox.__eo2DiscordToken).toBeUndefined()
   // The rejected token is fully invalidated: the next call neither uses
   // the cache nor re-reads the same webpack token — it goes UNAUTHENTICATED
   // without another fetch (the 403 and the 401 each fetched once).
