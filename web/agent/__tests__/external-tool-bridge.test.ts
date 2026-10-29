@@ -326,3 +326,99 @@ it('refreshes navigation tools and returns the exact creator continuation withou
   expect(result.data.page_tools[0]).toMatchObject({ full_tool_name: 'creator_publish', tab_id: 7, origin: creator.origin })
   expect(invoke).toHaveBeenCalledTimes(1)
 })
+
+describe('WebMCP legacy extension compatibility', () => {
+  const legacySchema = { type: 'object' as const, properties: { a: { type: 'string' } } }
+
+  const legacyTool = (groupKey: string) => ({
+    name: 'picture',
+    origin: 'https://example.com',
+    fullName: 'example_com__picture',
+    hostname: 'example.com',
+    description: '',
+    inputSchema: legacySchema,
+    apiMode: 'documentModelContext' as const,
+    tabs: [{
+      tabId: 1,
+      title: 'Example',
+      url: 'https://example.com',
+      lastSeenAt: 1,
+      groupKey,
+    }],
+  })
+
+  it('sends route fields for both extension generations', async () => {
+    const tool = legacyTool('example_com_signature')
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [tool],
+      getToolByCallName: (name: string) => (name === tool.fullName ? tool : undefined),
+    })
+    const invoke = vi.fn().mockResolvedValue({
+      ok: true,
+      hostname: 'example.com',
+      tabId: 1,
+      result: { ok: true },
+    })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    await callToolExecutor(
+      { full_tool_name: tool.fullName, tab_id: 1, args: { a: 'x' } },
+      toolContext,
+    )
+
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(invoke.mock.calls[0][0]).toMatchObject({
+      targetTabId: 1,
+      preferredTabId: 1,
+      origin: 'https://example.com',
+      toolName: 'picture',
+      fullToolName: 'example_com__picture',
+      groupKey: 'example_com_signature',
+      args: { a: 'x' },
+    })
+  })
+
+  it('refreshes the route key and retries once when the route lookup misses', async () => {
+    const stale = legacyTool('example_com_stale')
+    const fresh = legacyTool('example_com_fresh')
+    let current = stale
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [current],
+      getToolByCallName: (name: string) => (name === stale.fullName ? current : undefined),
+    })
+    mocks.refreshCatalog.mockImplementation(async () => {
+      current = fresh
+      return [fresh]
+    })
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'INVALID_TOOL_NAME',
+        error: 'No route cache entry for tool and group — try re-discovering WebMCP tools',
+        hostname: '',
+        toolName: '',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        hostname: 'example.com',
+        tabId: 1,
+        result: { ok: true },
+      })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    const result = JSON.parse(await callToolExecutor(
+      { full_tool_name: stale.fullName, tab_id: 1, args: { a: 'x' } },
+      toolContext,
+    ))
+
+    expect(invoke).toHaveBeenCalledTimes(2)
+    expect(invoke.mock.calls[0][0]).toMatchObject({ groupKey: 'example_com_stale' })
+    expect(invoke.mock.calls[1][0]).toMatchObject({
+      groupKey: 'example_com_fresh',
+      args: { a: 'x' },
+    })
+    expect(result.data.result).toEqual({ ok: true })
+  })
+})

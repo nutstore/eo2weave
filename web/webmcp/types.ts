@@ -24,6 +24,12 @@ export interface WebMCPDiscoveredTool extends WebMCPToolDefinition {
   apiMode: WebMCPApiMode
   /** Extension-side per-host authorization flag (annotated by background) */
   hostEnabled?: boolean
+  /**
+   * Legacy route key (`hostname_<toolsetSignature>`) reported by extension
+   * <= 1.1.7, which routes invocations by key instead of by origin + raw
+   * tool name. Absent on newer extensions.
+   */
+  groupKey?: string
 }
 
 export type WebMCPDiscoveredToolInstance = WebMCPDiscoveredTool
@@ -43,6 +49,15 @@ export interface WebMCPInvokeRequest {
   toolName: string
   args?: Record<string, unknown>
   binding?: string
+  /**
+   * Legacy routing fields for extension <= 1.1.7, which resolves the target
+   * tab by `groupKey` + `fullToolName` instead of by origin + raw tool name.
+   * Newer extensions ignore them; sending both keeps one web app working
+   * with either extension generation.
+   */
+  groupKey?: string
+  fullToolName?: string
+  preferredTabId?: number
 }
 
 export interface WebMCPPluginDownloadPlan {
@@ -106,6 +121,12 @@ export interface WebMCPTabInstance {
   title: string
   url: string
   lastSeenAt: number
+  /**
+   * Legacy route key of the tab's toolset. Kept per tab because the key
+   * covers a host's whole toolset signature, so two tabs exposing the same
+   * tool can carry different keys.
+   */
+  groupKey?: string
 }
 
 export interface WebMCPRegisteredTool {

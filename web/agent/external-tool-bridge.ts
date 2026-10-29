@@ -1051,6 +1051,33 @@ async function navigationCatalog(tabId: number, rawToolName?: string) {
   }
 }
 
+/**
+ * Re-discover the page catalog and return the current legacy route key
+ * (`groupKey`) of `fullName` on `tabId`.
+ *
+ * Extension <= 1.1.7 routes invocations by a key that embeds the page's
+ * toolset signature, so the key rotates whenever the page re-registers its
+ * tools and the cached one goes stale. Returns undefined when the tool or
+ * the tab is gone.
+ */
+async function refreshLegacyRouteKey(
+  fullName: string,
+  tabId: number,
+): Promise<string | undefined> {
+  try {
+    const { refreshWebMCPCatalog } = await import('@/webmcp/manager')
+    await refreshWebMCPCatalog()
+  } catch {
+    return undefined
+  }
+  try {
+    const refreshed = useWebMCPStore.getState().getToolByCallName(fullName)
+    return refreshed?.tabs.find((tab) => tab.tabId === tabId)?.groupKey
+  } catch {
+    return undefined
+  }
+}
+
 async function executeWebMCPTool(
   tool: UnifiedToolEntry,
   targetTabId: number,
@@ -1099,15 +1126,42 @@ async function executeWebMCPTool(
   if (validationError) return validationError
 
   try {
-    const response = await bridge.webMCPInvoke({
+    // Route fields for both extension generations: newer extensions route by
+    // origin + raw tool name, legacy ones (<= 1.1.7) by `groupKey` +
+    // `fullToolName` + `preferredTabId`. Sending both keeps one web app
+    // working with either extension without probing its version.
+    const targetTab = toolInfo.tabs.find((tab) => tab.tabId === targetTabId)
+    const buildInvokePayload = (groupKey?: string) => ({
       targetTabId,
+      preferredTabId: targetTabId,
       origin: toolInfo.origin,
       toolName: toolInfo.name,
+      fullToolName: toolInfo.fullName,
+      ...(groupKey ? { groupKey } : {}),
       args: toolArgs,
       ...(isSidePanelMode() && getSidePanelBindingId()
         ? { binding: getSidePanelBindingId()! }
         : {}),
     })
+
+    let response = await bridge.webMCPInvoke(buildInvokePayload(targetTab?.groupKey))
+
+    if (
+      !response.ok &&
+      ['INVALID_TOOL_NAME', 'TOOL_TARGET_NOT_FOUND'].includes(response.errorCode || '')
+    ) {
+      // A stale route key is the usual cause on legacy extensions. Refresh
+      // the catalog once to pick up the current key and retry. Only routing
+      // fields change — the arguments are sent unchanged, and this whole
+      // path runs downstream of authorize().
+      const refreshedGroupKey = await refreshLegacyRouteKey(
+        toolInfo.fullName,
+        targetTabId,
+      )
+      if (refreshedGroupKey && refreshedGroupKey !== targetTab?.groupKey) {
+        response = await bridge.webMCPInvoke(buildInvokePayload(refreshedGroupKey))
+      }
+    }
 
     if (!response.ok) {
       const refreshed = ['TARGET_ORIGIN_MISMATCH', 'TOOL_NOT_FOUND'].includes(response.errorCode || '')
