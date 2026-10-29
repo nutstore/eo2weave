@@ -1064,11 +1064,19 @@ async function refreshLegacyRouteKey(
   fullName: string,
   tabId: number,
 ): Promise<string | undefined> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
   try {
     const { refreshWebMCPCatalog } = await import('@/webmcp/manager')
-    await refreshWebMCPCatalog()
+    await Promise.race([
+      refreshWebMCPCatalog(),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Legacy route refresh timed out')), 3000)
+      }),
+    ])
   } catch {
     return undefined
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
   }
   try {
     const refreshed = useWebMCPStore.getState().getToolByCallName(fullName)
@@ -1125,12 +1133,26 @@ async function executeWebMCPTool(
   const validationError = validateToolArgs(tool.fullName, toolArgs, toolInfo.inputSchema)
   if (validationError) return validationError
 
+  const targetTab = toolInfo.tabs.find((tab) => tab.tabId === targetTabId)
+  const targetInstance = targetTab?.groupKey
+    ? store.discoveredTools.find(
+        (instance) => instance.fullName === toolInfo.fullName && instance.tabId === targetTabId
+      )
+    : undefined
+  if (targetTab?.groupKey && targetInstance?.annotations?.readOnlyHint !== true) {
+    return toolErrorJson(
+      'call_tool',
+      'LEGACY_EXACT_TAB_UNSUPPORTED',
+      'This tool may change the page, and the installed browser extension cannot guarantee the selected tab. Update the extension before calling it.',
+      { retryable: false, details: { fullToolName: tool.fullName, tabId: targetTabId } }
+    )
+  }
+
   try {
     // Route fields for both extension generations: newer extensions route by
     // origin + raw tool name, legacy ones (<= 1.1.7) by `groupKey` +
     // `fullToolName` + `preferredTabId`. Sending both keeps one web app
     // working with either extension without probing its version.
-    const targetTab = toolInfo.tabs.find((tab) => tab.tabId === targetTabId)
     const buildInvokePayload = (groupKey?: string) => ({
       targetTabId,
       preferredTabId: targetTabId,
@@ -1159,8 +1181,20 @@ async function executeWebMCPTool(
         targetTabId,
       )
       if (refreshedGroupKey && refreshedGroupKey !== targetTab?.groupKey) {
+        if (context.abortSignal?.aborted) {
+          return toolErrorJson('call_tool', 'CALL_CANCELLED', 'WebMCP tool call was cancelled before retry.', { retryable: false })
+        }
         response = await bridge.webMCPInvoke(buildInvokePayload(refreshedGroupKey))
       }
+    }
+
+    if (response.ok && response.tabId !== targetTabId) {
+      return toolErrorJson(
+        'call_tool',
+        'TAB_TARGET_MISMATCH',
+        `WebMCP tool returned from tab ${response.tabId ?? 'unknown'} instead of selected tab ${targetTabId}.`,
+        { retryable: false, details: { requestedTabId: targetTabId, actualTabId: response.tabId } }
+      )
     }
 
     if (!response.ok) {

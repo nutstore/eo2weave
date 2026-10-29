@@ -98,6 +98,16 @@ export async function refreshWebMCPCatalog(): Promise<WebMCPRegisteredTool[]> {
   // so filter to tools from authorized hosts. Discovery itself still
   // caches the full catalog — authorization is enforced by the extension
   // invoke gate and mirrored here via annotations.
+  // A forced refresh must not reuse a request that began before the caller
+  // observed a route miss. Wait for that request, then start a new discovery.
+  const earlierDiscovery = discoveryInFlight
+  if (earlierDiscovery && useSettingsStore.getState().enableWebMCP) {
+    try {
+      await earlierDiscovery
+    } catch {
+      // A fresh request may recover from the earlier failure.
+    }
+  }
   await discoverWebMCPCatalog(true)
   return useWebMCPStore.getState().getEnabledTools()
 }
