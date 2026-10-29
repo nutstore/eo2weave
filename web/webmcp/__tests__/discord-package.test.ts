@@ -63,7 +63,15 @@ it('validates every package contract and stays below the package snapshot limit'
     // Round 3: one absolute abort deadline per request — the timer must
     // never be re-created after headers arrive (a slow-headers + stalled
     // body request would then outlive the 25s browser-eval timeout).
-    expect(source).not.toMatch(/abortTimer\s*=\s*setTimeout/)
+    // Reject EVERY assignment of a fresh timer to abortTimer, including
+    // the ternary re-arm form `abortTimer = cond ? setTimeout(...) : null`
+    // that the plain-assignment regex alone let through: exactly one
+    // setTimeout call per workflow is the contract, so any second
+    // assignment — however written — would restart the absolute deadline.
+    expect(source.match(/abortTimer\s*=[^\n]*/g) ?? []).toEqual([
+      expect.stringMatching(/^abortTimer\s*=\s*(?!\s*abortController)/),
+    ])
+    expect(source.match(/setTimeout\s*\(/g) ?? []).toHaveLength(1)
   }
 
 })
@@ -315,6 +323,15 @@ it('removes its probe chunk so repeated lookups do not accumulate entries', asyn
   // lifetime. Model exactly that: a real array (so indexOf/splice behave)
   // with webpack's push semantics.
   const chunks: unknown[] = []
+  // Model an ALREADY-INITIALIZED tab: webpack's real entries are present
+  // before the first probe. A cleanup that clears the whole array (instead
+  // of splicing out only its own probe entry) would silently drop these
+  // real chunks — a regression the previous empty-start fixture could not
+  // catch, because empty == empty either way. Pushed via the REAL array
+  // method so it bypasses the probe-instrumented push installed below.
+  const sentinel: unknown[] = [1, {}]
+  Array.prototype.push.call(chunks, sentinel)
+  expect(chunks).toContain(sentinel)
   chunks.push = function (this: unknown[], entry: unknown) {
     Array.prototype.push.call(this, entry)
     const requireCallback = (entry as [number[], unknown, (require: { c: unknown }) => void])[2]
@@ -323,10 +340,12 @@ it('removes its probe chunk so repeated lookups do not accumulate entries', asyn
   ;(page.window as any).webpackChunkdiscord_app = chunks
   ;(page.sandbox as any).webpackChunkdiscord_app = chunks
   for (let i = 0; i < 3; i++) await page.execute('list_guilds', {})
-  // Each walk pushed one probe chunk and the workflow spliced its own
-  // entry back out, so the array returns to empty: nothing accumulates
-  // and no callback closure keeps the token string alive.
-  expect(chunks).toHaveLength(0)
+  // Each walk pushed one probe chunk and the workflow spliced ONLY its own
+  // entry back out: the sentinel webpack entry survives all three walks
+  // untouched and nothing accumulates beyond it. (Spread first: the
+  // instrumented push is an own property the array still carries.)
+  expect([...chunks]).toEqual([sentinel])
+  expect(chunks.indexOf(sentinel)).toBe(0)
   // All three calls still succeeded with the live token.
   expect(page.fetches).toHaveLength(3)
 })
@@ -528,6 +547,10 @@ it('keeps the cached token on a coded 403 but clears it on any 401', async () =>
   })
   expect(denied.value.result.message).toContain('(code 50013)')
   // Permission denial keeps the token cached: no re-auth, no walk needed.
+  // Assert the page-global cache DIRECTLY, immediately after the 403 —
+  // the next call would re-read the same token from the walk either way,
+  // so code that wrongly clears the cache on a coded 403 must fail HERE.
+  expect(page.sandbox.__eo2DiscordToken).toBe('discord-token-xyz')
 
   // Now the walk runs against a LIVE webpack token and Discord rejects it
   // with a coded 401 whose code (50012) is NOT in AUTH_ERRORS: the
@@ -771,30 +794,45 @@ it('rejects nonces longer than the Discord 25-char limit at the schema boundary'
   expect((await page.execute('send_message', { channel: '1', content: 'x', nonce: 'n'.repeat(25) })).ok).toBe(true)
 })
 
-it('reuses the auto-generated nonce when a send is retried with identical input', async () => {
-  const page = fixture()
+it('reuses the auto-generated nonce on retry and mints a fresh one after a confirmed delivery', async () => {
+  const page = fixture({
+    respond: (url) =>
+      url.includes('/channels/555/')
+        ? // Uncoded 500: a pure server failure — outcome unknown, token
+          // untouched, so the send is genuinely "unconfirmed".
+          { status: 500, body: 'Internal Server Error' }
+        : { status: 200, body: [] },
+  })
   const input = { channel: '555', content: 'hello world', reply_to: 'm0' }
+  // First send FAILS (outcome unknown from Discord's perspective): the
+  // nonce must be remembered so the retry is deduped, not posted twice.
   const first = await page.execute('send_message', input)
+  expect(first.value.result.status).toBe('error')
   const firstNonce = JSON.parse(page.fetches[0].init.body!).nonce as string
   expect(firstNonce).toMatch(/.+-[0-9a-z]+/)
-  expect(first.value.result.data.nonce).toBe(firstNonce)
-  // Retry after a lost result: the remembered nonce makes Discord dedupe.
+  // Retry after the failure: the remembered nonce makes Discord dedupe.
   await page.execute('send_message', input)
   expect(JSON.parse(page.fetches[1].init.body!).nonce).toBe(firstNonce)
-  // A different message always gets a fresh nonce.
-  await page.execute('send_message', { channel: '555', content: 'different' })
-  expect(JSON.parse(page.fetches[2].init.body!).nonce).not.toBe(firstNonce)
-  // A caller-supplied nonce always wins over the remembered one.
-  await page.execute('send_message', { ...input, nonce: 'caller-nonce' })
-  expect(JSON.parse(page.fetches[3].init.body!).nonce).toBe('caller-nonce')
   // Retries of different sends do not evict each other: the nonce map is
   // keyed per (channel, reply, content), not one last-send slot.
   const inputB = { channel: '555', content: 'second message', reply_to: 'm0' }
   await page.execute('send_message', inputB)
-  const nonceB = JSON.parse(page.fetches[4].init.body!).nonce as string
+  const nonceB = JSON.parse(page.fetches[2].init.body!).nonce as string
   expect(nonceB).not.toBe(firstNonce)
   await page.execute('send_message', input)
-  expect(JSON.parse(page.fetches[5].init.body!).nonce).toBe(firstNonce)
+  expect(JSON.parse(page.fetches[3].init.body!).nonce).toBe(firstNonce)
+  // A caller-supplied nonce always wins over the remembered one.
+  await page.execute('send_message', { ...input, nonce: 'caller-nonce' })
+  expect(JSON.parse(page.fetches[4].init.body!).nonce).toBe('caller-nonce')
+
+  // Confirmed delivery: the remember entry is DELETED on success, so an
+  // intentional identical resend mints a FRESH nonce and posts a new
+  // message instead of being silently deduped by Discord.
+  const page2 = fixture()
+  await page2.execute('send_message', input)
+  const deliveredNonce = JSON.parse(page2.fetches[0].init.body!).nonce as string
+  await page2.execute('send_message', input)
+  expect(JSON.parse(page2.fetches[1].init.body!).nonce).not.toBe(deliveredNonce)
 })
 
 it('rejects malformed inputs at the schema boundary without touching the tab', async () => {
@@ -948,14 +986,20 @@ it("bounds automatic nonce reuse to Discord's enforce_nonce window", async () =>
   ;(page.sandbox as Record<string, unknown>).__eo2DiscordRetryNonces = new Map([
     [retryKey, { nonce: 'seeded-expired', at: now - 300000 }],
   ])
-  await page.execute('send_message', input)
-  const regenerated = JSON.parse(page.fetches[1].init.body!).nonce as string
+  const failing = fixture({
+    respond: () => ({ status: 500, body: 'Internal Server Error' }),
+  })
+  ;(failing.sandbox as Record<string, unknown>).__eo2DiscordRetryNonces = new Map([
+    [retryKey, { nonce: 'seeded-expired', at: now - 300000 }],
+  ])
+  await failing.execute('send_message', input)
+  const regenerated = JSON.parse(failing.fetches[0].init.body!).nonce as string
   expect(regenerated).not.toBe('seeded-expired')
   // The regenerated entry is stored ONCE: an immediate retry reuses the
   // nonce WITHOUT refreshing its timestamp, so retries cannot extend the
   // window past Discord's dedupe guarantee.
-  const storedAt = (page.sandbox.__eo2DiscordRetryNonces as Map<string, { nonce: string; at: number }>).get(retryKey)!.at
-  await page.execute('send_message', input)
-  expect(JSON.parse(page.fetches[2].init.body!).nonce).toBe(regenerated)
-  expect((page.sandbox.__eo2DiscordRetryNonces as Map<string, { nonce: string; at: number }>).get(retryKey)!.at).toBe(storedAt)
+  const storedAt = (failing.sandbox.__eo2DiscordRetryNonces as Map<string, { nonce: string; at: number }>).get(retryKey)!.at
+  await failing.execute('send_message', input)
+  expect(JSON.parse(failing.fetches[1].init.body!).nonce).toBe(regenerated)
+  expect((failing.sandbox.__eo2DiscordRetryNonces as Map<string, { nonce: string; at: number }>).get(retryKey)!.at).toBe(storedAt)
 }, 15000)

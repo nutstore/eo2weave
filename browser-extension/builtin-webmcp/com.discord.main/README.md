@@ -65,10 +65,11 @@ retry IS deduped; a retry AFTER it re-sends the same nonce but Discord no
 longer enforces uniqueness, so it can post a duplicate — automatic
 retries outside that window are potentially duplicating, and callers who
 need exact-once semantics across longer horizons must pass their own
-`nonce` and reconcile against the channel history. Note also that two
-intentionally identical sends to the same channel and reply target within
-the 5-minute window share a nonce and are deduped by Discord — vary the
-content or pass an explicit `nonce` to force a new message.
+`nonce` and reconcile against the channel history. The remembered nonce
+is dropped as soon as a send is confirmed delivered (HTTP 2xx), so it
+only ever covers retries of sends whose outcome is unknown: two
+intentionally identical sends in a row both post normally, each with its
+own fresh nonce.
 
 ## Readiness gating
 

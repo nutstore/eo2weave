@@ -505,11 +505,17 @@ export default {
               // to the window Discord actually guarantees. The timestamp is
               // set once at nonce creation and NOT refreshed on retry
               // attempts, so the window cannot be extended by retries.
-              // The map holds at most 32 keys (oldest evicted first).
-              // Known trade-off: two intentionally identical sends to the
-              // same channel/reply target within the 5-minute window share
-              // a nonce and Discord dedupes the second one — vary the
-              // content or pass an explicit nonce to force a new message.
+              // The remembered entry is DELETED once the send is confirmed
+              // delivered (HTTP 2xx): a nonce only exists to dedupe a retry
+              // of an UNACKNOWLEDGED send, so a confirmed delivery frees the
+              // key and a second, intentional identical send mints a fresh
+              // nonce and posts normally. The map therefore only ever holds
+              // keys whose delivery outcome is still unknown.
+              // The map holds at most 128 keys (oldest evicted first); a
+              // key can only reach eviction while its send is still
+              // unconfirmed, and Discord only enforces uniqueness for a few
+              // minutes, so a retry after eviction falls back to the
+              // caller-supplied nonce contract for exact control.
               // A different message always gets a fresh nonce, so two sends
               // in the same millisecond never collide. The generated value
               // is echoed back in data.nonce for reuse.
@@ -561,8 +567,8 @@ export default {
                     store.delete(retryKey)
                     store.set(retryKey, { nonce: nonce, at: Date.now() })
                   }
-                  // Bounded: keep the map at 32 keys, evicting the oldest.
-                  while (store.size > 32) {
+                  // Bounded: keep the map at 128 keys, evicting the oldest.
+                  while (store.size > 128) {
                     var oldest = store.keys().next().value
                     store.delete(oldest)
                   }
@@ -579,6 +585,17 @@ export default {
                 { method: 'POST', body: body },
               )
               if (!response.ok) return response
+              // Delivered: the nonce has done its job — drop the remember
+              // entry so a later intentional identical send is NOT deduped
+              // by Discord against this nonce (only retries of sends whose
+              // outcome is unknown need the remembered value).
+              if (retryKey !== null)
+                try {
+                  var delivered =
+                    (globalThis.__eo2DiscordRetryNonces =
+                      globalThis.__eo2DiscordRetryNonces || new Map())
+                  delivered.delete(retryKey)
+                } catch (e) {}
               return ok({ message: mapMessage(response.data), nonce: nonce })
             },
           }
