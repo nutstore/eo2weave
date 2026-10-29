@@ -78,11 +78,14 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
     dbg.sendCommand.mockImplementation((_target: unknown, method: string, params: Record<string, unknown>, done: (r?: unknown) => void) => {
       if (method === 'Runtime.evaluate') {
         captured.push(String(params.expression))
-        // Execute the caller's body FOR REAL via the wrapper-aware mock: a
-        // wrapper that embeds the input as inert text yields undefined, not
-        // 'computed:title', so this assertion proves the input executes.
-        const expression = String(params.expression)
-        const fn = new Function(`return (async () => { ${expression.includes('(async () => {') ? '' : 'throw new Error("no wrapper")'} return 'computed:' + (${JSON.stringify(expression)}.includes('document.title') ? 'title' : 'nothing') })()`) as () => Promise<unknown>
+        // Execute the EXACT captured source as Runtime.evaluate would (as an
+        // async-IIFE script): the result is whatever the wrapper ACTUALLY
+        // evaluates to. A wrapper that embeds the expression as inert text
+        // resolves undefined — it cannot fake 'set-by-body'. The node env has
+        // no `window`, so route the expression's global object through
+        // `globalThis`, exactly like a page expression sees it.
+        const source = String(params.expression).replace(/\bwindow\b/g, 'globalThis')
+        const fn = new Function(`return ${source}`) as () => Promise<unknown>
         void fn().then((v) => done({ result: { value: v } }))
       } else if (method === IDENTITY_PROBE) {
         done({ frameTree: { frame: { loaderId: 'same-loader-id' } } })
@@ -94,8 +97,11 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       storage: storageApi(),
       runtime: { onDetach: dbg.onDetach },
     })
-    const result = await evaluateBoundExpressionViaCdp(7, 'document.title')
-    expect(result).toEqual({ ok: true, result: 'computed:title' })
+    // The expression WRITES its observable effect; the result is derived by
+    // the wrapper actually running that write. An inert-text wrapper never
+    // assigns, so the wrapper's completion value cannot be 'set-by-body'.
+    const result = await evaluateBoundExpressionViaCdp(7, "window.__x = 'set-by-body'; return window.__x")
+    expect(result).toEqual({ ok: true, result: 'set-by-body' })
     expect(dbg.attach).toHaveBeenCalledWith({ tabId: 7 }, '1.3', expect.any(Function))
     expect(dbg.sendCommand).toHaveBeenCalledWith(
       expect.objectContaining({ tabId: 7 }),
@@ -105,7 +111,7 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
     )
     // The caller's expression must reach Runtime.evaluate inside the wrapper.
     expect(captured).toHaveLength(1)
-    expect(captured[0]).toContain('document.title')
+    expect(captured[0]).toContain("window.__x = 'set-by-body'")
   })
 
   it('wraps function-body syntax (return / top-level await) so it parses and EXECUTES as a script', async () => {
@@ -249,8 +255,11 @@ describe('evaluateBoundExpressionViaCdp (#106 fallback)', () => {
       storage: storageApi(),
       runtime: { onDetach: dbg.onDetach },
     })
-    await evaluateBoundExpressionViaCdp(7, '(async () => "late")()')
+    const result = await evaluateBoundExpressionViaCdp(7, '(async () => "late")()')
     expect(captured?.awaitPromise).toBe(true)
+    // The resolved CDP value must actually come back — an evaluator that sent
+    // awaitPromise but dropped the response would fail this assertion.
+    expect(result).toEqual({ ok: true, result: 'late' })
   })
 
   it('surfaces page exceptions as structured failures', async () => {

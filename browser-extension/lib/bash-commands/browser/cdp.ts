@@ -43,9 +43,23 @@ let activityLoaded: Promise<void> | undefined
 // Per-tab operation queue — serialises concurrent click/fill actions on the same tab.
 const tabOpQueue = new Map<number, Promise<void>>()
 
+/**
+ * Thrown by {@link withTabLock} when `maxQueueWaitMs` elapsed while still
+ * WAITING for the tab lock — `fn` never started. Callers use this to abandon
+ * queued work whose requester has already timed out, so an action whose
+ * caller gave up does not execute later against the tab.
+ */
+export class TabLockWaitTimeoutError extends Error {
+    constructor(public readonly waitedMs: number) {
+        super(`Tab operation lock not acquired within ${waitedMs}ms — the queued operation was abandoned before starting (its requester has timed out).`)
+        this.name = 'TabLockWaitTimeoutError'
+    }
+}
+
 export async function withTabLock<T>(
     tabId: number,
     fn: () => Promise<T>,
+    opts?: { maxQueueWaitMs?: number },
 ): Promise<T> {
     const prev = tabOpQueue.get(tabId) ?? Promise.resolve()
     let release!: () => void
@@ -53,7 +67,24 @@ export async function withTabLock<T>(
         release = r
     })
     tabOpQueue.set(tabId, barrier)
-    await prev
+    if (opts?.maxQueueWaitMs !== undefined) {
+        // Deadline applies to the WAIT only: once `fn` starts it always runs
+        // to completion (an in-flight executeScript cannot be cancelled).
+        // A waiter that exceeds the deadline rejects WITHOUT starting `fn` —
+        // later actions are not blocked either, because this entry's barrier
+        // is released in the finally below.
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const deadline = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new TabLockWaitTimeoutError(opts!.maxQueueWaitMs!)), opts!.maxQueueWaitMs)
+        })
+        try {
+            await Promise.race([prev, deadline])
+        } finally {
+            if (timer !== undefined) clearTimeout(timer)
+        }
+    } else {
+        await prev
+    }
     try {
         return await fn()
     } finally {

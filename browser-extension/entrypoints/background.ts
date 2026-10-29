@@ -1,3 +1,9 @@
+// Matches the page-side bridge timeout for runBoundPageAction
+// (injected.content.ts sendToBridge, 300s): a queued page action abandoned by
+// its caller is rejected BEFORE its executeScript starts, so an action whose
+// requester has given up can never run later against the tab.
+const PAGE_ACTION_QUEUE_WAIT_MS = 300_000
+
 // ============================================================
 // Background Service Worker
 // ============================================================
@@ -6,7 +12,7 @@ import { serializeError as serializeBrowserError } from '../lib/bash-commands/br
 import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
 import { installCdpIdleWatch } from '../lib/bash-commands/browser/cdp'
 import { captureFrameLoaderId, evaluateBoundExpressionViaCdpUnlocked } from '../lib/bash-commands/browser/cdp-evaluate'
-import { withTabLock } from '../lib/bash-commands/browser/cdp'
+import { TabLockWaitTimeoutError, withTabLock } from '../lib/bash-commands/browser/cdp'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
@@ -1733,7 +1739,7 @@ export default defineBackground(() => {
       return false
     }
 
-    (async () => {
+    void (async () => {
       try {
         if (message.type === 'extension_get_version') {
           try {
@@ -1990,13 +1996,25 @@ export default defineBackground(() => {
             sendResponse({ ok: false, errorCode: 'INVALID_REQUEST', error: 'runBoundPageAction requires { action: object }' })
             return
           }
-          try {
-            // Serialize the ENTIRE page-action flow (executeScript + CSP
+          // Serialize the ENTIRE page-action flow (executeScript + CSP
             // fallback) on the same per-tab operation lock the CDP fallback
             // evaluator uses. Without this, a concurrent page action could
             // mutate the tab between an async evaluation's steps — the
             // fallback would observe or act on inconsistent page state.
+            // maxQueueWaitMs: the page-side bridge gives up on this action
+            // after 300s (injected.content.ts sendToBridge timeout for
+            // runBoundPageAction) while the handler keeps waiting in the
+            // queue. An action abandoned by its caller must not execute
+            // later against the tab — so the wait itself carries the same
+            // deadline, and a waiter that exceeds it rejects WITHOUT ever
+            // starting its executeScript (cancellation before the effect,
+            // the only cancelable stage: an in-flight executeScript cannot
+            // be interrupted). A started action still runs to completion —
+            // the lock ensures no later command overlaps it.
+            let settled = false
+            try {
             const result: unknown = await withTabLock(targetTabId, async () => {
+              settled = true
               const results = await chrome.scripting.executeScript({
               target: { tabId: targetTabId },
               world: 'MAIN',
@@ -2063,9 +2081,22 @@ export default defineBackground(() => {
               }
             }
             return result
-            })
+            }, { maxQueueWaitMs: PAGE_ACTION_QUEUE_WAIT_MS })
+            settled = true
             sendResponse(result ?? { ok: false, errorCode: 'NO_RESULT', error: 'executeScript returned no result' })
-          } catch (err: any) {
+            } catch (err: any) {
+            if (!settled && err instanceof TabLockWaitTimeoutError) {
+              // The action was abandoned while queued — its caller's bridge
+              // request has already timed out (same 300s budget), so this
+              // response is informational; the caller is gone. Crucially the
+              // executeScript NEVER ran, so no side effect reaches the tab.
+              sendResponse({
+                ok: false,
+                errorCode: 'PAGE_ACTION_ABANDONED',
+                error: 'Page action abandoned: the operation queue for this tab did not grant the lock within the caller\'s timeout window; the action was NOT executed.',
+              })
+              return
+            }
             // Common causes: tab gone, restricted URL (chrome://, web store),
             // host permission missing. Surface as structured error.
             sendResponse({
@@ -2073,8 +2104,8 @@ export default defineBackground(() => {
               errorCode: 'EXECUTE_SCRIPT_FAILED',
               error: err?.message || String(err),
             })
-          }
-          return
+            }
+            return
         }
 
         // ── Capture Visible Tab ───────────────────────────────────────
