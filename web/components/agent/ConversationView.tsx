@@ -15,6 +15,7 @@ import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react'
 import { AlertTriangle, RefreshCw, WifiOff, KeyRound, Wallet } from 'lucide-react'
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
+import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { presentLlmError } from './llm-error'
 import { ErrorBoundary } from '@/components/error/ErrorBoundary'
 import { AgentRichInput, type AgentRichInputHandle } from './AgentRichInput'
@@ -685,7 +686,7 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
               <button
                 type="button"
                 onClick={() => {
-                  window.open('https://ai.jianguoyun.com/', '_blank', 'noopener,noreferrer')
+                  window.open(getNutstoreAIConsoleURL(), '_blank', 'noopener,noreferrer')
                 }}
                 className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-700"
               >

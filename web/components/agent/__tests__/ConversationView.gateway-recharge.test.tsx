@@ -10,6 +10,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { ConversationView } from '../ConversationView'
+import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 
 const {
   useConversationStoreMock,
@@ -254,8 +255,10 @@ describe('ConversationErrorBanner GATEWAY_INSUFFICIENT_CREDIT', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /conversation\.error\.gatewayRecharge/ }))
     expect(windowOpen).toHaveBeenCalledTimes(1)
+    // The console host follows the deployment's configured gateway base URL
+    // (a demo deployment must not send the user to production).
     expect(windowOpen).toHaveBeenCalledWith(
-      'https://ai.jianguoyun.com/',
+      getNutstoreAIConsoleURL(),
       '_blank',
       'noopener,noreferrer'
     )

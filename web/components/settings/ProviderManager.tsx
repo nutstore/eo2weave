@@ -49,6 +49,7 @@ import { getCachedModels, getModelContextWindow, mergeModelLists } from '@/agent
 import { getDefaultPinnedModels } from '@/agent/providers/default-models'
 import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
+import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHeader, BrandDialogBody, BrandDialogFooter, BrandDialogTitle, BrandDialogClose } from '@creatorweave/ui'
 import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, updateGatewayModels, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
 import { performDeviceCodeFlow, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels } from '@/agent/providers/llm-gateway-auth'
@@ -1513,14 +1514,14 @@ export function LLMGatewayCard({
                   that handles both. */}
               <button
                 type="button"
-                onClick={() => window.open('https://ai.jianguoyun.com/', '_blank', 'noopener,noreferrer')}
+                onClick={() => window.open(getNutstoreAIConsoleURL(), '_blank', 'noopener,noreferrer')}
                 className="shrink-0 rounded-md border border-[var(--brand-border,rgba(13,148,136,0.25))] px-2 py-1 text-[11px] font-medium text-[var(--brand-light,#14b8a6)] transition-colors hover:bg-[var(--brand-bg,rgba(13,148,136,0.06))]"
               >
                 {t('settings.gateway.recharge')} →
               </button>
             </div>
             <p className="mt-0.5 font-mono text-[11px] text-tertiary">
-              {process.env.NEXT_PUBLIC_JIANGUOYUN_AI_BASE_URL || 'https://ai.jianguoyun.com'}
+              {getNutstoreAIConsoleURL()}
             </p>
           </div>
 
@@ -1770,16 +1771,6 @@ export function LLMGatewayCard({
                       disabled={rateLimitsLoading}
                     >
                       {rateLimitsLoading ? t('settings.gatewayRateLimits.refreshing') : t('settings.gatewayRateLimits.refresh')}
-                    </BrandButton>
-                    {/* Recharge entry: opens the Nutstore AI console where the
-                        credit balance is managed (next to the refresh/logout
-                        row; the console is also where login lives). */}
-                    <BrandButton
-                      variant="outline"
-                      className="flex-1 h-8 text-[11px]"
-                      onClick={() => window.open('https://ai.jianguoyun.com/', '_blank', 'noopener,noreferrer')}
-                    >
-                      {t('settings.gateway.recharge')}
                     </BrandButton>
                     <BrandButton
                       variant="outline"
