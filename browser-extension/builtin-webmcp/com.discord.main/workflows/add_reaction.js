@@ -505,6 +505,81 @@ export default {
             }
           }
 
+          // Outcome-unknown ledger (finding: a timed-out mutation released
+          // its ordering lock). If Discord accepted an add or remove but
+          // the response was delayed past the abort deadline, discordApi
+          // returns NETWORK after the client aborts, the lock promise
+          // settles, and a QUEUED OPPOSITE mutation would then dispatch —
+          // Discord may already have accepted the timed-out mutation and
+          // still apply it after the queued one, leaving the reaction
+          // state OPPOSITE to the later request. The ledger records the
+          // last aborted (outcome-unknown) mutation per reaction key; an
+          // opposing mutation consults it BEFORE dispatching, re-fetches
+          // the message's actual reaction state (reconcile), and re-arms
+          // its own mutation to whatever direction the reconciled state
+          // still needs, so the final state always matches the LATER
+          // request. Aborted mutations of the SAME direction are also
+          // reconciled and re-applied if absent — the same outcome-unknown
+          // reasoning applies: Discord may not have applied it after all.
+          // Kept per tab: the reaction lock serializes same-tab opposing
+          // mutations, and the ledger only matters for a mutation queued
+          // BEHIND an unknown-outcome one, which is always same-tab.
+          var __eo2ReactionUnknownOutcome = {}
+          function noteReactionUnknownOutcome(key, direction) {
+            __eo2ReactionUnknownOutcome[key] = {
+              direction: direction,
+              at: Date.now(),
+            }
+          }
+          function clearReactionUnknownOutcome(key) {
+            delete __eo2ReactionUnknownOutcome[key]
+          }
+          // Re-fetch the message and return its CURRENT reaction state for
+          // this emoji: { present: true } when the user's reaction exists,
+          // { present: false } when it does not, null when the state cannot
+          // be determined (the reconcile itself failed). Reads the SAME
+          // endpoint the read_messages tool uses (GET .../reactions/<emoji>
+          // with the current user's context via the Discord default of
+          // pagination but a 1-item limit): the API returns the users who
+          // added that reaction — an empty list means absent.
+          async function reconcileReactionState(channel, messageId, emojiEnc) {
+            var probe = await discordApi(
+              '/channels/' +
+                encodeURIComponent(channel) +
+                '/messages/' +
+                encodeURIComponent(messageId) +
+                '/reactions/' +
+                emojiEnc +
+                '?limit=1',
+              { method: 'GET' },
+            )
+            if (!probe.ok) return null
+            var users = probe.data
+            var present = Array.isArray(users)
+              ? users.some(function (u) {
+                  return u && u.id === selfUserId()
+                })
+              : false
+            return { present: present }
+          }
+          // Resolve the current user's id from the token context: Discord's
+          // reaction-user list entries carry full user objects, so the id
+          // must come from /users/@me (cached for the tab lifetime — the
+          // account-switch guard in getTokenCached already refuses stale
+          // credentials, and a switched account would fail the token walk
+          // before this cache is ever consulted).
+          var __eo2SelfUserId = null
+          function selfUserId() {
+            if (__eo2SelfUserId !== null) return __eo2SelfUserId
+            return null
+          }
+          async function ensureSelfUserId() {
+            if (__eo2SelfUserId !== null) return __eo2SelfUserId
+            var me = await discordApi('/users/@me', { method: 'GET' })
+            if (me.ok && me.data && typeof me.data.id === 'string')
+              __eo2SelfUserId = me.data.id
+            return __eo2SelfUserId
+          }
           function ok(data) {
             return {
               status: 'ok',
@@ -630,9 +705,42 @@ export default {
                   'Not on a discord.com page.',
                 )
               var emoji = encodeURIComponent(args.emoji)
+              var lockKey = args.channel + ':' + args.message_id + ':' + args.emoji
               var response = await withReactionLock(
-                args.channel + ':' + args.message_id + ':' + args.emoji,
-                function (queuedAt) {
+                lockKey,
+                async function (queuedAt) {
+                  // Outcome-unknown reconcile (see the ledger above): a
+                  // PREVIOUS mutation for this reaction aborted past its
+                  // deadline — its outcome is unknown. Re-fetch the live
+                  // reaction state and only dispatch when the mutation is
+                  // still needed; if the reconcile itself fails, the
+                  // outcome stays unknown and the request fails closed
+                  // (NETWORK, retryable) instead of dispatching blind.
+                  var unknown = __eo2ReactionUnknownOutcome[lockKey]
+                  if (unknown) {
+                    var mine = await ensureSelfUserId()
+                    if (mine === null)
+                      return {
+                        ok: false,
+                        error_code: 'NETWORK',
+                        message:
+                          'Previous reaction mutation timed out with unknown outcome and the reconciling state read failed; retry to re-check the reaction.',
+                      }
+                    var state = await reconcileReactionState(
+                      args.channel,
+                      args.message_id,
+                      emoji,
+                    )
+                    if (state === null)
+                      return {
+                        ok: false,
+                        error_code: 'NETWORK',
+                        message:
+                          'Previous reaction mutation timed out with unknown outcome and the reconciling state read failed; retry to re-check the reaction.',
+                      }
+                    clearReactionUnknownOutcome(lockKey)
+                    if (state.present) return { ok: true, data: {} }
+                  }
                   return discordApi(
                     '/channels/' +
                       encodeURIComponent(args.channel) +
@@ -651,7 +759,16 @@ export default {
                 if (e && e.lockTimeout) return error('LOCK_TIMEOUT', String(e.message || e))
                 throw e
               })
-              if (!response.ok) return response
+              if (!response.ok) {
+                // An ABORTED mutation (deadline abort) has an UNKNOWN
+                // outcome: Discord may have accepted it even though the
+                // response never arrived. Record it so the NEXT mutation
+                // for this reaction reconciles the live state instead of
+                // dispatching blind (see the ledger above).
+                if (response.error_code === 'NETWORK')
+                  noteReactionUnknownOutcome(lockKey, 'add')
+                return response
+              }
               return ok({ added: true })
             },
           }
