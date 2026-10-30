@@ -627,6 +627,29 @@ export default {
               delete persisted[retryKey]
             })
           }
+          // Positive-evidence ledger for stale-map-nonce detection: it
+          // records every shared-store entry THIS tab has observed — either
+          // because it reserved it or because it adopted it from another
+          // tab (key -> entry creation timestamp). A key recorded here
+          // whose shared entry has later VANISHED was delivered and
+          // superseded by another tab (delivery is the only writer that
+          // removes a young entry), so the per-tab map entry for it is
+          // stale and must not be reused — Discord would dedupe the
+          // intentional new send against the delivered nonce. A map entry
+          // with NO recorded observation (seeded by the caller, or whose
+          // reservation failed while storage was down) is never treated as
+          // stale on a missing shared entry: absence without evidence is
+          // not supersession. Per-tab like the nonce map; both live in the
+          // page's globalThis.
+          function noteRetrySharedSeen(retryKey, at) {
+            var seen = (globalThis.__eo2DiscordRetrySharedSeen =
+              globalThis.__eo2DiscordRetrySharedSeen || new Map())
+            seen.set(retryKey, at)
+          }
+          function noteRetrySharedGone(retryKey) {
+            var seen = globalThis.__eo2DiscordRetrySharedSeen
+            if (seen) seen.delete(retryKey)
+          }
           var discordToolImplementations = {
             async send_message(args) {
               if (location.hostname !== 'discord.com')
@@ -692,8 +715,45 @@ export default {
                     remembered &&
                     typeof remembered.nonce === 'string' &&
                     now - remembered.at < 300000
-                  )
+                  ) {
                     nonce = remembered.nonce
+                    // Verify the map nonce against shared storage BEFORE
+                    // minting, using POSITIVE supersession evidence only
+                    // (finding: a tab can retain a map entry another tab
+                    // already superseded — it delivered the send, deleted
+                    // the shared key, and its own retry minted a fresh
+                    // reservation; reusing the stale map nonce would let
+                    // Discord dedupe an intentional new send). A live
+                    // shared entry wins (and re-anchors the map value); a
+                    // map entry whose key is in the seen-ledger but whose
+                    // shared entry has vanished was delivered elsewhere
+                    // and is dropped. Entries never observed in shared
+                    // storage (seeded by the caller, or reserved while
+                    // storage was down) are kept — absence without
+                    // evidence is not supersession. A storage failure
+                    // keeps the map value and degrades the scope: the
+                    // nonce is still needed for retry dedup.
+                    withoutStorage(function () {
+                      var shared = retryNonceEntryAt(retryKey, now)
+                      var seen = globalThis.__eo2DiscordRetrySharedSeen
+                      if (shared) {
+                        if (shared.nonce !== nonce) {
+                          nonce = shared.nonce
+                          remembered.nonce = shared.nonce
+                        }
+                        noteRetrySharedSeen(retryKey, shared.at)
+                        // A live shared entry means an earlier mirror or
+                        // reserve succeeded: the tab-only mark is obsolete.
+                        delete remembered.__eo2TabOnlyNonce
+                      } else if (seen && seen.has(retryKey)) {
+                        // Superseded: the shared entry this tab observed
+                        // is gone because another tab DELIVERED the send.
+                        retries.delete(retryKey)
+                        seen.delete(retryKey)
+                        nonce = undefined
+                      }
+                    })
+                  }
                   // Cross-tab lookup: another discord.com tab may hold the
                   // original nonce (same origin → shared localStorage).
                   // The map is only a fallback, so a remembered entry wins
@@ -707,7 +767,10 @@ export default {
                   if (nonce === undefined)
                     withoutStorage(function () {
                       var entry = retryNonceEntryAt(retryKey, now)
-                      if (entry) nonce = entry.nonce
+                      if (entry) {
+                        nonce = entry.nonce
+                        noteRetrySharedSeen(retryKey, entry.at)
+                      }
                     })
                   if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
                 } catch (e) {}
@@ -721,7 +784,10 @@ export default {
                 // here instead of being raced with a second value.
                 withoutStorage(function () {
                   var entry = retryNonceEntryAt(retryKey, Date.now())
-                  if (entry && nonce === undefined) nonce = entry.nonce
+                  if (entry && nonce === undefined) {
+                    nonce = entry.nonce
+                    noteRetrySharedSeen(retryKey, entry.at)
+                  }
                 })
                 if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
               }
@@ -743,6 +809,8 @@ export default {
                     withoutStorage(function () {
                       reserveRetryNonceInStorage(retryKey, nonce, Date.now())
                     })
+                    if (__eo2StorageOk !== false)
+                      noteRetrySharedSeen(retryKey, Date.now())
                   } catch (e) {}
                 if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
               }
@@ -751,13 +819,43 @@ export default {
               // that reserved between this tab's re-check and its own
               // reserve is adopted here, so both tabs POST the SAME nonce
               // and Discord's enforce_nonce dedupes. This is also the
-              // verification step for a remembered (map) nonce: a stale or
-              // foreign reservation replaces it before the send.
+              // verification step for a remembered (map) nonce: a live
+              // young shared entry REPLACES the map value (and re-anchors
+              // the map entry to it), so a nonce another tab superseded or
+              // already delivered cannot be reused — reusing it would let
+              // Discord dedupe an intentional new send. The inverse case
+              // (map entry, NO live shared entry) splits on the
+              // __eo2TabOnlyNonce mark: a reservation that FAILED is
+              // tab-local on purpose and gets mirrored below; an unmarked
+              // entry whose shared copy vanished was superseded and
+              // delivered by another tab, so it is stale — dropped here,
+              // and a fresh nonce is minted instead of reusing the dead
+              // value (which Discord would silently dedupe).
+              var mapNonceNeedsMirror = false
+              // Final adoption guard: whatever shared storage holds for
+              // this retry key RIGHT BEFORE the fetch wins. A racing tab
+              // that reserved between this tab's re-check and its own
+              // reserve is adopted here, so both tabs POST the SAME nonce
+              // and Discord's enforce_nonce dedupes. The map entry is
+              // re-anchored to an adopted value so later attempts in this
+              // tab stay consistent with the shared store.
               if (retryKey !== null && nonce !== undefined)
                 try {
                   withoutStorage(function () {
                     var entry = retryNonceEntryAt(retryKey, Date.now())
-                    if (entry && entry.nonce !== nonce) nonce = entry.nonce
+                    if (entry) {
+                      if (entry.nonce !== nonce) {
+                        nonce = entry.nonce
+                        var m = retries.get(retryKey)
+                        if (m) {
+                          m.nonce = entry.nonce
+                          delete m.__eo2TabOnlyNonce
+                        }
+                      } else if (retries.get(retryKey)) {
+                        delete retries.get(retryKey).__eo2TabOnlyNonce
+                      }
+                      noteRetrySharedSeen(retryKey, entry.at)
+                    }
                   })
                 } catch (e) {}
               // Creation timestamp for the store-once contract: captured ONCE
@@ -776,7 +874,28 @@ export default {
                   if (!existing) {
                     store.delete(retryKey)
                     store.set(retryKey, { nonce: nonce, at: now2 })
+                    // Storage was unavailable when this nonce's shared
+                    // reservation was attempted: mark the map entry so the
+                    // lookup verification treats it as tab-local ON PURPOSE
+                    // (a missing shared entry must not drop it as stale)
+                    // and a later attempt with recovered storage mirrors it
+                    // into the shared store (finding: recovered storage left
+                    // the nonce tab-local).
+                    if (__eo2StorageOk === false) {
+                      var marked = store.get(retryKey)
+                      if (marked) marked.__eo2TabOnlyNonce = true
+                    }
                   }
+                  var entryNow = store.get(retryKey)
+                  if (
+                    entryNow &&
+                    entryNow.__eo2TabOnlyNonce === true &&
+                    __eo2StorageOk !== false
+                  )
+                    // A marked entry with recovered storage: mirror it into
+                    // the shared store below so other tabs can dedupe
+                    // against it too.
+                    mapNonceNeedsMirror = true
                   // Bounded: keep the map at 128 keys, evicting the oldest.
                   while (store.size > 128) {
                     var oldest = store.keys().next().value
@@ -784,16 +903,19 @@ export default {
                   }
                 } catch (e) {}
               // Mirror-after-recovery (finding: recovered storage left the
-              // nonce tab-local): a nonce remembered only in the per-tab map
-              // because its first reserve hit a storage failure must not
-              // keep reporting cross-tab dedup while shared storage has no
-              // live entry — a retry routed to ANOTHER tab could not see it
-              // and would double-post. Once storage works again, reserve the
-              // map's nonce under the SAME retry key so every tab adopts it;
-              // reserveRetryNonceInStorage keeps a still-young foreign entry
-              // verbatim, and the final adoption guard above reconciles the
-              // map value with it before the send.
-              if (retryKey !== null && __eo2StorageOk !== false)
+              // nonce tab-local): a nonce whose FIRST shared-storage
+              // reservation failed is marked __eo2TabOnlyNonce on the map
+              // entry; once storage works again on a later attempt, reserve
+              // that same nonce under the SAME retry key so every tab
+              // adopts it — without the mirror, a retry routed to ANOTHER
+              // tab could not see the nonce and would double-post.
+              // reserveRetryNonceInStorage keeps a still-young foreign
+              // entry verbatim, and the adoption guard above reconciles the
+              // map value with it before the send. Gated on the mark: an
+              // unmarked map entry with no shared entry was superseded by
+              // another tab (delivered and deleted) and was already dropped
+              // as stale in the guard, never reaching this branch.
+              if (mapNonceNeedsMirror && __eo2StorageOk !== false)
                 withoutStorage(function () {
                   if (retryNonceEntryAt(retryKey, now2) === null)
                     reserveRetryNonceInStorage(retryKey, nonce, now2)
@@ -842,6 +964,8 @@ export default {
                   withoutStorage(function () {
                     deleteRetryNonceFromStorage(retryKey)
                   })
+                  if (__eo2StorageOk !== false)
+                    noteRetrySharedGone(retryKey)
                   if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
                 } catch (e) {}
               return ok({
