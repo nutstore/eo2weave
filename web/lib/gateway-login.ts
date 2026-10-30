@@ -38,8 +38,22 @@ export interface GatewayLoginResult {
  */
 export interface GatewayLoginApplyOptions {
   signal?: AbortSignal
-  /** Synchronous token-pair commit, called only after every cancellable step. */
+  /**
+   * Synchronous token-pair commit, called only after every cancellable step.
+   */
   onCommit?: () => void
+  /**
+   * When the login ATTEMPT started (before the device-code approval wait),
+   * supplied by the caller. The logout-supersedes commit guard compares the
+   * cross-tab logout marker against this timestamp: a logout committed after
+   * the attempt began must win over the pending login. Callers that ran
+   * `performDeviceCodeFlow` themselves MUST pass the timestamp taken BEFORE
+   * that call — `applyGatewayLoginTokens` itself only observes the attempt
+   * after approval completed, which can be minutes later, and a logout in
+   * between would otherwise predate the guard's timestamp. Defaults to
+   * "now" for direct (already-approved) callers.
+   */
+  attemptStartedAt?: number
 }
 
 export async function applyGatewayLoginTokens(
@@ -51,20 +65,18 @@ export async function applyGatewayLoginTokens(
 
 async function applyGatewayLoginTokensInner(
   accessToken: string,
-  { signal, onCommit }: GatewayLoginApplyOptions,
+  { signal, onCommit, attemptStartedAt }: GatewayLoginApplyOptions,
 ): Promise<GatewayLoginResult> {
   const keyId = getLLMGatewayApiKeyProviderKey()
   const { saveApiKey, loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
   signal?.throwIfAborted()
 
-  // Record when THIS attempt started — BEFORE the device-code approval and
-  // model-preparation awaits in the caller (approval can take minutes), so
-  // a logout committed during any of those waits (in any tab) predates
-  // this timestamp and invalidates the attempt in the commit guard below.
-  // (Previously the timestamp was taken inside the credential lock, AFTER
-  // those waits — a logout that happened meanwhile predated it and the
-  // stale login resurrected the just-ended session.)
-  const attemptStartedAt = Date.now()
+  // The attempt timestamp: the caller's pre-approval capture when supplied
+  // (device-code approval can take minutes — a logout during that wait must
+  // invalidate the attempt), else "now" (direct callers without a pending
+  // approval window). The commit guard below re-checks the cross-tab logout
+  // marker against it under the credential lock.
+  const effectiveAttemptStartedAt = attemptStartedAt ?? Date.now()
 
   // Fetch models before the first persistent write (network work outside
   // the credential lock). A NETWORK failure here is treated as best-effort
@@ -95,7 +107,7 @@ async function applyGatewayLoginTokensInner(
     // preparation can take minutes — do not resurrect the session they
     // just ended. The last login wins, the last logout also wins.
     const lastLogout = getLastLogoutTimestamp()
-    if (lastLogout !== null && lastLogout > attemptStartedAt) {
+    if (lastLogout !== null && lastLogout > effectiveAttemptStartedAt) {
       console.warn(
         '[gateway-login] discarding login commit: a logout occurred after this attempt started',
       )

@@ -84,6 +84,18 @@ async function withProbeTimeout<T>(p: Promise<T>, what: string): Promise<T> {
  * sits in that store to the login step with no explanation.
  */
 export async function checkAiReadiness(): Promise<AiReadinessResult> {
+  return checkAiReadinessOnce(/* allowRecheck: */ true)
+}
+
+/**
+ * Single readiness pass. `allowRecheck` permits ONE recursive re-run when
+ * the visitor changed the selected provider while a probe was pending (the
+ * new provider's credentials must be evaluated before reporting ready);
+ * the re-run itself disallows further re-checks so a visitor switching
+ * repeatedly within the probe window degrades to the safe not-ready/login
+ * verdict instead of looping.
+ */
+async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessResult> {
   let gatewayProbeTimeout: Error | null = null
   if (ENABLE_LLM_GATEWAY && isLLMGatewayConfigured()) {
     // The token lookup itself can throw (storage not ready, corrupted token
@@ -172,12 +184,25 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
           // earlier snapshot predates the probe awaits, and the visitor may
           // have selected a different provider while the key lookup was
           // pending. Switching blindly would overwrite their newer choice
-          // with this page's stale probe target — revalidate instead, and
-          // skip the switch when the selection changed (the page's own
-          // generation gate drops this stale flow afterwards).
+          // with this page's stale probe target — when the selection
+          // changed, RE-EVALUATE readiness from the top against the new
+          // provider instead of returning ready unconditionally (the newly
+          // selected provider may itself have no usable key). The page's
+          // own generation gate drops this stale flow's navigation either
+          // way; only its settings side effects are governed here.
           const freshProvider = useSettingsStore.getState().providerType
           if (freshProvider !== currentProviderType) {
-            return { ready: true, creditExhausted: false }
+            if (useSettingsStore.getState().hasApiKey) {
+              return { ready: true, creditExhausted: false }
+            }
+            // Re-check the new provider's credentials; `allowRecheck` false
+            // (a visitor switching twice within the probe window) falls
+            // through to the plain not-ready verdict, where the page offers
+            // the login step — the safe default.
+            if (allowRecheck) {
+              return checkAiReadinessOnce(/* allowRecheck: */ false)
+            }
+            return { ready: false, creditExhausted: false }
           }
           // Resolve the model to select for the candidate BEFORE switching:
           // an empty string would overwrite the visitor's saved model for

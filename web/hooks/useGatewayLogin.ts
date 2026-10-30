@@ -74,6 +74,9 @@ export function useGatewayLogin(): UseGatewayLoginResult {
     setIsRunning(true)
     try {
       console.log('[useGatewayLogin] starting device code flow...')
+      // Capture the attempt start BEFORE approval: approval can take
+      // minutes, and a logout during it must invalidate this attempt.
+      const attemptStartedAt = Date.now()
       const tokens = await performDeviceCodeFlow(baseURL, clientId, (state) => {
         if (mountedRef.current && !attempt.signal.aborted) {
           setAuthState(state)
@@ -84,6 +87,7 @@ export function useGatewayLogin(): UseGatewayLoginResult {
 
       await applyGatewayLoginTokens(tokens.access_token, {
         signal: attempt.signal,
+        attemptStartedAt,
         onCommit: () => persistDeviceLoginTokens(tokens, clientId, baseURL),
       })
       console.log('[useGatewayLogin] login complete, returning true')

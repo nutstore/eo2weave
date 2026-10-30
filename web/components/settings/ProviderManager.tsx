@@ -1203,7 +1203,7 @@ export function LLMGatewayCard({
   onToggle: () => void
 }) {
   const t = useT()
-  const { triggerProviderRefresh, pinModel, unpinModel, removePinnedModels, markPinnedModelsSeen, getStalePinnedModels, pinnedModelsByProvider, modelCredentialStatus } = useSettingsStore()
+  const { triggerProviderRefresh, pinModel, unpinModel, removePinnedModels, markPinnedModelsSeen, getStalePinnedModels, pinnedModelsByProvider, modelCredentialStatus, modelCredentialStatusError, setModelCredentialStatusError } = useSettingsStore()
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [allModels, setAllModels] = useState<Array<{ id: string; name: string }>>([])
   const [showModelPicker, setShowModelPicker] = useState(false)
@@ -1352,10 +1352,14 @@ export function LLMGatewayCard({
     }
 
     try {
+      // Capture the attempt start BEFORE approval: approval can take
+      // minutes, and a logout during it must invalidate this attempt.
+      const attemptStartedAt = Date.now()
       const tokens = await performDeviceCodeFlow(baseURL, clientId, (state) => {
         setAuthState(state)
       })
       const result = await applyGatewayLoginTokens(tokens.access_token, {
+        attemptStartedAt,
         onCommit: () => persistDeviceLoginTokens(tokens, clientId, baseURL),
       })
       setAllModels(result.models)
@@ -1480,6 +1484,18 @@ export function LLMGatewayCard({
     void handleFetchRateLimits()
   }, [isLoggedIn, isExpanded, handleFetchRateLimits, rateLimitsResult, rateLimitsError])
 
+  // Surface the auth layer's persisted credential-state write failure: a
+  // purge/status write that failed (storage outage, timed-out key-store op)
+  // leaves modelCredentialStatusError set in the store — without a
+  // production reader the hint vanished once the transient logout/auth
+  // error state cleared, and the card silently trusted a status that may
+  // not reflect the stores. Show a retryable banner while expanded; a
+  // retry button clears the flag (the next status write re-records it if
+  // the failure persists).
+  const handleDismissCredentialStatusError = useCallback(() => {
+    setModelCredentialStatusError(null)
+  }, [setModelCredentialStatusError])
+
   return (
     <div className="rounded-lg border border-[var(--brand-border,rgba(13,148,136,0.25))] overflow-hidden"
       style={{ background: isExpanded ? 'var(--brand-bg, rgba(13,148,136,0.04))' : undefined }}
@@ -1534,6 +1550,25 @@ export function LLMGatewayCard({
       {/* Expanded Content */}
       {isExpanded && (
         <div className="border-t border-border/60 px-3.5 py-3 space-y-3">
+          {/* Auth layer's persisted credential-state write failure: the
+              stored status may not reflect the actual stores (a purge that
+              failed can resurrect the session, a timed-out write may still
+              land). Offer a dismiss — the next token operation re-records
+              the flag if the failure persists. */}
+          {modelCredentialStatusError && (
+            <div className="flex items-start justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-2.5 py-2 dark:border-red-900 dark:bg-red-950/40">
+              <p className="text-[11px] text-red-600 dark:text-red-400 break-all">
+                {modelCredentialStatusError}
+              </p>
+              <button
+                type="button"
+                onClick={handleDismissCredentialStatusError}
+                className="text-[11px] text-red-600 dark:text-red-400 underline shrink-0"
+              >
+                {t('common.dismiss')}
+              </button>
+            </div>
+          )}
           <div>
             <div className="flex items-center justify-between gap-2">
               <p className="text-[11px] font-medium text-secondary">{t('settings.gateway.serviceUrl')}</p>

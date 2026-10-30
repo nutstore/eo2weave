@@ -191,9 +191,11 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     expect(settingsState.providerType).toBe('llm-gateway')
   })
 
-  it('does NOT switch providers when the visitor picks one while the key lookup is pending', async () => {
+  it('RE-CHECKS readiness when the visitor picks a provider while the key lookup is pending', async () => {
     // The visitor changed the selection while the candidate key lookup was
-    // in flight: the stale probe must not overwrite their newer choice.
+    // in flight: the stale probe must not overwrite their newer choice, but
+    // it must ALSO not report ready without checking the new provider —
+    // readiness is re-evaluated against 'deepseek' (which has no key).
     getValidAccessTokenMock.mockResolvedValue(null)
     getAllApiKeyProvidersMock.mockResolvedValue(['openai'])
     settingsState.providerType = 'anthropic'
@@ -216,7 +218,34 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     settingsState.providerType = 'deepseek'
     releaseLookup()
 
+    // The recheck finds 'deepseek' unconfigured and 'openai' keyed — the
+    // corrected flow switches to the provider that actually has a key.
     await expect(pending).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(settingsState.providerType).toBe('openai')
+  })
+
+  it('reports NOT ready when the visitor picks an UNCONFIGURED provider mid-lookup and nothing else is keyed', async () => {
+    getValidAccessTokenMock.mockResolvedValue(null)
+    settingsState.providerType = 'anthropic'
+    settingsState.hasApiKey = false
+    let releaseProbe!: () => void
+    getAllApiKeyProvidersMock.mockImplementationOnce(
+      () =>
+        new Promise<string[]>((resolve) => {
+          releaseProbe = () => resolve([])
+        }),
+    )
+
+    const pending = checkAiReadiness()
+    for (let i = 0; i < 40 && releaseProbe === undefined; i++) {
+      await Promise.resolve()
+    }
+    expect(releaseProbe).toBeTypeOf('function')
+    // Visitor switches to an unconfigured provider while the probe runs.
+    settingsState.providerType = 'deepseek'
+    releaseProbe()
+
+    await expect(pending).resolves.toEqual({ ready: false, creditExhausted: false })
     expect(settingsState.providerType).toBe('deepseek')
   })
 
