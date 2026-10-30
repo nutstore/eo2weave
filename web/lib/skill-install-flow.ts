@@ -16,7 +16,10 @@ import {
   LLM_GATEWAY_API_KEY_ID,
   LLM_GATEWAY_PROVIDER_TYPE,
 } from '@/agent/providers/llm-gateway-provider'
-import { getValidAccessToken } from '@/agent/providers/llm-gateway-auth'
+import {
+  getValidAccessToken,
+  LLM_GATEWAY_REFRESH_TOKEN_KEY_ID,
+} from '@/agent/providers/llm-gateway-auth'
 import { useSettingsStore } from '@/store/settings.store'
 import { getAllApiKeyProviders } from '@/security/api-key-store'
 
@@ -130,9 +133,12 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
       getAllApiKeyProviders(),
       'reading saved API keys',
     )
-    // A stored gateway token shadow alone does NOT mean usable (the token
-    // branch above already proved it invalid) — exclude it.
-    const others = providers.filter((p) => p !== LLM_GATEWAY_API_KEY_ID)
+    // A stored gateway token shadow OR refresh-token backup alone does NOT
+    // mean usable (the token branch above already proved the shadow invalid;
+    // the refresh-token backup is internal bookkeeping, not a provider key)
+    // — exclude both before declaring "another provider has a key".
+    const gatewayOwnedKeys = new Set([LLM_GATEWAY_API_KEY_ID, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID])
+    const others = providers.filter((p) => !gatewayOwnedKeys.has(p))
     if (others.length > 0) {
       return { ready: true, creditExhausted: false }
     }

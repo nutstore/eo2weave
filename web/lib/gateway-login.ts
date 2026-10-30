@@ -20,6 +20,7 @@ import {
 } from '@/agent/providers/llm-gateway-provider'
 import { useSettingsStore } from '@/store/settings.store'
 import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
+import { withKeyStoreDeadline } from '@/agent/providers/llm-gateway-auth'
 
 export interface GatewayLoginResult {
   ok: boolean
@@ -53,26 +54,35 @@ async function applyGatewayLoginTokensInner(
   const { saveApiKey, loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
   signal?.throwIfAborted()
 
-  // Fetch and prepare everything before the first persistent write.
+  // Fetch models before the first persistent write (network work outside
+  // the credential lock). Default pins are computed INSIDE the lock below —
+  // a snapshot taken here could go stale if the visitor pins something
+  // while the lock is contended.
   const models = await prepareGatewayModels(accessToken, signal)
   signal?.throwIfAborted()
-  const settings = useSettingsStore.getState()
-  let defaults: string[] = []
-  if ((settings.pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
-    const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
-    signal?.throwIfAborted()
-    defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
-  }
 
   // Keep the read, write and possible rollback in one cross-tab critical
   // section. A cancelled login must not restore over a newer tab's login.
   return withGatewayCredentialLock(async () => {
     signal?.throwIfAborted()
-    const previousKey = await loadApiKey(keyId)
+    const settings = useSettingsStore.getState()
+    // Re-check pins under the lock: a pin added between the pre-lock
+    // snapshot and this commit must win over the computed defaults.
+    let defaults: string[] = []
+    if ((settings.pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
+      const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
+      defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
+    }
+    signal?.throwIfAborted()
+    // Bound the key-store reads/writes: a stalled api-key-store op must not
+    // hold the origin-wide credential lock forever (later logins, refreshes
+    // and logouts all queue behind it).
+    const bounded = <T>(p: Promise<T>) => withKeyStoreDeadline(p)
+    const previousKey = await bounded(loadApiKey(keyId))
     signal?.throwIfAborted()
     let committed = false
     try {
-      await saveApiKey(keyId, accessToken)
+      await bounded(saveApiKey(keyId, accessToken))
       signal?.throwIfAborted()
       // No awaits after this point: cancellation cannot interleave the token
       // pair, provider registration, and selected-provider settings commit.
@@ -96,12 +106,14 @@ async function applyGatewayLoginTokensInner(
       return { ok: true, accessToken, models }
     } catch (e) {
       // The aborted write may have committed. Roll back only while still
-      // holding the lock shared by all gateway login attempts.
+      // holding the lock shared by all gateway login attempts. Bounded the
+      // same way as the forward path — a stalled key-store op must not hold
+      // the lock forever during rollback either.
       if (!committed) {
-        const current = await loadApiKey(keyId)
+        const current = await bounded(loadApiKey(keyId))
         if (current === accessToken) {
-          if (previousKey === null) await deleteApiKey(keyId)
-          else await saveApiKey(keyId, previousKey)
+          if (previousKey === null) await bounded(deleteApiKey(keyId))
+          else await bounded(saveApiKey(keyId, previousKey))
         }
       }
       throw e

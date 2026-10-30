@@ -30,6 +30,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
 
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   getValidAccessToken: (...args: unknown[]) => getValidAccessTokenMock(...(args as [])),
+  LLM_GATEWAY_REFRESH_TOKEN_KEY_ID: '__llm_gateway_refresh_token__',
 }))
 
 vi.mock('@/store/settings.store', () => ({
@@ -161,6 +162,27 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
   it('a gateway-token shadow alone does NOT count as another-provider key', async () => {
     getValidAccessTokenMock.mockResolvedValue(null)
     getAllApiKeyProvidersMock.mockResolvedValue(['__llm_gateway_token__'])
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+  })
+
+  it('a gateway refresh-token backup alone does NOT count as another-provider key', async () => {
+    // The SQLite refresh-token backup lives in the same api-key-store as real
+    // provider keys; counting it as one let a visitor skip login with no
+    // usable credential.
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue(['__llm_gateway_refresh_token__'])
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+  })
+
+  it('the refresh-token backup does not mask a missing key when mixed with the shadow', async () => {
+    // Both gateway-owned keys present and nothing else: still not ready.
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue([
+      '__llm_gateway_token__',
+      '__llm_gateway_refresh_token__',
+    ])
 
     await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
   })
