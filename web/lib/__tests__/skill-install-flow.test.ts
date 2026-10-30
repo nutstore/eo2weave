@@ -54,6 +54,7 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     settingsState.hasApiKey = false
+    settingsState.providerType = 'openai'
     getAllApiKeyProvidersMock.mockResolvedValue([])
   })
 
@@ -162,6 +163,28 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     getAllApiKeyProvidersMock.mockResolvedValue(['__llm_gateway_token__'])
 
     await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+  })
+
+  it('does not trust cached hasApiKey for an expired selected gateway credential', async () => {
+    settingsState.providerType = 'llm-gateway'
+    settingsState.hasApiKey = true
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue(['__llm_gateway_token__'])
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+  })
+
+  it('offers a retry when the gateway token probe stalls and no other key exists', async () => {
+    vi.useFakeTimers()
+    try {
+      getValidAccessTokenMock.mockReturnValue(new Promise(() => {}))
+      const pending = checkAiReadiness()
+      const assertion = expect(pending).rejects.toThrow(/timed out/)
+      await vi.advanceTimersByTimeAsync(10_000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('key-store failure degrades to not-ready but flags the verdict as unproven', async () => {

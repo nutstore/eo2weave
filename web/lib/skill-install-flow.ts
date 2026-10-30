@@ -81,6 +81,7 @@ async function withProbeTimeout<T>(p: Promise<T>, what: string): Promise<T> {
  * sits in that store to the login step with no explanation.
  */
 export async function checkAiReadiness(): Promise<AiReadinessResult> {
+  let gatewayProbeTimeout: Error | null = null
   if (ENABLE_LLM_GATEWAY && isLLMGatewayConfigured()) {
     // The token lookup itself can throw (storage not ready, corrupted token
     // cache) — treat that as "no gateway token" and keep evaluating the
@@ -93,13 +94,9 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
         'checking the gateway login',
       )
     } catch (e) {
-      // A lookup failure (storage not ready, corrupted token cache) is
-      // treated as "no gateway token" so the remaining credential branches
-      // still run. A probe that STALLED past the deadline is different: the
-      // outcome is UNKNOWN, not "no token" — swallowing it here would turn
-      // a retryable timeout into the login prompt. Propagate it; the page
-      // surfaces its retryable readiness-timeout error instead.
-      if (e instanceof Error && e.message.includes('timed out')) throw e
+      // A stalled probe is still unknown. Check other credentials before
+      // surfacing its retryable error when no usable credential is found.
+      if (e instanceof Error && e.message.includes('timed out')) gatewayProbeTimeout = e
       token = null
     }
     if (token) {
@@ -151,6 +148,7 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
     return { ready: false, creditExhausted: false, keyStoreUnavailable: true }
   }
 
+  if (gatewayProbeTimeout) throw gatewayProbeTimeout
   return { ready: false, creditExhausted: false }
 }
 

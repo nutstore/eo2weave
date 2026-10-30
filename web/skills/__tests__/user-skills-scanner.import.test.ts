@@ -74,7 +74,7 @@ const writeInstalled = (dirName: string, md: string): void => {
 function makeOpfsRoot(
   failWritesFor?: string,
   failReadsFor?: string,
-  opts?: { failWritesTimes?: number },
+  opts?: { failWritesTimes?: number; onGetDirectory?: (path: string, name: string) => Promise<void> | void },
 ): FileSystemDirectoryHandle {
   let failedWrites = 0
   const shouldFailWrite = (targetPath: string): boolean => {
@@ -114,8 +114,8 @@ function makeOpfsRoot(
       createWritable: async () => {
         const chunks: Uint8Array[] = []
         return {
-          write: async (d: Uint8Array | string) => {
-            chunks.push(typeof d === 'string' ? new TextEncoder().encode(d) : d)
+          write: async (d: Uint8Array | string | Blob) => {
+            chunks.push(typeof d === 'string' ? new TextEncoder().encode(d) : d instanceof Uint8Array ? d : new Uint8Array(await d.arrayBuffer()))
           },
           close: async () => {
             if (shouldFailWrite(`${path}/${name}`)) {
@@ -141,13 +141,14 @@ function makeOpfsRoot(
       name: path.split('/').pop() ?? '',
       getFileHandle: (name: string, opts?: { create?: boolean }) =>
         Promise.resolve(fileHandle(path, name, opts)),
-      getDirectoryHandle: (name: string, opts?: { create?: boolean }) => {
+      getDirectoryHandle: async (name: string, handleOpts?: { create?: boolean }) => {
+        await opts?.onGetDirectory?.(path, name)
         const dir = dirOf(userRoot, path, true)!
         if (!dir.dirs.has(name)) {
-          if (!opts?.create) return Promise.reject(new Error(`NotFoundError: ${path}/${name}`))
+          if (!handleOpts?.create) throw new Error(`NotFoundError: ${path}/${name}`)
           dir.dirs.set(name, makeDir())
         }
-        return Promise.resolve(build(path ? `${path}/${name}` : name))
+        return build(path ? `${path}/${name}` : name)
       },
       removeEntry: (name: string) => {
         const dir = dirOf(userRoot, path, false)
@@ -173,6 +174,9 @@ function makeOpfsRoot(
         for (const name of dir.files.keys()) {
           yield [name, fileHandle(path, name)] as const
         }
+      },
+      values: async function* () {
+        for await (const [, entry] of self.entries()) yield entry
       },
     }
     return self as unknown as FileSystemDirectoryHandle
@@ -242,12 +246,16 @@ const writeRunState = (runId: string, status: 'import-complete' | 'failed-rollba
 
 describe('importUserSkillZip cleanup safety (issue #128)', () => {
   it('skips a queued store install after another tab installed the target', async () => {
-    const first = importUserSkillZip({
+    vi.resetModules()
+    const firstTab = await import('@/skills/user-skills-scanner')
+    vi.resetModules()
+    const secondTab = await import('@/skills/user-skills-scanner')
+    const first = firstTab.importUserSkillZip({
       isBundle: false,
       skill: previewEntry('skill-a', 'first/skill-a/', 1),
       _raw: { 'first/skill-a/SKILL.md': new TextEncoder().encode('# First') },
     }, { ifAbsent: true })
-    const second = importUserSkillZip({
+    const second = secondTab.importUserSkillZip({
       isBundle: false,
       skill: previewEntry('skill-a', 'second/skill-a/', 1),
       _raw: { 'second/skill-a/SKILL.md': new TextEncoder().encode('# Second') },
@@ -263,6 +271,91 @@ describe('importUserSkillZip cleanup safety (issue #128)', () => {
       _raw: { 'third/skill-a/SKILL.md': new TextEncoder().encode('# Third') },
     }, { ifAbsent: true })).toBe(0)
     expect(contentOf('skill-a', 'SKILL.md')).toBe('# Local edit')
+  })
+
+  it('keeps separate module realms out of the same import transaction', async () => {
+    vi.resetModules()
+    const firstTab = await import('@/skills/user-skills-scanner')
+    vi.resetModules()
+    const secondTab = await import('@/skills/user-skills-scanner')
+    let releaseFirst!: () => void
+    let backupAccesses = 0
+    const lockRequests = vi.spyOn(navigator.locks, 'request')
+    const root = makeOpfsRoot(undefined, undefined, {
+      onGetDirectory: async (path, name) => {
+        if (path === '.skills' && name === '.import-backups') {
+          backupAccesses++
+          if (backupAccesses === 1) await new Promise<void>((resolve) => { releaseFirst = resolve })
+        }
+      },
+    })
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => root,
+    }
+    const makePreview = (rootName: string) => ({
+      isBundle: false,
+      skill: previewEntry('skill-a', `${rootName}/skill-a/`, 1),
+      _raw: { [`${rootName}/skill-a/SKILL.md`]: new TextEncoder().encode(`# ${rootName}`) },
+    })
+    const first = firstTab.importUserSkillZip(makePreview('First'), { ifAbsent: true })
+    await vi.waitFor(() => expect(backupAccesses).toBe(1))
+    const second = secondTab.importUserSkillZip(makePreview('Second'), { ifAbsent: true })
+    await vi.waitFor(() => expect(lockRequests.mock.calls.filter(([name]) => name === 'eo2weave-skill-import-recovery')).toHaveLength(2))
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    expect(backupAccesses).toBe(1)
+    releaseFirst()
+    expect(await Promise.all([first, second])).toEqual([1, 0])
+    lockRequests.mockRestore()
+  })
+
+  it('restores the previous skill when a folder overwrite fails after removal', async () => {
+    writeInstalled('skill-a', '# Previous')
+    const source = dirOf(userRoot, '.source/skill-a', true)!
+    source.files.set('SKILL.md', { data: new TextEncoder().encode('# Replacement') })
+    const root = makeOpfsRoot('user/skill-a/SKILL.md', undefined, { failWritesTimes: 1 })
+    ;(navigator as unknown as { storage: unknown }).storage = { getDirectory: async () => root }
+    const sourceHandle = await (await root.getDirectoryHandle('.source')).getDirectoryHandle('skill-a')
+
+    await expect(importUserSkillFolder(sourceHandle)).rejects.toThrow('OPFS write failed')
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# Previous')
+  })
+
+  it('serializes folder and ZIP imports targeting the same skill across tabs', async () => {
+    vi.resetModules()
+    const folderTab = await import('@/skills/user-skills-scanner')
+    vi.resetModules()
+    const zipTab = await import('@/skills/user-skills-scanner')
+    const source = dirOf(userRoot, '.source/skill-a', true)!
+    source.files.set('SKILL.md', { data: new TextEncoder().encode('# Folder') })
+    let releaseFolder!: () => void
+    let backupAccesses = 0
+    const lockRequests = vi.spyOn(navigator.locks, 'request')
+    const root = makeOpfsRoot(undefined, undefined, {
+      onGetDirectory: async (path, name) => {
+        if (path === '.skills' && name === '.import-backups') {
+          backupAccesses++
+          if (backupAccesses === 1) await new Promise<void>((resolve) => { releaseFolder = resolve })
+        }
+      },
+    })
+    const sourceHandle = await (await root.getDirectoryHandle('.source')).getDirectoryHandle('skill-a')
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => root,
+    }
+    const folder = folderTab.importUserSkillFolder(sourceHandle)
+    await vi.waitFor(() => expect(backupAccesses).toBe(1))
+    const zip = zipTab.importUserSkillZip({
+      isBundle: false,
+      skill: previewEntry('skill-a', 'zip/skill-a/', 1),
+      _raw: { 'zip/skill-a/SKILL.md': new TextEncoder().encode('# ZIP') },
+    })
+    await vi.waitFor(() => expect(lockRequests.mock.calls.filter(([name]) => name === 'eo2weave-skill-import-recovery')).toHaveLength(2))
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    expect(backupAccesses).toBe(1)
+    releaseFolder()
+    expect(await Promise.all([folder, zip])).toEqual([1, 1])
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# ZIP')
+    lockRequests.mockRestore()
   })
 
   it('restores an overwritten skill and removes only what this import wrote when a bundle import fails', async () => {
@@ -1153,6 +1246,9 @@ describe('importUserSkillFolder uses the serialized import pipeline', () => {
               }),
             }] as const
           }
+        },
+        values: async function* () {
+          for await (const [, entry] of dirHandleFor(path).entries()) yield entry
         },
         getDirectoryHandle: async (n: string) => dirHandleFor(path ? `${path}/${n}` : n),
         getFileHandle: async () => {

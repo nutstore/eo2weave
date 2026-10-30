@@ -116,4 +116,28 @@ describe('applyGatewayLoginTokens cancellation', () => {
     expect(keyStore.save).toHaveBeenCalledTimes(1)
     expect(keyStore.delete).not.toHaveBeenCalled()
   })
+
+  it('does not roll back a newer login committed by another tab', async () => {
+    vi.resetModules()
+    const firstTab = await import('@/lib/gateway-login')
+    vi.resetModules()
+    const secondTab = await import('@/lib/gateway-login')
+    let finishFirstSave!: () => void
+    keyStore.save.mockImplementationOnce(async (_id, key) => {
+      await new Promise<void>((resolve) => { finishFirstSave = resolve })
+      savedKey = key
+    })
+    const controller = new AbortController()
+    const first = firstTab.applyGatewayLoginTokens('cancelled-key', { signal: controller.signal })
+    await vi.waitFor(() => expect(keyStore.save).toHaveBeenCalledTimes(1))
+    controller.abort()
+    const second = secondTab.applyGatewayLoginTokens('newer-key')
+    await vi.waitFor(() => expect(provider.prepare).toHaveBeenCalledTimes(2))
+    await Promise.resolve()
+    expect(keyStore.save).toHaveBeenCalledTimes(1)
+    finishFirstSave()
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(second).resolves.toMatchObject({ ok: true })
+    expect(savedKey).toBe('newer-key')
+  })
 })

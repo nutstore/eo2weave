@@ -37,26 +37,17 @@ export interface GatewayLoginApplyOptions {
   onCommit?: () => void
 }
 
-// Serialize credential commits and their possible rollback in this tab.
-// Cross-tab, the rollback below is a content compare-and-swap: it restores
-// the previous key ONLY while the store still holds THIS attempt's token,
-// so a newer credential saved by another tab is never overwritten.
-let applicationTail: Promise<unknown> = Promise.resolve()
+const GATEWAY_CREDENTIAL_LOCK = 'eo2weave-gateway-credential-commit'
+
+interface GatewayWebLocks {
+  request<T>(name: string, callback: () => Promise<T>): Promise<T>
+}
 
 export async function applyGatewayLoginTokens(
   accessToken: string,
   options: GatewayLoginApplyOptions = {},
 ): Promise<GatewayLoginResult> {
-  const previous = applicationTail.catch(() => {})
-  let release!: () => void
-  const slot = new Promise<void>((resolve) => { release = resolve })
-  applicationTail = previous.then(() => slot)
-  await previous
-  try {
-    return await applyGatewayLoginTokensInner(accessToken, options)
-  } finally {
-    release()
-  }
+  return applyGatewayLoginTokensInner(accessToken, options)
 }
 
 async function applyGatewayLoginTokensInner(
@@ -65,8 +56,6 @@ async function applyGatewayLoginTokensInner(
 ): Promise<GatewayLoginResult> {
   const keyId = getLLMGatewayApiKeyProviderKey()
   const { saveApiKey, loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
-  signal?.throwIfAborted()
-  const previousKey = await loadApiKey(keyId)
   signal?.throwIfAborted()
 
   // Fetch and prepare everything before the first persistent write.
@@ -80,46 +69,51 @@ async function applyGatewayLoginTokensInner(
     defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
   }
 
-  let committed = false
-  try {
+  // Keep the read, write and possible rollback in one cross-tab critical
+  // section. A cancelled login must not restore over a newer tab's login.
+  const locks = (navigator as Navigator & { locks?: GatewayWebLocks }).locks
+  if (!locks) throw new Error('Web Locks are required for safe gateway login.')
+  return locks.request(GATEWAY_CREDENTIAL_LOCK, async () => {
     signal?.throwIfAborted()
-    await saveApiKey(keyId, accessToken)
+    const previousKey = await loadApiKey(keyId)
     signal?.throwIfAborted()
-    // No awaits after this point: cancellation cannot interleave the token
-    // pair, provider registration, and selected-provider settings commit.
-    registerGatewayModels(models)
-    onCommit?.()
-    committed = true
-    settings.invalidateApiKeyCache(keyId)
-    settings.switchProviderAndModel(
-      LLM_GATEWAY_PROVIDER_TYPE,
-      models[0]?.id ?? settings.modelName,
-    )
+    let committed = false
+    try {
+      await saveApiKey(keyId, accessToken)
+      signal?.throwIfAborted()
+      // No awaits after this point: cancellation cannot interleave the token
+      // pair, provider registration, and selected-provider settings commit.
+      registerGatewayModels(models)
+      onCommit?.()
+      committed = true
+      settings.invalidateApiKeyCache(keyId)
+      settings.switchProviderAndModel(
+        LLM_GATEWAY_PROVIDER_TYPE,
+        models[0]?.id ?? settings.modelName,
+      )
 
-    if (defaults.length > 0) {
-      settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-      settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-    }
-
-    settings.setHasApiKey(true)
-    settings.setModelCredentialStatus('valid')
-    settings.triggerProviderRefresh()
-    return { ok: true, accessToken, models }
-  } catch (e) {
-    // An abort during the async key-store write may arrive after it commits.
-    // Restore only if the store STILL holds THIS attempt's token (a CAS on
-    // content): another tab's login may have saved a newer credential after
-    // our write — overwriting it with our older key would leave that tab
-    // reporting success while its token pair and saved credential disagree.
-    if (!committed) {
-      const current = await loadApiKey(keyId)
-      if (current === accessToken) {
-        if (previousKey === null) await deleteApiKey(keyId)
-        else await saveApiKey(keyId, previousKey)
+      if (defaults.length > 0) {
+        settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+        settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
       }
+
+      settings.setHasApiKey(true)
+      settings.setModelCredentialStatus('valid')
+      settings.triggerProviderRefresh()
+      return { ok: true, accessToken, models }
+    } catch (e) {
+      // The aborted write may have committed. Roll back only while still
+      // holding the lock shared by all gateway login attempts.
+      if (!committed) {
+        const current = await loadApiKey(keyId)
+        if (current === accessToken) {
+          if (previousKey === null) await deleteApiKey(keyId)
+          else await saveApiKey(keyId, previousKey)
+        }
+      }
+      throw e
     }
-    throw e
-  }
+  })
 }
 
 export { getLLMGatewayBaseURL, getLLMGatewayClientId }

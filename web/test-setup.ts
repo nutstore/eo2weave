@@ -130,7 +130,9 @@ if (typeof navigator !== 'undefined' && !(navigator as any).locks) {
       if (prev && prev.size > 0) return await callback(null)
     }
     while (prev && prev.size > 0) {
-      await Promise.race(prev)
+      // A rejected lock callback still releases the lock; the next waiter
+      // must acquire it rather than inherit the previous callback's error.
+      await Promise.race([...prev].map((pending) => pending.catch(() => {})))
     }
     const p = (async () => {
       const result = await callback(makeLock())

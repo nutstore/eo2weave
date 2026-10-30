@@ -12,6 +12,7 @@
 
 import type { Skill, SkillResource } from './skill-types'
 import { parseSkillMd, slugify } from './skill-parser'
+import { copyDirectoryRecursive } from './skill-folder-utils'
 import { Unzip, UnzipInflate, UnzipPassThrough } from 'fflate'
 import {
   getResourceType,
@@ -1153,53 +1154,18 @@ export async function importUserSkillFolder(
   srcDirHandle: FileSystemDirectoryHandle,
 ): Promise<number> {
   const dirName = srcDirHandle.name
-
-  // Read the source tree into memory BEFORE taking the import locks: the
-  // copy itself is the only phase that must be serialized. A slow source
-  // (network drive) would otherwise hold the lock and stall concurrent
-  // imports of unrelated skills.
-  const files: Record<string, Uint8Array> = {}
-  const readRecursive = async (
-    dir: FileSystemDirectoryHandle,
-    prefix: string,
-  ): Promise<number> => {
-    let count = 0
-    for await (const [name, entry] of dir.entries()) {
-      const path = prefix ? `${prefix}/${name}` : name
-      if (entry.kind === 'directory') {
-        count += await readRecursive(await dir.getDirectoryHandle(name), path)
-      } else {
-        const file = await (entry as FileSystemFileHandle).getFile()
-        files[path] = new Uint8Array(await file.arrayBuffer())
-        count++
-      }
-    }
-    return count
-  }
-  const count = await readRecursive(srcDirHandle, '')
-
-  // Reuse the ZIP write pipeline (stage/remove/backup/rollback + locks) by
-  // presenting the folder as a single-skill in-memory "archive". The folder
-  // name must pass the same safety validation the preview path enforces.
   if (!/^[a-zA-Z][a-zA-Z0-9-]*$/.test(dirName)) {
     throw new Error(
       `Folder name "${dirName}" is not a valid skill directory name (letters, digits, hyphens).`,
     )
   }
-  const raw: Record<string, Uint8Array> = {}
-  for (const [path, data] of Object.entries(files)) {
-    raw[`${dirName}/${path}`] = data
-  }
-  return importUserSkillZip({
-    isBundle: false,
-    skill: {
-      dirName,
-      entries: [],
-      fileCount: count,
-      _commonRoot: `${dirName}/`,
-    },
-    _raw: raw,
-  })
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  const skill: ZipSkillEntry = { dirName, entries: [], fileCount: 0, _commonRoot: '' }
+  // Folder and ZIP imports share the same cross-tab lock and durable backup
+  // transaction, so neither can overwrite the other's in-flight changes.
+  return withImportSerialization(runId, [dirName], () =>
+    importUserSkillZipInner({ isBundle: false, skill, _raw: {} }, [skill], runId,
+      (target) => copyDirectoryRecursive(srcDirHandle, target)))
 }
 
 /**
@@ -1538,6 +1504,7 @@ async function importUserSkillZipInner(
   preview: ZipSkillPreview,
   skills: ZipSkillEntry[],
   runId: string,
+  writeFolder?: (target: FileSystemDirectoryHandle) => Promise<number>,
 ): Promise<number> {
   const { _raw } = preview
 
@@ -1748,7 +1715,9 @@ async function importUserSkillZipInner(
       // untouched skill's directory must not be (re)created on failure.
       const target = await userDir.getDirectoryHandle(s.dirName, { create: true })
       await writeImportOwner(target, runId)
-      total += await writeZipSkillToOpfs(_raw, s.dirName, s._commonRoot, target)
+      total += writeFolder
+        ? await writeFolder(target)
+        : await writeZipSkillToOpfs(_raw, s.dirName, s._commonRoot, target)
       await target.removeEntry(IMPORT_OWNER_FILE)
       written.add(s.dirName)
       // Fresh skill fully written — drop it from the durable recovery
