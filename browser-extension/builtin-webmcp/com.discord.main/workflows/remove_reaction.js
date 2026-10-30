@@ -244,11 +244,21 @@ export default {
                 ? options.queued_at
                 : Date.now()
             var remainingMs = deadlineMs - (Date.now() - queuedAtMs)
-            if (
-              typeof commandDeadlineMs === 'number' &&
-              commandDeadlineMs > 0
-            ) {
-              var commandRemainingMs = commandDeadlineMs - Date.now()
+            // The adapter-side command deadline arrives INSIDE __args
+            // (__eo2CommandDeadlineMs, spread into the eval input by the
+            // adapter): execute.toString() is invoked with the input object
+            // only, so the execute function's own second parameter is never
+            // bound and must not be relied on. Clamping to the command
+            // deadline keeps a queued reaction from applying after the
+            // caller already received TAB_UNAVAILABLE.
+            var commandDeadline = null
+            try {
+              var injected = args && args.__eo2CommandDeadlineMs
+              if (typeof injected === 'number' && injected > 0)
+                commandDeadline = injected
+            } catch (e) {}
+            if (commandDeadline !== null) {
+              var commandRemainingMs = commandDeadline - Date.now()
               if (commandRemainingMs < remainingMs) remainingMs = commandRemainingMs
             }
             var abortTimer =

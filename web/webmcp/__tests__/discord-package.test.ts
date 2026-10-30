@@ -139,7 +139,10 @@ function fixture(options: {
         body = [{ id: 'g1', name: 'Guild', icon: null, owner: false, description: null, approximate_member_count: 42 }]
       else if (url.endsWith('/users/@me'))
         body = { id: 'self', username: 'me', bot: false, email: 'me@example.com', verified: true, mfa_enabled: true, locale: 'en-US' }
-      else if (url.includes('/users/'))
+      else if (url.endsWith('/users/' + encodeURIComponent('u1') + '/profile'))
+        // Distinct from /users/@me: a fixture answering any '/users/' URL
+        // would let a regression to the bare /users/:id endpoint still pass
+        // the profile assertions below.
         body = { user: { id: 'u1', username: 'tester', global_name: 'Tester', bot: false, banner: null }, user_profile: { bio: 'bio text' } }
       else if (url.includes('/messages'))
         body = [{ id: 'm1', channel_id: 'c1', content: 'hello', author: { id: 'u1', username: 'tester' } }]
@@ -483,6 +486,11 @@ it('maps guild, channel, profile and search responses', async () => {
   expect(profile.value.result.data.user).not.toHaveProperty('email')
   expect(profile.value.result.data).not.toHaveProperty('email')
   expect(profile.value.result.data.profile_source).toBe('users/:id/profile')
+  // Route regression guard: the non-self profile request must hit
+  // /users/:id/profile exactly — the bare /users/:id endpoint exposes no
+  // bio and would break the mapping contract.
+  const profileFetch = page.fetches.find((f) => f.url.includes('/users/u1'))
+  expect(new URL(profileFetch!.url).pathname).toBe('/api/v9/users/u1/profile')
   const me = await page.execute('get_user_profile', { user_id: '@me' })
   expect(me.value.result.data.user).toMatchObject({ id: 'self', username: 'me' })
   // Private account fields never reach tool output, even for '@me'.

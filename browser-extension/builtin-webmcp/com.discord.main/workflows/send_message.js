@@ -42,6 +42,14 @@ export default {
     description: 'send_message',
     async run({ input, state, target }) {
       const options = { tab: target.tabId, timeout: 25000 }
+      // Absolute deadline (epoch ms) for the WHOLE command, computed on the
+      // adapter side before the eval is dispatched: the browser's 25s
+      // timeout includes the tab-command queue wait, so the in-page fetch
+      // must never outlive this instant (finding: an eval that starts late
+      // could otherwise arm a full fresh deadline and DELIVER a message
+      // after the caller already received TAB_UNAVAILABLE, making a retry
+      // of it post a duplicate).
+      const commandDeadlineMs = Date.now() + options.timeout
       const execute = async (args) => {
         var workflow = (() => {
 
@@ -221,6 +229,26 @@ export default {
             // cleared exactly once, when the response is fully consumed.
             var deadlineMs = 18000
             var startedAt = Date.now()
+            // Clamp to the COMMAND deadline (epoch ms, injected from the
+            // adapter as __args.__eo2CommandDeadlineMs): the browser's 25s
+            // timeout includes the tab-command queue wait BEFORE the eval
+            // runs, so a late-starting eval must not arm a fresh 18s
+            // deadline the command cannot cover — otherwise the POST can
+            // deliver after the caller already received TAB_UNAVAILABLE,
+            // and a retry of that send posts a duplicate. When the command
+            // budget is exhausted, the fetch aborts immediately instead of
+            // firing into the dark.
+            var commandDeadline = null
+            try {
+              var injected = args && args.__eo2CommandDeadlineMs
+              if (typeof injected === 'number' && injected > 0)
+                commandDeadline = injected
+            } catch (e) {}
+            var remainingMs = deadlineMs
+            if (commandDeadline !== null) {
+              var commandRemainingMs = commandDeadline - startedAt
+              if (commandRemainingMs < remainingMs) remainingMs = commandRemainingMs
+            }
             var abortTimer =
               abortController !== null
                 ? setTimeout(
@@ -229,7 +257,7 @@ export default {
                         abortController.abort()
                       } catch (e) {}
                     },
-                    Math.max(1, deadlineMs - (Date.now() - startedAt)),
+                    Math.max(1, remainingMs),
                   )
                 : null
             var response
@@ -755,6 +783,21 @@ export default {
                     store.delete(oldest)
                   }
                 } catch (e) {}
+              // Mirror-after-recovery (finding: recovered storage left the
+              // nonce tab-local): a nonce remembered only in the per-tab map
+              // because its first reserve hit a storage failure must not
+              // keep reporting cross-tab dedup while shared storage has no
+              // live entry — a retry routed to ANOTHER tab could not see it
+              // and would double-post. Once storage works again, reserve the
+              // map's nonce under the SAME retry key so every tab adopts it;
+              // reserveRetryNonceInStorage keeps a still-young foreign entry
+              // verbatim, and the final adoption guard above reconciles the
+              // map value with it before the send.
+              if (retryKey !== null && __eo2StorageOk !== false)
+                withoutStorage(function () {
+                  if (retryNonceEntryAt(retryKey, now2) === null)
+                    reserveRetryNonceInStorage(retryKey, nonce, now2)
+                })
               // A storage failure at persist time left the nonce tab-local,
               // so cross-tab dedup is degraded; it is surfaced via
               // data.dedup_scope. Everything here is best-effort too:
@@ -789,8 +832,17 @@ export default {
                   // never posted). The delete is a merge-on-write: it drops
                   // ONLY this key from the CURRENT stored map, so it cannot
                   // erase a nonce another tab persisted concurrently for a
-                  // different unconfirmed send.
-                  deleteRetryNonceFromStorage(retryKey)
+                  // different unconfirmed send. A FAILED delete must not be
+                  // swallowed silently (finding: the delivered nonce stayed
+                  // in shared storage with dedup still reported as
+                  // 'cross-tab', so a later identical send was suppressed):
+                  // the sticky degraded flag marks the result so the caller
+                  // knows cross-tab dedup is unreliable, and cannot be
+                  // cleared by the successful map delete below.
+                  withoutStorage(function () {
+                    deleteRetryNonceFromStorage(retryKey)
+                  })
+                  if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
                 } catch (e) {}
               return ok({
                 message: mapMessage(response.data),
@@ -810,9 +862,16 @@ export default {
       }
       let response
       try {
+        // The command deadline rides into the page via __args so the
+        // in-page abort timer can clamp its remaining budget to it (the
+        // browser's 25s timeout includes the tab-command queue wait).
+        const inputWithDeadline = {
+          ...input,
+          __eo2CommandDeadlineMs: commandDeadlineMs,
+        }
         response = await browser.eval(
           '() => { var __args = ' +
-            JSON.stringify(input) +
+            JSON.stringify(inputWithDeadline) +
             '; var __out = (' + execute.toString() + ')(__args); ' +
             'return Promise.resolve(__out).then(function (o) { ' +
             'if (__args.__eo2DedupDegraded === true) o.degradedDedup = true; return o; }) }',

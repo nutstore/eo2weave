@@ -37,6 +37,13 @@ export default {
     description: 'read_messages',
     async run({ input, state, target }) {
       const options = { tab: target.tabId, timeout: 25000 }
+      // Absolute deadline (epoch ms) for the WHOLE command, computed on the
+      // adapter side before the eval is dispatched: the browser's 25s
+      // timeout includes the tab-command queue wait, so the in-page fetch
+      // must never outlive this instant (finding: an eval that starts late
+      // could otherwise arm a full fresh deadline and complete after the
+      // caller already received TAB_UNAVAILABLE).
+      const commandDeadlineMs = Date.now() + options.timeout
       const execute = async (args) => {
         var workflow = (() => {
 
@@ -216,6 +223,26 @@ export default {
             // cleared exactly once, when the response is fully consumed.
             var deadlineMs = 18000
             var startedAt = Date.now()
+            // Clamp to the COMMAND deadline (epoch ms, injected from the
+            // adapter as __args.__eo2CommandDeadlineMs): the browser's 25s
+            // timeout includes the tab-command queue wait BEFORE the eval
+            // runs, so a late-starting eval must not arm a fresh 18s
+            // deadline the command cannot cover — otherwise the request
+            // can outlive the timed-out command and apply after the caller
+            // already received TAB_UNAVAILABLE. When the command budget is
+            // exhausted, the fetch aborts immediately instead of firing
+            // into the dark.
+            var commandDeadline = null
+            try {
+              var injected = args && args.__eo2CommandDeadlineMs
+              if (typeof injected === 'number' && injected > 0)
+                commandDeadline = injected
+            } catch (e) {}
+            var remainingMs = deadlineMs
+            if (commandDeadline !== null) {
+              var commandRemainingMs = commandDeadline - startedAt
+              if (commandRemainingMs < remainingMs) remainingMs = commandRemainingMs
+            }
             var abortTimer =
               abortController !== null
                 ? setTimeout(
@@ -224,7 +251,7 @@ export default {
                         abortController.abort()
                       } catch (e) {}
                     },
-                    Math.max(1, deadlineMs - (Date.now() - startedAt)),
+                    Math.max(1, remainingMs),
                   )
                 : null
             var response
@@ -519,8 +546,15 @@ export default {
       }
       let response
       try {
+        // The command deadline rides into the page via __args so the
+        // in-page abort timer can clamp its remaining budget to it (the
+        // browser's 25s timeout includes the tab-command queue wait).
+        const inputWithDeadline = {
+          ...input,
+          __eo2CommandDeadlineMs: commandDeadlineMs,
+        }
         response = await browser.eval(
-          '() => (' + execute.toString() + ')(' + JSON.stringify(input) + ')',
+          '() => (' + execute.toString() + ')(' + JSON.stringify(inputWithDeadline) + ')',
           options,
         )
       } catch (error) {
