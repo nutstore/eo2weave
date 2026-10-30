@@ -647,16 +647,62 @@ export default {
             } catch (e) {}
             if (!locksObj || typeof locksObj.request !== 'function') return null
             var queuedAt = Date.now()
-            return locksObj.request('eo2-discord-reaction:' + key, function () {
+            // The WAIT itself must be bounded inside the eval window: another
+            // tab can hold the cross-tab lock far past the 25s browser-command
+            // timeout, and the host would then terminate the eval before the
+            // granted-lock expiry check below ever runs — the outer catch
+            // would misreport the live tab as TAB_UNAVAILABLE (Sourcery
+            // round 7). Race the lock request against a wait-budget timer so
+            // an over-long wait surfaces as LOCK_TIMEOUT while the tab can
+            // still answer. The budget is additionally clamped to the
+            // injected command deadline minus a safety margin, so the timer
+            // always beats the host kill.
+            var waitBudgetMs = 15000
+            try {
+              var injectedWaitDeadline = args && args.__eo2CommandDeadlineMs
+              if (typeof injectedWaitDeadline === 'number' && injectedWaitDeadline > 0) {
+                var commandRemainingWaitMs = injectedWaitDeadline - Date.now() - 2000
+                if (commandRemainingWaitMs < waitBudgetMs) waitBudgetMs = commandRemainingWaitMs
+              }
+            } catch (e) {}
+            if (!(waitBudgetMs >= 1)) waitBudgetMs = 1
+            var expired = false
+            var rejectWait = null
+            var waited = new Promise(function (resolve, reject) {
+              rejectWait = reject
+            })
+            var lockWaitTimer = setTimeout(function () {
+              expired = true
+              rejectWait(
+                makeLockTimeoutError(
+                  'Reaction request queued behind another tab working on the same reaction and gave up after the cross-tab lock wait (the tab is still available).',
+                ),
+              )
+            }, waitBudgetMs)
+            var granted = locksObj.request('eo2-discord-reaction:' + key, function () {
               // Granted after a long wait: the caller's window is nearly
               // spent, so skip dispatch (same cutoff and rationale as the
-              // per-tab path below).
-              if (Date.now() - queuedAt > 15000)
+              // per-tab path below). Also skip when the wait-budget timer
+              // already expired this request.
+              if (expired || Date.now() - queuedAt > 15000)
                 throw makeLockTimeoutError(
                   'Reaction request queued behind another tab working on the same reaction and gave up after the 15s cross-tab lock wait (the tab is still available).',
                 )
               return run(queuedAt)
             })
+            // Promise.race attaches handlers to BOTH inputs, so a late grant
+            // after the timer already rejected cannot produce an unhandled
+            // rejection; the timer is cleared on whichever outcome lands.
+            return Promise.race([granted, waited]).then(
+              function (value) {
+                clearTimeout(lockWaitTimer)
+                return value
+              },
+              function (e) {
+                clearTimeout(lockWaitTimer)
+                throw e
+              },
+            )
           }
           function withReactionLock(key, run) {
             var crossTab = crossTabReactionLock(key, run)
