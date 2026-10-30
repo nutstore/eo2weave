@@ -7,8 +7,11 @@ const { settingsState } = vi.hoisted(() => {
     hasApiKey: false as boolean,
     providerType: 'llm-gateway' as string,
     lastUsedModelByProvider: {} as Record<string, string>,
-    switchProviderAndModel: (providerType: string, _modelName: string) => {
+    lastSwitchedModel: null as string | null,
+    switchProviderAndModel: (providerType: string, modelName: string) => {
       settingsState.providerType = providerType
+      settingsState.lastUsedModelByProvider[providerType] = modelName
+      settingsState.lastSwitchedModel = modelName
     },
   }
   return { settingsState }
@@ -86,6 +89,8 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     vi.clearAllMocks()
     settingsState.hasApiKey = false
     settingsState.providerType = 'openai'
+    settingsState.lastUsedModelByProvider = {}
+    settingsState.lastSwitchedModel = null
     getAllApiKeyProvidersMock.mockResolvedValue([])
   })
 
@@ -162,9 +167,10 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
     expect(settingsState.providerType).toBe('openai')
     // The saved model resolution: last-used → default → first catalog entry.
-    // Here no last-used model exists, so the provider's default wins and the
-    // saved selection is not erased by an empty string.
-    expect(settingsState.lastUsedModelByProvider.openai).toBeUndefined()
+    // No last-used model exists here, so the provider's DEFAULT wins and the
+    // selection is NOT empty (an empty model would leave the conversation
+    // without a selectable model and erase the saved preference).
+    expect(settingsState.lastSwitchedModel).toBe('gpt-4o-mini')
   })
 
   it('switches to the candidate with its LAST-USED model when one is saved', async () => {
@@ -175,6 +181,10 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
 
     await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
     expect(settingsState.providerType).toBe('openai')
+    // The visitor's saved last-used model must survive the switch — the
+    // mock records the model argument, so an empty/default selection fails
+    // this assertion.
+    expect(settingsState.lastSwitchedModel).toBe('gpt-4o')
   })
 
   it('ignores non-model secret keys in the api-key store', async () => {

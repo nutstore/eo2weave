@@ -1319,12 +1319,18 @@ export function LLMGatewayCard({
             // committed an EMPTY registration, and without this the provider
             // would stay registered without usable models until another
             // operation re-registered it (finding: "login succeeds with an
-            // unusable model catalog").
-            const { registerGatewayModels } = await import('@/agent/providers/llm-gateway-provider')
+            // unusable model catalog"). contextWindow is resolved per model
+            // the same way prepareGatewayModels does — re-registering without
+            // it would silently drop the configured context limits.
+            const [{ registerGatewayModels }, { getModelContextWindow }] = await Promise.all([
+              import('@/agent/providers/llm-gateway-provider'),
+              import('@/agent/providers/model-store'),
+            ])
             registerGatewayModels(models.map((m) => ({
               id: m.id,
               name: m.name,
               capabilities: ['code', 'writing', 'reasoning'] as const,
+              contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
             })))
           }
           setAllModels(models)
@@ -1362,6 +1368,20 @@ export function LLMGatewayCard({
         attemptStartedAt,
         onCommit: () => persistDeviceLoginTokens(tokens, clientId, baseURL),
       })
+      // Session-freshness guard: a logout may have committed in another tab
+      // between applyGatewayLoginTokens releasing the credential lock and
+      // this point (model preparation runs outside the lock). Relabeling
+      // that logout as a live login here would leave the UI inconsistent
+      // with the cleared credentials — sync to the auth layer's ACTUAL last
+      // token-operation outcome instead of blindly claiming success.
+      const credentialStatus = getGatewayCredentialStatus()
+      if (credentialStatus === 'missing' || credentialStatus === 'expired') {
+        setAuthState({
+          status: 'error',
+          error: t('settings.gateway.authFailed'),
+        })
+        return
+      }
       setAllModels(result.models)
 
       setIsLoggedIn(true)
