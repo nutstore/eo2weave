@@ -1,5 +1,9 @@
 // サイドバーコンポーネント
 export const sidebar = {
+    directChat: {
+        convertSuccess: "プロジェクト会話に変換しました。フォルダをマウントできます",
+        convertFailed: "変換に失敗しました。再試行してください",
+    },
     activeTab: "アクティブ",
     archivedTab: "アーカイブ済み",
     expandSidebar: "サイドバーを展開",

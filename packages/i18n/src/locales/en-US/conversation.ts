@@ -1,4 +1,8 @@
 export const conversation = {
+    directChat: {
+        badge: "Standalone",
+        inputPlaceholder: "Just chat, or ask me anything…",
+    },
     thinking: "Thinking: Off",
     reasoning: "Reasoning",
     toolCall: "Tool Call",
@@ -148,6 +152,11 @@ export const conversation = {
       branchCreated: "Branched conversation created",
       messageQueued: "Message queued (position {position})",
       queueFull: "Queue is full. Please wait for the current task to finish.",
+      kindSaveFailed: "Failed to save the conversation type change.",
+      conversationMissing: "Conversation not found.",
+      convertNoProject: "No project is available to host this conversation.",
+      convertedToProject: "Converted to a project conversation.",
+      convertFailed: "Conversion failed. Please try again.",
     },
     // Error
     error: {

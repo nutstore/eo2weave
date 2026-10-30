@@ -1,5 +1,12 @@
 // トップバー
 export const topbar = {
+    standaloneChats: {
+        spaceName: "スタンドアロンチャット",
+        tooltip: "スタンドアロンチャット",
+    },
+    directChat: {
+        convertTooltip: "スタンドアロンチャット — クリックでプロジェクトチャットに変換（フォルダ認証が必要）",
+    },
     productName: "EO2Weave",
     openFolder: "フォルダを開く",
     switchFolder: "プロジェクトフォルダを切り替え",

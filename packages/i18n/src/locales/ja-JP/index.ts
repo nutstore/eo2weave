@@ -37,6 +37,7 @@ import { sidePanelPackage } from './sidePanelPackage'
 import { execPolicy } from './execPolicy'
 import { tools } from './tools'
 import { schedule } from './schedule'
+import { chats } from './chats'
 import { extension } from './extension'
 
 export const jaJP = {
@@ -99,4 +100,5 @@ export const jaJP = {
   extension,
   tools,
   schedule,
+  chats,
 } as const

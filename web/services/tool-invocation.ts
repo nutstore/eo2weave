@@ -33,6 +33,8 @@ export interface InvocationOutcome {
 export interface ToolInvocationInput {
   toolRegistry: Pick<ToolRegistry, 'getToolDefinitionsForMode' | 'execute'>
   mode: AgentMode
+  /** Folder-less conversation: folder-dependent tools are unavailable even by direct name. */
+  directMode?: boolean
   callbacks?: Pick<AgentCallbacks, 'onToolCallStart' | 'onToolCallComplete'>
   beforeToolCall?: AgentLoopConfig['beforeToolCall']
   afterToolCall?: AgentLoopConfig['afterToolCall']
@@ -67,7 +69,7 @@ export async function invokeTool(
         `Tool "${toolName}" is not available in plan mode. Switch to Act mode to use it.`
       )
     }
-    const definitions = input.toolRegistry.getToolDefinitionsForMode(input.mode)
+    const definitions = input.toolRegistry.getToolDefinitionsForMode(input.mode, { directMode: input.directMode })
     const definition = definitions.find((def) => def.function.name === toolName)
     if (input.allowedToolNames && !input.allowedToolNames().includes(toolName))
       throw new Error(`Tool unavailable: ${toolName}`)

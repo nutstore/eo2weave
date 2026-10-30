@@ -266,9 +266,25 @@ export async function persistConversationMeta(conversation: Conversation): Promi
     contextUsage: conversation.lastContextWindowUsage || null,
     compressedContextSummary: conversation.compressedContextSummary || null,
     compressedContextCutoffTimestamp: conversation.compressedContextCutoffTimestamp ?? null,
+    kind: conversation.kind,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
   })
+}
+
+/**
+ * Persist ONLY the conversation kind via the repository's dedicated
+ * kind-transition write. Generic meta saves (persistConversationMeta) snapshot
+ * `kind` when the call starts, so a meta save racing a kind change could write
+ * the stale kind back after the transition commits — the repository layer now
+ * guards against that, and kind changes go exclusively through this path.
+ */
+export async function persistConversationKind(convId: string, kind: 'project' | 'direct'): Promise<void> {
+  // Ensure the row exists (createNew's meta INSERT may still be in flight);
+  // an UPDATE against a missing row would silently match nothing.
+  await waitForConversationMetaPersist(convId)
+  const repo = getConversationRepository()
+  await repo.updateKind(convId, kind)
 }
 
 /** Load all conversation metadata from SQLite (without messages) */
@@ -285,6 +301,7 @@ export async function loadConversationsMeta(): Promise<Conversation[]> {
     lastContextWindowUsage: meta.lastContextWindowUsage || null,
     compressedContextSummary: meta.compressedContextSummary || null,
     compressedContextCutoffTimestamp: meta.compressedContextCutoffTimestamp ?? null,
+    kind: meta.kind === 'direct' ? 'direct' : undefined,
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     status: 'idle' as const,

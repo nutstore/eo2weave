@@ -1,5 +1,12 @@
 // 상단 바
 export const topbar = {
+    standaloneChats: {
+        spaceName: "독립 대화",
+        tooltip: "독립 대화",
+    },
+    directChat: {
+        convertTooltip: "독립 대화 — 클릭하여 프로젝트 대화로 전환 (폴더 인증 필요)",
+    },
     productName: "EO2Weave",
     openFolder: "폴더 열기",
     switchFolder: "프로젝트 폴더 전환",

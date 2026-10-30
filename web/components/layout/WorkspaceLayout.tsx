@@ -17,6 +17,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { useConversationStore } from '@/store/conversation.store'
 import { useAssetStore } from '@/store/asset.store'
 import { useFlowStore } from '@/store/flow.store'
@@ -62,6 +63,7 @@ import { MCPSettingsDialog } from '@/components/mcp'
 import { SettingsDialog, type SettingsTab } from '@/components/settings/SettingsDialog'
 import { ScheduleDrawer } from '@/components/schedule/ScheduleDrawer'
 import { useLocale, useT } from '@/i18n'
+import { chatsPath } from '@/lib/route-paths'
 import { WebContainerPanel } from '@/components/webcontainer/WebContainerPanel'
 import { useWebContainerStore } from '@/store/webcontainer.store'
 import { getWorkspaceManager } from '@/opfs'
@@ -88,6 +90,12 @@ interface WorkspaceLayoutProps {
    * draft → conversation transition doesn't add a history entry.
    */
   onDraftConversationCreated?: (workspaceId: string) => void
+  /**
+   * Route owner when the layout is hosted OUTSIDE /projects (standalone chats
+   * route). When set, TopBar's global standalone-chats entry replaces the
+   * project switcher space and project-management callbacks are not rendered.
+   */
+  routeSpace?: 'projects' | 'chats'
 }
 
 export function WorkspaceLayout({
@@ -100,7 +108,11 @@ export function WorkspaceLayout({
   onManageProjects,
   onSelectWorkspace,
   onDraftConversationCreated,
+  routeSpace = 'projects',
 }: WorkspaceLayoutProps) {
+  // Client-side router for in-app navigation (see onOpenStandaloneChats
+  // below — a document-level navigation there would trip the unload guard).
+  const router = useRouter()
   const waitForWorkspaceReady = useCallback(async (workspaceId: string, timeoutMs = 30000) => {
     const manager = await getWorkspaceManager()
     const start = Date.now()
@@ -228,6 +240,11 @@ export function WorkspaceLayout({
   const isMobile = useMobile()
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const activeConversationName = conversationName ?? workspaceName
+  // Single kind check (isDirectConversation) — the sidebar and agent loop read
+  // the same selector, so a kind upgrade applies everywhere on next render.
+  const activeConversationIsDirect = useConversationStore(
+    (s) => !!s.activeConversationId && s.conversations.find((c) => c.id === s.activeConversationId)?.kind === 'direct'
+  )
 
   // Guard against accidental page close when there are unsaved changes or running agent loops
   useUnloadGuard()
@@ -287,10 +304,16 @@ export function WorkspaceLayout({
   // New Chat entries (sidebar button): create the conversation immediately
   // (persisted right away by createNew) and let the route owner navigate to
   // its canonical URL. No draft state involved.
+  // In the chats route space a "new chat" must be a standalone (kind='direct')
+  // conversation — creating a default project conversation there would leave
+  // an orphan project chat and bounce off the /chats/:id route sync.
   const handleCreateConversation = useCallback(() => {
-    const conv = createNew('New conversation')
+    const conv =
+      routeSpace === 'chats'
+        ? createNew(t('chats.home.newChatTitle'), { kind: 'direct' })
+        : createNew('New conversation')
     onSelectWorkspace?.(conv.id)
-  }, [createNew, onSelectWorkspace])
+  }, [createNew, onSelectWorkspace, routeSpace, t])
 
   // Skills management handlers
   const handleSkillsManagerOpen = useCallback(() => {
@@ -391,8 +414,12 @@ export function WorkspaceLayout({
     // Conversations
     onNewConversation: () => {
       // Immediate creation: the conversation row is persisted right away and
-      // the URL moves to its canonical /workspaces/:id page (no draft state).
-      const newConv = createNew('New conversation')
+      // the URL moves to its canonical page (no draft state). Space semantics
+      // match the sidebar/TopBar New chat (see handleCreateConversation).
+      const newConv =
+        routeSpace === 'chats'
+          ? createNew(t('chats.home.newChatTitle'), { kind: 'direct' })
+          : createNew('New conversation')
       onSelectWorkspace?.(newConv.id)
     },
     onContinueLast: () => {
@@ -842,6 +869,7 @@ export function WorkspaceLayout({
         onBackToProjects={onBackToProjects}
         activeProjectName={projectName}
         activeConversationName={activeConversationName}
+        activeConversationIsDirect={activeConversationIsDirect}
         onMenuOpen={() => setIsSidebarOpen((prev) => !prev)}
         isMobile={isMobile}
         onSwitchProject={onSwitchProject}
@@ -851,8 +879,24 @@ export function WorkspaceLayout({
         onProjectSwitcherOpenChange={setProjectSwitcherOpen}
         onScheduleDrawerOpen={() => setScheduleDrawerOpen(true)}
         onWorkflowOpen={() => useFlowStore.getState().setPanelOpen(true)}
+        onOpenStandaloneChats={() => {
+          // Client-side navigation: /chats is an internal App Router route, and
+          // a full document navigation here would trip the unload guard (and
+          // tear down a running agent / pending file changes) for what is just
+          // a route-space switch. WorkspaceLayout renders inside the App
+          // Router's client tree (WorkspaceRouteView / ChatsRouteView), so
+          // useRouter is available at this layer.
+          router.push(chatsPath())
+        }}
+        routeSpace={routeSpace}
         onNewConversation={() => {
-          const newConv = createNew('New conversation')
+          // Same space semantics as the sidebar's New chat (see
+          // handleCreateConversation): chats space creates a standalone chat,
+          // projects space a project conversation.
+          const newConv =
+            routeSpace === 'chats'
+              ? createNew(t('chats.home.newChatTitle'), { kind: 'direct' })
+              : createNew('New conversation')
           onSelectWorkspace?.(newConv.id)
         }}
       />
@@ -890,6 +934,7 @@ export function WorkspaceLayout({
             onRevealComplete={handleRevealComplete}
             onSelectWorkspace={onSelectWorkspace}
             onCreateConversation={handleCreateConversation}
+            hideProjectResources={activeConversationIsDirect}
           />
         )}
         {isMobile && isSidebarOpen && (
@@ -904,6 +949,7 @@ export function WorkspaceLayout({
               onRevealComplete={handleRevealComplete}
               onSelectWorkspace={onSelectWorkspace}
               onCreateConversation={handleCreateConversation}
+              hideProjectResources={activeConversationIsDirect}
               />
           </div>
         )}

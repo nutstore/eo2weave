@@ -1,5 +1,10 @@
 // プロジェクトホーム
 export const projectHome = {
+    standaloneChats: {
+        cardTitle: "スタンドアロンチャット",
+        cardDescription: "プロジェクトに紐付けず、いつでも開始",
+        cardPreview: "最近：{title}",
+    },
     // ヘッダーブランド
     brand: "怡氧知知",
     openSettings: "設定を開く",

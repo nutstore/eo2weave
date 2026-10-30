@@ -289,6 +289,12 @@ export interface Conversation {
   compressedContextCutoffTimestamp?: number | null
   /** Persisted visual-flow working copy for this conversation. */
   flowInstance?: FlowInstance | null
+  /**
+   * Conversation kind: 'project' (default, workspace with folder semantics)
+   * or 'direct' (folder-less chat — file tools unregistered, project UI hidden).
+   * Undefined ≡ 'project' (legacy rows / zero migration).
+   */
+  kind?: 'project' | 'direct'
   /** Assets collected during current agent run (not persisted, moved to assistant message on commit) */
   collectedAssets?: AssetMeta[]
   /**
@@ -426,7 +432,7 @@ export function createRunChangesMessage(snapshotId: string): Message {
 }
 
 /** Create a new conversation */
-export function createConversation(title?: string): Conversation {
+export function createConversation(title?: string, options?: { kind?: 'project' | 'direct' }): Conversation {
   const id = generateId()
   const now = Date.now()
   return {
@@ -467,6 +473,8 @@ export function createConversation(title?: string): Conversation {
     compressionLastSummaryConvertCall: Number.NEGATIVE_INFINITY,
     compressedContextSummary: null,
     compressedContextCutoffTimestamp: null,
+    // 'direct' conversations are folder-less chats; undefined ≡ 'project'.
+    ...(options?.kind === 'direct' ? { kind: 'direct' as const } : {}),
     collectedAssets: [],
   }
 }

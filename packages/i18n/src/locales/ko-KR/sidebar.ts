@@ -1,5 +1,9 @@
 // 사이드바 컴포넌트
 export const sidebar = {
+    directChat: {
+        convertSuccess: "프로젝트 대화로 변환되었습니다. 이제 폴더를 마운트할 수 있어요",
+        convertFailed: "변환에 실패했습니다. 다시 시도해 주세요",
+    },
     activeTab: "활성",
     archivedTab: "보관됨",
     expandSidebar: "사이드바 펼치기",

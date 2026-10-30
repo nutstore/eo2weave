@@ -1,5 +1,9 @@
 // Sidebar component
 export const sidebar = {
+    directChat: {
+        convertSuccess: "Converted to a project conversation — you can now mount a folder",
+        convertFailed: "Conversion failed, please retry",
+    },
     expandSidebar: "Expand Sidebar",
     collapseSidebar: "Collapse Sidebar",
     closeSidebar: "Close Sidebar",

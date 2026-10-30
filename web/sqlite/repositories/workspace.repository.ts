@@ -89,6 +89,28 @@ export class WorkspaceRepository {
    */
   async findWorkspacesByProject(projectId: string): Promise<Workspace[]> {
     const db = getSQLiteDB()
+    // Standalone chats keep a hidden host workspace row (NOT NULL project_id
+    // schema), but they are not project conversations — project-scoped
+    // listings must not include them.
+    const rows = await db.queryAll<WorkspaceRow>(
+      `SELECT w.* FROM workspaces w
+       LEFT JOIN conversations c ON c.id = w.id
+       WHERE w.project_id = ? AND c.kind IS NOT 'direct'
+       ORDER BY w.last_accessed_at DESC`,
+      [projectId]
+    )
+    return rows.map((row) => this.rowToWorkspace(row))
+  }
+
+  /**
+   * Get ALL workspaces hosted by a project, including standalone-chat
+   * (kind='direct') host rows. Used by deleteProject's rebind step: the
+   * hidden host rows must also leave the deleted project or their
+   * project_id goes stale. Project listings must keep using
+   * findWorkspacesByProject, which filters the direct hosts out.
+   */
+  async findAllWorkspacesByProjectIncludingDirect(projectId: string): Promise<Workspace[]> {
+    const db = getSQLiteDB()
     const rows = await db.queryAll<WorkspaceRow>(
       'SELECT * FROM workspaces WHERE project_id = ? ORDER BY last_accessed_at DESC',
       [projectId]

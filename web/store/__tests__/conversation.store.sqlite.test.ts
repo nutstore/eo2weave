@@ -4,13 +4,16 @@ import { useConversationRuntimeStore } from '../conversation-runtime.store'
 
 const deleteWorkspaceMock = vi.fn(() => Promise.resolve())
 const conversationRepoDeleteMock = vi.fn(() => Promise.resolve())
-const conversationRepoSaveMetaMock = vi.fn(() => Promise.resolve())
+const conversationRepoSaveMetaMock = vi.fn((..._: [Record<string, unknown>]) => Promise.resolve())
+const conversationRepoUpdateKindMock = vi.fn((_id: string, _kind: 'project' | 'direct') => Promise.resolve())
 const messageRepoInsertMock = vi.fn(() => Promise.resolve())
 const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
+const toastErrorMock = vi.fn()
 
 vi.mock('sonner', () => ({
   toast: {
-    error: vi.fn(),
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: vi.fn(),
   },
 }))
 
@@ -58,18 +61,22 @@ vi.mock('../settings.store', () => {
   }
 })
 
+const conversationRepoMock = {
+  findAll: vi.fn(() => Promise.resolve([])),
+  findAllMeta: vi.fn(() => Promise.resolve([])),
+  save: vi.fn(() => Promise.resolve()),
+  saveMeta: conversationRepoSaveMetaMock,
+  updateKind: conversationRepoUpdateKindMock,
+  touch: vi.fn(() => Promise.resolve()),
+  delete: conversationRepoDeleteMock,
+}
+
 vi.mock('@/sqlite', () => ({
   initSQLiteDB: vi.fn(() => Promise.resolve()),
   getApiKeyRepository: vi.fn(() => ({
     load: vi.fn(() => Promise.resolve('test-key')),
   })),
-  getConversationRepository: vi.fn(() => ({
-    findAll: vi.fn(() => Promise.resolve([])),
-    save: vi.fn(() => Promise.resolve()),
-    saveMeta: conversationRepoSaveMetaMock,
-    touch: vi.fn(() => Promise.resolve()),
-    delete: conversationRepoDeleteMock,
-  })),
+  getConversationRepository: vi.fn(() => conversationRepoMock),
   getMessageRepository: vi.fn(() => ({
     findByConversation: vi.fn(() => Promise.resolve([])),
     insert: messageRepoInsertMock,
@@ -212,12 +219,19 @@ describe('conversation.store.sqlite tool-call routing', () => {
     conversationRepoDeleteMock.mockClear()
     conversationRepoSaveMetaMock.mockReset()
     conversationRepoSaveMetaMock.mockResolvedValue(undefined)
+    conversationRepoUpdateKindMock.mockReset()
+    conversationRepoUpdateKindMock.mockResolvedValue(undefined)
     messageRepoInsertMock.mockReset()
     messageRepoInsertMock.mockResolvedValue(undefined)
     messageRepoReplaceAllMock.mockReset()
     messageRepoReplaceAllMock.mockResolvedValue(undefined)
+    conversationRepoMock.findAll.mockReset()
+    conversationRepoMock.findAll.mockResolvedValue([])
+    conversationRepoMock.findAllMeta.mockReset()
+    conversationRepoMock.findAllMeta.mockResolvedValue([])
     clearAgentLoops()
     clearStreamingQueues()
+    toastErrorMock.mockClear()
     useConversationRuntimeStore.setState({ runtimes: new Map() })
     useConversationStore.setState({
       conversations: [],
@@ -1129,5 +1143,257 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(closeThink?.reasoning).toBe('分析中')
     expect(closeThink?.reasoningStep?.content).toBe('分析中')
     expect(closeThink?.content).toBe('最终答案')
+  })
+
+  // ── Direct chat (kind) coverage ────────────────────────────────────────
+
+  describe('direct chat (conversation kind)', () => {
+    it('createNew with kind:direct persists and carries the kind', () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('New direct chat', { kind: 'direct' })
+
+      expect(conv.kind).toBe('direct')
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+
+      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
+      expect(metaCall?.kind).toBe('direct')
+    })
+
+    it('createNew without kind leaves kind undefined (≡ project, legacy zero migration)', () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('plain')
+
+      expect(conv.kind).toBeUndefined()
+
+      const metaCall = conversationRepoSaveMetaMock.mock.calls.at(-1)?.[0]
+      expect(metaCall?.kind).toBeUndefined()
+    })
+
+    it('persisted kind survives a loadFromDB roundtrip (direct stays direct)', async () => {
+      const store = useConversationStore.getState()
+      const direct = store.createNew('direct-roundtrip', { kind: 'direct' })
+      const project = store.createNew('project-roundtrip')
+
+      // Reload from the mocked repo using LITERAL fixture rows — NOT values
+      // echoed back from the saveMeta calls. If findAllMeta merely mirrored
+      // what saveMeta was handed, a repository that dropped or corrupted
+      // `kind` on write would round-trip undetected. Asserting an expected
+      // literal ('direct') makes the test fail the moment the store stops
+      // persisting or restoring the kind.
+      const { getConversationRepository } = await import('@/sqlite')
+      const repo = getConversationRepository() as any
+      repo.findAllMeta.mockResolvedValueOnce([
+        { id: direct.id, title: 'direct-roundtrip', kind: 'direct', createdAt: 1, updatedAt: 1 },
+        { id: project.id, title: 'project-roundtrip', kind: 'project', createdAt: 2, updatedAt: 2 },
+      ])
+
+      // beforeEach seeds loaded:true; reset it so loadFromDB actually runs its
+      // load path instead of being skipped (that skip is what this test guards).
+      useConversationStore.setState({ loaded: false, activeConversationId: null } as any)
+
+      await useConversationStore.getState().loadFromDB()
+
+      const reloaded = useConversationStore.getState().conversations
+      expect(reloaded.find((c) => c.id === direct.id)?.kind).toBe('direct')
+      // project row roundtrips as undefined ≡ 'project'
+      expect(reloaded.find((c) => c.id === project.id)?.kind).toBeUndefined()
+      // The creation path must actually have persisted the direct kind —
+      // this is the write the literal fixture above stands in for. A legacy
+      // (pre-kind) conversation persists kind: undefined, which the
+      // repository normalizes to a 'project' row on INSERT.
+      expect(conversationRepoSaveMetaMock).toHaveBeenCalledWith(
+        expect.objectContaining({ id: direct.id, kind: 'direct' })
+      )
+      expect(conversationRepoSaveMetaMock).toHaveBeenCalledWith(
+        expect.objectContaining({ id: project.id, kind: undefined })
+      )
+    })
+
+    it('setConversationKind flips direct → project and persists', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('upgrade-me', { kind: 'direct' })
+
+      const persisted = await useConversationStore.getState().setConversationKind(conv.id, 'project')
+
+      expect(persisted).toBe(true)
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
+      // The kind change goes through the dedicated updateKind write (not the
+      // generic saveMeta path, whose kind snapshot can race a transition).
+      expect(conversationRepoUpdateKindMock).toHaveBeenCalledWith(conv.id, 'project')
+    })
+
+    it('setConversationKind restores the previous kind and resolves false when persistence fails', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('rollback-me', { kind: 'direct' })
+
+      conversationRepoUpdateKindMock.mockRejectedValueOnce(new Error('persist failed'))
+
+      // The boolean is the explicit failure contract: callers must be able to
+      // detect the rolled-back kind without re-inspecting store state.
+      const persisted = await useConversationStore.getState().setConversationKind(conv.id, 'project')
+
+      expect(persisted).toBe(false)
+      // The in-memory kind rolled back to 'direct' so the session matches
+      // what a reload will show (the persisted row kept the old kind).
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+      expect(toastErrorMock).toHaveBeenCalled()
+    })
+
+    it('overlapping kind transitions of one conversation persist in call order (no stale rollback)', async () => {
+      // Finding: two overlapping transitions persisted out of order — an
+      // earlier write failing AFTER a later one already persisted rolled the
+      // in-memory kind back to a value SQLite never stored, so the UI
+      // disagreed with a reload. Transitions of the same conversation are
+      // serialized on a per-conversation chain.
+      const store = useConversationStore.getState()
+      const conv = store.createNew('race-kind', { kind: 'direct' })
+
+      // First call (direct → project) suspends inside the persist write.
+      let releaseFirst: (() => void) | null = null
+      conversationRepoUpdateKindMock.mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            releaseFirst = () => reject(new Error('first write failed'))
+          })
+      )
+      const first = useConversationStore.getState().setConversationKind(conv.id, 'project')
+
+      // Second call (project → direct) is QUEUED behind the first: it must
+      // not touch updateKind until the first write settled.
+      const second = useConversationStore.getState().setConversationKind(conv.id, 'direct')
+      // Let the first call reach its persist write (async: the meta-persist
+      // await resolves first), then prove the second is still queued.
+      await vi.waitFor(() => expect(conversationRepoUpdateKindMock).toHaveBeenCalledTimes(1))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(conversationRepoUpdateKindMock).toHaveBeenCalledTimes(1)
+
+      // First write fails; the second write then runs and succeeds.
+      releaseFirst!()
+      const [firstOk, secondOk] = await Promise.all([first, second])
+
+      expect(firstOk).toBe(false)
+      expect(secondOk).toBe(true)
+      expect(conversationRepoUpdateKindMock).toHaveBeenCalledTimes(2)
+      // Call order preserved: project was attempted BEFORE direct.
+      expect(conversationRepoUpdateKindMock.mock.calls.map((c) => c[1])).toEqual(['project', 'direct'])
+      // In-memory kind matches the last PERSISTED value (direct), and the
+      // failed first call could not clobber it back to the pre-race kind.
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+    })
+
+    it('convertDirectToProject runs folder authorization then upgrades the kind', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('convert-me', { kind: 'direct' })
+
+      // vi.resetModules() clears the dynamic-import cache so EACH conversion
+      // test re-evaluates '@/store/folder-access.store' with ITS OWN
+      // doMock factory: vi.doUnmock alone removes the registration but not
+      // the cached module, so a later test would silently reuse the earlier
+      // mock's pickDirectory (and never exercise its own expectation).
+      vi.resetModules()
+
+      const pickDirectoryMock = vi.fn(() => Promise.resolve(true))
+      vi.doMock('@/store/folder-access.store', () => ({
+        useFolderAccessStore: {
+          getState: () => ({ activeProjectId: 'proj-1', pickDirectory: pickDirectoryMock }),
+        },
+      }))
+
+      // convertDirectToProject dynamically imports '@/store/folder-access.store'.
+      // vi.doMock matches by resolved module id, so mocking the SAME
+      // specifier the source uses intercepts the dynamic import.
+      const ok = await useConversationStore.getState().convertDirectToProject(conv.id)
+
+      expect(ok).toBe(true)
+      expect(pickDirectoryMock).toHaveBeenCalledWith('proj-1')
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
+      expect(conversationRepoUpdateKindMock).toHaveBeenCalledWith(conv.id, 'project')
+
+      vi.doUnmock('@/store/folder-access.store')
+    })
+
+    it('convertDirectToProject returns false and keeps the kind when persistence fails', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('convert-persist-fail', { kind: 'direct' })
+
+      // Fresh module registry: without this, the dynamic import could return
+      // the FIRST test's cached folder-access mock and this test's
+      // pickDirectoryMock would never be exercised.
+      vi.resetModules()
+
+      const pickDirectoryMock = vi.fn(() => Promise.resolve(true))
+      vi.doMock('@/store/folder-access.store', () => ({
+        useFolderAccessStore: {
+          getState: () => ({ activeProjectId: 'proj-1', pickDirectory: pickDirectoryMock }),
+        },
+      }))
+      conversationRepoUpdateKindMock.mockRejectedValueOnce(new Error('persist failed'))
+
+      const ok = await useConversationStore.getState().convertDirectToProject(conv.id)
+
+      // The caller must never see a false success: the kind write failed, so
+      // the conversion reports false and the kind stays 'direct'.
+      expect(ok).toBe(false)
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+      expect(toastErrorMock).toHaveBeenCalled()
+
+      vi.doUnmock('@/store/folder-access.store')
+    })
+
+    it('convertDirectToProject does not change the kind when folder authorization fails', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('convert-cancelled', { kind: 'direct' })
+
+      // Fresh module registry: this test is the reason the reset matters —
+      // its mock resolves pickDirectory to FALSE, but a stale cached module
+      // from an earlier test (resolving true) would make the conversion
+      // pass authorization and update the kind, failing the assertions
+      // below for the wrong reason.
+      vi.resetModules()
+
+      const pickDirectoryMock = vi.fn(() => Promise.resolve(false))
+      vi.doMock('@/store/folder-access.store', () => ({
+        useFolderAccessStore: {
+          getState: () => ({ activeProjectId: 'proj-1', pickDirectory: pickDirectoryMock }),
+        },
+      }))
+
+      const ok = await useConversationStore.getState().convertDirectToProject(conv.id)
+
+      expect(ok).toBe(false)
+      expect(pickDirectoryMock).toHaveBeenCalledWith('proj-1')
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('direct')
+      expect(conversationRepoUpdateKindMock).not.toHaveBeenCalled()
+
+      vi.doUnmock('@/store/folder-access.store')
+    })
+
+    it('convertDirectToProject returns true for an already-project conversation (no-op)', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('already-project')
+
+      const ok = await useConversationStore.getState().convertDirectToProject(conv.id)
+      expect(ok).toBe(true)
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBeUndefined()
+    })
+
+    it('runAgent for a direct conversation sets toolContext.directMode; project leaves it unset', async () => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('direct-run', { kind: 'direct' })
+
+      await useConversationStore
+        .getState()
+        .runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null)
+
+      const config = (globalThis as any).__lastAgentLoopConfig
+      expect(config?.toolContext?.directMode).toBe(true)
+
+      const projectConv = store.createNew('project-run')
+      await useConversationStore
+        .getState()
+        .runAgent(projectConv.id, 'openai' as any, 'mock-model', 1024, null)
+      const projectConfig = (globalThis as any).__lastAgentLoopConfig
+      expect(projectConfig?.toolContext?.directMode).toBeFalsy()
+    })
   })
 })

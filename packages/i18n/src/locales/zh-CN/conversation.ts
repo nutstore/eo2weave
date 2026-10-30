@@ -1,5 +1,9 @@
 // 对话相关
 export const conversation = {
+    directChat: {
+        badge: "独立对话",
+        inputPlaceholder: "随便聊聊，或问我任何问题…",
+    },
     thinking: "思考：关",
     reasoning: "推理过程",
     toolCall: "工具调用",
@@ -152,6 +156,11 @@ export const conversation = {
       branchCreated: "已创建分叉对话",
       messageQueued: "消息已加入队列 (第 {position} 位)",
       queueFull: "队列已满，请等待当前任务完成后再试",
+      kindSaveFailed: "对话类型修改保存失败",
+      conversationMissing: "对话不存在",
+      convertNoProject: "没有可用的项目来承载此对话",
+      convertedToProject: "已转换为项目对话",
+      convertFailed: "转换失败，请重试",
     },
     // 错误
     error: {

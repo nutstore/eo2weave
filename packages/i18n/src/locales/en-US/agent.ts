@@ -1,5 +1,8 @@
 // Agent
 export const agent = {
+    directChat: {
+        systemBoundary: "This is a project-independent conversation with no local file access. File tools (read/write/edit/delete/ls/search, snapshots, sync-to-opfs) are NOT available — do not attempt to call them. You still have: page_* browser tools, run_python, bash (sandbox), skills, web search/fetch, and WebMCP external tools.",
+    },
     inputHint: "Type @ to temporarily switch agent",
     createNew: "Create New Agent...",
     noAgents: "No agents available",

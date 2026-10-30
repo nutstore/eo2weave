@@ -5,19 +5,24 @@ class SchemaDatabase {
   statements: string[] = []
   /** When true, simulated ALTER TABLE repairs never register the column. */
   blockFsOpsRepair = false
+  /** When true, simulated kind ALTER TABLE never registers the column. */
+  blockKindRepair = false
   private missingConversationColumns: Set<string>
   private missingProjectRootColumns: Set<string>
   private missingFsOpsColumns: Set<string>
+  private missingKindColumn: boolean
 
   constructor(
     public userVersion = 0,
     missingConversationColumns: string[] = [],
     missingProjectRootColumns: string[] = [],
     missingFsOpsColumns: string[] = [],
+    missingKindColumn = false,
   ) {
     this.missingConversationColumns = new Set(missingConversationColumns)
     this.missingProjectRootColumns = new Set(missingProjectRootColumns)
     this.missingFsOpsColumns = new Set(missingFsOpsColumns)
+    this.missingKindColumn = missingKindColumn
   }
 
   exec(sql: string): Array<{ values: number[][] }> {
@@ -50,9 +55,19 @@ class SchemaDatabase {
       throw new Error(`no such column: ${missingFsOpsColumn}`)
     }
 
+    if (sql.includes('SELECT kind FROM conversations LIMIT 0') && this.missingKindColumn) {
+      throw new Error('no such column: kind')
+    }
+    if (sql.includes('kind FROM conversations') && sql.includes('LIMIT 0') && !sql.includes('SELECT kind')) {
+      // multi-column probes (verify) — treat any kind reference as a check
+    }
+
     const addedColumn = sql.match(/ALTER TABLE conversations ADD COLUMN (compressed_context_\w+)/)
     if (addedColumn) {
       this.missingConversationColumns.delete(addedColumn[1])
+    }
+    if (/ALTER TABLE conversations ADD COLUMN kind/.test(sql) && !this.blockKindRepair) {
+      this.missingKindColumn = false
     }
     const addedProjectRootColumn = sql.match(/ALTER TABLE project_roots\s+ADD COLUMN (backend|scope_id)/)
     if (addedProjectRootColumn) {
@@ -177,14 +192,18 @@ describe('initializeSchema', () => {
     )
   })
 
-  it('runs the v18 fs_ops migration when upgrading a v17 database', async () => {
-    const db = new SchemaDatabase(17, [], [], ['delete_mode'])
+  it('runs the v18 fs_ops + v19 kind migrations when upgrading a v17 database', async () => {
+    // A v17 database also lacks the v19 kind column.
+    const db = new SchemaDatabase(17, [], [], ['delete_mode'], true)
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(18)
+    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ALTER TABLE fs_ops ADD COLUMN delete_mode')
+    )
+    expect(db.statements).toContainEqual(
+      expect.stringContaining("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'project'")
     )
   })
 
@@ -193,10 +212,32 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(18)
+    // v19 (kind) also runs — the final version is the current base.
+    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ALTER TABLE fs_ops ADD COLUMN delete_mode')
     )
+  })
+
+  it('repairs the conversations kind column when a v19 database is missing physical DDL', async () => {
+    // user_version already 19 but the kind DDL never landed: the startup
+    // repair (not the migration, which already ran) must add the column.
+    const db = new SchemaDatabase(BASE_SCHEMA_VERSION, [], [], [], true)
+
+    await initializeSchema(db)
+
+    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.statements).toContainEqual(
+      expect.stringContaining("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'project'")
+    )
+  })
+
+  it('rejects a database whose declared schema still lacks the conversations kind column', async () => {
+    const db = new SchemaDatabase(BASE_SCHEMA_VERSION, [], [], [], true)
+    // Simulate an unfixable database: even the repair ALTER cannot add the column.
+    db.blockKindRepair = true
+
+    await expect(initializeSchema(db)).rejects.toThrow('SCHEMA_INCOMPATIBLE')
   })
 
   it('rejects a database whose declared schema still lacks the fs_ops delete_mode column', async () => {

@@ -115,6 +115,85 @@ interface ProjectState {
   deleteProject: (projectId: string) => Promise<boolean>
 }
 
+// Module-level serialization for deleteProject's host-rebind critical
+// section: overlapping deletions chain onto this promise so the second one
+// re-reads project state only after the first has finished rebinding (see
+// deleteProject for why concurrent selection would strand host rows on
+// projects that are themselves being deleted).
+let projectDeletionRebindChain: Promise<void> = Promise.resolve()
+
+// In-memory retry list for OPFS workspace-data deletions that failed AFTER
+// the DB row was already committed. Best-effort DEFERRED cleanup only —
+// deliberately NOT persisted (storage-light rule): at that point the data is
+// unreferenced, so a failed cleanup leaves orphaned files, never data loss.
+// Dropped on page reload by design.
+const pendingOpfsProjectDeletions = new Set<string>()
+
+// Upper bound for one OPFS cleanup attempt. Cleanup is best-effort (the DB
+// row is already gone, so a skipped cleanup only leaves orphaned files), but
+// it is awaited INSIDE the serialized deletion chain: a cleanup that never
+// settles would hold the chain forever and block every later project
+// deletion in this tab. The race bounds that wait — on timeout the project
+// id stays in (or is added to) the retry list and the chain moves on.
+const OPFS_CLEANUP_TIMEOUT_MS = 10_000
+
+// Overall wall-clock budget for ONE flush pass over the retry queue. Each
+// queued cleanup is already bounded per-attempt, but the flush loop is
+// awaited INSIDE the serialized deletion chain: without a pass-level cap a
+// large retry backlog would serialize N × 10s of waits into the chain and
+// delay every later project deletion in this tab. One pass spends at most
+// this much time; leftovers stay queued for the next flush (best-effort —
+// the data is unreferenced, so deferred cleanup is orphaned files only).
+const OPFS_FLUSH_BUDGET_MS = 10_000
+
+/**
+ * Await `promise` with a hard deadline. Resolves with `false` if the
+ * underlying promise does not settle within `timeoutMs` (the promise keeps
+ * running in the background — its late result is ignored, never a leak of
+ * failure into the caller's error path).
+ */
+async function withTimeout(promise: Promise<boolean>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function tryDeleteOpfsProject(projectId: string): Promise<boolean> {
+  try {
+    const pm = await ProjectManager.create()
+    await pm.deleteProject(projectId)
+    return true
+  } catch (error) {
+    console.warn('[ProjectStore] Failed to delete OPFS project directory (will retry):', projectId, error)
+    return false
+  }
+}
+
+/** Best-effort bounded OPFS cleanup: false on failure OR on timeout. */
+function tryDeleteOpfsProjectBounded(projectId: string): Promise<boolean> {
+  return withTimeout(tryDeleteOpfsProject(projectId), OPFS_CLEANUP_TIMEOUT_MS)
+}
+
+async function flushPendingOpfsProjectDeletions(): Promise<void> {
+  if (pendingOpfsProjectDeletions.size === 0) return
+  const deadline = Date.now() + OPFS_FLUSH_BUDGET_MS
+  for (const id of [...pendingOpfsProjectDeletions]) {
+    if (Date.now() >= deadline) break
+    // eslint-disable-next-line no-await-in-loop -- sequential retries keep OPFS contention predictable
+    if (await tryDeleteOpfsProjectBounded(id)) {
+      pendingOpfsProjectDeletions.delete(id)
+    }
+  }
+  // Leftover ids stay queued: the next flush pass retries them under a
+  // fresh budget.
+}
+
 /**
  * localStorage key for tracking whether we've already auto-created a default
  * project for this browser.
@@ -329,6 +408,26 @@ export const useProjectStore = create<ProjectState>()(
           activeConversationId: null,
         })
 
+        // 1c. Revalidate the project row IMMEDIATELY before publishing the
+        //     active id: a deleteProject can commit between the initial
+        //     existence check above and this point (activation awaits OPFS
+        //     bootstrap and several store resets in between). If deletion
+        //     read the OLD active pointer and skipped repair, publishing the
+        //     deleted id here would strand the UI on a project whose row is
+        //     gone. The re-check and the publish in step 2 run in ONE
+        //     synchronous continuation (no await between them), so within
+        //     this tab a concurrent deletion cannot slip between the check
+        //     and the commit.
+        const stillExists = await repo.findById(projectId)
+        if (!stillExists) {
+          await get().refreshProjects()
+          set({
+            error: `Project not found: ${projectId}`,
+            isLoading: false,
+          })
+          return false
+        }
+
         // 2. Update activeProjectId (keep isLoading=true until workspaces loaded).
         //    CRITICAL: setting isLoading=false here would race with syncFromRoute
         //    in App.tsx — the effect subscribes to isLoading, and if it sees
@@ -484,37 +583,164 @@ export const useProjectStore = create<ProjectState>()(
       set({ isLoading: true, error: null })
       try {
         const repo = getProjectRepository()
-        const activeProjectId = get().activeProjectId
 
-        // Delete OPFS project directory (workspaces, agents, etc.)
-        try {
-          const pm = await ProjectManager.create()
-          await pm.deleteProject(projectId)
-        } catch (err) {
-          console.warn('[ProjectStore] Failed to delete OPFS project directory:', err)
-        }
+        // Standalone chats keep a hidden host workspace row pointing at the
+        // deleted project. Rebind ALL host rows (including the direct-chat
+        // ones, which project-scoped listings filter out) BEFORE the project
+        // row is deleted: if a rebind fails here the deletion aborts with a
+        // visible error and stays retryable — already-rebound rows no longer
+        // match the findAll query, so the loop is idempotent on retry. When
+        // the deleted project is the LAST project, hosts are rebound to empty
+        // string, which every consumer treats as "no project" (falsy
+        // projectId checks, e.g. resolvedProjectId in conversation-agent-run).
+        //
+        // Overlapping deletions are SERIALIZED on a module-level promise
+        // chain around the rebind+delete critical section: two concurrent
+        // deletions computing their replacement host from the same
+        // not-yet-updated project table would each rebind the other's
+        // standalone-chat hosts to a project that is about to be deleted.
+        // Inside the section the successor is re-read from the repository
+        // (fresh state — the in-memory `projects` snapshot predates any
+        // awaits), the host rows are re-bound, AND the project row is
+        // deleted — all before the next chained deletion's selection runs,
+        // so it can never pick a project whose row is already gone.
+        //
+        // The predecessor's rejection is SWALLOWED before this section is
+        // attached (`.catch(() => {})`): a plain `.then(...)` chain would
+        // skip every queued section after a failure, leaving those projects
+        // undeleted while their callers saw... nothing resolve. With the
+        // swallow, every queued deletion runs regardless — but this caller
+        // still observes its own failure, because the local `section` link
+        // this function awaits carries the section's rejection. Ordering is
+        // preserved: sections execute strictly in queue order whether or not
+        // earlier ones failed.
+        const section = projectDeletionRebindChain
+          .catch(() => {
+            // A failed predecessor must not strand this deletion: its error
+            // was already reported to ITS caller via its own rejected link.
+          })
+          .then(async () => {
+            const remaining = await repo.findAllProjects()
+            const nextProjectId = remaining.find((p) => p.id !== projectId)?.id || ''
+            const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
+            const workspaceRepo = getWorkspaceRepository()
+            const orphaned = await workspaceRepo.findAllWorkspacesByProjectIncludingDirect(projectId)
+            // Rebind ALL host rows off the deleted project AND delete the
+            // project row in ONE SQLite transaction (repository method): an
+            // interruption mid-section can no longer leave the project row
+            // alive with some workspaces already assigned to the successor —
+            // rebinds and the row deletion commit (or roll back) together, so
+            // a retry observes the pre-deletion state and re-runs cleanly.
+            await repo.deleteProjectIncludingHostRebind(
+              projectId,
+              nextProjectId,
+              orphaned.map((ws) => ws.id)
+            )
 
-        await repo.deleteProject(projectId)
+              // ── OPFS workspace-data cleanup — AFTER the DB commit ──
+              // Deliberately deferred and best-effort: the row is gone, so the
+              // OPFS data is unreferenced — a failed cleanup leaves orphaned
+              // files, NOT data loss. Deleting it BEFORE the commit (the old
+              // order) destroyed workspace files on a failed deletion that the
+              // rollback path could not restore. Failures are logged and
+              // queued in an in-memory retry list (not persisted — storage-
+              // light rule); the next successful deletion flushes the queue.
+              // The wait is BOUNDED (timeout race): a hung cleanup must not
+              // hold the serialized deletion chain forever and strand every
+              // later deletion — on timeout the id is queued for retry and
+              // the chain proceeds (tradeoff: possible orphaned OPFS files
+              // until a later flush succeeds).
+              if (!(await tryDeleteOpfsProjectBounded(projectId))) {
+                pendingOpfsProjectDeletions.add(projectId)
+              }
+              await flushPendingOpfsProjectDeletions()
+
+            // ── Post-delete repair — INSIDE the serialized section ──
+            // The check must run AFTER this deletion committed, and inside
+            // the chain: reading `get().activeProjectId` before the chain
+            // takes a stale snapshot (an earlier chained deletion may have
+            // rebound the active pointer to THIS project after this caller
+            // was invoked), and running the repair outside the chain lets two
+            // concurrent repairs interleave with each other's row deletion.
+            // `!activeId` covers the last-project case: the previous deletion
+            // cleared the pointer, and this deletion must not leave hosts
+            // pointing at empty while survivors exist (or vice versa).
+            //
+            // The row is GONE at this point, so nothing here may flip the
+            // caller's result to false: a repair crash is logged (and still
+            // surfaced via the outer non-fatal refresh below), never
+            // rethrown — a thrown repair would make the caller report
+            // failure for a deletion that already committed. Each step is
+            // guarded independently so a failure in one does not skip the
+            // others.
+            const activeId = get().activeProjectId
+            if (!activeId || activeId === projectId) {
+              // A repair crash must not flip the deletion's result: the row
+              // is already gone, so a rejection here would report failure for
+              // a committed deletion (and the queued callers' prefix would
+              // swallow it while the UI showed a stale list). Log and move
+              // on — refreshProjects below re-syncs the list from SQLite.
+              try {
+                const { useAgentStore } = await import('@/store/agent.store')
+                const { useConversationContextStore } = await import('@/store/conversation-context.store')
+
+                // Re-read survivors AFTER the deletion committed: the host
+                // rebind's value described pre-deletion state, and a concurrent
+                // deletion may have removed that project in the meantime.
+                const remainingAfterDelete = await repo.findAllProjects()
+                const successorId = remainingAfterDelete.find((p) => p.id !== projectId)?.id || ''
+                if (successorId) {
+                  await repo.setActiveProject(successorId)
+                  set({ activeProjectId: successorId })
+                  await useAgentStore.getState().setActiveProject(successorId)
+                } else {
+                  await repo.clearActiveProject()
+                  set({ activeProjectId: '' })
+                  await useAgentStore.getState().setActiveProject('')
+                }
+
+                await useConversationContextStore.getState().refreshWorkspaces()
+              } catch (repairError) {
+                // The deletion HAS committed — never rethrow. Repair the
+                // in-memory pointer defensively before returning success:
+                // without this the active pointer stays on the deleted id
+                // (refreshProjects() re-syncs the LIST but not the pointer),
+                // so the UI keeps a project that no longer exists.
+                console.error('[ProjectStore] Post-delete active-pointer repair failed (deletion committed):', repairError)
+                const fallbackId = (await repo.findAllProjects().catch(() => [] as Project[]))
+                  .find((p) => p.id !== projectId)?.id || ''
+                set({ activeProjectId: fallbackId })
+                // Re-sync dependent workspace state for the fallback pointer.
+                try {
+                  const { useConversationContextStore } = await import('@/store/conversation-context.store')
+                  useConversationContextStore.setState({
+                    activeWorkspaceId: null,
+                    workspaces: [],
+                    initialized: false,
+                  })
+                  await useConversationContextStore.getState().refreshWorkspaces()
+                } catch (refreshError) {
+                  console.warn('[ProjectStore] Failed to refresh workspaces after failed repair:', refreshError)
+                }
+              }
+            }
+          })
+        // The module-level chain keeps the section's rejection until the
+        // NEXT caller's `.catch` prefix swallows it, so awaiting the local
+        // link propagates this section's failure to THIS caller's catch
+        // (retryable), while later callers are insulated by their own
+        // prefix and keep draining.
+        projectDeletionRebindChain = section
+        // The section only rejects when the ROW DELETION itself failed (the
+        // post-delete repair above never rethrows). Before reporting the
+        // failure, refresh the list so the UI does not keep a project that
+        // may or may not have been removed by an interrupted run.
+        await section.catch(async (sectionError: unknown) => {
+          await get().refreshProjects()
+          throw sectionError
+        })
+
         await get().refreshProjects()
-
-        if (activeProjectId === projectId) {
-          const remainingProjects = get().projects
-          const nextProjectId = remainingProjects[0]?.id || ''
-          const { useAgentStore } = await import('./agent.store')
-          const { useConversationContextStore } = await import('./conversation-context.store')
-
-          if (nextProjectId) {
-            await repo.setActiveProject(nextProjectId)
-            set({ activeProjectId: nextProjectId })
-            await useAgentStore.getState().setActiveProject(nextProjectId)
-          } else {
-            await repo.clearActiveProject()
-            set({ activeProjectId: '' })
-            await useAgentStore.getState().setActiveProject('')
-          }
-
-          await useConversationContextStore.getState().refreshWorkspaces()
-        }
 
         set({ isLoading: false })
         broadcastProjectChange({ type: 'deleted', projectId })

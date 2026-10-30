@@ -593,13 +593,17 @@ export async function importStorage(data: {
     if (data.conversations) {
       for (const row of data.conversations) {
         const conv = row as any
+        // kind travels with the backup; older exports without the column
+        // default to 'project' so restored standalone chats stay standalone.
+        const convKind = conv.kind === 'direct' ? 'direct' : 'project'
         await tx.execute(
-          'INSERT OR REPLACE INTO conversations (id, title, title_mode, context_usage_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)',
+          'INSERT OR REPLACE INTO conversations (id, title, title_mode, context_usage_json, kind, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)',
           [
             conv.id,
             conv.title,
             conv.title_mode || 'manual',
             conv.context_usage_json || null,
+            convKind,
             conv.created_at,
             conv.updated_at,
           ]

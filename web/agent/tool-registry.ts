@@ -8,7 +8,7 @@ import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 
 import type { ToolDefinition, ToolExecutor, ToolEntry, ToolContext, ToolPromptDoc } from './tools/tool-types'
 import { formatErrorForUser, withAutoRetry } from './error-handling'
-import { isToolAllowedInMode, type AgentMode } from './agent-mode'
+import { isToolAllowedInMode, isToolAllowedInDirectMode, type AgentMode } from '@/agent/agent-mode'
 import { getToolPolicy, type ToolPolicy } from './policy-engine'
 import { useSettingsStore } from '@/store/settings.store'
 
@@ -348,13 +348,23 @@ export class ToolRegistry {
    * Get tool definitions filtered by agent mode and feature flags.
    * In 'plan' mode, only read-only tools are returned.
    * In 'act' mode, all tools are returned.
+   *
+   * `directMode` (folder-less conversation) additionally removes every
+   * folder-dependent tool (read/write/edit/delete/ls/search/snapshots/
+   * sync-to-opfs) in ALL modes — the agent never sees them.
    */
-  getToolDefinitionsForMode(mode: AgentMode, options?: { includeDynamicDescriptions?: boolean }): ToolDefinition[] {
+  getToolDefinitionsForMode(mode: AgentMode, options?: { includeDynamicDescriptions?: boolean; directMode?: boolean }): ToolDefinition[] {
     let definitions = Array.from(this.tools.values()).map((entry) =>
       options?.includeDynamicDescriptions === false ? entry.definition : this.withBashCommands(entry.definition, mode))
 
     // Filter by feature flags first
     definitions = this.filterByFeatureFlags(definitions)
+
+    // Direct mode: folder-dependent tools are not registered at all —
+    // applies before the plan/act split so no mode can re-introduce them.
+    if (options?.directMode) {
+      definitions = definitions.filter(tool => isToolAllowedInDirectMode(tool.function.name))
+    }
 
     if (mode === 'act') {
       return definitions
@@ -418,6 +428,18 @@ export class ToolRegistry {
       return JSON.stringify({ error: `Unknown tool: ${rawName}` })
     }
 
+    // Direct-mode authorization is enforced HERE, not only in the
+    // definition filter: callers that bypass `getToolDefinitionsForMode`
+    // (the visual-flow engine calls `registry.execute` directly) must not
+    // be able to run folder-dependent tools against a folder-less
+    // conversation's workspace. The definition-level filter alone leaves
+    // exactly this hole.
+    if (context.directMode === true && !isToolAllowedInDirectMode(name)) {
+      return JSON.stringify({
+        error: `Tool "${rawName}" is not available in a standalone chat (no folder authorized).`,
+      })
+    }
+
     try {
       // run_code may have side effects; never auto-retry the whole program.
       if (name === RUN_CODE_TOOL) return await entry.executor(args, context)
@@ -439,6 +461,14 @@ export class ToolRegistry {
     const entry = this.tools.get(name)
     if (!entry) {
       return JSON.stringify({ error: `Unknown tool: ${name}` })
+    }
+
+    // Same direct-mode authorization as execute(): the no-retry path must
+    // not become a bypass around the folder-less guard.
+    if (context.directMode === true && !isToolAllowedInDirectMode(name)) {
+      return JSON.stringify({
+        error: `Tool "${name}" is not available in a standalone chat (no folder authorized).`,
+      })
     }
 
     try {

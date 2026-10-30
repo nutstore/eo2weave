@@ -1,5 +1,9 @@
 // 채팅
 export const conversation = {
+    directChat: {
+        badge: "독립 대화",
+        inputPlaceholder: "편하게 대화하거나 무엇이든 물어보세요…",
+    },
     thinking: "생각：끔",
     reasoning: "추론 과정",
     toolCall: "도구 호출",
@@ -120,6 +124,11 @@ export const conversation = {
       branchCreated: "분기 채팅가 생성되었습니다",
       messageQueued: "메시지가 대기열에 추가되었습니다 (위치 {position})",
       queueFull: "대기열이 가득 찼습니다. 현재 작업이 완료될 때까지 기다려주세요.",
+      kindSaveFailed: "대화 유형 변경을 저장하지 못했습니다",
+      conversationMissing: "대화를 찾을 수 없습니다",
+      convertNoProject: "이 대화를 저장할 프로젝트가 없습니다",
+      convertedToProject: "프로젝트 대화로 전환되었습니다",
+      convertFailed: "변환에 실패했습니다. 다시 시도해 주세요",
     },
     // 오류
     error: {

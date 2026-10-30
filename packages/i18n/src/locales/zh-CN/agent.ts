@@ -1,5 +1,8 @@
 // Agent 相关
 export const agent = {
+    directChat: {
+        systemBoundary: "这是与项目无关的对话，没有本地文件访问。文件类工具（read/write/edit/delete/ls/search、快照、sync-to-opfs）不可用，请不要尝试调用。你仍然可以使用：page_* 浏览器工具、run_python、bash（沙箱）、技能、web 搜索/抓取和 WebMCP 外部工具。",
+    },
     inputHint: "输入 @ 临时切换 Agent",
     createNew: "创建新 Agent...",
     noAgents: "暂无可用 Agent",

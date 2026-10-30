@@ -264,6 +264,11 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
         conversationConditions.push(`p.name IN (${projectsFilter.map(() => '?').join(',')})`)
         conversationParams.push(...projectsFilter)
       }
+      if (conversationConditions.length > 0) {
+        // A project filter must not sweep in standalone chats merely because
+        // their hidden host workspace carries that project's id.
+        conversationConditions.push(`c.kind IS NOT 'direct'`)
+      }
       const conversationWhere =
         conversationConditions.length > 0 ? `WHERE ${conversationConditions.join(' AND ')}` : ''
 
@@ -319,6 +324,10 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
       } else if (projectsFilter.length > 0) {
         conditions.push(`p.name IN (${projectsFilter.map(() => '?').join(',')})`)
         params.push(...projectsFilter)
+      }
+      if (conditions.length > 0) {
+        // Same standalone-chat exclusion as keyword mode.
+        conditions.push(`c.kind IS NOT 'direct'`)
       }
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 

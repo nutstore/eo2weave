@@ -25,6 +25,7 @@ import { ActiveTabIndicator } from './ActiveTabIndicator'
 import { AgentModeSelect } from './AgentModeSelect'
 import { RunEndPolicySelect } from './RunEndPolicySelect'
 import { useConversationLogic } from './useConversationLogic'
+import { useConversationStore } from '@/store/conversation.store'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 import { isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
@@ -106,6 +107,11 @@ export function ConversationView({
     return !getProviderConfig(providerType)
   }, [hasUsableModel, providerType])
   const hasSelectableModel = hasUsableModel || modelCredentialStatus === 'expired' || selectedProviderUnregistered
+  // Single kind check — direct conversations hide project semantics (auto-apply)
+  // and use the direct-chat placeholder copy.
+  const isDirect = useConversationStore(
+    (s) => !!s.activeConversationId && s.conversations.find((c) => c.id === s.activeConversationId)?.kind === 'direct'
+  )
   const {
     hasInput, setInput, setMentionedAgentIds, inputResetToken, messagesEndRef, scrollContainerRef,
     isUserAtBottomRef,
@@ -440,7 +446,9 @@ export function ConversationView({
                   (isProcessing
                     ? t('conversation.input.placeholderQueuing')
                     : hasUsableModel
-                      ? t('conversation.input.placeholder')
+                      ? (isDirect
+                          ? t('conversation.directChat.inputPlaceholder')
+                          : t('conversation.input.placeholder'))
                       : hasApiKey
                         ? t('conversation.input.placeholderNoModel')
                         : t('conversation.input.placeholderNoKey'))
@@ -512,11 +520,13 @@ export function ConversationView({
                 deleteAgent={deleteAgent}
               />
               <AgentModeSelect mode={agentMode} onModeChange={setAgentMode} />
-              <RunEndPolicySelect
-                runEndPolicy={autoApplyOnRunComplete ? 'auto' : 'manual'}
-                onRunEndPolicyChange={(policy) => setAutoApplyOnRunComplete(policy === 'auto')}
-                disabled={disabled}
-              />
+              {!isDirect && (
+                <RunEndPolicySelect
+                  runEndPolicy={autoApplyOnRunComplete ? 'auto' : 'manual'}
+                  onRunEndPolicyChange={(policy) => setAutoApplyOnRunComplete(policy === 'auto')}
+                  disabled={disabled}
+                />
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-2 pl-1 sm:pl-0">
               <ContextUsageBar contextWindowUsage={activeContextWindowUsage} isProcessing={isProcessing} />

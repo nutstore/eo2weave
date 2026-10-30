@@ -4,9 +4,14 @@
 
 import { MessageSquare } from 'lucide-react'
 import { useT } from '@/i18n'
+import { useConversationStore } from '@/store/conversation.store'
 
 export function ConversationEmptyState() {
   const t = useT()
+  // Direct conversations get their own positioning copy (casual-chat framing).
+  const isDirect = useConversationStore(
+    (s) => !!s.activeConversationId && s.conversations.find((c) => c.id === s.activeConversationId)?.kind === 'direct'
+  )
 
   return (
     <div className="flex h-full items-center justify-center">
@@ -19,7 +24,7 @@ export function ConversationEmptyState() {
             {t('conversation.empty.title')}
           </h3>
           <p className="max-w-md text-sm leading-relaxed text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400">
-            {t('conversation.empty.description')}
+            {isDirect ? t('conversation.directChat.inputPlaceholder') : t('conversation.empty.description')}
           </p>
         </div>
       </div>

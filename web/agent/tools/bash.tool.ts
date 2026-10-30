@@ -100,18 +100,23 @@ export const bashToolExecutor: ToolExecutor = async (
   const isPlanMode = (context.agentMode ?? 'act') === 'plan'
 
   // Resolve multi-root names
+  // Direct conversations have NO folder authorization: their workspace must
+  // never resolve host-project roots (the hidden host binding would leak
+  // project files into /mnt). Skip root resolution entirely in direct mode.
   let rootNames: string[] = []
-  try {
-    const { getProjectRootRepository } = await import(
-      '@/sqlite/repositories/project-root.repository'
-    )
-    const repo = getProjectRootRepository()
-    if (context.projectId) {
-      const roots = await repo.findByProject(context.projectId)
-      rootNames = roots.map((r: { name: string }) => r.name)
+  if (!context.directMode) {
+    try {
+      const { getProjectRootRepository } = await import(
+        '@/sqlite/repositories/project-root.repository'
+      )
+      const repo = getProjectRootRepository()
+      if (context.projectId) {
+        const roots = await repo.findByProject(context.projectId)
+        rootNames = roots.map((r: { name: string }) => r.name)
+      }
+    } catch {
+      // Root repository not available — single root
     }
-  } catch {
-    // Root repository not available — single root
   }
 
   const defaultCwd = rootNames.length > 0
@@ -124,12 +129,17 @@ export const bashToolExecutor: ToolExecutor = async (
   // file IO on the main thread (where all the zustand stores / managers live).
   const handlerConfig: VfsRpcHandlerConfig = {
     workspaceId: context.workspaceId ?? null,
-    projectId: context.projectId ?? null,
+    // Direct conversations must not reach host-project files via /mnt:
+    // strip the host project binding so the VFS handler scopes to the
+    // workspace's own OPFS dir only.
+    projectId: context.directMode ? null : (context.projectId ?? null),
     currentAgentId: context.currentAgentId ?? null,
     readOnly: isPlanMode,
     restrictAgentCoreFiles: context.isSubagent === true,
     onWorkspacePathsChanged: context.onWorkspacePathsChanged,
-    directoryHandle: context.directoryHandle,
+    // Same boundary for native directory access — a direct conversation has
+    // no folder authorization, so never pass the (host-inherited) handle.
+    directoryHandle: context.directMode ? null : context.directoryHandle,
   }
 
   const startTime = Date.now()

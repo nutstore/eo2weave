@@ -79,6 +79,7 @@ interface ConversationItemData {
   isArchived: boolean
   isPinned: boolean
   hasSchedule: boolean
+  kind?: 'project' | 'direct'
 }
 
 interface ConversationItemProps extends ConversationItemData {
@@ -338,6 +339,7 @@ const ConversationItem = memo(function ConversationItem({
     prev.isEditing === next.isEditing &&
     prev.isPinned === next.isPinned &&
     prev.hasSchedule === next.hasSchedule &&
+    prev.kind === next.kind &&
     prev.isArchived === next.isArchived &&
     prev.editingTitle === next.editingTitle &&
     prev.composing === next.composing &&
@@ -355,6 +357,8 @@ interface SidebarProps {
   selectedFilePath?: string | null
   /** Whether sidebar is rendered in mobile mode */
   isMobile?: boolean
+  /** Direct conversations have no folder semantics — hide the file/pending/snapshot tabs */
+  hideProjectResources?: boolean
   /** Request parent to close mobile sidebar */
   onRequestClose?: () => void
   /** Target file path to reveal in tree (relative path without root prefix) */
@@ -748,6 +752,7 @@ export const Sidebar = memo(function Sidebar({
   onInspect,
   selectedFilePath,
   isMobile = false,
+  hideProjectResources = false,
   onRequestClose,
   revealTargetPath,
   onRevealComplete,
@@ -764,7 +769,7 @@ export const Sidebar = memo(function Sidebar({
   // useShallow ensures stable references when the extracted values haven't changed.
   const conversationListItems = useConversationStore(
     useShallow((s) =>
-      s.conversations.map((c) => ({ id: c.id, title: c.title }))
+      s.conversations.map((c) => ({ id: c.id, title: c.title, kind: c.kind }))
     )
   )
   const deleteConversation = useConversationStore((s) => s.deleteConversation)
@@ -820,9 +825,13 @@ export const Sidebar = memo(function Sidebar({
   const workspaceIds = workspaceStats.map((w) => w.id)
   const currentPendingCount = useConversationContextStore((state) => state.currentPendingCount)
   const scopedWorkspaceIdSet = useMemo(() => new Set(workspaceIds), [workspaceIds])
+  // The shared sidebar always renders PROJECT conversation rows (its links
+  // are projectWorkspacePath-based). Standalone (kind='direct') chats live in
+  // the /chats space and are rejected by that route sync, so they never
+  // appear here regardless of which workspace hosts them.
   const scopedConversations = useMemo(
     () => conversationListItems.filter(
-      (conv) => scopedWorkspaceIdSet.has(conv.id) || conv.id === activeWorkspaceId
+      (conv) => conv.kind !== 'direct' && (scopedWorkspaceIdSet.has(conv.id) || conv.id === activeWorkspaceId)
     ),
     [conversationListItems, scopedWorkspaceIdSet, activeWorkspaceId]
   )
@@ -1241,6 +1250,58 @@ export const Sidebar = memo(function Sidebar({
     }
   }, [deleteConversation, t, onSelectWorkspace, activeProjectId, router])
 
+  // Row renderer — extracted from the previously-duplicated inline map so the
+  // sidebar list body stays a single source of truth.
+  const renderConversationItem = useCallback((conv: { id: string; title: string; kind?: 'project' | 'direct' }) => {
+    const isRunning = runningSet.has(conv.id)
+    const isActive = conv.id === activeWorkspaceId
+    const pendingReviewCount = pendingCountByConversationId.get(conv.id) || 0
+    const isEditing = editingId === conv.id
+    const isArchived = workspaceStatusMap.get(conv.id) === 'archived'
+    const isPinned = pinnedIds.includes(conv.id)
+
+    return (
+      <motion.div
+        key={conv.id}
+        layout={reduceMotion ? false : 'position'}
+        transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 35, mass: 0.8 }}
+        className="mb-0.5"
+      >
+        <ConversationItem
+          id={conv.id}
+          title={conv.title}
+          isRunning={isRunning}
+          isActive={isActive}
+          pendingReviewCount={pendingReviewCount}
+          isEditing={isEditing}
+          isArchived={isArchived}
+          isPinned={isPinned}
+          hasSchedule={(workspaceScheduleCount.get(conv.id) ?? 0) > 0}
+          href={projectWorkspacePath(activeProjectId, conv.id)}
+          onSelect={handleItemSelect}
+          onStartRename={startRename}
+          onDeleteClick={handleItemDeleteClick}
+          onTogglePin={handleItemTogglePin}
+          onExport={handleItemExport}
+          onArchive={handleItemArchive}
+          onDelete={handleItemDelete}
+          onGenerateTitle={handleItemGenerateTitle}
+          editingTitle={editingTitle}
+          onEditingTitleChange={handleEditingTitleChange}
+          onConfirmRename={confirmRename}
+          onCancelRename={cancelRename}
+          onRenameBlur={handleRenameBlur}
+          composing={composing}
+          onComposingChange={setComposing}
+          renameInputRef={renameInputRef}
+          workspaceLabel={t('sidebar.workspaceLabel', { name: conv.title })}
+          t={t}
+        />
+      </motion.div>
+    )
+  }, [runningSet, activeWorkspaceId, pendingCountByConversationId, editingId, workspaceStatusMap, pinnedIds, workspaceScheduleCount, activeProjectId, reduceMotion, handleItemSelect, startRename, handleItemDeleteClick, handleItemTogglePin, handleItemExport, handleItemArchive, handleItemDelete, handleItemGenerateTitle, editingTitle, handleEditingTitleChange, confirmRename, cancelRename, handleRenameBlur, composing, setComposing, renameInputRef, t])
+
+
   // collapsed sidebar view — single container with animated width
   return (
     <>
@@ -1343,8 +1404,8 @@ export const Sidebar = memo(function Sidebar({
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {/* Conversation list */}
           <div
-            className="flex min-h-0 flex-col overflow-hidden bg-muted/25"
-            style={{ height: `${conversationRatio}%` }}
+            className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/25"
+            style={hideProjectResources ? undefined : { height: `${conversationRatio}%` }}
           >
           {workspaceTab === 'active' && (
             <NewWorkspaceButton
@@ -1355,52 +1416,7 @@ export const Sidebar = memo(function Sidebar({
 
           <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-2">
             {displayedConversations.map((conv) => {
-              const isRunning = runningSet.has(conv.id)
-              const isActive = conv.id === activeWorkspaceId
-              const pendingReviewCount = pendingCountByConversationId.get(conv.id) || 0
-              const isEditing = editingId === conv.id
-              const isArchived = workspaceStatusMap.get(conv.id) === 'archived'
-              const isPinned = pinnedIds.includes(conv.id)
-
-              return (
-                <motion.div
-                  key={conv.id}
-                  layout={reduceMotion ? false : 'position'}
-                  transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 35, mass: 0.8 }}
-                  className="mb-0.5"
-                >
-                <ConversationItem
-                  id={conv.id}
-                  title={conv.title}
-                  isRunning={isRunning}
-                  isActive={isActive}
-                  pendingReviewCount={pendingReviewCount}
-                  isEditing={isEditing}
-                  isArchived={isArchived}
-                  isPinned={isPinned}
-                  hasSchedule={(workspaceScheduleCount.get(conv.id) ?? 0) > 0}
-                  href={projectWorkspacePath(activeProjectId, conv.id)}
-                  onSelect={handleItemSelect}
-                  onStartRename={startRename}
-                  onDeleteClick={handleItemDeleteClick}
-                  onTogglePin={handleItemTogglePin}
-                  onExport={handleItemExport}
-                  onArchive={handleItemArchive}
-                  onDelete={handleItemDelete}
-                  onGenerateTitle={handleItemGenerateTitle}
-                  editingTitle={editingTitle}
-                  onEditingTitleChange={handleEditingTitleChange}
-                  onConfirmRename={confirmRename}
-                  onCancelRename={cancelRename}
-                  onRenameBlur={handleRenameBlur}
-                  composing={composing}
-                  onComposingChange={setComposing}
-                  renameInputRef={renameInputRef}
-                  workspaceLabel={t('sidebar.workspaceLabel', { name: conv.title })}
-                  t={t}
-                />
-                </motion.div>
-              )
+              return renderConversationItem(conv)
             })}
           </div>
           </div>
@@ -1417,7 +1433,10 @@ export const Sidebar = memo(function Sidebar({
             </div>
           )}
 
-          {/* Resource tabs — memoized to avoid re-render during streaming */}
+          {/* Resource tabs — memoized to avoid re-render during streaming.
+              Direct conversations have no folder semantics: the file tree,
+              pending-changes and snapshot panels are hidden entirely. */}
+          {!hideProjectResources && (
           <div className="min-h-0 overflow-hidden" style={{ height: `${100 - conversationRatio}%` }}>
             <ResourceTabPanel
               resourceTab={resourceTab}
@@ -1436,6 +1455,7 @@ export const Sidebar = memo(function Sidebar({
               t={t}
             />
           </div>
+          )}
         </div>
         </>}
       </motion.div>

@@ -413,7 +413,12 @@ export const webFetchExecutor: ToolExecutor = async (args, context) => {
   const needsSecrets =
     (headers && Object.values(headers).some((v) => referencesSecretTemplate(v))) ||
     (body !== undefined && referencesSecretTemplate(body))
-  if (needsSecrets) {
+  // Standalone chats (directMode) run under the hidden host project's id, so
+  // resolving secrets against context.projectId would leak the HOST project's
+  // secrets into an outbound request the host user never authored. In
+  // directMode we skip resolution entirely: templates stay literal and the
+  // endpoint's error makes the unresolved reference explicit (never a leak).
+  if (needsSecrets && !context.directMode) {
     const names = collectSecretNames(headers, body)
     const secrets = await resolveSecrets(context.projectId, names)
     const collected: string[] = []

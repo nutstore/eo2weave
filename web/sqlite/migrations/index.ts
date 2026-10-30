@@ -189,8 +189,42 @@ function verifyFsOpsDeleteModeSchema(db: any): void {
   }
 }
 
+function conversationKindColumnExists(db: any, column: string): boolean {
+  try {
+    db.exec(`SELECT ${column} FROM conversations LIMIT 0`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Ensure the physical conversations.kind column exists.
+ *
+ * Runs unconditionally after pending migrations (and inside the v19 migration)
+ * so a database whose user_version raced ahead of its DDL gets the column
+ * created regardless of which version it reports. Existing rows default to
+ * 'project' — the NOT NULL DEFAULT carries that with zero data migration.
+ */
+function repairConversationKindColumn(db: any): void {
+  if (!conversationKindColumnExists(db, 'kind')) {
+    db.exec("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'project'")
+  }
+  bumpUserVersionFloor(db, 19)
+}
+
+function verifyConversationKindSchema(db: any): void {
+  try {
+    db.exec('SELECT kind FROM conversations LIMIT 0')
+  } catch (error) {
+    throw new Error(
+      `SCHEMA_INCOMPATIBLE: conversations is missing the kind column. ${getErrorMessage(error)}`
+    )
+  }
+}
+
 // Base schema version
-export const BASE_SCHEMA_VERSION = 18
+export const BASE_SCHEMA_VERSION = 19
 
 // ============================================================================
 // Migration Registry
@@ -425,6 +459,11 @@ export const migrations: Migration[] = [
     name: 'add_fs_ops_delete_mode',
     up: repairFsOpsDeleteModeColumn,
   },
+  {
+    version: 19,
+    name: 'add_conversations_kind',
+    up: repairConversationKindColumn,
+  },
 ]
 
 // ============================================================================
@@ -598,12 +637,16 @@ export async function initializeSchema(
   // so repair it on every startup before verifying.
   repairFsOpsDeleteModeColumn(db)
 
+  // Same guard for the v19 conversations.kind column.
+  repairConversationKindColumn(db)
+
   // Version numbers alone are not enough: validate the physical columns after
   // migration so the app fails safely with an exportable database instead of
   // later rendering an empty conversation list.
   verifyConversationSchema(db)
   verifyProjectRootSchema(db)
   verifyFsOpsDeleteModeSchema(db)
+  verifyConversationKindSchema(db)
 
   // Report completion
   onProgress?.({

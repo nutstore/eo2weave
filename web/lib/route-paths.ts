@@ -9,6 +9,8 @@
  *   /projects                                     — project home
  *   /projects/:projectId                          — bare project (layout picks workspace)
  *   /projects/:projectId/workspaces/:workspaceId  — canonical workspace URL
+ *   /chats                                        — standalone chats home
+ *   /chats/:chatId                                — standalone chat (kind='direct' conversation)
  *   /docs[/:language[/:category[/:page]]]         — documentation
  *   /preview?path=...                             — standalone file preview
  *
@@ -25,6 +27,8 @@ export const ROUTE_PATHS = {
   projectsHome: '/projects',
   projectWorkspace: '/projects/:projectId',
   projectWorkspaceWithId: '/projects/:projectId/workspaces/:workspaceId',
+  chatsHome: '/chats',
+  chat: '/chats/:chatId',
   filePreview: '/preview',
   docs: '/docs',
   docsLanguage: '/docs/:language',
@@ -35,6 +39,16 @@ export const ROUTE_PATHS = {
 /** Project home. */
 export function projectsPath(): string {
   return '/projects'
+}
+
+/** Standalone chats home (/chats) — kind='direct' conversations live here. */
+export function chatsPath(): string {
+  return '/chats'
+}
+
+/** Canonical standalone chat URL. */
+export function chatPath(chatId: string): string {
+  return `/chats/${encodeURIComponent(chatId)}`
 }
 
 /**

@@ -113,7 +113,60 @@ import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 
 //=============================================================================
-import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from './conversation-persist'
+import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from '@/store/conversation-persist'
+
+/**
+ * Per-conversation serialization for kind transitions (setConversationKind).
+ * Overlapping transitions of the SAME conversation must persist in call
+ * order: an earlier write failing after a later one already persisted would
+ * otherwise roll the in-memory kind back to a value SQLite never stored —
+ * UI and reload would disagree. Different conversations chain independently.
+ */
+const kindTransitionChains = new Map<string, Promise<boolean>>()
+
+/**
+ * One optimistic-update + persist + rollback-on-failure kind transition.
+ * Runs INSIDE the per-conversation chain, so no two transitions of the same
+ * conversation interleave their bookkeeping.
+ */
+async function applyConversationKind(id: string, kind: 'direct' | 'project'): Promise<boolean> {
+  const store = useConversationStoreSQLite
+  const previousKind = store.getState().conversations.find((c) => c.id === id)?.kind
+  store.setState((state) => {
+    const conv = state.conversations.find((c) => c.id === id)
+    if (conv) {
+      conv.kind = kind
+    }
+  })
+  const conv = store.getState().conversations.find((c) => c.id === id)
+  if (!conv) return false
+  try {
+    // Kind changes go through the dedicated transition write so a generic
+    // meta save racing this change cannot carry a stale kind into SQLite.
+    await persistConversationKind(id, kind)
+  } catch (error) {
+    console.error(
+      '[conversation.store] Failed to persist conversation kind on setConversationKind:',
+      error
+    )
+    // Roll the in-memory kind back ONLY if it still reflects THIS call's
+    // optimistic update: with transitions serialized, the only way the kind
+    // moved on is a generic path outside this chain — blindly restoring
+    // previousKind would clobber that newer committed value.
+    store.setState((state) => {
+      const stale = state.conversations.find((c) => c.id === id)
+      if (stale && stale.kind === kind) {
+        stale.kind = previousKind
+      }
+    })
+    toast.error(i18nText('conversation.toast.kindSaveFailed', '对话类型修改保存失败'))
+    // Explicit failure: callers must not treat a rolled-back kind as
+    // persisted (the error is already surfaced here, so callers only
+    // branch on the result — they do not re-toast).
+    return false
+  }
+  return true
+}
 import {
   runAgentImpl,
   type ConversationAgentRunInternals,
@@ -161,7 +214,7 @@ interface ConversationState {
 
   // Actions
   loadFromDB: () => Promise<void>
-  createNew: (title?: string, options?: { activate?: boolean }) => Conversation
+  createNew: (title?: string, options?: { activate?: boolean; kind?: 'project' | 'direct' }) => Conversation
   setActive: (id: string | null) => Promise<void>
   addMessage: (conversationId: string, message: Message) => void
   updateMessages: (conversationId: string, messages: Message[]) => void
@@ -180,6 +233,24 @@ interface ConversationState {
     failed: Array<{ id: string; error: string }>
   }>
   updateTitle: (id: string, title: string) => void
+  /**
+   * One-way kind upgrade: 'direct' → 'project' after folder authorization.
+   * No downgrade path by design (a mounted folder has no unmount→direct
+   * Persisted via a dedicated kind write (NOT the generic
+   * saveMeta path, whose snapshot of `kind` can race a concurrent transition);
+   * resolves only after the write settles. Returns true when the kind is
+   * durably persisted; false when the conversation is missing or the write
+   * failed (the in-memory kind is rolled back before resolving false).
+   */
+  setConversationKind: (id: string, kind: 'project' | 'direct') => Promise<boolean>
+  /**
+   * User-facing conversion of a standalone chat into a project conversation.
+   * Launches the folder-authorization flow (folder picker for the active
+   * project, mirroring the workspace-mount entry); only on a successful
+   * authorization is the conversation's kind upgraded via setConversationKind.
+   * Resolves true when the conversion completed.
+   */
+  convertDirectToProject: (id: string) => Promise<boolean>
   /**
    * Generate a title for a conversation using the current model.
    *
@@ -773,8 +844,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       })
     },
 
-    createNew: (title?: string, options?: { activate?: boolean }) => {
-      const conversation = createConversation(title)
+    createNew: (title?: string, options?: { activate?: boolean; kind?: 'project' | 'direct' }) => {
+      const conversation = createConversation(title, { kind: options?.kind })
       // `activate: false` lets background creators (WebMCP app-tools) add a
       // conversation without yanking the user's current view (m-2).
       const activate = options?.activate !== false
@@ -1489,6 +1560,83 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         })
     },
 
+    setConversationKind: async (id, kind) => {
+      // Serialize per-conversation kind transitions: two overlapping
+      // transitions for the same conversation must persist in call order.
+      // Out-of-order writes would interleave the rollback bookkeeping below
+      // with a LATER transition's optimistic update — an earlier write
+      // failing after a later one already persisted could then roll the
+      // in-memory kind back to a value that no longer matches SQLite.
+      // Different conversations remain independent (per-key chains).
+      const predecessor = kindTransitionChains.get(id) ?? Promise.resolve()
+      // Run the transition inside the chain: the map holds the FULL link
+      // (prefix + apply step), so a concurrent caller queues behind the
+      // whole transition — not just the swallowed predecessor prefix. The
+      // entry is cleared once no newer caller has replaced it, so the map
+      // cannot grow unboundedly on long-lived sessions.
+      const section = predecessor
+        .catch(() => {
+          // A failed earlier transition must not skip this one: its failure
+          // was already reported by ITS own call (boolean + toast).
+        })
+        .then(() => applyConversationKind(id, kind))
+        .finally(() => {
+          if (kindTransitionChains.get(id) === section) kindTransitionChains.delete(id)
+        })
+      kindTransitionChains.set(id, section)
+      return section
+    },
+
+    convertDirectToProject: async (id) => {
+      const conv = get().conversations.find((c) => c.id === id)
+      if (!conv) {
+        toast.error(i18nText('conversation.toast.conversationMissing', '对话不存在'))
+        return false
+      }
+      // One-way upgrade: a project conversation needs no conversion.
+      if (conv.kind !== 'direct') return true
+
+      // Failures anywhere in the flow (dynamic-import chunk unavailable,
+      // picker crash, persistence error) must surface to the user instead of
+      // rejecting into a click handler that does not catch.
+      try {
+        // Folder-authorization flow: the conversation becomes a project
+        // conversation, so its host project must have an authorized folder —
+        // the same picker the workspace-mount entry uses. Dynamic import keeps
+        // the folder-access store out of this module's initial graph.
+        const { useFolderAccessStore } = await import('@/store/folder-access.store')
+        const folderState = useFolderAccessStore.getState()
+        const projectId = folderState.activeProjectId
+        if (!projectId) {
+          toast.error(i18nText('conversation.toast.convertNoProject', '没有可用的项目来承载此对话'))
+          return false
+        }
+
+        // pickDirectory launches the native folder picker and persists the
+        // granted handle; it resolves false on cancel / failure.
+        const authorized = await folderState.pickDirectory(projectId)
+        if (!authorized) return false
+
+        // Consume the explicit result instead of re-inspecting store state:
+        // setConversationKind reports persistence failure through its boolean
+        // (after rolling the in-memory kind back), so a false here means the
+        // conversion did not land and must not report success.
+        const persisted = await get().setConversationKind(id, 'project')
+        if (!persisted) {
+          return false
+        }
+      } catch (error) {
+        console.error(
+          '[conversation.store] convertDirectToProject failed:',
+          error
+        )
+        toast.error(i18nText('conversation.toast.convertFailed', '转换失败，请重试'))
+        return false
+      }
+      toast.success(i18nText('conversation.toast.convertedToProject', '已转换为项目对话'))
+      return true
+    },
+
     generateTitle: async (id, manual) => {
       const conv = get().conversations.find((c) => c.id === id)
       if (!conv) return { ok: false, reason: 'conversation_missing' }
@@ -1799,16 +1947,23 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // compression loop tolerates a null handle
       }
 
+      // Direct conversations (kind='direct') have no folder authorization:
+      // the compaction loop's ToolContext must carry directMode so the
+      // registry guard rejects folder-dependent tools even on this secondary
+      // loop. Derived via the single kind selector, same as runAgent.
+      const directMode = isDirectConversation(conversationId)
+
       const agentLoop = new AgentLoop({
         provider,
         toolRegistry,
         contextManager,
         toolContext: {
-          directoryHandle,
+          directoryHandle: directMode ? null : directoryHandle,
           workspaceId: conversationId,
           projectId: undefined,
           currentAgentId: 'default',
           agentMode: 'act',
+          directMode: directMode || undefined,
         },
         maxIterations: 1,
         initialConvertCallCount: conv.compressionConvertCallCount ?? 0,
@@ -2341,6 +2496,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 // (external importers and tests resolve these names here).
 export { findSpawnStepInDraft } from './conversation-message-ops'
 export { reconcileMessageSnapshot } from './conversation-message-ops'
+
+/**
+ * The single kind selector — read a conversation's direct-mode flag.
+ *
+ * The design mandates ONE check site (never scatter `kind === 'direct'`
+ * across WorkspaceLayout/ConversationView/agent-run): undefined ≡ 'project',
+ * so legacy conversations and runtime-created ones behave exactly as before.
+ */
+export function isDirectConversation(id: string | null | undefined): boolean {
+  if (!id) return false
+  return useConversationStoreSQLite.getState().conversations.find((c) => c.id === id)?.kind === 'direct'
+}
 
 // ---------------------------------------------------------------------------
 // Eviction trigger: last view unmounted
