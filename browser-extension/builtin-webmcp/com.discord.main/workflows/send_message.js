@@ -681,6 +681,20 @@ export default {
           function noteRetrySharedSeen(retryKey, at) {
             var seen = (globalThis.__eo2DiscordRetrySharedSeen =
               globalThis.__eo2DiscordRetrySharedSeen || new Map())
+            // Bounded like the per-tab nonce map: a long-lived tab handling
+            // many distinct unconfirmed sends must not retain every retry
+            // key (message text included) forever. An entry only matters
+            // while its nonce can still be reused — the same 5-minute
+            // window Discord's enforce_nonce guarantees — so lazily drop
+            // expired observations and evict the oldest past that bound.
+            var now = at
+            seen.forEach(function (seenAt, k) {
+              if (now - seenAt >= 300000) seen.delete(k)
+            })
+            while (seen.size > 128) {
+              var oldest = seen.keys().next().value
+              seen.delete(oldest)
+            }
             seen.set(retryKey, at)
           }
           function noteRetrySharedGone(retryKey) {
