@@ -140,4 +140,16 @@ describe('applyGatewayLoginTokens cancellation', () => {
     await expect(second).resolves.toMatchObject({ ok: true })
     expect(savedKey).toBe('newer-key')
   })
+
+  it('rejects before writing when cross-tab credential locking is unavailable', async () => {
+    const realLocks = navigator.locks
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined })
+    try {
+      await expect(applyGatewayLoginTokens('new-key')).rejects.toThrow(/Web Locks are required/)
+      expect(savedKey).toBe('previous-key')
+      expect(keyStore.save).not.toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(navigator, 'locks', { configurable: true, value: realLocks })
+    }
+  })
 })

@@ -8,6 +8,8 @@
  */
 
 import { t as translate } from '@creatorweave/i18n'
+import { withGatewayCredentialLock } from './gateway-credential-lock'
+import { saveApiKey as saveGatewayApiKey } from '@/security/api-key-store'
 import { useI18nStore } from '@/i18n/store'
 
 // ── Types ──
@@ -228,15 +230,19 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
       client_id: recovered.client_id || '',
       base_url: recovered.base_url || '',
     }
-    // Write back to localStorage so subsequent reads take the fast path
-    // (no async SQLite hit on every call).
-    try {
-      localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(restored))
-    } catch {
-      // localStorage may be full / disabled — restored object is still
-      // returned in-memory, the caller will use it directly.
-    }
-    return restored
+    // A newer login may have committed while SQLite was loading. Re-check
+    // localStorage under the credential lock before restoring this backup.
+    return await withGatewayCredentialLock(async () => {
+      const current = loadStoredTokens()
+      if (current) return current
+      try {
+        localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(restored))
+      } catch {
+        // A disabled/full localStorage does not prevent this request from
+        // using the recovered pair in memory.
+      }
+      return restored
+    })
   } catch {
     return null
   }
@@ -246,8 +252,13 @@ function saveStoredTokens(tokens: StoredTokens): void {
   bumpAuthSessionGeneration()
   localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens))
   // Also persist refresh_token to SQLite for durability across localStorage clears.
-  // Fire-and-forget — localStorage is the primary sync store; SQLite is the backup.
-  void persistRefreshTokenToSQLite(tokens).catch((e) => {
+  // The backup write may run after a newer login. Serialize and verify its
+  // source pair so an older background write cannot replace that backup.
+  void withGatewayCredentialLock(async () => {
+    const current = loadStoredTokens()
+    if (!current || JSON.stringify(current) !== JSON.stringify(tokens)) return
+    await persistRefreshTokenToSQLite(tokens)
+  }).catch((e) => {
     console.warn('[llm-gateway] persist refresh_token to SQLite failed:', e)
   })
 }
@@ -285,15 +296,14 @@ function isTokenInvalidError(e: unknown): boolean {
   return false
 }
 
-function clearStoredTokens(): void {
-  bumpAuthSessionGeneration()
-  localStorage.removeItem(TOKEN_STORAGE_KEY)
-  // Also purge both SQLite-side credentials with a SINGLE dynamic import.
-  // Fire-and-forget — localStorage is the primary sync store; SQLite is the
-  // backup. Do NOT split these into two separate import() calls: concurrent
-  // dynamic imports of the same module have been observed racing past the
-  // test mock registry, and semantically a dead session must purge both.
-  void (async () => {
+async function clearStoredTokens(expectedRefreshToken?: string): Promise<boolean> {
+  return withGatewayCredentialLock(async () => {
+    const current = loadStoredTokens()
+    if (expectedRefreshToken && current?.refresh_token !== expectedRefreshToken) return false
+    bumpAuthSessionGeneration()
+    localStorage.removeItem(TOKEN_STORAGE_KEY)
+    // Purge both SQLite-side credentials before releasing the lock, so a
+    // later login cannot have its new access key deleted by this logout.
     try {
       const { deleteApiKey } = await import('@/security/api-key-store')
       await deleteApiKey(REFRESH_TOKEN_DB_KEY)
@@ -307,7 +317,8 @@ function clearStoredTokens(): void {
       // the "logged-in badge on a dead session" state with no way to debug.
       console.warn('[llm-gateway] failed to purge stored credentials:', e)
     }
-  })()
+    return true
+  })
 }
 
 /**
@@ -327,11 +338,16 @@ function clearStoredTokens(): void {
  */
 async function purgeStaleAccessTokenShadow(): Promise<boolean> {
   try {
-    const { loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
-    const shadow = await loadApiKey(LLM_GATEWAY_API_KEY_ID)
-    if (!shadow) return false
-    await deleteApiKey(LLM_GATEWAY_API_KEY_ID)
-    return true
+    return await withGatewayCredentialLock(async () => {
+      if (loadStoredTokens()) return false
+      const { loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
+      const shadow = await loadApiKey(LLM_GATEWAY_API_KEY_ID)
+      // A new session can appear during the key-store read. Do not delete
+      // its access shadow when the earlier no-token observation is stale.
+      if (!shadow || loadStoredTokens()) return false
+      await deleteApiKey(LLM_GATEWAY_API_KEY_ID)
+      return true
+    })
   } catch (e) {
     // Diagnostic log on purpose — a silent failure here would keep the
     // "logged-in badge on a dead session" state with no way to debug.
@@ -515,11 +531,10 @@ export async function refreshAccessToken(
  * Call after refresh to ensure the next LLM request uses the new token.
  */
 export async function persistAccessTokenToKeyStore(accessToken: string): Promise<void> {
-  const { saveApiKey } = await import('@/security/api-key-store')
   // Keep this auth-layer write independent from the provider module. The
   // provider re-exports this auth module, so importing it here creates a
-  // fragile dynamic cycle and can bypass test/runtime module mocks.
-  await saveApiKey(LLM_GATEWAY_API_KEY_ID, accessToken)
+  // fragile cycle.
+  await saveGatewayApiKey(LLM_GATEWAY_API_KEY_ID, accessToken)
 }
 
 // ── High-Level Auth Functions ──
@@ -551,6 +566,7 @@ export function persistDeviceLoginTokens(
     client_id: clientId,
     base_url: baseURL,
   })
+  setCredentialStatus('valid')
 }
 
 /**
@@ -558,7 +574,7 @@ export function persistDeviceLoginTokens(
  * 1. Create device session
  * 2. Open browser for user
  * 3. Poll until authorized
- * 4. Save tokens
+ * 4. Return the token pair for the caller's serialized credential commit
  *
  * @returns The access token on success
  */
@@ -567,7 +583,6 @@ export async function performDeviceCodeFlow(
   clientId: string,
   onStateChange?: AuthStateListener,
   signal?: AbortSignal,
-  deferPersistence = false,
 ): Promise<TokenResponse> {
   const emit = (state: AuthState) => onStateChange?.(state)
 
@@ -625,11 +640,8 @@ export async function performDeviceCodeFlow(
           err.retriable = false
           throw err
         }
-        if (!deferPersistence) {
-          persistDeviceLoginTokens(tokens, clientId, baseURL)
-          emit({ status: 'success' })
-          setCredentialStatus('valid')
-        }
+        // The caller commits the pair with the access key under the shared
+        // credential lock after its other cancellable work is complete.
         return tokens
       }
       // Still pending, continue polling
@@ -758,7 +770,9 @@ async function refreshAccessTokenWithStatusImpl(
       refresh_expires_at: new Date(stored.refresh_expires_at).toISOString(),
       now: new Date(now).toISOString(),
     })
-    clearStoredTokens()
+    if (!await clearStoredTokens(requestRefreshToken)) {
+      return { status: 'temporary_error', error: new Error('session changed during refresh') }
+    }
     setCredentialStatus('expired')
     return { status: 'expired' }
   }
@@ -810,39 +824,32 @@ async function refreshAccessTokenWithStatusImpl(
       tokens.refresh_expires_in > 0
         ? tokens.refresh_expires_in
         : null
-    saveStoredTokens({
-      access_token: tokens.access_token,
-      refresh_token: responseRefreshToken ?? stored.refresh_token,
-      access_expires_at: completedAt + expiresIn * 1000,
-      refresh_expires_at: responseRefreshExpiresIn !== null
-        ? completedAt + responseRefreshExpiresIn * 1000
-        : stored.refresh_expires_at,
-      client_id: clientId,
-      base_url: baseURL,
-    })
-    // The local token cache is sufficient for the current request. Persist the
-    // API-key shadow best-effort so a transient SQLite failure cannot turn a
-    // successful gateway refresh into a false expiry/error state. The save
-    // re-checks the generation: a logout that lands mid-save must not have the
-    // shadow resurrected by this late write.
-    const savedGeneration = authSessionGeneration
-    void persistAccessTokenToKeyStore(tokens.access_token)
-      .catch((error) => {
+    return await withGatewayCredentialLock(async (): Promise<RefreshResult> => {
+      // The generation is tab-local; compare the shared refresh-token identity
+      // under the same lock used by every device-login commit.
+      const current = loadStoredTokens()
+      if (authSessionGeneration !== generation || current?.refresh_token !== requestRefreshToken) {
+        return { status: 'temporary_error', error: new Error('session changed during refresh') }
+      }
+      saveStoredTokens({
+        access_token: tokens.access_token,
+        refresh_token: responseRefreshToken ?? stored.refresh_token,
+        access_expires_at: completedAt + expiresIn * 1000,
+        refresh_expires_at: responseRefreshExpiresIn !== null
+          ? completedAt + responseRefreshExpiresIn * 1000
+          : stored.refresh_expires_at,
+        client_id: clientId,
+        base_url: baseURL,
+      })
+      // Keep the access shadow write within the same cross-tab commit.
+      try {
+        await persistAccessTokenToKeyStore(tokens.access_token)
+      } catch (error) {
         console.warn('[llm-gateway] persist refreshed access token shadow failed:', error)
-      })
-      .then(() => {
-        if (authSessionGeneration !== savedGeneration) {
-          // Session ended after this save started — remove what we just wrote.
-          void (async () => {
-            try {
-              const { deleteApiKey } = await import('@/security/api-key-store')
-              await deleteApiKey(LLM_GATEWAY_API_KEY_ID)
-            } catch { /* best-effort cleanup */ }
-          })()
-        }
-      })
-    setCredentialStatus('valid')
-    return { status: 'success', accessToken: tokens.access_token }
+      }
+      setCredentialStatus('valid')
+      return { status: 'success', accessToken: tokens.access_token }
+    })
   } catch (e) {
     // Only clear tokens if the refresh_token is definitively invalid.
     // Network errors (TypeError), 5xx, etc. should NOT wipe tokens —
@@ -869,7 +876,9 @@ async function refreshAccessTokenWithStatusImpl(
       // clearStoredTokens() also purges the api-key-store access_token
       // shadow (the key the settings card's logged-in badge derives from),
       // so the UI falls back to the logged-out state with a login button.
-      clearStoredTokens()
+      if (!await clearStoredTokens(requestRefreshToken)) {
+        return { status: 'temporary_error', error: new Error('session changed during refresh') }
+      }
       setCredentialStatus('expired')
       return { status: 'expired', error: e }
     } else {
@@ -929,8 +938,7 @@ export async function getValidAccessToken(
   }
 
   // Both tokens expired
-  clearStoredTokens()
-  setCredentialStatus('expired')
+  if (await clearStoredTokens(stored.refresh_token)) setCredentialStatus('expired')
   return null
 }
 
@@ -956,8 +964,8 @@ export function hasValidAccessToken(): boolean {
  * clearStoredTokens() also purges the api-key-store access_token shadow
  * (the key the settings card's logged-in badge is derived from).
  */
-export function logoutGateway(): void {
-  clearStoredTokens()
+export async function logoutGateway(): Promise<void> {
+  await clearStoredTokens()
   setCredentialStatus('missing')
 }
 

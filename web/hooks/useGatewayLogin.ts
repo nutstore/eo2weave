@@ -78,7 +78,7 @@ export function useGatewayLogin(): UseGatewayLoginResult {
         if (mountedRef.current && !attempt.signal.aborted) {
           setAuthState(state)
         }
-      }, attempt.signal, true)
+      }, attempt.signal)
       attempt.signal.throwIfAborted()
       console.log('[useGatewayLogin] got tokens, saving...')
 

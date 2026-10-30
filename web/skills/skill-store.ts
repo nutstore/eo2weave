@@ -200,18 +200,21 @@ export async function installSkillFromUrl(
     }
     // Trusting Content-Length alone is not enough: a server may omit it or
     // lie — the cumulative cap inside streamToBlob is the real guard.
-    const maxBytes = contentLength > 0 ? contentLength : ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE
+    const maxBytes = ZIP_IMPORT_LIMITS.MAX_TOTAL_SIZE
     const blob = await streamToBlob(
       resp,
       contentLength,
       maxBytes,
       controller.signal,
       (loaded, total) => {
+        const displayTotal = total >= loaded ? total : 0
         onProgress?.({
           phase: 'fetching',
-          message: `Downloading… (${formatBytes(loaded)} / ${formatBytes(total || contentLength)})`,
+          message: displayTotal
+            ? `Downloading… (${formatBytes(loaded)} / ${formatBytes(displayTotal)})`
+            : `Downloading… (${formatBytes(loaded)})`,
           bytesLoaded: loaded,
-          bytesTotal: total || contentLength,
+          bytesTotal: displayTotal || undefined,
         })
       },
     )

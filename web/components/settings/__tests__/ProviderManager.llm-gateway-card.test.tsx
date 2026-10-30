@@ -62,6 +62,7 @@ const gatewayMock = vi.hoisted(() => ({
   getValidAccessToken: vi.fn(async () => 'stale-access-token'),
   fetchGatewayModels: vi.fn(async () => []),
   updateGatewayModels: vi.fn(async () => []),
+  persistDeviceLoginTokens: vi.fn(),
   fetchGatewayRateLimits: vi.fn(async () => {
     throw new Error('Nutstore AI login has expired. Please log in again.')
   }),
@@ -69,9 +70,15 @@ const gatewayMock = vi.hoisted(() => ({
 
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   performDeviceCodeFlow: gatewayMock.performDeviceCodeFlow,
+  persistDeviceLoginTokens: gatewayMock.persistDeviceLoginTokens,
   logoutGateway: gatewayMock.logoutGateway,
   getValidAccessToken: gatewayMock.getValidAccessToken,
   fetchGatewayModels: gatewayMock.fetchGatewayModels,
+}))
+
+const applyGatewayLoginTokensMock = vi.hoisted(() => vi.fn())
+vi.mock('@/lib/gateway-login', () => ({
+  applyGatewayLoginTokens: applyGatewayLoginTokensMock,
 }))
 
 vi.mock('@/agent/providers/llm-gateway-provider', () => ({
@@ -117,6 +124,11 @@ async function waitForLoggedInPanel() {
 describe('LLMGatewayCard credential state', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    applyGatewayLoginTokensMock.mockImplementation(async (_token, options) => {
+      options.onCommit()
+      settingsState.setModelCredentialStatus('valid')
+      return { ok: true, accessToken: 'new-access-token', models: [] }
+    })
     settingsState.modelCredentialStatus = 'unknown'
     settingsState.pinnedModelsByProvider = {}
     apiKeyState.key = 'stale-access-token'
@@ -215,6 +227,10 @@ describe('LLMGatewayCard credential state', () => {
     await waitFor(() => {
       expect(settingsState.setModelCredentialStatus).toHaveBeenCalledWith('valid')
     })
+    expect(applyGatewayLoginTokensMock).toHaveBeenCalledWith(
+      'new-access-token', expect.objectContaining({ onCommit: expect.any(Function) }),
+    )
+    expect(gatewayMock.persistDeviceLoginTokens).toHaveBeenCalled()
     await waitFor(() => {
       expect(screen.getByText('Logged in')).toBeTruthy()
     })

@@ -90,7 +90,7 @@ it('defers device token persistence until the login commit', async () => {
     .mockResolvedValueOnce(new Response(JSON.stringify(token), { status: 200 })))
   const open = vi.spyOn(window, 'open').mockImplementation(() => null)
   try {
-    const result = await performDeviceCodeFlow(BASE_URL, CLIENT_ID, undefined, undefined, true)
+    const result = await performDeviceCodeFlow(BASE_URL, CLIENT_ID)
     expect(result.access_token).toBe('new-access')
     expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
     persistDeviceLoginTokens(result, CLIENT_ID, BASE_URL)
@@ -426,13 +426,88 @@ describe('llm-gateway-auth token refresh hardening', () => {
       vi.stubGlobal('fetch', vi.fn(() => refreshResponsePromise))
 
       const pending = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
-      logoutGateway() // session ends while the refresh is in flight
+      await logoutGateway() // session ends while the refresh is in flight
       resolveRefresh(refreshResponse('late-token', 60))
 
       const result = await pending
       expect(result.status).toBe('temporary_error')
       // Nothing from the dead session may be written
       expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+    })
+
+    it('does not overwrite a newer login committed in another tab', async () => {
+      seedStoredTokens()
+      let resolveRefresh!: (response: Response) => void
+      vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { resolveRefresh = resolve })))
+      const pending = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+      const newer = JSON.parse(localStorage.getItem(TOKENS_KEY)!)
+      newer.access_token = 'newer-login-access'
+      newer.refresh_token = 'newer-login-refresh'
+      localStorage.setItem(TOKENS_KEY, JSON.stringify(newer))
+      resolveRefresh(refreshResponse('old-session-refresh', 60))
+
+      await expect(pending).resolves.toMatchObject({ status: 'temporary_error' })
+      expect(JSON.parse(localStorage.getItem(TOKENS_KEY)!).refresh_token).toBe('newer-login-refresh')
+    })
+
+    it('does not restore an old SQLite backup over a newer cross-tab login', async () => {
+      seedStoredTokens()
+      vi.stubGlobal('fetch', vi.fn(async () => refreshResponse('old-session-refresh')))
+      const oldBackup = localStorage.getItem(TOKENS_KEY)!
+      localStorage.removeItem(TOKENS_KEY)
+      let releaseBackup!: (value: string) => void
+      loadApiKeyMock.mockImplementation(() => new Promise<string>((resolve) => { releaseBackup = resolve }))
+      const pending = getValidAccessToken(BASE_URL, CLIENT_ID)
+      await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalled())
+      const newer = JSON.parse(oldBackup)
+      newer.access_token = 'newer-login-access'
+      newer.refresh_token = 'newer-login-refresh'
+      newer.access_expires_at = Date.now() + 3600_000
+      localStorage.setItem(TOKENS_KEY, JSON.stringify(newer))
+      releaseBackup(oldBackup)
+
+      await expect(pending).resolves.toBe('newer-login-access')
+      expect(JSON.parse(localStorage.getItem(TOKENS_KEY)!).refresh_token).toBe('newer-login-refresh')
+    })
+
+    it('does not purge a new login while checking a stale access shadow', async () => {
+      let releaseShadow!: (value: string) => void
+      loadApiKeyMock.mockImplementation((provider) => provider === '__llm_gateway_token__'
+        ? new Promise<string>((resolve) => { releaseShadow = resolve })
+        : Promise.resolve(null))
+      const pending = getValidAccessToken(BASE_URL, CLIENT_ID)
+      await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__'))
+      seedStoredTokens({ access_expires_at: Date.now() + 3600_000, refresh_token: 'new-login-refresh' })
+      releaseShadow('old-access-shadow')
+      await pending
+      expect(deleteApiKeyMock).not.toHaveBeenCalledWith('__llm_gateway_token__')
+      expect(JSON.parse(localStorage.getItem(TOKENS_KEY)!).refresh_token).toBe('new-login-refresh')
+    })
+
+    it('serializes logout behind an in-flight refreshed access-key write', async () => {
+      seedStoredTokens()
+      vi.stubGlobal('fetch', vi.fn(async () => refreshResponse('refreshed-access')))
+      let releaseShadow!: () => void
+      saveApiKeyMock.mockImplementation(async (provider) => {
+        if (provider === '__llm_gateway_token__') {
+          await new Promise<void>((resolve) => { releaseShadow = resolve })
+        }
+      })
+      const refresh = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      await vi.waitFor(() => expect(saveApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__', 'refreshed-access'))
+      const logout = logoutGateway()
+      const finishedEarly = await Promise.race([
+        Promise.resolve(logout).then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 20)),
+      ])
+      expect(finishedEarly).toBe(false)
+      expect(deleteApiKeyMock).not.toHaveBeenCalled()
+      releaseShadow()
+      await refresh
+      await logout
+      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+      expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
     })
 
     it('purges the api-key shadow key when the refresh_token is expired locally', async () => {
@@ -507,7 +582,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
     })
 
     it('logoutGateway also purges the api-key shadow key', async () => {
-      logoutGateway()
+      await logoutGateway()
 
       await vi.waitFor(() => {
         expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
@@ -527,7 +602,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       await getValidAccessToken(BASE_URL, CLIENT_ID)
       expect(getGatewayCredentialStatus()).toBe('expired')
 
-      logoutGateway()
+      await logoutGateway()
       expect(getGatewayCredentialStatus()).toBe('missing')
     })
 

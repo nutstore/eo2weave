@@ -51,8 +51,9 @@ import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHeader, BrandDialogBody, BrandDialogFooter, BrandDialogTitle, BrandDialogClose } from '@creatorweave/ui'
-import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, updateGatewayModels, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
-import { performDeviceCodeFlow, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels } from '@/agent/providers/llm-gateway-auth'
+import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
+import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels } from '@/agent/providers/llm-gateway-auth'
+import { applyGatewayLoginTokens } from '@/lib/gateway-login'
 import type { AuthState, CreditPackage } from '@/agent/providers/llm-gateway-auth'
 
 // =============================================================================
@@ -1340,29 +1341,10 @@ export function LLMGatewayCard({
       const tokens = await performDeviceCodeFlow(baseURL, clientId, (state) => {
         setAuthState(state)
       })
-
-      // Save access_token as the "API key" for this provider
-      const keyId = getLLMGatewayApiKeyProviderKey()
-      const { saveApiKey } = await import('@/security/api-key-store')
-      await saveApiKey(keyId, tokens.access_token)
-      useSettingsStore.getState().invalidateApiKeyCache(keyId)
-      // Sync global hasApiKey so TopBar / ModelQuickSwitch stop showing "unavailable"
-      useSettingsStore.getState().setHasApiKey(true)
-
-      // Fetch and register model list
-      await updateGatewayModels(tokens.access_token)
-
-      // Seed the curated default (deepseek-v4.1-flash) when the user has
-      // never pinned a gateway model — intersected against the live catalog
-      // so an out-of-curation default is simply skipped.
-      if ((useSettingsStore.getState().pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
-        const gatewayModels = getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)
-        const defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, gatewayModels)
-        if (defaults.length > 0) {
-          useSettingsStore.getState().setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-          useSettingsStore.getState().markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-        }
-      }
+      const result = await applyGatewayLoginTokens(tokens.access_token, {
+        onCommit: () => persistDeviceLoginTokens(tokens, clientId, baseURL),
+      })
+      setAllModels(result.models)
 
       setIsLoggedIn(true)
       // A successful (re-)login ends the expired state — clear it so the
@@ -1387,10 +1369,8 @@ export function LLMGatewayCard({
     // api-key row reads as a dead session — an explicit logout must not
     // flash the "login expired" re-login state.
     setIsLoggedIn(false)
-    const { deleteApiKey } = await import('@/security/api-key-store')
     const keyId = getLLMGatewayApiKeyProviderKey()
-    logoutGatewayAuth()
-    await deleteApiKey(keyId)
+    await logoutGatewayAuth()
     useSettingsStore.getState().invalidateApiKeyCache(keyId)
     // Re-check from DB so we don't flip hasApiKey off when another provider is active
     if (useSettingsStore.getState().providerType === LLM_GATEWAY_PROVIDER_TYPE) {

@@ -19,6 +19,7 @@ import {
   LLM_GATEWAY_PROVIDER_TYPE,
 } from '@/agent/providers/llm-gateway-provider'
 import { useSettingsStore } from '@/store/settings.store'
+import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
 
 export interface GatewayLoginResult {
   ok: boolean
@@ -35,12 +36,6 @@ export interface GatewayLoginApplyOptions {
   signal?: AbortSignal
   /** Synchronous token-pair commit, called only after every cancellable step. */
   onCommit?: () => void
-}
-
-const GATEWAY_CREDENTIAL_LOCK = 'eo2weave-gateway-credential-commit'
-
-interface GatewayWebLocks {
-  request<T>(name: string, callback: () => Promise<T>): Promise<T>
 }
 
 export async function applyGatewayLoginTokens(
@@ -71,9 +66,7 @@ async function applyGatewayLoginTokensInner(
 
   // Keep the read, write and possible rollback in one cross-tab critical
   // section. A cancelled login must not restore over a newer tab's login.
-  const locks = (navigator as Navigator & { locks?: GatewayWebLocks }).locks
-  if (!locks) throw new Error('Web Locks are required for safe gateway login.')
-  return locks.request(GATEWAY_CREDENTIAL_LOCK, async () => {
+  return withGatewayCredentialLock(async () => {
     signal?.throwIfAborted()
     const previousKey = await loadApiKey(keyId)
     signal?.throwIfAborted()

@@ -806,6 +806,20 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
       globalThis.fetch = realFetch
     }
   })
+
+  it('accepts an archive below the cap when Content-Length understates its size', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({ 'underreported-skill/SKILL.md': strToU8('# Skill') })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200, headers: { 'content-length': '1' } })) as typeof fetch
+      const result = await installSkillFromUrl('https://store.example/underreported.zip')
+      expect(result.count).toBe(1)
+      expect(contentOf('underreported-skill', 'SKILL.md')).toBe('# Skill')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
 })
 
 
@@ -1295,11 +1309,9 @@ describe('importUserSkillFolder uses the serialized import pipeline', () => {
     expect(backups?.dirs.size ?? 0).toBe(0)
   })
 
-  it('still serializes in-tab when the cross-tab Web Lock is broken', async () => {
-    // Degradation contract: if navigator.locks is unavailable/broken (the
-    // cross-tab layer), the IN-TAB promise chain must remain the serializer
-    // of last resort — two concurrent same-dir imports must not interleave
-    // their remove/backup/write phases even without any Web Lock.
+  it('fails closed before writing when the cross-tab Web Lock is broken', async () => {
+    // A tab-local promise chain cannot protect OPFS from another tab. Both
+    // imports must reject before changing the existing skill.
     writeInstalled('same-skill', '# Original')
     const zipRaw = { 'z/same-skill/SKILL.md': new TextEncoder().encode('# From ZIP') }
     const folderSrc = makeSourceFolder('same-skill', { 'SKILL.md': '# From folder' })
@@ -1321,15 +1333,11 @@ describe('importUserSkillFolder uses the serialized import pipeline', () => {
         }),
         importUserSkillFolder(folderSrc),
       ])
-      // No deadlock, no crash outside the import error contract.
       for (const r of results) {
-        expect(['fulfilled', 'rejected']).toContain(r.status)
+        expect(r.status).toBe('rejected')
       }
-      // Exactly ONE skill directory exists and its SKILL.md is one of the
-      // two contenders, whole-file — never a torn mix of both.
       expect(installed('same-skill')).toBe(true)
-      const final = contentOf('same-skill', 'SKILL.md')
-      expect(['# From ZIP', '# From folder', '# Original']).toContain(final)
+      expect(contentOf('same-skill', 'SKILL.md')).toBe('# Original')
     } finally {
       Object.defineProperty(navigator, 'locks', { configurable: true, value: realLocks })
     }
