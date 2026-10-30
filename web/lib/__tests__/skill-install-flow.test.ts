@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
-const { settingsState, switchProviderAndModelMock } = vi.hoisted(() => {
+const { settingsState } = vi.hoisted(() => {
   const settingsState = {
     hasApiKey: false as boolean,
     providerType: 'llm-gateway' as string,
@@ -10,7 +10,7 @@ const { settingsState, switchProviderAndModelMock } = vi.hoisted(() => {
       settingsState.providerType = providerType
     },
   }
-  return { settingsState, switchProviderAndModelMock: settingsState.switchProviderAndModel }
+  return { settingsState }
 })
 
 vi.mock('@/lib/deploy-region', () => ({

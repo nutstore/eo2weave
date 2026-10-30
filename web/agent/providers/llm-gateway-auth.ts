@@ -370,6 +370,26 @@ async function persistRefreshTokenToSQLite(tokens: StoredTokens): Promise<void> 
 }
 
 /**
+ * Bound a key-store operation used while holding the credential lock.
+ *
+ * The deletion/reads in `clearStoredTokens` and `purgeStaleAccessTokenShadow`
+ * previously ran unbounded: a key-store op that never settles would hold the
+ * origin-wide credential lock forever, and every later login, refresh and
+ * logout would queue behind it indefinitely. Every bounded op returns a
+ * `settled` promise that MUST be awaited before the lock's critical section
+ * returns, so an op that outlived its deadline cannot land after a newer
+ * credential commit (see `withKeyStoreDeadline`).
+ */
+async function runBoundedKeyStoreOp<T>(p: Promise<T>): Promise<T> {
+  const { result, settled } = withKeyStoreDeadline(p)
+  try {
+    return await result
+  } finally {
+    await settled
+  }
+}
+
+/**
  * Check if an error indicates the refresh_token is definitively invalid
  * (revoked, expired, etc.) — as opposed to a transient network error.
  */
@@ -410,14 +430,19 @@ async function clearStoredTokens(
     // leaving it behind shows "Logged in" UI with a logout button while
     // every request 401s, user-reported bug).
     const { deleteApiKey } = await import('@/security/api-key-store')
+    // Bound each deletion: a key-store op that never settles must not hold
+    // the credential lock forever (later logins, refreshes and logouts all
+    // queue behind it). A deadline-expired op that lands late is harmless —
+    // deleteApiKey idempotently removes the key, and `settled` was awaited
+    // so it cannot land after a newer credential commit.
     const purgeFailures: unknown[] = []
     try {
-      await deleteApiKey(REFRESH_TOKEN_DB_KEY)
+      await runBoundedKeyStoreOp(deleteApiKey(REFRESH_TOKEN_DB_KEY))
     } catch (e) {
       purgeFailures.push(e)
     }
     try {
-      await deleteApiKey(LLM_GATEWAY_API_KEY_ID)
+      await runBoundedKeyStoreOp(deleteApiKey(LLM_GATEWAY_API_KEY_ID))
     } catch (e) {
       purgeFailures.push(e)
     }
@@ -425,6 +450,33 @@ async function clearStoredTokens(
       // Diagnostic log on purpose — a silent failure here would re-create
       // the "logged-in badge on a dead session" state with no way to debug.
       console.warn('[llm-gateway] failed to purge stored credentials:', purgeFailures)
+      // A surviving refresh-token backup can be resurrected by
+      // loadStoredTokensWithFallback, and a surviving access-key shadow
+      // keeps the settings card's "Logged in" badge lit. Do NOT report the
+      // logout complete: mark the status write as FAILED so the UI renders
+      // a stale-state hint instead of trusting 'missing', and throw so the
+      // caller surfaces a retryable error instead of silently declaring a
+      // session gone that can come back.
+      const purgeError = new Error(
+        translate(useI18nStore.getState().locale, 'conversation.error.gatewayCredentialPurgeFailed')
+      ) as Error & { code: string; retriable: boolean }
+      purgeError.code = 'network_error'
+      purgeError.retriable = true
+      try {
+        const { useSettingsStore } = await import('@/store/settings.store')
+        useSettingsStore.getState().setModelCredentialStatusError(purgeError.message)
+      } catch {
+        // Auth must remain usable even when the settings store is unavailable.
+      }
+      throw purgeError
+    }
+    // The purge succeeded — clear any earlier stale-state flag so the UI
+    // trusts the status written below.
+    try {
+      const { useSettingsStore } = await import('@/store/settings.store')
+      useSettingsStore.getState().setModelCredentialStatusError(null)
+    } catch {
+      // Non-fatal.
     }
     // The status write is part of the same critical section as the purge:
     // a login committing between the purge and a post-lock status write
@@ -454,16 +506,20 @@ async function purgeStaleAccessTokenShadow(): Promise<boolean> {
     return await withGatewayCredentialLock(async () => {
       if (loadStoredTokens()) return false
       const { loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
-      const shadow = await loadApiKey(LLM_GATEWAY_API_KEY_ID)
+      // Both key-store ops are bounded (see runBoundedKeyStoreOp): a stalled
+      // read or deletion must not hold the credential lock forever.
+      const shadow = await runBoundedKeyStoreOp(loadApiKey(LLM_GATEWAY_API_KEY_ID))
       // A new session can appear during the key-store read. Do not delete
       // its access shadow when the earlier no-token observation is stale.
       if (!shadow || loadStoredTokens()) return false
-      await deleteApiKey(LLM_GATEWAY_API_KEY_ID)
+      await runBoundedKeyStoreOp(deleteApiKey(LLM_GATEWAY_API_KEY_ID))
       return true
     })
   } catch (e) {
     // Diagnostic log on purpose — a silent failure here would keep the
     // "logged-in badge on a dead session" state with no way to debug.
+    // The caller (getValidAccessToken) already returns null on this path —
+    // the not-ready verdict stands; the settings card just shows a hint.
     console.warn('[llm-gateway] failed to inspect the access_token shadow:', e)
     return false
   }
@@ -1158,7 +1214,18 @@ export async function logoutGateway(): Promise<void> {
   // 'missing' is written inside the same lock-held critical section as the
   // purge: a new login committing right after the purge would otherwise be
   // relabeled "missing" by this post-lock write.
-  await clearStoredTokens(undefined, 'missing')
+  // The call can now REJECT when the key-store purge fails (a surviving
+  // refresh-token backup would be resurrectable, a surviving access-key
+  // shadow keeps the "Logged in" badge lit). Surface that to the caller —
+  // a failed logout must not render as success — with an i18n message.
+  try {
+    await clearStoredTokens(undefined, 'missing')
+  } catch (e) {
+    console.warn('[llm-gateway] logout purge failed:', e)
+    throw new Error(
+      translate(useI18nStore.getState().locale, 'conversation.error.gatewayCredentialPurgeFailed')
+    )
+  }
 }
 
 /**

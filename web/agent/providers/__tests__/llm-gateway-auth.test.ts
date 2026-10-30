@@ -36,10 +36,25 @@ vi.mock('@/security/api-key-store', () => ({
 }))
 
 // The auth layer pushes the credential state into the settings store through a
-// dynamic import — stub it so the tests never load the real store.
+// dynamic import — stub it so the tests never load the real store. The stub
+// keeps a PERSISTENT state object so tests can assert the
+// modelCredentialStatusError flag the purge-failure path sets.
+const settingsStoreState = vi.hoisted(() => ({
+  modelCredentialStatus: 'unknown' as string,
+  modelCredentialStatusError: null as string | null,
+}))
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
-    getState: () => ({ setModelCredentialStatus: vi.fn() }),
+    getState: () => ({
+      setModelCredentialStatus: (status: string) => {
+        settingsStoreState.modelCredentialStatus = status
+      },
+      setModelCredentialStatusError: (message: string | null) => {
+        settingsStoreState.modelCredentialStatusError = message
+      },
+      modelCredentialStatus: settingsStoreState.modelCredentialStatus,
+      modelCredentialStatusError: settingsStoreState.modelCredentialStatusError,
+    }),
   },
 }))
 
@@ -508,6 +523,61 @@ describe('llm-gateway-auth token refresh hardening', () => {
       await logout
       expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
       expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
+    })
+
+    it('logout does not hold the credential lock forever on a stalled key-store delete', async () => {
+      seedStoredTokens()
+      // A deletion that NEVER settles: the logout must still complete within
+      // the deadline window (bounded key-store ops), not hang forever.
+      deleteApiKeyMock.mockImplementation((provider) =>
+        provider === '__llm_gateway_refresh_token__'
+          ? new Promise<void>(() => {}) // never settles
+          : Promise.resolve(),
+      )
+
+      const logout = logoutGateway()
+      const finishedEarly = await Promise.race([
+        logout.then(
+          () => 'done' as const,
+          () => 'done' as const,
+        ),
+        new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 20)),
+      ])
+      // Not yet done (deadline is 10s), but crucially NOT blocked forever —
+      // the assertion below proves logout settles once the deadline fires.
+      expect(finishedEarly).toBe('pending')
+      // Logout ultimately REJECTS with the purge error (the backup delete
+      // timed out, so the purge is incomplete) instead of hanging.
+      await expect(logout).rejects.toThrow()
+    }, 20_000)
+
+    it('logout rejects instead of reporting success when the purge fails', async () => {
+      seedStoredTokens()
+      // The refresh-token backup deletion fails: a surviving backup could be
+      // resurrected by the SQLite fallback, so logout must NOT report
+      // complete — the caller gets a retryable error.
+      deleteApiKeyMock.mockImplementation((provider) =>
+        provider === '__llm_gateway_refresh_token__'
+          ? Promise.reject(new Error('sqlite unavailable'))
+          : Promise.resolve(),
+      )
+
+      await expect(logoutGateway()).rejects.toThrow()
+      // The local pair is still wiped (that part succeeded) and the purge
+      // failure must be visible to the UI through the settings store flag.
+      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+    })
+
+    it('purge failure marks the credential status write as failed for the UI', async () => {
+      deleteApiKeyMock.mockRejectedValue(new Error('sqlite unavailable'))
+
+      await expect(logoutGateway()).rejects.toThrow()
+      expect(settingsStoreState.modelCredentialStatusError).not.toBeNull()
+
+      // A later successful purge clears the stale-state flag.
+      deleteApiKeyMock.mockResolvedValue(undefined)
+      await logoutGateway()
+      expect(settingsStoreState.modelCredentialStatusError).toBeNull()
     })
 
     it('purges the api-key shadow key when the refresh_token is expired locally', async () => {
