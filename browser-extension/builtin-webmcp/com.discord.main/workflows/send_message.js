@@ -249,6 +249,20 @@ export default {
               var commandRemainingMs = commandDeadline - startedAt
               if (commandRemainingMs < remainingMs) remainingMs = commandRemainingMs
             }
+            // Fail fast BEFORE arming the timer or dispatching: an eval
+            // that starts after the command deadline has no budget left —
+            // the caller already received TAB_UNAVAILABLE, so a request
+            // sent here could deliver a message the caller believes was
+            // never sent (a retry of it posts a duplicate). Arming
+            // Math.max(1, remainingMs) would only abort a fetch that has
+            // already gone out.
+            if (remainingMs <= 0)
+              return {
+                ok: false,
+                error_code: 'NETWORK',
+                message:
+                  'Discord API request not sent: the browser command deadline expired before the page eval started.',
+              }
             var abortTimer =
               abortController !== null
                 ? setTimeout(
@@ -610,9 +624,32 @@ export default {
                 persisted[retryKey] = { nonce: nonce, at: at }
               }
               var pkeys = Object.keys(persisted)
-              while (pkeys.length >= 128) {
-                var pk = pkeys.shift()
-                if (pk !== undefined) delete persisted[pk]
+              // Evict only while the map EXCEEDS the 128-key cap, not at
+              // it: at >= the previous loop evicted an entry on every
+              // reserve at full capacity, so the reservation this call
+              // had just written (an overwritten key keeps its original
+              // insertion slot, making it a shift() candidate) could be
+              // evicted by its own reserve and a retry in another tab
+              // would find no nonce and post a duplicate. Expired
+              // entries go first (they are dead weight for the 5-minute
+              // dedupe window); only a genuinely over-cap store drops
+              // the oldest still-young key.
+              while (pkeys.length > 128) {
+                var expiredPk = null
+                for (var pi = 0; pi < pkeys.length; pi++) {
+                  var pe = persisted[pkeys[pi]]
+                  if (pe && typeof pe.at === 'number' && at - pe.at >= 300000) {
+                    expiredPk = pkeys[pi]
+                    break
+                  }
+                }
+                if (expiredPk !== null) {
+                  delete persisted[expiredPk]
+                  pkeys.splice(pkeys.indexOf(expiredPk), 1)
+                } else {
+                  var pk = pkeys.shift()
+                  if (pk !== undefined) delete persisted[pk]
+                }
               }
             })
           }
