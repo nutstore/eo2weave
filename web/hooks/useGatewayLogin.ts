@@ -18,6 +18,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import {
   performDeviceCodeFlow,
+  persistDeviceLoginTokens,
   type AuthState,
 } from '@/agent/providers/llm-gateway-auth'
 import {
@@ -77,12 +78,14 @@ export function useGatewayLogin(): UseGatewayLoginResult {
         if (mountedRef.current && !attempt.signal.aborted) {
           setAuthState(state)
         }
-      }, attempt.signal)
+      }, attempt.signal, true)
       attempt.signal.throwIfAborted()
       console.log('[useGatewayLogin] got tokens, saving...')
 
-      await applyGatewayLoginTokens(tokens.access_token)
-      attempt.signal.throwIfAborted()
+      await applyGatewayLoginTokens(tokens.access_token, {
+        signal: attempt.signal,
+        onCommit: () => persistDeviceLoginTokens(tokens, clientId, baseURL),
+      })
       console.log('[useGatewayLogin] login complete, returning true')
 
       if (mountedRef.current && attemptRef.current === attempt) {

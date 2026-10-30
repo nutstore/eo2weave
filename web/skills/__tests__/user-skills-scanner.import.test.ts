@@ -241,6 +241,30 @@ const writeRunState = (runId: string, status: 'import-complete' | 'failed-rollba
 // ── Bundle-import cleanup (Critical) ─────────────────────────────────
 
 describe('importUserSkillZip cleanup safety (issue #128)', () => {
+  it('skips a queued store install after another tab installed the target', async () => {
+    const first = importUserSkillZip({
+      isBundle: false,
+      skill: previewEntry('skill-a', 'first/skill-a/', 1),
+      _raw: { 'first/skill-a/SKILL.md': new TextEncoder().encode('# First') },
+    }, { ifAbsent: true })
+    const second = importUserSkillZip({
+      isBundle: false,
+      skill: previewEntry('skill-a', 'second/skill-a/', 1),
+      _raw: { 'second/skill-a/SKILL.md': new TextEncoder().encode('# Second') },
+    }, { ifAbsent: true })
+
+    expect(await Promise.all([first, second])).toEqual([1, 0])
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# First')
+    // Even a local edit after the first install remains untouched on retry.
+    writeInstalled('skill-a', '# Local edit')
+    expect(await importUserSkillZip({
+      isBundle: false,
+      skill: previewEntry('skill-a', 'third/skill-a/', 1),
+      _raw: { 'third/skill-a/SKILL.md': new TextEncoder().encode('# Third') },
+    }, { ifAbsent: true })).toBe(0)
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# Local edit')
+  })
+
   it('restores an overwritten skill and removes only what this import wrote when a bundle import fails', async () => {
     // Previously installed skill that the failing bundle ALSO targets.
     writeInstalled('skill-a', '# Old A\nkeep me')
@@ -654,6 +678,23 @@ describe('previewUserSkillZip size caps (issue #128)', () => {
 // ── installSkillFromUrl download cap ─────────────────────────────────
 
 describe('installSkillFromUrl download cap (issue #128)', () => {
+  it('preserves local edits when a store install is repeated', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({ 'store-skill/SKILL.md': strToU8('# Store version') })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      const first = await installSkillFromUrl('https://store.example/store-skill.zip')
+      expect(first.count).toBe(1)
+      writeInstalled('store-skill', '# Local edit')
+      const second = await installSkillFromUrl('https://store.example/store-skill.zip')
+      expect(second.count).toBe(0)
+      expect(contentOf('store-skill', 'SKILL.md')).toBe('# Local edit')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('rejects the download up front when Content-Length exceeds the cap', async () => {
     const realFetch = globalThis.fetch
     try {

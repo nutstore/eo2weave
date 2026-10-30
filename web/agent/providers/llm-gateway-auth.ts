@@ -533,6 +533,26 @@ export interface AuthState {
 
 type AuthStateListener = (state: AuthState) => void
 
+/** Commit a validated device-code token pair after all cancellable work. */
+export function persistDeviceLoginTokens(
+  tokens: TokenResponse,
+  clientId: string,
+  baseURL: string,
+): void {
+  if (!tokens.refresh_token || typeof tokens.refresh_expires_in !== 'number') {
+    throw new Error('Device login returned an incomplete token pair.')
+  }
+  const now = Date.now()
+  saveStoredTokens({
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,
+    access_expires_at: now + tokens.expires_in * 1000,
+    refresh_expires_at: now + tokens.refresh_expires_in * 1000,
+    client_id: clientId,
+    base_url: baseURL,
+  })
+}
+
 /**
  * Perform the complete Device Code Flow:
  * 1. Create device session
@@ -547,6 +567,7 @@ export async function performDeviceCodeFlow(
   clientId: string,
   onStateChange?: AuthStateListener,
   signal?: AbortSignal,
+  deferPersistence = false,
 ): Promise<TokenResponse> {
   const emit = (state: AuthState) => onStateChange?.(state)
 
@@ -604,19 +625,11 @@ export async function performDeviceCodeFlow(
           err.retriable = false
           throw err
         }
-        const now = Date.now()
-        saveStoredTokens({
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
-          access_expires_at: now + tokens.expires_in * 1000,
-          refresh_expires_at: now + refreshExpiresIn * 1000,
-          client_id: clientId,
-          base_url: baseURL,
-        })
-        emit({ status: 'success' })
-        // A fresh device-code login always yields a usable credential — record
-        // it so the UI leaves the "login expired" state.
-        setCredentialStatus('valid')
+        if (!deferPersistence) {
+          persistDeviceLoginTokens(tokens, clientId, baseURL)
+          emit({ status: 'success' })
+          setCredentialStatus('valid')
+        }
         return tokens
       }
       // Still pending, continue polling
@@ -953,10 +966,12 @@ export function logoutGateway(): void {
  */
 export async function fetchGatewayModels(
   baseURL: string,
-  accessToken: string
+  accessToken: string,
+  signal?: AbortSignal,
 ): Promise<Array<{ id: string; name: string }>> {
   const res = await fetch(`${baseURL}/v1/models`, {
     headers: { Authorization: `Bearer ${accessToken}` },
+    signal,
   })
   if (!res.ok) return []
 

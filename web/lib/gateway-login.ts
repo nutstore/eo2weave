@@ -14,7 +14,8 @@ import {
   getLLMGatewayBaseURL,
   getLLMGatewayClientId,
   getLLMGatewayApiKeyProviderKey,
-  updateGatewayModels,
+  prepareGatewayModels,
+  registerGatewayModels,
   LLM_GATEWAY_PROVIDER_TYPE,
 } from '@/agent/providers/llm-gateway-provider'
 import { useSettingsStore } from '@/store/settings.store'
@@ -27,49 +28,92 @@ export interface GatewayLoginResult {
 }
 
 /**
- * Post-token save/model/credential sequence shared by every gateway login
- * entry point. Assumes the Device Code Flow already produced `accessToken`.
+ * Options for the shared login commit. The hook uses `onCommit` to persist
+ * the device token pair in the same synchronous phase as provider settings.
  */
-export async function applyGatewayLoginTokens(accessToken: string): Promise<GatewayLoginResult> {
-  // Save access_token as the "API key" for this provider
+export interface GatewayLoginApplyOptions {
+  signal?: AbortSignal
+  /** Synchronous token-pair commit, called only after every cancellable step. */
+  onCommit?: () => void
+}
+
+// Serialize credential commits and their possible rollback in this tab.
+let applicationTail: Promise<unknown> = Promise.resolve()
+
+export async function applyGatewayLoginTokens(
+  accessToken: string,
+  options: GatewayLoginApplyOptions = {},
+): Promise<GatewayLoginResult> {
+  const previous = applicationTail.catch(() => {})
+  let release!: () => void
+  const slot = new Promise<void>((resolve) => { release = resolve })
+  applicationTail = previous.then(() => slot)
+  await previous
+  try {
+    return await applyGatewayLoginTokensInner(accessToken, options)
+  } finally {
+    release()
+  }
+}
+
+async function applyGatewayLoginTokensInner(
+  accessToken: string,
+  { signal, onCommit }: GatewayLoginApplyOptions,
+): Promise<GatewayLoginResult> {
   const keyId = getLLMGatewayApiKeyProviderKey()
-  const { saveApiKey } = await import('@/security/api-key-store')
-  await saveApiKey(keyId, accessToken)
-  useSettingsStore.getState().invalidateApiKeyCache(keyId)
+  const { saveApiKey, loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
+  signal?.throwIfAborted()
+  const previousKey = await loadApiKey(keyId)
+  signal?.throwIfAborted()
 
-  // Fetch and register model list FIRST (need models before we can select one)
-  const models = await updateGatewayModels(accessToken)
-
-  // Keep provider/model selection atomic. The shared reconciliation action
-  // also preserves an existing gateway model when the catalog changes.
+  // Fetch and prepare everything before the first persistent write.
+  const models = await prepareGatewayModels(accessToken, signal)
+  signal?.throwIfAborted()
   const settings = useSettingsStore.getState()
-  settings.switchProviderAndModel(
-    LLM_GATEWAY_PROVIDER_TYPE,
-    models[0]?.id ?? settings.modelName,
-  )
-
-  // Seed the curated default pin (deepseek-v4.1-flash) for first-time
-  // gateway users — same first-save seeding as ProviderManager, so the
-  // top-bar switcher works without manual pinning. Intersection with the
-  // live catalog skips an out-of-curation default.
-  if ((useSettingsStore.getState().pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
+  let defaults: string[] = []
+  if ((settings.pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
     const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
-    const defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
-    if (defaults.length > 0) {
-      useSettingsStore.getState().setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-      useSettingsStore.getState().markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-    }
+    signal?.throwIfAborted()
+    defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
   }
 
-  // Sync global credential state so UI reacts immediately (must come AFTER
-  // provider/model set). Expiry is kept separate from model availability.
-  useSettingsStore.getState().setHasApiKey(true)
-  useSettingsStore.getState().setModelCredentialStatus('valid')
+  let committed = false
+  try {
+    signal?.throwIfAborted()
+    await saveApiKey(keyId, accessToken)
+    signal?.throwIfAborted()
+    // No awaits after this point: cancellation cannot interleave the token
+    // pair, provider registration, and selected-provider settings commit.
+    registerGatewayModels(models)
+    onCommit?.()
+    committed = true
+    settings.invalidateApiKeyCache(keyId)
+    settings.switchProviderAndModel(
+      LLM_GATEWAY_PROVIDER_TYPE,
+      models[0]?.id ?? settings.modelName,
+    )
 
-  // Trigger UI refresh so provider dropdowns etc. update
-  useSettingsStore.getState().triggerProviderRefresh()
+    if (defaults.length > 0) {
+      settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+      settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+    }
 
-  return { ok: true, accessToken, models }
+    settings.setHasApiKey(true)
+    settings.setModelCredentialStatus('valid')
+    settings.triggerProviderRefresh()
+    return { ok: true, accessToken, models }
+  } catch (e) {
+    // An abort during the async key-store write may arrive after it commits.
+    // Restore only if that write still owns the key, then release the queue.
+    if (!committed) {
+      const current = await loadApiKey(keyId)
+      if (current === accessToken) {
+        if (previousKey === null) await deleteApiKey(keyId)
+        else await saveApiKey(keyId, previousKey)
+      }
+    }
+    throw e
+  }
 }
 
 export { getLLMGatewayBaseURL, getLLMGatewayClientId }

@@ -50,6 +50,7 @@ import {
   getValidAccessToken,
   logoutGateway,
   performDeviceCodeFlow,
+  persistDeviceLoginTokens,
 } from '@/agent/providers/llm-gateway-auth'
 
 const BASE_URL = 'https://ai.jianguoyun.com'
@@ -74,6 +75,31 @@ it('does not save tokens when a device login is cancelled during session creatio
     vi.unstubAllGlobals()
   }
 }, 500)
+
+it('defers device token persistence until the login commit', async () => {
+  localStorage.clear()
+  const token = {
+    access_token: 'new-access', token_type: 'Bearer', expires_in: 60,
+    refresh_token: 'new-refresh', refresh_expires_in: 3600,
+  }
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({
+      device_code: 'device', user_code: '123', verification_uri: 'https://example.com',
+      interval: 0, expires_in: 60,
+    }), { status: 200 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify(token), { status: 200 })))
+  const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+  try {
+    const result = await performDeviceCodeFlow(BASE_URL, CLIENT_ID, undefined, undefined, true)
+    expect(result.access_token).toBe('new-access')
+    expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+    persistDeviceLoginTokens(result, CLIENT_ID, BASE_URL)
+    expect(localStorage.getItem(TOKENS_KEY)).toContain('new-refresh')
+  } finally {
+    open.mockRestore()
+    vi.unstubAllGlobals()
+  }
+})
 
 function seedStoredTokens(overrides: Partial<{
   refresh_expires_at: number

@@ -229,7 +229,7 @@ export async function installSkillFromUrl(
     // only directories this import actually wrote and restores overwritten
     // skills from a staged backup — previously installed skills that merely
     // appear in the preview are never deleted.
-    const count = await importUserSkillZip(preview)
+    const count = await importUserSkillZip(preview, { ifAbsent: true })
 
     // Find manifest entry (best effort — caller may not have it)
     const manifest: SkillStoreEntry = {
@@ -243,7 +243,7 @@ export async function installSkillFromUrl(
       zipUrl,
     }
 
-    report({ phase: 'done', message: `Installed ${count} files` })
+    report({ phase: 'done', message: count === 0 ? 'Already installed' : `Installed ${count} files` })
     return { count, manifest }
   } catch (e) {
     clearTimeout(timeoutId)

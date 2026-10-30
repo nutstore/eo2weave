@@ -1454,6 +1454,7 @@ async function readStagedBackup(
  */
 export async function importUserSkillZip(
   preview: ZipSkillPreview,
+  options: { ifAbsent?: boolean } = {},
 ): Promise<number> {
   const skills = preview.isBundle ? (preview.skills ?? []) : preview.skill ? [preview.skill] : []
 
@@ -1476,9 +1477,25 @@ export async function importUserSkillZip(
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const dirNames = [...seenDirNames].sort()
-  return withImportSerialization(runId, dirNames, () =>
-    importUserSkillZipInner(preview, skills, runId),
-  )
+  return withImportSerialization(runId, dirNames, async () => {
+    if (options.ifAbsent) {
+      // This check must happen AFTER acquiring the cross-tab locks. A second
+      // landing page may have observed "not installed" before the first one
+      // committed, and must preserve that install and subsequent local edits.
+      const root = await navigator.storage.getDirectory()
+      const skillsRoot = await root.getDirectoryHandle(SKILLS_ROOT, { create: true })
+      const userDir = await skillsRoot.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
+      for (const dirName of dirNames) {
+        try {
+          await userDir.getDirectoryHandle(dirName)
+          return 0
+        } catch (e) {
+          if (!isNotFoundError(e)) throw e
+        }
+      }
+    }
+    return importUserSkillZipInner(preview, skills, runId)
+  })
 }
 
 async function importUserSkillZipInner(

@@ -99,11 +99,12 @@ export function registerLLMGatewayProvider(): void {
  * Fetch models from gateway /v1/models and re-register the provider
  * with the updated model list. Call after obtaining a valid access token.
  */
-export async function updateGatewayModels(accessToken: string): Promise<ModelInfo[]> {
+export async function prepareGatewayModels(accessToken: string, signal?: AbortSignal): Promise<ModelInfo[]> {
   const baseURL = getGatewayBaseURL()
-  const models = await fetchGatewayModels(baseURL, accessToken)
+  const models = await fetchGatewayModels(baseURL, accessToken, signal)
+  signal?.throwIfAborted()
 
-  const modelInfos: ModelInfo[] = models.map((m) => ({
+  return models.map((m) => ({
     id: m.id,
     name: m.name,
     capabilities: ['code', 'writing', 'reasoning'] as const,
@@ -111,7 +112,10 @@ export async function updateGatewayModels(accessToken: string): Promise<ModelInf
     // gpt-4o (128K), etc. each show their real value instead of a flat 200K.
     contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
   }))
+}
 
+/** Register a previously fetched model list without another async boundary. */
+export function registerGatewayModels(modelInfos: ModelInfo[]): void {
   const baseURL_str = getGatewayBaseURL()
   const config: Omit<LLMProviderConfig, 'apiKey'> = {
     baseURL: `${baseURL_str}/v1`,
@@ -126,6 +130,11 @@ export async function updateGatewayModels(accessToken: string): Promise<ModelInf
   }
 
   registerDynamicProvider(LLM_GATEWAY_PROVIDER_TYPE, config, meta)
+}
+
+export async function updateGatewayModels(accessToken: string): Promise<ModelInfo[]> {
+  const modelInfos = await prepareGatewayModels(accessToken)
+  registerGatewayModels(modelInfos)
   return modelInfos
 }
 
