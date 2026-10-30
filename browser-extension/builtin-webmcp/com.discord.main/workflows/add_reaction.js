@@ -39,7 +39,14 @@ export default {
     description: 'add_reaction',
     async run({ input, state, target }) {
       const options = { tab: target.tabId, timeout: 25000 }
-      const execute = async (args) => {
+      // Absolute deadline (epoch ms) for the WHOLE command, computed on the
+      // adapter side before the eval is dispatched: the browser's 25s
+      // timeout includes the tab-command queue wait, so the in-page fetch
+      // must never outlive this instant (finding: an eval that starts late
+      // could otherwise arm a full fresh deadline and apply a reaction
+      // after the caller already received TAB_UNAVAILABLE).
+      const commandDeadlineMs = Date.now() + options.timeout
+      const execute = async (args, commandDeadlineMs) => {
         var workflow = (() => {
 
           // Page-side Discord runtime (translated from OpenTabs discord-api.ts, MIT).
@@ -220,13 +227,30 @@ export default {
             // timestamp through discordApi's options.queued_at, and the
             // fetch only gets the REMAINING budget from that timestamp —
             // a queued call that starts late cannot get a fresh deadline
-            // that outlives the eval. The timer is cleared exactly once,
-            // when the response is fully consumed.
+            // that outlives the eval. The budget is additionally clamped
+            // to the COMMAND deadline (epoch ms, injected from the
+            // adapter as __args.__eo2CommandDeadlineMs): the browser's
+            // 25s timeout includes the tab-command queue wait BEFORE the
+            // eval runs, so a late-starting eval must not arm a fresh
+            // 18s deadline the command cannot cover — otherwise the
+            // caller gets TAB_UNAVAILABLE while the reaction still
+            // applies afterwards. When the command budget is exhausted,
+            // the fetch aborts immediately instead of firing into the
+            // dark. The timer is cleared exactly once, when the response
+            // is fully consumed.
             var deadlineMs = 18000
             var queuedAtMs =
               options && typeof options.queued_at === 'number'
                 ? options.queued_at
                 : Date.now()
+            var remainingMs = deadlineMs - (Date.now() - queuedAtMs)
+            if (
+              typeof commandDeadlineMs === 'number' &&
+              commandDeadlineMs > 0
+            ) {
+              var commandRemainingMs = commandDeadlineMs - Date.now()
+              if (commandRemainingMs < remainingMs) remainingMs = commandRemainingMs
+            }
             var abortTimer =
               abortController !== null
                 ? setTimeout(
@@ -235,7 +259,7 @@ export default {
                         abortController.abort()
                       } catch (e) {}
                     },
-                    Math.max(1, deadlineMs - (Date.now() - queuedAtMs)),
+                    Math.max(1, remainingMs),
                   )
                 : null
             var response
@@ -508,9 +532,50 @@ export default {
           //    re-keyed it), so the map does not grow for the tab lifetime.
           // 2. A queued entry that only starts running after the 15s
           //    wait cutoff has passed is skipped: its caller's eval window
-          //    is nearly spent, so running it would turn a reported
-          //    failure into a surprise reaction change.
+          //    is nearly spent (and the fetch deadline is additionally
+          //    clamped to the injected command deadline), so running it
+          //    would turn a reported failure into a surprise reaction
+          //    change.
+          // Cross-tab reaction lock (navigator.locks, same discord.com
+          // origin across tabs of one profile): opposing add/remove
+          // mutations for the same message+emoji serialize across TABS, so
+          // the later request cannot reach Discord before the earlier
+          // mutation's result is known — the per-tab promise map alone is
+          // invisible to another tab and let Discord process opposing
+          // mutations in reverse order (finding: final reaction state
+          // contradicted the later request). The queued entry skips
+          // dispatch after the same 15s wait cutoff as the per-tab path
+          // (checked when the lock is granted, no extra timer: exactly one
+          // setTimeout per workflow stays the contract), returning
+          // LOCK_TIMEOUT so the caller knows nothing was applied; and the
+          // fetch deadline is separately clamped to the injected command
+          // deadline, so a lock wait that overshot the eval window cannot
+          // leave a reaction applying after TAB_UNAVAILABLE. Runtimes
+          // without Web Locks (the QuickJS eval harness, older browsers)
+          // fall back to the per-tab chain below, preserving single-tab
+          // serialization; cross-tab ordering then degrades exactly as
+          // before instead of failing the tool.
+          function crossTabReactionLock(key, run) {
+            var locksObj = null
+            try {
+              locksObj = navigator.locks
+            } catch (e) {}
+            if (!locksObj || typeof locksObj.request !== 'function') return null
+            var queuedAt = Date.now()
+            return locksObj.request('eo2-discord-reaction:' + key, function () {
+              // Granted after a long wait: the caller's window is nearly
+              // spent, so skip dispatch (same cutoff and rationale as the
+              // per-tab path below).
+              if (Date.now() - queuedAt > 15000)
+                throw makeLockTimeoutError(
+                  'Reaction request queued behind another tab working on the same reaction and gave up after the 15s cross-tab lock wait (the tab is still available).',
+                )
+              return run(queuedAt)
+            })
+          }
           function withReactionLock(key, run) {
+            var crossTab = crossTabReactionLock(key, run)
+            if (crossTab) return crossTab
             var locks
             try {
               locks = globalThis.__eo2ReactionLocks =
@@ -591,8 +656,15 @@ export default {
       }
       let response
       try {
+        // The command deadline rides into the page via __args (the eval
+        // source below passes __args into execute) so the in-page abort
+        // timer can clamp its remaining budget to it.
+        const inputWithDeadline = {
+          ...input,
+          __eo2CommandDeadlineMs: commandDeadlineMs,
+        }
         response = await browser.eval(
-          '() => (' + execute.toString() + ')(' + JSON.stringify(input) + ')',
+          '() => (' + execute.toString() + ')(' + JSON.stringify(inputWithDeadline) + ')',
           options,
         )
       } catch (error) {

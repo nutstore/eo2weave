@@ -115,6 +115,11 @@ function fixture(options: {
   overrideTimers?: () =>
     | { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout; Date?: DateConstructor }
     | undefined
+  // Per-eval override for navigator.locks (cross-tab reaction lock tests);
+  // undefined keeps the fixture's default "no Web Locks" surface.
+  overrideLocks?: () =>
+    | { request: (name: string, fn: () => Promise<unknown> | unknown) => Promise<unknown> }
+    | undefined
 } = {}) {
   const window = new Window({ url: options.url ?? 'https://discord.com/channels/@me' })
   window.document.write('<html><body></body></html>')
@@ -189,6 +194,14 @@ function fixture(options: {
   const pageSandbox: Record<string, unknown> = {
     webpackChunkdiscord_app: (window as unknown as { webpackChunkdiscord_app?: unknown[] }).webpackChunkdiscord_app,
   }
+  // happy-dom's navigator may expose a Web Locks API surface; the workflows
+  // take a cross-tab lock path when navigator.locks.request exists, so the
+  // sandbox navigator stays WITHOUT locks unless a test explicitly provides
+  // one — the fixture models the QuickJS eval harness, which has none.
+  Object.defineProperty(window.navigator, 'locks', {
+    configurable: true,
+    get: () => options.overrideLocks?.() ?? undefined,
+  })
   // In-memory localStorage shim shared by every eval of this fixture: it
   // emulates the per-origin storage the workflow uses as the cross-tab
   // retry store. Created EAGERLY so tests can seed it before the first

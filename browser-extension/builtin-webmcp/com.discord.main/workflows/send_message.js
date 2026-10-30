@@ -497,8 +497,13 @@ export default {
           // Declared with var (not implicit): QuickJS rejects assignment
           // to an undeclared identifier.
           var __eo2StorageOk = true
+          // Sticky within ONE workflow evaluation: any storage failure
+          // during the send (lookup, reserve, or cleanup) keeps the flag
+          // false so the result reports the degraded tab-only scope, even
+          // if later reads succeed. The var declaration above re-initializes
+          // the flag on every page eval, so degradation never leaks across
+          // sends.
           function withoutStorage(tryBlock) {
-            __eo2StorageOk = true
             try {
               tryBlock()
             } catch (e) {
@@ -522,11 +527,77 @@ export default {
           function writeRetryNoncesToStorage(entries) {
             localStorage.setItem(RETRY_NONCES_STORAGE_KEY, JSON.stringify(entries))
           }
+          // Young (unexpired) entry for a retry key, or null: the shared
+          // store's 5-minute window matches the map's, so a stale entry is
+          // never adopted (and reserveRetryNonceInStorage replaces it).
+          function retryNonceEntryAt(retryKey, at) {
+            var persisted = readRetryNoncesFromStorage()
+            var entry = persisted ? persisted[retryKey] : undefined
+            if (
+              entry &&
+              typeof entry.nonce === 'string' &&
+              typeof entry.at === 'number' &&
+              at - entry.at < 300000
+            )
+              return entry
+            return null
+          }
+          // Bounded merge onto the CURRENT stored map: the caller's change
+          // callback edits the freshly-read map in place (upsert or delete
+          // of its own key only), and the merged result is written back.
+          // No writer ever rewrites the map from its own stale snapshot.
+          function applyRetryNoncesChange(change) {
+            var persisted = readRetryNoncesFromStorage()
+            var out = persisted || {}
+            change(out)
+            writeRetryNoncesToStorage(out)
+          }
+          // Reserve a freshly minted nonce under the retry key BEFORE the
+          // POST (finding: two tabs racing the same automatic-nonce send
+          // could each read "no stored nonce", each mint a different nonce,
+          // and Discord would see two distinct submissions — no dedup, a
+          // duplicate post). The reservation makes the cross-tab sequence
+          // atomic WITHOUT async primitives the page runtime lacks: every
+          // other tab's lookup path synchronously RE-READS storage right
+          // before minting (see the retryKey branch below) and catches the
+          // 'storage' event's refresh on the final guard, so the loser of
+          // the race re-reads, finds the winner's reservation, and adopts
+          // the SAME nonce — Discord sees one shared idempotency key and
+          // dedupes. The kept creation timestamp anchors the 5-minute
+          // reuse window to the FIRST persist (store-once), and the same
+          // 128-key oldest-first cap as the map bounds the shared store.
+          function reserveRetryNonceInStorage(retryKey, nonce, at) {
+            applyRetryNoncesChange(function (persisted) {
+              var existing = persisted[retryKey]
+              if (
+                existing &&
+                typeof existing.at === 'number' &&
+                at - existing.at < 300000
+              ) {
+                // A still-young entry exists (another tab reserved or
+                // persisted first): keep it verbatim — its nonce is the
+                // one concurrent attempts must adopt.
+                persisted[retryKey] = { nonce: existing.nonce, at: existing.at }
+              } else {
+                persisted[retryKey] = { nonce: nonce, at: at }
+              }
+              var pkeys = Object.keys(persisted)
+              while (pkeys.length >= 128) {
+                var pk = pkeys.shift()
+                if (pk !== undefined) delete persisted[pk]
+              }
+            })
+          }
+          // Merge-on-write delete (finding: writeRetryNoncesToStorage used
+          // to rewrite the whole shared map from a per-tab snapshot, so the
+          // last concurrent write silently dropped the other tab's nonce
+          // and its retry minted a fresh nonce and double-posted): the
+          // read-merge-write drops ONLY this key and preserves every other
+          // entry the current storage holds.
           function deleteRetryNonceFromStorage(retryKey) {
-            var entries = readRetryNoncesFromStorage()
-            if (!entries || !entries[retryKey]) return
-            delete entries[retryKey]
-            writeRetryNoncesToStorage(entries)
+            applyRetryNoncesChange(function (persisted) {
+              delete persisted[retryKey]
+            })
           }
           var discordToolImplementations = {
             async send_message(args) {
@@ -567,6 +638,8 @@ export default {
               // is echoed back in data.nonce for reuse.
               var nonce = args.nonce
               var retryKey = null
+              // Retry key for the automatic-nonce remember map (per-tab)
+              // and the shared localStorage store (cross-tab).
               if (nonce === undefined) {
                 retryKey =
                   args.channel +
@@ -599,61 +672,66 @@ export default {
                   // and a storage entry is adopted when the map has none.
                   // A map hit alone is NOT proof of cross-tab dedup: the
                   // map is per-tab, so its entry must still be VERIFIED in
-                  // (or mirrored into) shared storage before dedup_scope
-                  // may report 'cross-tab'. Run the same storage probe for
-                  // both paths; only a storage read/write that succeeds
-                  // keeps __eo2StorageOk true, and a map entry absent from
-                  // storage is mirrored there so another tab can adopt it.
-                  withoutStorage(function () {
-                    var stored = readRetryNoncesFromStorage()
-                    if (stored) {
-                      for (var sk in stored) {
-                        if (!Object.prototype.hasOwnProperty.call(stored, sk)) continue
-                        var sv = stored[sk]
-                        if (now - sv.at < 300000) {
-                          if (sk === retryKey) {
-                            if (nonce === undefined) nonce = sv.nonce
-                          } else {
-                            // Refresh the in-tab map from storage so its
-                            // lazy expiry and eviction see the shared state.
-                            retries.set(sk, { nonce: sv.nonce, at: sv.at })
-                          }
-                        }
-                      }
-                    }
-                    // Map-hit path: verify against / mirror into storage so
-                    // the reported dedup scope matches what another tab can
-                    // actually see.
-                    if (
-                      nonce !== undefined &&
-                      (!stored || !stored[retryKey] || now - stored[retryKey].at >= 300000)
-                    ) {
-                      var p = stored || {}
-                      var pkeys = Object.keys(p)
-                      while (pkeys.length >= 128) {
-                        var pk = pkeys.shift()
-                        if (pk !== undefined) delete p[pk]
-                      }
-                      var mapEntry = retries.get(retryKey)
-                      p[retryKey] = {
-                        nonce: nonce,
-                        at: mapEntry && typeof mapEntry.at === 'number' ? mapEntry.at : now,
-                      }
-                      writeRetryNoncesToStorage(p)
-                    }
-                  })
-                  // Echo the flag into the in-page args so the adapter
-                  // (which sees only args) can surface it on every result
-                  // path, including unconfirmed-send errors where the
-                  // caller must retry.
+                  // shared storage before dedup_scope may report
+                  // 'cross-tab' — the lookup below is that verification,
+                  // and a storage throw keeps __eo2StorageOk false so the
+                  // result reports the degraded tab-only scope.
+                  if (nonce === undefined)
+                    withoutStorage(function () {
+                      var entry = retryNonceEntryAt(retryKey, now)
+                      if (entry) nonce = entry.nonce
+                    })
                   if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
                 } catch (e) {}
               }
-              if (nonce === undefined)
+              if (nonce === undefined) {
+                // Re-check shared storage JUST before minting (finding: two
+                // discord.com tabs starting the same automatic-nonce send
+                // before either persisted could each mint its own nonce, so
+                // Discord saw two distinct submissions and deduped nothing).
+                // A nonce another tab reserved in this window is adopted
+                // here instead of being raced with a second value.
+                withoutStorage(function () {
+                  var entry = retryNonceEntryAt(retryKey, Date.now())
+                  if (entry && nonce === undefined) nonce = entry.nonce
+                })
+                if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
+              }
+              if (nonce === undefined) {
                 nonce =
                   String(Date.now()) +
                   '-' +
                   Math.random().toString(36).slice(2, 10)
+                // Reserve BEFORE the POST (finding: concurrent cross-tab
+                // sends bypassed dedup). From this moment every other
+                // discord.com tab's lookup or pre-mint re-check observes
+                // this reservation under the same retry key and adopts the
+                // SAME nonce, so concurrent attempts for one send submit
+                // one shared idempotency key and Discord dedupes instead
+                // of posting twice. Failure keeps the nonce tab-local and
+                // the result reports the degraded scope.
+                if (retryKey !== null)
+                  try {
+                    withoutStorage(function () {
+                      reserveRetryNonceInStorage(retryKey, nonce, Date.now())
+                    })
+                  } catch (e) {}
+                if (__eo2StorageOk === false) args.__eo2DedupDegraded = true
+              }
+              // Final adoption guard: whatever shared storage holds for
+              // this retry key RIGHT BEFORE the fetch wins. A racing tab
+              // that reserved between this tab's re-check and its own
+              // reserve is adopted here, so both tabs POST the SAME nonce
+              // and Discord's enforce_nonce dedupes. This is also the
+              // verification step for a remembered (map) nonce: a stale or
+              // foreign reservation replaces it before the send.
+              if (retryKey !== null && nonce !== undefined)
+                try {
+                  withoutStorage(function () {
+                    var entry = retryNonceEntryAt(retryKey, Date.now())
+                    if (entry && entry.nonce !== nonce) nonce = entry.nonce
+                  })
+                } catch (e) {}
               // Creation timestamp for the store-once contract: captured ONCE
               // here, never re-read on retry attempts, so the 5-minute reuse
               // window cannot be extended by retries.
@@ -669,37 +747,7 @@ export default {
                   // 5-minute reuse window cannot be extended by retries.
                   if (!existing) {
                     store.delete(retryKey)
-                    store.set(retryKey, { nonce: nonce, at: Date.now() })
-                    // Mirror the fresh nonce into localStorage so a retry
-                    // that lands on ANOTHER discord.com tab finds it (the
-                    // per-tab map is invisible across tabs). Store-once:
-                    // only write when no entry exists yet — or when the
-                    // stored entry has EXPIRED (it would never be adopted,
-                    // so it must not block the fresh entry) — keeping the
-                    // original creation timestamp — and the 5-minute
-                    // window — anchored to the FIRST send, not the retry.
-                    // A storage failure here leaves the nonce tab-local;
-                    // __eo2StorageOk is false and the result says so.
-                    withoutStorage(function () {
-                      var persisted = readRetryNoncesFromStorage()
-                      var persistedEntry = persisted ? persisted[retryKey] : undefined
-                      var persistedExpired =
-                        persistedEntry && now2 - persistedEntry.at >= 300000
-                      if (!persistedEntry || persistedExpired) {
-                        persisted = persisted || {}
-                        // Keep the shared store bounded too (same 128-key
-                        // cap as the map, oldest entries dropped first) so a
-                        // backlog of unconfirmed sends cannot grow it
-                        // unboundedly across tabs.
-                        var pkeys = Object.keys(persisted)
-                        while (pkeys.length >= 128) {
-                          var pk = pkeys.shift()
-                          if (pk !== undefined) delete persisted[pk]
-                        }
-                        persisted[retryKey] = { nonce: nonce, at: now2 }
-                        writeRetryNoncesToStorage(persisted)
-                      }
-                    })
+                    store.set(retryKey, { nonce: nonce, at: now2 })
                   }
                   // Bounded: keep the map at 128 keys, evicting the oldest.
                   while (store.size > 128) {
@@ -738,7 +786,10 @@ export default {
                   // Also drop the cross-tab copy: a retry landing on a
                   // DIFFERENT tab must not reuse a nonce whose send already
                   // succeeded (it would be silently deduped by Discord and
-                  // never posted).
+                  // never posted). The delete is a merge-on-write: it drops
+                  // ONLY this key from the CURRENT stored map, so it cannot
+                  // erase a nonce another tab persisted concurrently for a
+                  // different unconfirmed send.
                   deleteRetryNonceFromStorage(retryKey)
                 } catch (e) {}
               return ok({
