@@ -597,28 +597,51 @@ export default {
                   // original nonce (same origin → shared localStorage).
                   // The map is only a fallback, so a remembered entry wins
                   // and a storage entry is adopted when the map has none.
-                  // If storage throws, __eo2StorageOk is false and the
-                  // result documents that dedup degraded to this tab only.
-                  if (nonce === undefined) {
-                    withoutStorage(function () {
-                      var stored = readRetryNoncesFromStorage()
-                      if (stored) {
-                        for (var sk in stored) {
-                          if (!Object.prototype.hasOwnProperty.call(stored, sk)) continue
-                          var sv = stored[sk]
-                          if (now - sv.at < 300000) {
-                            if (sk === retryKey) {
-                              nonce = sv.nonce
-                            } else {
-                              // Refresh the in-tab map from storage so its
-                              // lazy expiry and eviction see the shared state.
-                              retries.set(sk, { nonce: sv.nonce, at: sv.at })
-                            }
+                  // A map hit alone is NOT proof of cross-tab dedup: the
+                  // map is per-tab, so its entry must still be VERIFIED in
+                  // (or mirrored into) shared storage before dedup_scope
+                  // may report 'cross-tab'. Run the same storage probe for
+                  // both paths; only a storage read/write that succeeds
+                  // keeps __eo2StorageOk true, and a map entry absent from
+                  // storage is mirrored there so another tab can adopt it.
+                  withoutStorage(function () {
+                    var stored = readRetryNoncesFromStorage()
+                    if (stored) {
+                      for (var sk in stored) {
+                        if (!Object.prototype.hasOwnProperty.call(stored, sk)) continue
+                        var sv = stored[sk]
+                        if (now - sv.at < 300000) {
+                          if (sk === retryKey) {
+                            if (nonce === undefined) nonce = sv.nonce
+                          } else {
+                            // Refresh the in-tab map from storage so its
+                            // lazy expiry and eviction see the shared state.
+                            retries.set(sk, { nonce: sv.nonce, at: sv.at })
                           }
                         }
                       }
-                    })
-                  }
+                    }
+                    // Map-hit path: verify against / mirror into storage so
+                    // the reported dedup scope matches what another tab can
+                    // actually see.
+                    if (
+                      nonce !== undefined &&
+                      (!stored || !stored[retryKey] || now - stored[retryKey].at >= 300000)
+                    ) {
+                      var p = stored || {}
+                      var pkeys = Object.keys(p)
+                      while (pkeys.length >= 128) {
+                        var pk = pkeys.shift()
+                        if (pk !== undefined) delete p[pk]
+                      }
+                      var mapEntry = retries.get(retryKey)
+                      p[retryKey] = {
+                        nonce: nonce,
+                        at: mapEntry && typeof mapEntry.at === 'number' ? mapEntry.at : now,
+                      }
+                      writeRetryNoncesToStorage(p)
+                    }
+                  })
                   // Echo the flag into the in-page args so the adapter
                   // (which sees only args) can surface it on every result
                   // path, including unconfirmed-send errors where the
@@ -788,7 +811,7 @@ export default {
       // eval source so the adapter can annotate every result path — a
       // caller retrying an unconfirmed send must know another tab cannot
       // see the remembered nonce.
-      if (response.result.degradedDedup === true && state.result.message !== null) {
+      if (result && result.degradedDedup === true && state.result.message !== null) {
         state.result.message +=
           ' (cross-tab retry dedup is degraded: page storage was unavailable, so only this tab remembers the nonce)'
       }

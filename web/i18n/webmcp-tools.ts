@@ -1,5 +1,5 @@
 import { getWebMCPToolDescription } from '@creatorweave/i18n'
-import { useI18nStore } from './store'
+import { useI18nStore } from '@/i18n/store'
 
 /**
  * Localized tool description for USER-FACING surfaces (tool-auth modal block,
