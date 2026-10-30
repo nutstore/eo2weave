@@ -49,9 +49,9 @@ it('validates every package contract and stays below the package snapshot limit'
     })
   expect(() => validatePackageSnapshot(snapshot)).not.toThrow()
 
-  const discordSources = Object.values(sources) as string[]
-  expect(discordSources).toHaveLength(8)
-  for (const source of discordSources) {
+  const discordSourceEntries = Object.entries(sources) as Array<[string, string]>
+  expect(discordSourceEntries).toHaveLength(8)
+  for (const [path, source] of discordSourceEntries) {
     // Navigation-free contract: reject every known page-navigation API,
     // not just location.assign. Navigation belongs to browser.goto.
     expect(source).not.toMatch(/location\s*\.\s*(assign|replace|reload)\s*\(/)
@@ -59,19 +59,34 @@ it('validates every package contract and stays below the package snapshot limit'
     expect(source).not.toMatch(/window\s*\.\s*open\s*\(/)
     expect(source).not.toMatch(/document\s*\.\s*write\s*\(/)
     expect(source).toContain('webpackChunkdiscord_app')
-    expect(source).toContain('credentials')
+    // Round 7: a bare word search would pass a `credentials: 'omit'`
+    // regression; the credential mode itself is contracted to 'include' in
+    // every workflow's fetch options.
+    expect(source).toMatch(/credentials:\s*'include'/)
     // Round 3: one absolute abort deadline per request — the timer must
     // never be re-created after headers arrive (a slow-headers + stalled
     // body request would then outlive the 25s browser-eval timeout).
     // Reject EVERY assignment of a fresh timer to abortTimer, including
     // the ternary re-arm form `abortTimer = cond ? setTimeout(...) : null`
-    // that the plain-assignment regex alone let through: exactly one
-    // setTimeout call per workflow is the contract, so any second
-    // assignment — however written — would restart the absolute deadline.
+    // that the plain-assignment regex alone let through.
     expect(source.match(/abortTimer\s*=[^\n]*/g) ?? []).toEqual([
       expect.stringMatching(/^abortTimer\s*=\s*(?!\s*abortController)/),
     ])
-    expect(source.match(/setTimeout\s*\(/g) ?? []).toHaveLength(1)
+    // Exactly one setTimeout per non-reaction workflow (the abort
+    // deadline); the reaction workflows additionally carry the Round-7
+    // cross-tab lock WAIT budget — a second, independent timer so an
+    // over-long cross-tab lock wait surfaces as LOCK_TIMEOUT inside the
+    // eval window instead of being killed by the host and misreported as
+    // TAB_UNAVAILABLE. Both call sites are named and single-purpose: the
+    // abort deadline is still assigned exactly once (never re-armed,
+    // asserted above), and lockWaitTimer is the only other setTimeout.
+    const isReaction = path === 'workflows/add_reaction.js' || path === 'workflows/remove_reaction.js'
+    const timerSites = source.match(/setTimeout\s*\(/g) ?? []
+    expect(timerSites, path).toHaveLength(isReaction ? 2 : 1)
+    if (isReaction) {
+      expect(source).toMatch(/lockWaitTimer\s*=\s*setTimeout\s*\(/)
+      expect(source).toMatch(/abortTimer\s*=\s*\n?\s*abortController !== null\s*\n?\s*\?\s*setTimeout\s*\(/)
+    }
   }
 
 })
@@ -445,7 +460,9 @@ it('sends messages and reactions through the right methods and bodies', async ()
   expect(page.fetches[0]).toMatchObject({
     url: 'https://discord.com/api/v9/channels/555/messages/m1/reactions/%F0%9F%91%8D/@me',
   })
-  expect(page.fetches[0].init.method).toBe('PUT')
+  // Round 7: the credential mode is asserted on the EXECUTED fetch options,
+  // not just the source text.
+  expect(page.fetches[0].init.credentials).toBe('include')
 
   page.fetches.length = 0
   expect(await page.execute('remove_reaction', { channel: '555', message_id: 'm1', emoji: 'thumbsup:123' })).toMatchObject({
@@ -456,6 +473,7 @@ it('sends messages and reactions through the right methods and bodies', async ()
     url: 'https://discord.com/api/v9/channels/555/messages/m1/reactions/thumbsup%3A123/@me',
   })
   expect(page.fetches[0].init.method).toBe('DELETE')
+  expect(page.fetches[0].init.credentials).toBe('include')
 })
 
 it('maps guild, channel, profile and search responses', async () => {
