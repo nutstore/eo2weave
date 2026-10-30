@@ -259,6 +259,65 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     expect(settingsState.providerType).toBe('deepseek')
   })
 
+  it('reports ready mid-lookup switch only when the NEW provider holds a live key', async () => {
+    // Same race as above, but the new provider ('deepseek') genuinely has a
+    // key in the store even though the cached flag was stale FALSE.
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue(['openai', 'deepseek'])
+    settingsState.providerType = 'anthropic'
+    settingsState.hasApiKey = false
+    // 1st call: the candidate 'openai' lookup pends so the visitor can
+    // switch mid-flight; 2nd call (the race branch's re-validation) reads
+    // 'deepseek' — the NEW selection — and finds a live key.
+    let releaseLookup!: (value?: string) => void
+    loadApiKeyMock.mockImplementationOnce(
+      () =>
+        new Promise<string | null>((resolve) => {
+          releaseLookup = (value?: string) => resolve(value ?? 'openai-key')
+        }),
+    )
+    loadApiKeyMock.mockImplementationOnce(async (provider: string) =>
+      provider === 'deepseek' ? 'deepseek-key' : null,
+    )
+
+    const pending = checkAiReadiness()
+    for (let i = 0; i < 20 && releaseLookup === undefined; i++) {
+      await Promise.resolve()
+    }
+    expect(releaseLookup).toBeTypeOf('function')
+    settingsState.providerType = 'deepseek'
+    releaseLookup()
+
+    await expect(pending).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(settingsState.providerType).toBe('deepseek')
+    // Restore the file-default per-provider mock so later tests are unaffected.
+    loadApiKeyMock.mockImplementation(
+      async (provider: string) => (provider === 'openai' ? 'openai-key' : null),
+    )
+  })
+
+  it('reports NOT ready (no switch) when the keyed candidate has no resolvable model', async () => {
+    // A keyed dynamic provider with no catalog, no last-used model and no
+    // default (e.g. a brand-new custom provider): resolving `''` and
+    // switching would persist an empty model — readiness must stay false
+    // and leave the visitor's selection untouched.
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue(['custom-brand-new'])
+    settingsState.providerType = 'openai'
+    settingsState.hasApiKey = false
+    loadApiKeyMock.mockImplementationOnce(async (provider: string) =>
+      provider === 'custom-brand-new' ? 'custom-key' : null,
+    )
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+    expect(settingsState.providerType).toBe('openai')
+    expect(settingsState.lastSwitchedModel).toBeNull()
+    // Restore the file-default per-provider mock so later tests are unaffected.
+    loadApiKeyMock.mockImplementation(
+      async (provider: string) => (provider === 'openai' ? 'openai-key' : null),
+    )
+  })
+
   it('gateway token-lookup failure falls through to other usable credentials', async () => {
     // The gateway probe itself throws (storage not ready) — a valid
     // other-provider key must still make the visitor ready.

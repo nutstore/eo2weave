@@ -192,7 +192,17 @@ async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessR
           // way; only its settings side effects are governed here.
           const freshProvider = useSettingsStore.getState().providerType
           if (freshProvider !== currentProviderType) {
-            if (useSettingsStore.getState().hasApiKey) {
+            // The `hasApiKey` flag can be STALE (cached from an earlier
+            // selection, or from before the visitor removed a key) — the
+            // visitor switched while the probe was pending, so the flag was
+            // never re-derived for the new provider. Re-derive it from the
+            // live store before trusting it: report ready only when the NEW
+            // provider actually holds a usable key right now.
+            const newProviderKey = await withProbeTimeout(
+              loadApiKey(freshProvider),
+              `reading the ${freshProvider} key`,
+            )
+            if (newProviderKey) {
               return { ready: true, creditExhausted: false }
             }
             // Re-check the new provider's credentials; `allowRecheck` false
@@ -226,7 +236,14 @@ async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessR
           // itself be unconfigured; plain `ready` would skip its checks).
           const providerBeforeSwitch = useSettingsStore.getState().providerType
           if (providerBeforeSwitch !== currentProviderType) {
-            if (useSettingsStore.getState().hasApiKey) {
+            // Same stale-flag concern as the key-lookup race above:
+            // re-derive the new provider's credential from the live store
+            // instead of trusting the cached `hasApiKey` flag.
+            const newProviderKey = await withProbeTimeout(
+              loadApiKey(providerBeforeSwitch),
+              `reading the ${providerBeforeSwitch} key`,
+            )
+            if (newProviderKey) {
               return { ready: true, creditExhausted: false }
             }
             if (allowRecheck) {
@@ -243,6 +260,16 @@ async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessR
               : '') ||
             catalog[0] ||
             ''
+          // No resolvable model (a keyed dynamic provider with no catalog,
+          // no last-used model and no default — e.g. a brand-new custom
+          // provider): switching would persist `''` as both the selected
+          // model and the provider's last-used model, and the page would
+          // enter a conversation that cannot run. Report NOT ready and
+          // leave the visitor's saved selection untouched — the page then
+          // offers the provider/model setup step instead.
+          if (resolvedModel === '') {
+            return { ready: false, creditExhausted: false }
+          }
           useSettingsStore
             .getState()
             .switchProviderAndModel(target, resolvedModel)

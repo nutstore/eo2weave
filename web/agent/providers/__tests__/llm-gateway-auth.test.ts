@@ -740,18 +740,44 @@ describe('llm-gateway-auth token refresh hardening', () => {
       // op 1 left the registry when its grace timer fired, so this lock
       // acquisition would NOT wait for the still-pending write.
       const logout = logoutGateway()
-      await new Promise((resolve) => setTimeout(resolve, 50))
-
-      // Release the stalled write: only then may the logout proceed.
-      releaseShadow()
-      await Promise.all([refresh, logout])
-      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
-
-      // The registry must be empty now — a follow-up commit is admitted
-      // without waiting on any ghost op.
+      // Hold the stalled write PAST the 10s deadline AND the 5s grace
+      // window: the pre-fix registry dropped op 1 as soon as the grace
+      // timer fired its `settled`, so only exercising the window after
+      // deadline+grace distinguishes the real-tracking registry from the
+      // broken one — before that point both registries still hold the op
+      // (the deadline itself had not expired), and this test would pass
+      // without ever touching the regression. A below-deadline release
+      // cannot prove the fix.
+      await new Promise((resolve) => setTimeout(resolve, 10_000 + 5_000 + 100))
+      // While the write is STILL pending (well past deadline+grace), a
+      // later credential commit must remain blocked: it may only proceed
+      // once the underlying op settles.
+      let commitSettled = false
       const { withGatewayCredentialLock } = await import(
         '@/agent/providers/gateway-credential-lock'
       )
+      const laterCommit = withGatewayCredentialLock(async () => {
+        commitSettled = true
+        return 'commit'
+      })
+      let commitFailed: unknown = null
+      laterCommit.catch((e) => {
+        commitFailed = e
+      })
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(commitSettled).toBe(false)
+      expect(commitFailed).toBeNull()
+
+      // Release the stalled write: only then may the logout and the later
+      // commit proceed, in registry order.
+      releaseShadow()
+      await Promise.all([refresh, logout, laterCommit])
+      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+      expect(commitSettled).toBe(true)
+      expect(commitFailed).toBeNull()
+
+      // The registry must be empty now — a follow-up commit is admitted
+      // without waiting on any ghost op.
       await withGatewayCredentialLock(async () => 'commit')
     }, 45_000)
   })
