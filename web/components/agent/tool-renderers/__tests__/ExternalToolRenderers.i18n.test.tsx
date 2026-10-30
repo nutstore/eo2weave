@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, beforeEach } from 'vitest'
-import '../ExternalToolRenderers'
+import '@/components/agent/tool-renderers/ExternalToolRenderers'
 import { getRenderer } from '@/components/agent/tool-renderers/registry'
 import type { ToolRenderCtx } from '@/components/agent/tool-renderers/types'
 import { useI18nStore } from '@/i18n/store'
