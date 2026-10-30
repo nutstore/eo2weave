@@ -8,7 +8,7 @@
  */
 
 import { t as translate } from '@creatorweave/i18n'
-import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
+import { trackPendingKeyStoreOp, withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
 import { saveApiKey as saveGatewayApiKey } from '@/security/api-key-store'
 import { useI18nStore } from '@/i18n/store'
 
@@ -122,6 +122,28 @@ export const LLM_GATEWAY_API_KEY_ID = '__llm_gateway_token__'
  * restore we can reconstruct the full StoredTokens object.
  */
 const REFRESH_TOKEN_DB_KEY = '__llm_gateway_refresh_token__'
+
+/**
+ * localStorage marker recording when the last logout purged credentials.
+ * A device-code login that was APPROVED before this timestamp must not
+ * commit afterwards (the user changed their mind — see gateway-login's
+ * commit re-check).
+ */
+const LOGOUT_MARKER_KEY = '__llm_gateway_last_logout_at__'
+
+/**
+ * Read the last logout timestamp (null when never logged out / unreadable).
+ */
+export function getLastLogoutTimestamp(): number | null {
+  try {
+    const raw = localStorage.getItem(LOGOUT_MARKER_KEY)
+    if (!raw) return null
+    const ts = Number(raw)
+    return Number.isFinite(ts) && ts > 0 ? ts : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * Public alias of `REFRESH_TOKEN_DB_KEY` for consumers that must exclude
@@ -318,7 +340,12 @@ function saveStoredTokens(tokens: StoredTokens): void {
   void withGatewayCredentialLock(async () => {
     const current = loadStoredTokens()
     if (!current || JSON.stringify(current) !== JSON.stringify(tokens)) return
-    await withKeyStoreDeadline(persistRefreshTokenToSQLite(tokens))
+    // Await BOTH the raced result and the underlying settlement: releasing
+    // the lock while the write is still pending would let it land after a
+    // logout has purged the backup, restoring a logged-out session.
+    const { result, settled } = withKeyStoreDeadline(persistRefreshTokenToSQLite(tokens))
+    await result
+    await settled
   }).catch((e) => {
     console.warn('[llm-gateway] persist refresh_token to SQLite failed:', e)
   })
@@ -366,6 +393,15 @@ async function clearStoredTokens(
     if (expectedRefreshToken && current?.refresh_token !== expectedRefreshToken) return false
     bumpAuthSessionGeneration()
     localStorage.removeItem(TOKEN_STORAGE_KEY)
+    // Record the logout timestamp so a login attempt that was pending
+    // (device-code approval / model preparation) in another tab cannot
+    // commit AFTER this logout: gateway-login's commit re-checks this
+    // marker and refuses to persist a session that predates it.
+    try {
+      localStorage.setItem(LOGOUT_MARKER_KEY, String(Date.now()))
+    } catch {
+      // Non-fatal: the marker is a cross-tab heuristic, not a guarantee.
+    }
     // Purge both SQLite-side credentials before releasing the lock, so a
     // later login cannot have its new access key deleted by this logout.
     // Each deletion is attempted INDEPENDENTLY: a failure purging the
@@ -658,8 +694,12 @@ export function withKeyStoreDeadline<T>(
   // Safety net: if the underlying promise NEVER settles (a hung worker),
   // `settled` would block the lock forever — the very deadlock this helper
   // exists to prevent. Give the underlying op an extra grace window after
-  // the deadline, then release the lock regardless.
+  // the deadline, then release the lock regardless. The op's real
+  // completion is tracked in the shared pendingKeyStoreOps registry (via
+  // `settled.finally` below), so `withGatewayCredentialLock` waits for it
+  // before granting a new credential commit.
   setTimeout(() => settleResolve(), 10_000 + 5_000)
+  trackPendingKeyStoreOp(settled)
   return { result, settled }
 }
 
@@ -692,7 +732,14 @@ export function persistDeviceLoginTokens(
     client_id: clientId,
     base_url: baseURL,
   })
-  setCredentialStatus('valid')
+  // Only update the SYNCHRONOUS mirror here. The settings-store write is
+  // deferred (dynamic import, unawaited): scheduled during this
+  // lock-held commit, it could land AFTER the lock releases and after a
+  // concurrent logout wrote 'missing' — reporting valid credentials for a
+  // logged-out session. Callers (applyGatewayLoginTokensInner) already set
+  // the status inside their own lock-held commit via
+  // settings.setModelCredentialStatus, which covers the settings store.
+  lastCredentialStatus = 'valid'
 }
 
 /**

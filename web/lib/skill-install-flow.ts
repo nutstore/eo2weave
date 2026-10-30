@@ -140,7 +140,30 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
     const gatewayOwnedKeys = new Set([LLM_GATEWAY_API_KEY_ID, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID])
     const others = providers.filter((p) => !gatewayOwnedKeys.has(p))
     if (others.length > 0) {
-      return { ready: true, creditExhausted: false }
+      // A usable credential exists, but under a DIFFERENT provider than the
+      // currently selected one: reporting plain "ready" would start a
+      // conversation with the unconfigured selected provider and fail on
+      // the first request. Switch the selection to the provider that has a
+      // saved key (first available), then report ready.
+      const { loadApiKey } = await import('@/security/api-key-store')
+      for (const candidate of others) {
+        const key = await withProbeTimeout(
+          loadApiKey(candidate),
+          `reading the ${candidate} key`,
+        )
+        if (key) {
+          // Fresh getState(): the earlier snapshot predates the probe awaits.
+          useSettingsStore
+            .getState()
+            .switchProviderAndModel(
+              candidate as Parameters<
+                ReturnType<typeof useSettingsStore.getState>['switchProviderAndModel']
+              >[0],
+              '',
+            )
+          return { ready: true, creditExhausted: false }
+        }
+      }
     }
   } catch (e) {
     // Key store unavailable (storage not ready): the not-ready verdict

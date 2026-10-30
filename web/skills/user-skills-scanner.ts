@@ -640,11 +640,38 @@ async function recoverAbandonedImportBackupsInner(): Promise<void> {
       const removedFresh = new Set<string>()
       for (const dirName of incompleteFresh) {
         try {
-          // An old journal cannot remove a directory installed by a later
-          // run. Legacy unmarked targets are intentionally left intact.
-          if (await readImportOwner(userDir, dirName) !== runId) {
+          // Owner-check semantics (the pipeline writes the owner marker at
+          // install start and removes it on completion):
+          //  - owner === runId           → in-flight/crashed install of THIS
+          //    run: remove the partial directory.
+          //  - owner === '' (no marker)  → ambiguous: either a COMPLETED
+          //    install (marker removed on completion) or a directory created
+          //    outside the pipeline. Distinguish by content: a partial fresh
+          //    install has NO SKILL.md yet, while any registered skill does.
+          //    Remove only the former — an unmarked dir with SKILL.md is a
+          //    completed/newer install and must survive.
+          //  - owner === other runId     → a newer install owns it: leave it.
+          const owner = await readImportOwner(userDir, dirName)
+          if (owner !== runId && owner !== '') {
+            // A newer install owns this directory — leave it alone.
             removedFresh.add(dirName)
             continue
+          }
+          if (owner === '') {
+            let hasSkillMd = false
+            try {
+              await (await userDir.getDirectoryHandle(dirName)).getFileHandle('SKILL.md')
+              hasSkillMd = true
+            } catch {
+              hasSkillMd = false
+            }
+            if (hasSkillMd) {
+              // Completed install (owner marker removed on completion) —
+              // keep it and just drop the stale record entry.
+              removedFresh.add(dirName)
+              continue
+            }
+            // No marker AND no SKILL.md: abandoned partial fresh install.
           }
           await userDir.removeEntry(dirName, { recursive: true })
           removedFresh.add(dirName)

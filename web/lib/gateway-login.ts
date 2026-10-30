@@ -20,7 +20,10 @@ import {
 } from '@/agent/providers/llm-gateway-provider'
 import { useSettingsStore } from '@/store/settings.store'
 import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
-import { withKeyStoreDeadline } from '@/agent/providers/llm-gateway-auth'
+import {
+  getLastLogoutTimestamp,
+  withKeyStoreDeadline,
+} from '@/agent/providers/llm-gateway-auth'
 
 export interface GatewayLoginResult {
   ok: boolean
@@ -73,8 +76,22 @@ async function applyGatewayLoginTokensInner(
 
   // Keep the read, write and possible rollback in one cross-tab critical
   // section. A cancelled login must not restore over a newer tab's login.
+  // Record when THIS attempt started: a logout committed after this
+  // timestamp (in any tab) invalidates the attempt below.
+  const attemptStartedAt = Date.now()
   return withGatewayCredentialLock(async () => {
     signal?.throwIfAborted()
+    // Logout-supersedes-pending-login: if the user logged out (any tab)
+    // while this attempt was pending — device-code approval or model
+    // preparation can take minutes — do not resurrect the session they
+    // just ended. The last login wins, the last logout also wins.
+    const lastLogout = getLastLogoutTimestamp()
+    if (lastLogout !== null && lastLogout > attemptStartedAt) {
+      console.warn(
+        '[gateway-login] discarding login commit: a logout occurred after this attempt started',
+      )
+      throw new Error('session changed during login: logout superseded this attempt')
+    }
     const settings = useSettingsStore.getState()
     // Re-check pins under the lock: a pin added between the pre-lock
     // snapshot and this commit must win over the computed defaults.

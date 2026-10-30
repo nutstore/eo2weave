@@ -542,6 +542,11 @@ function SkillInstallView() {
         getSkillManager().setUserSkillEnabled(`user:${entry.dirName}`, true)
       } else if (registration === false) {
         if (currentGeneration() !== installGeneration) return
+        // The directory the load scan saw may have been a PARTIAL install
+        // that recovery has since removed — the page must reconcile:
+        // clear the stale installed flag so the retry offers installation
+        // again instead of looping on the registration-only path.
+        setAlreadyInstalled(false)
         setErrorMessage(t('skillInstall.registerFailed'))
         setPhase('details')
         return

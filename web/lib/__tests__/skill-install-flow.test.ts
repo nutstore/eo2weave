@@ -2,12 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
-const { settingsState } = vi.hoisted(() => {
+const { settingsState, switchProviderAndModelMock } = vi.hoisted(() => {
   const settingsState = {
     hasApiKey: false as boolean,
     providerType: 'llm-gateway' as string,
+    switchProviderAndModel: (providerType: string, _modelName: string) => {
+      settingsState.providerType = providerType
+    },
   }
-  return { settingsState }
+  return { settingsState, switchProviderAndModelMock: settingsState.switchProviderAndModel }
 })
 
 vi.mock('@/lib/deploy-region', () => ({
@@ -38,9 +41,15 @@ vi.mock('@/store/settings.store', () => ({
 }))
 
 const getAllApiKeyProvidersMock = vi.fn<() => Promise<string[]>>()
+// Per-provider key lookup: "openai" has a saved key, others report none —
+// used by the readiness branch that switches to a provider with a key.
+const loadApiKeyMock = vi.fn(async (provider: string) =>
+  provider === 'openai' ? 'openai-key' : null,
+)
 
 vi.mock('@/security/api-key-store', () => ({
   getAllApiKeyProviders: (...args: unknown[]) => getAllApiKeyProvidersMock(...(args as [])),
+  loadApiKey: (provider: string) => loadApiKeyMock(provider),
 }))
 
 import {
