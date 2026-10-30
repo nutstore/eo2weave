@@ -6,6 +6,7 @@ const { settingsState } = vi.hoisted(() => {
   const settingsState = {
     hasApiKey: false as boolean,
     providerType: 'llm-gateway' as string,
+    lastUsedModelByProvider: {} as Record<string, string>,
     switchProviderAndModel: (providerType: string, _modelName: string) => {
       settingsState.providerType = providerType
     },
@@ -52,6 +53,24 @@ const loadApiKeyMock = vi.fn<(
 vi.mock('@/security/api-key-store', () => ({
   getAllApiKeyProviders: (...args: unknown[]) => getAllApiKeyProvidersMock(...(args as [])),
   loadApiKey: (provider: string) => loadApiKeyMock(provider),
+}))
+
+vi.mock('@/agent/providers/types', () => ({
+  // Registry lookups: `openai` is a built-in provider with a small catalog,
+  // unknown ids (non-model secrets) resolve to null meta. Async-registered
+  // ids count as model providers via the potentially-dynamic check.
+  getModelsForProvider: (providerType: string) =>
+    providerType === 'openai'
+      ? [{ id: 'gpt-4o-mini', name: 'GPT-4o mini' }, { id: 'gpt-4o', name: 'GPT-4o' }]
+      : [],
+  getProviderMeta: (providerType: string) =>
+    providerType === 'openai' ? { displayName: 'OpenAI' } : null,
+  isPotentiallyDynamicProviderType: (type: string) =>
+    type === 'llm-gateway' || type === 'codex-oauth' || type.startsWith('custom-'),
+}))
+
+vi.mock('@/agent/providers/default-models', () => ({
+  DEFAULT_PINNED_MODELS: { openai: ['gpt-4o-mini'] },
 }))
 
 import {
@@ -142,6 +161,34 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
 
     await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
     expect(settingsState.providerType).toBe('openai')
+    // The saved model resolution: last-used → default → first catalog entry.
+    // Here no last-used model exists, so the provider's default wins and the
+    // saved selection is not erased by an empty string.
+    expect(settingsState.lastUsedModelByProvider.openai).toBeUndefined()
+  })
+
+  it('switches to the candidate with its LAST-USED model when one is saved', async () => {
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue(['openai'])
+    settingsState.providerType = 'anthropic'
+    settingsState.lastUsedModelByProvider = { openai: 'gpt-4o' }
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(settingsState.providerType).toBe('openai')
+  })
+
+  it('ignores non-model secret keys in the api-key store', async () => {
+    // The api-key store also holds non-model secrets (e.g. Jianguoyun WebDAV
+    // app passwords). Only a registered model provider's key counts as a
+    // usable credential — selecting a secret id as the provider would start
+    // the conversation with no usable model configuration.
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue(['jianguoyun-webdav', 'some-random-secret'])
+    settingsState.providerType = 'llm-gateway'
+    settingsState.hasApiKey = false
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
+    expect(settingsState.providerType).toBe('llm-gateway')
   })
 
   it('does NOT switch providers when the visitor picks one while the key lookup is pending', async () => {

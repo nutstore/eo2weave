@@ -139,7 +139,22 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
     // the refresh-token backup is internal bookkeeping, not a provider key)
     // — exclude both before declaring "another provider has a key".
     const gatewayOwnedKeys = new Set([LLM_GATEWAY_API_KEY_ID, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID])
-    const others = providers.filter((p) => !gatewayOwnedKeys.has(p))
+    const { getProviderMeta, isPotentiallyDynamicProviderType } = await import(
+      '@/agent/providers/types'
+    )
+    // Only REGISTERED MODEL providers count as usable credentials: the
+    // api-key store also holds non-model secrets (e.g. Jianguoyun WebDAV
+    // app passwords). Selecting one of those as the provider would start a
+    // conversation with no usable model configuration. A provider that
+    // registers asynchronously (llm-gateway, codex-oauth, custom-*) may not
+    // be in the registry yet at probe time — treat it as a model provider
+    // so a genuinely usable key is not mistaken for a non-model secret.
+    const others = providers.filter(
+      (p) =>
+        !gatewayOwnedKeys.has(p) &&
+        (getProviderMeta(p as Parameters<typeof getProviderMeta>[0]) !== null ||
+          isPotentiallyDynamicProviderType(p)),
+    )
     if (others.length > 0) {
       // A usable credential exists, but under a DIFFERENT provider than the
       // currently selected one: reporting plain "ready" would start a
@@ -164,14 +179,33 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
           if (freshProvider !== currentProviderType) {
             return { ready: true, creditExhausted: false }
           }
+          // Resolve the model to select for the candidate BEFORE switching:
+          // an empty string would overwrite the visitor's saved model for
+          // that provider (`lastUsedModelByProvider`) and leave the
+          // conversation with no model. Preference order: the provider's
+          // last-used model (must still exist in its catalog), then the
+          // provider's default model, then its first catalog entry.
+          const target = candidate as Parameters<
+            ReturnType<typeof useSettingsStore.getState>['switchProviderAndModel']
+          >[0]
+          const { getModelsForProvider } = await import('@/agent/providers/types')
+          const lastUsed =
+            useSettingsStore.getState().lastUsedModelByProvider[target] ?? ''
+          const catalog = getModelsForProvider(target).map((m) => m.id)
+          const { DEFAULT_PINNED_MODELS } = await import('@/agent/providers/default-models')
+          const defaultPinned = (DEFAULT_PINNED_MODELS[target] ?? [])[0] ?? ''
+          const resolvedModel =
+            (lastUsed && (catalog.length === 0 || catalog.includes(lastUsed))
+              ? lastUsed
+              : '') ||
+            (defaultPinned && (catalog.length === 0 || catalog.includes(defaultPinned))
+              ? defaultPinned
+              : '') ||
+            catalog[0] ||
+            ''
           useSettingsStore
             .getState()
-            .switchProviderAndModel(
-              candidate as Parameters<
-                ReturnType<typeof useSettingsStore.getState>['switchProviderAndModel']
-              >[0],
-              '',
-            )
+            .switchProviderAndModel(target, resolvedModel)
           return { ready: true, creditExhausted: false }
         }
       }

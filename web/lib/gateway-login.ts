@@ -135,11 +135,15 @@ async function applyGatewayLoginTokensInner(
       onCommit?.()
       committed = true
       settings.invalidateApiKeyCache(keyId)
-      settings.switchProviderAndModel(
-        LLM_GATEWAY_PROVIDER_TYPE,
-        models[0]?.id ?? settings.modelName,
-      )
-
+      // Selected model: the gateway's first served model. When discovery
+      // failed (empty list) do NOT fall back to `settings.modelName` — that
+      // id belongs to the PREVIOUSLY selected provider and would leave the
+      // gateway login pointing at an unsupported model. The model registry
+      // is refreshed in the background (triggerProviderRefresh below), and
+      // the settings card re-registers the fetched catalog on its next
+      // /models fetch; an empty modelName here marks the selection for
+      // that re-resolution instead of pinning a wrong provider's model.
+      settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, models[0]?.id ?? '')
       if (defaults.length > 0) {
         settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
         settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)

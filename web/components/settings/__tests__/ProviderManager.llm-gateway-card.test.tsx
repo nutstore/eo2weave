@@ -61,6 +61,8 @@ const gatewayMock = vi.hoisted(() => ({
   logoutGateway: vi.fn(),
   getValidAccessToken: vi.fn(async () => 'stale-access-token'),
   fetchGatewayModels: vi.fn(async () => []),
+  getGatewayCredentialStatus: vi.fn(() => 'unknown'),
+  registerGatewayModels: vi.fn(),
   updateGatewayModels: vi.fn(async () => []),
   persistDeviceLoginTokens: vi.fn(),
   fetchGatewayRateLimits: vi.fn(async () => {
@@ -74,6 +76,7 @@ vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   logoutGateway: gatewayMock.logoutGateway,
   getValidAccessToken: gatewayMock.getValidAccessToken,
   fetchGatewayModels: gatewayMock.fetchGatewayModels,
+  getGatewayCredentialStatus: gatewayMock.getGatewayCredentialStatus,
 }))
 
 const applyGatewayLoginTokensMock = vi.hoisted(() => vi.fn())
@@ -89,6 +92,9 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   updateGatewayModels: gatewayMock.updateGatewayModels,
   isLLMGatewayConfigured: () => true,
   fetchGatewayRateLimits: gatewayMock.fetchGatewayRateLimits,
+  // The card re-registers a fetched catalog with the gateway provider via a
+  // DYNAMIC import of this module (finding: "unusable model catalog").
+  registerGatewayModels: gatewayMock.registerGatewayModels,
 }))
 
 vi.mock('sonner', () => ({
@@ -124,6 +130,9 @@ async function waitForLoggedInPanel() {
 describe('LLMGatewayCard credential state', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Logout's session-freshness guard: default to "no newer login" so the
+    // logged-out UI path runs; individual tests override when needed.
+    gatewayMock.getGatewayCredentialStatus.mockReturnValue('unknown')
     applyGatewayLoginTokensMock.mockImplementation(async (_token, options) => {
       options.onCommit()
       settingsState.setModelCredentialStatus('valid')

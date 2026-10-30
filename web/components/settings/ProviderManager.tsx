@@ -52,7 +52,7 @@ import { useI18nStore } from '@/i18n/store'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHeader, BrandDialogBody, BrandDialogFooter, BrandDialogTitle, BrandDialogClose } from '@creatorweave/ui'
 import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
-import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels } from '@/agent/providers/llm-gateway-auth'
+import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels, getGatewayCredentialStatus } from '@/agent/providers/llm-gateway-auth'
 import { applyGatewayLoginTokens } from '@/lib/gateway-login'
 import type { AuthState, CreditPackage } from '@/agent/providers/llm-gateway-auth'
 
@@ -1313,6 +1313,20 @@ export function LLMGatewayCard({
         const token = await getValidAccessToken(baseURL, clientId)
         if (token && !cancelled) {
           const models = await fetchGatewayModels(baseURL, token)
+          if (models.length > 0) {
+            // Register the fetched catalog with the gateway provider, not
+            // just this card's local list: a login whose discovery failed
+            // committed an EMPTY registration, and without this the provider
+            // would stay registered without usable models until another
+            // operation re-registered it (finding: "login succeeds with an
+            // unusable model catalog").
+            const { registerGatewayModels } = await import('@/agent/providers/llm-gateway-provider')
+            registerGatewayModels(models.map((m) => ({
+              id: m.id,
+              name: m.name,
+              capabilities: ['code', 'writing', 'reasoning'] as const,
+            })))
+          }
           setAllModels(models)
           // Gateway /models response is authoritative — record confirmed pins
           // so pins absent from a later fetch get flagged as stale.
@@ -1391,6 +1405,23 @@ export function LLMGatewayCard({
       return
     }
     useSettingsStore.getState().invalidateApiKeyCache(keyId)
+    // Session-freshness guard: a login may have committed in another tab
+    // between logoutGatewayAuth() releasing the credential lock and this
+    // point (device-flow approval takes minutes, so the window is real).
+    // Overwriting that login's settings state (hasApiKey=false,
+    // modelCredentialStatus='missing', empty model list) would corrupt a
+    // live session. getGatewayCredentialStatus() reflects the LAST token
+    // operation of the auth layer in THIS tab — after a purge it is
+    // 'missing', but a login that committed afterwards sets it back to
+    // 'valid' — so a 'valid' status here means a newer login won; leave
+    // its state alone.
+    if (getGatewayCredentialStatus() === 'valid') {
+      // A newer login committed after the logout: treat this tab like the
+      // post-login state instead of forcing logged-out UI over it.
+      const key = await loadApiKey(keyId)
+      setIsLoggedIn(!!key)
+      return
+    }
     // Re-check from DB so we don't flip hasApiKey off when another provider is active
     if (useSettingsStore.getState().providerType === LLM_GATEWAY_PROVIDER_TYPE) {
       useSettingsStore.getState().setHasApiKey(false)
