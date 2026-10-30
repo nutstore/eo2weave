@@ -1290,23 +1290,40 @@ it('reports a same-key reaction lock expiry as LOCK_TIMEOUT, not TAB_UNAVAILABLE
   // distinct LOCK_TIMEOUT error result — the tab is alive — NOT the
   // TAB_UNAVAILABLE the outer browser.eval catch maps every escaped
   // rejection to. The expired entry must not fetch Discord and must not
-  // leak its lock slot.
+  // leak its lock slot. A CONTROLLED clock moves the queued entry's
+  // queue timestamp past the 15s cutoff deterministically — no fixed
+  // wall-clock sleep that a slow runner could under- or over-shoot
+  // (Sourcery round 6: the previous 15.4s sleep raced the runner).
+  const clock = makeFakeClock()
   let releaseFirst: (() => void) | null = null
   const firstStalled = new Promise<void>((resolveStall) => {
     releaseFirst = resolveStall
   })
   const held = fixture({
     gate: () => firstStalled,
+    overrideTimers: () => ({
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      Date: clock.dateConstructor,
+    }),
   })
   const input = { channel: 'c', message_id: 'm', emoji: '👍' }
   // Entry 1 takes the lock slot; its fetch stalls at the gate.
   const first = held.execute('add_reaction', input)
   await vi.waitFor(() => expect(held.fetches).toHaveLength(1))
-  // Entry 2 queues behind the held slot (queue timestamp ≈ now), then
-  // the wall clock waits past the 15s cutoff before entry 1 releases.
+  // Entry 2 queues behind the held slot at fake-time T0. Wait until its
+  // eval has SYNCHRONOUSLY captured queuedAt — observable as the lock
+  // slot being re-keyed to entry 2's own settled promise — before
+  // shifting the clock (same synchronization as the deadline tests above).
+  const slotBefore = (held.sandbox as any).__eo2ReactionLocks?.['c:m:👍']
   const second = held.execute('add_reaction', input)
-  await vi.waitFor(() => expect(held.evalCount()).toBe(2))
-  await new Promise((resolve) => setTimeout(resolve, 15400))
+  await vi.waitFor(
+    () => expect((held.sandbox as any).__eo2ReactionLocks?.['c:m:👍']).not.toBe(slotBefore),
+  )
+  // Shift the in-page clock past the 15s wait cutoff while entry 2 is
+  // still queued, then release entry 1 so entry 2 starts and hits the
+  // expiry check with a deterministic +16s queue age.
+  clock.advance(16000)
   releaseFirst!()
   expect(await first).toMatchObject({
     ok: true,
@@ -1331,7 +1348,7 @@ it('reports a same-key reaction lock expiry as LOCK_TIMEOUT, not TAB_UNAVAILABLE
     | Record<string, unknown>
     | undefined
   expect(locks === undefined || Object.keys(locks).length === 0).toBe(true)
-}, 30000)
+}, 15000)
 
 it("bounds automatic nonce reuse to Discord's enforce_nonce window", async () => {
   // Control the clock by seeding the retry-nonce map with timestamps
