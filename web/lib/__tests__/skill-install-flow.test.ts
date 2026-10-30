@@ -105,10 +105,27 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
   it('flags creditExhausted when /v1/rate-limits reports 0 available credit', async () => {
     getValidAccessTokenMock.mockResolvedValue('tok-1')
     fetchGatewayRateLimitsMock.mockResolvedValue({ available_credit: 0 })
+    // The selected provider is UNKEYED — readiness comes from the gateway,
+    // and the flow switches the selection to it (the first conversation
+    // request would otherwise go through the unconfigured provider).
+    loadApiKeyMock.mockResolvedValueOnce(null)
 
     const result = await checkAiReadiness()
     expect(result.ready).toBe(true)
     expect(result.creditExhausted).toBe(true)
+    expect(settingsState.providerType).toBe('llm-gateway')
+  })
+
+  it('keeps a keyed selected provider when the gateway is also ready', async () => {
+    // The visitor's selected provider has its own usable key: their choice
+    // stands (no switch to the gateway) and the gateway's credit state is
+    // irrelevant to the conversation they will actually run.
+    getValidAccessTokenMock.mockResolvedValue('tok-1')
+    fetchGatewayRateLimitsMock.mockResolvedValue({ available_credit: 0 })
+
+    const result = await checkAiReadiness()
+    expect(result).toEqual({ ready: true, creditExhausted: false })
+    expect(settingsState.providerType).toBe('openai')
   })
 
   it('does NOT fail readiness when the quota probe throws (best-effort)', async () => {

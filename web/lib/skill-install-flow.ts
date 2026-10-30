@@ -21,7 +21,7 @@ import {
   LLM_GATEWAY_REFRESH_TOKEN_KEY_ID,
 } from '@/agent/providers/llm-gateway-auth'
 import { useSettingsStore } from '@/store/settings.store'
-import { getAllApiKeyProviders } from '@/security/api-key-store'
+import { getAllApiKeyProviders, loadApiKey } from '@/security/api-key-store'
 
 // ── AI readiness ────────────────────────────────────────────────────
 
@@ -123,6 +123,41 @@ async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessR
         // Quota is informational. A failed or stalled probe does not make
         // an otherwise valid gateway credential unusable.
       }
+      // The gateway token is usable but a DIFFERENT provider is selected:
+      // reporting plain "ready" would start the conversation through the
+      // unconfigured selected provider and fail on the first request — the
+      // same failure mode the "other keyed provider" branch below fixes by
+      // switching. Mirror that intent: switch the selection to the gateway
+      // (which provably holds the usable credential) before reporting
+      // ready. A visitor who changed the selection while the probe ran
+      // keeps their newer choice — re-evaluate from the top instead of
+      // overwriting it (the newly selected provider may itself be keyed).
+      const selectedProvider = useSettingsStore.getState().providerType
+      if (selectedProvider !== LLM_GATEWAY_PROVIDER_TYPE) {
+        const keyed = await withProbeTimeout(
+          loadApiKey(selectedProvider),
+          `reading the ${selectedProvider} key`,
+        )
+        if (!keyed) {
+          const freshProvider = useSettingsStore.getState().providerType
+          if (freshProvider !== selectedProvider) {
+            // The visitor switched again while the key lookup was pending —
+            // re-evaluate against their latest choice (the safe default is
+            // not-ready/login; the page's own gate drops this stale pass).
+            if (allowRecheck) return checkAiReadinessOnce(/* allowRecheck: */ false)
+            return { ready: false, creditExhausted: false }
+          }
+          useSettingsStore
+            .getState()
+            .switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, '')
+          return { ready: true, creditExhausted }
+        }
+        // The newly selected provider has its own usable key — the visitor's
+        // choice stands; their credential, their provider. The gateway's
+        // credit state only matters when the conversation will actually run
+        // on the gateway, so it is NOT propagated here.
+        return { ready: true, creditExhausted: false }
+      }
       return { ready: true, creditExhausted }
     }
   }
@@ -173,7 +208,6 @@ async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessR
       // conversation with the unconfigured selected provider and fail on
       // the first request. Switch the selection to the provider that has a
       // saved key (first available), then report ready.
-      const { loadApiKey } = await import('@/security/api-key-store')
       for (const candidate of others) {
         const key = await withProbeTimeout(
           loadApiKey(candidate),

@@ -781,4 +781,56 @@ describe('llm-gateway-auth token refresh hardening', () => {
       await withGatewayCredentialLock(async () => 'commit')
     }, 45_000)
   })
+
+  describe('cross-tab pending-op barrier', () => {
+    const PENDING_OPS_KEY = 'eo2weave-gateway-keystore-pending-ops'
+
+    it('a credential commit waits for key-store ops still pending in ANOTHER tab', async () => {
+      const { withGatewayCredentialLock } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      // Simulate tab A: it dispatched a key-store op that registered in the
+      // SHARED counter registry (exactly what trackPendingKeyStoreOp does
+      // there). This tab's own registry is empty — the pre-barrier
+      // implementation would admit the commit immediately.
+      localStorage.setItem(
+        PENDING_OPS_KEY,
+        JSON.stringify({ 'tab-other': { ops: ['op-late-write'], updatedAt: Date.now() } }),
+      )
+
+      let commitSettled = false
+      const commit = withGatewayCredentialLock(async () => {
+        commitSettled = true
+        return 'commit'
+      })
+      // Give the lock ample time to (wrongly) proceed past an empty local
+      // registry — the barrier must hold it.
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      expect(commitSettled).toBe(false)
+
+      // Tab A's op settles: its entry disappears from the shared registry,
+      // and only then may this commit proceed.
+      localStorage.setItem(PENDING_OPS_KEY, JSON.stringify({}))
+      await expect(commit).resolves.toBe('commit')
+      expect(commitSettled).toBe(true)
+    }, 20_000)
+
+    it('a stale registry entry from a crashed tab does not stall commits', async () => {
+      const { withGatewayCredentialLock } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      // A tab died while its entry was registered; the entry's timestamp is
+      // past the TTL, so it must be treated as abandoned, not as a pending
+      // op blocking every credential commit until the quiescence cap.
+      localStorage.setItem(
+        PENDING_OPS_KEY,
+        JSON.stringify({
+          'tab-crashed': { ops: ['op-ghost'], updatedAt: Date.now() - 61_000 },
+        }),
+      )
+      await expect(
+        withGatewayCredentialLock(async () => 'commit'),
+      ).resolves.toBe('commit')
+    }, 20_000)
+  })
 })
