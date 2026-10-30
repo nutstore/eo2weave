@@ -14,6 +14,7 @@ import {
   getLLMGatewayClientId,
   isLLMGatewayConfigured,
   LLM_GATEWAY_API_KEY_ID,
+  LLM_GATEWAY_PROVIDER_TYPE,
 } from '@/agent/providers/llm-gateway-provider'
 import { getValidAccessToken } from '@/agent/providers/llm-gateway-auth'
 import { useSettingsStore } from '@/store/settings.store'
@@ -91,7 +92,14 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
         getValidAccessToken(getLLMGatewayBaseURL(), getLLMGatewayClientId()),
         'checking the gateway login',
       )
-    } catch {
+    } catch (e) {
+      // A lookup failure (storage not ready, corrupted token cache) is
+      // treated as "no gateway token" so the remaining credential branches
+      // still run. A probe that STALLED past the deadline is different: the
+      // outcome is UNKNOWN, not "no token" — swallowing it here would turn
+      // a retryable timeout into the login prompt. Propagate it; the page
+      // surfaces its retryable readiness-timeout error instead.
+      if (e instanceof Error && e.message.includes('timed out')) throw e
       token = null
     }
     if (token) {
@@ -107,7 +115,16 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
     }
   }
 
-  if (useSettingsStore.getState().hasApiKey) {
+  // The gateway branch above proved the gateway credential unusable (no
+  // valid token). If the CURRENT provider is the gateway, its saved key IS
+  // the (missing/expired) gateway token — treating `hasApiKey` as usable
+  // here would let an expired or purged gateway login report ready, skip
+  // the login step, and fail on the first conversation send. Only a
+  // non-gateway current provider counts as an independent credential.
+  const settingsState = useSettingsStore.getState()
+  const currentProviderIsGateway =
+    settingsState.providerType === LLM_GATEWAY_PROVIDER_TYPE
+  if (settingsState.hasApiKey && !currentProviderIsGateway) {
     return { ready: true, creditExhausted: false }
   }
 

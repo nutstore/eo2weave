@@ -21,7 +21,7 @@ vi.mock('@/store/skills.store', () => ({
   useSkillsStore: { getState: () => ({ skills: [] }) },
 }))
 
-import { importUserSkillZip, previewUserSkillZip, ZIP_IMPORT_LIMITS } from '@/skills/user-skills-scanner'
+import { importUserSkillFolder, importUserSkillZip, previewUserSkillZip, ZIP_IMPORT_LIMITS } from '@/skills/user-skills-scanner'
 import { installSkillFromUrl } from '@/skills/skill-store'
 
 // ── In-memory OPFS test double ───────────────────────────────────────
@@ -1061,5 +1061,172 @@ describe('scanUserSkills overlapping-refresh serialization (round 3)', () => {
     expect(installed('skill-stale')).toBe(true)
     expect(result.skills.map((s) => s.id)).toContain('user:skill-stale')
     expect(backupsRoot.dirs.has('run-stale')).toBe(false)
+  })
+})
+
+// ── Round 9 (Sourcery 2026-10-30) regression tests ───────────────────
+
+describe('fresh-target record failure rolls back stage-1 removals', () => {
+  it('restores overwritten skills when the fresh-target record write fails', async () => {
+    // Bundle: skill-a is an overwrite (staged + removed in stage 1),
+    // skill-b is fresh. The fresh-targets.json write then FAILS — the
+    // import must abort but skill-a must NOT stay missing: its staged
+    // backup is restored before the error propagates.
+    writeInstalled('skill-a', '# Old A\nkeep me')
+    const raw = {
+      'bundle/skill-a/SKILL.md': new TextEncoder().encode('# New A'),
+      'bundle/skill-b/SKILL.md': new TextEncoder().encode('# New B'),
+    }
+    // Fail ONLY the fresh-targets.json write in the run dir; the staged
+    // backup write (`.import-backups/<runId>/skill-a/SKILL.md`) and the
+    // final target writes must succeed so the failure is isolated to the
+    // bookkeeping step.
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () =>
+        makeOpfsRoot('.import-backups/rt-fail/fresh-targets.json'),
+    }
+    // The run id is time-based; inject the failure against ANY run dir's
+    // fresh-targets.json by matching the file name instead.
+    const opfsRoot2 = makeOpfsRoot('fresh-targets.json')
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => opfsRoot2,
+    }
+
+    await expect(importUserSkillZip({
+      isBundle: true,
+      skills: [
+        previewEntry('skill-a', 'bundle/skill-a/', 1),
+        previewEntry('skill-b', 'bundle/skill-b/', 1),
+      ],
+      _raw: raw,
+    })).rejects.toThrow(/Failed to record fresh-import targets/)
+
+    // skill-a was removed in stage 1 → restored from its staged backup.
+    expect(installed('skill-a')).toBe(true)
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# Old A\nkeep me')
+    // skill-b (fresh) was never written → no partial directory.
+    expect(installed('skill-b')).toBe(false)
+    // All restores succeeded → staging is cleaned up.
+    const backups = dirOf(userRoot, '.skills/.import-backups', false)
+    expect(backups?.dirs.size ?? 0).toBe(0)
+  })
+})
+
+describe('importUserSkillFolder uses the serialized import pipeline', () => {
+  /** Build a source-folder handle over an in-memory tree. */
+  const makeSourceFolder = (
+    name: string,
+    tree: Record<string, string>,
+  ): FileSystemDirectoryHandle => {
+    const root = makeDir()
+    for (const [path, content] of Object.entries(tree)) {
+      const parts = path.split('/')
+      let cur = root
+      for (const p of parts.slice(0, -1)) {
+        if (!cur.dirs.has(p)) cur.dirs.set(p, makeDir())
+        cur = cur.dirs.get(p)!
+      }
+      cur.files.set(parts[parts.length - 1], {
+        data: new TextEncoder().encode(content),
+      })
+    }
+    const dirHandleFor = (path: string): FileSystemDirectoryHandle => {
+      return {
+        kind: 'directory',
+        name: path ? path.split('/').pop() : name,
+        entries: async function* () {
+          let d: FakeDir | null = root
+          for (const p of path.split('/').filter(Boolean)) {
+            d = d!.dirs.get(p) ?? null
+            if (!d) return
+          }
+          for (const [n] of d.dirs.entries()) {
+            yield [n, dirHandleFor(path ? `${path}/${n}` : n)] as const
+          }
+          for (const [n, f] of d.files.entries()) {
+            yield [n, {
+              kind: 'file',
+              name: n,
+              getFile: async () => ({
+                size: f.data.byteLength,
+                arrayBuffer: async () => f.data.buffer.slice(f.data.byteOffset, f.data.byteOffset + f.data.byteLength) as ArrayBuffer,
+              }),
+            }] as const
+          }
+        },
+        getDirectoryHandle: async (n: string) => dirHandleFor(path ? `${path}/${n}` : n),
+        getFileHandle: async () => {
+          throw new Error('not implemented')
+        },
+      } as unknown as FileSystemDirectoryHandle
+    }
+    return dirHandleFor('')
+  }
+
+  it('imports a fresh folder through the backup/rollback pipeline', async () => {
+    const src = makeSourceFolder('folder-skill', {
+      'SKILL.md': '# Folder skill',
+      'assets/data.json': '{}',
+    })
+    const count = await importUserSkillFolder(src)
+    expect(count).toBe(2)
+    expect(installed('folder-skill')).toBe(true)
+    expect(contentOf('folder-skill', 'SKILL.md')).toBe('# Folder skill')
+    expect(contentOf('folder-skill/assets', 'data.json')).toBe('{}')
+    // A successful import leaves no staging behind.
+    const backups = dirOf(userRoot, '.skills/.import-backups', false)
+    expect(backups?.dirs.size ?? 0).toBe(0)
+  })
+
+  it('overwrites an existing folder skill and rolls back on write failure', async () => {
+    writeInstalled('folder-skill', '# Old folder\nkeep me')
+    const src = makeSourceFolder('folder-skill', {
+      'SKILL.md': '# New folder',
+    })
+    // Fail the TARGET write (first failure); the staged backup write
+    // succeeds (different path), so the import fails and must restore the
+    // previous content — the second write allowance covers the rollback's
+    // restore of the same target path.
+    const opfs = makeOpfsRoot('.skills/user/folder-skill', undefined, { failWritesTimes: 1 })
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => opfs,
+    }
+    await expect(importUserSkillFolder(src)).rejects.toThrow(/OPFS write failed/)
+    expect(installed('folder-skill')).toBe(true)
+    expect(contentOf('folder-skill', 'SKILL.md')).toBe('# Old folder\nkeep me')
+    // Rollback succeeded → staging cleaned up.
+    const backups = dirOf(userRoot, '.skills/.import-backups', false)
+    expect(backups?.dirs.size ?? 0).toBe(0)
+  })
+
+  it('rejects a folder whose name is not a safe skill directory name', async () => {
+    const src = makeSourceFolder('bad_name!', { 'SKILL.md': '# X' })
+    await expect(importUserSkillFolder(src)).rejects.toThrow(/not a valid skill directory name/)
+    expect(installed('bad_name!')).toBe(false)
+  })
+
+  it('serializes a folder import against a concurrent ZIP import of the same skill', async () => {
+    // Both imports target the same directory; the serialization contract
+    // (in-tab chain + dir Web Lock) must hold for folder imports too, so
+    // both complete without corrupting each other's remove/write phases.
+    writeInstalled('same-skill', '# Original')
+    const zipRaw = { 'z/same-skill/SKILL.md': new TextEncoder().encode('# From ZIP') }
+    const folderSrc = makeSourceFolder('same-skill', { 'SKILL.md': '# From folder' })
+    const [zipCount, folderCount] = await Promise.all([
+      importUserSkillZip({
+        isBundle: false,
+        skill: previewEntry('same-skill', 'z/same-skill/', 1),
+        _raw: zipRaw,
+      }),
+      importUserSkillFolder(folderSrc),
+    ])
+    expect(zipCount).toBe(1)
+    expect(folderCount).toBe(1)
+    // The directory ends up holding ONE coherent version, not a mix: its
+    // SKILL.md is exactly one of the two contents.
+    const final = contentOf('same-skill', 'SKILL.md')
+    expect(['# From ZIP', '# From folder']).toContain(final)
+    const backups = dirOf(userRoot, '.skills/.import-backups', false)
+    expect(backups?.dirs.size ?? 0).toBe(0)
   })
 })

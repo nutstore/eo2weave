@@ -12,7 +12,6 @@
 
 import type { Skill, SkillResource } from './skill-types'
 import { parseSkillMd, slugify } from './skill-parser'
-import { copyDirectoryRecursive } from './skill-folder-utils'
 import { Unzip, UnzipInflate, UnzipPassThrough } from 'fflate'
 import {
   getResourceType,
@@ -1139,9 +1138,13 @@ export async function writeUserSkillMd(dirName: string, content: string): Promis
  * Import a skill folder from a native FileSystemDirectoryHandle into OPFS
  * `.skills/user/<dirName>/`.
  *
- * Copies the entire folder recursively (including SKILL.md and any resource
- * files). If a skill with the same directory name already exists, it is
- * replaced (old directory removed first to avoid stale file accumulation).
+ * Folder imports go through the SAME pipeline as ZIP imports
+ * (`importUserSkillZip`): per-directory cross-tab serialization (Web Lock
+ * on `dir:<dirName>` plus the global lock), durable staged backups with
+ * crash recovery, and rollback on failure. A folder import overlapping a
+ * ZIP import of the same skill (even from another tab) therefore cannot
+ * interleave remove/backup/write steps — one import would otherwise erase
+ * or overwrite the other's result.
  *
  * @param srcDirHandle  Source folder handle (from drag-drop or folder picker)
  * @returns the number of files copied.
@@ -1150,20 +1153,53 @@ export async function importUserSkillFolder(
   srcDirHandle: FileSystemDirectoryHandle,
 ): Promise<number> {
   const dirName = srcDirHandle.name
-  const opfsRoot = await navigator.storage.getDirectory()
-  const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
-  const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
 
-  // Remove existing skill directory to avoid stale files
-  try {
-    await userDir.removeEntry(dirName, { recursive: true })
-  } catch {
-    // Directory doesn't exist yet — fine
+  // Read the source tree into memory BEFORE taking the import locks: the
+  // copy itself is the only phase that must be serialized. A slow source
+  // (network drive) would otherwise hold the lock and stall concurrent
+  // imports of unrelated skills.
+  const files: Record<string, Uint8Array> = {}
+  const readRecursive = async (
+    dir: FileSystemDirectoryHandle,
+    prefix: string,
+  ): Promise<number> => {
+    let count = 0
+    for await (const [name, entry] of dir.entries()) {
+      const path = prefix ? `${prefix}/${name}` : name
+      if (entry.kind === 'directory') {
+        count += await readRecursive(await dir.getDirectoryHandle(name), path)
+      } else {
+        const file = await (entry as FileSystemFileHandle).getFile()
+        files[path] = new Uint8Array(await file.arrayBuffer())
+        count++
+      }
+    }
+    return count
   }
+  const count = await readRecursive(srcDirHandle, '')
 
-  // Create fresh skill directory and copy files recursively
-  const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
-  return copyDirectoryRecursive(srcDirHandle, skillDir)
+  // Reuse the ZIP write pipeline (stage/remove/backup/rollback + locks) by
+  // presenting the folder as a single-skill in-memory "archive". The folder
+  // name must pass the same safety validation the preview path enforces.
+  if (!/^[a-zA-Z][a-zA-Z0-9-]*$/.test(dirName)) {
+    throw new Error(
+      `Folder name "${dirName}" is not a valid skill directory name (letters, digits, hyphens).`,
+    )
+  }
+  const raw: Record<string, Uint8Array> = {}
+  for (const [path, data] of Object.entries(files)) {
+    raw[`${dirName}/${path}`] = data
+  }
+  return importUserSkillZip({
+    isBundle: false,
+    skill: {
+      dirName,
+      entries: [],
+      fileCount: count,
+      _commonRoot: `${dirName}/`,
+    },
+    _raw: raw,
+  })
 }
 
 /**
@@ -1649,19 +1685,51 @@ async function importUserSkillZipInner(
       await writeFreshTargets(freshTargets)
     } catch (recordErr) {
       // Cannot record → a crash mid-write could leave an unrecoverable
-      // partial fresh skill. Abort BEFORE touching the target — the run
-      // dir holds no backups yet, so it is safe to discard.
+      // partial fresh skill. Abort BEFORE touching the target — but stage-1
+      // may already have REMOVED overwritten targets, so their staged
+      // backups must be restored first (the fresh-target bookkeeping failure
+      // is part of the same rollback path as any other pre-write failure).
       console.warn(
         `[UserSkillsScanner] Failed to record fresh-import targets for run ${runId}:`,
         recordErr,
       )
-      try {
-        await backupsRoot.removeEntry(runId, { recursive: true })
-      } catch (cleanupErr) {
-        console.warn(
-          `[UserSkillsScanner] Failed to clean up import backup staging ${runId}:`,
-          cleanupErr,
-        )
+      const restoreFailures: string[] = []
+      for (const dirName of backedUp) {
+        try {
+          const stagedDir = await runDir.getDirectoryHandle(dirName)
+          const files = await readStagedBackup(stagedDir)
+          if (Object.keys(files).length > 0) {
+            await restoreUserSkillDir(userDir, dirName, files, runId)
+          }
+        } catch (restoreErr) {
+          restoreFailures.push(dirName)
+          console.warn(
+            `[UserSkillsScanner] Failed to restore ${dirName} after fresh-target record failure:`,
+            restoreErr,
+          )
+        }
+      }
+      if (restoreFailures.length === 0) {
+        try {
+          await backupsRoot.removeEntry(runId, { recursive: true })
+        } catch (cleanupErr) {
+          console.warn(
+            `[UserSkillsScanner] Failed to clean up import backup staging ${runId}:`,
+            cleanupErr,
+          )
+        }
+      } else {
+        // Some overwritten targets could not be restored: their staged
+        // backups are the ONLY remaining copy — keep the run directory so
+        // the next scan's recovery retries the restores.
+        try {
+          await writeImportRunState(runDir, { status: 'failed-rollback' })
+        } catch (stateErr) {
+          console.warn(
+            `[UserSkillsScanner] Failed to persist rollback-failure state for run ${runId}:`,
+            stateErr,
+          )
+        }
       }
       throw new Error(
         `Failed to record fresh-import targets for recovery: ${

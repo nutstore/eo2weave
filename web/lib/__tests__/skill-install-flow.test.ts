@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { settingsState } = vi.hoisted(() => {
   const settingsState = {
-    hasApiKey: false,
+    hasApiKey: false as boolean,
+    providerType: 'llm-gateway' as string,
   }
   return { settingsState }
 })
@@ -23,6 +24,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   getLLMGatewayBaseURL: () => 'https://gateway.example',
   getLLMGatewayClientId: () => 'client-1',
   LLM_GATEWAY_API_KEY_ID: '__llm_gateway_token__',
+  LLM_GATEWAY_PROVIDER_TYPE: 'llm-gateway',
   fetchGatewayRateLimits: (...args: unknown[]) => fetchGatewayRateLimitsMock(...(args as [])),
 }))
 
@@ -81,20 +83,37 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
 
   it('skips the gateway branch when no valid token (expired / never logged in)', async () => {
     getValidAccessTokenMock.mockResolvedValue(null)
-    // Current provider has a key → ready via branch 2.
+    // Current provider is NOT the gateway → its saved key is an independent
+    // credential → ready via branch 2.
+    settingsState.providerType = 'openai'
     settingsState.hasApiKey = true
 
     await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
     expect(fetchGatewayRateLimitsMock).not.toHaveBeenCalled()
+    settingsState.providerType = 'llm-gateway'
   })
 
-  it('ready when settings.store.hasApiKey is true (current provider key)', async () => {
+  it('ready when settings.store.hasApiKey is true (current NON-gateway provider key)', async () => {
     getValidAccessTokenMock.mockResolvedValue(null)
+    settingsState.providerType = 'openai'
     settingsState.hasApiKey = true
     await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
     // The gateway branch ran first (token null) but did NOT throw; the
     // settings branch is what made it ready.
     expect(fetchGatewayRateLimitsMock).not.toHaveBeenCalled()
+    settingsState.providerType = 'llm-gateway'
+  })
+
+  it('an expired gateway credential does NOT count via settings.hasApiKey (no login skip)', async () => {
+    // Gateway selected, token expired/purged, hasApiKey still true: the key
+    // IS the unusable gateway token — readiness must NOT report ready (the
+    // visitor would skip login and fail on the first send).
+    getValidAccessTokenMock.mockResolvedValue(null)
+    settingsState.providerType = 'llm-gateway'
+    settingsState.hasApiKey = true
+    getAllApiKeyProvidersMock.mockResolvedValue(['__llm_gateway_token__'])
+
+    await expect(checkAiReadiness()).resolves.toEqual({ ready: false, creditExhausted: false })
   })
 
   it('ready when ANOTHER provider has a key in the api-key store', async () => {
@@ -119,10 +138,12 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
 
   it('gateway token-lookup failure falls through to settings.hasApiKey', async () => {
     getValidAccessTokenMock.mockRejectedValue(new Error('token storage unavailable'))
+    settingsState.providerType = 'openai'
     settingsState.hasApiKey = true
 
     await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
     settingsState.hasApiKey = false
+    settingsState.providerType = 'llm-gateway'
   })
 
   it('gateway token-lookup failure with nothing else configured stays not-ready', async () => {
@@ -154,16 +175,18 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     })
   })
 
-  it('continues to another provider when the gateway token probe stalls', async () => {
+  it('a STALLED gateway token probe propagates its retryable timeout (no login prompt)', async () => {
     vi.useFakeTimers()
     try {
       // A probe that NEVER settles: without the deadline readiness would
-      // hang forever, leaving the visitor stuck with Start blocked.
+      // hang forever. A stalled probe means the outcome is UNKNOWN — the
+      // timeout must surface so the page offers a retry instead of the
+      // login step (or a false "ready" from an unproven credential).
       getValidAccessTokenMock.mockReturnValue(new Promise(() => {}))
-      getAllApiKeyProvidersMock.mockResolvedValue(['openai'])
       const pending = checkAiReadiness()
+      const assertion = expect(pending).rejects.toThrow(/timed out.*try again/i)
       await vi.advanceTimersByTimeAsync(10_000)
-      await expect(pending).resolves.toEqual({ ready: true, creditExhausted: false })
+      await assertion
     } finally {
       vi.useRealTimers()
     }

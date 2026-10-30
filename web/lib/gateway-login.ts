@@ -38,6 +38,9 @@ export interface GatewayLoginApplyOptions {
 }
 
 // Serialize credential commits and their possible rollback in this tab.
+// Cross-tab, the rollback below is a content compare-and-swap: it restores
+// the previous key ONLY while the store still holds THIS attempt's token,
+// so a newer credential saved by another tab is never overwritten.
 let applicationTail: Promise<unknown> = Promise.resolve()
 
 export async function applyGatewayLoginTokens(
@@ -104,7 +107,10 @@ async function applyGatewayLoginTokensInner(
     return { ok: true, accessToken, models }
   } catch (e) {
     // An abort during the async key-store write may arrive after it commits.
-    // Restore only if that write still owns the key, then release the queue.
+    // Restore only if the store STILL holds THIS attempt's token (a CAS on
+    // content): another tab's login may have saved a newer credential after
+    // our write — overwriting it with our older key would leave that tab
+    // reporting success while its token pair and saved credential disagree.
     if (!committed) {
       const current = await loadApiKey(keyId)
       if (current === accessToken) {

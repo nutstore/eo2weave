@@ -89,4 +89,31 @@ describe('applyGatewayLoginTokens cancellation', () => {
     expect(settings.switchProviderAndModel).not.toHaveBeenCalled()
     expect(commit).not.toHaveBeenCalled()
   })
+
+  it('does NOT roll back when another tab already saved a newer credential', async () => {
+    // Cross-tab race: THIS attempt's save commits, then it is cancelled.
+    // Before its rollback check runs, ANOTHER tab's login saves a different
+    // (newer) key. The rollback must leave that newer credential alone —
+    // restoring our older key would leave the other tab "successful" while
+    // its token pair and saved credential disagree.
+    let release!: () => void
+    keyStore.save.mockImplementationOnce(async () => {
+      // The hung save writes NOTHING on release — the newer credential is
+      // already the store's content, so the rollback CAS must skip.
+      await new Promise<void>((resolve) => { release = resolve })
+    })
+    const controller = new AbortController()
+    const pending = applyGatewayLoginTokens('new-key', { signal: controller.signal })
+    await vi.waitFor(() => expect(keyStore.save).toHaveBeenCalledTimes(1))
+    controller.abort()
+    // Another tab commits a newer credential now (the store's content), and
+    // the cancelled attempt's save resolves WITHOUT writing.
+    savedKey = 'other-tab-newer-key'
+    release()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    // The newer credential survived; no restore/delete ran after it.
+    expect(savedKey).toBe('other-tab-newer-key')
+    expect(keyStore.save).toHaveBeenCalledTimes(1)
+    expect(keyStore.delete).not.toHaveBeenCalled()
+  })
 })
