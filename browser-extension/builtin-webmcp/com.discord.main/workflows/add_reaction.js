@@ -680,10 +680,17 @@ export default {
               )
             }, waitBudgetMs)
             var granted = locksObj.request('eo2-discord-reaction:' + key, function () {
-              // Granted after a long wait: the caller's window is nearly
-              // spent, so skip dispatch (same cutoff and rationale as the
-              // per-tab path below). Also skip when the wait-budget timer
-              // already expired this request.
+              // Granted: the wait the timer bounds is over, so retire the
+              // timer BEFORE any expiry check or dispatch (Sourcery
+              // round 8). Racing the timer against the whole lock request
+              // let it fire while run() was still executing past the wait
+              // budget, so the caller received LOCK_TIMEOUT while the
+              // mutation went on to apply. With the timer cleared at
+              // grant, it races only the acquisition phase; from here the
+              // mutation is governed solely by the existing fetch abort
+              // deadline. An expiry that landed while still waiting is
+              // honored below.
+              clearTimeout(lockWaitTimer)
               if (expired || Date.now() - queuedAt > 15000)
                 throw makeLockTimeoutError(
                   'Reaction request queued behind another tab working on the same reaction and gave up after the 15s cross-tab lock wait (the tab is still available).',
