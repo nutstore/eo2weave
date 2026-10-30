@@ -671,15 +671,42 @@ export default {
             var waited = new Promise(function (resolve, reject) {
               rejectWait = reject
             })
+            // Abort signal for the queued acquisition: when the wait timer
+            // gives up, the pending navigator.locks.request must be CANCELED
+            // too, not left queued behind the other tab's lock holding its
+            // callback and closure until release (Sourcery round 9 —
+            // repeated timeouts behind a long-held lock accumulated pending
+            // requests). The signal only affects a NOT-yet-granted request;
+            // once granted, the callback governs itself (the timer is
+            // cleared at grant, so abort never fires mid-run).
+            var acquireController = null
+            try {
+              if (typeof AbortController === 'function') {
+                acquireController = new AbortController()
+              }
+            } catch (e) {}
             var lockWaitTimer = setTimeout(function () {
               expired = true
+              // Reject the caller race FIRST so the caller sees LOCK_TIMEOUT
+              // (not the browser's AbortError), then cancel the queued
+              // acquisition so it stops holding resources in the lock queue.
               rejectWait(
                 makeLockTimeoutError(
                   'Reaction request queued behind another tab working on the same reaction and gave up after the cross-tab lock wait (the tab is still available).',
                 ),
               )
+              if (acquireController !== null) {
+                try {
+                  acquireController.abort()
+                } catch (e) {}
+              }
             }, waitBudgetMs)
-            var granted = locksObj.request('eo2-discord-reaction:' + key, function () {
+            var requestOptions =
+              acquireController !== null ? { signal: acquireController.signal } : undefined
+            var granted = locksObj.request(
+              'eo2-discord-reaction:' + key,
+              requestOptions,
+              function () {
               // Granted: the wait the timer bounds is over, so retire the
               // timer BEFORE any expiry check or dispatch (Sourcery
               // round 8). Racing the timer against the whole lock request
