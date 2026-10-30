@@ -220,10 +220,19 @@ async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessR
           const { DEFAULT_PINNED_MODELS } = await import('@/agent/providers/default-models')
           const defaultPinned = (DEFAULT_PINNED_MODELS[target] ?? [])[0] ?? ''
           // The resolution awaits above can themselves race a visitor
-          // selection change — revalidate immediately before switching.
+          // selection change — revalidate immediately before switching, and
+          // when the selection changed, follow the same re-evaluation path
+          // as the key-lookup race above (the newly selected provider may
+          // itself be unconfigured; plain `ready` would skip its checks).
           const providerBeforeSwitch = useSettingsStore.getState().providerType
           if (providerBeforeSwitch !== currentProviderType) {
-            return { ready: true, creditExhausted: false }
+            if (useSettingsStore.getState().hasApiKey) {
+              return { ready: true, creditExhausted: false }
+            }
+            if (allowRecheck) {
+              return checkAiReadinessOnce(/* allowRecheck: */ false)
+            }
+            return { ready: false, creditExhausted: false }
           }
           const resolvedModel =
             (lastUsed && (catalog.length === 0 || catalog.includes(lastUsed))

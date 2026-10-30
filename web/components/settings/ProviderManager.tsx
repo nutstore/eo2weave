@@ -1421,6 +1421,18 @@ export function LLMGatewayCard({
         e instanceof Error && e.message
           ? e.message
           : t('settings.gateway.logoutFailed')
+      // A surviving refresh-token backup can resurrect the session — the
+      // card must not read as definitively logged out: re-derive the badge
+      // from the actual stored key so the logout action (and its retry)
+      // stays available.
+      try {
+        const { loadApiKey } = await import('@/security/api-key-store')
+        const key = await loadApiKey(keyId)
+        setIsLoggedIn(!!key)
+      } catch {
+        // The key read failed too — keep isLoggedIn false; the banner below
+        // still surfaces the purge failure.
+      }
       setAuthState({
         status: 'error',
         error: message,
