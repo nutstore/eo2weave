@@ -49,11 +49,31 @@ import {
   getGatewayCredentialStatus,
   getValidAccessToken,
   logoutGateway,
+  performDeviceCodeFlow,
 } from '@/agent/providers/llm-gateway-auth'
 
 const BASE_URL = 'https://ai.jianguoyun.com'
 const CLIENT_ID = 'test-client-id'
 const TOKENS_KEY = 'llm-gateway-tokens'
+
+it('does not save tokens when a device login is cancelled during session creation', async () => {
+  localStorage.clear()
+  const controller = new AbortController()
+  let release!: (response: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { release = resolve })))
+  try {
+    const pending = performDeviceCodeFlow(BASE_URL, CLIENT_ID, undefined, controller.signal)
+    controller.abort()
+    release(new Response(JSON.stringify({
+      device_code: 'device', user_code: '123', verification_uri: 'https://example.com',
+      interval: 1, expires_in: 60,
+    }), { status: 200 }))
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+  } finally {
+    vi.unstubAllGlobals()
+  }
+}, 500)
 
 function seedStoredTokens(overrides: Partial<{
   refresh_expires_at: number

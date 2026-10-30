@@ -111,29 +111,23 @@ function SkillInstallView() {
     reset: resetGatewayLogin,
   } = useGatewayLogin()
 
-  // The hook's device-session request has NO timeout of its own — but the
-  // 15s bound applies ONLY to that first request (session creation), never
-  // to the visitor's authorization + polling phase: a visitor who simply
-  // takes >15s to approve must not get a bogus "gateway timeout". The
-  // bound is enforced by racing `createDeviceSession` against a deadline —
-  // implemented here by racing the whole flow but INVALIDATING this
-  // attempt on expiry: the abandoned flow's late completion (state
-  // updates, token saves already happen inside the hook) can no longer
-  // drive THIS page's UI, because the success effect and the callback
-  // below both check the attempt generation before acting.
+  // The deadline applies only while creating the device session. Once a
+  // user code is shown, approval can take as long as the server allows.
   const loginGenerationRef = useRef(0)
+  const loginAttemptActiveRef = useRef(false)
   const loginTimeoutRef = useRef<number | null>(null)
   const gatewayLoginBounded = useCallback(async () => {
     if (loginTimeoutRef.current !== null) clearTimeout(loginTimeoutRef.current)
     // Invalidate any superseded attempt: its late success/failure must not
     // touch the UI or continue the flow — only the NEWEST attempt acts.
     const generation = ++loginGenerationRef.current
+    loginAttemptActiveRef.current = true
     loginTimeoutRef.current = window.setTimeout(() => {
       loginTimeoutRef.current = null
       if (generation !== loginGenerationRef.current) return
       console.error('[SkillInstall] gateway login did not settle in time')
-      // Reset the hook so a stalled `requesting` state cannot pin the UI,
-      // and mark the attempt dead: its late completion is ignored below.
+      loginGenerationRef.current++
+      loginAttemptActiveRef.current = false
       resetGatewayLogin()
       setErrorMessage(t('skillInstall.loginTimeout'))
       setPhase('login')
@@ -143,7 +137,7 @@ function SkillInstallView() {
       if (generation !== loginGenerationRef.current) return false
       return success
     } finally {
-      if (loginTimeoutRef.current !== null) {
+      if (generation === loginGenerationRef.current && loginTimeoutRef.current !== null) {
         clearTimeout(loginTimeoutRef.current)
         loginTimeoutRef.current = null
       }
@@ -168,6 +162,13 @@ function SkillInstallView() {
   const currentGeneration = () => loadGenerationRef.current
 
   const loadEntry = useCallback(async () => {
+    loginGenerationRef.current++
+    loginAttemptActiveRef.current = false
+    if (loginTimeoutRef.current !== null) {
+      clearTimeout(loginTimeoutRef.current)
+      loginTimeoutRef.current = null
+    }
+    resetGatewayLogin()
     const generation = ++loadGenerationRef.current
     const isStale = () => generation !== loadGenerationRef.current
     setPhase('loading')
@@ -229,7 +230,7 @@ function SkillInstallView() {
       setErrorMessage(e instanceof Error ? e.message : String(e))
       setPhase('error')
     }
-  }, [skillParam, promptParam])
+  }, [skillParam, promptParam, resetGatewayLogin])
 
   useEffect(() => {
     void loadEntry()
@@ -245,6 +246,7 @@ function SkillInstallView() {
       if (loadGenerationRef.current === generationAtMount) {
         loadGenerationRef.current++
       }
+      loginAttemptActiveRef.current = false
     }
   }, [loadEntry])
 
@@ -575,20 +577,32 @@ function SkillInstallView() {
   }, [continueToConversation, entry])
 
   const handleSkipLogin = useCallback(async () => {
+    loginGenerationRef.current++
+    loginAttemptActiveRef.current = false
+    resetGatewayLogin()
     // "later" escape — skipping still proceeds to the conversation; the
     // existing 401 chain + re-login error card backstop the first send.
     await continueToConversation(entry?.name ?? entry?.dirName ?? '')
-  }, [continueToConversation, entry])
+  }, [continueToConversation, entry, resetGatewayLogin])
 
   // After a successful inline login, move on automatically. The generation
   // gate ensures a login attempt that was timed out / superseded cannot
   // continue the flow when its underlying `gatewayLogin()` eventually
   // settles AFTER the visitor retried or skipped.
   const authStatus = authState?.status ?? 'idle'
+  useEffect(() => {
+    if (authStatus !== 'waiting' && authStatus !== 'polling' && authStatus !== 'success' && authStatus !== 'error') return
+    if (loginTimeoutRef.current !== null) {
+      clearTimeout(loginTimeoutRef.current)
+      loginTimeoutRef.current = null
+    }
+  }, [authStatus])
   const loginGeneration = loginGenerationRef.current
   useEffect(() => {
     if (phase === 'login' && authStatus === 'success') {
       if (loginGeneration !== loginGenerationRef.current) return
+      if (!loginAttemptActiveRef.current) return
+      loginAttemptActiveRef.current = false
       void handleLoginSuccess()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

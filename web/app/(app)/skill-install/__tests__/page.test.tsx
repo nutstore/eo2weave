@@ -83,8 +83,10 @@ const inputDraftPeekMock = vi.fn<() => InputDraft | null>(() => null)
 
 // Mutable gateway-login auth state so tests can drive the login-success
 // effect (the page keys its post-login behavior on authState.status).
-const { gatewayAuthHolder } = vi.hoisted(() => ({
+const { gatewayAuthHolder, gatewayLoginMock, gatewayResetMock } = vi.hoisted(() => ({
   gatewayAuthHolder: { state: { status: 'idle' } as { status: string } },
+  gatewayLoginMock: vi.fn<() => Promise<boolean>>(),
+  gatewayResetMock: vi.fn(),
 }))
 
 vi.mock('@/hooks/useGatewayLogin', () => ({
@@ -93,8 +95,8 @@ vi.mock('@/hooks/useGatewayLogin', () => ({
       (typeof import('@/hooks/useGatewayLogin'))['useGatewayLogin']
     >['authState'],
     isRunning: false,
-    login: vi.fn(async () => true),
-    reset: vi.fn(),
+    login: gatewayLoginMock,
+    reset: gatewayResetMock,
   }),
 }))
 
@@ -162,6 +164,8 @@ const ENTRY = {
 describe('SkillInstallPage (issue #126)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    gatewayLoginMock.mockResolvedValue(true)
+    gatewayAuthHolder.state = { status: 'idle' }
     // clearAllMocks keeps implementations — reset the registration cache
     // explicitly so tests start with an EMPTY manager (leftover
     // mockReturnValue from an earlier test would make the already-installed
@@ -515,6 +519,7 @@ describe('SkillInstallPage (issue #126)', () => {
     expect(checkAiReadinessMock).toHaveBeenCalledTimes(1)
     // Simulate the login-success effect: flip the mocked auth state (the
     // hook mock reads the holder on every render) and re-render.
+    fireEvent.click(screen.getByText('settings.gateway.login'))
     gatewayAuthHolder.state = { status: 'success' }
     result.rerender(<SkillInstallPage />)
     await waitFor(() => expect(checkAiReadinessMock).toHaveBeenCalledTimes(2))
@@ -529,7 +534,7 @@ describe('SkillInstallPage (issue #126)', () => {
     vi.useFakeTimers()
     try {
       checkAiReadinessMock.mockResolvedValue({ ready: false, creditExhausted: false })
-      render(<SkillInstallPage />)
+      const view = render(<SkillInstallPage />)
       await vi.waitFor(() =>
         expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument(),
       )
@@ -542,13 +547,41 @@ describe('SkillInstallPage (issue #126)', () => {
       // Start the (never-settling) login, then advance past the
       // login-request timeout: the UI must leave `requesting` and surface
       // the retryable timeout error instead of pinning the spinner.
+      gatewayLoginMock.mockReturnValue(new Promise(() => {}))
       fireEvent.click(screen.getByText('settings.gateway.login'))
-      vi.advanceTimersByTime(16_000)
+      await vi.advanceTimersByTimeAsync(14_999)
+      expect(screen.queryByText('skillInstall.loginTimeout')).not.toBeInTheDocument()
+      await vi.advanceTimersByTimeAsync(1)
       await vi.waitFor(() =>
         expect(screen.getByText('skillInstall.loginTimeout')).toBeInTheDocument(),
       )
       // The skip escape remains usable afterwards.
       expect(screen.getAllByText('skillInstall.aiLater').length).toBeGreaterThan(0)
+      gatewayAuthHolder.state = { status: 'success' }
+      view.rerender(<SkillInstallPage />)
+      expect(checkAiReadinessMock).toHaveBeenCalledTimes(1)
+      expect(routerReplaceMock).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not time out while the visitor is approving a device code', async () => {
+    vi.useFakeTimers()
+    try {
+      checkAiReadinessMock.mockResolvedValue({ ready: false, creditExhausted: false })
+      gatewayLoginMock.mockReturnValue(new Promise(() => {}))
+      const view = render(<SkillInstallPage />)
+      await vi.waitFor(() => expect(screen.getByText(ENTRY.dirName)).toBeInTheDocument())
+      fireEvent.click(screen.getByText('skillInstall.installButton'))
+      await vi.waitFor(() => expect(refreshUserSkillsMock).toHaveBeenCalled())
+      ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
+      await vi.waitFor(() => expect(screen.getByText('skillInstall.aiNotReady')).toBeInTheDocument())
+      fireEvent.click(screen.getByText('settings.gateway.login'))
+      gatewayAuthHolder.state = { status: 'waiting' }
+      view.rerender(<SkillInstallPage />)
+      await vi.advanceTimersByTimeAsync(16_000)
+      expect(screen.queryByText('skillInstall.loginTimeout')).not.toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }

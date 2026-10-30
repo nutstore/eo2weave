@@ -34,6 +34,8 @@ const USER_SKILLS_DIR = 'user'
  * finishes; a crashed import leaves the backup behind as recovery data.
  */
 const IMPORT_BACKUPS_DIR = '.import-backups'
+const IMPORT_OWNER_FILE = '.eo2weave-import-owner'
+const IMPORT_LOCK_GLOBAL = 'eo2weave-skill-import-recovery'
 
 /**
  * Minimal structural typing for the Web Locks API (not every TS lib target
@@ -41,9 +43,7 @@ const IMPORT_BACKUPS_DIR = '.import-backups'
  * tabs and to fence import-backup recovery away from runs that are still
  * actively importing.
  */
-interface WebLockLike {
-  release(): void
-}
+interface WebLockLike { name?: string }
 interface WebLocksLike {
   request(
     name: string,
@@ -56,8 +56,8 @@ interface WebLocksLike {
   ): Promise<unknown>
 }
 
-/** Web Lock name prefixes: `dir:` serializes same-target imports across
- * tabs; `run:<runId>` fences recovery away from an in-flight import. */
+/** All imports and recovery hold the global lock. Directory and run locks
+ * additionally preserve the existing per-target and liveness contracts. */
 const IMPORT_LOCK_DIR_PREFIX = 'eo2weave-skill-import-dir:'
 const IMPORT_LOCK_RUN_PREFIX = 'eo2weave-skill-import-run:'
 
@@ -116,11 +116,8 @@ async function withImportSerialization<T>(
     await Promise.all(prevs)
     const locks = getWebLocks()
     if (!locks) {
-      try {
-        return await fn()
-      } finally {
-        release()
-      }
+      release()
+      throw new Error('Web Locks are required for safe cross-tab skill imports.')
     }
     let result!: T
     try {
@@ -137,9 +134,11 @@ async function withImportSerialization<T>(
           : locks.request(`${IMPORT_LOCK_DIR_PREFIX}${dirNames[i]}`, () =>
               holdDirLocks(i + 1, body),
             )
-      await holdDirLocks(0, async () => {
-        await locks.request(`${IMPORT_LOCK_RUN_PREFIX}${runId}`, async () => {
-          result = await fn()
+      await locks.request(IMPORT_LOCK_GLOBAL, async () => {
+        await holdDirLocks(0, async () => {
+          await locks.request(`${IMPORT_LOCK_RUN_PREFIX}${runId}`, async () => {
+            result = await fn()
+          })
         })
       })
     } finally {
@@ -178,24 +177,22 @@ async function isImportRunActive(runId: string): Promise<boolean> {
           if (lock) {
             // Lock acquired → the import is NOT running elsewhere.
             done(false)
-            setTimeout(() => lock.release(), 0)
+            // Web Locks release automatically when this callback returns.
           } else {
             // Held by someone else → an import is in flight.
             done(true)
           }
         })
-        .catch(() => done(false))
+        .catch(() => done(true))
     })
   } catch {
-    // Lock probing is best-effort; on failure assume not active (the run's
-    // own state markers still guard the restore path).
-    return false
+    return true
   }
 }
 
 /**
  * Conservative liveness fallback for environments WITHOUT Web Locks: a run
- * that has not durably recorded a terminal state (`import-complete`) or
+ * that has not durably recorded a terminal state or
  * been fully consumed is treated as still in flight in another tab. Only
  * proven-finished runs may be recovered; unproven ones stay untouched.
  */
@@ -206,15 +203,14 @@ async function isImportRunUnfinished(runId: string): Promise<boolean> {
     const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: false })
     backupsRoot = await skillsDir.getDirectoryHandle(IMPORT_BACKUPS_DIR, { create: false })
   } catch {
-    return false
+    return true
   }
   try {
     const runDir = await backupsRoot.getDirectoryHandle(runId)
     const state = await readImportRunState(runDir)
-    // A durably completed import needs no protection (its cleanup simply
-    // crashed) — recovery may consume it. Anything else could belong to a
-    // LIVE import in another tab: treat as active and skip.
-    return state?.status !== 'import-complete'
+    // Successful imports and failed rollbacks have both stopped writing.
+    // Runs without a terminal state may still be live in another tab.
+    return state?.status !== 'import-complete' && state?.status !== 'failed-rollback'
   } catch {
     // Unreadable run state: cannot prove the import finished — treat as
     // active rather than risking consumption of a live rollback copy.
@@ -424,13 +420,12 @@ async function getUserSkillsDir(): Promise<FileSystemDirectoryHandle | null> {
  *
  * Called before scanning installed skills, so recovery lands in the
  * manager cache on the same refresh. Best-effort: a recovery failure must
- * not break the scan. (A concurrent import in ANOTHER tab is not fenced —
- * same pre-existing limitation as the import itself.)
+ * not break the scan. The shared global Web Lock fences concurrent imports.
  */
 /**
  * Import-backup run bookkeeping (see `importUserSkillZip`):
- *  - `<dirName>.done` marker file: that skill's backup was FULLY staged and
- *    its target directory removed — only marked entries are ever restored.
+ *  - `<dirName>.done` marker file: that skill's backup was fully staged
+ *    before target removal — only marked entries are considered for restore.
  *  - `state.json` with status `import-complete`: the import finished
  *    successfully but its cleanup crashed — recovery must DROP the backups
  *    (restoring them would revert a good import).
@@ -497,7 +492,7 @@ async function writeImportRunState(
   await writable.close()
 }
 
-/** Marker written after a skill's backup is fully staged AND its target removed. */
+/** Marker written once a skill's backup is fully staged, before target removal. */
 const stagedMarkerName = (dirName: string): string => `${dirName}.done`
 
 async function markStaged(runDir: FileSystemDirectoryHandle, dirName: string): Promise<void> {
@@ -540,6 +535,44 @@ async function writeFreshTargetRecord(
 }
 
 async function recoverAbandonedImportBackups(): Promise<void> {
+  const locks = getWebLocks()
+  if (locks) {
+    await locks.request(IMPORT_LOCK_GLOBAL, recoverAbandonedImportBackupsInner)
+  } else {
+    // Imports are refused without Web Locks. Only durably finished runs can
+    // be recovered in that environment; the liveness check enforces this.
+    await recoverAbandonedImportBackupsInner()
+  }
+}
+
+async function readImportOwner(
+  userDir: FileSystemDirectoryHandle,
+  dirName: string,
+): Promise<string | null> {
+  let target: FileSystemDirectoryHandle
+  try {
+    target = await userDir.getDirectoryHandle(dirName)
+  } catch (e) {
+    if (isNotFoundError(e)) return null
+    throw e
+  }
+  try {
+    const handle = await target.getFileHandle(IMPORT_OWNER_FILE)
+    return await (await handle.getFile()).text()
+  } catch (e) {
+    if (isNotFoundError(e)) return ''
+    throw e
+  }
+}
+
+async function writeImportOwner(target: FileSystemDirectoryHandle, runId: string): Promise<void> {
+  const handle = await target.getFileHandle(IMPORT_OWNER_FILE, { create: true })
+  const writable = await handle.createWritable()
+  await writable.write(runId)
+  await writable.close()
+}
+
+async function recoverAbandonedImportBackupsInner(): Promise<void> {
   let backupsRoot: FileSystemDirectoryHandle
   let userDir: FileSystemDirectoryHandle
   try {
@@ -607,6 +640,12 @@ async function recoverAbandonedImportBackups(): Promise<void> {
       const removedFresh = new Set<string>()
       for (const dirName of incompleteFresh) {
         try {
+          // An old journal cannot remove a directory installed by a later
+          // run. Legacy unmarked targets are intentionally left intact.
+          if (await readImportOwner(userDir, dirName) !== runId) {
+            removedFresh.add(dirName)
+            continue
+          }
           await userDir.removeEntry(dirName, { recursive: true })
           removedFresh.add(dirName)
           console.log(
@@ -651,10 +690,9 @@ async function recoverAbandonedImportBackups(): Promise<void> {
         }
       }
       // Interrupted staging / import, or a failed rollback: restore only the
-      // MARKED staged entries (a `<dirName>.done` marker proves that backup
-      // was fully staged AND its target removed). Unmarked staged dirs belong
-      // to targets that were never removed — restoring their possibly PARTIAL
-      // contents would overwrite an intact skill, so they are dropped.
+      // MARKED staged entries have a complete backup. The ownership check
+      // below distinguishes a missing or run-owned target from newer
+      // content; unmarked staging may be partial and is never restored.
       const stagedNames: string[] = []
       for await (const [name, entry] of runDir.entries()) {
         if (entry.kind === 'directory') stagedNames.push(name)
@@ -663,10 +701,17 @@ async function recoverAbandonedImportBackups(): Promise<void> {
       for (const dirName of stagedNames) {
         if (!(await isStagedMarked(runDir, dirName))) continue
         try {
+          const owner = await readImportOwner(userDir, dirName)
+          if (owner !== null && owner !== runId) {
+            // Existing unowned content may be a newer install. Preserve
+            // both it and the backup until ownership can be established.
+            restoredAll = false
+            continue
+          }
           const stagedDir = await runDir.getDirectoryHandle(dirName)
           const files = await readStagedBackup(stagedDir)
           if (Object.keys(files).length === 0) continue
-          await restoreUserSkillDir(userDir, dirName, files)
+          await restoreUserSkillDir(userDir, dirName, files, runId)
           console.log(
             `[UserSkillsScanner] Restored skill "${dirName}" from abandoned import backup (run ${runId}).`,
           )
@@ -874,6 +919,7 @@ async function scanUserSkillResources(
 
       // Skip SKILL.md — it's the skill instruction, not a resource
       if (name.toUpperCase() === 'SKILL.MD') continue
+      if (name === IMPORT_OWNER_FILE) continue
 
       const resourcePath = relativeDir ? `${relativeDir}/${name}` : name
 
@@ -1309,6 +1355,9 @@ async function writeZipSkillToOpfs(
     // Split into path segments and navigate/create intermediate dirs
     const parts = relPath.split('/').filter(Boolean)
     if (parts.length === 0) continue
+    if (parts.length === 1 && parts[0] === IMPORT_OWNER_FILE) {
+      throw new Error(`ZIP archive contains reserved import file ${IMPORT_OWNER_FILE}.`)
+    }
 
     let currentDir = skillDir
     for (let i = 0; i < parts.length - 1; i++) {
@@ -1490,7 +1539,6 @@ async function importUserSkillZipInner(
   // us restore the previous version if a later skill in the bundle fails,
   // even if this tab dies before the rollback runs.
   const backedUp = new Set<string>()
-  const preRemoved = new Set<string>()
   try {
     for (const s of skills) {
       // Throws on a real read failure — absence (NotFoundError) returns
@@ -1506,12 +1554,11 @@ async function importUserSkillZipInner(
         // OLD files in place and let the import write into the surviving
         // directory, so files absent from the new archive stay installed as
         // stale content. Abort instead (the backup is staged, nothing lost).
-        await userDir.removeEntry(s.dirName, { recursive: true })
-        preRemoved.add(s.dirName)
-        // Only NOW is this skill's backup complete and its target gone:
-        // the marker is what lets recovery restore this entry (and ONLY
-        // this entry) if the tab dies before the import finishes.
+        // Record a complete backup BEFORE removing the target. A crash
+        // between removal and a later marker write would otherwise leave
+        // the only copy unmarked and unrecoverable.
         await markStaged(runDir, s.dirName)
+        await userDir.removeEntry(s.dirName, { recursive: true })
       }
     }
   } catch (e) {
@@ -1527,7 +1574,7 @@ async function importUserSkillZipInner(
         const stagedDir = await runDir.getDirectoryHandle(dirName)
         const files = await readStagedBackup(stagedDir)
         if (Object.keys(files).length > 0) {
-          await restoreUserSkillDir(userDir, dirName, files)
+          await restoreUserSkillDir(userDir, dirName, files, runId)
         }
       } catch (restoreErr) {
         restoreFailures.push(dirName)
@@ -1614,10 +1661,10 @@ async function importUserSkillZipInner(
     for (const s of skills) {
       // Create the target only when we actually write the skill — an
       // untouched skill's directory must not be (re)created on failure.
-      const target = preRemoved.has(s.dirName)
-        ? await userDir.getDirectoryHandle(s.dirName, { create: true })
-        : undefined
+      const target = await userDir.getDirectoryHandle(s.dirName, { create: true })
+      await writeImportOwner(target, runId)
       total += await writeZipSkillToOpfs(_raw, s.dirName, s._commonRoot, target)
+      await target.removeEntry(IMPORT_OWNER_FILE)
       written.add(s.dirName)
       // Fresh skill fully written — drop it from the durable recovery
       // record so a LATER crash cannot delete the completed skill.
@@ -1664,7 +1711,7 @@ async function importUserSkillZipInner(
     const restoreFromStaging = async (dirName: string) => {
       const stagedDir = await runDir.getDirectoryHandle(dirName)
       const files = await readStagedBackup(stagedDir)
-      await restoreUserSkillDir(userDir, dirName, files)
+      await restoreUserSkillDir(userDir, dirName, files, runId)
     }
     const rollbackFailures: string[] = []
     for (const dirName of written) {
@@ -1802,6 +1849,7 @@ async function restoreUserSkillDir(
   userDir: FileSystemDirectoryHandle,
   dirName: string,
   files: Record<string, Uint8Array>,
+  runId: string,
 ): Promise<void> {
   try {
     await userDir.removeEntry(dirName, { recursive: true })
@@ -1814,6 +1862,18 @@ async function restoreUserSkillDir(
     if (!isNotFoundError(e)) throw e
   }
   const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
+  try {
+    await writeImportOwner(skillDir, runId)
+  } catch (e) {
+    // If even the ownership marker cannot be written, remove the empty
+    // target so a later recovery can safely restore the staged copy.
+    try {
+      await userDir.removeEntry(dirName, { recursive: true })
+    } catch {
+      // The staged backup remains for a later retry.
+    }
+    throw e
+  }
   for (const [path, data] of Object.entries(files)) {
     const parts = path.split('/').filter(Boolean)
     if (parts.length === 0) continue
@@ -1826,6 +1886,7 @@ async function restoreUserSkillDir(
     await writable.write(data)
     await writable.close()
   }
+  await skillDir.removeEntry(IMPORT_OWNER_FILE)
 }
 
 /**

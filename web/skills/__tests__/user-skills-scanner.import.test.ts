@@ -455,17 +455,15 @@ describe('abandoned import-backup recovery', () => {
     const brokenStaged = makeDir()
     brokenStaged.files.set('SKILL.md', { data: new TextEncoder().encode('# C') })
     poisoned.dirs.set('skill-c', brokenStaged)
+    poisoned.files.set('skill-c.done', { data: new Uint8Array([0x31]) })
     const backupsRoot = dirOf(userRoot, '.skills/.import-backups', true)!
     // Make skill-c's staged file unreadable via a read-failure root: we
     // re-point storage AFTER staging so only reads fail for skill-c.
     backupsRoot.dirs.set('run-2', poisoned)
 
-    // Recovery observes the same (real) failures the scanner would see in
-    // the browser: reads of skill-c's staged SKILL.md fail, so run-2 stays
-    // behind while healthy runs recover. We can't easily inject read
-    // failures into the shared fake, so we drop run-2's staged file to
-    // simulate an unrecoverable staged entry instead.
-    brokenStaged.files.delete('SKILL.md')
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => makeOpfsRoot(undefined, '.import-backups/run-2/skill-c/SKILL.md'),
+    }
 
     const { scanUserSkills } = await import('@/skills/user-skills-scanner')
     await scanUserSkills()
@@ -474,11 +472,76 @@ describe('abandoned import-backup recovery', () => {
     expect(installed('skill-a')).toBe(true)
     expect(installed('skill-b')).toBe(true)
     expect(backupsRoot.dirs.has('run-1')).toBe(false)
-    // An empty staged dir yields no restorable files — the run is consumed
-    // anyway (nothing restorable was lost), matching the recovery policy.
-    expect(backupsRoot.dirs.has('run-2')).toBe(false)
-    // The poisoned skill-c was NOT restored (nothing to restore from).
+    expect(backupsRoot.dirs.has('run-2')).toBe(true)
+    // The unreadable copy remains the only recovery source.
     expect(installed('skill-c')).toBe(false)
+  })
+
+  it('does not overwrite a newer install with an abandoned backup', async () => {
+    stageAbandonedBackup('old-run', 'skill-a', '# Old')
+    writeInstalled('skill-a', '# Newer')
+    const { scanUserSkills } = await import('@/skills/user-skills-scanner')
+    await scanUserSkills()
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# Newer')
+  })
+
+  it('does not delete a fresh target without proof that the old run owns it', async () => {
+    const run = dirOf(userRoot, '.skills/.import-backups/old-run', true)!
+    run.files.set('fresh-targets.json', { data: new TextEncoder().encode('["skill-a"]') })
+    writeInstalled('skill-a', '# Newer')
+    const { scanUserSkills } = await import('@/skills/user-skills-scanner')
+    await scanUserSkills()
+    expect(contentOf('skill-a', 'SKILL.md')).toBe('# Newer')
+  })
+
+  it('leaves a run untouched when its liveness check fails without Web Locks', async () => {
+    stageAbandonedBackup('old-run', 'skill-a', '# Old')
+    const locks = (navigator as Navigator & { locks?: unknown }).locks
+    Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true })
+    let reads = 0
+    ;(navigator as unknown as { storage: unknown }).storage = {
+      getDirectory: async () => {
+        if (++reads === 2) throw new Error('transient OPFS failure')
+        return makeOpfsRoot()
+      },
+    }
+    try {
+      const { scanUserSkills } = await import('@/skills/user-skills-scanner')
+      await scanUserSkills()
+      expect(installed('skill-a')).toBe(false)
+      expect(dirOf(userRoot, '.skills/.import-backups', false)!.dirs.has('old-run')).toBe(true)
+    } finally {
+      Object.defineProperty(navigator, 'locks', { value: locks, configurable: true })
+    }
+  })
+
+  it('retries a finished failed rollback without Web Locks', async () => {
+    stageAbandonedBackup('failed-run', 'skill-a', '# Old')
+    writeRunState('failed-run', 'failed-rollback')
+    const locks = (navigator as Navigator & { locks?: unknown }).locks
+    Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true })
+    try {
+      const { scanUserSkills } = await import('@/skills/user-skills-scanner')
+      await scanUserSkills()
+      expect(contentOf('skill-a', 'SKILL.md')).toBe('# Old')
+    } finally {
+      Object.defineProperty(navigator, 'locks', { value: locks, configurable: true })
+    }
+  })
+
+  it('refuses an import when cross-tab locking is unavailable', async () => {
+    const locks = (navigator as Navigator & { locks?: unknown }).locks
+    Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true })
+    try {
+      await expect(importUserSkillZip({
+        isBundle: false,
+        skill: previewEntry('skill-a', 'b/skill-a/', 1),
+        _raw: { 'b/skill-a/SKILL.md': new TextEncoder().encode('# New') },
+      })).rejects.toThrow(/Web Locks|cross-tab/i)
+      expect(installed('skill-a')).toBe(false)
+    } finally {
+      Object.defineProperty(navigator, 'locks', { value: locks, configurable: true })
+    }
   })
 })
 
@@ -737,7 +800,7 @@ describe('import staging durability + recovery state (round 3)', () => {
     // The restore failed → the skill is NOT back (an empty partial dir may
     // exist from the failed restore, but no SKILL.md content), and the run
     // (marker + staged copy) must REMAIN for the retry.
-    expect(contentOf('skill-a', 'SKILL.md')).toBe('')
+    expect(installed('skill-a')).toBe(false)
     const backups = dirOf(userRoot, '.skills/.import-backups', false)
     expect(backups?.dirs.has('run-crash')).toBe(true)
     expect(backups!.dirs.get('run-crash')!.files.has('skill-a.done')).toBe(true)
@@ -905,6 +968,9 @@ describe('scanUserSkills overlapping-refresh serialization (round 3)', () => {
     const user = dirOf(userRoot, '.skills/user', true)!
     const partial = makeDir()
     partial.dirs.set('scripts', makeDir())
+    partial.files.set('.eo2weave-import-owner', {
+      data: new TextEncoder().encode('run-fresh'),
+    })
     user.dirs.set('skill-fresh', partial)
     // The fresh-targets record left by the crashed import.
     const backupsRoot = dirOf(userRoot, '.skills/.import-backups', true)!
@@ -940,7 +1006,11 @@ describe('scanUserSkills overlapping-refresh serialization (round 3)', () => {
       data: new TextEncoder().encode(JSON.stringify(['skill-ghost'])),
     })
     const user = dirOf(userRoot, '.skills/user', true)!
-    user.dirs.set('skill-ghost', makeDir())
+    const ghost = makeDir()
+    ghost.files.set('.eo2weave-import-owner', {
+      data: new TextEncoder().encode('run-stale'),
+    })
+    user.dirs.set('skill-ghost', ghost)
 
     const { scanUserSkills } = await import('@/skills/user-skills-scanner')
     const result = await scanUserSkills()

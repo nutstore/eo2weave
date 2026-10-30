@@ -44,16 +44,21 @@ export function useGatewayLogin(): UseGatewayLoginResult {
   const [authState, setAuthState] = useState<AuthState | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const mountedRef = useRef(true)
+  const attemptRef = useRef<AbortController | null>(null)
   const t = useT()
 
   useEffect(() => {
     mountedRef.current = true
     return () => {
       mountedRef.current = false
+      attemptRef.current?.abort()
     }
   }, [])
 
   const login = useCallback(async (): Promise<boolean> => {
+    attemptRef.current?.abort()
+    const attempt = new AbortController()
+    attemptRef.current = attempt
     const baseURL = getLLMGatewayBaseURL()
     const clientId = getLLMGatewayClientId()
 
@@ -69,21 +74,24 @@ export function useGatewayLogin(): UseGatewayLoginResult {
     try {
       console.log('[useGatewayLogin] starting device code flow...')
       const tokens = await performDeviceCodeFlow(baseURL, clientId, (state) => {
-        if (mountedRef.current) {
+        if (mountedRef.current && !attempt.signal.aborted) {
           setAuthState(state)
         }
-      })
+      }, attempt.signal)
+      attempt.signal.throwIfAborted()
       console.log('[useGatewayLogin] got tokens, saving...')
 
       await applyGatewayLoginTokens(tokens.access_token)
+      attempt.signal.throwIfAborted()
       console.log('[useGatewayLogin] login complete, returning true')
 
-      if (mountedRef.current) {
+      if (mountedRef.current && attemptRef.current === attempt) {
         setAuthState({ status: 'success' })
         setIsRunning(false)
       }
       return true
     } catch (e) {
+      if (attempt.signal.aborted || attemptRef.current !== attempt) return false
       console.error('[useGatewayLogin] FAILED:', e)
       const errorCode = (e as Error & { code?: string }).code
       // Only gateway-issued terminal codes prove stored credentials are bad.
@@ -105,6 +113,8 @@ export function useGatewayLogin(): UseGatewayLoginResult {
   }, [])
 
   const reset = useCallback(() => {
+    attemptRef.current?.abort()
+    attemptRef.current = null
     setAuthState(null)
     setIsRunning(false)
   }, [])

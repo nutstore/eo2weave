@@ -83,17 +83,15 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
   if (ENABLE_LLM_GATEWAY && isLLMGatewayConfigured()) {
     // The token lookup itself can throw (storage not ready, corrupted token
     // cache) — treat that as "no gateway token" and keep evaluating the
-    // remaining credential branches instead of aborting readiness. A probe
-    // that STALLS (never settles) is bounded by the deadline below: without
-    // it readiness would hang with Start blocked by the in-flight guard.
+    // remaining credential branches instead of aborting readiness. The
+    // deadline also bounds a stalled probe before checking other credentials.
     let token: string | null = null
     try {
       token = await withProbeTimeout(
         getValidAccessToken(getLLMGatewayBaseURL(), getLLMGatewayClientId()),
         'checking the gateway login',
       )
-    } catch (e) {
-      if (e instanceof Error && e.message.includes('timed out')) throw e
+    } catch {
       token = null
     }
     if (token) {
@@ -101,11 +99,9 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
       try {
         const limits = await withProbeTimeout(fetchGatewayRateLimits(), 'checking gateway credit')
         creditExhausted = limits.available_credit <= 0
-      } catch (e) {
-        // Quota probe is informational — a failed probe must not block the
-        // flow; a STALLED probe must not hang it either. Surface the
-        // timeout so the page can offer a retry instead of pinning Start.
-        if (e instanceof Error && e.message.includes('timed out')) throw e
+      } catch {
+        // Quota is informational. A failed or stalled probe does not make
+        // an otherwise valid gateway credential unusable.
       }
       return { ready: true, creditExhausted }
     }

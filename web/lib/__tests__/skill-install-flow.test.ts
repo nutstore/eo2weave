@@ -154,30 +154,29 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     })
   })
 
-  it('throws a retryable timeout error when the token probe stalls (readiness must not hang)', async () => {
+  it('continues to another provider when the gateway token probe stalls', async () => {
     vi.useFakeTimers()
     try {
       // A probe that NEVER settles: without the deadline readiness would
       // hang forever, leaving the visitor stuck with Start blocked.
       getValidAccessTokenMock.mockReturnValue(new Promise(() => {}))
+      getAllApiKeyProvidersMock.mockResolvedValue(['openai'])
       const pending = checkAiReadiness()
-      const assertion = expect(pending).rejects.toThrow(/timed out.*try again/i)
       await vi.advanceTimersByTimeAsync(10_000)
-      await assertion
+      await expect(pending).resolves.toEqual({ ready: true, creditExhausted: false })
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('throws a retryable timeout error when the credit probe stalls', async () => {
+  it('keeps a valid gateway credential usable when the quota probe stalls', async () => {
     vi.useFakeTimers()
     try {
       getValidAccessTokenMock.mockResolvedValue('tok-1')
       fetchGatewayRateLimitsMock.mockReturnValue(new Promise(() => {}))
       const pending = checkAiReadiness()
-      const assertion = expect(pending).rejects.toThrow(/timed out/)
       await vi.advanceTimersByTimeAsync(10_000)
-      await assertion
+      await expect(pending).resolves.toEqual({ ready: true, creditExhausted: false })
     } finally {
       vi.useRealTimers()
     }

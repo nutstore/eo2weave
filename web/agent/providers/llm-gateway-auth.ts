@@ -390,11 +390,13 @@ async function gatewayFetch<T>(
  */
 export async function createDeviceSession(
   baseURL: string,
-  clientId: string
+  clientId: string,
+  signal?: AbortSignal,
 ): Promise<DeviceCodeResponse> {
   return gatewayFetch<DeviceCodeResponse>(baseURL, '/v1/auth/device/code', {
     method: 'POST',
     body: JSON.stringify({ client_id: clientId }),
+    signal,
   })
 }
 
@@ -426,13 +428,15 @@ function appendQueryParam(uri: string, key: string, value: string): string {
 export async function pollDeviceToken(
   baseURL: string,
   deviceCode: string,
-  userCode: string
+  userCode: string,
+  signal?: AbortSignal,
 ): Promise<TokenResponse | null> {
   try {
     const res = await fetch(`${baseURL}/v1/auth/device/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ device_code: deviceCode, user_code: userCode }),
+      signal,
     })
 
     if (res.status === 200) {
@@ -541,13 +545,15 @@ type AuthStateListener = (state: AuthState) => void
 export async function performDeviceCodeFlow(
   baseURL: string,
   clientId: string,
-  onStateChange?: AuthStateListener
+  onStateChange?: AuthStateListener,
+  signal?: AbortSignal,
 ): Promise<TokenResponse> {
   const emit = (state: AuthState) => onStateChange?.(state)
 
   // Step 1: Create device session
   emit({ status: 'requesting' })
-  const session = await createDeviceSession(baseURL, clientId)
+  const session = await createDeviceSession(baseURL, clientId, signal)
+  signal?.throwIfAborted()
 
   emit({
     status: 'waiting',
@@ -568,9 +574,11 @@ export async function performDeviceCodeFlow(
 
   while (Date.now() - startTime < expiresMs) {
     await sleep(interval)
+    signal?.throwIfAborted()
 
     try {
-      const tokens = await pollDeviceToken(baseURL, session.device_code, session.user_code)
+      const tokens = await pollDeviceToken(baseURL, session.device_code, session.user_code, signal)
+      signal?.throwIfAborted()
       if (tokens) {
         // Success! Save tokens. The device-code login ALWAYS issues the
         // refresh token (unlike /v1/auth/refresh) — but guard anyway so a
@@ -614,6 +622,7 @@ export async function performDeviceCodeFlow(
       // Still pending, continue polling
       slowDownCount = 0
     } catch (e) {
+      signal?.throwIfAborted()
       const err = e as Error & { code?: string; retriable?: boolean }
 
       if (err.code === 'slow_down') {
