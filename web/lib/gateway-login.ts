@@ -55,10 +55,20 @@ async function applyGatewayLoginTokensInner(
   signal?.throwIfAborted()
 
   // Fetch models before the first persistent write (network work outside
-  // the credential lock). Default pins are computed INSIDE the lock below —
-  // a snapshot taken here could go stale if the visitor pins something
-  // while the lock is contended.
-  const models = await prepareGatewayModels(accessToken, signal)
+  // the credential lock). A NETWORK failure here is treated as best-effort
+  // (empty list — the credential commit still proceeds; models refresh
+  // later via triggerProviderRefresh), because the visitor already approved
+  // device authorization: making them repeat it because a models fetch
+  // flaked is worse than a temporarily empty model list. Cancellation
+  // (signal aborted) still propagates — an explicitly cancelled login must
+  // not commit.
+  let models: Awaited<ReturnType<typeof prepareGatewayModels>> = []
+  try {
+    models = await prepareGatewayModels(accessToken, signal)
+  } catch (e) {
+    if (signal?.aborted) signal.throwIfAborted()
+    console.warn('[gateway-login] model discovery failed; committing login with an empty model list:', e)
+  }
   signal?.throwIfAborted()
 
   // Keep the read, write and possible rollback in one cross-tab critical
@@ -76,13 +86,22 @@ async function applyGatewayLoginTokensInner(
     signal?.throwIfAborted()
     // Bound the key-store reads/writes: a stalled api-key-store op must not
     // hold the origin-wide credential lock forever (later logins, refreshes
-    // and logouts all queue behind it).
+    // and logouts all queue behind it). Each bounded op returns a `settled`
+    // promise — ALL of them are awaited before this function returns, so a
+    // timed-out write that lands late can never modify the credential state
+    // after a newer login/logout has committed under this lock.
     const bounded = <T>(p: Promise<T>) => withKeyStoreDeadline(p)
-    const previousKey = await bounded(loadApiKey(keyId))
+    const pendingSettles: Array<Promise<void>> = []
+    const runBounded = async <T>(p: Promise<T>): Promise<T> => {
+      const { result, settled } = bounded(p)
+      pendingSettles.push(settled)
+      return result
+    }
+    const previousKey = await runBounded(loadApiKey(keyId))
     signal?.throwIfAborted()
     let committed = false
     try {
-      await bounded(saveApiKey(keyId, accessToken))
+      await runBounded(saveApiKey(keyId, accessToken))
       signal?.throwIfAborted()
       // No awaits after this point: cancellation cannot interleave the token
       // pair, provider registration, and selected-provider settings commit.
@@ -110,13 +129,20 @@ async function applyGatewayLoginTokensInner(
       // same way as the forward path — a stalled key-store op must not hold
       // the lock forever during rollback either.
       if (!committed) {
-        const current = await bounded(loadApiKey(keyId))
+        const current = await runBounded(loadApiKey(keyId))
         if (current === accessToken) {
-          if (previousKey === null) await bounded(deleteApiKey(keyId))
-          else await bounded(saveApiKey(keyId, previousKey))
+          if (previousKey === null) await runBounded(deleteApiKey(keyId))
+          else await runBounded(saveApiKey(keyId, previousKey))
         }
       }
       throw e
+    } finally {
+      // Hold the credential lock until every bounded key-store op has fully
+      // settled — a write that exceeded its deadline but lands afterwards
+      // must not modify credential state after a newer login/logout has
+      // committed under this lock. The grace timeout inside
+      // withKeyStoreDeadline guarantees this await cannot hang forever.
+      await Promise.all(pendingSettles)
     }
   })
 }

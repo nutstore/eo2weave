@@ -56,6 +56,10 @@ describe('applyGatewayLoginTokens cancellation', () => {
   })
 
   it('does not persist a credential when cancelled during model preparation', async () => {
+    // The abort must land while preparation is IN FLIGHT: wait until
+    // provider.prepare has been invoked and its promise is still pending,
+    // then cancel. Aborting before the awaited import reaches prepare would
+    // pass trivially even if cancellation mid-preparation were mishandled.
     let finish!: (models: Array<{ id: string; name: string }>) => void
     const models = new Promise<Array<{ id: string; name: string }>>((resolve) => { finish = resolve })
     provider.update.mockReturnValue(models)
@@ -63,6 +67,8 @@ describe('applyGatewayLoginTokens cancellation', () => {
     const controller = new AbortController()
     const commit = vi.fn()
     const pending = applyGatewayLoginTokens('new-key', { signal: controller.signal, onCommit: commit })
+    // Preparation started and is pending → NOW the cancellation is mid-flight.
+    await vi.waitFor(() => expect(provider.prepare).toHaveBeenCalledTimes(1))
     controller.abort()
     finish([{ id: 'new-model', name: 'New' }])
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })

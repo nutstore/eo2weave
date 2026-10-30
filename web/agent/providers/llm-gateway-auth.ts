@@ -262,7 +262,13 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
       // Re-read the backup under the lock too: a logout may have purged the
       // SQLite row after our pre-lock read captured it.
       const { loadApiKey } = await import('@/security/api-key-store')
-      const fresh = await loadApiKey(REFRESH_TOKEN_DB_KEY)
+      const { result: freshResult, settled: freshSettled } = withKeyStoreDeadline(
+        loadApiKey(REFRESH_TOKEN_DB_KEY),
+      )
+      const fresh = await freshResult
+      // Hold the lock until the read settles (a deadline-expired read that
+      // lands late must not race the restore write below).
+      await freshSettled
       if (!fresh) return null
       let freshRecovered: Partial<StoredTokens>
       try {
@@ -305,10 +311,14 @@ function saveStoredTokens(tokens: StoredTokens): void {
   // Also persist refresh_token to SQLite for durability across localStorage clears.
   // The backup write may run after a newer login. Serialize and verify its
   // source pair so an older background write cannot replace that backup.
+  // The SQLite write is bounded: a stalled api-key-store op inside the
+  // credential lock must not block later logins/refreshes/logouts forever
+  // (the lock-held fallback path in loadStoredTokensWithFallback gets the
+  // same treatment via its bounded load).
   void withGatewayCredentialLock(async () => {
     const current = loadStoredTokens()
     if (!current || JSON.stringify(current) !== JSON.stringify(tokens)) return
-    await persistRefreshTokenToSQLite(tokens)
+    await withKeyStoreDeadline(persistRefreshTokenToSQLite(tokens))
   }).catch((e) => {
     console.warn('[llm-gateway] persist refresh_token to SQLite failed:', e)
   })
@@ -358,18 +368,27 @@ async function clearStoredTokens(
     localStorage.removeItem(TOKEN_STORAGE_KEY)
     // Purge both SQLite-side credentials before releasing the lock, so a
     // later login cannot have its new access key deleted by this logout.
+    // Each deletion is attempted INDEPENDENTLY: a failure purging the
+    // refresh-token backup must not skip the access-token shadow deletion
+    // (the settings card derives its logged-in badge from that key alone —
+    // leaving it behind shows "Logged in" UI with a logout button while
+    // every request 401s, user-reported bug).
+    const { deleteApiKey } = await import('@/security/api-key-store')
+    const purgeFailures: unknown[] = []
     try {
-      const { deleteApiKey } = await import('@/security/api-key-store')
       await deleteApiKey(REFRESH_TOKEN_DB_KEY)
-      // The api-key-store also holds the stale access_token under the
-      // provider key. The settings card derives its logged-in badge from
-      // that key alone — leaving it behind shows "Logged in" UI with a
-      // logout button while every request 401s (user-reported bug).
+    } catch (e) {
+      purgeFailures.push(e)
+    }
+    try {
       await deleteApiKey(LLM_GATEWAY_API_KEY_ID)
     } catch (e) {
+      purgeFailures.push(e)
+    }
+    if (purgeFailures.length > 0) {
       // Diagnostic log on purpose — a silent failure here would re-create
       // the "logged-in badge on a dead session" state with no way to debug.
-      console.warn('[llm-gateway] failed to purge stored credentials:', e)
+      console.warn('[llm-gateway] failed to purge stored credentials:', purgeFailures)
     }
     // The status write is part of the same critical section as the purge:
     // a login committing between the purge and a post-lock status write
@@ -601,20 +620,47 @@ export async function persistAccessTokenToKeyStore(accessToken: string): Promise
  * later login/refresh/logout queues behind it and never completes.
  *
  * The deadline is deliberately generous (10s): the goal is deadlock
- * protection, not fast failure. On expiry the underlying write MAY still
- * complete later; callers treat the timeout as "nonessential write failed"
- * and keep the in-memory/localStorage state authoritative.
+ * protection, not fast failure.
+ *
+ * Returns `{ result, settled }`: `result` resolves/rejects with the raced
+ * outcome (deadline expiry rejects), and `settled` resolves only when the
+ * UNDERLYING operation completes. Callers holding the credential lock MUST
+ * await `settled` before returning — a timed-out write that later lands
+ * would otherwise modify the shared credential state after a newer
+ * login/logout has committed under the lock.
  */
-export async function withKeyStoreDeadline<T>(p: Promise<T>): Promise<T> {
+export function withKeyStoreDeadline<T>(
+  p: Promise<T>,
+): { result: Promise<T>; settled: Promise<void> } {
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error('key store write timed out')), 10_000)
   })
-  try {
-    return await Promise.race([p, deadline])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
+  let settleDone = false
+  let settleResolve!: () => void
+  const settled = new Promise<void>((resolve) => {
+    settleResolve = () => {
+      if (!settleDone) {
+        settleDone = true
+        resolve()
+      }
+    }
+  })
+  const result = Promise.race([
+    p.finally(() => {
+      if (timer !== undefined) clearTimeout(timer)
+      settleResolve()
+    }),
+    deadline.finally(() => {
+      if (timer !== undefined) clearTimeout(timer)
+    }),
+  ])
+  // Safety net: if the underlying promise NEVER settles (a hung worker),
+  // `settled` would block the lock forever — the very deadlock this helper
+  // exists to prevent. Give the underlying op an extra grace window after
+  // the deadline, then release the lock regardless.
+  setTimeout(() => settleResolve(), 10_000 + 5_000)
+  return { result, settled }
 }
 
 // ── High-Level Auth Functions ──
@@ -850,10 +896,9 @@ async function refreshAccessTokenWithStatusImpl(
       refresh_expires_at: new Date(stored.refresh_expires_at).toISOString(),
       now: new Date(now).toISOString(),
     })
-    if (!await clearStoredTokens(requestRefreshToken)) {
+    if (!await clearStoredTokens(requestRefreshToken, 'expired')) {
       return { status: 'temporary_error', error: new Error('session changed during refresh') }
     }
-    setCredentialStatus('expired')
     return { status: 'expired' }
   }
 
@@ -925,14 +970,26 @@ async function refreshAccessTokenWithStatusImpl(
       // bound it: a stalled key-store write must not hold the credential
       // lock forever (later commits/logout queue behind it indefinitely).
       // The shadow is a display/cache convenience — localStorage and the
-      // SQLite refresh-token backup remain authoritative.
+      // SQLite refresh-token backup remain authoritative. The lock is held
+      // until the write SETTLES (see the finally below) so a late write
+      // cannot overwrite a newer credential committed by another tab.
+      let shadowSettled: Promise<void> | null = null
       try {
-        await withKeyStoreDeadline(persistAccessTokenToKeyStore(tokens.access_token))
+        const { result: shadowWrite, settled } = withKeyStoreDeadline(
+          persistAccessTokenToKeyStore(tokens.access_token),
+        )
+        shadowSettled = settled
+        await shadowWrite
       } catch (error) {
         console.warn('[llm-gateway] persist refreshed access token shadow failed:', error)
       }
       setCredentialStatus('valid')
-      return { status: 'success', accessToken: tokens.access_token }
+      const result: RefreshResult = { status: 'success', accessToken: tokens.access_token }
+      // Wait for the (possibly timed-out) shadow write to settle while still
+      // holding the lock — deadline expiry must not let it land after a
+      // newer login/logout has committed.
+      if (shadowSettled) await shadowSettled
+      return result
     })
   } catch (e) {
     // Only clear tokens if the refresh_token is definitively invalid.
@@ -960,10 +1017,9 @@ async function refreshAccessTokenWithStatusImpl(
       // clearStoredTokens() also purges the api-key-store access_token
       // shadow (the key the settings card's logged-in badge derives from),
       // so the UI falls back to the logged-out state with a login button.
-      if (!await clearStoredTokens(requestRefreshToken)) {
+      if (!await clearStoredTokens(requestRefreshToken, 'expired')) {
         return { status: 'temporary_error', error: new Error('session changed during refresh') }
       }
-      setCredentialStatus('expired')
       return { status: 'expired', error: e }
     } else {
       console.warn('[llm-gateway] forceRefresh: transient error, keeping stored tokens', e)
