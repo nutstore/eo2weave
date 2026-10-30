@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useI18nStore } from '@/i18n/store'
 import { localizedToolDescription } from '@/i18n/webmcp-tools'
+import { getWebMCPToolDescription } from '@creatorweave/i18n'
 
 describe('localizedToolDescription (webmcp builtin package tool copy)', () => {
   beforeEach(() => {
@@ -40,13 +41,32 @@ describe('localizedToolDescription (webmcp builtin package tool copy)', () => {
     const manifest = JSON.parse(
       builtinResources['com.discord.main/manifest.json']
     ) as { tools: Array<{ name: string }> }
-    const { getWebMCPToolDescription } = await import('@creatorweave/i18n')
+    const { enUS } = await import('@creatorweave/i18n/locales')
 
     for (const locale of ['zh-CN', 'en-US', 'ja-JP', 'ko-KR'] as const) {
       for (const tool of manifest.tools) {
         const description = getWebMCPToolDescription(locale, 'discord.com', tool.name)
         expect(description, `${locale} ${tool.name}`).toBeDefined()
         expect(description!.length, `${locale} ${tool.name}`).toBeGreaterThan(0)
+        // Locale-specific guard: for non-English locales the stored copy must
+        // not be the en-US table entry (English fallback passing as localized).
+        const enUSCopy = (
+          enUS as unknown as {
+            webmcpTools: Record<string, Record<string, string>>
+          }
+        ).webmcpTools['discord.com'][tool.name]
+        if (locale !== 'en-US') {
+          expect(
+            description,
+            `${locale} ${tool.name} not en-US copy`
+          ).not.toBe(enUSCopy)
+          expect(
+            description!,
+            `${locale} ${tool.name} has non-ASCII text`
+          ).toMatch(/[^\x00-\x7F]/)
+        } else {
+          expect(description, `en-US ${tool.name} table copy`).toBe(enUSCopy)
+        }
       }
     }
   })
