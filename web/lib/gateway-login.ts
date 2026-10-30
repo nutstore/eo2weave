@@ -57,6 +57,15 @@ async function applyGatewayLoginTokensInner(
   const { saveApiKey, loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
   signal?.throwIfAborted()
 
+  // Record when THIS attempt started — BEFORE the device-code approval and
+  // model-preparation awaits in the caller (approval can take minutes), so
+  // a logout committed during any of those waits (in any tab) predates
+  // this timestamp and invalidates the attempt in the commit guard below.
+  // (Previously the timestamp was taken inside the credential lock, AFTER
+  // those waits — a logout that happened meanwhile predated it and the
+  // stale login resurrected the just-ended session.)
+  const attemptStartedAt = Date.now()
+
   // Fetch models before the first persistent write (network work outside
   // the credential lock). A NETWORK failure here is treated as best-effort
   // (empty list — the credential commit still proceeds; models refresh
@@ -76,9 +85,9 @@ async function applyGatewayLoginTokensInner(
 
   // Keep the read, write and possible rollback in one cross-tab critical
   // section. A cancelled login must not restore over a newer tab's login.
-  // Record when THIS attempt started: a logout committed after this
-  // timestamp (in any tab) invalidates the attempt below.
-  const attemptStartedAt = Date.now()
+  // (The logout-supersedes guard below compares against `attemptStartedAt`,
+  // captured BEFORE the device-code approval / model preparation waits —
+  // see the comment at the top of this function.)
   return withGatewayCredentialLock(async () => {
     signal?.throwIfAborted()
     // Logout-supersedes-pending-login: if the user logged out (any tab)

@@ -529,9 +529,10 @@ describe('llm-gateway-auth token refresh hardening', () => {
       seedStoredTokens()
       // A deletion that NEVER settles: the logout must still complete within
       // the deadline window (bounded key-store ops), not hang forever.
+      let releaseStalledDelete!: () => void
       deleteApiKeyMock.mockImplementation((provider) =>
         provider === '__llm_gateway_refresh_token__'
-          ? new Promise<void>(() => {}) // never settles
+          ? new Promise<void>((resolve) => { releaseStalledDelete = resolve }) // never settles until released
           : Promise.resolve(),
       )
 
@@ -549,6 +550,10 @@ describe('llm-gateway-auth token refresh hardening', () => {
       // Logout ultimately REJECTS with the purge error (the backup delete
       // timed out, so the purge is incomplete) instead of hanging.
       await expect(logout).rejects.toThrow()
+      // The registry now tracks the UNDERLYING op's real settlement, so the
+      // stalled delete must be released for later credential commits to
+      // proceed within the test timeout.
+      releaseStalledDelete()
     }, 20_000)
 
     it('logout rejects instead of reporting success when the purge fails', async () => {
@@ -707,5 +712,47 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(token).toBe('buffer-token')
       expect(fetchMock).toHaveBeenCalledTimes(1)
     })
+  })
+
+  describe('late key-store ops are tracked until real settlement', () => {
+    it('a credential commit waits for the UNDERLYING op, not just the grace timer', async () => {
+      // A key-store op that outlives deadline AND grace still holds the
+      // registry: a later credential commit must not be admitted while the
+      // old op can still write (the pre-fix registry dropped the op when
+      // the grace timer resolved `settled`, letting a late write land after
+      // a newer login/logout committed under the lock).
+      seedStoredTokens()
+      let releaseShadow!: () => void
+      saveApiKeyMock.mockImplementation(async (provider) => {
+        if (provider === '__llm_gateway_token__') {
+          await new Promise<void>((resolve) => { releaseShadow = resolve })
+        }
+      })
+
+      // Op 1: a refresh whose shadow write stalls past deadline+grace.
+      vi.stubGlobal('fetch', vi.fn(async () => refreshResponse('stalled-access')))
+      const refresh = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      await vi.waitFor(() =>
+        expect(saveApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__', 'stalled-access'),
+      )
+
+      // Op 2: a logout that queues behind op 1. Under the pre-fix registry
+      // op 1 left the registry when its grace timer fired, so this lock
+      // acquisition would NOT wait for the still-pending write.
+      const logout = logoutGateway()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // Release the stalled write: only then may the logout proceed.
+      releaseShadow()
+      await Promise.all([refresh, logout])
+      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+
+      // The registry must be empty now — a follow-up commit is admitted
+      // without waiting on any ghost op.
+      const { withGatewayCredentialLock } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      await withGatewayCredentialLock(async () => 'commit')
+    }, 45_000)
   })
 })

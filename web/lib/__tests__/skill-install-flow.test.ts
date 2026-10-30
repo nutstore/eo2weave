@@ -43,7 +43,9 @@ vi.mock('@/store/settings.store', () => ({
 const getAllApiKeyProvidersMock = vi.fn<() => Promise<string[]>>()
 // Per-provider key lookup: "openai" has a saved key, others report none —
 // used by the readiness branch that switches to a provider with a key.
-const loadApiKeyMock = vi.fn(async (provider: string) =>
+const loadApiKeyMock = vi.fn<(
+  provider: string,
+) => Promise<string | null>>(async (provider: string) =>
   provider === 'openai' ? 'openai-key' : null,
 )
 
@@ -133,8 +135,42 @@ describe('checkAiReadiness (issue #126 login-detection branches)', () => {
     // ready assertion must depend on `openai` alone, not on the presence
     // of multiple provider ids or the gateway shadow.
     getAllApiKeyProvidersMock.mockResolvedValue(['openai'])
+    // The visitor must END UP on the provider holding the saved key —
+    // reporting ready while leaving the unconfigured provider selected
+    // would fail on the first conversation send.
+    settingsState.providerType = 'anthropic'
 
     await expect(checkAiReadiness()).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(settingsState.providerType).toBe('openai')
+  })
+
+  it('does NOT switch providers when the visitor picks one while the key lookup is pending', async () => {
+    // The visitor changed the selection while the candidate key lookup was
+    // in flight: the stale probe must not overwrite their newer choice.
+    getValidAccessTokenMock.mockResolvedValue(null)
+    getAllApiKeyProvidersMock.mockResolvedValue(['openai'])
+    settingsState.providerType = 'anthropic'
+    let releaseLookup!: (value?: string) => void
+    loadApiKeyMock.mockImplementationOnce(
+      () =>
+        new Promise<string | null>((resolve) => {
+          releaseLookup = (value?: string) => resolve(value ?? 'openai-key')
+        }),
+    )
+
+    const pending = checkAiReadiness()
+    // Flush the probe chain until the candidate key lookup is actually
+    // pending (token probe → getAllApiKeyProviders → loadApiKey), then
+    // simulate the visitor selecting a different provider mid-lookup.
+    for (let i = 0; i < 20 && releaseLookup === undefined; i++) {
+      await Promise.resolve()
+    }
+    expect(releaseLookup).toBeTypeOf('function')
+    settingsState.providerType = 'deepseek'
+    releaseLookup()
+
+    await expect(pending).resolves.toEqual({ ready: true, creditExhausted: false })
+    expect(settingsState.providerType).toBe('deepseek')
   })
 
   it('gateway token-lookup failure falls through to other usable credentials', async () => {

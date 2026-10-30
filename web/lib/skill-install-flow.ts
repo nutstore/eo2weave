@@ -122,8 +122,9 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
   // the login step, and fail on the first conversation send. Only a
   // non-gateway current provider counts as an independent credential.
   const settingsState = useSettingsStore.getState()
+  const currentProviderType = settingsState.providerType
   const currentProviderIsGateway =
-    settingsState.providerType === LLM_GATEWAY_PROVIDER_TYPE
+    currentProviderType === LLM_GATEWAY_PROVIDER_TYPE
   if (settingsState.hasApiKey && !currentProviderIsGateway) {
     return { ready: true, creditExhausted: false }
   }
@@ -152,7 +153,17 @@ export async function checkAiReadiness(): Promise<AiReadinessResult> {
           `reading the ${candidate} key`,
         )
         if (key) {
-          // Fresh getState(): the earlier snapshot predates the probe awaits.
+          // Fresh getState() AND a fresh selected-provider re-check: the
+          // earlier snapshot predates the probe awaits, and the visitor may
+          // have selected a different provider while the key lookup was
+          // pending. Switching blindly would overwrite their newer choice
+          // with this page's stale probe target — revalidate instead, and
+          // skip the switch when the selection changed (the page's own
+          // generation gate drops this stale flow afterwards).
+          const freshProvider = useSettingsStore.getState().providerType
+          if (freshProvider !== currentProviderType) {
+            return { ready: true, creditExhausted: false }
+          }
           useSettingsStore
             .getState()
             .switchProviderAndModel(

@@ -510,6 +510,7 @@ export const settings = {
       authHint: "通过 Device Code Flow 安全认证，无需手动管理 API Key。",
       clientIdMissing: "Client ID 未配置，请设置 NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID 环境变量",
       authFailed: "认证失败",
+      logoutFailed: "登出未完成——可能有凭据残留，请重试。",
     },
     // Provider 显示名（中文品牌保留中文，国际用户看公司拼音/英文品牌；
     // 注意不用海外分身服务名，如智谱国际是 Z.ai 但服务独立）

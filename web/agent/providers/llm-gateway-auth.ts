@@ -752,10 +752,11 @@ export function withKeyStoreDeadline<T>(
   // exists to prevent. Give the underlying op an extra grace window after
   // the deadline, then release the lock regardless. The op's real
   // completion is tracked in the shared pendingKeyStoreOps registry (via
-  // `settled.finally` below), so `withGatewayCredentialLock` waits for it
+  // `trackPendingKeyStoreOp(p)` below), so `withGatewayCredentialLock`
+  // waits for the UNDERLYING operation — not just this grace timer —
   // before granting a new credential commit.
   setTimeout(() => settleResolve(), 10_000 + 5_000)
-  trackPendingKeyStoreOp(settled)
+  trackPendingKeyStoreOp(p)
   return { result, settled }
 }
 

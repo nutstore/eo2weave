@@ -234,18 +234,17 @@ function SkillInstallView() {
 
   useEffect(() => {
     void loadEntry()
-    // Unmount must invalidate the CURRENT generation too: a pending
-    // install/readiness continuation (capturing this generation) would
-    // otherwise run to completion after the visitor left the page and
+    // Unmount must invalidate the CURRENT generation UNCONDITIONALLY: a
+    // pending install/readiness continuation (capturing this generation)
+    // would otherwise run to completion after the visitor left the page and
     // still call router.replace — redirecting them from wherever they
-    // navigated to. Capturing the generation in a local (the ref value at
-    // cleanup time is what must be bumped); a remount's loadEntry()
-    // re-bumps it for the new visit anyway.
-    const generationAtMount = loadGenerationRef.current
+    // navigated to. A retry's loadEntry() already advanced the generation,
+    // so comparing against a mount-time capture would miss it and leave
+    // that newer flow "active" after unmount — bump the ref directly.
+    // (A remount's loadEntry() re-bumps it for the new visit anyway, so
+    // nothing else needs the old value to survive.)
     return () => {
-      if (loadGenerationRef.current === generationAtMount) {
-        loadGenerationRef.current++
-      }
+      loadGenerationRef.current++
       loginAttemptActiveRef.current = false
     }
   }, [loadEntry])

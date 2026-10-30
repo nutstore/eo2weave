@@ -15,19 +15,65 @@ interface GatewayWebLocks {
  */
 const pendingKeyStoreOps = new Set<Promise<void>>()
 
-/** Register an unsettled key-store op (called by the deadline helper). */
-export function trackPendingKeyStoreOp(settled: Promise<void>): void {
-  pendingKeyStoreOps.add(settled)
-  void settled.finally(() => pendingKeyStoreOps.delete(settled))
+/**
+ * Register an unsettled key-store op (called by the deadline helper).
+ *
+ * The registry tracks the UNDERLYING op's real settlement (rejections
+ * ignored), NOT the grace-resolved `settled` promise: an op that ran past
+ * its deadline and grace period can still write or delete after `settled`
+ * fired — dropping it from the registry then would let
+ * `withGatewayCredentialLock` admit a newer credential commit while the
+ * old operation is still in flight, letting it overwrite newer
+ * credentials or undo a logout.
+ */
+export function trackPendingKeyStoreOp(op: Promise<unknown>): void {
+  const tracked = op.then(
+    () => {},
+    () => {},
+  )
+  pendingKeyStoreOps.add(tracked)
+  void tracked.finally(() => pendingKeyStoreOps.delete(tracked))
 }
+
+/**
+ * Overall cap on the registry wait: an op that NEVER settles (a hung
+ * worker) must not block credential commits forever. The bounded ops'
+ * grace-resolved `settled` promises fire at deadline+grace, so lock
+ * holders are never stuck — only this extra-conservative wait for the
+ * real settlement is abandoned past the cap, with a diagnostic.
+ */
+const KEYSTORE_QUIESCENCE_CAP_MS = 30_000
 
 /**
  * Wait until no bounded key-store op is pending. Loops because settling
  * these ops may itself schedule further bounded sub-ops.
  */
 async function waitKeyStoreOpsQuiescent(): Promise<void> {
+  const capAt = Date.now() + KEYSTORE_QUIESCENCE_CAP_MS
   while (pendingKeyStoreOps.size > 0) {
-    await Promise.all([...pendingKeyStoreOps])
+    const remaining = capAt - Date.now()
+    if (remaining <= 0) {
+      console.warn(
+        '[gateway-credential-lock] key-store ops still pending after the quiescence cap — proceeding with the credential commit',
+      )
+      return
+    }
+    let capped = false
+    await Promise.race([
+      Promise.all([...pendingKeyStoreOps]),
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          capped = true
+          resolve()
+        }, remaining)
+      }),
+    ])
+    if (capped) {
+      console.warn(
+        '[gateway-credential-lock] key-store ops still pending after the quiescence cap — proceeding with the credential commit',
+      )
+      return
+    }
   }
 }
 

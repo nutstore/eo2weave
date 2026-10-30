@@ -1370,7 +1370,26 @@ export function LLMGatewayCard({
     // flash the "login expired" re-login state.
     setIsLoggedIn(false)
     const keyId = getLLMGatewayApiKeyProviderKey()
-    await logoutGatewayAuth()
+    // A purge failure (storage outage, timed-out key-store op) rejects —
+    // a surviving refresh-token backup can resurrect the session, so the
+    // logout is NOT complete. Surface it as a retryable failure instead of
+    // letting the rejection escape unhandled while the card already reads
+    // "logged out".
+    try {
+      await logoutGatewayAuth()
+    } catch (e) {
+      console.error('[LLMGatewayCard] logout purge failed:', e)
+      const message =
+        e instanceof Error && e.message
+          ? e.message
+          : t('settings.gateway.logoutFailed')
+      setAuthState({
+        status: 'error',
+        error: message,
+      })
+      toast.error(message)
+      return
+    }
     useSettingsStore.getState().invalidateApiKeyCache(keyId)
     // Re-check from DB so we don't flip hasApiKey off when another provider is active
     if (useSettingsStore.getState().providerType === LLM_GATEWAY_PROVIDER_TYPE) {
@@ -1385,7 +1404,7 @@ export function LLMGatewayCard({
     setRateLimitsResult(null)
     setRateLimitsError(null)
     triggerProviderRefresh()
-  }, [triggerProviderRefresh])
+  }, [triggerProviderRefresh, t])
 
   const handleCopyCode = useCallback(() => {
     if (authState.userCode) {
