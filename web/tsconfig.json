@@ -3,7 +3,6 @@
     "display": "Web Application",
     "extends": "@creatorweave/config/tsconfig/react",
     "compilerOptions": {
-        "baseUrl": ".",
         "paths": {
             "@/*": [
                 "./*"
