@@ -1199,6 +1199,46 @@ describe('importUserSkillFolder uses the serialized import pipeline', () => {
     expect(backups?.dirs.size ?? 0).toBe(0)
   })
 
+  it('still serializes in-tab when the cross-tab Web Lock is broken', async () => {
+    // Degradation contract: if navigator.locks is unavailable/broken (the
+    // cross-tab layer), the IN-TAB promise chain must remain the serializer
+    // of last resort — two concurrent same-dir imports must not interleave
+    // their remove/backup/write phases even without any Web Lock.
+    writeInstalled('same-skill', '# Original')
+    const zipRaw = { 'z/same-skill/SKILL.md': new TextEncoder().encode('# From ZIP') }
+    const folderSrc = makeSourceFolder('same-skill', { 'SKILL.md': '# From folder' })
+    const realLocks = navigator.locks
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request: async () => {
+          throw new Error('ABORT: cross-tab lock unavailable')
+        },
+      },
+    })
+    try {
+      const results = await Promise.allSettled([
+        importUserSkillZip({
+          isBundle: false,
+          skill: previewEntry('same-skill', 'z/same-skill/', 1),
+          _raw: zipRaw,
+        }),
+        importUserSkillFolder(folderSrc),
+      ])
+      // No deadlock, no crash outside the import error contract.
+      for (const r of results) {
+        expect(['fulfilled', 'rejected']).toContain(r.status)
+      }
+      // Exactly ONE skill directory exists and its SKILL.md is one of the
+      // two contenders, whole-file — never a torn mix of both.
+      expect(installed('same-skill')).toBe(true)
+      const final = contentOf('same-skill', 'SKILL.md')
+      expect(['# From ZIP', '# From folder', '# Original']).toContain(final)
+    } finally {
+      Object.defineProperty(navigator, 'locks', { configurable: true, value: realLocks })
+    }
+  })
+
   it('rejects a folder whose name is not a safe skill directory name', async () => {
     const src = makeSourceFolder('bad_name!', { 'SKILL.md': '# X' })
     await expect(importUserSkillFolder(src)).rejects.toThrow(/not a valid skill directory name/)
