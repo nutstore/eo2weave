@@ -95,6 +95,8 @@ type SearchResultRow = {
   score?: number
   relevanceReason?: string
   adapterServed?: boolean
+  /** Per-tab provenance (see TabProvenance) — display-only alongside the grouped flag. */
+  tabProvenance?: TabProvenance[]
 }
 
 //=============================================================================
@@ -455,8 +457,13 @@ function formatBm25Results(
     inputSchema: s.tool.inputSchema,
     ...(s.tool.origin ? { origin: s.tool.origin } : {}),
     ...(s.tool.tabIds ? { tabIds: s.tool.tabIds } : {}),
+    // Per-tab provenance mirrors the group flag for renderer consumers; see
+    // SearchResultRow.adapterServed for why the group flag is display-only.
     ...(s.tool.source === 'webmcp' && s.tool.adapterServed !== undefined
-      ? { adapterServed: s.tool.adapterServed }
+      ? {
+          adapterServed: s.tool.adapterServed,
+          tabProvenance: s.tool.tabProvenance,
+        }
       : {}),
     score: Math.round(s.score * 1000) / 1000,
   }))
@@ -498,6 +505,8 @@ interface EnrichedToolRow {
   tabIds?: number[]
   relevanceReason: string
   adapterServed?: boolean
+  /** Per-tab provenance (see TabProvenance) — display-only alongside the grouped flag. */
+  tabProvenance?: TabProvenance[]
 }
 
 /**
@@ -534,7 +543,14 @@ function enrichWithCatalog(
         ...(catalogEntry?.origin ? { origin: catalogEntry.origin } : {}),
         ...(catalogEntry?.tabIds ? { tabIds: catalogEntry.tabIds } : {}),
         ...(catalogEntry?.source === 'webmcp' && catalogEntry?.adapterServed !== undefined
-          ? { adapterServed: catalogEntry.adapterServed }
+          ? {
+              adapterServed: catalogEntry.adapterServed,
+              // Same per-tab mirror as formatBm25Results (Path A/A2): a row
+              // whose group representative is adapter-served must not be the
+              // only provenance signal when a colliding page-provided tab is
+              // the actual call target.
+              tabProvenance: catalogEntry.tabProvenance,
+            }
           : {}),
         relevanceReason: t.relevance_reason,
       }
@@ -802,12 +818,15 @@ export const searchToolsExecutor: ToolExecutor = async (args, context) => {
       inputSchema: c.tool.inputSchema,
       ...(c.tool.origin ? { origin: c.tool.origin } : {}),
       ...(c.tool.tabIds ? { tabIds: c.tool.tabIds } : {}),
-      // Same provenance rule as formatBm25Results (Path A/A2): the fallback
-      // panel must localize builtin-package tools identically. Without this
-      // row the same Discord builtin shows its English manifest description
-      // here but the translated copy in every other search path.
+      // Same provenance rule as formatBm25Results (Path A/A2) — including the
+      // per-tab mirror: the fallback panel must localize builtin-package tools
+      // identically and carry the same per-tab provenance table, so the
+      // renderer never relies on the representative's flag alone.
       ...(c.tool.source === 'webmcp' && c.tool.adapterServed !== undefined
-        ? { adapterServed: c.tool.adapterServed }
+        ? {
+            adapterServed: c.tool.adapterServed,
+            tabProvenance: c.tool.tabProvenance,
+          }
         : {}),
       score: Math.round(c.score * 1000) / 1000,
     })),
@@ -959,7 +978,14 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
     // grouped representative's provenance can belong to a different tab.
     toolDescription: localizedToolDescription({
       ...tool,
-      adapterServed: tool.source === 'webmcp' ? tabProvenanceForTab(tool, tab_id) ?? tool.adapterServed : tool.adapterServed,
+      // No ?? tool.adapterServed fallback: when the store carries per-tab
+      // provenance but has no entry for the requested tab, unknown must stay
+      // unknown — borrowing the grouped representative's flag would show the
+      // builtin translation for a page-provided action on that tab
+      // (tabProvenanceForTab already returns undefined in that case, and
+      // localizedToolDescription treats undefined as no-evidence → provider's
+      // own description).
+      adapterServed: tool.source === 'webmcp' ? tabProvenanceForTab(tool, tab_id) : tool.adapterServed,
     }),
     // Origin for the settings-side "always trust" list (webmcp hostname /
     // mcp serverId). Trusted origins skip the modal in plan AND act mode;
@@ -1185,9 +1211,10 @@ async function executeWebMCPTool(
 ): Promise<string> {
   // Provenance of the TARGETED tab's instance (not the grouped
   // representative's) — every wrap/annotation decision below must match the
-  // tool that actually executes. Falls back to the grouped flag only when no
-  // per-tab provenance is known (older extension catalogs).
-  const tabProvenance = tabProvenanceForTab(tool, targetTabId) ?? tool.adapterServed
+  // tool that actually executes. No grouped-representative fallback here
+  // either: a missing per-tab entry means unknown provenance, and executing
+  // under the representative's flag would mislabel the action that runs.
+  const tabProvenance = tabProvenanceForTab(tool, targetTabId)
   const untrusted = tool.annotations?.untrustedContentHint === true
   const sourceId = tool.hostname || tool.sourceId
   const bridge = getWebMCPBridge()
