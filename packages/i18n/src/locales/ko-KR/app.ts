@@ -7,8 +7,18 @@ export const app = {
     productName: "EO2Weave",
     initComplete: "초기화 완료",
     initFailed: "초기화 실패",
+    retry: "재시도",
+    projectsInitErrorHint:
+      "프로젝트 데이터는 안전합니다. 이번에는 로컬 저장소를 열 수 없었으며, 보통 재시도하면 복구됩니다.",
+    projectsInitUnknownHint:
+      "로컬 저장소에서 알 수 없는 오류가 발생했습니다. 프로젝트가 영향을 받지 않았을 수 있지만 현재로서는 확인할 수 없습니다. 진단을 실행하고 재시도하고, 문제가 지속되면 보고서를 버그 보고에 첨부해 주세요.",
+    projectsInitCorruptionHint:
+      "로컬 저장소에서 데이터 문제가 감지되었을 수 있습니다. 프로젝트가 정상적으로 열리지 않을 수 있으니, 브라우저 데이터를 지우지 말고 진단을 실행해 보고서를 버그 보고에 첨부해 주세요.",
+    projectsInitRetrying: "재시도 중...",
     sessionStorageOnly:
       "데이터는 현재 세션에만 저장되며, 새로고침 시 사라집니다",
+    memoryModeWarning:
+      "경고: 임시 메모리 모드로 실행 중입니다. 탭을 닫거나 새로고침하면 모든 데이터가 사라집니다. 브라우저가 영구 저장소를 열 수 없습니다(시크릿 모드 설정 또는 사이트 권한을 확인하세요).",
     localStorageMode: "로컬 스토리지 모드 사용 중",
     migrationInProgress: "데이터 마이그레이션 중",
     migrationComplete: "마이그레이션 완료",

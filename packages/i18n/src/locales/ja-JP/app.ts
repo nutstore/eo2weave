@@ -7,8 +7,18 @@ export const app = {
     productName: "EO2Weave",
     initComplete: "初期化完了",
     initFailed: "初期化に失敗しました",
+    retry: "再試行",
+    projectsInitErrorHint:
+      "プロジェクトデータは安全です。今回はローカルストレージを開けませんでした。再試行で通常は復旧します。",
+    projectsInitUnknownHint:
+      "ローカルストレージで不明なエラーが発生しました。現時点ではプロジェクトへの影響を確認できません。診断を実行して再試行し、問題が解決しない場合はレポートを不具合報告に添付してください。",
+    projectsInitCorruptionHint:
+      "ローカルストレージがデータの問題を検出した可能性があります。プロジェクトが正しく開けない場合があります。ブラウザデータの消去は行わず、診断を実行してレポートを不具合報告に添付してください。",
+    projectsInitRetrying: "再試行中...",
     sessionStorageOnly:
       "データは現在のセッションのみ保存され、更新時に失われます",
+    memoryModeWarning:
+      "警告：一時的なメモリモードで動作しています。タブを閉じるか更新するとすべてのデータが失われます。ブラウザが永続ストレージを開けません（プライベートモードの設定やサイトの権限を確認してください）。",
     localStorageMode: "ローカルストレージモードを使用中",
     migrationInProgress: "データを移行中",
     migrationComplete: "移行完了",

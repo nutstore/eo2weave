@@ -32,14 +32,25 @@ function makeProject(id: string) {
   return { id, name: id, status: 'active' as const, createdAt: 1_000, updatedAt: 1_000 }
 }
 
-function setupStore(opts: { initialized: boolean; projects: ReturnType<typeof makeProject>[] }) {
+function setupStore(opts: {
+  initialized: boolean
+  projects: ReturnType<typeof makeProject>[]
+  error?: string | null
+  initError?: string | null
+}) {
   useProjectStore.setState({
     projects: opts.projects,
     projectStats: {},
     activeProjectId: opts.projects[0]?.id ?? '',
     initialized: opts.initialized,
     isLoading: false,
-    error: null,
+    // action-level and init failures are INDEPENDENT fields; the fixture
+    // must be able to set one without the other (Sourcery: "Action errors
+    // can trigger redirects" — merging them in the fixture masked a guard
+    // regression that redirected on any action error).
+    error: opts.error ?? null,
+    initError: opts.initError ?? null,
+    initErrorKind: 'transient',
   })
 }
 
@@ -61,8 +72,38 @@ describe('(app)/page.tsx first-run redirect', () => {
     routerReplaceMock.mockClear()
     sessionStorage.clear()
     localStorage.clear()
+    useProjectStore.setState({ error: null, initError: null, initErrorKind: 'transient' })
   })
 
+  it('redirects to /projects without the first-run flow when store init failed', async () => {
+    // Issue #131: a SQLite init failure must surface the ProjectHomeView
+    // error banner (via /projects), never the blank page or a redirect into
+    // a "default project" that was never loaded.
+    setupStore({ initialized: false, projects: [], initError: 'OPFS pool busy' })
+    render(<App />)
+
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith('/projects'))
+    expect(routerReplaceMock).not.toHaveBeenCalledWith('/projects/project-fresh')
+  })
+
+  it('does NOT redirect to /projects for an action-level error when initError is null', async () => {
+    // Sourcery round 2 ("Action errors can trigger redirects"): the guard is
+    // keyed on `initError` ONLY. A failed project action sets `error` while
+    // `initError` stays null — that must never drive the root-page redirect.
+    // With the old fixture (`initError: opts.error`) this regression was
+    // invisible: both fields carried the same value, so a guard flipped to
+    // `error` still passed this suite.
+    setupStore({
+      initialized: false,
+      projects: [],
+      error: 'Failed to rename project',
+      initError: null,
+    })
+    render(<App />)
+
+    await new Promise((r) => setTimeout(r, 30))
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+  })
   it('redirects to /projects when initialized but the list is terminally empty', async () => {
     // Terminal empty state: the user deleted every project. The auto-default
     // flag stays set, so initialize() will never auto-create again — waiting

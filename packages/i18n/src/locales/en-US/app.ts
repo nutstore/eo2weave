@@ -7,8 +7,18 @@ export const app = {
     productName: "EO2Weave",
     initComplete: "Initialization complete",
     initFailed: "Initialization failed",
+    retry: "Retry",
+    projectsInitErrorHint:
+      "Your projects are safe — local storage could not be opened this time. Retrying usually fixes it.",
+    projectsInitUnknownHint:
+      "Local storage reported an unexpected error. Your projects may be unaffected, but we can't confirm that — run Diagnostics and retry; if the problem persists, attach the report to a bug report.",
+    projectsInitCorruptionHint:
+      "Local storage reported a possible data problem. Your projects may not open correctly — avoid clearing browser data and run Diagnostics so the report can be attached to a bug report.",
+    projectsInitRetrying: "Retrying...",
     sessionStorageOnly:
       "Data is saved for current session only, will be lost on refresh",
+    memoryModeWarning:
+      "Warning: running in temporary memory mode — all data will be lost when this tab closes or refreshes. Your browser cannot open persistent storage (check private-mode settings or site permissions).",
     localStorageMode: "Using local storage mode",
     migrationInProgress: "Migrating data",
     migrationComplete: "Migration complete",
