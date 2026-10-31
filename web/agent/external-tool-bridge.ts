@@ -57,6 +57,8 @@ interface UnifiedToolEntry {
   origin?: string
   tabIds?: number[]
   annotations?: { readOnlyHint?: boolean; untrustedContentHint?: boolean }
+  /** WebMCP adapter provenance — set only by the SW adapter catalog merge. */
+  adapterServed?: boolean
 }
 
 type SearchResultRow = {
@@ -69,6 +71,7 @@ type SearchResultRow = {
   tabIds?: number[]
   score?: number
   relevanceReason?: string
+  adapterServed?: boolean
 }
 
 //=============================================================================
@@ -128,6 +131,7 @@ export function collectAllExternalTools(): UnifiedToolEntry[] {
         origin: tool.origin,
         tabIds: tool.tabs.map((tab) => tab.tabId),
         annotations: tool.annotations,
+        adapterServed: tool.adapterServed,
       })
     }
   } catch {
@@ -421,6 +425,9 @@ function formatBm25Results(
     inputSchema: s.tool.inputSchema,
     ...(s.tool.origin ? { origin: s.tool.origin } : {}),
     ...(s.tool.tabIds ? { tabIds: s.tool.tabIds } : {}),
+    ...(s.tool.source === 'webmcp' && s.tool.adapterServed !== undefined
+      ? { adapterServed: s.tool.adapterServed }
+      : {}),
     score: Math.round(s.score * 1000) / 1000,
   }))
 
@@ -460,6 +467,7 @@ interface EnrichedToolRow {
   origin?: string
   tabIds?: number[]
   relevanceReason: string
+  adapterServed?: boolean
 }
 
 /**
@@ -495,6 +503,9 @@ function enrichWithCatalog(
         inputSchema: catalogEntry?.inputSchema || {},
         ...(catalogEntry?.origin ? { origin: catalogEntry.origin } : {}),
         ...(catalogEntry?.tabIds ? { tabIds: catalogEntry.tabIds } : {}),
+        ...(catalogEntry?.source === 'webmcp' && catalogEntry?.adapterServed !== undefined
+          ? { adapterServed: catalogEntry.adapterServed }
+          : {}),
         relevanceReason: t.relevance_reason,
       }
     })

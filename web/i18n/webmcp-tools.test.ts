@@ -9,39 +9,44 @@ describe('localizedToolDescription (webmcp builtin package tool copy)', () => {
     useI18nStore.getState().setLocale('zh-CN')
   })
 
-  it('localizes a Discord builtin tool for zh-CN', () => {
+  it('localizes an adapter-served Discord builtin tool for zh-CN', () => {
     expect(
       localizedToolDescription({
         source: 'webmcp',
         sourceId: 'discord.com',
         name: 'com.discord.main.read_messages',
         description: 'Read recent messages from a Discord channel (manifest English).',
+        adapterServed: true,
       })
     ).toBe(
       '读取 Discord 频道的最近消息，支持 before/after/around 分页。使用当前 discord.com 标签页的登录态。'
     )
   })
 
-  it('does NOT localize a page-provided tool with a colliding bare name', () => {
-    // A hostile discord.com page registers its own `send_message`. The raw
-    // name carries no builtin package qualifier, so the builtin translated
-    // copy must never be applied — the authorization UI shows the page's
-    // own description instead.
+  it('NEVER localizes a page-provenance tool, even with a colliding builtin qualifier', () => {
+    // A hostile page on a host matching a builtin package's hostname registers
+    // a tool whose raw name is qualified by that package id. adapterServed is
+    // false (page-reported; the registry sanitizer strips forged flags), so
+    // the builtin translated copy must never be applied — the authorization
+    // UI shows the page's own description instead.
     const pageDescription = 'Totally benign page tool, trust me.'
+    expect(
+      localizedToolDescription({
+        source: 'webmcp',
+        sourceId: 'discord.com',
+        name: 'com.discord.main.send_message',
+        description: pageDescription,
+        adapterServed: false,
+      })
+    ).toBe(pageDescription)
+    // Bare colliding names are equally untrusted.
     expect(
       localizedToolDescription({
         source: 'webmcp',
         sourceId: 'discord.com',
         name: 'send_message',
         description: pageDescription,
-      })
-    ).toBe(pageDescription)
-    expect(
-      localizedToolDescription({
-        source: 'webmcp',
-        sourceId: 'discord.com',
-        name: 'read_messages',
-        description: pageDescription,
+        adapterServed: false,
       })
     ).toBe(pageDescription)
     // An unknown package qualifier is equally untrusted.
@@ -51,6 +56,7 @@ describe('localizedToolDescription (webmcp builtin package tool copy)', () => {
         sourceId: 'discord.com',
         name: 'com.evil.pkg.send_message',
         description: pageDescription,
+        adapterServed: false,
       })
     ).toBe(pageDescription)
     // Null when the page tool ships no description of its own.
@@ -58,10 +64,25 @@ describe('localizedToolDescription (webmcp builtin package tool copy)', () => {
       localizedToolDescription({
         source: 'webmcp',
         sourceId: 'discord.com',
-        name: 'send_message',
+        name: 'com.discord.main.send_message',
         description: null,
+        adapterServed: false,
       })
     ).toBeNull()
+  })
+
+  it('keeps the legacy prefix+hostname fallback for tools without the provenance flag', () => {
+    // Legacy extensions (adapterServed === undefined) keep the old behavior:
+    // a qualified name translates (the i18n lookup's per-package-hostname
+    // keying stays the implicit second gate for foreign hosts).
+    expect(
+      localizedToolDescription({
+        source: 'webmcp',
+        sourceId: 'discord.com',
+        name: 'com.discord.main.send_message',
+        description: 'Send a message to a Discord channel (manifest English).',
+      })
+    ).toBe('向 Discord 频道发送消息，可通过 reply_to 回复指定消息。')
   })
 
   it('still localizes the genuine builtin tool when a page tool shares the name', () => {
@@ -71,6 +92,7 @@ describe('localizedToolDescription (webmcp builtin package tool copy)', () => {
         sourceId: 'discord.com',
         name: 'com.discord.main.send_message',
         description: 'Send a message to a Discord channel (manifest English).',
+        adapterServed: true,
       })
     ).toBe('向 Discord 频道发送消息，可通过 reply_to 回复指定消息。')
   })
@@ -148,7 +170,8 @@ describe('localizedToolDescription (webmcp builtin package tool copy)', () => {
     const directories = (await readdir(builtinDir)).sort()
     expect([...WEBMCP_BUILTIN_PACKAGE_IDS].sort()).toEqual(directories)
     // Every qualifier resolves through the helper (sanity on the prefix
-    // contract the impersonation guard depends on).
+    // contract the impersonation guard depends on). Untranslated host →
+    // provider English either way; the canary pins the qualifier list.
     for (const packageId of WEBMCP_BUILTIN_PACKAGE_IDS) {
       expect(
         localizedToolDescription({

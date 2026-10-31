@@ -30,6 +30,8 @@ export interface WebMCPDiscoveredTool extends WebMCPToolDefinition {
    * tool name. Absent on newer extensions.
    */
   groupKey?: string
+  /** Set by the SW adapter catalog merge; page-registered tools never carry it. */
+  adapterServed?: boolean
 }
 
 export type WebMCPDiscoveredToolInstance = WebMCPDiscoveredTool
@@ -141,6 +143,8 @@ export interface WebMCPRegisteredTool {
   hostname: string
   fullName: string
   apiMode: WebMCPApiMode
+  /** Set by the SW adapter catalog merge; page-registered tools never carry it. */
+  adapterServed?: boolean
   tabs: WebMCPTabInstance[]
   discoveredAt: number
 }

@@ -336,12 +336,14 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
                               // package's site hostname — the same key the
                               // webmcpTools i18n namespace uses (see
                               // getWebMCPToolDescription). The name carries
-                              // the builtin package qualifier — the shape
-                              // localizedToolDescription trusts (see
-                              // web/i18n/webmcp-tools.ts).
+                              // the builtin package qualifier. The payload is
+                              // built from extension-internal opt-in data
+                              // (genuinely builtin), so adapter provenance is
+                              // passed explicitly (see web/i18n/webmcp-tools.ts).
                               sourceId: packageInfo.hostname,
                               name: `${packageInfo.id}.${tool.name}`,
                               description: tool.description,
+                              adapterServed: true,
                             })}</span>
                           ) : null}
                         </span>

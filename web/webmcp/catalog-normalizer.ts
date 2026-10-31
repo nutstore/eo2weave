@@ -88,6 +88,7 @@ function buildRegisteredTools(
         hostname: representative.hostname,
         fullName: representative.fullName,
         apiMode: representative.apiMode,
+        adapterServed: representative.adapterServed,
         tabs: buildTabs(instances),
         discoveredAt: Math.max(...instances.map((instance) => instance.discoveredAt)),
       }

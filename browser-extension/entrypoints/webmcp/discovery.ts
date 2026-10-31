@@ -158,11 +158,22 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         for (const tool of adapters) tools.set(tool.name, tool)
         return { tabId: tab.id, origin, hostname, tabTitle: tab.title || '',
           tabUrl: tab.url!, windowId: tab.windowId, apiMode: 'documentModelContext' as const,
-          tools: [...tools.values()], updatedAt: Date.now() }
+          tools: [...tools.values()], updatedAt: Date.now(),
+          // Transient — consumed by the post-registerTab marking below, never
+          // passed to registerTab's persisted shape.
+          adapterNames: new Set(adapters.map(tool => tool.name)) }
       }))
       for (const snapshot of snapshots) {
         if (snapshot.status !== 'fulfilled' || !snapshot.value) continue
         await registerTab(snapshot.value)
+        // Mark adapter-served tools on the IN-MEMORY copy only, AFTER the
+        // persisted registry write above — the persisted registry must never
+        // store this flag because the WEBMCP_TAB_REPORT path feeds
+        // page-controlled tools through it (sanitizeTool strips the flag from
+        // raw reports; only this merge sets it programmatically).
+        snapshot.value.tools = snapshot.value.tools.map((tool) =>
+          snapshot.value!.adapterNames.has(tool.name) ? { ...tool, adapterServed: true } : tool
+        )
         const index = registryEntries.findIndex(entry => entry.tabId === snapshot.value!.tabId)
         if (index < 0) registryEntries.push(snapshot.value)
         else registryEntries[index] = snapshot.value

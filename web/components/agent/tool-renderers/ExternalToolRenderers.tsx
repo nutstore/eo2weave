@@ -97,6 +97,7 @@ registerRenderer({
                   sourceId: tool.sourceId,
                   name: tool.name,
                   description: tool.description,
+                  adapterServed: tool.adapterServed,
                 })
                 return description ? (
                   <div className="text-[12px] text-neutral-600 text-neutral-300 text-neutral-300 dark:text-neutral-300 mb-1.5 leading-relaxed">
@@ -347,6 +348,7 @@ interface SearchResult {
   sourceId: string
   description: string
   inputSchema: Record<string, unknown>
+  adapterServed?: boolean
 }
 
 function extractSearchResults(ctx: ToolRenderCtx): SearchResult[] {
@@ -362,6 +364,7 @@ function extractSearchResults(ctx: ToolRenderCtx): SearchResult[] {
       sourceId: typeof t.sourceId === 'string' ? t.sourceId : '',
       description: typeof t.description === 'string' ? t.description : '',
       inputSchema: (t.inputSchema as Record<string, unknown>) || {},
+      adapterServed: t.adapterServed === true ? true : t.adapterServed === false ? false : undefined,
     }))
     .filter(t => t.fullName)
 }

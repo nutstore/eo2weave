@@ -25,6 +25,8 @@ export interface WebMCPDiscoveredTool extends WebMCPToolDefinition, WebMCPToolMe
   tabUrl?: string
   discoveredAt: number
   apiMode: WebMCPApiMode
+  /** Set by the SW adapter catalog merge; page-registered tools never carry it. */
+  adapterServed?: boolean
 }
 
 export interface WebMCPDiscoverResponse {
