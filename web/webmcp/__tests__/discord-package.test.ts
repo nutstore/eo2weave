@@ -1110,6 +1110,27 @@ it('aborts a queued reaction fetch by its queue time, not its start time', async
   }
   // Non-reaction workflows keep their own start-of-request deadline.
   expect(sourceOf('read_messages')).toMatch(/var startedAt = Date\.now\(\)/)
+  // Every fetch workflow must fail fast when the command budget is
+  // exhausted BEFORE arming the timer or dispatching — arming
+  // Math.max(1, remainingMs) can only abort a fetch that has already
+  // gone out, and the caller has already received TAB_UNAVAILABLE by
+  // then. send_message carried the guard first; the other seven were
+  // aligned so no workflow can apply a change past its command deadline.
+  for (const name of [
+    'send_message',
+    'read_messages',
+    'search_messages',
+    'list_channels',
+    'list_guilds',
+    'get_user_profile',
+    'add_reaction',
+    'remove_reaction',
+  ]) {
+    const source = sourceOf(name)
+    expect(source, name).toMatch(/if \(remainingMs <= 0\)/)
+    expect(source, name).toMatch(/error_code: 'NETWORK'/)
+    expect(source, name).toMatch(/command deadline expired before the page eval started/)
+  }
 }, 15000)
 
 // Deterministic in-page clock for behavioral timer tests. setTimeout is

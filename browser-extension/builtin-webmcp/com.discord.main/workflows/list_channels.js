@@ -239,6 +239,19 @@ export default {
               var commandRemainingMs = commandDeadline - startedAt
               if (commandRemainingMs < remainingMs) remainingMs = commandRemainingMs
             }
+            // Fail fast BEFORE arming the timer or dispatching: an eval
+            // that starts after the command deadline has no budget left —
+            // the caller already received TAB_UNAVAILABLE, so a request
+            // sent here could apply after the caller believes the command
+            // timed out. Arming Math.max(1, remainingMs) would only abort
+            // a fetch that has already gone out.
+            if (remainingMs <= 0)
+              return {
+                ok: false,
+                error_code: 'NETWORK',
+                message:
+                  'Discord API request not sent: the browser command deadline expired before the page eval started.',
+              }
             var abortTimer =
               abortController !== null
                 ? setTimeout(
