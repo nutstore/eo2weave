@@ -80,6 +80,27 @@ it('sanitizeTool strips a page-reported adapterServed flag (forge prevention)', 
 })
 
 it('discovery marks only adapter-served tools with adapterServed, after the persisted write', async () => {
+  // A page-reported tool whose raw name collides with a builtin-qualified
+  // prefix registers FIRST (WEBMCP_TAB_REPORT → registerTab path). The
+  // adapter serves a DIFFERENT tool with the same package prefix — both
+  // look "builtin" by name alone, so marking-everything and dropping-the-
+  // flag regressions must be distinguishable in the discovery output.
+  await registerTab({
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext',
+    tools: [
+      {
+        name: 'com.discord.main.read_messages',
+        description: 'Page-reported reader (collides with a builtin prefix).',
+        inputSchema: { type: 'object' },
+      },
+    ],
+  })
+
   installAdapterCatalog(async () => [
     {
       name: 'com.discord.main.send_message',
@@ -94,15 +115,91 @@ it('discovery marks only adapter-served tools with adapterServed, after the pers
   expect(persisted).toHaveLength(1)
   expect(JSON.stringify(persisted[0]!.tools)).not.toContain('adapterServed')
 
-  // …while the in-memory snapshot handed to consumers does.
+  // …while the in-memory snapshot handed to consumers flags ONLY the
+  // adapter-derived tool, even though the page tool's name carries the
+  // same builtin package qualifier.
   const adapterTools = response.tools.filter(
     (tool) => tool.name === 'com.discord.main.send_message'
   )
   expect(adapterTools).toHaveLength(1)
   expect(adapterTools[0]!.adapterServed).toBe(true)
 
+  const pageTools = response.tools.filter(
+    (tool) => tool.name === 'com.discord.main.read_messages'
+  )
+  expect(pageTools).toHaveLength(1)
+  expect(pageTools[0]!.adapterServed).toBeUndefined()
+  expect(pageTools[0]!.description).toBe(
+    'Page-reported reader (collides with a builtin prefix).'
+  )
+
   // Re-reading through the registry (fresh SW read path) keeps the flag off —
   // only the discovery response of the merge that saw the adapter carries it.
   const fromRegistry = entriesToDiscoveredTools(await getRegistryEntries())
-  expect(fromRegistry[0]!.adapterServed).toBeUndefined()
+  expect(fromRegistry).toHaveLength(2)
+  expect(fromRegistry.find((tool) => tool.name === 'com.discord.main.send_message')!.adapterServed).toBeUndefined()
+  expect(fromRegistry.find((tool) => tool.name === 'com.discord.main.read_messages')!.adapterServed).toBeUndefined()
 })
+
+it('adapter merge preserves a mid-await page report (fresh re-read before registering)', async () => {
+  // Race regression: while the adapter catalog await is in flight, the page
+  // reports a NEW tool. The merge must build its snapshot from the registry
+  // entry re-read AFTER that await, so the newer page report survives the
+  // registerTab write instead of being clobbered by the stale pre-await
+  // snapshot (which never contained the new tool).
+  installAdapterCatalog(async () => {
+    // Simulate the page reporting a changed toolset WHILE discovery is
+    // awaiting the adapter catalog (WEBMCP_TAB_REPORT → registerTab).
+    // Reporting inside the provider pins the report strictly between the
+    // pre-await registry snapshot and the post-await fresh re-read.
+    await registerTab({
+      tabId: 7,
+      hostname: 'discord.com',
+      origin: 'https://discord.com',
+      tabTitle: 'Discord',
+      tabUrl: 'https://discord.com/channels/@me',
+      apiMode: 'documentModelContext',
+      tools: [
+        {
+          name: 'page_only_tool',
+          description: 'Reported while adapter discovery was in flight.',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    })
+    return [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Send a message to a Discord channel.',
+        inputSchema: { type: 'object' },
+      },
+    ]
+  })
+  const response = await discoverWebMCPToolsInCurrentWindow(3)
+
+  // The adapter tool landed, flagged, in the discovery output…
+  const adapterTools = response.tools.filter(
+    (tool) => tool.name === 'com.discord.main.send_message'
+  )
+  expect(adapterTools).toHaveLength(1)
+  expect(adapterTools[0]!.adapterServed).toBe(true)
+
+  // …and the mid-await page report SURVIVED the registerTab merge write.
+  const pageTools = response.tools.filter((tool) => tool.name === 'page_only_tool')
+  expect(pageTools).toHaveLength(1)
+  expect(pageTools[0]!.adapterServed).toBeUndefined()
+  expect(pageTools[0]!.description).toBe('Reported while adapter discovery was in flight.')
+
+  // The persisted registry keeps both tools, flag-free.
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<Record<string, unknown>>
+  }>
+  const entry = persisted.find((e) => e.tabId === 7)!
+  expect(entry.tools.map((tool) => tool.name).sort()).toEqual([
+    'com.discord.main.send_message',
+    'page_only_tool',
+  ])
+  expect(JSON.stringify(entry.tools)).not.toContain('adapterServed')
+})
+

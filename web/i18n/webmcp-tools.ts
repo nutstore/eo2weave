@@ -22,8 +22,9 @@ export const WEBMCP_BUILTIN_PACKAGE_IDS = [
 /**
  * Strip the builtin package qualifier from a raw tool name, or return null
  * when the name is not qualified by a known builtin package (page tools,
- * MCP tools). LEGACY-ONLY signal: a matching prefix alone no longer proves
- * the tool is builtin — see localizedToolDescription for the trust root.
+ * MCP tools). NAME PARSER ONLY: a matching prefix alone proves nothing
+ * about provenance — callers must gate on `adapterServed === true` before
+ * trusting the result (see localizedToolDescription).
  */
 function builtinPackageToolName(name: string): string | null {
   for (const packageId of WEBMCP_BUILTIN_PACKAGE_IDS) {
@@ -51,6 +52,8 @@ function builtinPackageToolName(name: string): string | null {
  * and the registry sanitizer strips it from page-reported tool snapshots,
  * so a page can never forge it.
  *
+ * STRICT gating — translation requires EXPLICIT provenance:
+ *
  * - `adapterServed === true`: the tool was served by a builtin adapter —
  *   translate when the raw name is qualified by a builtin package id and a
  *   translation exists for the active locale.
@@ -59,12 +62,15 @@ function builtinPackageToolName(name: string): string | null {
  *   (a page on a host matching a builtin package's hostname could otherwise
  *   register `com.discord.main.send_message` and have the authorization UI
  *   display the builtin's benign translated copy for a different action).
- * - `adapterServed === undefined`: extensions predating the provenance flag
- *   (douban/xiaohongshu/jmail adapter tools already shipped in earlier
- *   releases). LEGACY FALLBACK: keep the old prefix behavior — translate
- *   when the raw name is qualified by a builtin package id; the lookup's
- *   hostname keying (translations are stored per package site hostname)
- *   remains the implicit second gate for foreign-host pages.
+ * - `adapterServed === undefined`: no provenance evidence at all — NEVER
+ *   translate. Extensions predating the flag (douban/xiaohongshu/jmail
+ *   adapter tools already shipped in earlier releases) fall into this
+ *   branch: users on those builds see the manifest English description
+ *   until they update. Accepted product trade-off — the exploit window
+ *   (a page registering a builtin-qualified name inheriting the benign
+ *   translated copy in the authorization modal) outweighs the cosmetic
+ *   loss, and the old prefix-based fallback is exactly the hole this gate
+ *   closes: no prefix check alone can prove a tool is builtin.
  */
 export function localizedToolDescription(tool: {
   source: string
@@ -76,9 +82,11 @@ export function localizedToolDescription(tool: {
 }): string | null {
   const english = tool.description?.trim() || null
   if (tool.source !== 'webmcp') return english
-  // Page-provenance tools never receive builtin translations, no matter
-  // what their raw name looks like.
-  if (tool.adapterServed === false) return english
+  // Only tools with EXPLICIT adapter provenance may receive builtin
+  // translations. `false` (page-reported) and `undefined` (no evidence —
+  // pre-flag extensions, MCP-style rows) both keep the provider's own
+  // description, no matter what their raw name looks like.
+  if (tool.adapterServed !== true) return english
   const builtinToolName = builtinPackageToolName(tool.name)
   if (!builtinToolName) return english
   const localized = getWebMCPToolDescription(

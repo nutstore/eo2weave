@@ -153,7 +153,14 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         const adapters = await adapterCatalog!(tab.id)
         const current = await chrome.tabs.get(tab.id)
         if (current.url !== tab.url || !adapters.length) return null
-        const existing = registryEntries.find(entry => entry.tabId === tab.id)
+        // Re-read the LIVE registry entry for this tab: the `registryEntries`
+        // array was snapshotted before the adapter await above, and a page
+        // may have reported a changed toolset (WEBMCP_TAB_REPORT) while we
+        // were in flight. Merging onto the stale entry would clobber the
+        // newer page report — the registry is the source of truth, so merge
+        // onto the fresh entry instead (adapter wins same-name collisions).
+        const freshEntries = await getRegistryEntries()
+        const existing = freshEntries.find(entry => entry.tabId === tab.id)
         const tools = new Map((existing?.tools || []).map(tool => [tool.name, tool]))
         for (const tool of adapters) tools.set(tool.name, tool)
         return { tabId: tab.id, origin, hostname, tabTitle: tab.title || '',
@@ -174,6 +181,11 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         snapshot.value.tools = snapshot.value.tools.map((tool) =>
           snapshot.value!.adapterNames.has(tool.name) ? { ...tool, adapterServed: true } : tool
         )
+        // Reflect the merge into the local registryEntries array for the
+        // discovery response below. snapshot.value.tools was merged onto the
+        // FRESH registry entry (re-read after the adapter await), so any
+        // mid-await page report is preserved; a tab that was previously
+        // silent and only reported mid-await simply gets pushed here.
         const index = registryEntries.findIndex(entry => entry.tabId === snapshot.value!.tabId)
         if (index < 0) registryEntries.push(snapshot.value)
         else registryEntries[index] = snapshot.value

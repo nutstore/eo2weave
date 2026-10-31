@@ -71,18 +71,40 @@ describe('localizedToolDescription (webmcp builtin package tool copy)', () => {
     ).toBeNull()
   })
 
-  it('keeps the legacy prefix+hostname fallback for tools without the provenance flag', () => {
-    // Legacy extensions (adapterServed === undefined) keep the old behavior:
-    // a qualified name translates (the i18n lookup's per-package-hostname
-    // keying stays the implicit second gate for foreign hosts).
+  it('NEVER localizes tools without explicit adapter provenance (undefined flag)', () => {
+    // STRICT gate: adapterServed === undefined means NO provenance evidence
+    // (pre-flag extensions, rows that lost the flag in transit). The old
+    // prefix-based fallback is exactly the hole this gate closes — a page
+    // registering a builtin-qualified name must not inherit the builtin's
+    // translated copy in the authorization modal. Pre-flag extension users
+    // see manifest English until they update (accepted trade-off).
+    const manifestEnglish = 'Send a message to a Discord channel (manifest English).'
     expect(
       localizedToolDescription({
         source: 'webmcp',
         sourceId: 'discord.com',
         name: 'com.discord.main.send_message',
-        description: 'Send a message to a Discord channel (manifest English).',
+        description: manifestEnglish,
       })
-    ).toBe('向 Discord 频道发送消息，可通过 reply_to 回复指定消息。')
+    ).toBe(manifestEnglish)
+    // Same rule on a foreign host with a matching qualifier.
+    expect(
+      localizedToolDescription({
+        source: 'webmcp',
+        sourceId: 'page.example',
+        name: 'com.discord.main.send_message',
+        description: manifestEnglish,
+      })
+    ).toBe(manifestEnglish)
+    // Null when the flag-less tool ships no description of its own.
+    expect(
+      localizedToolDescription({
+        source: 'webmcp',
+        sourceId: 'discord.com',
+        name: 'com.discord.main.send_message',
+        description: null,
+      })
+    ).toBeNull()
   })
 
   it('still localizes the genuine builtin tool when a page tool shares the name', () => {
