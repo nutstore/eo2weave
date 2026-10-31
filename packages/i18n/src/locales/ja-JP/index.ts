@@ -38,6 +38,7 @@ import { webmcpPackages } from './webmcpPackages'
 import { execPolicy } from './execPolicy'
 import { tools } from './tools'
 import { schedule } from './schedule'
+import { webmcpTools } from './webmcpTools'
 import { extension } from './extension'
 
 export const jaJP = {
@@ -101,4 +102,5 @@ export const jaJP = {
   extension,
   tools,
   schedule,
+  webmcpTools,
 } as const

@@ -39,6 +39,7 @@ import { assets } from './assets'
 import { processes } from './processes'
 import { tools } from './tools'
 import { schedule } from './schedule'
+import { webmcpTools } from './webmcpTools'
 
 export const enUS = {
   common,
@@ -101,4 +102,5 @@ export const enUS = {
   processes,
   tools,
   schedule,
+  webmcpTools,
 } as const

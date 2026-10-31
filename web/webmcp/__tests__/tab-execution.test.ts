@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { executeWebMCPToolInTab, installAdapterInvoker, invokeWebMCPTool } from '../../../browser-extension/entrypoints/webmcp/invoke'
-const mocks = vi.hoisted(() => ({ adapter: vi.fn(), send: vi.fn(), script: vi.fn(), info: vi.fn(), get: vi.fn(), route: vi.fn() }))
+const mocks = vi.hoisted(() => ({ adapter: vi.fn(), send: vi.fn(), script: vi.fn(), info: vi.fn(), get: vi.fn(), route: vi.fn(), catalog: vi.fn() }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/discovery', () => ({
   discoverToolsInTab: mocks.info,
+  currentAdapterCatalogForTab: mocks.catalog,
   parseHostname: (url: string) => new URL(url).hostname,
   parseOrigin: (url: string) => new URL(url).origin,
 }))
@@ -14,6 +15,7 @@ vi.mock('../../../browser-extension/entrypoints/webmcp/authorization', () => ({
 beforeEach(() => {
   vi.resetAllMocks()
   mocks.adapter.mockResolvedValue(null)
+  mocks.catalog.mockResolvedValue(null)
   mocks.route.mockResolvedValue([{
     tabId: 102,
     origin: 'https://example.com',
@@ -103,5 +105,103 @@ it('cancels waiting on a native tool without falling back or accepting a late re
   controller.abort(new Error('stopped'))
   await stopped
   done({ ok: true, result: 'late' })
+  expect(mocks.script).not.toHaveBeenCalled()
+})
+
+it('rejects a stale adapter-served invocation instead of falling back to the page relay (round-5)', async () => {
+  // Sourcery round-5 regression guard: the registry entry still carries a
+  // name marked adapter-owned after the catalog dropped the route (the next
+  // adapter-merge discovery has not reconciled it yet). The web app —
+  // holding the adapter's previously trusted description — invokes it:
+  // invokeAdapter returns null, and the old behavior fell back to the page
+  // relay, executing a colliding PAGE tool under the adapter's description.
+  // The invocation must be rejected outright instead.
+  mocks.route.mockResolvedValue([{
+    tabId: 102,
+    origin: 'https://example.com',
+    hostname: 'example.com',
+    tools: [{
+      name: 'com.example.main.send_message',
+      description: 'Adapter copy (stale).',
+      inputSchema: { type: 'object' },
+      adapterOwned: true,
+    }],
+  }])
+  // The CURRENT catalog no longer serves the name…
+  mocks.catalog.mockResolvedValue([])
+  const response = await invokeWebMCPTool({
+    targetTabId: 102,
+    origin: 'https://example.com',
+    toolName: 'com.example.main.send_message',
+    args: {},
+  })
+  expect(response).toMatchObject({ ok: false, errorCode: 'TOOL_NOT_FOUND' })
+  // …and neither the page relay nor the script probe ever ran.
+  expect(mocks.adapter).not.toHaveBeenCalled()
+  expect(mocks.send).not.toHaveBeenCalled()
+  expect(mocks.script).not.toHaveBeenCalled()
+})
+
+it('a live adapter-served invocation still passes the catalog revalidation (round-5)', async () => {
+  mocks.route.mockResolvedValue([{
+    tabId: 102,
+    origin: 'https://example.com',
+    hostname: 'example.com',
+    tools: [{
+      name: 'com.example.main.send_message',
+      description: 'Adapter copy.',
+      inputSchema: { type: 'object' },
+      adapterOwned: true,
+    }],
+  }])
+  // The catalog still serves the name → the call proceeds to the adapter…
+  mocks.catalog.mockResolvedValue([
+    { name: 'com.example.main.send_message', description: 'Adapter copy.', inputSchema: { type: 'object' } },
+  ])
+  mocks.adapter.mockResolvedValue({ ok: true, value: { status: 'sent' } })
+  const response = await invokeWebMCPTool({
+    targetTabId: 102,
+    origin: 'https://example.com',
+    toolName: 'com.example.main.send_message',
+    args: {},
+  })
+  expect(response).toMatchObject({ ok: true, result: { status: 'sent' } })
+  expect(mocks.adapter).toHaveBeenCalled()
+  expect(mocks.send).not.toHaveBeenCalled()
+})
+
+it('a route withdrawn after catalog revalidation fails closed instead of running the page tool (round-6)', async () => {
+  // Sourcery round-6: the route can be withdrawn BETWEEN the pre-call
+  // catalog revalidation and the adapter invocation — invokeAdapter then
+  // returns null, and the old call fell through to the page relay, running
+  // a colliding PAGE tool under the adapter's previously trusted
+  // description. invokeWebMCPTool must pass adapterOnly for adapter-owned
+  // names so a null adapter result fails closed.
+  mocks.route.mockResolvedValue([{
+    tabId: 102,
+    origin: 'https://example.com',
+    hostname: 'example.com',
+    tools: [{
+      name: 'com.example.main.send_message',
+      description: 'Adapter copy.',
+      inputSchema: { type: 'object' },
+      adapterOwned: true,
+    }],
+  }])
+  // The catalog still serves the name at revalidation time…
+  mocks.catalog.mockResolvedValue([
+    { name: 'com.example.main.send_message', description: 'Adapter copy.', inputSchema: { type: 'object' } },
+  ])
+  // …but the route is gone by invocation time (invokeAdapter returns null).
+  mocks.adapter.mockResolvedValue(null)
+  const response = await invokeWebMCPTool({
+    targetTabId: 102,
+    origin: 'https://example.com',
+    toolName: 'com.example.main.send_message',
+    args: {},
+  })
+  expect(response).toMatchObject({ ok: false, errorCode: 'ADAPTER_UNAVAILABLE' })
+  // The page relay and script probe never ran.
+  expect(mocks.send).not.toHaveBeenCalled()
   expect(mocks.script).not.toHaveBeenCalled()
 })

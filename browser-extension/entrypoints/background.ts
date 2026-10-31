@@ -111,7 +111,7 @@ import { captureFrameLoaderId, evaluateBoundExpressionViaCdpUnlocked, isCallerDe
 import { TabLockWaitTimeoutError, withTabLock } from '../lib/bash-commands/browser/cdp'
 import { isCspCompileRejection } from '../lib/bash-commands/browser/csp-rejection'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
-import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
+import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog, invalidateAdapterCatalogGeneration } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
 import { createTabWebMCPApi } from './webmcp/tab-api'
 import { createPackageOptInHandler, handlePackageOptInRecoveryAlarm } from './webmcp/package-optin-handler'

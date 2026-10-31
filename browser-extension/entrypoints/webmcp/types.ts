@@ -15,6 +15,13 @@ export interface WebMCPToolMeta {
     readOnlyHint?: boolean
     untrustedContentHint?: boolean
   }
+  /**
+   * SW-internal ownership marker (extension adapter catalog owns this tool
+   * name on the tab). Set only by the SW's own registerTab merge call —
+   * sanitizeTool whitelists fields, so page reports cannot set it. Stripped
+   * before discovery output; never leaves the service worker.
+   */
+  adapterOwned?: boolean
 }
 
 export interface WebMCPDiscoveredTool extends WebMCPToolDefinition, WebMCPToolMeta {
@@ -25,6 +32,8 @@ export interface WebMCPDiscoveredTool extends WebMCPToolDefinition, WebMCPToolMe
   tabUrl?: string
   discoveredAt: number
   apiMode: WebMCPApiMode
+  /** Set by the SW adapter catalog merge; page-registered tools never carry it. */
+  adapterServed?: boolean
 }
 
 export interface WebMCPDiscoverResponse {

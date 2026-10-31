@@ -46,6 +46,17 @@ export interface WebMCPRegisteredTabEntry {
   windowId?: number
   apiMode: WebMCPApiMode
   tools: WebMCPToolMeta[]
+  /**
+   * Page-reported implementations of names the adapter catalog currently
+   * owns on this tab. When a page reports a tool whose raw name collides
+   * with an adapter-owned name, the adapter object stays the advertised
+   * implementation — but the page's object is retained here so it can be
+   * restored the moment the catalog stops serving that name (otherwise the
+   * page implementation would be lost until the page re-reported). Shadows
+   * are sanitized page objects (never adapter-marked) and never advertised
+   * while the adapter owns the name.
+   */
+  shadowedPageTools?: WebMCPToolMeta[]
   updatedAt: number
 }
 
@@ -127,14 +138,40 @@ function sanitizeTool(raw: unknown): WebMCPToolMeta | null {
   }
 }
 
+/**
+ * Internal-only marker reader: the service-worker adapter catalog (not the
+ * page) owns this tool name on this tab. The flag is written only through
+ * RegisterTabInput.adapterOwnedNames (discovery.ts merge) and survives
+ * storage.session hydration via the marker rebuild in sanitizeEntry — a
+ * hostile page cannot set it because sanitizeTool whitelists tool fields.
+ */
+function isAdapterOwned(raw: unknown): boolean {
+  return !!(raw && typeof raw === 'object' && (raw as Record<string, unknown>).adapterOwned === true)
+}
+
 function sanitizeEntry(raw: unknown, tabId: unknown): WebMCPRegisteredTabEntry | null {
   if (!raw || typeof raw !== 'object') return null
   if (typeof tabId !== 'number') return null
   const item = raw as Record<string, unknown>
   if (typeof item.hostname !== 'string' || item.hostname.length === 0) return null
 
+  // adapterOwned is a SW-internal bookkeeping field: keep it across the
+  // in-memory roundtrip through storage.session, but rebuild it from the
+  // stored marker rather than trusting the page-controlled payload —
+  // sanitizeTool (above) whitelists fields, so a page cannot set it.
+  const adapterOwnedNames = Array.isArray(item.tools)
+    ? new Set(
+        item.tools
+          .filter((tool: unknown) => isAdapterOwned(tool))
+          .map((tool: unknown) => (tool as Record<string, unknown>).name as string),
+      )
+    : new Set<string>()
+
   const tools = Array.isArray(item.tools)
     ? (item.tools.map(sanitizeTool).filter(Boolean) as WebMCPToolMeta[])
+        .map((tool) =>
+          adapterOwnedNames.has(tool.name) ? { ...tool, adapterOwned: true } : tool,
+        )
     : []
   if (tools.length === 0) return null
 
@@ -156,8 +193,28 @@ function sanitizeEntry(raw: unknown, tabId: unknown): WebMCPRegisteredTabEntry |
         ? (item.apiMode as WebMCPApiMode)
         : 'documentModelContext',
     tools,
+    // Restore shadows only for names still adapter-owned (rebuild — like
+    // the marker — from SW-side state, never from the page payload).
+    ...(adapterOwnedNames.size > 0
+      ? { shadowedPageTools: sanitizeShadowedTools(item.shadowedPageTools, adapterOwnedNames) }
+      : {}),
     updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : now,
   }
+}
+
+/**
+ * Sanitized, adapter-mark-free copies of a page's colliding tool objects.
+ * Only the adapter merge (discovery.ts) writes these, and only for names
+ * the catalog currently serves — so they can never be used to smuggle a
+ * page tool into the advertised toolset while the adapter owns the name.
+ */
+function sanitizeShadowedTools(raw: unknown, ownedNames: Set<string>): WebMCPToolMeta[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const shadows = raw
+    .map(sanitizeTool)
+    .filter((tool): tool is WebMCPToolMeta => !!tool)
+    .filter((tool) => ownedNames.has(tool.name))
+  return shadows.length > 0 ? shadows : undefined
 }
 
 async function persist(): Promise<void> {
@@ -200,6 +257,14 @@ export interface RegisterTabInput {
       untrustedContentHint?: boolean
     }
   }>
+  /**
+   * SW-internal: names of tools owned by the extension adapter catalog.
+   * Only the adapter merge in discovery.ts passes this; the page-facing
+   * WEBMCP_TAB_REPORT path (background.ts) never does, and sanitizeTool's
+   * field whitelist drops any adapterOwned key a page smuggles into its
+   * tool objects — so the marker cannot be forged.
+   */
+  adapterOwnedNames?: string[]
 }
 
 /**
@@ -210,7 +275,79 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
   await hydrate()
   seenTabs.add(input.tabId)
 
+  const previous = entries.get(input.tabId)
+  // Caller discrimination: the adapter merge (discovery.ts) ALWAYS passes
+  // adapterOwnedNames — even when the reconciled set is empty — while the
+  // page relay (WEBMCP_TAB_REPORT, legacy probe) never does. The merge
+  // semantics below depend on this.
+  const isAdapterMerge = Array.isArray(input.adapterOwnedNames)
+
   if (input.tools.length === 0) {
+    if (isAdapterMerge) {
+      // The adapter merge reconciled every name away (or the tab never had
+      // tools): remove the entry — keeping it would advertise names the
+      // current catalog no longer serves. A WEBMCP_TAB_REPORT that landed
+      // after the merge's fresh re-read is NEWER than the snapshot and must
+      // survive this removal: keep exactly the live entry's unmarked tools
+      // (marked names have no route behind the empty snapshot). Without
+      // this, the newer report is erased together with the stale entry.
+      const surviving = (previous?.tools ?? []).filter((tool) => !tool.adapterOwned)
+      // Shadows only exist for names the adapter owned — with an EMPTY
+      // merge snapshot the catalog no longer serves any of this tab's
+      // names, so every shadowed page implementation is restored into the
+      // live toolset (finding 2: the page object displaced when the adapter
+      // took the name must not be lost when the catalog lets go of it).
+      const restored = [...surviving, ...(previous?.shadowedPageTools ?? [])]
+      if (previous && restored.length > 0) {
+        entries.set(input.tabId, {
+          ...previous,
+          hostname: input.hostname,
+          origin: input.origin,
+          tabTitle: input.tabTitle,
+          tabUrl: input.tabUrl,
+          windowId: input.windowId ?? previous.windowId,
+          apiMode: input.apiMode || previous.apiMode,
+          tools: restored,
+          updatedAt: Date.now(),
+        })
+        await persist()
+        notifyRegistryUpdated()
+        return
+      }
+      if (entries.delete(input.tabId)) {
+        await persist()
+        notifyRegistryUpdated()
+      } else {
+        await persist() // still record "seen" even if nothing to remove
+      }
+      return
+    }
+    // Page-reported empty toolset: adapter-owned tools did not go anywhere —
+    // the SW adapter catalog still serves them — so an empty page report must
+    // not strip them. Keep exactly those; without any, remove the tab (a page
+    // that unregistered all tools no longer exists for discovery beyond the
+    // adapter tools it does not own). Shadows for names the page no longer
+    // reports DIE here: the report is authoritative, and keeping a shadowed
+    // implementation would let a later catalog drop resurrect a page-removed
+    // tool (Sourcery round-6).
+    const surviving = (previous?.tools ?? []).filter((tool) => tool.adapterOwned)
+    if (previous && surviving.length > 0) {
+      entries.set(input.tabId, {
+        ...previous,
+        hostname: input.hostname,
+        origin: input.origin,
+        tabTitle: input.tabTitle,
+        tabUrl: input.tabUrl,
+        windowId: input.windowId ?? previous.windowId,
+        apiMode: input.apiMode || previous.apiMode,
+        tools: surviving,
+        shadowedPageTools: undefined,
+        updatedAt: Date.now(),
+      })
+      await persist()
+      notifyRegistryUpdated()
+      return
+    }
     if (entries.delete(input.tabId)) {
       await persist()
       notifyRegistryUpdated()
@@ -225,6 +362,145 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
     .filter(Boolean) as WebMCPToolMeta[]
   if (tools.length === 0) return
 
+  // Carry the SW-internal ownership marker past the field-whitelisting
+  // sanitizer. The marker comes ONLY from the caller-controlled
+  // adapterOwnedNames list (the adapter merge in discovery.ts); the page
+  // relay never passes it, and a forged adapterOwned key inside a page's
+  // tool objects is dropped by sanitizeTool's whitelist above.
+  const ownedNames = new Set(input.adapterOwnedNames ?? [])
+  if (ownedNames.size > 0) {
+    for (const tool of tools) {
+      if (ownedNames.has(tool.name)) tool.adapterOwned = true
+    }
+  }
+
+  // Merge with the LIVE entry (`previous`, read above) instead of replacing
+  // it. registerTab is the serialization point for both writers, so
+  // `previous` is fresher than any snapshot the caller built before its own
+  // awaits — merging here closes the read-to-write races on both paths:
+  const merged: WebMCPToolMeta[] = []
+  const incomingByName = new Map(tools.map((tool) => [tool.name, tool]))
+  // Shadow store: page-reported implementations of names the adapter
+  // currently owns. Seeded from the live entry's surviving shadows and
+  // extended below when the incoming snapshot carries a colliding page
+  // object; restored into `merged` when the catalog stops serving a name.
+  // Reconciliation (Sourcery round-6) checks BOTH sources:
+  //   1. adapter ownership — the incoming adapter snapshot (adapter merge)
+  //      or the live entry's surviving markers (page report) decide whether
+  //      the name is still adapter-owned;
+  //   2. the page's authoritative report — a shadow whose name the page no
+  //      longer lists must not survive: restoring it on a later catalog
+  //      drop would resurrect a tool the page deliberately removed.
+  const shadowed = new Map<string, WebMCPToolMeta>()
+  // The live shadows start out ALL retained; the end-of-merge reconciliation
+  // below (against the CURRENT adapter ownership and the CURRENT page
+  // report) drops the ones that lost either ground. Skipping any here — by
+  // incoming name or otherwise — would decide retention from stale inputs
+  // before the merge has disposed the live tools.
+  for (const shadow of previous?.shadowedPageTools ?? []) {
+    if (merged.some((tool) => tool.name === shadow.name)) continue
+    shadowed.set(shadow.name, shadow)
+  }
+  // Adapter ownership as of THIS write: on the adapter-merge path, the
+  // snapshot's names; on the page-report path, the live entry's surviving
+  // markers (the page report carries no adapter objects, so the markers are
+  // the freshest ownership evidence here).
+  const adapterServesNow = new Set<string>()
+  if (isAdapterMerge) {
+    for (const tool of tools) {
+      if (ownedNames.has(tool.name)) adapterServesNow.add(tool.name)
+    }
+  } else {
+    for (const tool of previous?.tools ?? []) {
+      if (tool.adapterOwned) adapterServesNow.add(tool.name)
+    }
+  }
+  for (const tool of previous?.tools ?? []) {
+    const incoming = incomingByName.get(tool.name)
+    if (tool.adapterOwned) {
+      if (isAdapterMerge) {
+        // Adapter merge: the snapshot carries the CURRENT catalog object, so
+        // it replaces the live one (version refresh); its absence means the
+        // catalog stopped serving the name → reconcile it away (never keep
+        // advertising an adapter tool without a route behind it). A
+        // shadowed page implementation is restored ONLY if the page still
+        // lists the name (in the incoming toolset or elsewhere in the
+        // merge) — a shadow whose name the page removed dies here so a
+        // later catalog drop cannot resurrect a removed tool.
+        if (incoming) merged.push(incoming)
+        else {
+          const shadow = shadowed.get(tool.name)
+          if (shadow) {
+            shadowed.delete(tool.name)
+            merged.push(shadow)
+          }
+        }
+        continue
+      }
+      // Page report: the catalog still owns this name — the marked live
+      // tool survives, and a page-reported colliding object must not
+      // displace it. The page's object is retained as a SHADOW so it can be
+      // restored when the catalog stops serving the name.
+      if (incoming) shadowed.set(tool.name, incoming)
+      merged.push(tool)
+      continue
+    }
+    if (isAdapterMerge) {
+      // Live page-owned tool under a name the snapshot also carries: the
+      // report landed after the merge's fresh re-read, so the live object
+      // is NEWER than the snapshot and wins (the snapshot's colliding
+      // object is skipped below). Absent from the snapshot entirely, it is
+      // kept too — either way it must not vanish from the registry.
+      // NOTE: a shadow for a name the live entry keeps unmarked is stale —
+      // the adapter no longer owns it — and is dropped (it was not seeded).
+      merged.push(tool)
+      continue
+    }
+    // Page report: authoritative FULL toolset — the incoming object is the
+    // page's latest version of the name, and a live page tool it no longer
+    // lists was removed by the page → drop it. A shadow whose page report
+    // disappeared is NOT kept here (see the reconciliation below), so a
+    // later catalog drop cannot restore a page tool the page removed.
+    if (incoming) merged.push(incoming)
+    else shadowed.delete(tool.name)
+  }
+  // Incoming tools with no live counterpart are additions (a new catalog
+  // tool or a newly reported page tool). Same-name live tools were already
+  // disposed above — pushing the incoming object here again would duplicate
+  // the name in the entry. Adapter-owned names only ever carry the ADAPTER's
+  // object here (discovery.ts's snapshot overrides any colliding page object
+  // with the catalog metadata before calling registerTab), so a same-name
+  // page implementation displaced at FIRST registration is captured by the
+  // page-report branch above on the page's next report — the shadow store
+  // never seeds from this loop.
+  for (const tool of tools) {
+    if (previous?.tools.some((live) => live.name === tool.name)) continue
+    merged.push(tool)
+  }
+
+  // Shadow reconciliation (Sourcery round-6): a surviving shadow must hold
+  // on BOTH counts — the adapter still owns the name AND the page still
+  // reports an implementation for it (the incoming toolset lists the name,
+  // or the merge carries a page-owned object under it). A shadow dropped
+  // here is either restored (adapter-merge path, above) or gone for good:
+  // keeping a shadow whose name the catalog dropped would restore a page
+  // tool that no longer exists, and keeping one whose name the page removed
+  // would resurrect a removed tool on a later catalog drop.
+  for (const [name] of [...shadowed]) {
+    const stillOwned = adapterServesNow.has(name)
+    // Page evidence: on the page-report path the incoming toolset IS the
+    // page's report. On the adapter-merge path the incoming toolset carries
+    // ADAPTER objects (never page evidence) — a retained shadow IS the
+    // page's last known implementation and keeps itself alive while the
+    // adapter still owns the name; only the merge's unmarked (page-owned)
+    // objects add fresh page evidence for other names.
+    const stillReportedByPage = isAdapterMerge
+      ? merged.some((tool) => tool.name === name && !tool.adapterOwned) || shadowed.has(name)
+      : incomingByName.has(name)
+    if (stillOwned && stillReportedByPage) continue
+    shadowed.delete(name)
+  }
+
   const entry: WebMCPRegisteredTabEntry = {
     tabId: input.tabId,
     hostname: input.hostname,
@@ -233,17 +509,24 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
     tabUrl: input.tabUrl,
     windowId: input.windowId,
     apiMode: input.apiMode || 'documentModelContext',
-    tools,
+    tools: merged,
+    ...(shadowed.size > 0 ? { shadowedPageTools: [...shadowed.values()] } : {}),
     updatedAt: Date.now(),
   }
 
-  const previous = entries.get(input.tabId)
   // Suppress no-op churn: identical toolset + still-live tab → keep entry,
-  // only refresh timestamps if metadata changed (title/url).
+  // only refresh timestamps if metadata changed (title/url). The shadows are
+  // part of the persisted entry too: an adapter-merge write that only
+  // changed shadowedPageTools (a page-reported colliding object was
+  // re-captured while the adapter tool itself stayed unchanged) must still
+  // be persisted, or the next catalog drop restores the OLD shadow — the
+  // page's latest description/schema would be lost (Sourcery round-6).
   const unchanged =
     previous &&
     previous.origin === entry.origin &&
     JSON.stringify(previous.tools) === JSON.stringify(entry.tools) &&
+    JSON.stringify(previous.shadowedPageTools ?? []) ===
+      JSON.stringify(entry.shadowedPageTools ?? []) &&
     previous.apiMode === entry.apiMode &&
     previous.tabTitle === entry.tabTitle &&
     previous.tabUrl === entry.tabUrl
@@ -331,6 +614,21 @@ export async function getRegistryEntries(): Promise<WebMCPRegisteredTabEntry[]> 
   return alive.sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
+/**
+ * Re-read a single tab's registry entry straight from the live in-memory
+ * map. Unlike `getRegistryEntries()` this skips the whole-registry tab scan
+ * and ghost reaping, so it is cheap enough to run per tab immediately before
+ * the adapter merge's registerTab write — the point where a concurrently
+ * reported WEBMCP_TAB_REPORT could otherwise be clobbered by a stale
+ * snapshot.
+ */
+export async function getFreshRegistryEntryForTab(
+  tabId: number,
+): Promise<WebMCPRegisteredTabEntry | null> {
+  await hydrate()
+  return entries.get(tabId) ?? null
+}
+
 /** Expand registry entries into the discovered-tool shape consumers expect. */
 export function entriesToDiscoveredTools(
   registryEntries: WebMCPRegisteredTabEntry[],
@@ -339,8 +637,15 @@ export function entriesToDiscoveredTools(
   const tools: WebMCPDiscoveredTool[] = []
   for (const entry of registryEntries) {
     for (const tool of entry.tools) {
+      // adapterOwned is SW-internal bookkeeping — it must not leak into the
+      // discovery output that the web app consumes (shadowedPageTools hangs
+      // off the ENTRY, not the tool, and is never iterated here).
+      // adapterServed, by contrast, is legitimately set on this in-memory
+      // copy by the adapter merge in discovery.ts (post-write marking), so
+      // it passes through untouched.
+      const { adapterOwned: _owned, ...publicTool } = tool
       tools.push({
-        ...tool,
+        ...publicTool,
         origin: entry.origin,
         hostname: entry.hostname,
         fullName: buildSafeFullName(entry.origin, tool.name),

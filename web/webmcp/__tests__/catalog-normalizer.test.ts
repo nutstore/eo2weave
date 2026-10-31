@@ -56,4 +56,40 @@ describe('WebMCP catalog identity', () => {
     expect(tabs.find((tab) => tab.tabId === 12)?.groupKey).toBe('host_signature_v2')
     expect(tabs.find((tab) => tab.tabId === 27)?.groupKey).toBe('host_signature_v1')
   })
+
+  it('keeps adapter provenance per tab when same-origin tabs collide on a tool name', () => {
+    // Sourcery regression guard: buildRegisteredTools used to copy
+    // adapterServed from the grouped representative onto the whole tool.
+    // When an older tab is adapter-served and a NEWER tab (the
+    // representative, by discoveredAt) runs a page-provided implementation
+    // of the same raw name, the canonical flag must not leak onto the page
+    // tab — the auth UI must show the page description for that tab's
+    // instance, and vice versa.
+    const build = (tabId: number, discoveredAt: number, adapterServed?: boolean) => ({
+      ...discoveredTool(tabId, `https://www.xiaohongshu.com/explore/${tabId}`, discoveredAt),
+      ...(adapterServed === undefined ? {} : { adapterServed }),
+    })
+
+    const catalog = buildHostCatalog([
+      // Older adapter-served tab, newer page-provided tab → page tab wins
+      // the representative slot and must NOT inherit adapter provenance.
+      build(12, 100, true),
+      build(27, 200, false),
+    ])
+    const grouped = catalog['www.xiaohongshu.com'].registeredTools[0]
+    expect(grouped.adapterServed).toBe(false)
+    expect(grouped.tabs.find((tab) => tab.tabId === 12)?.adapterServed).toBe(true)
+    expect(grouped.tabs.find((tab) => tab.tabId === 27)?.adapterServed).toBe(false)
+
+    // Mirror case: the representative is adapter-served, the other tab is
+    // page-provided — the page tab still carries its own provenance.
+    const flipped = buildHostCatalog([
+      build(12, 100, false),
+      build(27, 200, true),
+    ])
+    const flippedGroup = flipped['www.xiaohongshu.com'].registeredTools[0]
+    expect(flippedGroup.adapterServed).toBe(true)
+    expect(flippedGroup.tabs.find((tab) => tab.tabId === 12)?.adapterServed).toBe(false)
+    expect(flippedGroup.tabs.find((tab) => tab.tabId === 27)?.adapterServed).toBe(true)
+  })
 })

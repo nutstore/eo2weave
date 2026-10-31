@@ -30,6 +30,8 @@ export interface WebMCPDiscoveredTool extends WebMCPToolDefinition {
    * tool name. Absent on newer extensions.
    */
   groupKey?: string
+  /** Set by the SW adapter catalog merge; page-registered tools never carry it. */
+  adapterServed?: boolean
 }
 
 export type WebMCPDiscoveredToolInstance = WebMCPDiscoveredTool
@@ -127,6 +129,14 @@ export interface WebMCPTabInstance {
    * tool can carry different keys.
    */
   groupKey?: string
+  /**
+   * Adapter provenance of THIS tab's instance of the tool. Kept per tab
+   * because same-origin tabs can expose a colliding raw tool name with
+   * different provenance (extension adapter vs page-provided
+   * implementation) — `localizedToolDescription` must only show builtin
+   * translations for tabs whose tool actually comes from the adapter.
+   */
+  adapterServed?: boolean
 }
 
 export interface WebMCPRegisteredTool {
@@ -141,6 +151,8 @@ export interface WebMCPRegisteredTool {
   hostname: string
   fullName: string
   apiMode: WebMCPApiMode
+  /** Set by the SW adapter catalog merge; page-registered tools never carry it. */
+  adapterServed?: boolean
   tabs: WebMCPTabInstance[]
   discoveredAt: number
 }

@@ -8,6 +8,7 @@ import { Plug, Search } from 'lucide-react'
 import { CopyIconButton } from '../CopyIconButton'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
+import { localizedToolDescription } from '@/i18n/webmcp-tools'
 import { formatBytes } from '@/lib/utils'
 
 // ── search_tools ──
@@ -88,12 +89,22 @@ registerRenderer({
                 </span>
                 {tool.name}
               </div>
-              {/* Description */}
-              {tool.description && (
-                <div className="text-[12px] text-neutral-600 text-neutral-300 text-neutral-300 dark:text-neutral-300 mb-1.5 leading-relaxed">
-                  {tool.description}
-                </div>
-              )}
+              {/* Description — localized for WebMCP builtin-package tools,
+                  provider's English text otherwise */}
+              {(() => {
+                const description = localizedToolDescription({
+                  source: tool.source,
+                  sourceId: tool.sourceId,
+                  name: tool.name,
+                  description: tool.description,
+                  adapterServed: tool.adapterServed,
+                })
+                return description ? (
+                  <div className="text-[12px] text-neutral-600 text-neutral-300 text-neutral-300 dark:text-neutral-300 mb-1.5 leading-relaxed">
+                    {description}
+                  </div>
+                ) : null
+              })()}
               {/* Parameter schema */}
               <SchemaParamsPreview inputSchema={tool.inputSchema} />
             </div>
@@ -337,6 +348,7 @@ interface SearchResult {
   sourceId: string
   description: string
   inputSchema: Record<string, unknown>
+  adapterServed?: boolean
 }
 
 function extractSearchResults(ctx: ToolRenderCtx): SearchResult[] {
@@ -352,6 +364,7 @@ function extractSearchResults(ctx: ToolRenderCtx): SearchResult[] {
       sourceId: typeof t.sourceId === 'string' ? t.sourceId : '',
       description: typeof t.description === 'string' ? t.description : '',
       inputSchema: (t.inputSchema as Record<string, unknown>) || {},
+      adapterServed: t.adapterServed === true ? true : t.adapterServed === false ? false : undefined,
     }))
     .filter(t => t.fullName)
 }
