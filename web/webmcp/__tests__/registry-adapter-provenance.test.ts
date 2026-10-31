@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
   clearRegistry,
   registerTab,
+  getFreshRegistryEntryForTab,
   getRegistryEntries,
   entriesToDiscoveredTools,
 } from '../../../browser-extension/entrypoints/webmcp/registry'
@@ -9,6 +10,21 @@ import {
   discoverWebMCPToolsInCurrentWindow,
   installAdapterCatalog,
 } from '../../../browser-extension/entrypoints/webmcp/discovery'
+
+// getFreshRegistryEntryForTab is mocked as a pass-through wrapper so the
+// write-window race test can inject a page report AFTER discovery's fresh
+// re-read returns but BEFORE registerTab writes (the exact window the
+// registerTab live-merge guards).
+vi.mock('../../../browser-extension/entrypoints/webmcp/registry', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../../browser-extension/entrypoints/webmcp/registry')
+  >()
+  const wrapped = Object.assign(
+    vi.fn(actual.getFreshRegistryEntryForTab),
+    { __actual: actual.getFreshRegistryEntryForTab },
+  )
+  return { ...actual, getFreshRegistryEntryForTab: wrapped }
+})
 
 const sessionStore = new Map<string, unknown>()
 
@@ -507,6 +523,13 @@ it('a page report landing between the fresh re-read and registerTab survives the
   // — a WEBMCP_TAB_REPORT may land after it returns but before registerTab
   // runs. registerTab now merges against the LIVE entry, so the newly
   // reported tool must not be clobbered by the stale snapshot.
+  //
+  // The report is emitted from a WRAPPED getFreshRegistryEntryForTab: by the
+  // time the wrapper's post-read hook runs, discovery's fresh re-read has
+  // already RETURNED the old entry — exactly the window the test name
+  // describes. (Reporting from inside the adapter provider is too early: the
+  // provider await runs BEFORE that re-read, so the fresh snapshot already
+  // contains the tool and the old snapshot-overwrite behavior passes too.)
   const base = {
     tabId: 7,
     hostname: 'discord.com',
@@ -521,10 +544,17 @@ it('a page report landing between the fresh re-read and registerTab survives the
       { name: 'page_old_tool', description: 'Reported before discovery.', inputSchema: { type: 'object' } },
     ],
   })
-  installAdapterCatalog(async () => {
-    // Pin the report strictly AFTER getFreshRegistryEntryForTab has read the
-    // old entry: the provider await sits between the fresh re-read and the
-    // registerTab write in discovery.ts.
+  const realFreshRead = await getFreshRegistryEntryForTab(7)
+  expect(realFreshRead?.tools.map((tool) => tool.name)).toEqual(['page_old_tool'])
+  const freshRead = vi.mocked(getFreshRegistryEntryForTab)
+  freshRead.mockClear()
+  freshRead.mockImplementation(async () => {
+    // Pin the report strictly AFTER getFreshRegistryEntryForTab has returned
+    // discovery's re-read: the report lands in the window between that return
+    // and the registerTab write. Returning the PRE-report entry reproduces
+    // discovery holding a stale snapshot while registerTab receives a newer
+    // live entry.
+    const entry = await (getFreshRegistryEntryForTab as any).__actual(7)
     await registerTab({
       ...base,
       tools: [
@@ -532,15 +562,17 @@ it('a page report landing between the fresh re-read and registerTab survives the
         { name: 'page_midawait_tool', description: 'Reported after the fresh re-read.', inputSchema: { type: 'object' } },
       ],
     })
-    return [
-      {
-        name: 'com.discord.main.send_message',
-        description: 'Send a message to a Discord channel.',
-        inputSchema: { type: 'object' },
-      },
-    ]
+    return entry
   })
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
   const response = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(freshRead.mock.calls.length).toBeGreaterThan(0)
 
   const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
     tabId: number
@@ -549,6 +581,8 @@ it('a page report landing between the fresh re-read and registerTab survives the
   expect(
     persisted.find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name).sort(),
   ).toEqual(['com.discord.main.send_message', 'page_midawait_tool', 'page_old_tool'])
+  // The post-write live-entry read is the response's source of truth, so the
+  // same-run response must also carry the report.
   expect(
     response.tools.find((tool) => tool.name === 'page_midawait_tool')!.description,
   ).toBe('Reported after the fresh re-read.')

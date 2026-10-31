@@ -232,10 +232,10 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         // discovery run. The post-write adapterServed marking is reapplied on
         // the live copy (the persisted registry never stores the flag).
         const liveEntry = await getFreshRegistryEntryForTab(snapshot.value.tabId)
-        // Null live read: registerTab reconciled the entry away (its merged
-        // toolset was empty) — respect that removal instead of resurrecting
-        // the stale pre-write snapshot.
-        if (!liveEntry) continue
+        // Null/garbage live read: registerTab reconciled the entry away (its
+        // merged toolset was empty) — respect that removal instead of
+        // resurrecting the stale pre-write snapshot.
+        if (!liveEntry || !Array.isArray(liveEntry.tools)) continue
         const markedEntry = {
           ...liveEntry,
           tools: liveEntry.tools.map((tool) =>

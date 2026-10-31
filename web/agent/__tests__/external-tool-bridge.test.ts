@@ -33,7 +33,7 @@ vi.mock('../policy-engine', () => ({
   authorize: vi.fn().mockResolvedValue({ decision: 'allow', via: 'auto' }),
 }))
 
-import { callToolExecutor, collectAllExternalTools } from '../external-tool-bridge'
+import { callToolExecutor, collectAllExternalTools } from '@/agent/external-tool-bridge'
 import { useSettingsStore } from '@/store/settings.store'
 import { authorize } from '../policy-engine'
 

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ register: vi.fn(), entries: vi.fn(), silent: vi.fn(), expand: vi.fn() }))
+const mocks = vi.hoisted(() => ({ register: vi.fn(), entries: vi.fn(), freshEntry: vi.fn(), silent: vi.fn(), expand: vi.fn() }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/registry', () => ({
   registerTab: mocks.register, getRegistryEntries: mocks.entries,
-  getFreshRegistryEntryForTab: mocks.entries,
+  getFreshRegistryEntryForTab: mocks.freshEntry,
   getRegistrySilentTabs: mocks.silent, entriesToDiscoveredTools: mocks.expand,
 }))
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from '../../../browser-extension/entrypoints/webmcp/discovery'
@@ -10,6 +10,14 @@ import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from '../..
 beforeEach(() => {
   vi.resetAllMocks()
   mocks.entries.mockResolvedValue([])
+  // Model the real registry around the adapter merge: registerTab persists
+  // the merged snapshot, and discovery's POST-write live re-read
+  // (getFreshRegistryEntryForTab) returns exactly that persisted entry — or
+  // null when registerTab reconciled it away (empty merge).
+  let lastRegistered: any = null
+  mocks.register.mockImplementation(async (input: any) => { lastRegistered = input })
+  mocks.freshEntry.mockImplementation(async (tabId: number) =>
+    lastRegistered && lastRegistered.tabId === tabId ? lastRegistered : null)
   mocks.silent.mockResolvedValue([])
   mocks.expand.mockImplementation(entries => entries.flatMap((entry: any) => entry.tools.map((tool: any) => ({ ...tool, tabId: entry.tabId, origin: entry.origin }))))
 })
