@@ -2,6 +2,7 @@ import type { WebMCPApiMode, WebMCPDiscoverResponse, WebMCPToolMeta } from './ty
 import { runWebMCPPageProbe } from './page-api'
 import {
   entriesToDiscoveredTools,
+  getFreshRegistryEntryForTab,
   getRegistryEntries,
   getRegistrySilentTabs,
   registerTab,
@@ -153,19 +154,38 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         const adapters = await adapterCatalog!(tab.id)
         const current = await chrome.tabs.get(tab.id)
         if (current.url !== tab.url || !adapters.length) return null
-        // Re-read the LIVE registry entry for this tab: the `registryEntries`
-        // array was snapshotted before the adapter await above, and a page
-        // may have reported a changed toolset (WEBMCP_TAB_REPORT) while we
-        // were in flight. Merging onto the stale entry would clobber the
-        // newer page report — the registry is the source of truth, so merge
-        // onto the fresh entry instead (adapter wins same-name collisions).
-        const freshEntries = await getRegistryEntries()
-        const existing = freshEntries.find(entry => entry.tabId === tab.id)
-        const tools = new Map((existing?.tools || []).map(tool => [tool.name, tool]))
+        // Re-read the LIVE registry entry for this tab right before the
+        // registerTab write: the `registryEntries` array was snapshotted
+        // before the adapter await above, and a page may have reported a
+        // changed toolset (WEBMCP_TAB_REPORT) while we were in flight. The
+        // merge must run against the FRESHEST entry — merging onto the stale
+        // snapshot would clobber the newer page report, and even the earlier
+        // fresh re-read (before the per-tab awaits) can go stale because the
+        // snapshot loop processes tabs sequentially with its own awaits.
+        const freshEntry = await getFreshRegistryEntryForTab(tab.id)
+        // Adapter ownership reconciliation: registry entries persist
+        // page-reported tool names verbatim, so a previously adapter-served
+        // name that the CURRENT catalog no longer lists (package update
+        // removed/renamed the tool) must NOT keep riding the registry — it
+        // would stay advertised with no route behind it. Names absent from
+        // the current catalog are page-owned and survive unchanged; only
+        // names this tab previously carried are reconciled (a name another
+        // tab owns is not ours to remove).
+        const adapterNames = new Set(adapters.map(tool => tool.name))
+        const tools = new Map<string, WebMCPToolMeta>()
+        for (const tool of freshEntry?.tools || []) {
+          if (!tool.adapterOwned || adapterNames.has(tool.name)) tools.set(tool.name, tool)
+        }
+        // Adapter wins same-name collisions; the catalog-served names are
+        // handed to registerTab as adapter-owned so later merges can
+        // reconcile them against the (possibly shrunken) current catalog —
+        // see the comment above. The ownership marker travels as a
+        // caller-controlled name list, never as page-controlled tool fields.
         for (const tool of adapters) tools.set(tool.name, tool)
         return { tabId: tab.id, origin, hostname, tabTitle: tab.title || '',
           tabUrl: tab.url!, windowId: tab.windowId, apiMode: 'documentModelContext' as const,
           tools: [...tools.values()], updatedAt: Date.now(),
+          adapterOwnedNames: [...adapterNames],
           // Transient — consumed by the post-registerTab marking below, never
           // passed to registerTab's persisted shape.
           adapterNames: new Set(adapters.map(tool => tool.name)) }

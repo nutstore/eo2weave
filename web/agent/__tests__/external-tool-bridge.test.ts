@@ -630,3 +630,53 @@ describe('WebMCP catalog lookup recovery', () => {
     }
   })
 })
+
+describe('search_tools fallback results (provenance parity)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.getWebMCPBridge.mockReturnValue(null)
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [],
+      getToolByCallName: () => undefined,
+    })
+  })
+
+  it('includes adapterServed in fallback rows so builtin translations survive the no_match path', async () => {
+    // Regression guard (Sourcery: fallback results lose localized
+    // descriptions): the Fallback path (semantic search failed) maps results
+    // by hand and previously dropped adapterServed, so the renderer kept the
+    // English manifest description for exactly the tools whose localization
+    // requires explicit adapter provenance.
+    const { searchToolsExecutor } = await import('../external-tool-bridge')
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [
+        {
+          fullName: 'https_discord_com__com_discord_main_send_message',
+          name: 'com.discord.main.send_message',
+          description: 'Send a message to a Discord channel.',
+          inputSchema,
+          hostname: 'discord.com',
+          origin: 'https://discord.com',
+          apiMode: 'documentModelContext' as const,
+          adapterServed: true,
+          tabs: [{ tabId: 1, title: 'Discord', url: 'https://discord.com', lastSeenAt: 1 }],
+        },
+      ],
+      getToolByCallName: () => undefined,
+    })
+    // No LLM provider → Path B/C are skipped and the executor lands in the
+    // Fallback path directly.
+    const response = JSON.parse(
+      await searchToolsExecutor(
+        { query: 'discord send', intent: 'send messages', limit: 5 },
+        { provider: undefined } as never,
+      ),
+    )
+
+    expect(response.data.status).toBe('no_match')
+    expect(response.data.searchMode).toBe('fallback')
+    expect(response.data.results).toHaveLength(1)
+    expect(response.data.results[0].adapterServed).toBe(true)
+  })
+})

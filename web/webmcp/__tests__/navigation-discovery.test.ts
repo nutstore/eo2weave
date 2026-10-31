@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({ register: vi.fn(), entries: vi.fn(), silent: vi.fn(), expand: vi.fn() }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/registry', () => ({
   registerTab: mocks.register, getRegistryEntries: mocks.entries,
+  getFreshRegistryEntryForTab: mocks.entries,
   getRegistrySilentTabs: mocks.silent, entriesToDiscoveredTools: mocks.expand,
 }))
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from '../../../browser-extension/entrypoints/webmcp/discovery'

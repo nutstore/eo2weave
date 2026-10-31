@@ -127,14 +127,40 @@ function sanitizeTool(raw: unknown): WebMCPToolMeta | null {
   }
 }
 
+/**
+ * Internal-only marker reader: the service-worker adapter catalog (not the
+ * page) owns this tool name on this tab. The flag is written only through
+ * RegisterTabInput.adapterOwnedNames (discovery.ts merge) and survives
+ * storage.session hydration via the marker rebuild in sanitizeEntry — a
+ * hostile page cannot set it because sanitizeTool whitelists tool fields.
+ */
+function isAdapterOwned(raw: unknown): boolean {
+  return !!(raw && typeof raw === 'object' && (raw as Record<string, unknown>).adapterOwned === true)
+}
+
 function sanitizeEntry(raw: unknown, tabId: unknown): WebMCPRegisteredTabEntry | null {
   if (!raw || typeof raw !== 'object') return null
   if (typeof tabId !== 'number') return null
   const item = raw as Record<string, unknown>
   if (typeof item.hostname !== 'string' || item.hostname.length === 0) return null
 
+  // adapterOwned is a SW-internal bookkeeping field: keep it across the
+  // in-memory roundtrip through storage.session, but rebuild it from the
+  // stored marker rather than trusting the page-controlled payload —
+  // sanitizeTool (above) whitelists fields, so a page cannot set it.
+  const adapterOwnedNames = Array.isArray(item.tools)
+    ? new Set(
+        item.tools
+          .filter((tool: unknown) => isAdapterOwned(tool))
+          .map((tool: unknown) => (tool as Record<string, unknown>).name as string),
+      )
+    : new Set<string>()
+
   const tools = Array.isArray(item.tools)
     ? (item.tools.map(sanitizeTool).filter(Boolean) as WebMCPToolMeta[])
+        .map((tool) =>
+          adapterOwnedNames.has(tool.name) ? { ...tool, adapterOwned: true } : tool,
+        )
     : []
   if (tools.length === 0) return null
 
@@ -200,6 +226,14 @@ export interface RegisterTabInput {
       untrustedContentHint?: boolean
     }
   }>
+  /**
+   * SW-internal: names of tools owned by the extension adapter catalog.
+   * Only the adapter merge in discovery.ts passes this; the page-facing
+   * WEBMCP_TAB_REPORT path (background.ts) never does, and sanitizeTool's
+   * field whitelist drops any adapterOwned key a page smuggles into its
+   * tool objects — so the marker cannot be forged.
+   */
+  adapterOwnedNames?: string[]
 }
 
 /**
@@ -224,6 +258,18 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
     .map((tool) => sanitizeTool(tool))
     .filter(Boolean) as WebMCPToolMeta[]
   if (tools.length === 0) return
+
+  // Carry the SW-internal ownership marker past the field-whitelisting
+  // sanitizer. The marker comes ONLY from the caller-controlled
+  // adapterOwnedNames list (the adapter merge in discovery.ts); the page
+  // relay never passes it, and a forged adapterOwned key inside a page's
+  // tool objects is dropped by sanitizeTool's whitelist above.
+  const ownedNames = new Set(input.adapterOwnedNames ?? [])
+  if (ownedNames.size > 0) {
+    for (const tool of tools) {
+      if (ownedNames.has(tool.name)) tool.adapterOwned = true
+    }
+  }
 
   const entry: WebMCPRegisteredTabEntry = {
     tabId: input.tabId,
@@ -331,6 +377,21 @@ export async function getRegistryEntries(): Promise<WebMCPRegisteredTabEntry[]> 
   return alive.sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
+/**
+ * Re-read a single tab's registry entry straight from the live in-memory
+ * map. Unlike `getRegistryEntries()` this skips the whole-registry tab scan
+ * and ghost reaping, so it is cheap enough to run per tab immediately before
+ * the adapter merge's registerTab write — the point where a concurrently
+ * reported WEBMCP_TAB_REPORT could otherwise be clobbered by a stale
+ * snapshot.
+ */
+export async function getFreshRegistryEntryForTab(
+  tabId: number,
+): Promise<WebMCPRegisteredTabEntry | null> {
+  await hydrate()
+  return entries.get(tabId) ?? null
+}
+
 /** Expand registry entries into the discovered-tool shape consumers expect. */
 export function entriesToDiscoveredTools(
   registryEntries: WebMCPRegisteredTabEntry[],
@@ -339,8 +400,14 @@ export function entriesToDiscoveredTools(
   const tools: WebMCPDiscoveredTool[] = []
   for (const entry of registryEntries) {
     for (const tool of entry.tools) {
+      // adapterOwned is SW-internal bookkeeping — it must not leak into the
+      // discovery output that the web app consumes. adapterServed, by
+      // contrast, is legitimately set on this in-memory copy by the adapter
+      // merge in discovery.ts (post-registerTab marking), so it passes
+      // through untouched.
+      const { adapterOwned: _owned, ...publicTool } = tool
       tools.push({
-        ...tool,
+        ...publicTool,
         origin: entry.origin,
         hostname: entry.hostname,
         fullName: buildSafeFullName(entry.origin, tool.name),

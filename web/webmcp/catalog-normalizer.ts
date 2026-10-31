@@ -25,7 +25,7 @@ export function dedupeDiscoveredInstances(
   return Array.from(deduped.values())
 }
 
-export function buildTabs(tools: WebMCPDiscoveredTool[]): WebMCPTabInstance[] {
+export function buildTabs(tools: WebMCPDiscoveredTool[], representative?: WebMCPDiscoveredTool): WebMCPTabInstance[] {
   const tabs = new Map<number, WebMCPTabInstance>()
 
   for (const tool of tools) {
@@ -52,6 +52,15 @@ export function buildTabs(tools: WebMCPDiscoveredTool[]): WebMCPTabInstance[] {
       url: tool.tabUrl || '',
       lastSeenAt: tool.discoveredAt,
       groupKey: tool.groupKey,
+      // Adapter provenance is a fact about the TAB's toolset (whether the
+      // extension adapter serves this name there), not about the grouped
+      // tool. The representative tab keeps the canonical flag (it already
+      // owns WebMCPRegisteredTool.adapterServed); every other tab records
+      // its own instance's provenance.
+      adapterServed:
+        representative && tool.tabId === representative.tabId
+          ? representative.adapterServed
+          : tool.adapterServed,
     })
   }
 
@@ -88,8 +97,16 @@ function buildRegisteredTools(
         hostname: representative.hostname,
         fullName: representative.fullName,
         apiMode: representative.apiMode,
+        // Provenance must be PER TAB, not copied from the grouped
+        // representative: same-origin tabs can expose a colliding raw name with
+        // different provenance (one tab served by the extension adapter, a
+        // newer tab running a page-provided implementation). A
+        // representative-level flag would show the builtin translation for a
+        // page-provided tab (or vice versa) whenever that instance was not the
+        // representative. The canonical origin (this field) still uses the
+        // representative's value — per-tab truth lives in tabs[].adapterServed.
         adapterServed: representative.adapterServed,
-        tabs: buildTabs(instances),
+        tabs: buildTabs(instances, representative),
         discoveredAt: Math.max(...instances.map((instance) => instance.discoveredAt)),
       }
     })

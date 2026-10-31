@@ -129,6 +129,14 @@ export interface WebMCPTabInstance {
    * tool can carry different keys.
    */
   groupKey?: string
+  /**
+   * Adapter provenance of THIS tab's instance of the tool. Kept per tab
+   * because same-origin tabs can expose a colliding raw tool name with
+   * different provenance (extension adapter vs page-provided
+   * implementation) — `localizedToolDescription` must only show builtin
+   * translations for tabs whose tool actually comes from the adapter.
+   */
+  adapterServed?: boolean
 }
 
 export interface WebMCPRegisteredTool {

@@ -772,6 +772,13 @@ export const searchToolsExecutor: ToolExecutor = async (args, context) => {
       inputSchema: c.tool.inputSchema,
       ...(c.tool.origin ? { origin: c.tool.origin } : {}),
       ...(c.tool.tabIds ? { tabIds: c.tool.tabIds } : {}),
+      // Same provenance rule as formatBm25Results (Path A/A2): the fallback
+      // panel must localize builtin-package tools identically. Without this
+      // row the same Discord builtin shows its English manifest description
+      // here but the translated copy in every other search path.
+      ...(c.tool.source === 'webmcp' && c.tool.adapterServed !== undefined
+        ? { adapterServed: c.tool.adapterServed }
+        : {}),
       score: Math.round(c.score * 1000) / 1000,
     })),
     total: fallback.length,

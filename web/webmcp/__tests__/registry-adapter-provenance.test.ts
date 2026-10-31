@@ -203,3 +203,110 @@ it('adapter merge preserves a mid-await page report (fresh re-read before regist
   expect(JSON.stringify(entry.tools)).not.toContain('adapterServed')
 })
 
+it('reconciles removed adapter tools out of the stored registry on the next merge', async () => {
+  // Sourcery regression guard: the merge used to start from every stored
+  // tool and only ADD current adapter tools, so a package update that
+  // removed or renamed a tool left the stale name advertised with no route
+  // behind it. Adapter-owned names must be dropped when the current catalog
+  // no longer lists them, while page-reported names survive untouched.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  // First scan: adapter serves two tools, the page reported one of its own.
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+    {
+      name: 'com.discord.main.read_messages',
+      description: 'Read recent messages from a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+  expect(
+    (sessionStore.get('webmcp_tab_registry') as Array<{ tools: Array<{ name: string }> }>)[0]!
+      .tools.map((tool) => tool.name).sort(),
+  ).toEqual(['com.discord.main.read_messages', 'com.discord.main.send_message'])
+
+  // Package update: the adapter no longer serves read_messages.
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+
+  const entry = (
+    sessionStore.get('webmcp_tab_registry') as Array<{ tools: Array<{ name: string }> }>
+  )[0]!
+  // Removed adapter tool is reconciled away…
+  expect(entry.tools.map((tool) => tool.name)).toEqual(['com.discord.main.send_message'])
+  // …while a concurrently reported page tool would have survived. Verify
+  // the reconciliation does not eat page-owned names either:
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'page_only_tool', description: 'Page-owned.', inputSchema: { type: 'object' } },
+    ],
+  })
+  await discoverWebMCPToolsInCurrentWindow(3)
+  const afterPageReport = (
+    sessionStore.get('webmcp_tab_registry') as Array<{ tools: Array<{ name: string }> }>
+  )[0]!
+  expect(afterPageReport.tools.map((tool) => tool.name).sort()).toEqual([
+    'com.discord.main.send_message',
+    'page_only_tool',
+  ])
+})
+
+it('a page cannot forge the adapter ownership marker through a tab report', async () => {
+  // adapterOwned is SW-internal: it must only ever be set by the adapter
+  // merge in discovery.ts. A hostile page reporting a forged marker via
+  // WEBMCP_TAB_REPORT gets its field stripped by the field-whitelisting
+  // sanitizer, and the marker must not survive a storage.session hydration
+  // roundtrip either (it is rebuilt from the stored marker set, never taken
+  // from the page payload).
+  await registerTab({
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext',
+    tools: [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Page tool pretending to be adapter-owned.',
+        inputSchema: { type: 'object' },
+        // @ts-expect-error page-controlled input must not smuggle the marker
+        adapterOwned: true,
+      },
+    ],
+  })
+  expect(
+    JSON.stringify(sessionStore.get('webmcp_tab_registry')),
+  ).not.toContain('adapterOwned')
+
+  // Hydration roundtrip: rebuild the in-memory map from what the previous
+  // scan persisted. The page never earned the marker, so reconciliation
+  // must not treat this name as adapter-owned (a merge that stops serving
+  // it must remove it, exactly as for genuinely adapter-owned names).
+  installAdapterCatalog(async () => [])
+  const response = await discoverWebMCPToolsInCurrentWindow(3)
+  // No adapter tools → snapshot returns null → nothing rewritten; the entry
+  // stays page-owned and the discovery output keeps the page description.
+  expect(response.tools).toHaveLength(1)
+  expect(response.tools[0]!.name).toBe('com.discord.main.send_message')
+  expect(response.tools[0]!.description).toBe('Page tool pretending to be adapter-owned.')
+})
+
