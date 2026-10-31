@@ -22,4 +22,5 @@ export const common = {
     seconds: "秒",
     minutes: "分",
     skipToContent: "メインコンテンツへスキップ",
+    dismiss: "閉じる",
 } as const

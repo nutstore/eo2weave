@@ -113,3 +113,41 @@ global.URL.revokeObjectURL = vi.fn()
 beforeEach(() => {
   vi.setConfig({ testTimeout: 30000 })
 })
+// Web Locks API stub for happy-dom (unimplemented — its `navigator.locks`
+// getter always returns null). A real in-memory LockManager is provided so
+// import serialization / recovery-fencing tests exercise the SAME Web-Locks
+// code paths the browser uses. Tests that need the no-locks environment
+// delete `navigator.locks` explicitly.
+if (typeof navigator !== 'undefined' && !(navigator as any).locks) {
+  const held = new Map<string, Set<Promise<unknown>>>()
+  const makeLock = () => ({ release: () => {} })
+  const request = async (name: string, ...rest: unknown[]) => {
+    const hasOptions = rest.length === 2
+    const options = hasOptions ? (rest[0] as { ifAvailable?: boolean }) : undefined
+    const callback = (hasOptions ? rest[1] : rest[0]) as (lock: unknown) => unknown
+    const prev = held.get(name)
+    if (options?.ifAvailable) {
+      if (prev && prev.size > 0) return await callback(null)
+    }
+    while (prev && prev.size > 0) {
+      // A rejected lock callback still releases the lock; the next waiter
+      // must acquire it rather than inherit the previous callback's error.
+      await Promise.race([...prev].map((pending) => pending.catch(() => {})))
+    }
+    const p = (async () => {
+      const result = await callback(makeLock())
+      return result
+    })()
+    if (!held.has(name)) held.set(name, new Set())
+    held.get(name)!.add(p)
+    try {
+      return await p
+    } finally {
+      held.get(name)?.delete(p)
+    }
+  }
+  Object.defineProperty(navigator, 'locks', {
+    value: { request },
+    configurable: true,
+  })
+}

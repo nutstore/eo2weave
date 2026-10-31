@@ -522,6 +522,7 @@ export const settings = {
       authHint: "Secure authentication via Device Code Flow — no API key management needed.",
       clientIdMissing: "Client ID not configured. Set the NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID environment variable.",
       authFailed: "Authentication failed",
+      logoutFailed: "Logout incomplete — stored credentials may remain. Please retry.",
     },
     // Provider display names (company pinyin/English brand for non-Chinese
     // users; NOT the separate international services, e.g. Zhipu's overseas

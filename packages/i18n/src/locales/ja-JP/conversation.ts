@@ -132,6 +132,8 @@ export const conversation = {
       gatewayClientIdMissing: "Nutstore AI の Client ID が未設定のためログインできません",
       gatewayLoginFailed: "Nutstore AI ログインに失敗しました",
       gatewayTokenSetMalformed: "Nutstore AI ログインの応答に認証情報が不完全です — もう一度お試しください",
+      gatewayCredentialPurgeFailed: "Nutstore AI のログアウト時に保存された認証情報を完全に削除できませんでした — 再試行してください。繰り返し失敗する場合は、再度ログインする前にアプリを再起動してください",
+      gatewayCredentialStaleWrite: "Nutstore AI が古い認証情報の書き込みを検出しました。現在のセッションが損なわれている可能性があります — もう一度ログインしてください",
       gatewayDeviceFlowTimeout: "Nutstore AI の認証セッションが期限切れです — もう一度ログインしてください",
       requestFailed: "リクエスト失敗：",
       retry: "再試行",

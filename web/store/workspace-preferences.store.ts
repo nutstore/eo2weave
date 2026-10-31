@@ -32,6 +32,15 @@ export interface PanelState {
   toolsPanelOpen: boolean
   skillsManagerOpen: boolean
   quickActionsOpen: boolean
+  /**
+   * One-shot "open Settings" request for cross-page entry points (e.g.
+   * /skill-install's gateway-disabled login view): the flag is armed
+   * BEFORE navigating to a project workspace, and WorkspaceLayout — the
+   * SettingsDialog host, mounted only on /projects/:projectId/** —
+   * consumes it on mount (open on the LLM tab, then clear). Mirrors the
+   * `skillsManagerOpen` request mechanism.
+   */
+  settingsOpenRequest: boolean
 }
 
 /**
@@ -83,6 +92,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferences = {
     toolsPanelOpen: false,
     skillsManagerOpen: false,
     quickActionsOpen: false,
+    settingsOpenRequest: false,
   },
   display: {
     fontSize: 'medium',
@@ -115,6 +125,7 @@ interface WorkspacePreferencesState extends WorkspacePreferences {
   setActiveResourceTab: (tab: 'files' | 'plugins' | 'changes') => void
   setToolsPanelOpen: (open: boolean) => void
   setSkillsManagerOpen: (open: boolean) => void
+  setSettingsOpenRequest: (open: boolean) => void
   setQuickActionsOpen: (open: boolean) => void
 
   // Display preferences actions
@@ -193,6 +204,11 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
       setSkillsManagerOpen: (open) =>
         set((state) => {
           state.panelState.skillsManagerOpen = open
+        }),
+
+      setSettingsOpenRequest: (open) =>
+        set((state) => {
+          state.panelState.settingsOpenRequest = open
         }),
 
       setQuickActionsOpen: (open) =>

@@ -14,10 +14,19 @@ import {
   getLLMGatewayBaseURL,
   getLLMGatewayClientId,
   getLLMGatewayApiKeyProviderKey,
-  updateGatewayModels,
+  prepareGatewayModels,
+  registerGatewayModels,
   LLM_GATEWAY_PROVIDER_TYPE,
 } from '@/agent/providers/llm-gateway-provider'
 import { useSettingsStore } from '@/store/settings.store'
+import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
+import {
+  getLastLogoutTimestamp,
+  pendingKeyStoreOpIsFenced,
+  withKeyStoreDeadline,
+  withKeyStoreDeadlineFactory,
+  escalateFencedKeyStoreMutation,
+} from '@/agent/providers/llm-gateway-auth'
 
 export interface GatewayLoginResult {
   ok: boolean
@@ -27,49 +36,209 @@ export interface GatewayLoginResult {
 }
 
 /**
- * Post-token save/model/credential sequence shared by every gateway login
- * entry point. Assumes the Device Code Flow already produced `accessToken`.
+ * Options for the shared login commit. The hook uses `onCommit` to persist
+ * the device token pair in the same synchronous phase as provider settings.
  */
-export async function applyGatewayLoginTokens(accessToken: string): Promise<GatewayLoginResult> {
-  // Save access_token as the "API key" for this provider
+export interface GatewayLoginApplyOptions {
+  signal?: AbortSignal
+  /**
+   * Synchronous token-pair commit, called only after every cancellable step.
+   */
+  onCommit?: () => void
+  /**
+   * When the login ATTEMPT started (before the device-code approval wait),
+   * supplied by the caller. The logout-supersedes commit guard compares the
+   * cross-tab logout marker against this timestamp: a logout committed after
+   * the attempt began must win over the pending login. Callers that ran
+   * `performDeviceCodeFlow` themselves MUST pass the timestamp taken BEFORE
+   * that call — `applyGatewayLoginTokens` itself only observes the attempt
+   * after approval completed, which can be minutes later, and a logout in
+   * between would otherwise predate the guard's timestamp. Defaults to
+   * "now" for direct (already-approved) callers.
+   */
+  attemptStartedAt?: number
+}
+
+export async function applyGatewayLoginTokens(
+  accessToken: string,
+  options: GatewayLoginApplyOptions = {},
+): Promise<GatewayLoginResult> {
+  return applyGatewayLoginTokensInner(accessToken, options)
+}
+
+async function applyGatewayLoginTokensInner(
+  accessToken: string,
+  { signal, onCommit, attemptStartedAt }: GatewayLoginApplyOptions,
+): Promise<GatewayLoginResult> {
   const keyId = getLLMGatewayApiKeyProviderKey()
-  const { saveApiKey } = await import('@/security/api-key-store')
-  await saveApiKey(keyId, accessToken)
-  useSettingsStore.getState().invalidateApiKeyCache(keyId)
+  const { saveApiKey, loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
+  signal?.throwIfAborted()
 
-  // Fetch and register model list FIRST (need models before we can select one)
-  const models = await updateGatewayModels(accessToken)
+  // The attempt timestamp: the caller's pre-approval capture when supplied
+  // (device-code approval can take minutes — a logout during that wait must
+  // invalidate the attempt), else "now" (direct callers without a pending
+  // approval window). The commit guard below re-checks the cross-tab logout
+  // marker against it under the credential lock.
+  const effectiveAttemptStartedAt = attemptStartedAt ?? Date.now()
 
-  // Keep provider/model selection atomic. The shared reconciliation action
-  // also preserves an existing gateway model when the catalog changes.
-  const settings = useSettingsStore.getState()
-  settings.switchProviderAndModel(
-    LLM_GATEWAY_PROVIDER_TYPE,
-    models[0]?.id ?? settings.modelName,
-  )
-
-  // Seed the curated default pin (deepseek-v4.1-flash) for first-time
-  // gateway users — same first-save seeding as ProviderManager, so the
-  // top-bar switcher works without manual pinning. Intersection with the
-  // live catalog skips an out-of-curation default.
-  if ((useSettingsStore.getState().pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
-    const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
-    const defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
-    if (defaults.length > 0) {
-      useSettingsStore.getState().setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-      useSettingsStore.getState().markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-    }
+  // Fetch models before the first persistent write (network work outside
+  // the credential lock). A NETWORK failure here is treated as best-effort
+  // (empty list — the credential commit still proceeds; models refresh
+  // later via triggerProviderRefresh), because the visitor already approved
+  // device authorization: making them repeat it because a models fetch
+  // flaked is worse than a temporarily empty model list. Cancellation
+  // (signal aborted) still propagates — an explicitly cancelled login must
+  // not commit.
+  let models: Awaited<ReturnType<typeof prepareGatewayModels>> = []
+  try {
+    models = await prepareGatewayModels(accessToken, signal)
+  } catch (e) {
+    if (signal?.aborted) signal.throwIfAborted()
+    console.warn('[gateway-login] model discovery failed; committing login with an empty model list:', e)
   }
+  signal?.throwIfAborted()
 
-  // Sync global credential state so UI reacts immediately (must come AFTER
-  // provider/model set). Expiry is kept separate from model availability.
-  useSettingsStore.getState().setHasApiKey(true)
-  useSettingsStore.getState().setModelCredentialStatus('valid')
+  // Keep the read, write and possible rollback in one cross-tab critical
+  // section. A cancelled login must not restore over a newer tab's login.
+  // (The logout-supersedes guard below compares against `attemptStartedAt`,
+  // captured BEFORE the device-code approval / model preparation waits —
+  // see the comment at the top of this function.)
+  return withGatewayCredentialLock(async () => {
+    signal?.throwIfAborted()
+    // Logout-supersedes-pending-login: if the user logged out (any tab)
+    // while this attempt was pending — device-code approval or model
+    // preparation can take minutes — do not resurrect the session they
+    // just ended. The last login wins, the last logout also wins.
+    const lastLogout = getLastLogoutTimestamp()
+    if (lastLogout !== null && lastLogout > effectiveAttemptStartedAt) {
+      console.warn(
+        '[gateway-login] discarding login commit: a logout occurred after this attempt started',
+      )
+      throw new Error('session changed during login: logout superseded this attempt')
+    }
+    const settings = useSettingsStore.getState()
+    // Re-check pins under the lock: a pin added between the pre-lock
+    // snapshot and this commit must win over the computed defaults.
+    let defaults: string[] = []
+    if ((settings.pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
+      const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
+      defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
+    }
+    signal?.throwIfAborted()
+    // Bound the key-store reads/writes: a stalled api-key-store op must not
+    // hold the origin-wide credential lock forever (later logins, refreshes
+    // and logouts all queue behind it). Each bounded op returns a `settled`
+    // promise — ALL of them are awaited before this function returns, so a
+    // timed-out write that lands late can never modify the credential state
+    // after a newer login/logout has committed under this lock.
+    const bounded = <T>(p: Promise<T>) => withKeyStoreDeadline(p)
+    const pendingSettles: Array<Promise<void>> = []
+    // READS are bounded but never fenced: a read that lands after a newer
+    // commit cannot corrupt anything — callers re-validate what they read
+    // (the rollback CAS below compares against the live store).
+    const runBounded = async <T>(p: Promise<T>): Promise<T> => {
+      const { result, settled } = bounded(p)
+      pendingSettles.push(settled)
+      return result
+    }
+    // MUTATIONS (save/delete) take a FACTORY and are fenced BEFORE dispatch
+    // (Sourcery round-21): the op is registered (fence-stamped) and the
+    // fence checked BEFORE the effectful call is released — an already-fenced
+    // mutation never dispatches its write at all. The fence is ALSO
+    // re-checked after the effect lands (a commit that raced between the
+    // pre-dispatch check and the write is detected, escalated and thrown)
+    // and once more when the underlying op settles, so a deadline-rejected
+    // op whose write lands late inside a fenced window is still DETECTED.
+    const runBoundedFencedMutation = async <T>(factory: () => Promise<T>): Promise<T> => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const { result, settled, opId, underlying } = withKeyStoreDeadlineFactory(gate, factory)
+      pendingSettles.push(settled)
+      if (pendingKeyStoreOpIsFenced(opId)) {
+        // Release the gate WITHOUT running the factory: the mutation never
+        // dispatches, and the underlying promise settles immediately.
+        release()
+        throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
+      }
+      release()
+      try {
+        const value = await result
+        if (pendingKeyStoreOpIsFenced(opId)) {
+          escalateFencedKeyStoreMutation()
+          throw new Error('key-store op fenced: a newer credential commit landed while this op was pending')
+        }
+        return value
+      } finally {
+        void underlying.then(
+          () => {
+            if (pendingKeyStoreOpIsFenced(opId)) escalateFencedKeyStoreMutation()
+          },
+          () => {
+            if (pendingKeyStoreOpIsFenced(opId)) escalateFencedKeyStoreMutation()
+          },
+        )
+      }
+    }
+    const previousKey = await runBounded(loadApiKey(keyId))
+    signal?.throwIfAborted()
+    let committed = false
+    try {
+      await runBoundedFencedMutation(() => saveApiKey(keyId, accessToken))
+      signal?.throwIfAborted()
+      // No awaits after this point: cancellation cannot interleave the token
+      // pair, provider registration, and selected-provider settings commit.
+      registerGatewayModels(models)
+      onCommit?.()
+      committed = true
+      settings.invalidateApiKeyCache(keyId)
+      // Selected model: the gateway's first served model. When discovery
+      // failed (empty list) do NOT fall back to `settings.modelName` — that
+      // id belongs to the PREVIOUSLY selected provider and would leave the
+      // gateway login pointing at an unsupported model. The model registry
+      // is refreshed in the background (triggerProviderRefresh below), and
+      // the settings card re-registers the fetched catalog on its next
+      // /models fetch; an empty modelName here marks the selection for
+      // that re-resolution instead of pinning a wrong provider's model.
+      settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, models[0]?.id ?? '')
+      if (defaults.length > 0) {
+        settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+        settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+      }
 
-  // Trigger UI refresh so provider dropdowns etc. update
-  useSettingsStore.getState().triggerProviderRefresh()
-
-  return { ok: true, accessToken, models }
+      settings.setHasApiKey(true)
+      settings.setModelCredentialStatus('valid')
+      settings.triggerProviderRefresh()
+      return { ok: true, accessToken, models }
+    } catch (e) {
+      // The aborted write may have committed. Roll back only while still
+      // holding the lock shared by all gateway login attempts. Bounded the
+      // same way as the forward path — a stalled key-store op must not hold
+      // the lock forever during rollback either. The rollback MUTATIONS are
+      // fenced at their landing point too: an op that stayed pending past a
+      // newer credential commit must not delete that commit's key or
+      // overwrite it with this attempt's stale token (the CAS guard above
+      // already limits the restore to the store still holding THIS
+      // attempt's token; the fence additionally refuses the op outright).
+      if (!committed) {
+        const current = await runBounded(loadApiKey(keyId))
+        if (current === accessToken) {
+          if (previousKey === null) {
+            await runBoundedFencedMutation(() => deleteApiKey(keyId))
+          } else {
+            await runBoundedFencedMutation(() => saveApiKey(keyId, previousKey))
+          }
+        }
+      }
+      throw e
+    } finally {
+      // Hold the credential lock until every bounded key-store op has fully
+      // settled — a write that exceeded its deadline but lands afterwards
+      // must not modify credential state after a newer login/logout has
+      // committed under this lock. The grace timeout inside
+      // withKeyStoreDeadline guarantees this await cannot hang forever.
+      await Promise.all(pendingSettles)
+    }
+  })
 }
 
 export { getLLMGatewayBaseURL, getLLMGatewayClientId }

@@ -147,6 +147,13 @@ interface SettingsState {
   hasApiKeyLoaded: boolean
   /** Catalog/credential state used to keep model selection and sending distinct. */
   modelCredentialStatus: ModelCredentialStatus
+  /**
+   * Last credential-state write that FAILED (purge/storage unavailable).
+   * `null` when the latest write succeeded. The settings card renders this
+   * as a transient "state may be stale — retry" hint instead of trusting
+   * `modelCredentialStatus`, which may not reflect the stores.
+   */
+  modelCredentialStatusError: string | null
 
   // Per-workspace model overrides
   modelOverridesByWorkspace: Record<string, WorkspaceModelOverride>
@@ -197,6 +204,7 @@ interface SettingsState {
   setSnapshotLowWatermark: (n: number) => void
   setHasApiKey: (has: boolean) => void
   setModelCredentialStatus: (status: ModelCredentialStatus) => void
+  setModelCredentialStatusError: (message: string | null) => void
   setAgentLoopNotificationsEnabled: (enabled: boolean) => void
   setAgentLoopNotificationsOnlyWhenHidden: (onlyWhenHidden: boolean) => void
   getEffectiveProviderConfig: () => EffectiveProviderConfig | null
@@ -511,6 +519,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       hasApiKey: false,
       hasApiKeyLoaded: false,
       modelCredentialStatus: 'unknown',
+      modelCredentialStatusError: null,
       modelOverridesByWorkspace: {},
       lastUsedModelByProvider: {},
       imageGenModel: 'google/gemini-2.5-flash-image',
@@ -749,6 +758,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       },
       setHasApiKey: (hasApiKey) => set({ hasApiKey }),
       setModelCredentialStatus: (modelCredentialStatus) => set({ modelCredentialStatus }),
+      setModelCredentialStatusError: (modelCredentialStatusError) =>
+        set({ modelCredentialStatusError }),
       setAgentLoopNotificationsEnabled: (enabled) => {
         set((s) => ({ agentLoopNotifications: { ...s.agentLoopNotifications, enabled } }))
       },
