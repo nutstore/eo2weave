@@ -255,7 +255,28 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
     if (isAdapterMerge) {
       // The adapter merge reconciled every name away (or the tab never had
       // tools): remove the entry — keeping it would advertise names the
-      // current catalog no longer serves.
+      // current catalog no longer serves. A WEBMCP_TAB_REPORT that landed
+      // after the merge's fresh re-read is NEWER than the snapshot and must
+      // survive this removal: keep exactly the live entry's unmarked tools
+      // (marked names have no route behind the empty snapshot). Without
+      // this, the newer report is erased together with the stale entry.
+      const surviving = (previous?.tools ?? []).filter((tool) => !tool.adapterOwned)
+      if (previous && surviving.length > 0) {
+        entries.set(input.tabId, {
+          ...previous,
+          hostname: input.hostname,
+          origin: input.origin,
+          tabTitle: input.tabTitle,
+          tabUrl: input.tabUrl,
+          windowId: input.windowId ?? previous.windowId,
+          apiMode: input.apiMode || previous.apiMode,
+          tools: surviving,
+          updatedAt: Date.now(),
+        })
+        await persist()
+        notifyRegistryUpdated()
+        return
+      }
       if (entries.delete(input.tabId)) {
         await persist()
         notifyRegistryUpdated()
@@ -316,38 +337,46 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
   // it. registerTab is the serialization point for both writers, so
   // `previous` is fresher than any snapshot the caller built before its own
   // awaits — merging here closes the read-to-write races on both paths:
-  const merged: WebMCPToolMeta[] = [...tools]
-  if (previous) {
-    const incomingNames = new Set(tools.map((tool) => tool.name))
-    for (const tool of previous.tools) {
-      if (incomingNames.has(tool.name)) {
-        // The incoming report/snapshot wins same-name collisions (it carries
-        // the current adapter version or the page's latest report).
-        continue
-      }
-      if (tool.adapterOwned) {
-        if (isAdapterMerge) {
-          // Adapter-owned name the current snapshot no longer carries: the
-          // catalog stopped serving it → reconcile it away (never keep
-          // advertising an adapter tool without a route behind it).
-          continue
-        }
-        // Page report: the adapter still owns this name (a page report must
-        // not strip adapter-owned tools) → keep it marked.
-        merged.push(tool)
-        continue
-      }
+  const merged: WebMCPToolMeta[] = []
+  const incomingByName = new Map(tools.map((tool) => [tool.name, tool]))
+  for (const tool of previous?.tools ?? []) {
+    const incoming = incomingByName.get(tool.name)
+    if (tool.adapterOwned) {
       if (isAdapterMerge) {
-        // Page-owned name absent from the adapter snapshot: a WEBMCP_TAB_REPORT
-        // landed between the merge's fresh re-read and this write — it is
-        // NEWER than the snapshot → keep it (it must not vanish from
-        // discovery).
-        merged.push(tool)
+        // Adapter merge: the snapshot carries the CURRENT catalog object, so
+        // it replaces the live one (version refresh); its absence means the
+        // catalog stopped serving the name → reconcile it away (never keep
+        // advertising an adapter tool without a route behind it).
+        if (incoming) merged.push(incoming)
+        continue
       }
-      // Page-report path without a marker: the page's report is the
-      // authoritative FULL toolset — a live page tool it no longer lists was
-      // removed by the page → drop it.
+      // Page report: the catalog still owns this name — the marked live
+      // tool survives, and a page-reported colliding object must not
+      // displace it (a page report never strips adapter-owned tools).
+      merged.push(tool)
+      continue
     }
+    if (isAdapterMerge) {
+      // Live page-owned tool under a name the snapshot also carries: the
+      // report landed after the merge's fresh re-read, so the live object
+      // is NEWER than the snapshot and wins (the snapshot's colliding
+      // object is skipped below). Absent from the snapshot entirely, it is
+      // kept too — either way it must not vanish from the registry.
+      merged.push(tool)
+      continue
+    }
+    // Page report: authoritative FULL toolset — the incoming object is the
+    // page's latest version of the name, and a live page tool it no longer
+    // lists was removed by the page → drop it.
+    if (incoming) merged.push(incoming)
+  }
+  // Incoming tools with no live counterpart are additions (a new catalog
+  // tool or a newly reported page tool). Same-name live tools were already
+  // disposed above — pushing the incoming object here again would duplicate
+  // the name in the entry.
+  for (const tool of tools) {
+    if (previous?.tools.some((live) => live.name === tool.name)) continue
+    merged.push(tool)
   }
 
   const entry: WebMCPRegisteredTabEntry = {
