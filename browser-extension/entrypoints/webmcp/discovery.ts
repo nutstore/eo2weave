@@ -222,22 +222,31 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
       for (const snapshot of snapshots) {
         if (snapshot.status !== 'fulfilled' || !snapshot.value) continue
         await registerTab(snapshot.value)
-        // Mark adapter-served tools on the IN-MEMORY copy only, AFTER the
-        // persisted registry write above — the persisted registry must never
-        // store this flag because the WEBMCP_TAB_REPORT path feeds
-        // page-controlled tools through it (sanitizeTool strips the flag from
-        // raw reports; only this merge sets it programmatically).
-        snapshot.value.tools = snapshot.value.tools.map((tool) =>
-          snapshot.value!.adapterNames.has(tool.name) ? { ...tool, adapterServed: true } : tool
-        )
-        // Reflect the merge into the local registryEntries array for the
-        // discovery response below. snapshot.value.tools was merged onto the
-        // FRESH registry entry (re-read after the adapter await), so any
-        // mid-await page report is preserved; a tab that was previously
-        // silent and only reported mid-await simply gets pushed here.
-        const index = registryEntries.findIndex(entry => entry.tabId === snapshot.value!.tabId)
-        if (index < 0) registryEntries.push(snapshot.value)
-        else registryEntries[index] = snapshot.value
+        // Reflect the merge into the discovery response below. The
+        // authoritative data is the LIVE registry entry re-read AFTER
+        // registerTab: registerTab merges against the live entry at write
+        // time, so a WEBMCP_TAB_REPORT that landed after this tab's fresh
+        // re-read is already merged into it — rebuilding from the pre-write
+        // `snapshot.value` would drop that newer report from THIS response
+        // (and from `registryEntries`, which it replaces) until the next
+        // discovery run. The post-write adapterServed marking is reapplied on
+        // the live copy (the persisted registry never stores the flag).
+        const liveEntry = await getFreshRegistryEntryForTab(snapshot.value.tabId)
+        // Null live read: registerTab reconciled the entry away (its merged
+        // toolset was empty) — respect that removal instead of resurrecting
+        // the stale pre-write snapshot.
+        if (!liveEntry) continue
+        const markedEntry = {
+          ...liveEntry,
+          tools: liveEntry.tools.map((tool) =>
+            snapshot.value!.adapterNames.has(tool.name) && tool.adapterOwned
+              ? { ...tool, adapterServed: true }
+              : tool,
+          ),
+        }
+        const index = registryEntries.findIndex(entry => entry.tabId === markedEntry.tabId)
+        if (index < 0) registryEntries.push(markedEntry)
+        else registryEntries[index] = markedEntry
       }
     }
 
