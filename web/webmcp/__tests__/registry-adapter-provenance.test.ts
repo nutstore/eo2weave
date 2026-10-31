@@ -319,8 +319,10 @@ it('a page cannot forge the adapter ownership marker through a tab report', asyn
   // it must remove it, exactly as for genuinely adapter-owned names).
   installAdapterCatalog(async () => [])
   const response = await discoverWebMCPToolsInCurrentWindow(3)
-  // No adapter tools → snapshot returns null → nothing rewritten; the entry
-  // stays page-owned and the discovery output keeps the page description.
+  // An empty catalog reaches registerTab's adapter-merge branch, which keeps
+  // the live entry's unmarked tools: this name stays page-owned exactly as
+  // reported (marked adapter-owned names are the ones reconciled away), and
+  // the discovery output keeps the page description.
   expect(response.tools).toHaveLength(1)
   expect(response.tools[0]!.name).toBe('com.discord.main.send_message')
   expect(response.tools[0]!.description).toBe('Page tool pretending to be adapter-owned.')
@@ -411,9 +413,13 @@ it('same-name page + adapter tool keeps the page tool when the adapter drops it'
     },
   ])
   const withAdapter = await discoverWebMCPToolsInCurrentWindow(3)
-  // Route truth is unaffected while the adapter serves the name…
+  // While the adapter serves the colliding name, the ADAPTER's object is
+  // advertised — invocation routes the name through the adapter first
+  // (invoke.ts), so the authorization prompt must describe the action that
+  // actually runs (Sourcery: approved action differs from description).
   const routed = withAdapter.tools.find((tool) => tool.name === 'com.discord.main.send_message')!
-  expect(routed.description).toBe('Page-provided implementation of the colliding name.')
+  expect(routed.description).toBe('Send a message to a Discord channel.')
+  expect(routed.adapterServed).toBe(true)
 
   // …but the PERSISTED entry must keep the page tool, unmarked — so removing
   // the adapter tool later cannot take the page tool down with it.
@@ -586,5 +592,175 @@ it('a page report landing between the fresh re-read and registerTab survives the
   expect(
     response.tools.find((tool) => tool.name === 'page_midawait_tool')!.description,
   ).toBe('Reported after the fresh re-read.')
+})
+
+it('an empty adapter merge keeps live page tools a report added mid-flight (round-6)', async () => {
+  // Sourcery regression guard: when the adapter catalog became EMPTY, the
+  // empty snapshot hit registerTab's delete-everything branch — erasing the
+  // tab entry wholesale. A page report landing in the window between the
+  // merge's fresh re-read (which saw only adapter tools) and the write has
+  // its newly reported tools deleted with it, and discovery stops
+  // advertising them. The live entry's unmarked tools must survive the
+  // empty-snapshot removal.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  // Before discovery: the tab carries ONLY adapter-served tools, so the
+  // merge's fresh re-read sees nothing unmarked to keep.
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+
+  // The catalog is now empty, and the page reports a NEW tool while the
+  // merge is in flight (after the fresh re-read, before the write).
+  const realFreshRead = getFreshRegistryEntryForTab
+  const freshRead = vi.mocked(getFreshRegistryEntryForTab)
+  freshRead.mockImplementation(async () => {
+    const entry = await (realFreshRead as any).__actual(7)
+    await registerTab({
+      ...base,
+      tools: [
+        { name: 'page_late_tool', description: 'Reported during the empty merge.', inputSchema: { type: 'object' } },
+      ],
+    })
+    return entry
+  })
+  installAdapterCatalog(async () => [])
+  const response = await discoverWebMCPToolsInCurrentWindow(3)
+
+  // The mid-flight page report survives the empty-merge write…
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<{ name: string }>
+  }>
+  expect(persisted.find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name))
+    .toEqual(['page_late_tool'])
+  // …and THIS response still advertises it (the post-write live re-read).
+  expect(response.tools.map((tool) => tool.name)).toEqual(['page_late_tool'])
+  expect(response.tools[0]!.description).toBe('Reported during the empty merge.')
+})
+
+it('a page update landing after the fresh re-read wins over the stale adapter snapshot (round-6)', async () => {
+  // Sourcery regression guard: a page updating a page-owned tool after
+  // discovery's fresh re-read but before the adapter-merge write lost to
+  // the snapshot's same-name object — the stale (page-side) metadata was
+  // persisted, and a later catalog drop then removed the tool entirely.
+  // The live page-owned object must win same-name collisions with a stale
+  // adapter snapshot.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'page_collide_tool', description: 'Old page description.', inputSchema: { type: 'object' } },
+    ],
+  })
+
+  // The catalog serves the colliding name, but the snapshot is built
+  // BEFORE the page reports its update (the update lands inside the fresh
+  // re-read wrapper — strictly after the re-read, before the write).
+  const adapterCatalog = vi.fn(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  installAdapterCatalog(adapterCatalog)
+  const realFreshRead = getFreshRegistryEntryForTab
+  const freshRead = vi.mocked(getFreshRegistryEntryForTab)
+  freshRead.mockImplementation(async () => {
+    const entry = await (realFreshRead as any).__actual(7)
+    await registerTab({
+      ...base,
+      tools: [
+        { name: 'page_collide_tool', description: 'Updated page description.', inputSchema: { type: 'object' } },
+      ],
+    })
+    return entry
+  })
+  await discoverWebMCPToolsInCurrentWindow(3)
+  // Fresh re-read returned the OLD entry (the snapshot is stale)…
+  expect(adapterCatalog.mock.calls.length).toBeGreaterThan(0)
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<{ name: string; description?: string }>
+  }>
+  // …but the page's UPDATED object was persisted, not the snapshot's.
+  expect(
+    persisted.find((entry) => entry.tabId === 7)!.tools.find(
+      (tool) => tool.name === 'page_collide_tool',
+    )!.description,
+  ).toBe('Updated page description.')
+})
+
+it('a legacy unmarked entry is re-advertised from CURRENT adapter metadata while served (round-6)', async () => {
+  // Sourcery regression guard (legacy pre-marker entries): a persisted
+  // entry written before the adapterOwned marker existed carries a stale
+  // adapter object with no marker. Under a catalog that still serves the
+  // name, the merge now replaces the stale metadata with the CURRENT
+  // adapter object in the discovery response (the advertised action must
+  // match the route), while the PERSISTED object stays unmarked — an
+  // unmarked stored object cannot be told apart from a page tool by name
+  // alone (forge prevention), so it is never reconciled away by name
+  // matching. Once the catalog drops the name, the stored copy is
+  // advertised again WITHOUT the adapter flag: no builtin translation, and
+  // an invoke of it fails TOOL_NOT_FOUND instead of running a stale route.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  // Simulate a pre-marker persisted entry by writing through the page path
+  // (the sanitizer strips adapterOwned either way).
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'com.discord.main.send_message', description: 'Old adapter copy.', inputSchema: { type: 'object' } },
+    ],
+  })
+
+  // While the catalog serves the name, the CURRENT adapter metadata —
+  // flagged adapterServed — is what discovery advertises, not the stale
+  // stored copy.
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  const served = await discoverWebMCPToolsInCurrentWindow(3)
+  const servedTool = served.tools.find((tool) => tool.name === 'com.discord.main.send_message')!
+  expect(servedTool.description).toBe('Send a message to a Discord channel.')
+  expect(servedTool.adapterServed).toBe(true)
+
+  // After the catalog drops the name, the unmarked stored copy survives
+  // (page-safe reconciliation) and is advertised UNFLAGGED — the strict
+  // provenance gate keeps it untranslated and no adapter route is implied.
+  installAdapterCatalog(async () => [])
+  const dropped = await discoverWebMCPToolsInCurrentWindow(3)
+  const droppedTool = dropped.tools.find((tool) => tool.name === 'com.discord.main.send_message')!
+  expect(droppedTool.description).toBe('Old adapter copy.')
+  expect(droppedTool.adapterServed).toBeUndefined()
 })
 

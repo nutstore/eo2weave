@@ -155,9 +155,10 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         const current = await chrome.tabs.get(tab.id)
         // URL check only — an EMPTY catalog must still fall through: when a
         // tab previously carried adapter-served tools and the catalog now
-        // lists none, ownership reconciliation below has to run so those
-        // names stop being advertised (returning early here left stale
-        // adapter-owned names in the registry with no route behind them).
+        // lists none, the empty snapshot reaches registerTab's adapter-merge
+        // branch so marked names stop being advertised (an early return here
+        // left stale adapter-owned names in the registry with no route
+        // behind them).
         if (current.url !== tab.url) return null
         // Re-read the LIVE registry entry for this tab right before the
         // registerTab write: the `registryEntries` array was snapshotted
@@ -168,44 +169,39 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         // fresh re-read (before the per-tab awaits) can go stale because the
         // snapshot loop processes tabs sequentially with its own awaits.
         const freshEntry = await getFreshRegistryEntryForTab(tab.id)
-        // Adapter ownership reconciliation: registry entries persist
-        // page-reported tool names verbatim, so a previously adapter-served
-        // name that the CURRENT catalog no longer lists (package update
-        // removed/renamed the tool) must NOT keep riding the registry — it
-        // would stay advertised with no route behind it. Names absent from
-        // the current catalog are page-owned and survive unchanged; only
-        // names this tab previously carried are reconciled (a name another
-        // tab owns is not ours to remove).
         const adapterNames = new Set(adapters.map(tool => tool.name))
         const adapterOwnedNames = new Set<string>()
         const tools = new Map<string, WebMCPToolMeta>()
+        // Unmarked names are page-owned → keep them verbatim. MARKED names
+        // ride only while the catalog serves them — a marked name the
+        // catalog dropped stays OUT of the snapshot so registerTab's merge
+        // reconciles it away (never advertise an adapter tool with no route).
+        // An UNMARKED name the catalog no longer serves is deliberately
+        // preserved: it cannot be told apart from a page tool by name alone
+        // (a page may register any raw name, including builtin-qualified
+        // ones — see the forge-prevention test), and the strict provenance
+        // gate in localizedToolDescription already keeps such rows
+        // untranslated.
         for (const tool of freshEntry?.tools || []) {
           if (!tool.adapterOwned || adapterNames.has(tool.name)) tools.set(tool.name, tool)
         }
-        // Legacy entries written before the ownership marker existed need no
-        // name-based sweep: for every name the CURRENT catalog still serves,
-        // the adapterOwnedNames list below re-marks the kept instance on the
-        // persisted write, migrating the marker onto pre-marker entries. An
-        // UNMARKED name the catalog no longer serves cannot be told apart
-        // from a page tool by name alone (a page may register any raw name,
-        // including builtin-qualified ones — see the forge-prevention test),
-        // so it is preserved; the strict provenance gate in
-        // localizedToolDescription already keeps such rows untranslated.
-        // Merge order preserves the page tool on same-name collisions: insert
-        // catalog tools at their name slot WITHOUT evicting what is already
-        // there, and only mark names whose merged object is genuinely
-        // adapter-owned. A page-reported object that won a collision must stay
-        // OUT of adapterOwnedNames — otherwise a later catalog update that
-        // drops the name would reconcile the page tool away with it. Route
-        // truth is unaffected (the SW invokes the adapter before the page
-        // relay for any name the current catalog serves), and the transient
-        // adapterServed marking below still reflects that route.
+        // Catalog-served names ALWAYS take the adapter's object (displacing
+        // any colliding page-reported object under the same raw name), and
+        // every one is marked adapter-owned. Invocation routes any name the
+        // current catalog serves through the adapter FIRST (invoke.ts tries
+        // the adapter before the page relay), so the advertised
+        // description/schema must be the adapter's: keeping the PAGE's
+        // object here would make the authorization prompt describe a
+        // different action than the one that actually executes. The
+        // persisted entry still keeps the page's colliding object (it must
+        // survive a later catalog drop unharmed — see the same-name test),
+        // so the discovery response below re-applies the catalog object on
+        // the live copy for these names. A stale pre-marker adapter object
+        // occupying a served name is migrated onto the CURRENT catalog
+        // metadata by the same overwrite.
         for (const tool of adapters) {
-          const existing = tools.get(tool.name)
-          if (!existing || existing.adapterOwned) {
-            tools.set(tool.name, tool)
-            adapterOwnedNames.add(tool.name)
-          }
+          tools.set(tool.name, tool)
+          adapterOwnedNames.add(tool.name)
         }
         return { tabId: tab.id, origin, hostname, tabTitle: tab.title || '',
           tabUrl: tab.url!, windowId: tab.windowId, apiMode: 'documentModelContext' as const,
@@ -215,9 +211,13 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
           // adapter-owned tools).
           tools: [...tools.values()], updatedAt: Date.now(),
           adapterOwnedNames: [...adapterOwnedNames],
-          // Transient — consumed by the post-registerTab marking below, never
-          // passed to registerTab's persisted shape.
-          adapterNames: new Set(adapters.map(tool => tool.name)) }
+          // Transient — consumed by the post-registerTab response marking
+          // below, never passed to registerTab's persisted shape.
+          adapterNames: new Set(adapters.map(tool => tool.name)),
+          // Name → catalog object, so the response can re-apply the
+          // ADAPTER's metadata over the persisted page-reported colliding
+          // object (the advertised action must match the adapter route).
+          adapterByTool: new Map(adapters.map(tool => [tool.name, tool])) }
       }))
       for (const snapshot of snapshots) {
         if (snapshot.status !== 'fulfilled' || !snapshot.value) continue
@@ -238,11 +238,30 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         if (!liveEntry || !Array.isArray(liveEntry.tools)) continue
         const markedEntry = {
           ...liveEntry,
-          tools: liveEntry.tools.map((tool) =>
-            snapshot.value!.adapterNames.has(tool.name) && tool.adapterOwned
-              ? { ...tool, adapterServed: true }
-              : tool,
-          ),
+          // Two per-name adjustments on THIS tab's copy, keyed on the
+          // current catalog list:
+          // 1. adapterServed is the response's provenance flag — every
+          //    catalog-served name on this tab routes through the adapter,
+          //    so it must carry the flag (previously guarded by a marker
+          //    cross-check that only mattered while the merge could leave a
+          //    page object under a served name).
+          // 2. The catalog's own object overrides the live copy's stored
+          //    metadata: registerTab deliberately keeps a page-reported
+          //    colliding object in the PERSISTED entry (it must survive a
+          //    later catalog drop), but the ADVERTISED action for a served
+          //    name is the adapter's — the authorization prompt is built
+          //    from this copy, and invocation routes the name through the
+          //    adapter first (invoke.ts). Without this, the prompt would
+          //    describe the page's colliding action while the adapter's
+          //    action executes.
+          tools: liveEntry.tools.map((tool) => {
+            if (!snapshot.value!.adapterNames.has(tool.name)) return tool
+            const adapterTool = snapshot.value!.adapterByTool.get(tool.name)
+            return {
+              ...(adapterTool ?? tool),
+              adapterServed: true,
+            }
+          }),
         }
         const index = registryEntries.findIndex(entry => entry.tabId === markedEntry.tabId)
         if (index < 0) registryEntries.push(markedEntry)
