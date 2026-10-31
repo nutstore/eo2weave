@@ -335,9 +335,12 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
                               // The opt-in payload keys translations by the
                               // package's site hostname — the same key the
                               // webmcpTools i18n namespace uses (see
-                              // getWebMCPToolDescription).
+                              // getWebMCPToolDescription). The name carries
+                              // the builtin package qualifier — the shape
+                              // localizedToolDescription trusts (see
+                              // web/i18n/webmcp-tools.ts).
                               sourceId: packageInfo.hostname,
-                              name: tool.name,
+                              name: `${packageInfo.id}.${tool.name}`,
                               description: tool.description,
                             })}</span>
                           ) : null}

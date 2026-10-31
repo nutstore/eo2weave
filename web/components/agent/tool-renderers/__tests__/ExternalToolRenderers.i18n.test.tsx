@@ -31,8 +31,8 @@ describe('ExternalToolRenderers search_tools (localized descriptions)', () => {
     expect(renderer).toBeDefined()
     const Detail = renderer.Detail
     render(<Detail {...searchCtx([{
-      fullName: 'https_discord_com__read_messages',
-      name: 'read_messages',
+      fullName: 'https_discord_com__com_discord_main_read_messages',
+      name: 'com.discord.main.read_messages',
       source: 'webmcp',
       sourceId: 'discord.com',
       description: 'Read recent messages from a Discord channel (manifest English).',
