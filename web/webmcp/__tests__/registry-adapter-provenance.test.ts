@@ -764,3 +764,257 @@ it('a legacy unmarked entry is re-advertised from CURRENT adapter metadata while
   expect(droppedTool.adapterServed).toBeUndefined()
 })
 
+it('removes a reconciled-away tab entry from the SAME discovery response (round-5)', async () => {
+  // Sourcery round-5 regression guard: when catalog reconciliation deletes
+  // the tab entry (every stored tool was adapter-owned and the catalog now
+  // lists none), the post-write live read returns null and the merge used to
+  // just `continue` — leaving the tab's pre-write entry in the response's
+  // `registryEntries` array. The response then still advertised the removed
+  // tool even though its adapter route was gone.
+  // Seed the registry with an adapter-owned-only entry (run 1)…
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  const first = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(first.tools.map((tool) => tool.name)).toEqual(['com.discord.main.send_message'])
+
+  // …then empty the catalog: reconciliation deletes the entry entirely
+  // (no page tools survive), and THIS response must stop advertising it.
+  installAdapterCatalog(async () => [])
+  const second = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(second.tools).toEqual([])
+  expect(second.scannedTabs).toBe(0)
+
+  // The registry is empty too — nothing resurrected on the next read.
+  expect(
+    (sessionStore.get('webmcp_tab_registry') as unknown[] | undefined) ?? [],
+  ).toHaveLength(0)
+})
+
+it('restores a shadowed page tool when the adapter stops serving the colliding name (round-5)', async () => {
+  // Sourcery round-5 regression guard: a page-reported tool colliding with
+  // an adapter-owned name used to be DISCARDED by registerTab (the adapter
+  // object won). When the catalog later stopped serving the name, the page
+  // implementation was gone until the page re-reported. The colliding page
+  // object must be retained as a shadow and restored on the catalog drop.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  // Page reports the colliding tool FIRST…
+  await registerTab({
+    ...base,
+    tools: [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Page-provided implementation of the colliding name.',
+        inputSchema: { type: 'object' },
+      },
+    ],
+  })
+  // …then the adapter takes the name over (discovery merge). NOTE: the page
+  // object stays LIVE here (unmarked, not shadowed) — the merge keeps an
+  // unmarked live tool verbatim. The shadow path is exercised by the next
+  // test, where the page reports while the adapter ALREADY owns the name.
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+
+  // The persisted entry keeps the page tool LIVE (unmarked), the adapter
+  // object is advertised with the flag in the response…
+  const afterTakeover = sessionStore.get('webmcp_tab_registry') as Array<{
+    tools: Array<{ name: string; description?: string }>
+    shadowedPageTools?: Array<{ name: string; description?: string }>
+  }>
+  expect(afterTakeover[0]!.tools).toEqual([
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Page-provided implementation of the colliding name.',
+      inputSchema: { type: 'object' },
+      annotations: undefined,
+    },
+  ])
+  expect(afterTakeover[0]!.shadowedPageTools).toBeUndefined()
+
+  // Catalog drops the name → the page implementation survives untouched.
+  installAdapterCatalog(async () => [])
+  const afterDrop = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(afterDrop.tools).toHaveLength(1)
+  expect(afterDrop.tools[0]!.name).toBe('com.discord.main.send_message')
+  expect(afterDrop.tools[0]!.description).toBe('Page-provided implementation of the colliding name.')
+  expect(afterDrop.tools[0]!.adapterServed).toBeUndefined()
+})
+
+it('a page report colliding with an adapter-owned name is shadowed, not dropped (round-5)', async () => {
+  // Complementary direction: the page re-reports its colliding tool WHILE
+  // the adapter owns the name. The report must not displace the adapter
+  // object, and the page's object must be retained as a shadow so a later
+  // catalog drop can restore it.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+
+  await registerTab({
+    ...base,
+    tools: [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Page-provided implementation of the colliding name.',
+        inputSchema: { type: 'object' },
+      },
+    ],
+  })
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tools: Array<{ name: string; description?: string }>
+    shadowedPageTools?: Array<{ name: string; description?: string }>
+  }>
+  // The adapter object stays advertised…
+  expect(persisted[0]!.tools).toEqual([
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+      adapterOwned: true,
+      annotations: undefined,
+    },
+  ])
+  // …and the page's object became the shadow.
+  expect(persisted[0]!.shadowedPageTools).toEqual([
+    expect.objectContaining({
+      name: 'com.discord.main.send_message',
+      description: 'Page-provided implementation of the colliding name.',
+    }),
+  ])
+
+  // Catalog drop → shadow restored.
+  installAdapterCatalog(async () => [])
+  const afterDrop = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(afterDrop.tools[0]!.description).toBe('Page-provided implementation of the colliding name.')
+})
+
+it('a discovery run whose adapter snapshot went stale mid-flight does not commit (round-5)', async () => {
+  // Sourcery round-5 regression guard: an older discovery captured the
+  // adapter catalog before a refresh; a newer catalog refresh (route
+  // removal) landed while the run was still awaiting, and the old run then
+  // committed its stale adapter list — registering tools whose adapter
+  // routes no longer exist. The commit must be abandoned when the catalog
+  // generation changed after the snapshot.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  // The tab carries a page tool so the entry exists before the run.
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'page_only_tool', description: 'Page-owned.', inputSchema: { type: 'object' } },
+    ],
+  })
+
+  // The catalog provider simulates a refresh (installAdapterCatalog with a
+  // NEW route set) landing WHILE the discovery run is inside its per-tab
+  // adapter await — after this run captured its snapshot list, before its
+  // commit. The new catalog no longer serves the name.
+  installAdapterCatalog(async () => {
+    installAdapterCatalog(async () => [])
+    return [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Send a message to a Discord channel.',
+        inputSchema: { type: 'object' },
+      },
+    ]
+  })
+  const response = await discoverWebMCPToolsInCurrentWindow(3)
+
+  // The stale adapter tool must NOT be registered or advertised…
+  expect(response.tools.map((tool) => tool.name)).toEqual(['page_only_tool'])
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<{ name: string }>
+  }>
+  expect(persisted.find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name))
+    .toEqual(['page_only_tool'])
+
+  // …and the next discovery run against the refreshed (empty) catalog keeps
+  // the registry clean.
+  const next = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(next.tools.map((tool) => tool.name)).toEqual(['page_only_tool'])
+})
+
+it('a stale adapter-served response row loses its flag when the catalog refreshed mid-run (round-5)', async () => {
+  // Sourcery round-5 regression guard (provenance marking): when a catalog
+  // refresh lands between a run's snapshot and its post-write marking, the
+  // dropped route's name must NOT be advertised with the old adapter
+  // description and adapterServed:true — otherwise the colliding page tool
+  // could be invoked under the adapter's previously trusted description.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  await registerTab({
+    ...base,
+    tools: [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Page-provided implementation of the colliding name.',
+        inputSchema: { type: 'object' },
+      },
+    ],
+  })
+  installAdapterCatalog(async () => {
+    // Refresh lands mid-run, AFTER this run read the catalog (which still
+    // served the name): the snapshot is stale by commit time.
+    installAdapterCatalog(async () => [])
+    return [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Send a message to a Discord channel.',
+        inputSchema: { type: 'object' },
+      },
+    ]
+  })
+  const response = await discoverWebMCPToolsInCurrentWindow(3)
+
+  const row = response.tools.find((tool) => tool.name === 'com.discord.main.send_message')!
+  expect(row).toBeDefined()
+  // No trusted-provenance advertising from the stale snapshot: the page
+  // tool keeps its own description and carries no adapter flag.
+  expect(row!.adapterServed).toBeUndefined()
+  expect(row!.description).toBe('Page-provided implementation of the colliding name.')
+})
+

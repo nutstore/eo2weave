@@ -1,4 +1,5 @@
 import {
+  currentAdapterCatalogForTab,
   discoverToolsInTab,
   parseHostname,
   parseOrigin,
@@ -331,9 +332,10 @@ export async function invokeWebMCPTool(
 
   const entries = await getRegistryEntries()
   const entry = entries.find((candidate) => candidate.tabId === targetTabId)
-  let registered = entry?.origin === liveOrigin
-    ? entry.tools.some((tool) => tool.name === toolName)
-    : false
+  const registeredTool = entry?.origin === liveOrigin
+    ? entry.tools.find((tool) => tool.name === toolName)
+    : undefined
+  let registered = !!registeredTool
 
   // Registry-silent tabs opened before the extension reload are probed only
   // on their exact target tab. A failure never expands to another tab.
@@ -350,6 +352,30 @@ export async function invokeWebMCPTool(
       tabId: targetTabId,
       errorCode: 'TOOL_NOT_FOUND',
       error: `Tool "${toolName}" is not currently exposed by tab ${targetTabId}`,
+    }
+  }
+
+  // Stale adapter provenance guard (Sourcery round-5): a registry entry can
+  // still carry a name marked adapter-owned after the catalog dropped the
+  // route (reconciliation happens on the next adapter-merge discovery, not
+  // on the drop itself). The authorization prompt for such a call was built
+  // from the adapter's previously trusted description; letting
+  // executeWebMCPToolInTab fall back to the page relay when invokeAdapter
+  // returns null would run a colliding PAGE tool under that adapter copy.
+  // Revalidate against the CURRENT catalog: when the route is gone, reject
+  // the call outright — no page fallback for a stale adapter-served name.
+  if (registeredTool?.adapterOwned) {
+    const catalog = await currentAdapterCatalogForTab(targetTabId)
+    if (!catalog?.some((tool) => tool.name === toolName)) {
+      return {
+        ok: false,
+        origin: liveOrigin,
+        hostname,
+        toolName,
+        tabId: targetTabId,
+        errorCode: 'TOOL_NOT_FOUND',
+        error: `Adapter route for "${toolName}" is no longer available on tab ${targetTabId}`,
+      }
     }
   }
 

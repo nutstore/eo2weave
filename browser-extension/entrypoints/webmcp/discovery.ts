@@ -10,8 +10,30 @@ import {
 
 // SW adapter descriptors remain discoverable even before destination proxies mount.
 let adapterCatalog: ((tabId: number) => Promise<WebMCPToolMeta[]>) | undefined
+let adapterCatalogGeneration = 0
+
 export function installAdapterCatalog(provider: NonNullable<typeof adapterCatalog>): void {
+  // A new provider means a refreshed route set (package install/update/
+  // remove). Every in-flight discovery run that snapshotted the previous
+  // catalog loses its freshness guarantee at this instant — the generation
+  // check below makes them abandon their commits.
   adapterCatalog = provider
+  adapterCatalogGeneration++
+}
+
+function currentCatalogGeneration(): number {
+  return adapterCatalogGeneration
+}
+
+/**
+ * Current-catalog revalidation for the invoke path: returns the catalog's
+ * tool list for the tab (null when no catalog is installed). Callers use it
+ * to re-check, at execution time, that a registry entry marked adapter-owned
+ * still has a live adapter route behind it.
+ */
+export async function currentAdapterCatalogForTab(tabId: number): Promise<WebMCPToolMeta[] | null> {
+  if (!adapterCatalog) return null
+  return adapterCatalog(tabId)
 }
 
 // Legacy probe timeout — only used for registry-silent tabs (opened
@@ -146,6 +168,13 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         : await getRegistryEntries()
 
     if (adapterCatalog) {
+      // Catalog generation captured BEFORE the first snapshot: if a catalog
+      // refresh (installAdapterCatalog) happens while this run is in flight,
+      // the check before each commit below fails and the run's stale
+      // adapter snapshot is never written back into the registry (a stale
+      // snapshot would register tools whose adapter routes the newer
+      // catalog already withdrew).
+      const catalogGeneration = currentCatalogGeneration()
       const tabs = await chrome.tabs.query(typeof windowId === 'number' ? { windowId } : {})
       const snapshots = await Promise.allSettled(tabs.map(async tab => {
         const origin = parseOrigin(tab.url || '')
@@ -221,6 +250,14 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
       }))
       for (const snapshot of snapshots) {
         if (snapshot.status !== 'fulfilled' || !snapshot.value) continue
+        // Stale-snapshot guard (Sourcery round-5): a catalog refresh that
+        // landed while this run was awaiting its snapshots invalidates every
+        // adapter snapshot taken before it. Committing one would register
+        // adapter tools whose routes the newer catalog already withdrew —
+        // exactly the "stale discovery restores removed tools" race. Skip
+        // the commit; the next discovery run against the refreshed catalog
+        // rebuilds and reconciles correctly.
+        if (currentCatalogGeneration() !== catalogGeneration) break
         await registerTab(snapshot.value)
         // Reflect the merge into the discovery response below. The
         // authoritative data is the LIVE registry entry re-read AFTER
@@ -235,7 +272,25 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         // Null/garbage live read: registerTab reconciled the entry away (its
         // merged toolset was empty) — respect that removal instead of
         // resurrecting the stale pre-write snapshot.
-        if (!liveEntry || !Array.isArray(liveEntry.tools)) continue
+        if (!liveEntry || !Array.isArray(liveEntry.tools)) {
+          // The removal must also leave THIS response: the tab's earlier
+          // entry still sits in `registryEntries` (snapshotted before the
+          // write), and leaving it would keep advertising tools whose
+          // adapter routes are gone. Drop the stale entry from the response
+          // set (Sourcery round-5: "Removed tools remain advertised").
+          const staleIndex = registryEntries.findIndex(entry => entry.tabId === snapshot.value!.tabId)
+          if (staleIndex >= 0) registryEntries.splice(staleIndex, 1)
+          continue
+        }
+        // adapterServed marking is keyed on the catalog list THIS run
+        // snapshotted — and it stays valid only while that snapshot is the
+        // CURRENT one. A catalog refresh between the snapshot and this
+        // marking means a dropped route's name would be advertised with the
+        // old adapter description and a trusted-provenance flag, letting a
+        // colliding page tool execute under the adapter's previously
+        // trusted description once invokeAdapter returns null and the page
+        // relay is used as fallback. Never mark from a stale snapshot.
+        const catalogIsCurrent = currentCatalogGeneration() === catalogGeneration
         const markedEntry = {
           ...liveEntry,
           // Two per-name adjustments on THIS tab's copy, keyed on the
@@ -255,7 +310,7 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
           //    describe the page's colliding action while the adapter's
           //    action executes.
           tools: liveEntry.tools.map((tool) => {
-            if (!snapshot.value!.adapterNames.has(tool.name)) return tool
+            if (!catalogIsCurrent || !snapshot.value!.adapterNames.has(tool.name)) return tool
             const adapterTool = snapshot.value!.adapterByTool.get(tool.name)
             return {
               ...(adapterTool ?? tool),
