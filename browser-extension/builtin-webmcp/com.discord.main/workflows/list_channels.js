@@ -554,6 +554,20 @@ export default {
           options,
         )
       } catch (error) {
+        // An eval rejection whose error name carries the source marker
+        // means the eval HARNESS itself faulted (page-side runtime error)
+        // while the tab is still alive — TAB_UNAVAILABLE would mislead the
+        // caller into reopening a healthy tab, so it gets EVAL_FAILED.
+        if (error instanceof Error && error.name === '__eo2EvalSourceMarker__') {
+          state.result = {
+            status: 'error',
+            data: null,
+            message: 'The discord.com tab failed to run the tool (internal eval error): ' +
+              String(error),
+            error_code: 'EVAL_FAILED',
+          }
+          return 'success'
+        }
         // Tab closed/navigated or the eval timed out: surface a stable
         // workflow error instead of letting the adapter rejection escape.
         state.result = {

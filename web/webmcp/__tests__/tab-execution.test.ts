@@ -169,3 +169,39 @@ it('a live adapter-served invocation still passes the catalog revalidation (roun
   expect(mocks.adapter).toHaveBeenCalled()
   expect(mocks.send).not.toHaveBeenCalled()
 })
+
+it('a route withdrawn after catalog revalidation fails closed instead of running the page tool (round-6)', async () => {
+  // Sourcery round-6: the route can be withdrawn BETWEEN the pre-call
+  // catalog revalidation and the adapter invocation — invokeAdapter then
+  // returns null, and the old call fell through to the page relay, running
+  // a colliding PAGE tool under the adapter's previously trusted
+  // description. invokeWebMCPTool must pass adapterOnly for adapter-owned
+  // names so a null adapter result fails closed.
+  mocks.route.mockResolvedValue([{
+    tabId: 102,
+    origin: 'https://example.com',
+    hostname: 'example.com',
+    tools: [{
+      name: 'com.example.main.send_message',
+      description: 'Adapter copy.',
+      inputSchema: { type: 'object' },
+      adapterOwned: true,
+    }],
+  }])
+  // The catalog still serves the name at revalidation time…
+  mocks.catalog.mockResolvedValue([
+    { name: 'com.example.main.send_message', description: 'Adapter copy.', inputSchema: { type: 'object' } },
+  ])
+  // …but the route is gone by invocation time (invokeAdapter returns null).
+  mocks.adapter.mockResolvedValue(null)
+  const response = await invokeWebMCPTool({
+    targetTabId: 102,
+    origin: 'https://example.com',
+    toolName: 'com.example.main.send_message',
+    args: {},
+  })
+  expect(response).toMatchObject({ ok: false, errorCode: 'ADAPTER_UNAVAILABLE' })
+  // The page relay and script probe never ran.
+  expect(mocks.send).not.toHaveBeenCalled()
+  expect(mocks.script).not.toHaveBeenCalled()
+})

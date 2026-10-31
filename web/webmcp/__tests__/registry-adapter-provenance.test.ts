@@ -1018,3 +1018,221 @@ it('a stale adapter-served response row loses its flag when the catalog refreshe
   expect(row!.description).toBe('Page-provided implementation of the colliding name.')
 })
 
+
+it('a shadow is dropped when the page report stops listing the adapter-owned name (round-6)', async () => {
+  // Sourcery round-6 (shadow reconciliation): shadows whose names REMAIN in
+  // the adapter snapshot must not be dropped by a page report alone… but a
+  // shadow the page no longer reports must not survive into a LATER run,
+  // where a catalog drop would restore a page tool the page removed.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+  // The page reports the colliding name → captured as the shadow.
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'com.discord.main.send_message', description: 'Shadowed page copy.', inputSchema: { type: 'object' } },
+    ],
+  })
+  const persisted = () =>
+    sessionStore.get('webmcp_tab_registry') as Array<{
+      tabId: number
+      tools: Array<{ name: string; description?: string }>
+      shadowedPageTools?: Array<{ name: string; description?: string }>
+    }>
+  expect(persisted()[0]!.shadowedPageTools).toHaveLength(1)
+
+  // Run 1: page report + adapter merge in flight. The adapter snapshot STILL
+  // serves the name, but a page report that removes it lands mid-flight (after
+  // the fresh re-read, before the write) — an authoritative full toolset
+  // WITHOUT the name.
+  const realFreshRead = getFreshRegistryEntryForTab
+  const freshRead = vi.mocked(getFreshRegistryEntryForTab)
+  freshRead.mockImplementationOnce(async () => {
+    const entry = await (realFreshRead as any).__actual(7)
+    await registerTab({ ...base, tools: [] })
+    return entry
+  })
+  await discoverWebMCPToolsInCurrentWindow(3)
+  // The page's removal is authoritative for the PAGE implementation: the
+  // adapter tool (still catalog-served) stays, but the shadow is gone — a
+  // later catalog drop must NOT resurrect the removed page tool.
+  const afterRemoval = persisted().find((entry) => entry.tabId === 7)!
+  expect(afterRemoval.tools.map((tool) => tool.name)).toEqual(['com.discord.main.send_message'])
+  expect(afterRemoval.shadowedPageTools ?? []).toHaveLength(0)
+  installAdapterCatalog(async () => [])
+  const afterDrop = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(afterDrop.tools.filter((tool) => tool.name === 'com.discord.main.send_message')).toHaveLength(0)
+
+  // Variant: a NON-EMPTY page report without the name (other_page_tool only)
+  // kills the shadow through the merge path too.
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  // Restore the adapter-owned entry (the catalog-drop run above reconciled
+  // it away), then re-capture the page's colliding implementation.
+  await discoverWebMCPToolsInCurrentWindow(3)
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'com.discord.main.send_message', description: 'Shadowed page copy.', inputSchema: { type: 'object' } },
+    ],
+  })
+  expect(persisted().find((entry) => entry.tabId === 7)!.shadowedPageTools).toHaveLength(1)
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'other_page_tool', description: 'Page-owned.', inputSchema: { type: 'object' } },
+    ],
+  })
+  const afterRemoval2 = persisted().find((entry) => entry.tabId === 7)!
+  expect(afterRemoval2.tools.map((tool) => tool.name).sort()).toEqual([
+    'com.discord.main.send_message',
+    'other_page_tool',
+  ])
+  expect(afterRemoval2.shadowedPageTools ?? []).toHaveLength(0)
+
+  // Control: with the page re-capturing the colliding name, the shadow is
+  // rebuilt…
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'com.discord.main.send_message', description: 'Shadowed page copy.', inputSchema: { type: 'object' } },
+    ],
+  })
+  expect(persisted().find((entry) => entry.tabId === 7)!.shadowedPageTools).toHaveLength(1)
+  // …and an adapter merge with the page STILL reporting the name keeps it.
+  freshRead.mockImplementationOnce(async () => {
+    const entry = await (realFreshRead as any).__actual(7)
+    await registerTab({
+      ...base,
+      tools: [
+        { name: 'com.discord.main.send_message', description: 'Shadowed page copy.', inputSchema: { type: 'object' } },
+      ],
+    })
+    return entry
+  })
+  await discoverWebMCPToolsInCurrentWindow(3)
+  expect(persisted().find((entry) => entry.tabId === 7)!.shadowedPageTools).toHaveLength(1)
+})
+
+it('a shadow whose name the adapter dropped mid-report is restored exactly once (round-6)', async () => {
+  // Sourcery round-6: on a PAGE report where the live entry still carries the
+  // MARKED adapter tool, the shadow must be retained (the adapter still owns
+  // the name) — and restored exactly once when the catalog later drops it,
+  // not duplicated by the seeding loop plus the restore path.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'com.discord.main.send_message', description: 'Shadowed page copy.', inputSchema: { type: 'object' } },
+    ],
+  })
+  // Page report that KEEPS the colliding entry (page still reports it)
+  // while the live entry carries the marked adapter tool — the shadow is
+  // retained (the adapter still owns the name)…
+  await registerTab({ ...base, tools: [
+    { name: 'com.discord.main.send_message', description: 'Shadowed page copy.', inputSchema: { type: 'object' } },
+    { name: 'other_page_tool', description: 'Page.', inputSchema: { type: 'object' } },
+  ] })
+  const persisted = () =>
+    sessionStore.get('webmcp_tab_registry') as Array<{
+      tabId: number
+      tools: Array<{ name: string; description?: string }>
+      shadowedPageTools?: Array<{ name: string; description?: string }>
+    }>
+  const entry = persisted().find((item) => item.tabId === 7)!
+  // The marked adapter tool survives the page report…
+  expect(entry.tools.map((tool) => tool.name)).toEqual([
+    'com.discord.main.send_message',
+    'other_page_tool',
+  ])
+  // …and its shadow is retained for the later catalog drop.
+  expect(entry.shadowedPageTools).toHaveLength(1)
+
+  // Catalog drop → the shadow is restored EXACTLY once (no duplication from
+  // the seeding loop).
+  installAdapterCatalog(async () => [])
+  const dropped = await discoverWebMCPToolsInCurrentWindow(3)
+  const restored = dropped.tools.filter((tool) => tool.name === 'com.discord.main.send_message')
+  expect(restored).toHaveLength(1)
+  expect(restored[0]!.description).toBe('Shadowed page copy.')
+  expect(dropped.tools.map((tool) => tool.name).sort()).toEqual(['com.discord.main.send_message', 'other_page_tool'])
+})
+
+it('an adapter-merge write that only changed the shadow is still persisted (round-6)', async () => {
+  // Sourcery round-6 (no-op check): a page reporting an UPDATED colliding
+  // tool builds a changed shadow list, but the toolset and tab metadata are
+  // unchanged — the no-op short-circuit previously returned without writing,
+  // so the next catalog drop restored the OLD shadow description.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'com.discord.main.send_message', description: 'Old page description.', inputSchema: { type: 'object' } },
+    ],
+  })
+  // Same-name, same toolset, UPDATED page object → only the shadow changes.
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'com.discord.main.send_message', description: 'Updated page description.', inputSchema: { type: 'object' } },
+    ],
+  })
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    shadowedPageTools?: Array<{ name: string; description?: string }>
+  }>
+  expect(persisted[0]!.shadowedPageTools?.[0]!.description).toBe('Updated page description.')
+
+  // The catalog drop restores the LATEST shadow, not the old one.
+  installAdapterCatalog(async () => [])
+  const dropped = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(dropped.tools[0]!.description).toBe('Updated page description.')
+})

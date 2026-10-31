@@ -21,6 +21,20 @@ export function installAdapterCatalog(provider: NonNullable<typeof adapterCatalo
   adapterCatalogGeneration++
 }
 
+/**
+ * Invalidate every in-flight discovery run WITHOUT replacing the provider.
+ * The installed provider's route set can also change underneath it —
+ * `adapterService.refresh()` withdraws/adds routes and `listForTab` (the
+ * installed provider) starts returning the NEW list — without any
+ * installAdapterCatalog call. Without this bump a discovery run in flight
+ * during such a refresh passes its generation check and commits a snapshot
+ * built from the old route list (Sourcery round-6). Called by the adapter
+ * service wiring after each refresh.
+ */
+export function invalidateAdapterCatalogGeneration(): void {
+  adapterCatalogGeneration++
+}
+
 function currentCatalogGeneration(): number {
   return adapterCatalogGeneration
 }
@@ -259,6 +273,17 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         // rebuilds and reconciles correctly.
         if (currentCatalogGeneration() !== catalogGeneration) break
         await registerTab(snapshot.value)
+        // Post-write generation revalidation (Sourcery round-6): the catalog
+        // can refresh while this run is INSIDE the registerTab await above
+        // (or during the per-tab snapshot loop's other awaits). A commit
+        // that lands after such a refresh persists a snapshot built from the
+        // OLD route list — re-registering tools the new catalog withdrew.
+        // The write itself cannot be undone here, but it must not leak
+        // further: abandon the REST of this run's commits and drop the
+        // stale tab from the response. The next discovery run against the
+        // refreshed catalog rebuilds every tab and reconciles the stale
+        // adapter-owned names away.
+        if (currentCatalogGeneration() !== catalogGeneration) break
         // Reflect the merge into the discovery response below. The
         // authoritative data is the LIVE registry entry re-read AFTER
         // registerTab: registerTab merges against the live entry at write

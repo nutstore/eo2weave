@@ -29,6 +29,8 @@ results carry a stable `error_code`: `UNSUPPORTED_PAGE`, `UNAUTHENTICATED`,
 `HTTP`, `API` (unclassified Discord error codes), `EMPTY_RESULT`,
 `LOCK_TIMEOUT` (a reaction queued behind a same-key request gave up
 after the 15s lock wait while the tab is still available),
+`EVAL_FAILED` (the tab answered the eval but the page-side tool or
+eval runtime threw while the tab remains available),
 `TAB_UNAVAILABLE` (the
 discord.com tab closed, navigated away, or could not run the tool) or
 `UNKNOWN`. Discord error codes are

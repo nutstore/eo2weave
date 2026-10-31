@@ -378,7 +378,6 @@ export async function invokeWebMCPTool(
       }
     }
   }
-
   const runId = (request.args as Record<string, unknown> | undefined)?.runId
   const affinityTabId = getRunTab(runId)
   if (affinityTabId !== null && affinityTabId !== targetTabId) {
@@ -394,7 +393,18 @@ export async function invokeWebMCPTool(
   }
 
   try {
-    const result = await executeWebMCPToolInTab(targetTabId, toolName, request.args || {})
+    // Fail closed for an adapter-served name: pass adapterOnly through so a
+    // route withdrawn AFTER the revalidation above (catalog refresh racing
+    // the call) makes invokeAdapter return null and STOPS — never falling
+    // back to the page relay, which could run a colliding PAGE tool under
+    // the adapter's previously trusted description (Sourcery round-6).
+    const result = await executeWebMCPToolInTab(
+      targetTabId,
+      toolName,
+      request.args || {},
+      undefined,
+      !!registeredTool?.adapterOwned,
+    )
 
     if (!result.ok) {
       return {
