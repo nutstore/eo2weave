@@ -153,7 +153,12 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         if (!tab.id || !origin || !hostname) return null
         const adapters = await adapterCatalog!(tab.id)
         const current = await chrome.tabs.get(tab.id)
-        if (current.url !== tab.url || !adapters.length) return null
+        // URL check only — an EMPTY catalog must still fall through: when a
+        // tab previously carried adapter-served tools and the catalog now
+        // lists none, ownership reconciliation below has to run so those
+        // names stop being advertised (returning early here left stale
+        // adapter-owned names in the registry with no route behind them).
+        if (current.url !== tab.url) return null
         // Re-read the LIVE registry entry for this tab right before the
         // registerTab write: the `registryEntries` array was snapshotted
         // before the adapter await above, and a page may have reported a
@@ -172,20 +177,44 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         // names this tab previously carried are reconciled (a name another
         // tab owns is not ours to remove).
         const adapterNames = new Set(adapters.map(tool => tool.name))
+        const adapterOwnedNames = new Set<string>()
         const tools = new Map<string, WebMCPToolMeta>()
         for (const tool of freshEntry?.tools || []) {
           if (!tool.adapterOwned || adapterNames.has(tool.name)) tools.set(tool.name, tool)
         }
-        // Adapter wins same-name collisions; the catalog-served names are
-        // handed to registerTab as adapter-owned so later merges can
-        // reconcile them against the (possibly shrunken) current catalog —
-        // see the comment above. The ownership marker travels as a
-        // caller-controlled name list, never as page-controlled tool fields.
-        for (const tool of adapters) tools.set(tool.name, tool)
+        // Legacy entries written before the ownership marker existed need no
+        // name-based sweep: for every name the CURRENT catalog still serves,
+        // the adapterOwnedNames list below re-marks the kept instance on the
+        // persisted write, migrating the marker onto pre-marker entries. An
+        // UNMARKED name the catalog no longer serves cannot be told apart
+        // from a page tool by name alone (a page may register any raw name,
+        // including builtin-qualified ones — see the forge-prevention test),
+        // so it is preserved; the strict provenance gate in
+        // localizedToolDescription already keeps such rows untranslated.
+        // Merge order preserves the page tool on same-name collisions: insert
+        // catalog tools at their name slot WITHOUT evicting what is already
+        // there, and only mark names whose merged object is genuinely
+        // adapter-owned. A page-reported object that won a collision must stay
+        // OUT of adapterOwnedNames — otherwise a later catalog update that
+        // drops the name would reconcile the page tool away with it. Route
+        // truth is unaffected (the SW invokes the adapter before the page
+        // relay for any name the current catalog serves), and the transient
+        // adapterServed marking below still reflects that route.
+        for (const tool of adapters) {
+          const existing = tools.get(tool.name)
+          if (!existing || existing.adapterOwned) {
+            tools.set(tool.name, tool)
+            adapterOwnedNames.add(tool.name)
+          }
+        }
         return { tabId: tab.id, origin, hostname, tabTitle: tab.title || '',
           tabUrl: tab.url!, windowId: tab.windowId, apiMode: 'documentModelContext' as const,
+          // ALWAYS attach the list, even when empty: registerTab uses its
+          // PRESENCE to discriminate an adapter merge (reconcile names the
+          // catalog no longer serves) from a page report (never strip
+          // adapter-owned tools).
           tools: [...tools.values()], updatedAt: Date.now(),
-          adapterOwnedNames: [...adapterNames],
+          adapterOwnedNames: [...adapterOwnedNames],
           // Transient — consumed by the post-registerTab marking below, never
           // passed to registerTab's persisted shape.
           adapterNames: new Set(adapters.map(tool => tool.name)) }

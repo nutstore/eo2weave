@@ -244,7 +244,48 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
   await hydrate()
   seenTabs.add(input.tabId)
 
+  const previous = entries.get(input.tabId)
+  // Caller discrimination: the adapter merge (discovery.ts) ALWAYS passes
+  // adapterOwnedNames — even when the reconciled set is empty — while the
+  // page relay (WEBMCP_TAB_REPORT, legacy probe) never does. The merge
+  // semantics below depend on this.
+  const isAdapterMerge = Array.isArray(input.adapterOwnedNames)
+
   if (input.tools.length === 0) {
+    if (isAdapterMerge) {
+      // The adapter merge reconciled every name away (or the tab never had
+      // tools): remove the entry — keeping it would advertise names the
+      // current catalog no longer serves.
+      if (entries.delete(input.tabId)) {
+        await persist()
+        notifyRegistryUpdated()
+      } else {
+        await persist() // still record "seen" even if nothing to remove
+      }
+      return
+    }
+    // Page-reported empty toolset: adapter-owned tools did not go anywhere —
+    // the SW adapter catalog still serves them — so an empty page report must
+    // not strip them. Keep exactly those; without any, remove the tab (a page
+    // that unregistered all tools no longer exists for discovery beyond the
+    // adapter tools it does not own).
+    const surviving = (previous?.tools ?? []).filter((tool) => tool.adapterOwned)
+    if (previous && surviving.length > 0) {
+      entries.set(input.tabId, {
+        ...previous,
+        hostname: input.hostname,
+        origin: input.origin,
+        tabTitle: input.tabTitle,
+        tabUrl: input.tabUrl,
+        windowId: input.windowId ?? previous.windowId,
+        apiMode: input.apiMode || previous.apiMode,
+        tools: surviving,
+        updatedAt: Date.now(),
+      })
+      await persist()
+      notifyRegistryUpdated()
+      return
+    }
     if (entries.delete(input.tabId)) {
       await persist()
       notifyRegistryUpdated()
@@ -271,6 +312,44 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
     }
   }
 
+  // Merge with the LIVE entry (`previous`, read above) instead of replacing
+  // it. registerTab is the serialization point for both writers, so
+  // `previous` is fresher than any snapshot the caller built before its own
+  // awaits — merging here closes the read-to-write races on both paths:
+  const merged: WebMCPToolMeta[] = [...tools]
+  if (previous) {
+    const incomingNames = new Set(tools.map((tool) => tool.name))
+    for (const tool of previous.tools) {
+      if (incomingNames.has(tool.name)) {
+        // The incoming report/snapshot wins same-name collisions (it carries
+        // the current adapter version or the page's latest report).
+        continue
+      }
+      if (tool.adapterOwned) {
+        if (isAdapterMerge) {
+          // Adapter-owned name the current snapshot no longer carries: the
+          // catalog stopped serving it → reconcile it away (never keep
+          // advertising an adapter tool without a route behind it).
+          continue
+        }
+        // Page report: the adapter still owns this name (a page report must
+        // not strip adapter-owned tools) → keep it marked.
+        merged.push(tool)
+        continue
+      }
+      if (isAdapterMerge) {
+        // Page-owned name absent from the adapter snapshot: a WEBMCP_TAB_REPORT
+        // landed between the merge's fresh re-read and this write — it is
+        // NEWER than the snapshot → keep it (it must not vanish from
+        // discovery).
+        merged.push(tool)
+      }
+      // Page-report path without a marker: the page's report is the
+      // authoritative FULL toolset — a live page tool it no longer lists was
+      // removed by the page → drop it.
+    }
+  }
+
   const entry: WebMCPRegisteredTabEntry = {
     tabId: input.tabId,
     hostname: input.hostname,
@@ -279,11 +358,10 @@ export async function registerTab(input: RegisterTabInput): Promise<void> {
     tabUrl: input.tabUrl,
     windowId: input.windowId,
     apiMode: input.apiMode || 'documentModelContext',
-    tools,
+    tools: merged,
     updatedAt: Date.now(),
   }
 
-  const previous = entries.get(input.tabId)
   // Suppress no-op churn: identical toolset + still-live tab → keep entry,
   // only refresh timestamps if metadata changed (title/url).
   const unchanged =

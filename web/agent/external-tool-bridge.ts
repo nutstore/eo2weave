@@ -43,6 +43,18 @@ import { convertJsonSchemaToZod } from 'zod-from-json-schema'
 /** Unified tool source */
 type ToolSource = 'mcp' | 'webmcp'
 
+/**
+ * Adapter provenance of ONE tab's tool instance. Same-origin tabs can expose
+ * a colliding raw tool name with DIFFERENT provenance (one tab served by the
+ * extension adapter, another running a page-provided implementation), so the
+ * flag cannot live at the grouped-tool level — a call targeted at
+ * `tab_id` must be authorized with THAT tab's provenance.
+ */
+interface TabProvenance {
+  tabId: number
+  adapterServed?: boolean
+}
+
 /** A unified tool entry from either MCP or WebMCP */
 interface UnifiedToolEntry {
   fullName: string
@@ -57,8 +69,19 @@ interface UnifiedToolEntry {
   origin?: string
   tabIds?: number[]
   annotations?: { readOnlyHint?: boolean; untrustedContentHint?: boolean }
-  /** WebMCP adapter provenance — set only by the SW adapter catalog merge. */
+  /**
+   * WebMCP adapter provenance — set only by the SW adapter catalog merge.
+   * Provenance of the GROUP representative (catalog-normalizer): display-only
+   * default for search results. Call-path code must use `tabProvenance` for
+   * the actually-targeted tab instead.
+   */
   adapterServed?: boolean
+  /**
+   * Per-tab provenance for this tool name. Always populated for WebMCP tools
+   * with a known tab list; `adapterServed` above mirrors the first entry for
+   * search-result rows that predate per-tab provenance.
+   */
+  tabProvenance?: TabProvenance[]
 }
 
 type SearchResultRow = {
@@ -131,7 +154,14 @@ export function collectAllExternalTools(): UnifiedToolEntry[] {
         origin: tool.origin,
         tabIds: tool.tabs.map((tab) => tab.tabId),
         annotations: tool.annotations,
+        // Group-level flag stays the representative's value (display default
+        // for search rows); the authoritative per-tab truth rides along so
+        // call_tool can authorize the ACTUALLY targeted tab's provenance.
         adapterServed: tool.adapterServed,
+        tabProvenance: tool.tabs.map((tab) => ({
+          tabId: tab.tabId,
+          adapterServed: tab.adapterServed,
+        })),
       })
     }
   } catch {
@@ -832,6 +862,19 @@ export const callToolDefinition: ToolDefinition = {
   },
 }
 
+/**
+ * Adapter provenance of the tool instance on ONE tab, or undefined when the
+ * catalog carries no per-tab provenance for that tab (older extension
+ * builds). Same-origin tabs can expose a colliding raw tool name with
+ * different provenance, so call-path code must resolve THIS table before
+ * trusting the grouped representative's flag.
+ */
+function tabProvenanceForTab(tool: UnifiedToolEntry, tabId?: number): boolean | undefined {
+  if (tabId === undefined) return undefined
+  const hit = tool.tabProvenance?.find((entry) => entry.tabId === tabId)
+  return hit ? hit.adapterServed : undefined
+}
+
 export const callToolExecutor: ToolExecutor = async (args, context) => {
   const { full_tool_name, tab_id, args: toolArgs } = args as {
     full_tool_name: string
@@ -858,6 +901,14 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
       { retryable: true }
     )
   }
+
+  // Localize the tool instance SELECTED BY tab_id, not the grouped
+  // representative: same-origin tabs can expose the same raw name with
+  // different adapter provenance, and the authorization prompt must describe
+  // the action that will actually run for the requested tab (an adapter-
+  // served tab gets the builtin translated copy, a page-provided tab gets
+  // the page's own description). Falls back to the grouped flag only when no
+  // per-tab provenance is known (older catalogs).
 
   if (tool.source === 'webmcp') {
     if (!Number.isSafeInteger(tab_id) || tab_id! <= 0) {
@@ -904,7 +955,12 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
     // before authorizing. Display-only. Localized WebMCP builtin-package
     // tools use their translated copy (see web/i18n/webmcp-tools.ts); the
     // manifest's English description remains the LLM-facing protocol text.
-    toolDescription: localizedToolDescription(tool),
+    // For WebMCP the description must be the TARGETED TAB's instance: the
+    // grouped representative's provenance can belong to a different tab.
+    toolDescription: localizedToolDescription({
+      ...tool,
+      adapterServed: tool.source === 'webmcp' ? tabProvenanceForTab(tool, tab_id) ?? tool.adapterServed : tool.adapterServed,
+    }),
     // Origin for the settings-side "always trust" list (webmcp hostname /
     // mcp serverId). Trusted origins skip the modal in plan AND act mode;
     // untrusted-content tools still never qualify (see policy-engine 3.5).
@@ -1127,6 +1183,11 @@ async function executeWebMCPTool(
   toolArgs: Record<string, unknown>,
   context: ToolContext
 ): Promise<string> {
+  // Provenance of the TARGETED tab's instance (not the grouped
+  // representative's) — every wrap/annotation decision below must match the
+  // tool that actually executes. Falls back to the grouped flag only when no
+  // per-tab provenance is known (older extension catalogs).
+  const tabProvenance = tabProvenanceForTab(tool, targetTabId) ?? tool.adapterServed
   const untrusted = tool.annotations?.untrustedContentHint === true
   const sourceId = tool.hostname || tool.sourceId
   const bridge = getWebMCPBridge()
@@ -1314,6 +1375,9 @@ async function executeWebMCPTool(
       tabId: response.tabId,
       apiMode: response.apiMode,
       untrusted,
+      // Provenance of the tab that actually executed, for the renderer /
+      // audit trails downstream — the grouped representative may differ.
+      ...(tabProvenance !== undefined ? { adapterServed: tabProvenance } : {}),
     }, untrusted ? { contentParts: [{ type: 'text', text: String(wrapUntrustedContent(response.result, { untrusted, sourceId, toolName: tool.fullName })) }] } : undefined)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

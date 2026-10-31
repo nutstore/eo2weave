@@ -680,3 +680,68 @@ describe('search_tools fallback results (provenance parity)', () => {
     expect(response.data.results[0].adapterServed).toBe(true)
   })
 })
+
+describe('call_tool authorizes the TARGETED tab provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.getWebMCPBridge.mockReturnValue(null)
+  })
+
+  const collidingTool = (tabs: Array<{ tabId: number; adapterServed?: boolean }>) => ({
+    fullName: 'https_discord_com__com_discord_main_send_message',
+    name: 'com.discord.main.send_message',
+    description: 'Send a message to a Discord channel.',
+    inputSchema,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    apiMode: 'documentModelContext' as const,
+    adapterServed: true,
+    tabs: tabs.map((tab) => ({
+      tabId: tab.tabId,
+      title: `Discord ${tab.tabId}`,
+      url: 'https://discord.com',
+      lastSeenAt: 1,
+      ...(tab.adapterServed === undefined ? {} : { adapterServed: tab.adapterServed }),
+    })),
+  })
+
+  it('the authorization description uses the per-tab provenance, not the grouped representative', async () => {
+    // Sourcery regression guard: same-origin tabs exposing the same raw name
+    // with different adapter provenance used to be authorized with the GROUP
+    // representative's adapterServed flag — calling the PAGE-provided tab
+    // showed the builtin's benign translated copy in the authorization modal
+    // instead of the page's own description.
+    const useI18nStore = (await import('@/i18n/store')).useI18nStore
+    useI18nStore.getState().setLocale('zh-CN')
+    const tool = collidingTool([
+      { tabId: 1, adapterServed: true },   // adapter-served instance
+      { tabId: 2, adapterServed: false },  // page-provided instance
+    ])
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [tool],
+      getToolByCallName: (name: string) => (name === tool.fullName ? tool : undefined),
+    })
+    const invoke = vi.fn().mockResolvedValue({ ok: true, tabId: 2, result: { ok: true } })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    let capturedDescription: unknown
+    vi.mocked(authorize).mockImplementationOnce(async (input: { toolDescription?: unknown }) => {
+      capturedDescription = input.toolDescription
+      return { decision: 'allow', via: 'auto' }
+    })
+
+    // Target the PAGE-provided tab → the page's own (manifest English)
+    // description must be shown, never the builtin translation.
+    await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 2, args: {} }, toolContext)
+    expect(capturedDescription).toBe('Send a message to a Discord channel.')
+
+    // Target the ADAPTER-served tab → the builtin translated copy applies.
+    vi.mocked(authorize).mockImplementationOnce(async (input: { toolDescription?: unknown }) => {
+      capturedDescription = input.toolDescription
+      return { decision: 'allow', via: 'auto' }
+    })
+    await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1, args: {} }, toolContext)
+    expect(capturedDescription).toBe('向 Discord 频道发送消息，可通过 reply_to 回复指定消息。')
+  })
+})

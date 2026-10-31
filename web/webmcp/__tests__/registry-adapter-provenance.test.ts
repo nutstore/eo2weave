@@ -310,3 +310,247 @@ it('a page cannot forge the adapter ownership marker through a tab report', asyn
   expect(response.tools[0]!.description).toBe('Page tool pretending to be adapter-owned.')
 })
 
+it('an empty adapter catalog still reconciles stale adapter-owned names away', async () => {
+  // Sourcery regression guard: with the !adapters.length early-return in
+  // place, a tab whose adapter catalog became EMPTY after previously serving
+  // tools never reached ownership reconciliation — the previously persisted
+  // adapter-owned names stayed advertised with no route behind them. The
+  // empty catalog must produce a registerTab write (empty adapterOwnedNames)
+  // that drops them.
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+  expect(
+    (sessionStore.get('webmcp_tab_registry') as Array<{ tabId: number; tools: Array<{ name: string }> }>)
+      .find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name),
+  ).toEqual(['com.discord.main.send_message'])
+
+  // Package disabled/uninstalled: the catalog is now empty. The tab also
+  // carries a page tool, which must NOT be reconciled away with the adapter
+  // tools.
+  await registerTab({
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext',
+    tools: [
+      { name: 'page_only_tool', description: 'Page-owned.', inputSchema: { type: 'object' } },
+    ],
+  })
+  installAdapterCatalog(async () => [])
+  await discoverWebMCPToolsInCurrentWindow(3)
+
+  // The stale adapter tool is gone from the registry…
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<{ name: string }>
+  }>
+  expect(persisted.find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name))
+    .toEqual(['page_only_tool'])
+  // …and from the discovery output, while the page tool on the same tab
+  // survives untouched.
+  expect(
+    (await discoverWebMCPToolsInCurrentWindow(3)).tools.map((tool) => tool.name),
+  ).toEqual(['page_only_tool'])
+})
+
+it('same-name page + adapter tool keeps the page tool when the adapter drops it', async () => {
+  // Sourcery regression guard: the adapter loop used to REPLACE the merged
+  // entry on a same-name collision AND mark it adapter-owned. When a later
+  // catalog update removed the adapter tool, reconciliation then removed the
+  // (now adapter-owned) name — killing the page tool until the page
+  // re-reported its toolset. The page tool must survive both transitions.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  await registerTab({
+    ...base,
+    tools: [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Page-provided implementation of the colliding name.',
+        inputSchema: { type: 'object' },
+      },
+    ],
+  })
+
+  // Adapter ALSO serves the same raw name (collides with the page tool).
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  const withAdapter = await discoverWebMCPToolsInCurrentWindow(3)
+  // Route truth is unaffected while the adapter serves the name…
+  const routed = withAdapter.tools.find((tool) => tool.name === 'com.discord.main.send_message')!
+  expect(routed.description).toBe('Page-provided implementation of the colliding name.')
+
+  // …but the PERSISTED entry must keep the page tool, unmarked — so removing
+  // the adapter tool later cannot take the page tool down with it.
+  installAdapterCatalog(async () => [])
+  await discoverWebMCPToolsInCurrentWindow(3)
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<{ name: string; description?: string }>
+  }>
+  expect(persisted.find((entry) => entry.tabId === 7)!.tools).toEqual([
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Page-provided implementation of the colliding name.',
+      inputSchema: { type: 'object' },
+      annotations: undefined,
+    },
+  ])
+})
+
+it('a page report never strips adapter-owned tools', async () => {
+  // Sourcery regression guard: registerTab used to REPLACE the tab entry
+  // with the page report's tools. After discovery persisted adapter tools
+  // for the tab, a WEBMCP_TAB_REPORT toolset change made those adapter tools
+  // vanish until the next adapter merge. Page reports must merge onto the
+  // existing adapter-owned set instead.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+  expect(
+    (sessionStore.get('webmcp_tab_registry') as Array<{ tabId: number; tools: Array<{ name: string }> }>)
+      .find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name),
+  ).toEqual(['com.discord.main.send_message'])
+
+  // The page reports a NEW toolset (adding its own tool) — it does not
+  // mention the adapter tool at all.
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'page_new_tool', description: 'Freshly registered by the page.', inputSchema: { type: 'object' } },
+    ],
+  })
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<{ name: string; description?: string }>
+  }>
+  expect(
+    persisted.find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name).sort(),
+  ).toEqual(['com.discord.main.send_message', 'page_new_tool'])
+
+  // The discovery output keeps advertising the adapter tool…
+  const response = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(response.tools.find((tool) => tool.name === 'com.discord.main.send_message')).toBeTruthy()
+  expect(response.tools.find((tool) => tool.name === 'page_new_tool')).toBeTruthy()
+})
+
+it('an empty page report keeps adapter-owned tools and drops page tools', async () => {
+  // A page unregistering ALL its tools must not deregister the adapter tools
+  // (they are still served by the SW catalog), but the tab entry must not
+  // keep advertising page tools the page just removed either.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  installAdapterCatalog(async () => [
+    {
+      name: 'com.discord.main.send_message',
+      description: 'Send a message to a Discord channel.',
+      inputSchema: { type: 'object' },
+    },
+  ])
+  await discoverWebMCPToolsInCurrentWindow(3)
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'page_temp_tool', description: 'Transient page tool.', inputSchema: { type: 'object' } },
+    ],
+  })
+  await registerTab({ ...base, tools: [] })
+
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<{ name: string }>
+  }>
+  expect(persisted.find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name))
+    .toEqual(['com.discord.main.send_message'])
+})
+
+it('a page report landing between the fresh re-read and registerTab survives the merge write', async () => {
+  // Sourcery regression guard: getFreshRegistryEntryForTab can STILL go stale
+  // — a WEBMCP_TAB_REPORT may land after it returns but before registerTab
+  // runs. registerTab now merges against the LIVE entry, so the newly
+  // reported tool must not be clobbered by the stale snapshot.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'page_old_tool', description: 'Reported before discovery.', inputSchema: { type: 'object' } },
+    ],
+  })
+  installAdapterCatalog(async () => {
+    // Pin the report strictly AFTER getFreshRegistryEntryForTab has read the
+    // old entry: the provider await sits between the fresh re-read and the
+    // registerTab write in discovery.ts.
+    await registerTab({
+      ...base,
+      tools: [
+        { name: 'page_old_tool', description: 'Reported before discovery.', inputSchema: { type: 'object' } },
+        { name: 'page_midawait_tool', description: 'Reported after the fresh re-read.', inputSchema: { type: 'object' } },
+      ],
+    })
+    return [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Send a message to a Discord channel.',
+        inputSchema: { type: 'object' },
+      },
+    ]
+  })
+  const response = await discoverWebMCPToolsInCurrentWindow(3)
+
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<{ name: string; description?: string }>
+  }>
+  expect(
+    persisted.find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name).sort(),
+  ).toEqual(['com.discord.main.send_message', 'page_midawait_tool', 'page_old_tool'])
+  expect(
+    response.tools.find((tool) => tool.name === 'page_midawait_tool')!.description,
+  ).toBe('Reported after the fresh re-read.')
+})
+
