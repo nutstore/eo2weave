@@ -83,6 +83,11 @@ vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   fetchGatewayModels: gatewayMock.fetchGatewayModels,
   getGatewayCredentialStatus: gatewayMock.getGatewayCredentialStatus,
   hasStoredTokens: gatewayMock.hasStoredTokens,
+  // Consumed by handleLogout's purge-failure badge re-derivation (which key
+  // to check for a surviving refresh-token backup). Missing here, the
+  // binding access throws inside that catch and silently keeps the card
+  // logged out — exactly the bug the purge-failure test guards against.
+  LLM_GATEWAY_REFRESH_TOKEN_KEY_ID: '__llm_gateway_refresh_token__',
 }))
 
 const applyGatewayLoginTokensMock = vi.hoisted(() => vi.fn())
@@ -381,5 +386,52 @@ describe('LLMGatewayCard credential state', () => {
     // The logout must not have cleared the newer login's state.
     expect(settingsState.setModelCredentialStatus).not.toHaveBeenCalledWith('missing')
     expect(screen.queryByText('Login expired')).toBeNull()
+  })
+
+  it('keeps the logged-in panel (and the logout retry) reachable after a failed purge', async () => {
+    // Sourcery: a failed logout purge sets authState.status='error', which
+    // made isDeviceFlowActive true and swapped the card body for the
+    // device-flow auth panel — where no logout button exists. The user was
+    // locked out of retrying the purge even though the credential survived.
+    // The purge-error state must keep the NORMAL panel visible so the
+    // logout action can be retried.
+    settingsState.modelCredentialStatus = 'valid'
+    gatewayMock.logoutGateway.mockRejectedValue(new Error('storage outage during purge'))
+    // The post-failure badge re-derivation reads the live stores: a
+    // surviving credential keeps the card logged in.
+    gatewayMock.hasStoredTokens.mockReturnValue(true)
+    apiKeyState.key = 'surviving-access-token'
+    // The card's post-expand auto-fetch runs getValidAccessToken against the
+    // REAL llm-gateway-auth module (only the card's own imports are mocked):
+    // seed the token cache so the auto-fetch stays on its happy path and
+    // cannot clobber the card's state while the purge-failure assertion is
+    // in flight.
+    localStorage.setItem(
+      'llm-gateway-tokens',
+      JSON.stringify({
+        access_token: 'surviving-access-token',
+        refresh_token: 'surviving-refresh-token',
+        access_expires_at: Date.now() + 3600_000,
+        refresh_expires_at: Date.now() + 3600_000,
+        client_id: 'test-client-id',
+        base_url: 'https://ai.jianguoyun.com',
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitForLoggedInPanel()
+    await user.click(screen.getByRole('button', { name: 'Log out' }))
+
+    await waitFor(() => {
+      expect(gatewayMock.logoutGateway).toHaveBeenCalledTimes(1)
+    })
+    // The normal logged-in panel must survive the purge failure — the
+    // logout button stays clickable for the retry.
+    await waitForLoggedInPanel()
+    expect(screen.getByRole('button', { name: 'Log out' })).toBeTruthy()
+    // The device-flow auth panel must NOT have taken over the card body.
+    expect(screen.queryByText('Authentication failed')).toBeNull()
   })
 })

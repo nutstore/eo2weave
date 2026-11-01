@@ -1221,6 +1221,11 @@ export function LLMGatewayCard({
   const [authState, setAuthState] = useState<AuthState & { userCode?: string; verificationUri?: string }>({
     status: 'idle',
   })
+  // Set when a LOGOUT's purge fails (not a login failure): the error state
+  // then must NOT hand the card body to the device-flow auth panel — the
+  // logout retry button lives in the normal logged-in panel, and hiding it
+  // would leave a surviving credential with no way to purge it.
+  const [logoutPurgeFailed, setLogoutPurgeFailed] = useState(false)
   const [copied, setCopied] = useState(false)
 
   const isAuthRunning = authState.status === 'requesting' || authState.status === 'waiting' || authState.status === 'polling'
@@ -1241,8 +1246,16 @@ export function LLMGatewayCard({
   // While the Device Code Flow is running (or just finished / failed) the
   // auth panel takes over the card body — this is also how a re-login for an
   // expired session shows the user code.
+  // EXCEPTION (Sourcery: "Purge failure hides logout retry"): a logout that
+  // failed to purge sets status 'error' WITHOUT any device flow having run.
+  // Rendering the auth panel for it would swallow the normal logged-in panel
+  // — where the logout button lives — leaving no way to retry the purge.
+  // Only a flow that actually started (or a live success) takes over the
+  // body; a purge-error error state keeps the logged-in panel visible (the
+  // toast + the modelCredentialStatusError banner surface the failure).
+  const isDeviceFlowError = authState.status === 'error' && !logoutPurgeFailed
   const isDeviceFlowActive =
-    isAuthRunning || authState.status === 'success' || authState.status === 'error'
+    isAuthRunning || authState.status === 'success' || isDeviceFlowError
 
   const pinnedIds = pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE] || []
   // allModels starts empty on mount (models fetch after expand+login) — an
@@ -1364,6 +1377,10 @@ export function LLMGatewayCard({
     const baseURL = getLLMGatewayBaseURL()
     const clientId = getLLMGatewayClientId()
 
+    // A login is starting — a previous logout purge failure must not
+    // suppress THIS flow's error panel (the flag only belongs to the
+    // logout-purge path).
+    setLogoutPurgeFailed(false)
     if (!clientId) {
       setAuthState({ status: 'error', error: t('settings.gateway.clientIdMissing') })
       return
@@ -1474,12 +1491,20 @@ export function LLMGatewayCard({
     // "logged out".
     try {
       await logoutGatewayAuth()
+      // The purge succeeded — clear a previous attempt's failure flag so a
+      // later login error renders the auth panel again.
+      setLogoutPurgeFailed(false)
     } catch (e) {
       console.error('[LLMGatewayCard] logout purge failed:', e)
       const message =
         e instanceof Error && e.message
           ? e.message
           : t('settings.gateway.logoutFailed')
+      // The error state must not hand the card body to the device-flow auth
+      // panel: the logout retry lives in the normal logged-in panel (the
+      // badge re-derivation below keeps it visible when a credential
+      // survived). The toast here is the failure surface.
+      setLogoutPurgeFailed(true)
       // A surviving refresh-token backup can resurrect the session — the
       // card must not read as definitively logged out: re-derive the badge
       // from the actual stored credentials so the logout action (and its

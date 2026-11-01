@@ -28,6 +28,31 @@ import {
   escalateFencedKeyStoreMutation,
 } from '@/agent/providers/llm-gateway-auth'
 
+/**
+ * Hard deadline for post-approval model discovery. A gateway that accepts the
+ * device-code approval but never answers `/v1/models` must not leave an
+ * APPROVED login hung before the credential commit — the user already did
+ * their part, so the login proceeds best-effort (empty model list; models
+ * refresh later via triggerProviderRefresh). Deliberately generous: this
+ * guards against a stalled endpoint, not slow network on a healthy one.
+ */
+const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
+
+function withDiscoveryDeadline<T>(p: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('model discovery timed out')), MODEL_DISCOVERY_TIMEOUT_MS)
+  })
+  return Promise.race([
+    p.finally(() => {
+      if (timer !== undefined) clearTimeout(timer)
+    }),
+    deadline.finally(() => {
+      if (timer !== undefined) clearTimeout(timer)
+    }),
+  ])
+}
+
 export interface GatewayLoginResult {
   ok: boolean
   /** The access token on success (null otherwise). */
@@ -86,12 +111,16 @@ async function applyGatewayLoginTokensInner(
   // (empty list — the credential commit still proceeds; models refresh
   // later via triggerProviderRefresh), because the visitor already approved
   // device authorization: making them repeat it because a models fetch
-  // flaked is worse than a temporarily empty model list. Cancellation
-  // (signal aborted) still propagates — an explicitly cancelled login must
-  // not commit.
+  // flaked is worse than a temporarily empty model list. The deadline below
+  // extends the same best-effort contract to a gateway that approves the
+  // login but never answers `/v1/models`: without it `prepareGatewayModels`
+  // never settles and the approved login hangs before the credential
+  // commit (Sourcery: "Approved login can hang"). Cancellation (signal
+  // aborted) still propagates — an explicitly cancelled login must not
+  // commit.
   let models: Awaited<ReturnType<typeof prepareGatewayModels>> = []
   try {
-    models = await prepareGatewayModels(accessToken, signal)
+    models = await withDiscoveryDeadline(prepareGatewayModels(accessToken, signal))
   } catch (e) {
     if (signal?.aborted) signal.throwIfAborted()
     console.warn('[gateway-login] model discovery failed; committing login with an empty model list:', e)

@@ -287,4 +287,24 @@ describe('applyGatewayLoginTokens cancellation', () => {
     expect(savedKey).toBe('fresh-key')
     expect(settings.setHasApiKey).toHaveBeenCalledWith(true)
   })
+
+  it('commits with an empty model list when model discovery exceeds its deadline', async () => {
+    // Sourcery: an approved login must not hang when the gateway accepts the
+    // device-code approval but `/v1/models` never responds. Model discovery
+    // is best-effort — the deadline converts a stalled endpoint into the
+    // same "commit with an empty list" path as a plain network failure.
+    vi.useFakeTimers()
+    try {
+      provider.prepare.mockReturnValue(new Promise<never>(() => {}))
+      const pending = applyGatewayLoginTokens('new-key')
+      // runAllTimersAsync (not a single advance): the commit path's
+      // cross-tab quiescence barrier schedules its own setTimeout(0) polls
+      // AFTER the deadline fired, and those need timer processing too.
+      await vi.runAllTimersAsync()
+      await expect(pending).resolves.toMatchObject({ ok: true, models: [] })
+      expect(savedKey).toBe('new-key')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
