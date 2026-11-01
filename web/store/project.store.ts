@@ -417,7 +417,36 @@ export const useProjectStore = create<ProjectState>()(
               const freshProjects = await repo.findAllProjects()
               if (freshProjects.length > 0) {
                 // Another tab already created — adopt its project instead
-                // of duplicating it.
+                // of duplicating it. If the winner died between createProject
+                // and bootstrapProjectOpfs, the row exists without an OPFS
+                // directory; re-run the bootstrap here so adoption can't
+                // perpetuate a half-created row (Sourcery: "First-run
+                // bootstrap failure leaves an orphan row"). On failure, treat
+                // the row as an orphan: drop it (both stores) so the flow
+                // can retry creation from a clean slate.
+                try {
+                  await bootstrapProjectOpfs(freshProjects[0]!.id)
+                } catch (bootstrapError) {
+                  console.warn(
+                    '[ProjectStore] Adopted default project has no OPFS directory; removing the orphan row:',
+                    bootstrapError
+                  )
+                  try {
+                    const pm = await ProjectManager.create()
+                    await pm.deleteProject(freshProjects[0]!.id)
+                  } catch (cleanupError) {
+                    console.warn(
+                      '[ProjectStore] Failed to clean up the orphaned OPFS project directory:',
+                      cleanupError
+                    )
+                  }
+                  await repo.deleteProject(freshProjects[0]!.id)
+                  // Fail this run loudly (init banner + Retry) — the row is
+                  // gone now, so the retry recreates from a clean slate.
+                  throw bootstrapError instanceof Error
+                    ? bootstrapError
+                    : new Error(String(bootstrapError))
+                }
                 normalizedProjects = freshProjects
                 normalizedStats = await repo.findProjectStats()
                 return
@@ -464,9 +493,42 @@ export const useProjectStore = create<ProjectState>()(
           await Promise.race([lockAndCreate, timeout])
           if (normalizedProjects.length === 0) {
             // This tab lost the race, timed out, or skipped creation (no Web
-            // Locks): pick up the winner's default project.
-            normalizedProjects = await repo.findAllProjects()
-            normalizedStats = await repo.findProjectStats()
+            // Locks): pick up the winner's default project — but only if the
+            // row is complete. A winner that died between createProject and
+            // bootstrapProjectOpfs leaves an orphan row without an OPFS
+            // directory (Sourcery: "First-run bootstrap failure leaves an
+            // orphan row"); adopting it would skip setup forever. Re-run the
+            // bootstrap and, on failure, drop the orphan (both stores) so
+            // this run's creation path (or the user's Retry) starts clean.
+            const candidates = await repo.findAllProjects()
+            if (candidates.length > 0) {
+              try {
+                await bootstrapProjectOpfs(candidates[0]!.id)
+                normalizedProjects = candidates
+                normalizedStats = await repo.findProjectStats()
+              } catch (bootstrapError) {
+                console.warn(
+                  '[ProjectStore] Default-project row has no OPFS directory; removing the orphan row:',
+                  bootstrapError
+                )
+                try {
+                  const pm = await ProjectManager.create()
+                  await pm.deleteProject(candidates[0]!.id)
+                } catch (cleanupError) {
+                  console.warn(
+                    '[ProjectStore] Failed to clean up the orphaned OPFS project directory:',
+                    cleanupError
+                  )
+                }
+                await repo.deleteProject(candidates[0]!.id)
+                // Fail this run loudly (init banner + Retry) instead of
+                // completing with an empty list — the row is gone now, so
+                // the retry recreates from a clean slate.
+                throw bootstrapError instanceof Error
+                  ? bootstrapError
+                  : new Error(String(bootstrapError))
+              }
+            }
           }
         }
 

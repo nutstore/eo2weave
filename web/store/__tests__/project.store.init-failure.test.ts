@@ -9,10 +9,12 @@ const {
   findAllProjects,
   findProjectStats,
   createProject,
+  deleteProject,
 } = vi.hoisted(() => ({
   findAllProjects: vi.fn(),
   findProjectStats: vi.fn(),
   createProject: vi.fn(),
+  deleteProject: vi.fn(),
 }))
 
 vi.mock('@/sqlite/repositories/project.repository', () => ({
@@ -21,7 +23,7 @@ vi.mock('@/sqlite/repositories/project.repository', () => ({
     findAllProjects,
     findProjectStats,
     createProject,
-    deleteProject: vi.fn(),
+    deleteProject,
   }),
 }))
 
@@ -335,5 +337,48 @@ describe('project.store initialize() failure semantics (issue #131)', () => {
 
     expect(createProject).not.toHaveBeenCalled()
     expect(useProjectStore.getState().initialized).toBe(true)
+  })
+
+  it('fails init and drops the orphan row when an adopted default project has no OPFS directory (Sourcery: first-run bootstrap failure)', async () => {
+    // Another tab created the row but died before bootstrapProjectOpfs
+    // completed: the adopt path must re-run the bootstrap and, when it
+    // fails, delete the orphan row (both stores) and fail init loudly —
+    // silently adopting the row would skip setup forever.
+    findAllProjects
+      .mockResolvedValueOnce([]) // pre-lock snapshot: empty
+      .mockResolvedValueOnce([
+        { id: 'orphan-default', name: 'My Project', status: 'active' as const, createdAt: 0, updatedAt: 0 },
+      ])
+    // BootstrapProjectOpfs runs ProjectManager.create() → getOrCreateProjectById.
+    // It early-returns unless navigator.storage.getDirectory exists, so stub
+    // a minimal OPFS-capable navigator for this test.
+    vi.stubGlobal('navigator', {
+      ...globalThis.navigator,
+      storage: { getDirectory: async () => ({}) },
+      locks: {
+        request: async (_scope: string, cb: () => Promise<void>) => {
+          await cb()
+        },
+      },
+    })
+    const getOrCreateProjectById = vi.fn().mockRejectedValue(new Error('OPFS quota exceeded'))
+    const pmDeleteProject = vi.fn().mockResolvedValue(true)
+    const { ProjectManager } = await import('@/opfs')
+    ;(ProjectManager.create as ReturnType<typeof vi.fn>).mockResolvedValue({
+      getOrCreateProjectById,
+      deleteProject: pmDeleteProject,
+    })
+    deleteProject.mockResolvedValue(true)
+
+    await useProjectStore.getState().initialize()
+
+    expect(getOrCreateProjectById).toHaveBeenCalledWith('orphan-default')
+    // The orphan row is removed from the repository so the retry starts clean.
+    expect(deleteProject).toHaveBeenCalledWith('orphan-default')
+    expect(pmDeleteProject).toHaveBeenCalledWith('orphan-default')
+    const state = useProjectStore.getState()
+    expect(state.initialized).toBe(false)
+    expect(state.initError).toBe('OPFS quota exceeded')
+    expect(state.projects).toEqual([])
   })
 })
