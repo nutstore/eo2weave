@@ -9,6 +9,7 @@ import {
 import {
   discoverWebMCPToolsInCurrentWindow,
   installAdapterCatalog,
+  invalidateAdapterCatalogGeneration,
 } from '../../../browser-extension/entrypoints/webmcp/discovery'
 
 // getFreshRegistryEntryForTab is mocked as a pass-through wrapper so the
@@ -1018,6 +1019,59 @@ it('a stale adapter-served response row loses its flag when the catalog refreshe
   expect(row!.description).toBe('Page-provided implementation of the colliding name.')
 })
 
+
+it('a refresh without reinstall invalidates in-flight discovery runs the same way (round-6)', async () => {
+  // Sourcery round-6 regression guard (generation on refresh): the installed
+  // provider's route list can change via adapterService.refresh() WITHOUT
+  // installAdapterCatalog being called again. invalidateAdapterCatalogGeneration
+  // must bump the generation, so a discovery run whose snapshot predates the
+  // refresh abandons its commit instead of persisting withdrawn routes.
+  const base = {
+    tabId: 7,
+    hostname: 'discord.com',
+    origin: 'https://discord.com',
+    tabTitle: 'Discord',
+    tabUrl: 'https://discord.com/channels/@me',
+    apiMode: 'documentModelContext' as const,
+  }
+  await registerTab({
+    ...base,
+    tools: [
+      { name: 'page_only_tool', description: 'Page-owned.', inputSchema: { type: 'object' } },
+    ],
+  })
+
+  // Same self-invalidating provider trick as the round-5 test above, but the
+  // refresh signals through invalidateAdapterCatalogGeneration() only — the
+  // provider object itself is NOT reinstalled, exercising the plain-refresh
+  // path where the generation previously never advanced.
+  installAdapterCatalog(async () => {
+    invalidateAdapterCatalogGeneration()
+    return [
+      {
+        name: 'com.discord.main.send_message',
+        description: 'Send a message to a Discord channel.',
+        inputSchema: { type: 'object' },
+      },
+    ]
+  })
+  const response = await discoverWebMCPToolsInCurrentWindow(3)
+
+  // The stale adapter tool must NOT be registered or advertised…
+  expect(response.tools.map((tool) => tool.name)).toEqual(['page_only_tool'])
+  const persisted = sessionStore.get('webmcp_tab_registry') as Array<{
+    tabId: number
+    tools: Array<{ name: string }>
+  }>
+  expect(persisted.find((entry) => entry.tabId === 7)!.tools.map((tool) => tool.name))
+    .toEqual(['page_only_tool'])
+
+  // …and a fresh run against the refreshed (empty) route list reconciles the
+  // same way, proving the bump took effect for subsequent runs too.
+  invalidateAdapterCatalogGeneration()
+  const next = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(next.tools.map((tool) => tool.name)).toEqual(['page_only_tool'])
+})
 
 it('a shadow is dropped when the page report stops listing the adapter-owned name (round-6)', async () => {
   // Sourcery round-6 (shadow reconciliation): shadows whose names REMAIN in
