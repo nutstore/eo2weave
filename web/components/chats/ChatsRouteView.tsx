@@ -57,7 +57,34 @@ export default function ChatsRouteView() {
     return chatId ? active === chatId : true
   })
 
+  // Cold-link recoverable failure: the standalone route starts loadFromDB
+  // itself (useWorkspaceRouteSyncStandalone) because WorkspaceLayout — the
+  // normal loader — is withheld behind the gate below. When that load fails,
+  // the store keeps loaded=false + loadError, so neither the gate nor Step 1
+  // can ever pass: surface the error here with a Retry instead of pinning
+  // the URL on a spinner forever.
+  const loadError = useConversationStore((s) => s.loadError)
+  const loadFromDB = useConversationStore((s) => s.loadFromDB)
+
   if (!activeMatchesRoute) {
+    if (loadError) {
+      return (
+        <div
+          role="alert"
+          className="flex h-64 w-full flex-col items-center justify-center gap-3 bg-background px-6 text-center dark:bg-neutral-950"
+        >
+          <p className="text-sm text-muted-foreground">{t('chats.home.loadError')}</p>
+          <p className="max-w-md text-xs text-muted-foreground/70">{loadError}</p>
+          <button
+            type="button"
+            onClick={() => loadFromDB()}
+            className="rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-accent"
+          >
+            {t('chats.home.retry')}
+          </button>
+        </div>
+      )
+    }
     // Activation for this route's chat is still in flight (workspace switch
     // + setActive awaited by the sync hook). Nothing interactive renders, so
     // a fast send cannot target the stale conversation.

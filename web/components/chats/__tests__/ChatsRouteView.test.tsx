@@ -11,7 +11,7 @@
  * `activeConversationId === chatId`; only the intentionally empty bare state
  * (`/chats` without an id) passes while inactive.
  */
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 const t = (key: string) => (key === 'common.loading' ? '加载中…' : key)
@@ -20,6 +20,8 @@ const routeState = vi.hoisted(() => ({ chatId: '' }))
 const conversationState = vi.hoisted(() => ({
   activeConversationId: null as string | null,
   conversations: [] as Array<{ id: string; title: string }>,
+  loadError: null as string | null,
+  loadFromDB: vi.fn(),
 }))
 
 vi.mock('next/navigation', () => ({
@@ -58,6 +60,8 @@ describe('ChatsRouteView — route gate with a nonempty chatId', () => {
     routeState.chatId = ''
     conversationState.activeConversationId = null
     conversationState.conversations = []
+    conversationState.loadError = null
+    conversationState.loadFromDB.mockClear()
   })
 
   it('keeps the loading gate closed while activation for the URL chat is in flight', () => {
@@ -104,5 +108,23 @@ describe('ChatsRouteView — route gate with a nonempty chatId', () => {
 
     expect(screen.getByTestId('workspace-layout')).toBeInTheDocument()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('renders the load error with Retry instead of a stuck spinner when the conversation load fails', async () => {
+    // Cold /chats/:id + failed loadFromDB: loaded stays false so the route
+    // gate can never open — the view must surface the recoverable error
+    // (ChatsHome-style message + Retry) rather than spin forever.
+    routeState.chatId = 'chat-b'
+    conversationState.activeConversationId = null
+    conversationState.loadError = 'OPFS pool busy'
+
+    render(<ChatsRouteView />)
+
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-layout')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'chats.home.retry' }))
+    expect(conversationState.loadFromDB).toHaveBeenCalledTimes(1)
   })
 })
