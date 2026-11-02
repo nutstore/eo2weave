@@ -428,9 +428,56 @@ describe('installPackage (extension side)', () => {
       return serving(input)
     }) as typeof fetch
 
-    await expect(installPackage(registry, pkg, provider, { fetchImpl }))
-      .rejects.toThrow(/was removed while it was being prepared/)
+    await expect(installPackage(registry, pkg, provider, { fetchImpl })).rejects.toThrow(
+      /was removed while it was being prepared/,
+    )
     // The removed package was NOT resurrected.
     expect(await listFiles(provider, '')).toEqual([])
+  })
+
+  it('keeps the backup when the rollback RESTORE copy itself fails', async () => {
+    // SECURITY (critical, "Rollback failure deletes last copy"): when the
+    // copy-in fails and the rollback's restore copy ALSO fails (a storage
+    // error mid-restore, after the partial live tree was removed), the
+    // backup is the only surviving copy of the working package. The old
+    // code left `backupPreserved` false on this path, so the finally block
+    // deleted the backup — leaving NEITHER the old package nor a complete
+    // replacement. The restore failure must preserve the backup instead;
+    // the next install's recovery gate can still restore it.
+    const files = fixtureFiles()
+    const full = fixtureFiles({ ...TOOL_MANIFEST, version: '2.0.0' })
+    const pkg = await pkgWithFiles(full, { version: '2.0.0' })
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    // Old (working) install in place.
+    await provider.mkdir('com.example.pkg', { recursive: true })
+    for (const [path, content] of Object.entries(files)) {
+      await provider.writeFile(`com.example.pkg/${path}`, new TextEncoder().encode(content))
+    }
+    // The copy-in of the new tree fails mid-copy (after the live tree was
+    // removed), and the rollback's restore copy fails too — BOTH on the
+    // live-tree write path. The FIRST restore removal of the live tree
+    // still succeeds, so the restore copy is the step that fails.
+    const failingWrite = provider.writeFile.bind(provider)
+    let liveWrites = 0
+    provider.writeFile = (async (path: string, data: Uint8Array) => {
+      if (path === 'com.example.pkg/workflows/read.js') {
+        liveWrites += 1
+        // 1st: the swap's staged copy-in (staging path is separate — this
+        // counts only the LIVE tree writes: copy-in + restore).
+        if (liveWrites >= 1) throw new Error('EIO: simulated live write failure')
+      }
+      return failingWrite(path, data)
+    }) as typeof provider.writeFile
+    delete (provider as { rename?: unknown }).rename
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(full) }))
+      .rejects.toThrow(/previous install could not be restored/)
+
+    // The backup SURVIVES with the complete old package — the finally
+    // cleanup must not have deleted the only remaining copy.
+    const backupManifest = JSON.parse(new TextDecoder().decode(await provider.readFile('.com.example.pkg.previous/manifest.json')))
+    expect(backupManifest.version).toBe('1.0.0')
+    expect(await provider.readFile('.com.example.pkg.previous/workflows/read.js')).toBeInstanceOf(Uint8Array)
   })
 })

@@ -572,7 +572,26 @@ async function swapPackageIntoPlace(
               )
             }
             assertLeaseHeld() // fence: the restore copy is destructive
-            await copyTree(provider, backup, id, lockSignal)
+            try {
+              await copyTree(provider, backup, id, lockSignal)
+            } catch (restoreError) {
+              // SECURITY (critical, "Rollback failure deletes last copy"):
+              // the restore itself can fail (a storage error mid-copy after
+              // the partial live tree was removed). `backupPreserved` MUST
+              // be set here: the backup is now the ONLY copy of the
+              // previously working package, and a finally cleanup that
+              // treated the restore as finished would delete it — leaving
+              // neither the old package nor a complete replacement. The
+              // quarantine precedent (the importOPFSBackup two-phase rule)
+              // applies: never delete before the replacement is fully in
+              // place. The next install's recovery gate restores the
+              // backup over the partial live tree.
+              backupPreserved = true
+              throw new PackageInstallError(
+                `Failed to write package ${id} to storage AND the previous install could not be restored; its backup was preserved at ${backup}: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+                'STORAGE_FAILED',
+              )
+            }
           }
           throw copyError
         }
