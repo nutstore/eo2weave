@@ -132,6 +132,8 @@ export const conversation = {
       gatewayClientIdMissing: "Nutstore AI Client ID가 설정되지 않아 로그인할 수 없습니다",
       gatewayLoginFailed: "Nutstore AI 로그인에 실패했습니다",
       gatewayTokenSetMalformed: "Nutstore AI 로그인 응답의 자격 증명이 불완전합니다 — 다시 시도해 주세요",
+      gatewayCredentialPurgeFailed: "Nutstore AI 로그아웃 시 저장된 자격 증명을 완전히 삭제하지 못했습니다 — 다시 시도해 주세요. 계속 실패하면 다시 로그인하기 전에 앱을 재시작해 주세요",
+      gatewayCredentialStaleWrite: "Nutstore AI에서 오래된 자격 증명 쓰기를 감지했습니다. 현재 세션이 손상되었을 수 있습니다 — 다시 로그인해 주세요",
       gatewayDeviceFlowTimeout: "Nutstore AI 인증 세션이 만료되었습니다 — 다시 로그인해 주세요",
       requestFailed: "요청 실패:",
       retry: "재시도",

@@ -164,6 +164,8 @@ export const conversation = {
       gatewayClientIdMissing: "坚果云 AI Client ID 未配置，无法登录",
       gatewayLoginFailed: "坚果云 AI 登录失败",
       gatewayTokenSetMalformed: "坚果云 AI 登录返回的凭证不完整，请重试",
+      gatewayCredentialPurgeFailed: "坚果云 AI 退出登录时未能完全清除本地凭证，请重试；若持续失败，请重启应用后再重新登录",
+      gatewayCredentialStaleWrite: "坚果云 AI 检测到一次过期的凭证写入，可能已损坏当前会话——请重新登录",
       gatewayDeviceFlowTimeout: "坚果云 AI 授权会话已超时，请重新发起登录",
       requestFailed: "请求失败：",
       retry: "继续",

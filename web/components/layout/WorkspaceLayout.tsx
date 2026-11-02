@@ -171,6 +171,38 @@ export function WorkspaceLayout({
 
   // Skills management state
   const [skillsManagerOpen, setSkillsManagerOpen] = useState(false)
+  // Consume the persisted one-shot open request: cross-page entry points
+  // (e.g. /skill-install's unknown-skill error view) arm
+  // `panelState.skillsManagerOpen` before navigating to a project workspace;
+  // this effect opens the manager on mount and clears the flag (consume =
+  // one-shot, so a later manual close is not re-opened by a remount).
+  const pendingSkillsManagerOpen = useWorkspacePreferencesStore(
+    (s) => s.panelState.skillsManagerOpen,
+  )
+  const setPanelSkillsManagerOpen = useWorkspacePreferencesStore(
+    (s) => s.setSkillsManagerOpen,
+  )
+  useEffect(() => {
+    if (!pendingSkillsManagerOpen) return
+    setSkillsManagerOpen(true)
+    setPanelSkillsManagerOpen(false)
+  }, [pendingSkillsManagerOpen, setPanelSkillsManagerOpen])
+  // Consume the persisted one-shot "open Settings" request (cross-page
+  // entry points such as /skill-install's gateway-disabled login view):
+  // open the unified SettingsDialog on the LLM tab, then clear the flag
+  // (one-shot, so a later manual close is not re-opened by a remount).
+  const pendingSettingsOpenRequest = useWorkspacePreferencesStore(
+    (s) => s.panelState.settingsOpenRequest,
+  )
+  const setPanelSettingsOpenRequest = useWorkspacePreferencesStore(
+    (s) => s.setSettingsOpenRequest,
+  )
+  useEffect(() => {
+    if (!pendingSettingsOpenRequest) return
+    setSettingsInitialTab('llm')
+    setShowWorkspaceSettings(true)
+    setPanelSettingsOpenRequest(false)
+  }, [pendingSettingsOpenRequest, setPanelSettingsOpenRequest])
   const [toolsPanelOpen, setToolsPanelOpen] = useState(false)
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const skillsLoaded = useSkillsStore((s) => s.loaded) // Reactive state

@@ -22,4 +22,5 @@ export const common = {
     seconds: "초",
     minutes: "분",
     skipToContent: "본문으로 건너뛰기",
+    dismiss: "닫기",
 } as const

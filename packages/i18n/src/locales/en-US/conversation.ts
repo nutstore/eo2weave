@@ -160,6 +160,8 @@ export const conversation = {
       gatewayClientIdMissing: "Nutstore AI client ID is not configured — cannot log in",
       gatewayLoginFailed: "Nutstore AI login failed",
       gatewayTokenSetMalformed: "Nutstore AI login returned an incomplete credential set — please retry",
+      gatewayCredentialPurgeFailed: "Nutstore AI sign-out could not fully clear the stored credentials — please retry. If it keeps failing, restart the app before signing in again.",
+      gatewayCredentialStaleWrite: "Nutstore AI detected a stale credential write that may have damaged the current session — please log in again.",
       gatewayDeviceFlowTimeout: "Nutstore AI authorization session expired — please start again",
       requestFailed: "Request failed:",
       retry: "Retry",

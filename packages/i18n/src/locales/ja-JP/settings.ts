@@ -525,6 +525,7 @@ export const settings = {
       authHint: "Device Code Flow による安全な認証 — API Key の管理は不要です。",
       clientIdMissing: "Client ID が未設定です。NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID 環境変数を設定してください。",
       authFailed: "認証に失敗しました",
+      logoutFailed: "ログアウトが完了していません——認証情報が残っている可能性があります。もう一度お試しください。",
     },
     // Provider display names (company pinyin/English brand; NOT separate
     // international services like Z.ai)
