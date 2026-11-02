@@ -56,7 +56,15 @@ vi.mock('react-virtuoso', () => ({
     virtuosoSpy(props)
     useImperativeHandle(ref, () => ({
       scrollToIndex: virtuosoScrollToIndexSpy,
-      scrollTo: virtuosoScrollToSpy,
+      // Faithful to real Virtuoso: a scroll that lands at the bottom fires
+      // atBottomStateChange(true). The click tests rely on this to verify the
+      // jump actually REACHES the bottom (state follows Virtuoso's verdict),
+      // not merely that a scrollTo call was made.
+      scrollTo: (...args: unknown[]) => {
+        virtuosoScrollToSpy(...args)
+        const handler = atBottomStateChangeHandlers.at(-1)
+        if (handler) handler(true)
+      },
       scrollIntoView: vi.fn(),
       scrollBy: vi.fn(),
     }))
@@ -395,12 +403,19 @@ describe('ConversationMessages virtualization', () => {
 
     // Must route through Virtuoso's footer-inclusive scrollTo, NOT a native
     // scrollTop write and NOT scrollToIndex (which targets the last DATA
-    // turn and leaves the footer below the viewport).
+    // turn and leaves the footer below the viewport). The mock's scrollTo
+    // fires atBottomStateChange(true) like the real library, so the
+    // assertions below also prove the jump actually LANDS at the bottom:
+    // the list's followOutput state re-enables and the button hides.
     expect(virtuosoScrollToSpy).toHaveBeenCalledWith({
       top: Number.MAX_SAFE_INTEGER,
       behavior: 'smooth',
     })
     expect(virtuosoScrollToIndexSpy).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(isUserAtBottomRef.current).toBe(true)
+      expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
+    })
   })
 
   it('button click re-enables followOutput for subsequently appended turns', async () => {
@@ -471,7 +486,53 @@ describe('ConversationMessages virtualization', () => {
   it('button replays the hub state it subscribed after (no missed initial signal)', async () => {
     const isUserAtBottomRef = { current: false }
     const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
-    const { rerender, container } = renderWithButton(55, { isUserAtBottomRef, virtualAtBottomHub: hub })
+    const handleRef = { current: null as ConversationMessagesHandle | null }
+    const scrollContainerRef = { current: null as HTMLDivElement | null }
+    const noop = vi.fn()
+    const messagesEndRef = { current: null as HTMLDivElement | null }
+    // Same harness as the mode-switch test below: full prop control so the
+    // rerender can flip virtualized→plain→virtualized and genuinely tear
+    // down / re-register the hub subscription effect. The container is
+    // stubbed FAR from the bottom so plain-mode geometry keeps the button
+    // visible across the flip (happy-dom gives the div zero size, which
+    // native geometry would otherwise read as at-bottom → hidden).
+    const ui = (virtual: boolean) => (
+      <div className="overflow-y-auto" data-testid="scroll-container" ref={(el) => {
+        scrollContainerRef.current = el
+        if (el) {
+          Object.defineProperty(el, 'scrollHeight', { value: 1500, configurable: true })
+          Object.defineProperty(el, 'clientHeight', { value: 600, configurable: true })
+          Object.defineProperty(el, 'scrollTop', { value: 0, configurable: true })
+        }
+      }}>
+        <ConversationMessages
+          ref={handleRef}
+          activeMessages={makeMessages(virtual ? 55 : 5)}
+          toolResults={new Map()}
+          isProcessing={false}
+          status="idle"
+          onDeleteAgentLoop={noop}
+          onEditAndResend={noop}
+          onRegenerate={undefined}
+          onCancel={noop}
+          messagesEndRef={messagesEndRef}
+          isUserAtBottomRef={isUserAtBottomRef}
+          virtualAtBottomHub={hub}
+          conversationId="conv-1"
+          mentionAgents={[]}
+        />
+        <ScrollToBottomButton
+          scrollContainerRef={scrollContainerRef}
+          messagesEndRef={messagesEndRef}
+          isUserAtBottomRef={isUserAtBottomRef}
+          convId="conv-1"
+          {...(virtual
+            ? { isVirtualized: true as const, virtuosoRef: handleRef, virtualAtBottomHub: hub }
+            : { isVirtualized: false as const })}
+        />
+      </div>
+    )
+    const { container, rerender } = render(ui(true))
     await waitFor(() => {
       expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
     })
@@ -479,10 +540,16 @@ describe('ConversationMessages virtualization', () => {
     // Virtuoso reported not-at-bottom, then the subscription remounted
     // (virtualized→plain→virtualized mode flip, or a late effect). The
     // replay on registration must surface the hub's last value WITHOUT any
-    // new atBottomStateChange (no handler calls here).
-    rerender(55)
-
+    // new atBottomStateChange (no handler calls here). Review round 2: the
+    // rerender actually flips virtual→plain→virtual so the subscription
+    // effect genuinely tears down and re-registers — a replay that only
+    // works on same-mode renders cannot pass this.
+    rerender(ui(false))
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+    rerender(ui(true))
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+    })
   })
 
   it('plain-mode visibility recomputes from geometry on effect setup (mode switch)', async () => {
@@ -493,6 +560,11 @@ describe('ConversationMessages virtualization', () => {
     const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
     const handleRef = { current: null as ConversationMessagesHandle | null }
     const scrollContainerRef = { current: null as HTMLDivElement | null }
+    // Geometry stubs live in a closure the ref callback reads, so flipping
+    // `atBottom` between renders actually changes what handleScroll() sees
+    // (the ref callback re-runs on every rerender and would otherwise reset
+    // scrollTop back to the far-from-bottom value).
+    const geometry = { scrollTop: 0 }
     const noop = vi.fn()
     const messagesEndRef = { current: null as HTMLDivElement | null }
     const ui = (virtual: boolean) => (
@@ -505,7 +577,7 @@ describe('ConversationMessages virtualization', () => {
             // Far from bottom: 1500 scrollHeight, 600 clientHeight.
             Object.defineProperty(el, 'scrollHeight', { value: 1500, configurable: true })
             Object.defineProperty(el, 'clientHeight', { value: 600, configurable: true })
-            Object.defineProperty(el, 'scrollTop', { value: 0, configurable: true })
+            Object.defineProperty(el, 'scrollTop', { value: geometry.scrollTop, configurable: true })
           }
         }}
       >
@@ -547,6 +619,17 @@ describe('ConversationMessages virtualization', () => {
     // button immediately (previous behavior waited for a scroll event).
     rerender(ui(false))
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+
+    // Symmetric case (review round 2): switch to plain while ALREADY at the
+    // bottom — setup geometry must HIDE the button, not keep the stale
+    // visible state from the virtualized phase. Flip the container geometry
+    // to at-bottom first, otherwise the div keeps its 1500/600 far-from-
+    // bottom stub and the button legitimately stays visible.
+    rerender(ui(true))
+    act(() => atBottomStateChangeHandlers.at(-1)?.(true))
+    geometry.scrollTop = 900
+    rerender(ui(false))
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
   })
 })
 

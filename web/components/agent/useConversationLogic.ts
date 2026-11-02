@@ -144,7 +144,13 @@ export function useConversationLogic() {
       // the text survives the remount and is restored (peekDraft) when the
       // user switches back. saveDraft treats empty content as "clear", which
       // matches the switch-path semantics for an emptied editor.
-      if (convId) {
+      //
+      // PR #142 review round 2 (Sourcery, Medium): skip the save while the
+      // editor has not yet consumed a pending draft restoration
+      // (draftConvIdRef still set). At that point inputRef holds the
+      // pre-restore EMPTY value, so writing it would erase the stored draft
+      // before the editor's restore effect ever runs.
+      if (convId && !draftConvIdRef.current) {
         useInputDraftStore.getState().saveDraft(convId, {
           text: inputRef.current,
           mentionedAgentIds: mentionedAgentIdsRef.current,

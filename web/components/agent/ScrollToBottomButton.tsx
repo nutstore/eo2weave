@@ -29,10 +29,13 @@ export interface VirtualAtBottomHub {
  */
 interface ScrollToBottomButtonVirtualProps {
   /** Message-list handle — the virtual-mode click delegates to it. */
-  virtuosoRef: React.RefObject<{
-    scrollToLastTurn?: (behavior?: 'smooth' | 'auto') => void
-    notifyVirtualAtBottom?: (atBottom: boolean) => void
-  } | null>
+  virtuosoRef: React.RefObject<
+    | {
+        scrollToLastTurn: (behavior?: 'smooth' | 'auto') => void
+        notifyVirtualAtBottom: (atBottom: boolean) => void
+      }
+    | null
+  >
   /** Whether the conversation is currently rendered through react-virtuoso. */
   isVirtualized: true
   /** Shared hub receiving Virtuoso's atBottomStateChange (virtual mode). */
@@ -130,11 +133,11 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
       // its `isUserAtBottom` state (which followOutput reads) re-enables and
       // the next appended turn is followed. Writing only the shared ref is
       // not enough: followOutput reads the list component's state.
-      virtuosoRef?.current?.notifyVirtualAtBottom?.(true)
+      virtuosoRef?.current?.notifyVirtualAtBottom(true)
       // Under virtual scrolling the DOM only holds the window slice —
       // delegate to the list handle, which jumps to the true bottom of the
       // scroller (footer content included).
-      virtuosoRef?.current?.scrollToLastTurn?.('smooth')
+      virtuosoRef?.current?.scrollToLastTurn('smooth')
       // Optimistic hide, mirroring the plain path's immediate UX; Virtuoso
       // will re-affirm (or revoke) via atBottomStateChange.
       setVirtualAtBottom(true)
