@@ -50,20 +50,22 @@ vi.mock('@/skills/skill-manager', () => ({
 
 const checkAiReadinessMock = vi.fn()
 
-vi.mock('@/lib/skill-install-flow', () => ({
-  checkAiReadiness: (...args: unknown[]) => checkAiReadinessMock(...(args as [])),
-  buildPrefillText: (name: string, prompt?: string | null) =>
-    // Keep in sync with the REAL helper (#134): trim the prompt before
-    // choosing the form (a whitespace-only prompt is absent) and give the
-    // bare command a trailing space so the slash-command picker stays
-    // closed — the page tests must assert the contract the picker depends
-    // on, not a divergent snapshot of the helper.
-    prompt?.trim() ? `/${name} ${prompt.trim()}` : `/${name} `,
-  mergePrefillText: (existing: string | null | undefined, prefill: string) =>
-    (existing ?? '').trim() ? `${prefill}\n${existing!.trim()}` : prefill,
-  pickConversationTarget: vi.fn(() => ({ id: 'recent-conv', created: false })),
-  waitForCondition: vi.fn(async () => true),
-}))
+vi.mock('@/lib/skill-install-flow', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/skill-install-flow')>()
+  return {
+    // Pure prefill helpers stay REAL (#135 review round 3): the page tests
+    // must observe the production prefill contract (trailing space, prompt
+    // trimming) — a hand-rolled mock would keep passing even if the real
+    // helper regressed and dropped the picker-suppressing space.
+    buildPrefillText: actual.buildPrefillText,
+    mergePrefillText: actual.mergePrefillText,
+    // Only the async/impure helpers get test doubles.
+    checkAiReadiness: (...args: unknown[]) => checkAiReadinessMock(...(args as [])),
+    pickConversationTarget: vi.fn(() => ({ id: 'recent-conv', created: false })),
+    waitForCondition: vi.fn(async () => true),
+  }
+})
 
 vi.mock('@/lib/jianguoyun-ai-console', () => ({
   getNutstoreAIConsoleURL: () => 'https://ai.jianguoyun.com',
