@@ -19,7 +19,7 @@
 
 import { renderHook, act } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { useConversationLogic } from '../useConversationLogic'
+import { useConversationLogic } from '@/components/agent/useConversationLogic'
 import { useInputDraftStore } from '@/store/input-draft.store'
 import { useConversationStore as conversationStoreModule } from '@/store/conversation.store'
 
