@@ -24,17 +24,24 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/i18n', () => ({
   useT: () => (key: string, params?: Record<string, string | number>) =>
     params && 'count' in params ? `${key}:${params.count}` : key,
+  useLocale: () => ['zh-CN', vi.fn()] as const,
 }))
 
 const fetchSkillStoreManifestMock = vi.fn()
 const installSkillFromUrlMock = vi.fn()
 const scanInstalledDirNamesMock = vi.fn()
 
-vi.mock('@/skills/skill-store', () => ({
-  fetchSkillStoreManifest: (...args: unknown[]) => fetchSkillStoreManifestMock(...(args as [])),
-  installSkillFromUrl: (...args: unknown[]) => installSkillFromUrlMock(...(args as [])),
-  scanInstalledDirNames: (...args: unknown[]) => scanInstalledDirNamesMock(...(args as [])),
-}))
+vi.mock('@/skills/skill-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/skills/skill-store')>()
+  return {
+    // Prefill/install helpers stay mocked; the pure description selector is
+    // real so page tests observe the localized-description contract (#140).
+    selectLocalizedDescription: actual.selectLocalizedDescription,
+    fetchSkillStoreManifest: (...args: unknown[]) => fetchSkillStoreManifestMock(...(args as [])),
+    installSkillFromUrl: (...args: unknown[]) => installSkillFromUrlMock(...(args as [])),
+    scanInstalledDirNames: (...args: unknown[]) => scanInstalledDirNamesMock(...(args as [])),
+  }
+})
 
 const refreshUserSkillsMock = vi.fn(async () => {})
 const getSkillsMock = vi.fn(() => [] as Array<{ id: string; source: string; enabled?: boolean }>)
