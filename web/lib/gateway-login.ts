@@ -40,36 +40,47 @@ const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
 
 export { MODEL_DISCOVERY_TIMEOUT_MS }
 
-function withDiscoveryDeadline<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+/**
+ * Run the model discovery under a hard deadline that ALSO aborts the
+ * discovery request itself.
+ *
+ * The deadline previously only rejected the RACE: the caller moved on to
+ * the credential commit while `prepareGatewayModels` kept awaiting a hung
+ * fetch forever, and with no caller-supplied signal (the direct-login
+ * path) nothing would ever cancel it — the request and its resources
+ * stayed outstanding (Sourcery round 8, "Timed-out discovery keeps
+ * running").
+ *
+ * `start` receives the signal the discovery must use: an INTERNAL
+ * AbortController's signal, chained onto the caller's signal when one
+ * exists (so a caller cancellation still cancels the fetch). Expiry
+ * aborts the internal controller — the fetch settles instead of leaking.
+ * Aborting the internal controller never touches the caller's own signal,
+ * so `signal?.throwIfAborted()` still sees only genuine caller
+ * cancellations.
+ */
+function withDiscoveryDeadline<T>(
+  start: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
-  // Internal abort wiring (Sourcery round 8, "Timed-out discovery keeps
-  // running"): the deadline previously only rejected the RACE — the caller
-  // moved on to the credential commit while `prepareGatewayModels` kept
-  // awaiting a hung fetch forever, and when the caller supplied no signal
-  // (direct-login path) nothing would ever cancel it. An internal
-  // AbortController, chained onto the caller's signal when one exists, lets
-  // the deadline abort the discovery fetch itself so the inner promise
-  // settles instead of leaking. Aborting the internal controller does NOT
-  // touch the caller's signal, so `signal?.throwIfAborted()` still sees only
-  // genuine caller cancellations.
   const internalController = new AbortController()
   const onOuterAbort = () => internalController.abort(signal?.reason)
   signal?.addEventListener('abort', onOuterAbort, { once: true })
+  const cleanup = () => {
+    if (timer !== undefined) clearTimeout(timer)
+    signal?.removeEventListener('abort', onOuterAbort)
+  }
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       internalController.abort(new Error('model discovery timed out'))
       reject(new Error('model discovery timed out'))
     }, MODEL_DISCOVERY_TIMEOUT_MS)
   })
+  const discovery = start(internalController.signal)
   return Promise.race([
-    p.finally(() => {
-      if (timer !== undefined) clearTimeout(timer)
-      signal?.removeEventListener('abort', onOuterAbort)
-    }),
-    deadline.finally(() => {
-      if (timer !== undefined) clearTimeout(timer)
-      signal?.removeEventListener('abort', onOuterAbort)
-    }),
+    discovery.finally(cleanup),
+    deadline.finally(cleanup),
   ])
 }
 
@@ -150,7 +161,10 @@ async function applyGatewayLoginTokensInner(
     status: 'failed',
   }
   try {
-    discovery = await withDiscoveryDeadline(prepareGatewayModels(accessToken, signal), signal)
+    discovery = await withDiscoveryDeadline(
+      (discoverySignal) => prepareGatewayModels(accessToken, discoverySignal),
+      signal,
+    )
   } catch (e) {
     if (signal?.aborted) signal.throwIfAborted()
     console.warn('[gateway-login] model discovery failed; committing login with an empty model list:', e)
