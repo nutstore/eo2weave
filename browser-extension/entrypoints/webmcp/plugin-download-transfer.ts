@@ -139,19 +139,71 @@ function isForbiddenIPv6(groups: number[]): boolean {
   return false
 }
 
-function isForbiddenIpLiteral(hostname: string): boolean {
+function isForbiddenIpLiteral(hostname: string, opts: { allowLoopback: boolean } = { allowLoopback: false }): boolean {
   // hostname: URL.hostname lowercased, trailing dot stripped, NO brackets.
   if (hostname.includes(':')) {
     const groups = parseIPv6Groups(hostname)
     // An IPv6-looking host that does not parse is refused outright.
-    return groups === null || isForbiddenIPv6(groups)
+    if (groups === null) return true
+    if (opts.allowLoopback) {
+      // Loopback exemptions apply to the plain forms only; an IPv4-mapped or
+      // NAT64-embedded loopback still routes as its embedded IPv4 address.
+      const allZero = groups.every((g) => g === 0)
+      const isLoopback = groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1
+      if (allZero || isLoopback) return false
+    }
+    return isForbiddenIPv6(groups)
   }
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
     const octets = hostname.split('.').map(Number) as [number, number, number, number]
     if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true
+    if (opts.allowLoopback && octets[0] === 127) return false
     return isForbiddenIPv4(octets)
   }
   return false
+}
+
+/**
+ * Validate a URL aimed at a remote MCP server by the CreatorWeave app's
+ * mcp-client.service via the extension's proxy bridge (mcp_proxy_fetch /
+ * mcp_proxy_fetch_stream). Unlike plugin downloads, MCP servers legitimately
+ * run on the user's machine (http://localhost dev servers are a documented
+ * preset in web/mcp/preset-providers.ts), so http + loopback are ALLOWED —
+ * but everything else that could aim the privileged fetch at an intranet or
+ * adjacent-host endpoint is still refused: private / link-local / CGNAT /
+ * reserved IP literals (IPv4 and IPv6, incl. IPv4-mapped and NAT64 forms),
+ * .local / .internal / single-label hosts, and embedded credentials.
+ * (Same text-only DNS-rebinding limitation as assertPublicHttpsDownloadUrl.)
+ */
+export function assertValidMcpEndpointUrl(rawUrl: string): URL {
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    throw new Error('Invalid MCP endpoint URL')
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`MCP endpoint URL must use http or https (got ${url.protocol})`)
+  }
+  if (url.username || url.password) {
+    throw new Error('MCP endpoint URL must not embed credentials')
+  }
+  const hostname = url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '').replace(/\.$/, '')
+  const isLoopbackName = hostname === 'localhost' || hostname.endsWith('.localhost')
+  if (
+    !isLoopbackName &&
+    (hostname.endsWith('.local') ||
+      hostname.endsWith('.internal') ||
+      // Single-label hostname (no dot): on the public internet these do not
+      // resolve globally; a bare name would resolve via local search domains.
+      (!hostname.includes('.') && !hostname.includes(':')))
+  ) {
+    throw new Error(`MCP endpoint host is not allowed: ${hostname}`)
+  }
+  if (isForbiddenIpLiteral(hostname, { allowLoopback: true })) {
+    throw new Error(`MCP endpoint host is not allowed: ${hostname}`)
+  }
+  return url
 }
 
 /**

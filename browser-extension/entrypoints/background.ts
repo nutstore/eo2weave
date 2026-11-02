@@ -124,7 +124,7 @@ import {
   setHostEnabled as setWebMCPHostEnabled,
   annotateToolsWithHostAuthorization,
 } from './webmcp/authorization'
-import { streamPluginDownload } from './webmcp/plugin-download-transfer'
+import { streamPluginDownload, assertValidMcpEndpointUrl } from './webmcp/plugin-download-transfer'
 import type { WebMCPPluginDownloadPlan, WebMCPDiscoveredTool } from './webmcp/types'
 import { registerTab, unregisterTab } from './webmcp/registry'
 import { getRegistryEntries, entriesToDiscoveredTools } from './webmcp/registry'
@@ -2584,9 +2584,20 @@ export default defineBackground(() => {
         }
 
         if (message.type === 'mcp_proxy_fetch') {
+          // SECURITY: same-family SSRF as the plugin-download stream (#148).
+          // This content-script relay runs on <all_urls>, so ANY page can
+          // post the bridge marker — gate on the same trusted-sender check
+          // the other privileged handlers use, and refuse non-MCP-shaped
+          // targets (see assertValidMcpEndpointUrl for why http+loopback is
+          // deliberately allowed here).
+          if (!isTrustedWebMCPSender(_sender)) {
+            sendResponse({ ok: false, status: 0, error: 'mcp_proxy_fetch is only available to trusted WebMCP senders' });
+            return;
+          }
           const { url, method = 'POST', headers = {}, body = null, timeoutMs } = message;
           try {
-            const resp = await fetchWithTimeout(url, {
+            const endpoint = assertValidMcpEndpointUrl(String(url || ''));
+            const resp = await fetchWithTimeout(endpoint.toString(), {
               method,
               headers,
               body,
@@ -3338,9 +3349,31 @@ export default defineBackground(() => {
       }
 
       if (message.type === 'mcp_proxy_fetch_stream') {
+        // SECURITY: same-family SSRF as the plugin-download stream (#148).
+        // Port senders are NOT authenticated by chrome.runtime.onConnect
+        // (content.ts relays for any page), so gate on the same
+        // trusted-sender check and URL validation as mcp_proxy_fetch.
+        // http + loopback is deliberately allowed: MCP dev servers legitimately
+        // run on localhost (see assertValidMcpEndpointUrl).
+        if (!isTrustedWebMCPSender(port.sender)) {
+          port.postMessage({
+            type: 'error',
+            errorCode: 'UNAUTHORIZED_MCP_PROXY_SENDER',
+            message: 'MCP proxy stream is only available to trusted WebMCP senders',
+          })
+          try { port.disconnect() } catch {}
+          return
+        }
         (async () => {
           const { url, method = 'POST', headers = {}, body = null, timeoutMs } = message;
           const streamTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : 2 * 60 * 1000;
+          try {
+            assertValidMcpEndpointUrl(String(url || ''))
+          } catch (err: any) {
+            port.postMessage({ type: 'error', errorCode: 'INVALID_MCP_ENDPOINT_URL', message: String(err?.message || err) });
+            try { port.disconnect(); } catch {}
+            return;
+          }
           let timeoutId = setTimeout(() => {
             port.postMessage({ type: 'error', errorCode: 'NETWORK_ERROR', message: `MCP stream request timed out (${Math.round(streamTimeoutMs / 1000)}s)` });
             try { port.disconnect(); } catch {}

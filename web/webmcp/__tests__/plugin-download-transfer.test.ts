@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   assertPublicHttpsDownloadUrl,
+  assertValidMcpEndpointUrl,
   streamPluginDownload,
 } from '../../../browser-extension/entrypoints/webmcp/plugin-download-transfer'
 
@@ -259,5 +260,56 @@ describe('plugin download URL validation', () => {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+})
+
+// The mcp_proxy_fetch / mcp_proxy_fetch_stream handlers fetch arbitrary
+// caller-supplied URLs with background privileges (#148, same family as the
+// plugin-download SSRF). MCP semantics differ from downloads: servers
+// legitimately run on the user's machine (localhost dev presets exist), so
+// http + loopback is allowed, but intranet / adjacent-host targets stay
+// refused. The background handlers themselves need heavy chrome.* mocks to
+// unit-test; this file pins the validator contract they now enforce.
+describe('MCP endpoint URL validation (mcp_proxy_fetch / _stream)', () => {
+  it('allows http+loopback MCP dev servers but refuses intranet targets', () => {
+    // Legitimate: localhost dev MCP servers (documented presets).
+    expect(() => assertValidMcpEndpointUrl('http://localhost:3001/mcp-database')).not.toThrow()
+    expect(() => assertValidMcpEndpointUrl('http://127.0.0.1:3011/mcp')).not.toThrow()
+    expect(() => assertValidMcpEndpointUrl('https://mcp.figma.com/mcp')).not.toThrow()
+    expect(() => assertValidMcpEndpointUrl('https://mail-mcp.jianguoyun.net.cn/mcp')).not.toThrow()
+
+    // Refused: non-http(s) schemes and embedded credentials.
+    for (const url of [
+      'file:///etc/passwd',
+      'ftp://mcp.example.com/mcp',
+      'https://user:pass@mcp.example.com/mcp',
+      // Refused: private / link-local / CGNAT / reserved IP literals.
+      'http://10.0.0.5/mcp',
+      'http://172.16.4.4/mcp',
+      'http://192.168.1.1/mcp',
+      'http://169.254.169.254/mcp',
+      'http://100.64.0.1/mcp',
+      // Loopback is exempted, but 127.x forms disguised via IPv4-embedded
+      // IPv6 are NOT plain loopback and stay refused.
+      'http://[::ffff:127.0.0.1]/mcp',
+      // 127/8 IS exempted as loopback; refused here instead: an intranet
+      // .local host that a hostname-style allowlist would miss.
+      'http://nas.local:8443/mcp',
+      'https://printer.local/mcp',
+      'https://vault.internal/mcp',
+      'https://[fe80::1]/mcp',
+      'https://[::ffff:10.0.0.5]/mcp',
+      'https://[64:ff9b::10.0.0.5]/mcp',
+    ]) {
+      expect(() => assertValidMcpEndpointUrl(url)).toThrow()
+    }
+  })
+
+  it('exempts only plain loopback forms, not loopback embedded in mapped/NAT64 IPv6', () => {
+    expect(() => assertValidMcpEndpointUrl('http://[::1]:3011/mcp')).not.toThrow()
+    expect(() => assertValidMcpEndpointUrl('http://[0:0:0:0:0:0:0:1]:3011/mcp')).not.toThrow()
+    // ::ffff:127.0.0.1 routes as an IPv4-mapped loopback — still allowed,
+    // but the mapped PRIVATE form below must stay refused.
+    expect(() => assertValidMcpEndpointUrl('http://[::ffff:192.168.1.1]/mcp')).toThrow()
   })
 })
