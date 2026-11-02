@@ -3,7 +3,7 @@
  * precedence rules (see model-store.ts for the full rationale).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mergeModelLists } from '../model-store'
+import { mergeModelLists, setCachedModels, getCachedModelsResult, __clearMemoryCacheForTests } from '../model-store'
 import type { ModelInfo } from '../types'
 
 const getModelsMock = vi.hoisted(() => vi.fn())
@@ -104,5 +104,50 @@ describe('mergeModelLists — custom provider', () => {
       customModelIds: ['my-model'],
     })
     expect(merged.map((m) => m.id)).toEqual(['my-model', 'api-only'])
+  })
+})
+
+// ─── Failed-refresh bookkeeping (PR #150 round 5) ───────────────────────────
+
+describe('setCachedModels — failed refresh outcomes', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __clearMemoryCacheForTests('openai' as never)
+  })
+
+  it('records a FAILED fetch (source static + error) so consumers can see the catalog is unknown', () => {
+    // Sourcery "Failed fetches become authoritative empty": setCachedModels
+    // used to drop every source-'static' result, so a failed refresh left no
+    // trace and getAvailableProviders classified the outage as an
+    // authoritative empty catalog.
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBe('network down')
+    expect(result?.models).toEqual([])
+  })
+
+  it('keeps a failed result MEMORY-ONLY (it must not outlive the session)', () => {
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    expect(localStorage.getItem('cw-models:openai')).toBeNull()
+  })
+
+  it('still persists successful dynamic results to localStorage', () => {
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-x', name: 'GPT', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    expect(localStorage.getItem('cw-models:openai')).not.toBeNull()
+    expect(getCachedModelsResult('openai' as never)?.error).toBeUndefined()
   })
 })
