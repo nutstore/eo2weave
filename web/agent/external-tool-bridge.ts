@@ -30,6 +30,7 @@ import {
   SavedAssetAbortedError,
   WEBMCP_DOWNLOAD_ABORTED,
 } from '@/webmcp/plugin-download'
+import { raceRouteRefreshAgainstAbort } from '@/agent/webmcp-route-refresh'
 import {
   getSidePanelBindingId,
   isSidePanelMode,
@@ -1124,6 +1125,46 @@ async function deleteSavedAssetQuietly(workspaceId: string | null, savedPath: st
   } catch { return false /* best-effort: caller surfaces the orphaned path */ }
 }
 
+/**
+ * How long the abort path waits for an in-flight finalize to settle before
+ * giving up on its outcome. The finalize is a local extension call, so it
+ * normally settles in milliseconds; the bound keeps a stuck extension from
+ * delaying the cancellation envelope (the caller's race-loss grace is 2s).
+ */
+const FINALIZE_SETTLE_GRACE_MS = 500
+
+/**
+ * Settle an in-flight finalize call after the run aborted.
+ *
+ * Returns:
+ *   - 'succeeded' — the extension completed the transfer (the saved asset
+ *     must stay so it matches the extension's completed-transfer record),
+ *   - 'failed'    — the transfer did NOT complete (the saved asset is an
+ *     orphan and may be rolled back),
+ *   - 'pending'   — the outcome is still unknown; the asset must stay.
+ */
+async function settleFinalizeWithin(
+  finalizePromise: Promise<{ ok: boolean } | undefined>,
+): Promise<'succeeded' | 'failed' | 'pending'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const outcome: 'succeeded' | 'failed' | 'pending' = await Promise.race([
+      finalizePromise.then(
+        (value): 'succeeded' | 'failed' => (value?.ok === true ? 'succeeded' : 'failed'),
+        (): 'failed' => 'failed',
+      ),
+      new Promise<'pending'>((resolve) => {
+        timer = setTimeout(() => resolve('pending'), FINALIZE_SETTLE_GRACE_MS)
+      }),
+    ])
+    return outcome
+  } catch {
+    return 'failed'
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 /** Workspace id used to roll back an asset saved for a cancelled run. */
 function workspaceIdForAssetRollback(context: ToolContext): string | null {
   const workspaceId = context.workspaceId?.trim()
@@ -1137,8 +1178,13 @@ function workspaceIdForAssetRollback(context: ToolContext): string | null {
  */
 class FinalizeTransportError extends Error {
   readonly savedPath: string
-  constructor(cause: string, savedPath: string) {
-    super(cause)
+  constructor(message: string, savedPath: string) {
+    // The transport text must live in `message` (not `cause`): the catch
+    // branch reads error.message, and `super(cause)` never populated the
+    // `cause` property — the actual failure text was silently replaced by
+    // the generic fallback (#139 review round 6: finalize failures lose
+    // their message).
+    super(message)
     this.name = 'FinalizeTransportError'
     this.savedPath = savedPath
   }
@@ -1341,30 +1387,10 @@ async function executeWebMCPTool(
       // surface the generic abort rejection instead of the CALL_CANCELLED
       // envelope (#139 review: slow route refresh loses cancellation). Race
       // the refresh against the abort signal too.
-      let onRefreshAbort: (() => void) | undefined
-      const refreshedGroupKey = await Promise.race([
+      const refreshedGroupKey = await raceRouteRefreshAgainstAbort(
         refreshLegacyRouteKey(toolInfo.fullName, targetTabId),
-        ...(
-          context.abortSignal
-            ? [
-                new Promise<never>((_, reject) => {
-                  onRefreshAbort = () => reject(new Error('__WEBMCP_RUN_ABORTED__'))
-                  if (context.abortSignal!.aborted) onRefreshAbort()
-                  else context.abortSignal!.addEventListener('abort', onRefreshAbort, { once: true })
-                }),
-              ]
-            : []
-        ),
-      ])
-        .catch((e) => {
-          if ((e as Error).message === '__WEBMCP_RUN_ABORTED__') return undefined
-          throw e
-        })
-        .finally(() => {
-          if (onRefreshAbort && context.abortSignal) {
-            context.abortSignal.removeEventListener('abort', onRefreshAbort)
-          }
-        })
+        context.abortSignal,
+      )
       if (context.abortSignal?.aborted) {
         // The abort won the refresh race (or fired while the refresh was
         // in flight): return the envelope WITHOUT dispatching — no write
@@ -1472,10 +1498,10 @@ async function executeWebMCPTool(
         // Check the signal BEFORE dispatching: an abort between the save
         // and finalize must not send the finalize message at all — the
         // extension would record a completed transfer pointing at the very
-        // file the rollback then deletes (#139 review round 5: cancelled
-        // runs still finalize transfers). Arming the abort race happens
-        // before the dispatch so an abort in the same tick as the send
-        // still wins.
+        // file the rollback then deletes (#139 review round 5 / round 6:
+        // cancelled runs still finalize transfers). Arming the abort race
+        // happens before the dispatch so an abort in the same tick as the
+        // send still wins.
         if (context.abortSignal?.aborted) {
           const rolledBack = await deleteSavedAssetQuietly(
             workspaceIdForAssetRollback(context),
@@ -1485,23 +1511,29 @@ async function executeWebMCPTool(
             ? cancellationEnvelope()
             : cancellationEnvelopeWithOrphan(context, saveResult.savedPath)
         }
+
+        // The finalize call can outlive the caller's patience: race it
+        // against the abort signal so a cancelled run returns the envelope
+        // promptly instead of hanging on the transfer (#139 review: aborted
+        // downloads keep writing / failed finalize hides a saved file).
         let onFinalizeAbort: (() => void) | undefined
+        const finalizePromise = bridge
+          .webMCPPluginDownloadFinalize({
+            transferId: response.pluginDownloadPlan.transferId,
+            savedPath: saveResult.savedPath,
+          })
+          .catch((e) => {
+            // A finalize REJECTION must flow into the same rollback path as
+            // a `!ok` response — wrap it so the catch below can distinguish
+            // it from unrelated errors (#139 review round 5: finalize
+            // failures leave saved files).
+            throw new FinalizeTransportError(
+              e instanceof Error ? e.message : String(e),
+              saveResult.savedPath,
+            )
+          })
         const finalizeResp = await Promise.race([
-          bridge
-            .webMCPPluginDownloadFinalize({
-              transferId: response.pluginDownloadPlan.transferId,
-              savedPath: saveResult.savedPath,
-            })
-            .catch((e) => {
-              // A finalize REJECTION must flow into the same rollback path as
-              // a `!ok` response — wrap it so the catch below can distinguish
-              // it from unrelated errors (#139 review round 5: finalize
-              // failures leave saved files).
-              throw new FinalizeTransportError(
-                e instanceof Error ? e.message : String(e),
-                saveResult.savedPath,
-              )
-            }),
+          finalizePromise,
           ...(
             context.abortSignal
               ? [
@@ -1524,16 +1556,37 @@ async function executeWebMCPTool(
             }
           })
         if (context.abortSignal?.aborted) {
-          // A failed rollback must not hide the orphan: surface its path so
-          // the caller can clean it up (#139 review round 5: cancelled
-          // downloads leave untracked files).
-          const rolledBack = await deleteSavedAssetQuietly(
-            workspaceIdForAssetRollback(context),
-            saveResult.savedPath,
-          )
-          return rolledBack
-            ? cancellationEnvelope()
-            : cancellationEnvelopeWithOrphan(context, saveResult.savedPath)
+          // The extension-side finalize may ALREADY be in flight — deleting
+          // the file right away races it: if the extension later completes
+          // finalization, it records a completed transfer pointing at a
+          // deleted file (#139 review round 6: finalize can outlive asset
+          // rollback). The protocol has no extension-side cancel for
+          // finalize, so the outcome is settled first (bounded wait) and the
+          // asset is only rolled back when finalization provably did NOT
+          // complete.
+          const finalizeOutcome = await settleFinalizeWithin(finalizePromise)
+          if (finalizeOutcome === 'pending') {
+            // Unknown outcome: the finalize is still in flight and may yet
+            // complete, so the file must STAY (deleting it would contradict
+            // the extension's completed-transfer record). Report the path so
+            // the caller can clean it up if the transfer never completes.
+            return cancellationEnvelopeWithOrphan(context, saveResult.savedPath)
+          }
+          if (finalizeOutcome === 'failed') {
+            // Finalize did NOT complete: the transfer never succeeded, so
+            // the saved file is an orphan — roll it back. When the rollback
+            // itself fails, the envelope carries the orphaned path.
+            const rolledBack = await deleteSavedAssetQuietly(
+              workspaceIdForAssetRollback(context),
+              saveResult.savedPath,
+            )
+            if (!rolledBack) {
+              return cancellationEnvelopeWithOrphan(context, saveResult.savedPath)
+            }
+          }
+          // 'succeeded': the extension completed the transfer, so the file
+          // stays — it matches the extension's completed-transfer record.
+          return cancellationEnvelope()
         }
         if (!finalizeResp?.ok) {
           // The asset is ALREADY on disk but the extension's finalize failed:
@@ -1627,7 +1680,7 @@ async function executeWebMCPTool(
         if (error instanceof FinalizeTransportError) {
           const writeShape = tool.annotations?.readOnlyHint !== true
           const finalizeMessage =
-            (error.cause || 'Plugin download finalize failed') +
+            (error.message || 'Plugin download finalize failed') +
             (writeShape
               ? ' The page action already ran — verify its result on the target tab before retrying; retrying would repeat the action.'
               : '')

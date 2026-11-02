@@ -1113,10 +1113,11 @@ describe('WebMCP #139 round-3 regression coverage', () => {
       // deleteSavedAssetQuietly imports the backend lazily — clear the
       // module registry so the doMock above takes effect on that import.
       vi.resetModules()
-      const { callToolExecutor: freshExecutor } = await import('../external-tool-bridge')
+      const { callToolExecutor: freshExecutor } = await import('@/agent/external-tool-bridge')
       // The fresh module instance re-imports the hoisted test doubles; the
       // factory vi.mocks at the top of the file still apply, so rebind the
       // state/bridge mocks on the SHARED mock fns (already done below).
+      let rejectFinalize!: (error: Error) => void
       mocks.getWebMCPBridge.mockReturnValue({
         webMCPInvoke: vi.fn().mockResolvedValue({
           ok: true,
@@ -1125,7 +1126,13 @@ describe('WebMCP #139 round-3 regression coverage', () => {
           pluginDownloadPlan: { transferId: 't1' },
         }),
         webMCPPluginDownloadStream: vi.fn(),
-        webMCPPluginDownloadFinalize: vi.fn().mockImplementation(() => new Promise(() => {})),
+        // The finalize is still in flight when the abort fires, and then
+        // FAILS — the transfer provably never completed, so the saved
+        // asset is an orphan and must be rolled back (#139 review round 6:
+        // the abort path settles the finalize outcome before deleting).
+        webMCPPluginDownloadFinalize: vi.fn().mockImplementation(
+          () => new Promise((_resolve, reject) => { rejectFinalize = reject }),
+        ),
       })
       mocks.consumeAndSavePluginDownload.mockResolvedValue({
         savedPath: 'x.bin', fileName: 'x.bin', mimeType: 'application/octet-stream', size: 1, patchedResult: {},
@@ -1138,6 +1145,7 @@ describe('WebMCP #139 round-3 regression coverage', () => {
       )
       await vi.waitFor(() => expect(mocks.consumeAndSavePluginDownload).toHaveBeenCalledOnce())
       controller.abort()
+      rejectFinalize(new Error('extension port closed'))
       const result = JSON.parse(await pending)
       expect(deleteFile).toHaveBeenCalledWith('x.bin')
       expect(result.error.code).toBe('CALL_CANCELLED')
@@ -1159,7 +1167,7 @@ describe('WebMCP #139 round-3 regression coverage', () => {
     }))
     try {
       vi.resetModules()
-      const { callToolExecutor: freshExecutor } = await import('../external-tool-bridge')
+      const { callToolExecutor: freshExecutor } = await import('@/agent/external-tool-bridge')
       mocks.getWebMCPBridge.mockReturnValue({
         webMCPInvoke: vi.fn().mockResolvedValue({
           ok: true,
@@ -1205,7 +1213,7 @@ describe('WebMCP #139 round-3 regression coverage', () => {
     }))
     try {
       vi.resetModules()
-      const { callToolExecutor: freshExecutor } = await import('../external-tool-bridge')
+      const { callToolExecutor: freshExecutor } = await import('@/agent/external-tool-bridge')
       const finalize = vi.fn().mockResolvedValue({ ok: true, transferId: 't1' })
       mocks.getWebMCPBridge.mockReturnValue({
         webMCPInvoke: vi.fn().mockResolvedValue({
@@ -1293,7 +1301,7 @@ describe('WebMCP #139 round-3 regression coverage', () => {
     }))
     try {
       vi.resetModules()
-      const { callToolExecutor: freshExecutor } = await import('../external-tool-bridge')
+      const { callToolExecutor: freshExecutor } = await import('@/agent/external-tool-bridge')
       mocks.getWebMCPBridge.mockReturnValue({
         webMCPInvoke: vi.fn().mockResolvedValue({
           ok: true,

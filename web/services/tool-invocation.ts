@@ -161,7 +161,15 @@ export async function invokeTool(
         // MCP-backed call_tool / plain tools makes Stop and timeout results
         // wait the full grace for an envelope that cannot exist (#139
         // review: unrelated calls wait two seconds).
-        ...(toolName === 'call_tool' && typeof args.full_tool_name === 'string'
+        //
+        // MCP-backed call_tool invocations ALSO carry a string
+        // full_tool_name, so the string check alone is not enough: WebMCP
+        // full names are origin-derived with a `__` separator
+        // (https_example_com__tool), while MCP names join serverId and tool
+        // with `:` (serverId:tool). Require the `__` marker so MCP calls
+        // skip the grace wait (#139 review round 6: MCP calls wait
+        // unnecessarily).
+        ...(toolName === 'call_tool' && typeof args.full_tool_name === 'string' && args.full_tool_name.includes('__')
           ? { preferEnvelopeOnRaceLoss: preferWebMCPCancellationEnvelope }
           : {}),
         // The timeout must reach its observers even when a WebMCP call

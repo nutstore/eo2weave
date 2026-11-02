@@ -140,4 +140,35 @@ describe('shared tool invocation', () => {
     expect(JSON.parse(outcome.raw).error.code).toBe('CALL_CANCELLED')
     expect(onToolTimeout).toHaveBeenCalledTimes(1)
   })
+
+  it('does not wait the race-loss grace period for an MCP-backed call_tool (#139 review round 6: MCP calls wait unnecessarily)', async () => {
+    // An MCP-backed call_tool ALSO carries a string full_tool_name — but
+    // its name uses the `serverId:tool` separator, never the WebMCP
+    // origin-derived `__` marker. The grace period (2s) must not be spent
+    // waiting for a WebMCP-only cancellation envelope.
+    const config = input(() => new Promise<string>(() => {}))
+    const controller = new AbortController()
+    config.getAbortSignal = () => controller.signal
+    config.toolRegistry.getToolDefinitionsForMode = () => [
+      { type: 'function', function: { name: 'call_tool', description: '', parameters: { type: 'object', properties: {} } } },
+    ]
+    let releaseExecute!: () => void
+    const executeEntered = new Promise<void>((resolve) => { releaseExecute = resolve })
+    const config2 = { ...config, toolRegistry: { ...config.toolRegistry, execute: async (): Promise<string> => { releaseExecute(); await new Promise<string>(() => {}); return '' } } }
+    const pending = invokeTool(config2, {
+      toolName: 'call_tool', toolCallId: 'a',
+      args: { full_tool_name: 'filesystem:read_file' },
+      context: { directoryHandle: null },
+    })
+    await executeEntered
+    const rejectionGuard = pending.then(() => 'RESOLVED', (e) => `REJECTED:${(e as Error).message}`)
+    controller.abort()
+    const raced = await Promise.race([
+      rejectionGuard,
+      new Promise((r) => setTimeout(() => r('PENDING'), 300)),
+    ])
+    expect(raced).not.toBe('PENDING')
+    expect(raced).toContain('REJECTED')
+    expect(await rejectionGuard).toContain('REJECTED')
+  })
 })
