@@ -312,7 +312,7 @@ async function swapPackageIntoPlace(
   // checks the lease signal FIRST, so a step that STARTS after the lease was
   // lost never executes — a stale transaction must not mutate the package
   // directory the NEW owner now holds the lease for.
-  const throwIfLeaseLost = (): void => {
+  const assertLeaseHeld = (): void => {
     if (lockSignal.aborted) {
       throw new PackageInstallError(
         `The install of ${id} was aborted: the package lock was lost mid-transaction`,
@@ -320,9 +320,11 @@ async function swapPackageIntoPlace(
       )
     }
   }
+  // The shared tree-copy/removal helpers take the signal directly, so a
+  // step that STARTS after the lease was lost is fenced inside them too.
   try {
-    throwIfLeaseLost()
-    await removeMissingOk(provider, staging)
+    assertLeaseHeld()
+    await removeMissingOk(provider, staging, lockSignal)
     // SECURITY (critical, "Retry deletes last good package"): a PRIOR failed
     // replacement may have left `backup` behind holding the ONLY surviving
     // copy of the package (restoration failed there). If the live directory
@@ -346,12 +348,12 @@ async function swapPackageIntoPlace(
       )
     }
     if (!liveExists && backupExists) {
-      throwIfLeaseLost() // fence: do not recover/clear the backup after lease loss
+      assertLeaseHeld() // fence: do not recover/clear the backup after lease loss
       try {
-        await copyTree(provider, backup, id)
+        await copyTree(provider, backup, id, lockSignal)
         // Recovered — the backup is now redundant.
-        throwIfLeaseLost() // fence the backup cleanup against lease loss
-        await removeMissingOk(provider, backup)
+        assertLeaseHeld() // fence the backup cleanup against lease loss
+        await removeMissingOk(provider, backup, lockSignal)
       } catch {
         // Recovery failed: keep the backup and proceed WITHOUT deleting it
         // (the swap paths below tolerate its presence; the finally block
@@ -363,8 +365,8 @@ async function swapPackageIntoPlace(
         )
       }
     }
-    throwIfLeaseLost() // fence: the backup clear is destructive
-    await removeMissingOk(provider, backup)
+    assertLeaseHeld() // fence: the backup clear is destructive
+    await removeMissingOk(provider, backup, lockSignal)
     // Guard the WRITE LOOP: every staged write checks the lease signal
     // first, so a transaction whose lease expired stops writing before the
     // next file instead of finishing a swap the new lock owner is already
@@ -433,7 +435,7 @@ async function swapPackageIntoPlace(
       // and restore the copy if the swap fails.
       let hadOld: boolean
       try {
-        hadOld = await copyTree(provider, id, backup)
+        hadOld = await copyTree(provider, id, backup, lockSignal)
       } catch (error) {
         // A backup that cannot be LISTED is a backup that cannot be
         // trusted — abort BEFORE the live tree is removed, so the old
@@ -444,11 +446,11 @@ async function swapPackageIntoPlace(
         )
       }
       try {
-        throwIfLeaseLost() // fence: removing the live tree is destructive
-        await removeMissingOk(provider, id)
+        assertLeaseHeld() // fence: removing the live tree is destructive
+        await removeMissingOk(provider, id, lockSignal)
         try {
-          throwIfLeaseLost() // fence: the staged copy-in is destructive
-          await copyTree(provider, staging, id)
+          assertLeaseHeld() // fence: the staged copy-in is destructive
+          await copyTree(provider, staging, id, lockSignal)
         } catch (copyError) {
           // A LEASE-LOST abort is not a copy failure: do NOT run the
           // destructive rollback (remove + restore) for it — the transaction
@@ -459,14 +461,14 @@ async function swapPackageIntoPlace(
           if (!hadOld) {
             // First install: nothing to restore — remove the PARTIAL live
             // directory so the management UI never reports a half package.
-            throwIfLeaseLost() // fence the cleanup writes against lease loss
+            assertLeaseHeld() // fence the cleanup writes against lease loss
             await removeMissingOk(provider, id).catch(() => {})
           } else {
-            throwIfLeaseLost() // fence the rollback writes against lease loss
+            assertLeaseHeld() // fence the rollback writes against lease loss
             await removeMissingOk(provider, id).catch(() => {})
             try {
-              throwIfLeaseLost() // fence: the restore copy is destructive
-              await copyTree(provider, backup, id)
+              assertLeaseHeld() // fence: the restore copy is destructive
+              await copyTree(provider, backup, id, lockSignal)
             } catch (restoreError) {
               // The restore failed — same rule as the rename path: keep
               // the backup (it is the last good copy) and say so.
@@ -485,8 +487,8 @@ async function swapPackageIntoPlace(
         // mid-restore from it).
         if (!backupPreserved && !lockSignal.aborted) await removeMissingOk(provider, backup).catch(() => {})
       }
-      throwIfLeaseLost() // fence the final redundant-backup clear
-      await removeMissingOk(provider, backup)
+      assertLeaseHeld() // fence the final redundant-backup clear
+      await removeMissingOk(provider, backup, lockSignal)
     }
   } catch (error) {
     if (error instanceof PackageInstallError) throw error
@@ -516,13 +518,33 @@ async function pathExists(provider: FsProvider, path: string): Promise<boolean |
 }
 
 /**
+ * Throw LOCK_LOST when the transaction's lease is gone. Shared by the tree
+ * copy and the fenced removals: after the lease is lost the NEW owner holds
+ * the package directory, and a stale operation that keeps mutating alongside
+ * it corrupts the package.
+ */
+function throwIfLeaseLost(lockSignal: AbortSignal | undefined, what: string): void {
+  if (lockSignal?.aborted) {
+    throw new PackageInstallError(
+      `The operation was aborted: the package lock was lost mid-transaction during ${what}`,
+      'LOCK_LOST',
+    )
+  }
+}
+
+/**
  * Copy a directory tree inside the provider (the OPFS provider exposes no
  * rename). Returns false when the source does not exist. A readdir that
  * fails for any OTHER reason throws — treating a listing error as "absent
  * source" would silently skip the backup and let a later failure delete the
  * only copy.
+ *
+ * Every recursive step checks `lockSignal` FIRST: after the lease is lost
+ * the new owner holds the package directory, and a copy that keeps writing
+ * alongside it would leave a partial, mixed tree (finding: "Concurrent
+ * installs corrupt packages").
  */
-async function copyTree(provider: FsProvider, from: string, to: string): Promise<boolean> {
+async function copyTree(provider: FsProvider, from: string, to: string, lockSignal?: AbortSignal): Promise<boolean> {
   let entries: Array<{ name: string; kind: string }>
   try {
     entries = await provider.readdir(from)
@@ -531,12 +553,14 @@ async function copyTree(provider: FsProvider, from: string, to: string): Promise
     if (e.code === 'ENOENT' || e.name === 'NotFoundError') return false
     throw error
   }
+  throwIfLeaseLost(lockSignal, `the tree copy of ${from}`)
   await provider.mkdir(to, { recursive: true })
   for (const entry of entries) {
+    throwIfLeaseLost(lockSignal, `the tree copy of ${from}`)
     const source = `${from}/${entry.name}`
     const target = `${to}/${entry.name}`
     if (entry.kind === 'directory') {
-      await copyTree(provider, source, target)
+      await copyTree(provider, source, target, lockSignal)
     } else {
       await provider.writeFile(target, await provider.readFile(source))
     }
@@ -547,9 +571,12 @@ async function copyTree(provider: FsProvider, from: string, to: string): Promise
 /**
  * Remove a path, tolerating "does not exist" in BOTH error shapes: the
  * normalized `ENOENT` FsError and the raw File System Access
- * `NotFoundError` DOMException (the production OPFS provider).
+ * `NotFoundError` DOMException (the production OPFS provider). The removal
+ * is fenced against lease loss — a stale transaction must not delete the
+ * directory the NEW owner now holds the lease for.
  */
-async function removeMissingOk(provider: FsProvider, path: string): Promise<void> {
+async function removeMissingOk(provider: FsProvider, path: string, lockSignal?: AbortSignal): Promise<void> {
+  throwIfLeaseLost(lockSignal, `the removal of ${path}`)
   try {
     await provider.remove(path, { recursive: true })
   } catch (error) {
@@ -582,7 +609,7 @@ export async function uninstallPackage(packageId: string, provider: FsProvider):
       )
     }
     try {
-      await removeMissingOk(provider, packageId)
+      await removeMissingOk(provider, packageId, lockSignal)
     } catch (error) {
       throw new PackageInstallError(`Failed to remove package ${packageId}: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
     }
