@@ -17,7 +17,7 @@
 
 import { getSQLiteDB } from '@/sqlite'
 import { formatBytes } from '@/lib/utils'
-import { PROJECT_STORE_INIT_ERROR_KEY } from '@/lib/app-storage-keys'
+import { PROJECT_STORE_INIT_ERROR_KEY, CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 
 interface StoredProjectInitError {
   message: string
@@ -25,6 +25,15 @@ interface StoredProjectInitError {
   stack?: string
   at?: string
   /** True when a later initialize() succeeded — report kept for context. */
+  resolved?: boolean
+}
+
+/** Record written by the conversation store's loadFromDB() failure path (issue #147). */
+interface StoredConversationLoadError {
+  message: string
+  stack?: string
+  at?: string
+  /** True when a later loadFromDB() succeeded — report kept for context. */
   resolved?: boolean
 }
 
@@ -70,6 +79,42 @@ function collectProjectInitErrorSection(): DiagnosticSection {
   }
 
   return { label: 'Project Store Init', status, lines, summary }
+}
+
+/**
+ * Read the conversation-store load failure persisted by
+ * `useConversationStore.loadFromDB()` (sessionStorage, issue #147). Without
+ * this, a "history is empty" report shows nothing about the failed load that
+ * produced the empty sidebar.
+ */
+function collectConversationLoadErrorSection(): DiagnosticSection {
+  const lines: string[] = []
+  const summary: Record<string, string | number | boolean | null | undefined> = {}
+  let status: DiagnosticSection['status'] = 'info'
+
+  let stored: StoredConversationLoadError | null = null
+  try {
+    const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
+    if (raw) stored = JSON.parse(raw) as StoredConversationLoadError
+  } catch {
+    // sessionStorage unavailable / malformed record — treat as absent.
+  }
+
+  summary.conversationStoreLoadFailed = stored !== null
+  if (stored) {
+    status = stored.resolved ? 'warn' : 'error'
+    summary.conversationStoreLoadErrorAt = stored.at ?? null
+    if (stored.resolved) summary.conversationStoreLoadErrorResolved = true
+    lines.push('- Last conversation-store load failure:')
+    lines.push(`  - Message: ${stored.message}`)
+    if (stored.resolved) lines.push('  - Resolved: yes (a later load succeeded)')
+    if (stored.stack) lines.push(`  - Stack: ${stored.stack}`)
+    if (stored.at) lines.push(`  - At: ${stored.at}`)
+  } else {
+    lines.push('- No conversation-store load failure recorded this session.')
+  }
+
+  return { label: 'Conversation Store Load', status, lines, summary }
 }
 
 export interface DiagnosticSection {
@@ -333,6 +378,7 @@ export async function runDiagnostics(): Promise<DiagnosticReport> {
 
   sections.push(await collectSQLiteSection())
   sections.push(collectProjectInitErrorSection())
+  sections.push(collectConversationLoadErrorSection())
   sections.push(collectBrowserStorageSection())
   sections.push(await collectStorageQuotaSection())
   sections.push(collectServiceWorkerSection())

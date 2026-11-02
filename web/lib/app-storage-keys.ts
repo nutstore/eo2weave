@@ -6,3 +6,4 @@
  * importing each other's module graphs.
  */
 export const PROJECT_STORE_INIT_ERROR_KEY = 'creatorweave:project-store-init-error'
+export const CONVERSATION_STORE_LOAD_ERROR_KEY = 'creatorweave:conversation-store-load-error'

@@ -8,6 +8,8 @@ export const sidebar = {
     clear: "Clear",
     activeTab: "Active",
     archivedTab: "Archived",
+    historyLoadFailed: "Failed to load conversation history",
+    historyRetrying: "Retrying…",
     newWorkspace: "New Chat",
     workspaceLabel: "Chat: {name}",
     running: "Running",

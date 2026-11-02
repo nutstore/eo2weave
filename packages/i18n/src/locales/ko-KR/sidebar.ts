@@ -8,6 +8,8 @@ export const sidebar = {
     workspace: "채팅",
     clearWorkspace: "현재 프로젝트 채팅 지우기",
     clear: "지우기",
+    historyLoadFailed: "대화 기록을 불러오지 못했습니다",
+    historyRetrying: "재시도 중…",
     newWorkspace: "새 채팅",
     workspaceLabel: "채팅: {name}",
     running: "실행 중",

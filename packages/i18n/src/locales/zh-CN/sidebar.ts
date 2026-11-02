@@ -8,6 +8,8 @@ export const sidebar = {
     clear: "清空",
     activeTab: "活跃",
     archivedTab: "已归档",
+    historyLoadFailed: "加载对话历史失败",
+    historyRetrying: "重试中…",
     newWorkspace: "新对话",
     workspaceLabel: "对话: {name}",
     running: "运行中",

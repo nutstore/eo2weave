@@ -767,6 +767,16 @@ export const Sidebar = memo(function Sidebar({
       s.conversations.map((c) => ({ id: c.id, title: c.title }))
     )
   )
+  // Issue #147: a failed loadFromDB leaves `conversations` empty with
+  // `loadError` set. Rendering the list here would show an empty sidebar that
+  // reads as "history wiped" — render an error banner with Retry instead,
+  // mirroring the projects-page fix (PR #133).
+  const conversationLoadError = useConversationStore((s) => s.loadError)
+  const reloadConversations = useConversationStore((s) => s.loadFromDB)
+  // Keep the banner (and its disabled Retry button) mounted while a retry is
+  // in flight — loadFromDB clears loadError only on success, so the empty
+  // list never flashes as a false "no history" state (PR #133 semantics).
+  const [isRetryingLoad, setIsRetryingLoad] = useState(false)
   const deleteConversation = useConversationStore((s) => s.deleteConversation)
   const deleteConversations = useConversationStore((s) => s.deleteConversations)
   const updateTitle = useConversationStore((s) => s.updateTitle)
@@ -1354,7 +1364,33 @@ export const Sidebar = memo(function Sidebar({
           )}
 
           <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-2">
-            {displayedConversations.map((conv) => {
+            {conversationLoadError ? (
+              <div
+                role="alert"
+                data-testid="conversation-load-error"
+                className="mx-1 my-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm"
+              >
+                <p className="mb-1 font-medium text-foreground">
+                  {t('sidebar.historyLoadFailed')}
+                </p>
+                <p className="mb-2 break-words text-xs text-muted-foreground">
+                  {conversationLoadError}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRetryingLoad(true)
+                    void reloadConversations().finally(() => setIsRetryingLoad(false))
+                  }}
+                  disabled={isRetryingLoad}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                >
+                  <RefreshCw aria-hidden className={`h-3 w-3 ${isRetryingLoad ? 'animate-spin' : ''}`} />
+                  {isRetryingLoad ? t('sidebar.historyRetrying') : t('app.retry')}
+                </button>
+              </div>
+            ) : (
+            displayedConversations.map((conv) => {
               const isRunning = runningSet.has(conv.id)
               const isActive = conv.id === activeWorkspaceId
               const pendingReviewCount = pendingCountByConversationId.get(conv.id) || 0
@@ -1401,7 +1437,8 @@ export const Sidebar = memo(function Sidebar({
                 />
                 </motion.div>
               )
-            })}
+            })
+            )}
           </div>
           </div>
 

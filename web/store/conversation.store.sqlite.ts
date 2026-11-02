@@ -114,6 +114,7 @@ import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 //=============================================================================
 import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from './conversation-persist'
+import { CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 import {
   runAgentImpl,
   type ConversationAgentRunInternals,
@@ -703,6 +704,23 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           state.cancelledRunIds.clear()
         })
 
+        // Success MARKS the previous load-failure record resolved instead of
+        // deleting it (mirrors project.store, issue #147) — a user who
+        // reloaded into a working app must still be able to attach the
+        // ORIGINAL failure to a bug report via Diagnostics.
+        try {
+          const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
+          if (raw) {
+            const record = JSON.parse(raw) as { resolved?: boolean }
+            sessionStorage.setItem(
+              CONVERSATION_STORE_LOAD_ERROR_KEY,
+              JSON.stringify({ ...record, resolved: true })
+            )
+          }
+        } catch {
+          // sessionStorage unavailable / malformed — leave the record as is.
+        }
+
         // Load messages for the active conversation (it's about to be displayed)
         if (activeId) {
           try {
@@ -768,6 +786,21 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             state.loaded = false
             state.loadError = retryMessage
           })
+          // Persist the failure for diagnostics (issue #147) — same pattern as
+          // the project store's sessionStorage init-error record. Without this,
+          // a "history is empty" report carries no trace of the failed load.
+          try {
+            sessionStorage.setItem(
+              CONVERSATION_STORE_LOAD_ERROR_KEY,
+              JSON.stringify({
+                message: retryMessage,
+                stack: retryErr instanceof Error ? retryErr.stack : undefined,
+                at: new Date().toISOString(),
+              })
+            )
+          } catch {
+            // sessionStorage unavailable (SSR / disabled storage) — console is enough.
+          }
         }
       }
       })
