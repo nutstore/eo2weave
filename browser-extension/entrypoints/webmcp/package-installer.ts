@@ -41,6 +41,7 @@ import {
   MAX_REGISTRY_MANIFEST_BYTES,
   REGISTRY_FETCH_TIMEOUT_MS,
   RegistryError,
+  registryAltFileUrls,
   registryFileUrl,
   type PackageRegistry,
   type RegistryManifestPackage,
@@ -123,6 +124,7 @@ async function downloadFile(
   expectedSha256: string,
   timeoutMs: number = REGISTRY_FETCH_TIMEOUT_MS,
   preference?: MirrorPreference,
+  altUrls: string[] = [],
 ): Promise<Uint8Array> {
   const expected = expectedSha256.toLowerCase()
   const load = async (candidate: string): Promise<Uint8Array> => {
@@ -176,7 +178,17 @@ async function downloadFile(
     }
   }
   try {
-    return await fetchWithMirrorFallback(url, load, { preference })
+    // Candidates: the beside-the-manifest form first (both transports),
+    // then the REF-ROOT alternative — a subdirectory manifest's catalog
+    // lists repo-relative paths the primary form cannot address (finding:
+    // "Subdirectory registries cannot load packages"). Every candidate is
+    // verified against the catalog sha256 inside `load`, so the extra
+    // same-origin candidate cannot serve tampered content.
+    const candidates = mirrorCandidates(url, preference ?? resolveMirrorPreference())
+    for (const alt of altUrls) {
+      if (!candidates.includes(alt)) candidates.push(alt)
+    }
+    return await fetchWithMirrorFallback(url, load, { preference, candidates })
       .then(result => result.value)
   } catch (error) {
     if (error instanceof PackageInstallError && error.code === 'SHA256_MISMATCH') {
@@ -318,7 +330,7 @@ export async function installPackage(
       throw new PackageInstallError(`Package ${id} lists ${file.path} twice (aliased path)`, 'INVALID_PACKAGE')
     }
     seenPaths.add(relative)
-    const bytes = await downloadFile(url, fetchImpl, file.sha256, options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS, options?.preference)
+    const bytes = await downloadFile(url, fetchImpl, file.sha256, options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS, options?.preference, registryAltFileUrls(registry, file.path))
     // The download already verified the sha256 per candidate (finding:
     // "Stale mirrors abort installs") — nothing to re-check here.
     totalBytes += bytes.length

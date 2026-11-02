@@ -12,6 +12,7 @@ import {
   isNotFoundError,
   parseRegistryInput,
   RegistryError,
+  registryAltFileUrls,
   registryFileUrl,
   registryFromManifestUrl,
   validateRegistryManifest,
@@ -110,6 +111,45 @@ describe('parseRegistryInput', () => {
   it('refuses a file path that escapes the repo', () => {
     const registry = parseRegistryInput('nutstore/eo2weave-webmcp-packages')
     expect(() => registryFileUrl(registry, '../../etc/passwd')).toThrow(RegistryError)
+    expect(() => registryAltFileUrls(registry, '../../etc/passwd')).toThrow(RegistryError)
+  })
+
+  it('derives REF-ROOT alternatives for a subdirectory manifest (HIGH "Subdirectory registries cannot load packages")', () => {
+    // The manifest format stores REPO-relative package paths (the packages
+    // repo's CI generator hashes files with path.relative(repoRoot, …)), so
+    // a manifest hosted in a repo SUBDIRECTORY must load its packages from
+    // the ref root — the beside-the-manifest form 404s. The ref/dir split
+    // is unknowable by URL shape, so every tail prefix is offered.
+    const registry = parseRegistryInput(`https://${RAW_GITHUB_HOST}/nutstore/pkg/main/registry/manifest.json`)
+    const path = 'packages/com.example.tools/manifest.json'
+    // Primary: beside the manifest (unchanged behavior).
+    expect(registryFileUrl(registry, path))
+      .toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg/main/registry/${path}`)
+    // Alternatives: re-anchored at each ref-root candidate, same origin.
+    expect(registryAltFileUrls(registry, path))
+      .toEqual([`https://${RAW_GITHUB_HOST}/nutstore/pkg/main/${path}`])
+  })
+
+  it('returns NO alternatives when the manifest already sits at the ref root', () => {
+    const registry = parseRegistryInput('nutstore/eo2weave-webmcp-packages')
+    const path = 'packages/com.example.tools/manifest.json'
+    // Beside-the-manifest IS the ref-root form here — both derivations
+    // agree, so the candidate list must not gain duplicates.
+    expect(registryAltFileUrls(registry, path)).toEqual([])
+  })
+
+  it('offers both prefix splits for a slashed-branch subdirectory manifest', () => {
+    const registry = parseRegistryInput(`https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/registry/manifest.json`)
+    expect(registryAltFileUrls(registry, 'packages/com.example.tools/manifest.json'))
+      .toEqual([
+        // ref = `feature`, dir = `registry` (ref-root form).
+        `https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/packages/com.example.tools/manifest.json`,
+      ])
+  })
+
+  it('returns no alternatives for a non-GitHub manifest URL', () => {
+    const registry = registryFromManifestUrl('https://example.com/owner/repo/main/manifest.json')
+    expect(registryAltFileUrls(registry, 'packages/com.example.tools/manifest.json')).toEqual([])
   })
 
   it('builds a registry from an explicit manifest URL', () => {

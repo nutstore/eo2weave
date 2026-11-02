@@ -265,14 +265,16 @@ export function registryFromManifestUrl(manifestUrl: string, label?: string): Pa
 /**
  * Raw URL for one manifest-listed package file.
  *
- * Package paths are repo-relative (`packages/<id>/...`) but live at a REF,
- * and the ref may contain slashes that the URL shape alone cannot separate
- * from the path. The registry's `manifestUrl` carries the full ref+dir
- * tail, so the file URL REPLACES the manifest file name inside it — a
- * slash-branch registry therefore derives
- * `.../<owner>/<repo>/feature/x/packages/<id>/manifest.json`, not the
- * wrong-ref URL a first-segment rawBase produced (finding: "Slash branches
- * break package downloads").
+ * Package paths are REPO-relative (`packages/<id>/...` — the CI generator
+ * in the packages repo hashes files with `path.relative(repoRoot, …)`),
+ * but the ref boundary inside a raw-URL tail cannot be split from the
+ * catalog subdirectory by URL shape. The manifest URL therefore carries
+ * the FULL `<ref>[/<dir>]` tail and the file URL REPLACES the manifest
+ * file name inside it — the primary resolution — while
+ * `registryAltFileUrl` derives the REF-ROOT alternative for the one case
+ * the swap cannot cover: a manifest in a repo subdirectory whose catalog
+ * lists paths from the repo root (finding: "Subdirectory registries
+ * cannot load packages").
  */
 export function registryFileUrl(registry: PackageRegistry, path: string): string {
   const clean = path.replace(/^\/+/, '')
@@ -287,6 +289,53 @@ export function registryFileUrl(registry: PackageRegistry, path: string): string
     throw new RegistryError(`Registry manifest URL has no file segment: ${manifestUrl}`)
   }
   return `${manifestUrl.slice(0, lastSlash + 1)}${clean}`
+}
+
+/**
+ * REF-ROOT alternative URLs for one manifest-listed package file.
+ *
+ * `registryFileUrl` resolves package paths BESIDE the manifest, which is
+ * right when the catalog and its packages share a directory. The manifest
+ * format, though, stores REPO-relative paths (the packages repo's CI
+ * generator hashes files with `path.relative(repoRoot, …)`), so a manifest
+ * hosted in a SUBDIRECTORY (`<ref>/registry/manifest.json`) with catalog
+ * paths like `packages/<id>/manifest.json` must load them from the REF
+ * ROOT — the beside-the-manifest URL 404s (finding: "Subdirectory
+ * registries cannot load packages").
+ *
+ * The ref boundary inside the manifest URL's tail is unknowable from the
+ * URL shape alone (a branch may contain `/`), so EVERY prefix of the tail
+ * is offered as an alternative: for a manifest under
+ * `<owner>/<repo>/<a1>/…/<ak>/<file>` the candidates re-anchor the file at
+ * `<a1>`, `<a1>/<a2>`, … — the true ref-root form is among them whichever
+ * way the branch/dir split actually goes. The prefix that equals the whole
+ * dir tail reproduces the primary form and is dropped (no duplicates).
+ * Order is stable (shortest ref first), the list is capped, and every
+ * candidate's bytes are still verified against the catalog sha256 — a
+ * stale or hostile answer cannot slip through either split. Empty when the
+ * manifest has no directory under its ref (both derivations coincide) or
+ * the manifest URL is not a GitHub raw URL.
+ */
+const MAX_ALT_FILE_URLS = 3
+
+export function registryAltFileUrls(registry: PackageRegistry, path: string): string[] {
+  const clean = path.replace(/^\/+/, '')
+  if (!clean || clean.includes('..')) throw new RegistryError(`Invalid package file path: ${path}`)
+  const parsed = new URL(registry.manifestUrl)
+  const parts = parsed.pathname.split('/').filter(Boolean)
+  // <owner>/<repo>/<ref...>[/<dir...>]/<file>: at least ref + file.
+  if (parsed.hostname !== RAW_HOST || parts.length < 4) return []
+  const [owner, repo, ...tail] = parts
+  const primary = registryFileUrl(registry, path)
+  const alternatives: string[] = []
+  // Prefix j of the tail (excluding the file segment) re-anchors the file
+  // at `<a1>/…/<aj>`; the FULL tail minus the file reproduces the primary
+  // form, so j stops one short of it.
+  for (let j = 1; j <= tail.length - 2 && alternatives.length < MAX_ALT_FILE_URLS; j++) {
+    const alt = `${parsed.protocol}//${RAW_HOST}/${owner}/${repo}/${tail.slice(0, j).join('/')}/${clean}`
+    if (alt !== primary && !alternatives.includes(alt)) alternatives.push(alt)
+  }
+  return alternatives
 }
 
 /**
@@ -681,7 +730,6 @@ export async function fetchPackageManifestPreview(
   options?: { fetchImpl?: typeof fetch; timeoutMs?: number; preference?: MirrorPreference; expectedVersion?: string; expectedManifestSha256?: string },
 ): Promise<{ tools: Array<{ name: string; description: string }> }> {
   const doFetch = options?.fetchImpl ?? fetch
-  const url = registryFileUrl(registry, `packages/${packageId}/manifest.json`)
   const load = async (candidate: string): Promise<{ tools: Array<{ name: string; description: string }>; bytes: Uint8Array }> => {
     let response: Response
     let done: () => void
@@ -753,7 +801,17 @@ export async function fetchPackageManifestPreview(
     }
     return { tools: manifest.tools.map(tool => ({ name: tool.name, description: tool.description })), bytes }
   }
-  const result = await fetchWithMirrorFallback(url, load, { preference: options?.preference })
+  // Candidates: the beside-the-manifest form first (both its transports),
+  // then the REF-ROOT alternative — a manifest in a repo subdirectory lists
+  // repo-relative paths the primary form cannot address (finding:
+  // "Subdirectory registries cannot load packages"). Same-origin extra
+  // candidate, same 404/transport semantics as any other fallback step.
+  const url = registryFileUrl(registry, `packages/${packageId}/manifest.json`)
+  const candidates = mirrorCandidates(url, options?.preference ?? resolveMirrorPreference())
+  for (const alt of registryAltFileUrls(registry, `packages/${packageId}/manifest.json`)) {
+    if (!candidates.includes(alt)) candidates.push(alt)
+  }
+  const result = await fetchWithMirrorFallback(url, load, { preference: options?.preference, candidates })
   return result.value
 }
 
