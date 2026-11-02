@@ -172,7 +172,15 @@ export function setCachedModels(
   result: FetchModelsResult,
   providerKey?: string
 ): void {
-  if (result.source !== 'dynamic') return
+  // Persist every refresh OUTCOME, including failed ones (source 'static'
+  // with an `error`). A failed fetch carries real information — the catalog
+  // is UNKNOWN — and consumers read that error back via
+  // getCachedModelsResult() to avoid classifying an outage as an
+  // authoritative empty catalog. Failures are stored in MEMORY ONLY: a
+  // negative result must not outlive the session (an offline tab that later
+  // closes should not leave the next session believing the catalog is
+  // broken), while successes stay written to localStorage as before.
+  if (result.source !== 'dynamic' && !result.error) return
 
   const key = getCacheKey(providerType, providerKey)
   const entry: CachedModels = {
@@ -183,7 +191,7 @@ export function setCachedModels(
   }
 
   memoryCache.set(key, entry)
-  writeToDisk(key, entry)
+  if (result.source === 'dynamic') writeToDisk(key, entry)
 
   // Notify listeners that models have been updated
   // (e.g. image gen tool may need to register/unregister)

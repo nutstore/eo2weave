@@ -1127,17 +1127,33 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             // Catalog status for a BUILT-IN provider: the static registry is
             // the floor, the dynamic /models cache adds to it. A non-empty
             // authoritative list is self-evidently 'ready'. An EMPTY one is
-            // NOT automatically 'failed': if the last /models refresh
-            // RECORDED an error the list is unknown ('failed' — defer), but
-            // if the cache holds a success (or was never attempted because
-            // the provider shipped no dynamic refresh at all), the empty
-            // list is authoritative ('empty' — the provider truly serves no
-            // models and stale pins must be processed).
+            // NOT automatically 'failed' or 'empty':
+            // - if the last /models refresh RECORDED an error, the list is
+            //   unknown ('failed' — defer);
+            // - if there is NO cached refresh result at all, the catalog has
+            //   never been observed — that is unknown too ('failed'), not a
+            //   confirmed empty catalog (Sourcery: "Unknown catalogs appear
+            //   empty" — getCachedModelsResult() === null means the refresh
+            //   was never attempted, and reconciliation must not treat a
+            //   provider it has never seen as one that positively reported
+            //   no models);
+            // - only a SUCCESSFUL refresh that reported nothing (or a
+            //   provider that ships no dynamic refresh at all) makes the
+            //   empty list authoritative ('empty').
+            const cachedResults = [
+              getCachedModelsResult(providerType, providerType),
+              getCachedModelsResult(providerType),
+            ]
             const dynamicRefreshFailed =
-              (getCachedModelsResult(providerType, providerType)?.error != null) ||
-              (getCachedModelsResult(providerType)?.error != null)
+              cachedResults.some((r) => r?.error != null)
+            const dynamicRefreshObserved =
+              cachedResults.some((r) => r != null)
             const catalogStatus: ModelCatalogStatus =
-              authoritativeIds.length > 0 ? 'ready' : dynamicRefreshFailed ? 'failed' : 'empty'
+              authoritativeIds.length > 0
+                ? 'ready'
+                : dynamicRefreshFailed || !dynamicRefreshObserved
+                  ? 'failed'
+                  : 'empty'
 
             results.push({
               providerType,
@@ -1276,17 +1292,22 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // every provider-list load and is idempotent. Guards:
         // - A FAILED catalog ('failed') is missing information, not proof of
         //   delisting — skip it entirely, never wipe pins.
-        // - An EMPTY authoritativeIds (registry not loaded yet / gateway
-        //   before login) is not authoritative — skip, never wipe pins.
-        //   (The authoritative-empty case is handled INSIDE
-        //   getStalePinnedModels, which only reports stale pins for a
-        //   catalog that positively reported its contents.)
+        // - An authoritative EMPTY catalog DOES sweep: getStalePinnedModels
+        //   reports seen pins as stale only when the catalog status says its
+        //   (empty) contents are authoritative.
         // - Keep the currently selected model even if stale: the user is on
         //   it, and the topbar already flags it (currentModelDelistedTooltip).
         const current = get()
         for (const r of results) {
           if (r.catalogStatus === 'failed') continue
-          if (r.authoritativeIds.length === 0) continue
+          // An authoritative EMPTY catalog also sweeps: the provider
+          // positively reported it serves no models, so previously-seen
+          // pins ARE delisted. The old `authoritativeIds.length === 0`
+          // bail-out skipped exactly this case and left stale pins in
+          // settings forever (Sourcery: "Empty catalogs leave stale pins");
+          // the unknown-vs-confirmed distinction is already carried by
+          // catalogStatus — getStalePinnedModels only reports pins for a
+          // catalog whose status says its contents are authoritative.
           const staleIds = current.getStalePinnedModels(r.providerType, r.authoritativeIds, r.catalogStatus)
           if (staleIds.length === 0) continue
           const keep = r.providerType === current.providerType ? new Set([current.modelName]) : new Set<string>()
