@@ -10,7 +10,7 @@
 
 import { scanProviderSkills, listProviderSkillResources } from './provider-skills'
 import { providerRegistry } from '@/vfs/provider-registry'
-import type { Skill, SkillMetadata, SkillResource, SkillSource } from './skill-types'
+import type { Skill, SkillMetadata, SkillResource, SkillSource } from '@/skills/skill-types'
 import * as storage from './skill-storage'
 import {
   buildAvailableSkillsBlock,

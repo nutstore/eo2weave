@@ -15,6 +15,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRuntimeContextSources } from '@/agent/context/sources'
 import { collectContextSources } from '@/agent/context/journal'
 import { readSkillExecutor, readSkillResourceExecutor } from '@/skills/skill-tools'
+import {
+  readProjectSkillMdFromNativeFs,
+  readProjectSkillResourceFromNativeFs,
+} from '@/skills/project-skill-live-reader'
 import type { Skill, SkillMetadata } from '@/skills/skill-types'
 
 const state = vi.hoisted(() => ({
@@ -105,6 +109,7 @@ describe('skills context source in direct mode', () => {
 
 describe('read_skill / read_skill_resource direct-mode guard', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     state.initialized = true
     state.skills = []
   })
@@ -115,6 +120,8 @@ describe('read_skill / read_skill_resource direct-mode guard', () => {
     const parsed = JSON.parse(raw) as { ok: boolean; error?: { code?: string } }
     expect(parsed.ok).toBe(false)
     expect(parsed.error?.code).toBe('direct_mode_forbidden')
+    expect(readProjectSkillMdFromNativeFs).not.toHaveBeenCalled()
+    expect(readProjectSkillResourceFromNativeFs).not.toHaveBeenCalled()
   })
 
   it('read_skill not-found hint withholds project-skill names in direct mode (round 7)', async () => {
@@ -156,5 +163,7 @@ describe('read_skill / read_skill_resource direct-mode guard', () => {
     const parsed = JSON.parse(raw) as { ok: boolean; error?: { code?: string } }
     expect(parsed.ok).toBe(false)
     expect(parsed.error?.code).toBe('direct_mode_forbidden')
+    expect(readProjectSkillMdFromNativeFs).not.toHaveBeenCalled()
+    expect(readProjectSkillResourceFromNativeFs).not.toHaveBeenCalled()
   })
 })
