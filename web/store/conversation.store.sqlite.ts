@@ -461,19 +461,67 @@ export function evictConversationMessagesIfSafe(conversationId: string): boolean
 }
 
 /**
- * Success (metadata AND active transcript) MARKS the previous load-failure
- * record resolved instead of deleting it (mirrors project.store, issue #147) —
- * a user who reloaded into a working app must still be able to attach the
- * ORIGINAL failure to a bug report via Diagnostics. It is called ONLY after
- * the active transcript load succeeded: a failed transcript load is still an
- * unresolved failure (issue #147, PR #149 review) and must not be reported
- * as recovered.
+ * Persist a load failure for Diagnostics (issue #147 — same pattern as the
+ * project store's sessionStorage init-error record). `conversationId` records
+ * WHICH conversation's transcript failed so recovery can later be verified
+ * against that exact conversation (PR #149 round-4 review) — a transcript read
+ * of any other conversation proves nothing about this one.
  */
-function markPersistedFailureResolved(): void {
+function persistLoadErrorRecord(
+  message: string,
+  error: unknown,
+  conversationId?: string | null
+): void {
+  try {
+    sessionStorage.setItem(
+      CONVERSATION_STORE_LOAD_ERROR_KEY,
+      JSON.stringify({
+        message,
+        stack: error instanceof Error ? error.stack : undefined,
+        at: new Date().toISOString(),
+        ...(conversationId ? { conversationId } : {}),
+      })
+    )
+  } catch {
+    // sessionStorage unavailable (SSR / disabled storage) — console is enough.
+  }
+}
+
+/**
+ * Success MARKS the previous load-failure record resolved instead of deleting
+ * it (mirrors project.store, issue #147) — a user who reloaded into a working
+ * app must still be able to attach the ORIGINAL failure to a bug report via
+ * Diagnostics.
+ *
+ * `resolvedForConversationId` is the id of the conversation whose transcript
+ * was just re-read successfully (when any was). A record that NAMES its
+ * conversation (transcript-scope failures persist `conversationId`) may only
+ * be flagged recovered when THAT conversation re-read successfully — a later
+ * successful load of a different conversation (or a load with no active
+ * conversation, which reads no transcript at all) proves nothing about the
+ * failed one (issue #147, PR #149 round-4 review). Legacy records written
+ * before the id was persisted (and metadata-scope records, which name no
+ * conversation) keep the old behavior: a fully successful load resolves them.
+ */
+function markPersistedFailureResolved(
+  resolvedForConversationId?: string | null
+): void {
   try {
     const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
     if (raw) {
-      const record = JSON.parse(raw) as { resolved?: boolean }
+      const record = JSON.parse(raw) as {
+        resolved?: boolean
+        conversationId?: string
+      }
+      if (
+        record.conversationId &&
+        record.conversationId !== resolvedForConversationId
+      ) {
+        // The recorded failure belongs to a conversation that was NOT the
+        // one just re-read — leave it unresolved so Diagnostics keeps
+        // reporting it until its own transcript loads.
+        return
+      }
       sessionStorage.setItem(
         CONVERSATION_STORE_LOAD_ERROR_KEY,
         JSON.stringify({ ...record, resolved: true })
@@ -796,30 +844,29 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               // re-read successfully (issue #147, PR #149 review).
               state.loadFailedConversationId = activeId
             })
-            try {
-              sessionStorage.setItem(
-                CONVERSATION_STORE_LOAD_ERROR_KEY,
-                JSON.stringify({
-                  message: activeLoadMessage,
-                  stack: error instanceof Error ? error.stack : undefined,
-                  at: new Date().toISOString(),
-                })
-              )
-            } catch {
-              // sessionStorage unavailable (SSR / disabled storage) — console is enough.
-            }
+            // Record the failing conversation id in the diagnostics record
+            // too — resolution is verified against it later (PR #149
+            // round-4 review, "Unverified failures appear recovered").
+            persistLoadErrorRecord(activeLoadMessage, error, activeId)
           }
         }
 
         // Success (metadata AND active transcript) MARKS the previous
         // load-failure record resolved instead of deleting it (mirrors
-        // project.store, issue #147) — a user who reloaded into a working app
-        // must still be able to attach the ORIGINAL failure to a bug report
-        // via Diagnostics. It is called ONLY after the active transcript load
-        // succeeded: a failed transcript load is still an unresolved failure
-        // (issue #147, PR #149 review) and must not be reported as recovered.
+        // project.store, issue #147) — a user who reloaded into a working
+        // app must still be able to attach the ORIGINAL failure to a bug
+        // report via Diagnostics. It is called ONLY after the active
+        // transcript load succeeded: a failed transcript load is still an
+        // unresolved failure (issue #147, PR #149 review) and must not be
+        // reported as recovered.
         if (activeTranscriptLoaded) {
-          markPersistedFailureResolved()
+          // Pass the id whose transcript actually re-read this run: a record
+          // naming a DIFFERENT conversation stays unresolved — this load
+          // proves nothing about that one (PR #149 round-4 review, "Unverified
+          // failures appear recovered"). A run with no active conversation
+          // reads no transcript and proves even less, so resolution still
+          // requires the record to name no conversation at all.
+          markPersistedFailureResolved(activeId)
           // The error (and the sidebar's Retry affordance) stays visible
           // until the transcript read actually succeeded.
           set((state) => {
@@ -898,23 +945,14 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               // load failure — persist it for Diagnostics like the
               // initial-load catch does, or a bug report carries no trace of
               // it (issue #147, PR #149 review).
-              try {
-                sessionStorage.setItem(
-                  CONVERSATION_STORE_LOAD_ERROR_KEY,
-                  JSON.stringify({
-                    message: retryTranscriptMessage,
-                    stack:
-                      transcriptErr instanceof Error ? transcriptErr.stack : undefined,
-                    at: new Date().toISOString(),
-                  })
-                )
-              } catch {
-                // sessionStorage unavailable (SSR / disabled storage) — console is enough.
-              }
+              persistLoadErrorRecord(retryTranscriptMessage, transcriptErr, retryActiveId)
             }
           }
           if (retryTranscriptLoaded) {
-            markPersistedFailureResolved()
+            // Same verification as the primary path: only the transcript of
+            // the conversation actually re-read by this retry counts as
+            // proof (PR #149 round-4 review).
+            markPersistedFailureResolved(retryActiveId)
             // The error stays visible until the transcript read succeeded.
             set((state) => {
               state.loadError = null
@@ -942,18 +980,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           // Persist the failure for diagnostics (issue #147) — same pattern as
           // the project store's sessionStorage init-error record. Without this,
           // a "history is empty" report carries no trace of the failed load.
-          try {
-            sessionStorage.setItem(
-              CONVERSATION_STORE_LOAD_ERROR_KEY,
-              JSON.stringify({
-                message: retryMessage,
-                stack: retryErr instanceof Error ? retryErr.stack : undefined,
-                at: new Date().toISOString(),
-              })
-            )
-          } catch {
-            // sessionStorage unavailable (SSR / disabled storage) — console is enough.
-          }
+          persistLoadErrorRecord(retryMessage, retryErr)
         }
       }
       })
@@ -1047,18 +1074,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             // A lazy transcript failure is a real load failure — persist it
             // for Diagnostics like the initial-load catch does, or a bug
             // report carries no trace of it (issue #147, PR #149 review).
-            try {
-              sessionStorage.setItem(
-                CONVERSATION_STORE_LOAD_ERROR_KEY,
-                JSON.stringify({
-                  message: activeLoadMessage,
-                  stack: error instanceof Error ? error.stack : undefined,
-                  at: new Date().toISOString(),
-                })
-              )
-            } catch {
-              // sessionStorage unavailable (SSR / disabled storage) — console is enough.
-            }
+            persistLoadErrorRecord(activeLoadMessage, error, id)
           }
         } else {
           console.log(
@@ -1089,9 +1105,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           // Switching to a different, absent or cached conversation proves
           // nothing about the failed one — flagging the record recovered
           // there would let a still-broken conversation masquerade as
-          // healthy in Diagnostics (issue #147, PR #149 review).
+          // healthy in Diagnostics (issue #147, PR #149 review). The id is
+          // passed as proof: a record naming a DIFFERENT conversation stays
+          // unresolved (PR #149 round-4 review) — belt-and-suspenders on top
+          // of the `failedId === id` check, covering legacy records written
+          // before `conversationId` was persisted.
           if (failedId === id) {
-            markPersistedFailureResolved()
+            markPersistedFailureResolved(id)
           }
         }
         // NOTE: workspace switching is handled by syncFromRoute in App.tsx.
