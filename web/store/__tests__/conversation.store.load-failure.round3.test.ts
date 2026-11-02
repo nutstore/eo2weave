@@ -406,13 +406,11 @@ describe('conversation.store — round-3 Sourcery fixes (issue #147, PR #149)', 
     expect(record?.resolved).toBeFalsy()
   })
 
-  it('fallback-retry success with a working transcript marks an earlier record resolved', async () => {
-    // An earlier unresolved failure on record.
-    sessionStorage.setItem(
-      CONVERSATION_STORE_LOAD_ERROR_KEY,
-      JSON.stringify({ message: 'earlier failure', at: new Date().toISOString() }),
-    )
-
+  it('fallback-retry success preserves the ORIGINAL failure in the resolved record', async () => {
+    // Round-4 (PRRT_kwDORoHsZ86yw1er, "Recovered failures vanish from
+    // diagnostics"): the INITIAL exception is persisted before the fallback
+    // attempt, so a fallback recovery leaves the original failure — flagged
+    // resolved — on record for the bug report, instead of nothing at all.
     // The metadata pass fails; the retry recovers metadata AND transcript.
     findAllMetaMock.mockRejectedValueOnce(new Error('metadata pass failed'))
     findByConversationMock.mockResolvedValueOnce([
@@ -421,7 +419,31 @@ describe('conversation.store — round-3 Sourcery fixes (issue #147, PR #149)', 
     await useConversationStore.getState().loadFromDB()
 
     expect(useConversationStore.getState().loadError).toBeNull()
+    const record = readPersistedRecord()
+    expect(record?.resolved).toBe(true)
+    // The ORIGINAL failure message is preserved, not the recovered state.
+    expect(record?.message).toBe('metadata pass failed')
+  })
+
+  it('fallback-retry success marks an EARLIER persisted record resolved too', async () => {
+    // An earlier unresolved failure on record (e.g. from a previous load).
+    sessionStorage.setItem(
+      CONVERSATION_STORE_LOAD_ERROR_KEY,
+      JSON.stringify({ message: 'earlier failure', at: new Date().toISOString() }),
+    )
+
+    // The metadata pass fails; the retry recovers metadata AND transcript.
+    // The initial catch OVERWRITES the earlier record with the current
+    // failure before the fallback runs — the latest failure is the one a
+    // bug report needs.
+    findAllMetaMock.mockRejectedValueOnce(new Error('metadata pass failed'))
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'm-r', role: 'user', content: 'ok', timestamp: 4 },
+    ])
+    await useConversationStore.getState().loadFromDB()
+
+    expect(useConversationStore.getState().loadError).toBeNull()
     expect(readPersistedRecord()?.resolved).toBe(true)
-    expect(readPersistedRecord()?.message).toBe('earlier failure')
+    expect(readPersistedRecord()?.message).toBe('metadata pass failed')
   })
 })

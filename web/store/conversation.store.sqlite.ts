@@ -820,6 +820,17 @@ async function runLoadFromDB(
         }
       } catch (error) {
         console.error('[conversation.store] Failed to load conversations:', error)
+        // Persist the INITIAL failure BEFORE the fallback attempt: when the
+        // fallback retry then succeeds, markPersistedFailureResolved needs a
+        // record to flag recovered — without this write the recovered failure
+        // would vanish from Diagnostics entirely (PR #149 round-4 review,
+        // "Recovered failures vanish from diagnostics"). If the fallback
+        // also fails, the final catch below overwrites this record with the
+        // (more specific) retry failure.
+        persistLoadErrorRecord(
+          error instanceof Error ? error.message : 'Failed to load conversations',
+          error
+        )
         // One-shot retry, mirroring workspace.store's initialize retry.
         // A transient failure (e.g. SQLite/OPFS hydration race on cold start)
         // previously fell through to `loaded = true` with `conversations: []`,
