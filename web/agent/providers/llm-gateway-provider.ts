@@ -147,8 +147,26 @@ export function registerGatewayModels(
   registerDynamicProvider(LLM_GATEWAY_PROVIDER_TYPE, config, meta)
 }
 
+/**
+ * Hard deadline shared by every post-token /v1/models discovery path (login,
+ * the gateway settings card and the startup restore). A gateway that accepts
+ * the credential but never answers `/v1/models` must not hang the caller —
+ * each path degrades best-effort on expiry instead.
+ */
+const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
+
 export async function updateGatewayModels(accessToken: string): Promise<ModelInfo[]> {
-  const { models, status } = await prepareGatewayModels(accessToken)
+  // Startup restore (AppBootstrap awaits this before isStorageReady) and any
+  // other caller must not hang forever on a gateway that accepts the saved
+  // token but never answers /v1/models. Bound the discovery with the SAME
+  // deadline the login and gateway-card paths use, and degrade best-effort:
+  // on expiry register a FAILED (unknown) catalog — never an authoritative
+  // empty one — so consumers keep deferring until a later refresh succeeds
+  // (Sourcery: "Startup discovery can hang").
+  const { models, status } = await prepareGatewayModels(
+    accessToken,
+    AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
+  )
   registerGatewayModels(models, status)
   return models
 }
