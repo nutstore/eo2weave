@@ -295,8 +295,10 @@ export interface ConversationMessagesHandle {
   scrollToTurnIndex: (index: number, align?: 'start' | 'center' | 'end') => void
   /**
    * Issue #141: jump to the latest turn. Virtualized mode routes through
-   * Virtuoso's scrollToIndex (index: 'LAST'), which works under windowed
-   * rendering where a raw scrollTop assignment cannot reach the real bottom;
+   * Virtuoso's scrollTo (top: Number.MAX_SAFE_INTEGER), which clamps against
+   * the scroller's real scrollHeight — footer content included — and works
+   * under windowed rendering, where scrollToIndex({ index: 'LAST' }) would
+   * align to the last DATA turn and leave footer content below the viewport;
    * plain mode scrolls the native container.
    */
   scrollToLastTurn: (behavior?: 'smooth' | 'auto') => void
