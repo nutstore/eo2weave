@@ -1194,12 +1194,27 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
                     return found ? { id: found.id, name: found.name } : { id: pid, name: pid }
                   })
                 : allModels.map((m) => ({ id: m.id, name: m.name }))
-              // The gateway registry list is authoritative for seen
-              // bookkeeping, same as the built-in / dynamic branches above.
-              // Without this, the gateway's seen set only fills on manual pin
-              // events and a later empty catalog flags every pin as delisted
-              // with no way to self-heal on a plain refresh.
-              get().markPinnedModelsSeen(llmGatewayProviderKey, allModels.map((m) => m.id))
+              // Seen-bookkeeping goes through a Zustand set() whose persist
+              // middleware writes to localStorage. If that write throws
+              // (quota exceeded, blocked storage), the exception must NOT
+              // escape into the surrounding gateway catch — before this
+              // scoping the whole gateway result was dropped from `results`,
+              // reconciliation lost the active provider, and the user's
+              // model could silently switch to another provider. Bookkeeping
+              // failure is logged and tolerated; the gateway result is
+              // pushed regardless.
+              try {
+                get().markPinnedModelsSeen(llmGatewayProviderKey, allModels.map((m) => m.id))
+              } catch (e) {
+                console.warn('[settings] markPinnedModelsSeen failed for llm-gateway; keeping the gateway result:', e)
+              }
+              // The registry records HOW the gateway's catalog was obtained:
+              // 'ready' (fetched, non-empty), 'empty' (the gateway answered
+              // and positively reports it serves no models) or 'failed' (the
+              // /models fetch produced nothing usable). Only 'ready' and
+              // 'empty' are authoritative; 'failed' is missing information
+              // and must never switch the user's selection or flag pins.
+              const catalogStatus = getDynCatalogStatus(llmGatewayProviderKey) ?? 'failed'
               results.push({
                 providerType: llmGatewayProviderKey,
                 // Locale-aware provider name (zh: 坚果云 AI / others: Nutstore AI);
