@@ -4,7 +4,7 @@ import {
   executeToolWithTimeout,
   normalizeToolResult,
   truncateLargeToolResult,
-} from '../loop/tool-execution'
+} from '@/agent/loop/tool-execution'
 
 describe('tool-execution helpers', () => {
   it('coerceToolArgs returns empty object for null and throws on non-object', () => {
