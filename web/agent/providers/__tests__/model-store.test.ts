@@ -3,7 +3,7 @@
  * precedence rules (see model-store.ts for the full rationale).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mergeModelLists, setCachedModels, getCachedModelsResult, isCacheStale, __clearMemoryCacheForTests } from '@/agent/providers/model-store'
+import { mergeModelLists, setCachedModels, getCachedModels, getCachedModelsResult, isCacheStale, __clearMemoryCacheForTests } from '@/agent/providers/model-store'
 import type { ModelInfo } from '@/agent/providers/types'
 
 const getModelsMock = vi.hoisted(() => vi.fn())
@@ -149,6 +149,69 @@ describe('setCachedModels — failed refresh outcomes', () => {
     })
     expect(localStorage.getItem('cw-models:openai')).not.toBeNull()
     expect(getCachedModelsResult('openai' as never)?.error).toBeUndefined()
+  })
+
+  it('does NOT replace a non-empty cached catalog with a later failed refresh (Sourcery: fresh models disappear)', () => {
+    // A failed refresh's static-fallback list is no richer than the cached
+    // dynamic catalog; overwriting it hid previously fetched dynamic-only
+    // models until another refresh succeeded. The failure carries catalog
+    // information only when there is nothing better cached, so a non-empty
+    // successful entry wins.
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-dyn', name: 'GPT Dynamic', capabilities: ['code'] }],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBeUndefined()
+    expect(result?.models.map((m) => m.id)).toEqual(['gpt-dyn'])
+    expect(getCachedModels('openai' as never)?.map((m) => m.id)).toEqual(['gpt-dyn'])
+  })
+
+  it('still records a failed refresh when the cached list is empty or missing (outage must not read as authoritative empty)', () => {
+    // The downgrade guard above must not swallow the f244f533 fix: with no
+    // usable cached models, the failure IS the freshest catalog information.
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    let result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBe('network down')
+
+    __clearMemoryCacheForTests('openai' as never)
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down again',
+    })
+    result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBe('network down again')
+  })
+
+  it('lets a successful dynamic refresh recover after a failed one (error entry is replaced)', () => {
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-x', name: 'GPT', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBeUndefined()
+    expect(result?.models.map((m) => m.id)).toEqual(['gpt-x'])
   })
 })
 

@@ -191,6 +191,25 @@ export function setCachedModels(
   // broken), while successes stay written to localStorage as before.
   if (result.source !== 'dynamic' && !result.error) return
 
+  // A failed result must not DOWNGRADE a non-empty cached catalog
+  // (Sourcery: "Fresh models disappear after failed refresh"): the failure's
+  // static-fallback list is no richer than what the last successful fetch
+  // already cached, and overwriting would hide previously fetched
+  // dynamic-only models until another refresh succeeds — including the
+  // late-arrival case where a slow failed request resolves after a newer
+  // successful one. An empty-or-missing cached list is still replaced: that
+  // entry carries no models to lose, and recording the error is what keeps
+  // the outage from reading as an authoritative 'empty'.
+  const existing = getCachedModelsResult(providerType, providerKey)
+  if (
+    result.error != null &&
+    existing != null &&
+    existing.error == null &&
+    existing.models.length > 0
+  ) {
+    return
+  }
+
   const key = getCacheKey(providerType, providerKey)
   const entry: CachedModels = {
     models: result.models,
