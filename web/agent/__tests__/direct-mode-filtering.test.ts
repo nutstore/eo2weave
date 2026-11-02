@@ -327,6 +327,6 @@ describe('directMode tool filtering', () => {
       projectContext
     )
     const parsed = JSON.parse(raw) as { error?: { code?: string } }
-    expect(parsed.error?.code).not.toBeUndefined()
+    expect(parsed.error?.code).toBe('INVALID_INPUT')
   })
 })
