@@ -65,6 +65,11 @@ export function useDynamicModels(
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dynamicCount, setDynamicCount] = useState(0)
+  // Bumped when the failed-fetch negative-cache window expires so the
+  // stale-while-revalidate effect re-runs and retries (a mounted provider
+  // whose deps never change would otherwise never retry — Sourcery:
+  // "Failed fetches do not retry").
+  const [retryTick, setRetryTick] = useState(0)
   const mountedRef = useRef(true)
   const sourceRef = useRef(source)
   sourceRef.current = source
@@ -80,10 +85,19 @@ export function useDynamicModels(
       if (mountedRef.current) setError(null)
 
       const cacheKey = `${providerType}:${providerKey ?? ''}`
+      const recordFailure = () => {
+        failedFetchAt.set(cacheKey, Date.now())
+        // Bump the tick so the stale-while-revalidate effect re-runs and
+        // arms a retry timer for the remaining negative-cache window —
+        // without this, a mounted provider whose deps never change would
+        // never retry after its first failed fetch (Sourcery: "Failed
+        // fetches do not retry").
+        setRetryTick((t) => t + 1)
+      }
       try {
         const result = await fetchModelsForProvider(providerType, { apiKey, baseUrl })
         if (result.error) {
-          failedFetchAt.set(cacheKey, Date.now())
+          recordFailure()
         } else {
           failedFetchAt.delete(cacheKey)
         }
@@ -96,7 +110,7 @@ export function useDynamicModels(
           if (result.error) setError(result.error)
         }
       } catch (err) {
-        failedFetchAt.set(cacheKey, Date.now())
+        recordFailure()
         if (mountedRef.current) {
           setError(err instanceof Error ? err.message : String(err))
           // Don't overwrite existing dynamic data on failure
@@ -134,13 +148,28 @@ export function useDynamicModels(
   // Stale-while-revalidate: if a cached list is older than the TTL, silently
   // re-fetch in the background so metadata (names, modalities, context windows)
   // eventually catches up with provider-side changes. Cached data is still
-  // shown immediately, so this never blocks the UI.
+  // shown immediately, so this never blocks the UI. `retryTick` re-runs this
+  // effect when the failed-fetch negative-cache window expires (below).
   useEffect(() => {
     if (!isCacheStale(providerType, providerKey)) return
 
     const cacheKey = `${providerType}:${providerKey ?? ''}`
     const failedAt = failedFetchAt.get(cacheKey)
-    if (failedAt && Date.now() - failedAt < FAILED_FETCH_RETRY_MS) return
+    if (failedAt) {
+      const elapsed = Date.now() - failedAt
+      if (elapsed < FAILED_FETCH_RETRY_MS) {
+        // Negative-cache window active. Without scheduling anything, a
+        // mounted provider whose deps never change would NEVER retry: the
+        // effect only re-runs on provider/refresh changes, so once the
+        // window expires nothing re-triggers it (Sourcery: "Failed fetches
+        // do not retry"). Schedule a one-shot timer for the REMAINING
+        // window so the retry happens even on a static mount.
+        const remaining = FAILED_FETCH_RETRY_MS - elapsed
+        const timer = setTimeout(() => setRetryTick((t) => t + 1), remaining)
+        return () => clearTimeout(timer)
+      }
+      failedFetchAt.delete(cacheKey)
+    }
 
     let cancelled = false
     const refreshStaleCache = async () => {
@@ -163,7 +192,10 @@ export function useDynamicModels(
     return () => {
       cancelled = true
     }
-  }, [doFetch, providerType, providerKey])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- retryTick is a
+    // deliberate dep: the negative-cache expiry timer bumps it to re-trigger
+    // this effect after the retry window elapses.
+  }, [doFetch, providerType, providerKey, retryTick])
 
   return {
     models,
