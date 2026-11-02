@@ -269,6 +269,49 @@ describe('fetchWithMirrorFallback', () => {
     expect(tried).toEqual([url])
   })
 
+  it('falls back when the first host TIMES OUT (a timeout is a transport failure)', async () => {
+    // fetchWithTimeout re-labels an abort as RegistryError("Registry request
+    // timed out…"). Without the wrapped transport error that error read as a
+    // SEMANTIC verdict and the mirror was never tried — a host that answers
+    // too slowly blocked the whole load (finding: "Timed-out hosts prevent
+    // mirror fallback").
+    const tried: string[] = []
+    const result = await fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
+      if (candidate === url) {
+        const abort = new Error('The operation was aborted')
+        abort.name = 'AbortError'
+        throw new RegistryError(`Registry request timed out after 30s: ${candidate}`, abort)
+      }
+      return 'manifest'
+    }, { preference: 'global' })
+    expect(tried).toEqual([url, mirror])
+    expect(result.value).toBe('manifest')
+  })
+
+  it('falls back to the canonical origin when a MIRROR serves checksum-mismatched bytes', async () => {
+    // The preview's catalog-checksum check must treat a MIRROR's mismatch as
+    // a stale-content verdict (retryable) and the CANONICAL origin's mismatch
+    // as final (finding: "Stale mirror content blocks origin").
+    const mismatch = (candidate: string) =>
+      Object.assign(new RegistryError(`The package manifest does not match the catalog checksum (candidate ${candidate})`), { retryable: candidate !== url })
+    const tried: string[] = []
+    const result = await fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
+      if (candidate !== url) throw mismatch(candidate) // the mirror mismatch
+      return 'manifest'
+    }, { preference: 'cn' }) // mirror first, so the mirror's mismatch is the retried verdict
+    expect(tried).toEqual([mirror, url])
+    expect(result.value).toBe('manifest')
+    // The canonical origin's own mismatch is DEFINITIVE — no mirror retry:
+    const canonicalTried: string[] = []
+    await expect(fetchWithMirrorFallback(url, async candidate => {
+      canonicalTried.push(candidate)
+      throw mismatch(candidate)
+    }, { preference: 'global' })).rejects.toThrow(/does not match the catalog checksum/)
+    expect(canonicalTried).toEqual([url])
+  })
+
   it('does not fall back on a canonical-origin 404', async () => {
     // 404 is DEFINITIVE for the canonical raw host: both transports serve
     // the same git ref, so a mirror retry could only accept stale content

@@ -298,7 +298,12 @@ async function fetchWithTimeout(url: string, init: RequestInit, fetchImpl: typeo
   } catch (error) {
     clearTimeout(timer)
     if (controller.signal.aborted) {
-      throw new RegistryError(`Registry request timed out after ${timeoutMs / 1000}s: ${url}`)
+      // The wrap KEEPS the transport error (`wrappedError`): `isRetryableFetchError`
+      // classifies a RegistryError WITHOUT a wrapped error as a semantic verdict
+      // and would not fall through to the mirror, so a bare timeout RegistryError
+      // stopped `fetchWithMirrorFallback` at the first candidate (finding: "Timed-out
+      // hosts prevent mirror fallback").
+      throw new RegistryError(`Registry request timed out after ${timeoutMs / 1000}s: ${url}`, error)
     }
     throw error
   }
@@ -332,9 +337,13 @@ async function parseJsonCappedBytes(response: Response, maxBytes: number, done: 
         chunk = await reader.read()
       } catch (error) {
         // The abort deadline fired MID-BODY — report it as the timeout it
-        // is, not as a bare DOMException.
+        // is, not as a bare DOMException. The wrap KEEPS the transport
+        // error (`wrappedError`) so the mirror fallback still sees a
+        // retryable transport verdict (finding: "Timed-out hosts prevent
+        // mirror fallback" — an unwrapped timeout RegistryError read as a
+        // semantic verdict and stopped the fallback).
         if ((error as { name?: string }).name === 'AbortError') {
-          throw new RegistryError(`Registry request timed out while reading the body: ${response.url}`)
+          throw new RegistryError(`Registry request timed out while reading the body: ${response.url}`, error)
         }
         throw error
       }
@@ -534,10 +543,20 @@ export async function fetchWithMirrorFallback<T>(
  * `wrappedError` records the original transport error, and a registry
  * error WITHOUT one is a semantic verdict (invalid manifest, not JSON,
  * size cap) that another transport cannot answer better.
+ *
+ * An error explicitly marked `retryable` by its loader is retried too: a
+ * loader that verified the received bytes (the preview's catalog-checksum
+ * check) can distinguish a mirror's stale content (the canonical origin
+ * may hold the published file) from a canonical origin's final mismatch.
  */
 export function isRetryableFetchError(error: unknown): boolean {
   const status = (error as { status?: number } | null)?.status
   if (typeof status === 'number') return status >= 500 || status === 429
+  // An explicit `retryable` verdict from a loader that INSPECTED the bytes
+  // (e.g. the preview's catalog-checksum check): the checksum mismatch of a
+  // mirror candidate is a stale-content verdict the canonical origin may
+  // still answer correctly (finding: "Stale mirror content blocks origin").
+  if ((error as { retryable?: boolean } | null)?.retryable === true) return true
   // A 404 phrasing without a status ("not found", "HTTP 404") is likewise
   // definitive — see above.
   if (isNotFoundError(error)) return false
@@ -709,8 +728,18 @@ export async function fetchPackageManifestPreview(
       const { sha256Hex } = await import('./package-installer')
       const actual = await sha256Hex(bytes)
       if (actual !== options.expectedManifestSha256.toLowerCase()) {
-        throw new RegistryError(
-          `The package manifest does not match the catalog checksum (expected ${options.expectedManifestSha256}, got ${actual})`,
+        // The checksum mismatch of a NON-CANONICAL candidate (a mirror) is a
+        // TRANSPORT-class verdict: the CDN served stale or altered bytes, and
+        // the canonical origin may still hold the published file — mark the
+        // error so `fetchWithMirrorFallback` tries the next candidate instead
+        // of aborting the preview (finding: "Stale mirror content blocks
+        // origin"). A canonical candidate's mismatch stays NON-retryable: the
+        // origin IS the identity of the file, so a mismatch there is final.
+        throw Object.assign(
+          new RegistryError(
+            `The package manifest does not match the catalog checksum (expected ${options.expectedManifestSha256}, got ${actual})`,
+          ),
+          { retryable: candidate !== url },
         )
       }
     }
