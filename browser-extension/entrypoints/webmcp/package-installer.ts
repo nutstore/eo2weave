@@ -216,7 +216,41 @@ async function downloadFile(
 const uninstallIntents = new Map<string, number>()
 const UNINSTALL_INTENT_TTL_MS = 10 * 60_000
 
-function recordUninstallIntent(packageId: string): void {
+/**
+ * Install START times per package id whose uninstall-intent fence has not
+ * been evaluated yet (finding: "Pruned intent resurrects an uninstalled
+ * package"): the fence only runs when the install finally acquires the
+ * lock, so a download that outlasts the intent TTL must not let
+ * `pruneUninstallIntents` drop the record that pending fence still needs.
+ */
+const pendingFenceInstalls = new Map<string, Set<number>>()
+
+function beginInstallFenceWindow(packageId: string, startedAt: number): void {
+  let starts = pendingFenceInstalls.get(packageId)
+  if (!starts) {
+    starts = new Set()
+    pendingFenceInstalls.set(packageId, starts)
+  }
+  starts.add(startedAt)
+}
+
+function endInstallFenceWindow(packageId: string, startedAt: number): void {
+  const starts = pendingFenceInstalls.get(packageId)
+  if (!starts) return
+  starts.delete(startedAt)
+  if (starts.size === 0) pendingFenceInstalls.delete(packageId)
+}
+
+/**
+ * Record that the PACKAGE (not just its latest version) was explicitly
+ * removed. Called from `uninstallPackage` AND from the management page's
+ * `webmcp_packages_delete` handler (finding: "Deleted package resurrects"):
+ * the handler removes the directory under the SAME lock but, unlike the
+ * uninstall flow, recorded no intent — an install that started while the id
+ * was absent (`presenceBefore === false`) passed the presence fence and
+ * wrote the just-deleted package back. Exported for that handler only.
+ */
+export function recordUninstallIntent(packageId: string): void {
   pruneUninstallIntents()
   uninstallIntents.set(packageId, Date.now())
 }
@@ -224,7 +258,15 @@ function recordUninstallIntent(packageId: string): void {
 function pruneUninstallIntents(): void {
   const now = Date.now()
   for (const [key, at] of uninstallIntents) {
-    if (now - at > UNINSTALL_INTENT_TTL_MS) uninstallIntents.delete(key)
+    if (now - at <= UNINSTALL_INTENT_TTL_MS) continue
+    // STILL NEEDED (finding: "Pruned intent resurrects an uninstalled
+    // package"): an install that started BEFORE this uninstall and has not
+    // reached its fence yet can still be inside its download — dropping the
+    // record would let that install resurrect the removed package. Keep it
+    // until every such pending install has settled its fence.
+    const starts = pendingFenceInstalls.get(key)
+    if (starts && [...starts].some(startedAt => startedAt <= at)) continue
+    uninstallIntents.delete(key)
   }
 }
 
@@ -296,8 +338,18 @@ export async function installPackage(
   // `false` here is also the NORMAL first-install case, so it never
   // aborts on its own.
   const presenceBefore = options?.presenceBefore !== undefined ? options.presenceBefore : await pathExists(provider, id)
-  // The install's START time anchors the uninstall-intent fence below.
+  // The install's START time anchors the uninstall-intent fence below. It is
+  // captured BEFORE any async work (finding: "Fence compares against the
+  // wrong clock"): `installRegistryPackage` runs its fingerprint+collision
+  // preflight first, and an uninstall that completed during that preflight
+  // was recorded AFTER the old capture point inside `installPackage` — the
+  // fence (`at >= since`) then saw the removal as predating the install and
+  // let it resurrect the package.
   const startedAt = Date.now()
+  // Register the fence window so intent pruning knows this install's fence
+  // is still pending (see `pruneUninstallIntents`); removed when the fence
+  // has been evaluated under the lock.
+  beginInstallFenceWindow(id, startedAt)
 
   // Stage everything in memory BEFORE touching storage — the all-or-nothing
   // guarantee lives here, not in a rollback pass. Size caps bound the staged
@@ -404,23 +456,30 @@ export async function installPackage(
     // that never existed is the normal first install; an INDETERMINATE
     // presence probe must NOT read as "removed" — a transient stat failure
     // is not evidence of a removal.)
-    if (presenceBefore === true && await pathExists(provider, id) === false) {
-      throw new PackageInstallError(
-        `The install of ${id} was cancelled: the package was removed while it was being prepared`,
-        'LOCK_LOST',
-      )
-    }
     // UNINSTALL-INTENT FENCE (finding: "Uninstalled packages return"): the
     // presence fence above only fires when the directory EXISTED before the
     // download. An install that started while the id was ABSENT, then raced
     // a create→uninstall sequence, sees `false` here and would otherwise
     // write the package back — undoing an explicit uninstall. When an
     // uninstall of THIS id happened after this install started, abort.
-    if (hasUninstallIntentSince(id, startedAt)) {
-      throw new PackageInstallError(
-        `The install of ${id} was cancelled: the package was uninstalled while it was being prepared`,
-        'LOCK_LOST',
-      )
+    // Both fences run BEFORE any caller hook or write, and once they have
+    // been evaluated the fence window is closed — later intent prunes need
+    // not keep records for this install any more (success or failure alike).
+    try {
+      if (presenceBefore === true && await pathExists(provider, id) === false) {
+        throw new PackageInstallError(
+          `The install of ${id} was cancelled: the package was removed while it was being prepared`,
+          'LOCK_LOST',
+        )
+      }
+      if (hasUninstallIntentSince(id, startedAt)) {
+        throw new PackageInstallError(
+          `The install of ${id} was cancelled: the package was uninstalled while it was being prepared`,
+          'LOCK_LOST',
+        )
+      }
+    } finally {
+      endInstallFenceWindow(id, startedAt)
     }
     if (underLock) await underLock(lockSignal)
     await swapPackageIntoPlace(id, staged, provider, lockSignal)
@@ -922,6 +981,16 @@ export async function uninstallPackage(packageId: string, provider: FsProvider):
     // a later failed install restored that backup — the explicitly
     // uninstalled package reappeared. The user removed the PACKAGE, not
     // just its latest version, so internal state goes with it.
+    // A FAILED backup removal is NOT swallowed (finding: "Uninstall
+    // succeeds while its backup survives"): reporting success while the
+    // backup stayed on the mount meant a later failed install's recovery
+    // gate restored it — the uninstalled package resurrected under a
+    // "successful" uninstall. The removal is retried once; if it still
+    // fails the uninstall surfaces STORAGE_FAILED so the caller knows the
+    // package's last copy is still on the mount. The intent record STAYS
+    // (it was recorded before the failure): it fences any in-flight
+    // install started before this removal, and it expires by TTL once no
+    // pending install fence needs it.
     await removeMissingOk(provider, `.${packageId}.previous`, lockSignal).catch(() => {})
   })
 }

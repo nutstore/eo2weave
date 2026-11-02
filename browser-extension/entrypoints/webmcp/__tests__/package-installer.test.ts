@@ -455,6 +455,94 @@ describe('installPackage (extension side)', () => {
     expect(await listFiles(provider, '')).toEqual([])
   })
 
+  it('honors an uninstall intent recorded while the install preflight ran (fence anchor predates preflight)', async () => {
+    // MEDIUM ("Fence compares against the wrong clock"): `installPackage`
+    // captured `startedAt` AFTER its callers' async preflight, so an intent
+    // recorded during that preflight compared as OLDER than the install and
+    // passed the `at >= since` fence — the install resurrected the package.
+    // The start time must anchor BEFORE any async install work.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    const serving = fetchServing(files)
+    const fileUrls = Object.keys(files).map(path => `${RAW}/packages/com.example.pkg/${path}`)
+    let downloadsLeft = fileUrls.length
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (fileUrls.includes(url)) {
+        downloadsLeft -= 1
+        if (downloadsLeft === 0) {
+          // A concurrent uninstall records its intent DURING the download —
+          // i.e. before the install reaches the fence but, with the bug,
+          // after the install's (late) start-time capture.
+          await uninstallPackage('com.example.pkg', provider)
+        }
+      }
+      return serving(input)
+    }) as typeof fetch
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl }))
+      .rejects.toThrow(/was uninstalled while it was being prepared/)
+    expect(await listFiles(provider, '')).toEqual([])
+  })
+
+  it('keeps an install-started-before-uninstall fenceable even after the intent TTL expires', async () => {
+    // MEDIUM ("Pruned intent resurrects an uninstalled package"): intent
+    // records expire after 10 minutes, but a still-running install that
+    // STARTED before the uninstall only evaluates the fence when it finally
+    // acquires the lock — pruning the record first dropped the removal
+    // evidence and the install resurrected the package. The prune must keep
+    // intents whose timestamp postdates a pending install's start.
+    vi.useFakeTimers()
+    try {
+      // Confirm the TTL constant under test: the prune must outlive it.
+      const { UNINSTALL_INTENT_TTL_MS: ttl } = (await import('../package-installer')) as { UNINSTALL_INTENT_TTL_MS?: number }
+      expect(ttl === undefined || ttl <= 11 * 60_000).toBe(true)
+      const files = fixtureFiles()
+      const pkg = await pkgWithFiles(files)
+      const provider = memoryProvider()
+      const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+      const serving = fetchServing(files)
+      const fileUrls = Object.keys(files).map(path => `${RAW}/packages/com.example.pkg/${path}`)
+      let downloadsLeft = fileUrls.length
+      let releaseDownload: (() => void) | undefined
+      const downloadGate = new Promise<void>(resolve => { releaseDownload = resolve })
+      const fetchImpl = (async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (fileUrls.includes(url)) {
+          downloadsLeft -= 1
+          if (downloadsLeft === 0) {
+            // Hold the LAST download until the uninstall + TTL have passed.
+            await downloadGate
+          }
+        }
+        return serving(input)
+      }) as typeof fetch
+
+      const install = installPackage(registry, pkg, provider, { fetchImpl })
+      // Give the install time to capture its start and reach the held
+      // download, then uninstall while the install is still pending.
+      await vi.advanceTimersByTimeAsync(50)
+      await uninstallPackage('com.example.pkg', provider)
+      // Now let the intent TTL lapse WELL past its 10 minutes while the
+      // install has still not evaluated its fence.
+      await vi.advanceTimersByTimeAsync(11 * 60_000)
+      // The prune ran (recording + reading intents); release the download.
+      releaseDownload!()
+      await expect(install).rejects.toThrow(/was uninstalled while it was being prepared/)
+      expect(await listFiles(provider, '')).toEqual([])
+    } finally {
+      // The uninstall above recorded its intent against the FAKE clock,
+      // which at restore time sits ahead of the real one — without this
+      // cleanup the record would read as "uninstalled in the future" and
+      // spuriously fence later tests' installs (production expires it by
+      // TTL; tests reset the module state explicitly).
+      resetUninstallIntentStateForTest()
+      vi.useRealTimers()
+    }
+  })
+
   it('aborts an install whose id was uninstalled after the install started', async () => {
     // MEDIUM ("Uninstalled packages return"): an install that STARTS while
     // the id is absent sees presenceBefore=false, so the presence fence
