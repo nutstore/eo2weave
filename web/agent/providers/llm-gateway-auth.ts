@@ -1487,15 +1487,25 @@ export async function fetchGatewayModels(
   // authoritative "no models".
   if (!data?.data || !Array.isArray(data.data)) return { models: [], status: 'failed' }
 
-  const models = data.data.map(
-    (m: { id?: string; name?: string }) => ({
-      id: m.id || '',
-      name: m.name || m.id || '',
-    })
-  )
+  // Per-entry validation (Sourcery round 6, "Malformed gateway models are
+  // accepted"): a gateway that answers 200 with garbage entries — null,
+  // non-objects, or entries without a usable string `id` — is not sending a
+  // catalog. Mapping blind dereferenced null entries or empty-string ids
+  // produced either a thrown rejection (callers never saw the failed status)
+  // or a 'ready' status over an unusable list (empty-string ids selectable).
+  // Malformed SHAPE is treated like malformed JSON (b244dfeb): a failed,
+  // retryable catalog — never an authoritative empty one.
+  type RawModel = { id?: unknown; name?: unknown }
+  const usable: Array<{ id: string; name: string }> = []
+  for (const entry of data.data) {
+    if (typeof entry !== 'object' || entry === null) return { models: [], status: 'failed' }
+    const m = entry as RawModel
+    if (typeof m.id !== 'string' || m.id.trim() === '') return { models: [], status: 'failed' }
+    usable.push({ id: m.id, name: typeof m.name === 'string' && m.name !== '' ? m.name : m.id })
+  }
   // A SUCCESSFUL response IS authoritative, empty or not: an empty `data:[]`
   // positively reports that the gateway serves no models.
-  return { models, status: models.length > 0 ? 'ready' : 'empty' }
+  return { models: usable, status: usable.length > 0 ? 'ready' : 'empty' }
 }
 
 /**

@@ -89,6 +89,45 @@ describe('fetchGatewayModels: ready / empty / failed statuses', () => {
     fetchMock.mockRejectedValue(abortError)
     await expect(fetchGatewayModels('https://gw.example', 'tok', signal)).rejects.toBeInstanceOf(DOMException)
   })
+
+  // Sourcery round 6, "Malformed gateway models are accepted": a 200 whose
+  // data array contains unusable entries is NOT a usable catalog. The old
+  // mapping dereferenced null entries (throwing past the failed-catalog
+  // handling) and mapped missing ids to '' while still reporting 'ready'.
+  it('returns status "failed" when a data entry is null', async () => {
+    fetchMock.mockResolvedValue(okResponse({ data: [null] }))
+    const result = await fetchGatewayModels('https://gw.example', 'tok')
+    expect(result.models).toEqual([])
+    expect(result.status).toBe('failed')
+  })
+
+  it('returns status "failed" when a data entry is not an object', async () => {
+    fetchMock.mockResolvedValue(okResponse({ data: [{ id: 'ok' }, 'garbage'] }))
+    const result = await fetchGatewayModels('https://gw.example', 'tok')
+    expect(result.models).toEqual([])
+    expect(result.status).toBe('failed')
+  })
+
+  it('returns status "failed" when a data entry lacks a usable string id', async () => {
+    fetchMock.mockResolvedValue(okResponse({ data: [{ name: 'NoId' }] }))
+    const result = await fetchGatewayModels('https://gw.example', 'tok')
+    expect(result.models).toEqual([])
+    expect(result.status).toBe('failed')
+  })
+
+  it('returns status "failed" when a data entry has an empty/whitespace id (no empty-string ids become selectable)', async () => {
+    fetchMock.mockResolvedValue(okResponse({ data: [{ id: '   ' }] }))
+    const result = await fetchGatewayModels('https://gw.example', 'tok')
+    expect(result.models).toEqual([])
+    expect(result.status).toBe('failed')
+  })
+
+  it('maps name to id when missing but keeps a non-empty id catalog usable', async () => {
+    fetchMock.mockResolvedValue(okResponse({ data: [{ id: 'glm-5.2' }] }))
+    const result = await fetchGatewayModels('https://gw.example', 'tok')
+    expect(result.models).toEqual([{ id: 'glm-5.2', name: 'glm-5.2' }])
+    expect(result.status).toBe('ready')
+  })
 })
 
 describe('registry catalog status bookkeeping', () => {
