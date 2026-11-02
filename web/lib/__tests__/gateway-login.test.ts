@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { provider, keyStore, settings } = vi.hoisted(() => ({
   provider: {
     update: vi.fn<() => Promise<Array<{ id: string; name: string }>>>(),
-    prepare: vi.fn<() => Promise<Array<{ id: string; name: string }>>>(),
+    prepare: vi.fn<() => Promise<{ models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }>>(),
     register: vi.fn(),
   },
   keyStore: {
@@ -58,7 +58,7 @@ describe('applyGatewayLoginTokens cancellation', () => {
     keyStore.save.mockImplementation(async (_id, key) => { savedKey = key })
     keyStore.delete.mockImplementation(async () => { savedKey = null })
     provider.update.mockResolvedValue([{ id: 'new-model', name: 'New' }])
-    provider.prepare.mockResolvedValue([{ id: 'new-model', name: 'New' }])
+    provider.prepare.mockResolvedValue({ models: [{ id: 'new-model', name: 'New' }], status: 'ready' })
   })
 
   it('does not persist a credential when cancelled during model preparation', async () => {
@@ -66,9 +66,9 @@ describe('applyGatewayLoginTokens cancellation', () => {
     // provider.prepare has been invoked and its promise is still pending,
     // then cancel. Aborting before the awaited import reaches prepare would
     // pass trivially even if cancellation mid-preparation were mishandled.
-    let finish!: (models: Array<{ id: string; name: string }>) => void
-    const models = new Promise<Array<{ id: string; name: string }>>((resolve) => { finish = resolve })
-    provider.update.mockReturnValue(models)
+    let finish!: (result: { models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }) => void
+    const models = new Promise<{ models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }>((resolve) => { finish = resolve })
+    provider.update.mockReturnValue(Promise.resolve([{ id: 'new-model', name: 'New' }]))
     provider.prepare.mockReturnValue(models)
     const controller = new AbortController()
     const commit = vi.fn()
@@ -76,7 +76,7 @@ describe('applyGatewayLoginTokens cancellation', () => {
     // Preparation started and is pending → NOW the cancellation is mid-flight.
     await vi.waitFor(() => expect(provider.prepare).toHaveBeenCalledTimes(1))
     controller.abort()
-    finish([{ id: 'new-model', name: 'New' }])
+    finish({ models: [{ id: 'new-model', name: 'New' }], status: 'ready' })
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     expect(savedKey).toBe('previous-key')
     expect(keyStore.save).not.toHaveBeenCalled()

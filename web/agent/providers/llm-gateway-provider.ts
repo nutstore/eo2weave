@@ -20,8 +20,8 @@
  */
 
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
-import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from './types'
-import { registerDynamicProvider, unregisterDynamicProvider } from './types'
+import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from '@/agent/providers/types'
+import { registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayCredentialStatus, getValidAccessToken, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'

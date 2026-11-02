@@ -64,7 +64,7 @@ const gatewayMock = vi.hoisted(() => ({
   ),
   logoutGateway: vi.fn(),
   getValidAccessToken: vi.fn(async () => 'stale-access-token'),
-  fetchGatewayModels: vi.fn(async () => []),
+  fetchGatewayModels: vi.fn(async () => ({ models: [], status: 'failed' as const })),
   getGatewayCredentialStatus: vi.fn(() => 'unknown'),
   hasStoredTokens: vi.fn(() => true),
   registerGatewayModels: vi.fn(),
