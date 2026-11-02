@@ -87,6 +87,26 @@ describe('useWorkspaceRouteSyncStandalone', () => {
     routerReplaceMock.mockClear()
   })
 
+  it('a cold link into an unloaded store starts loadFromDB, then activates the URL chat once loaded', async () => {
+    setupStores({ conversations: [{ id: 'chat-1', kind: 'direct' }] })
+    // Cold start: nothing has kicked off the conversation load yet —
+    // /chats/:id is the first route of the session and WorkspaceLayout
+    // (the normal loader) is withheld behind ChatsRouteView's gate.
+    useConversationStore.setState({ loaded: false, loadError: null })
+    const loadFromDBSpy = vi.fn(async () => {
+      useConversationStore.setState({ loaded: true })
+    })
+    useConversationStore.setState({ loadFromDB: loadFromDBSpy as never })
+
+    renderHook(() => useWorkspaceRouteSyncStandalone('chat-1'))
+
+    // The route sync itself must start the load, then proceed through the
+    // normal workspace-switch + activation choreography once it settles.
+    await waitFor(() => expect(loadFromDBSpy).toHaveBeenCalled())
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('chat-1'))
+    expect(routerReplaceMock).not.toHaveBeenCalled()
+  })
+
   it('redirects to /chats when the conversation does not exist', async () => {
     setupStores({ conversations: [{ id: 'chat-1', kind: 'direct' }] })
     renderHook(() => useWorkspaceRouteSyncStandalone('chat-missing'))

@@ -53,6 +53,7 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
   // /chats/:id can land before loadFromDB resolves, and without this
   // dependency the sync never retries (leaving the chat inactive).
   const conversationsLoaded = useConversationStore((s) => s.loaded)
+  const loadFromDB = useConversationStore((s) => s.loadFromDB)
   const newestChatIdRef = useRef<string>('')
   // Retained across cleanup (unlike newestChatIdRef): the late host-activation
   // repair (Step 0) must be able to re-assert the destination's selection even
@@ -64,6 +65,19 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
     destinationChatIdRef.current = chatId
     if (!chatId) return
     if (!initialized || projectLoading) return
+
+    // Cold-chat-link: /chats/:chatId can be the FIRST route of the session —
+    // nothing else has kicked off the conversation store's loadFromDB
+    // (WorkspaceLayout, which normally loads conversations, is withheld
+    // behind ChatsRouteView's own active-matches-route gate, which in turn
+    // waits for this sync to activate the chat — a deadlock with Step 1's
+    // `!loaded` return below). Start the load here: the store's inflight
+    // guard joins overlapping calls, and the `conversationsLoaded`
+    // dependency re-runs this effect when the load settles, so the sync
+    // proceeds on the next pass. A failure keeps loaded=false and records
+    // loadError (no effect re-fire — no retry loop); ChatsRouteView renders
+    // that state with a Retry affordance.
+    if (!useConversationStore.getState().loaded) void loadFromDB()
 
     /**
      * One full URL → store sync for `target`: ensure the project host,
@@ -295,7 +309,7 @@ export function useWorkspaceRouteSyncStandalone(chatId: string) {
       // blanked (an abandoned chat must never be re-activated by its own
       // late completion).
     }
-  }, [chatId, router, initialized, projectLoading, conversationsLoaded])
+  }, [chatId, router, initialized, projectLoading, conversationsLoaded, loadFromDB])
 }
 
 /**
