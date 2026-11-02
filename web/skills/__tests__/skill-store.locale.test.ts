@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { selectLocalizedDescription, SKILL_STORE_UI_LOCALES } from '@/skills/skill-store'
+import { selectLocalizedDescription, SKILL_STORE_UI_LOCALES } from '../skill-store'
 
 describe('selectLocalizedDescription', () => {
   const entry = {

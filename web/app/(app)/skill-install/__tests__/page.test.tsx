@@ -349,43 +349,6 @@ describe('SkillInstallPage (issue #126)', () => {
     expect(screen.getByText('skillInstall.installButton')).toBeInTheDocument()
   })
 
-  it('shows the localized description when the base description is empty (#139 review: localized descriptions are hidden)', async () => {
-    // pack-skills.mjs emits `description: ''` when the frontmatter omits the
-    // base description but ships `description.<locale>` translations. The
-    // details view must guard on the SELECTED localized description, not on
-    // `entry.description` — the test locale is zh-CN (see the @/i18n mock),
-    // so the translation must render even though the base field is empty.
-    fetchSkillStoreManifestMock.mockResolvedValue({
-      skills: [{
-        ...ENTRY,
-        description: '',
-        description_i18n: { 'zh-CN': '律师证据链分析' },
-      }],
-    })
-    render(<SkillInstallPage />)
-    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
-    expect(screen.getByText('律师证据链分析')).toBeInTheDocument()
-  })
-
-  it('renders no description paragraph when both base and localized descriptions are empty', async () => {
-    fetchSkillStoreManifestMock.mockResolvedValue({
-      skills: [{ ...ENTRY, description: '' }],
-    })
-    render(<SkillInstallPage />)
-    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
-    // The install button (always on the details view) proves the page made
-    // it past loading; the description PARAGRAPH itself must be absent —
-    // asserting only on the button would pass even if an empty paragraph
-    // rendered (#139 review: empty description paragraph goes undetected).
-    expect(screen.getByText('skillInstall.installButton')).toBeInTheDocument()
-    expect(screen.queryByText(ENTRY.description)).not.toBeInTheDocument()
-    // The localized-description selector resolves to '' for this entry, so
-    // no non-empty paragraph text can exist either: assert the <p> that
-    // would host the description is not rendered next to the skill name.
-    const skillName = screen.getByText('cw-legal-evidence-chain')
-    expect(skillName.parentElement?.querySelector('p.mx-auto.mt-2')).toBeNull()
-  })
-
   it('treats an unregistered skill as a failed install (no navigation with a dead slash command)', async () => {
     // refreshUserSkills "succeeds" but the scan failed silently — the skill
     // never shows up in getSkills() (also at resolution time), so the page

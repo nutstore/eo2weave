@@ -231,13 +231,7 @@ async function applyGatewayLoginTokensInner(
       settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, models[0]?.id ?? '')
       if (defaults.length > 0) {
         settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-      }
-      // Backfill `seen` on EVERY successful login with a non-empty catalog,
-      // not just the first-seeding path — a re-login must self-heal a false
-      // delisted state left by an earlier empty-catalog commit (ids not
-      // pinned are ignored by markPinnedModelsSeen, so this is safe).
-      if (models.length > 0) {
-        settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
+        settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
       }
 
       settings.setHasApiKey(true)

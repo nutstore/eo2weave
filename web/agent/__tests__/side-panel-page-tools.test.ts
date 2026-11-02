@@ -26,11 +26,7 @@ vi.mock('@/mcp/mcp-manager', () => ({
   getMCPManager: () => ({ getAllTools: () => new Map() }),
 }))
 vi.mock('@/webmcp/bridge-client', () => ({ getWebMCPBridge: () => null }))
-vi.mock('@/webmcp/plugin-download', () => ({
-  consumeAndSavePluginDownload: vi.fn(),
-  WEBMCP_DOWNLOAD_ABORTED: '__WEBMCP_DOWNLOAD_ABORTED__',
-  SavedAssetAbortedError: class SavedAssetAbortedError extends Error {},
-}))
+vi.mock('@/webmcp/plugin-download', () => ({ consumeAndSavePluginDownload: vi.fn() }))
 vi.mock('@/webmcp/store', () => ({
   useWebMCPStore: {
     getState: () => ({

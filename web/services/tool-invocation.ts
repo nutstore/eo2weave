@@ -29,29 +29,11 @@ export interface InvocationOutcome {
   presentation: ReturnType<typeof normalizeToolResult>
 }
 
-/**
- * Recognize the WebMCP CALL_CANCELLED envelope minted by the bridge's
- * cancellationEnvelope (#139 review: cancellation warning gets lost).
- * Module-level so it can be handed to executeToolWithTimeout by reference.
- */
-function preferWebMCPCancellationEnvelope(envelope: string): string | null {
-  try {
-    const parsed = JSON.parse(envelope) as {
-      ok?: boolean
-      error?: { code?: string }
-    }
-    if (parsed?.ok === false && parsed?.error?.code === 'CALL_CANCELLED') {
-      return envelope
-    }
-  } catch { /* not JSON — keep the plain rejection */ }
-  return null
-}
-
 /** Mode checks, argument validation, hooks, timeout and post-processing shared by direct and nested calls. */
 export interface ToolInvocationInput {
   toolRegistry: Pick<ToolRegistry, 'getToolDefinitionsForMode' | 'execute'>
   mode: AgentMode
-  callbacks?: Pick<AgentCallbacks, 'onToolCallStart' | 'onToolCallComplete' | 'onToolTimeout'>
+  callbacks?: Pick<AgentCallbacks, 'onToolCallStart' | 'onToolCallComplete'>
   beforeToolCall?: AgentLoopConfig['beforeToolCall']
   afterToolCall?: AgentLoopConfig['afterToolCall']
   getAbortSignal: () => AbortSignal | undefined
@@ -154,30 +136,18 @@ export async function invokeTool(
         // "the page may still change" warning). Prefer that envelope over
         // the generic abort/timeout rejection so the model never loses the
         // warning (#139 review: cancellation warning gets lost).
-        //
-        // Only WebMCP-backed calls can ever produce that envelope — it is
-        // minted by the bridge's cancellationEnvelope in
-        // external-tool-bridge.ts. Supplying the race-loss grace period for
-        // MCP-backed call_tool / plain tools makes Stop and timeout results
-        // wait the full grace for an envelope that cannot exist (#139
-        // review: unrelated calls wait two seconds).
-        //
-        // MCP-backed call_tool invocations ALSO carry a string
-        // full_tool_name, so the string check alone is not enough: WebMCP
-        // full names are origin-derived with a `__` separator
-        // (https_example_com__tool), while MCP names join serverId and tool
-        // with `:` (serverId:tool). Require the `__` marker so MCP calls
-        // skip the grace wait (#139 review round 6: MCP calls wait
-        // unnecessarily).
-        ...(toolName === 'call_tool' && typeof args.full_tool_name === 'string' && args.full_tool_name.includes('__')
-          ? { preferEnvelopeOnRaceLoss: preferWebMCPCancellationEnvelope }
-          : {}),
-        // The timeout must reach its observers even when a WebMCP call
-        // settles with the cancellation envelope during the grace window
-        // (#139 review: timeout observers miss WebMCP timeouts). Plain
-        // tools reject, so the existing timeout catch keeps covering them.
-        onTimeout:
-          toolName === 'call_tool' ? () => input.callbacks?.onToolTimeout?.(toolCall) : undefined,
+        preferEnvelopeOnRaceLoss: (envelope) => {
+          try {
+            const parsed = JSON.parse(envelope) as {
+              ok?: boolean
+              error?: { code?: string }
+            }
+            if (parsed?.ok === false && parsed?.error?.code === 'CALL_CANCELLED') {
+              return envelope
+            }
+          } catch { /* not JSON — keep the plain rejection */ }
+          return null
+        },
       })
     }
 

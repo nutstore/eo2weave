@@ -185,14 +185,6 @@ describe('useSettingsStore', () => {
       expect(s.getStalePinnedModels(P, ['m-alive'])).not.toContain('m-manual')
     })
 
-    it('returns [] for an EMPTY availableIds — an empty catalog is unknown, not all absent', () => {
-      const s = useSettingsStore.getState()
-      s.setPinnedModels(P, ['m-alive', 'm-dead'])
-      s.markPinnedModelsSeen(P, ['m-alive', 'm-dead'])
-
-      expect(s.getStalePinnedModels(P, [])).toEqual([])
-    })
-
     it('ignores seen-marking for unpinned ids and empty pin lists', () => {
       const s = useSettingsStore.getState()
       s.markPinnedModelsSeen(P, ['never-pinned'])

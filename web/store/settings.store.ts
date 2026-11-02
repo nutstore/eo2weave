@@ -1304,10 +1304,6 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       },
 
       getStalePinnedModels: (providerType, availableIds) => {
-        // An EMPTY availableIds means the catalog is unknown (registry not
-        // loaded yet / gateway before login / failed discovery), not "every
-        // model is gone" — never flag pins as stale on it.
-        if (availableIds.length === 0) return []
         const state = get()
         const pinned = state.pinnedModelsByProvider[providerType] || []
         const seen = new Set(state.pinnedSeenByProvider[providerType] || [])

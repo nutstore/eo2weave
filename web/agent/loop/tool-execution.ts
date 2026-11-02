@@ -75,13 +75,6 @@ export interface ExecuteToolWithTimeoutInput {
    * string to surface it, or null to keep the plain rejection.
    */
   preferEnvelopeOnRaceLoss?: (envelope: string) => string | null
-  /**
-   * Called exactly once when the timeout fires, BEFORE the race-loss grace
-   * period — even if the losing tool promise later settles with a
-   * cancellation envelope that replaces the rejection (#139 review:
-   * timeout observers miss WebMCP timeouts when the envelope wins).
-   */
-  onTimeout?: () => void
 }
 
 export function coerceToolArgs(params: unknown): Record<string, unknown> {
@@ -162,56 +155,8 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
     if (timeoutPromise) {
       racers.push(timeoutPromise)
     }
-    // Track which racer WON the initial race: onTimeout must fire only when
-    // the TIMEOUT itself won — if Stop (abort) already cancelled the call,
-    // the timeout firing later during the grace window is just the timer
-    // winding down, not the reason the call ended (#139 review round 5:
-    // Stop triggers timeout notification). NOTE: a firing timeout also
-    // aborts timeoutController synchronously, so the abortPromise rejects
-    // in the same tick — the FIRST racer to settle locks the winner
-    // (timeoutPromise's rejection is scheduled before the induced abort
-    // rejection, so a genuine timeout keeps the crown).
-    let raceWinner: 'tool' | 'abort' | 'timeout' | null = null
-    const markWinner = (w: 'tool' | 'abort' | 'timeout') => {
-      if (raceWinner === null) raceWinner = w
-    }
     try {
-      return await Promise.race([
-        toolPromise.then(
-          (v) => {
-            markWinner('tool')
-            return v
-          },
-          (e) => {
-            markWinner('abort')
-            throw e
-          },
-        ),
-        abortPromise.then(
-          () => {
-            markWinner('abort')
-            return '' as string
-          },
-          (e) => {
-            markWinner('abort')
-            throw e
-          },
-        ),
-        ...(timeoutPromise
-          ? [
-              timeoutPromise.then(
-                (v) => {
-                  markWinner('timeout')
-                  return v
-                },
-                (e) => {
-                  markWinner('timeout')
-                  throw e
-                },
-              ),
-            ]
-          : []),
-      ])
+      return await Promise.race(racers)
     } catch (raceError) {
       if (!input.preferEnvelopeOnRaceLoss) throw raceError
       try {
@@ -221,19 +166,7 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
         ])
         if (envelope !== null) {
           const preferred = input.preferEnvelopeOnRaceLoss(envelope)
-          if (preferred !== null) {
-            // The structured envelope REPLACES the timeout/abort rejection,
-            // so a caller's timeout catch (buildAgentTools → onToolTimeout)
-            // will never run for this call. Fire onTimeout exactly ONCE
-            // here — only when the TIMEOUT itself won the initial race; a
-            // Stop (abort) win that merely left the timer winding down must
-            // NOT report a timeout for a call the user already cancelled
-            // (#139 review round 5: Stop triggers timeout notification).
-            if (raceWinner === 'timeout') {
-              try { input.onTimeout?.() } catch { /* observer errors must not break the result */ }
-            }
-            return preferred
-          }
+          if (preferred !== null) return preferred
         }
       } catch {
         // The tool promise rejected too — the original race error is the
