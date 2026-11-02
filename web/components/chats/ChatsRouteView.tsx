@@ -24,7 +24,9 @@ import { useT } from '@/i18n'
  * conversation A, and a fast send could target the wrong conversation. The
  * view therefore renders the existing loading spinner until the active
  * conversation matches the route id (the same spinner pattern the layout's
- * own `!loaded || !workspaceReady` gate uses).
+ * own `!loaded || !workspaceReady` gate uses). A NONEMPTY route id also gates
+ * on the pointer being non-null: active===null while chatId is set means
+ * activation for this URL is still in flight, not a settled empty state.
  */
 export default function ChatsRouteView() {
   const router = useRouter()
@@ -45,7 +47,14 @@ export default function ChatsRouteView() {
   // this component must not block that settled empty state.
   const activeMatchesRoute = useConversationStore((s) => {
     const active = s.activeConversationId
-    return !active || active === chatId
+    // A nonempty route id gates on the active pointer matching it: with
+    // active still null the sync hook is mid-flight (workspace switch +
+    // setActive in queue), and rendering now would let a welcome-state send
+    // create/target a conversation other than the URL's chat. Only the
+    // intentionally empty bare state (no chatId in the route) is allowed
+    // through while inactive — the layout's own loaded/workspaceReady gates
+    // then decide between Welcome and spinner.
+    return chatId ? active === chatId : true
   })
 
   if (!activeMatchesRoute) {
