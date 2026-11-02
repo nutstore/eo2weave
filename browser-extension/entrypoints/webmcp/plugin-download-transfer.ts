@@ -57,27 +57,52 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
  * client uses applies here: the canonical URL stays the identity of the
  * resource, the mirror is only a transport fallback.
  */
-async function fetchDownload(candidate: string): Promise<Response> {
-  const response = await fetch(candidate)
-  if (!response.ok) {
-    const error = new Error(`Download failed with status ${response.status}`) as Error & { status?: number }
-    error.status = response.status
+/** Per-candidate download deadline: headers AND body must arrive within it. */
+const DOWNLOAD_TIMEOUT_MS = 30_000
+
+/**
+ * Fetch one download candidate and consume its body INSIDE the attempt, so
+ * the mirror fallback sees a body failure/stall the same way it sees a
+ * header failure. An AbortController deadline covers the WHOLE download —
+ * fetchDownload used to wait on `fetch(candidate)` with no deadline, so a
+ * host that accepted the connection and stalled blocked the fallback
+ * forever, and a body read after the fallback loop bypassed the remaining
+ * hosts (findings: "Stalled downloads block mirror fallback", "Failed
+ * bodies skip mirror fallback").
+ */
+async function fetchDownload(candidate: string): Promise<{ buffer: ArrayBuffer; contentType: string | null }> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS)
+  try {
+    const response = await fetch(candidate, { signal: controller.signal })
+    if (!response.ok) {
+      const error = new Error(`Download failed with status ${response.status}`) as Error & { status?: number }
+      error.status = response.status
+      throw error
+    }
+    // The body is consumed while the deadline is still armed: a host that
+    // answers headers then stalls the stream aborts here, and the fallback
+    // loop moves on to the next candidate.
+    const buffer = await response.arrayBuffer()
+    return { buffer, contentType: response.headers.get('content-type') }
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Download timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s: ${candidate}`)
+    }
     throw error
+  } finally {
+    clearTimeout(timer)
   }
-  return response
 }
 
 async function prepareDownload(plan: WebMCPPluginDownloadPlan): Promise<PreparedDownload> {
   const result = await fetchWithMirrorFallback(plan.downloadUrl, fetchDownload)
-  const response = result.value
-
   const fileName = sanitizeFileName(plan.fileName || `download_${Date.now()}`)
 
   const mimeType =
-    response.headers.get('content-type')?.split(';')[0]?.trim() || guessMimeType(fileName)
+    result.value.contentType?.split(';')[0]?.trim() || guessMimeType(fileName)
 
-  const arrayBuffer = await response.arrayBuffer()
-  const base64 = arrayBufferToBase64(arrayBuffer)
+  const base64 = arrayBufferToBase64(result.value.buffer)
   const dataUrl = `data:${mimeType};base64,${base64}`
 
   return {
