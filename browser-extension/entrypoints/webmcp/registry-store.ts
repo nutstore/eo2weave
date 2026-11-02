@@ -20,6 +20,7 @@ import {
   fetchRegistryManifest,
   invalidateRegistryCache,
   parseRegistryInput,
+  RegistryError,
   type PackageRegistry,
   type RegistryManifest,
   type RegistryManifestPackage,
@@ -54,26 +55,63 @@ export async function listRegistries(): Promise<PackageRegistry[]> {
 
 /**
  * The raw persisted list. A malformed or missing entry list reads as empty
- * (the UI then shows "no registry added yet" instead of crashing).
+ * (the UI then shows "no registry added yet" instead of crashing). A
+ * TRANSIENT storage READ failure propagates: converting it to an empty list
+ * made the next mutation write that empty list back, erasing every saved
+ * registry (finding: "Saved registries disappear").
  */
 async function readPersistedRegistries(): Promise<StoredRegistry[]> {
+  const stored = await chrome.storage.local.get(REGISTRIES_STORAGE_KEY)
+  const parsed: unknown = stored?.[REGISTRIES_STORAGE_KEY]
+  if (!Array.isArray(parsed)) return []
+  return parsed.filter((entry): entry is StoredRegistry =>
+    !!entry && typeof entry === 'object' &&
+    typeof (entry as StoredRegistry).manifestUrl === 'string' &&
+    typeof (entry as StoredRegistry).rawBase === 'string' &&
+    typeof (entry as StoredRegistry).label === 'string')
+}
+
+/**
+ * Registry-list mutations are serialized through ONE module-local promise
+ * chain: `addRegistry`/`removeRegistry` read the whole stored list and write
+ * a modified replacement, so two overlapping mutations from different
+ * extension pages would otherwise lose one of the two edits (last writer
+ * wins). The chain makes every read→modify→write sequence atomic with
+ * respect to the other mutations in this context; a failure of one mutation
+ * must not block the next, so the chain itself never carries a rejection.
+ */
+let registryMutations: Promise<unknown> = Promise.resolve()
+
+function runRegistryMutation<T>(step: () => Promise<T>): Promise<T> {
+  const gate = registryMutations.catch(() => {}).then(step)
+  registryMutations = gate.catch(() => {})
+  return gate
+}
+
+/**
+ * Persist one mutation of the registry list. A failed write THROWS — the
+ * caller (the background handler) surfaces it as `{ ok: false }` instead of
+ * reporting success while `listRegistries` reads only persisted data and the
+ * edit silently disappeared (finding: "Registry edits report false
+ * success"). `lastWritePersisted` stays as the session-level flag the list
+ * response reports.
+ */
+async function writePersistedRegistries(entries: StoredRegistry[]): Promise<void> {
   try {
-    const stored = await chrome.storage.local.get(REGISTRIES_STORAGE_KEY)
-    const parsed: unknown = stored?.[REGISTRIES_STORAGE_KEY]
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((entry): entry is StoredRegistry =>
-      !!entry && typeof entry === 'object' &&
-      typeof (entry as StoredRegistry).manifestUrl === 'string' &&
-      typeof (entry as StoredRegistry).rawBase === 'string' &&
-      typeof (entry as StoredRegistry).label === 'string')
-  } catch {
-    return []
+    await chrome.storage.local.set({ [REGISTRIES_STORAGE_KEY]: entries })
+    lastWritePersisted = true
+  } catch (error) {
+    lastWritePersisted = false
+    throw new RegistryError(
+      `The registry list could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
 }
 
 /**
  * Parse a loose registry URL and persist it. Throws on unparseable input
- * (the `RegistryError` message is user-presentable).
+ * (the `RegistryError` message is user-presentable) and when the list
+ * cannot be read or written.
  */
 export async function addRegistry(input: string): Promise<PackageRegistry> {
   const registry = parseRegistryInput(input)
@@ -83,28 +121,23 @@ export async function addRegistry(input: string): Promise<PackageRegistry> {
     rawBase: registry.rawBase,
     manifestUrl: registry.manifestUrl,
   }
-  const merged = (await readPersistedRegistries()).filter(entry => entry.manifestUrl !== stored.manifestUrl)
-  merged.push(stored)
-  try {
-    await chrome.storage.local.set({ [REGISTRIES_STORAGE_KEY]: merged })
-    lastWritePersisted = true
-  } catch {
-    lastWritePersisted = false
-  }
-  return registry
+  return runRegistryMutation(async () => {
+    const merged = (await readPersistedRegistries()).filter(entry => entry.manifestUrl !== stored.manifestUrl)
+    merged.push(stored)
+    await writePersistedRegistries(merged)
+    return registry
+  })
 }
 
 /**
  * Remove a registry from the list (installed packages are NOT uninstalled).
+ * Throws when the list cannot be read or written.
  */
 export async function removeRegistry(manifestUrl: string): Promise<void> {
-  const remaining = (await readPersistedRegistries()).filter(entry => entry.manifestUrl !== manifestUrl)
-  try {
-    await chrome.storage.local.set({ [REGISTRIES_STORAGE_KEY]: remaining })
-    lastWritePersisted = true
-  } catch {
-    lastWritePersisted = false
-  }
+  await runRegistryMutation(async () => {
+    const remaining = (await readPersistedRegistries()).filter(entry => entry.manifestUrl !== manifestUrl)
+    await writePersistedRegistries(remaining)
+  })
   invalidateRegistryCache()
 }
 
