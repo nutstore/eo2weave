@@ -2,6 +2,8 @@
 name: cw-impeccable-design
 description: "Frontend design skill from pbakaus/impeccable, ported for EO2Weave. Trigger when user asks to design, redesign, refine, polish, audit, critique, distill, harden, animate, colorize, typeset, layout, clarify, adapt, optimize, extract, document, init, shape, bolder, quieter, delight, overdrive, onboard, live-iterate, or ux-review any frontend UI work. Covers websites, landing pages, dashboards, product UI, app shells, components, forms, settings, onboarding, empty states. Handles visual hierarchy, information architecture, cognitive load, a11y, performance, responsive, theming, anti-patterns, typography, spacing, alignment, color, motion, micro-interactions, UX copy, error states, edge cases, i18n, design systems, tokens. Also use for bland designs that need to become bolder, loud designs that need to become quieter, or ambitious visual effects that should feel technically extraordinary."
 description.zh-CN: "来自 pbakaus/impeccable 的前端设计技能，已适配 EO2Weave。当用户要求设计、重设计、打磨、优化、审查 UI，调整排版、配色、动画、布局、层次，或希望界面更有质感、更克制、更愉悦时触发。"
+description.ja-JP: "pbakaus/impeccable のフロントエンドデザインスキルを EO2Weave 向けに移植したもの。UI の設計・再設計・磨き・最適化・レビュー、タイポグラフィ、配色、アニメーション、レイアウト、階層の調整、あるいは UI をより上質に・より落ち着いて・より魅力的にしたいときにトリガーされます。"
+description.ko-KR: "pbakaus/impeccable의 프런트엔드 디자인 스킬을 EO2Weave용으로 포팅한 것입니다. UI 설계·재설계·다듬기·최적화·검토, 타이포그래피·색상·애니메이션·레이아웃·위계 조정, 또는 UI를 더 세련되고·더 절제되고·더 매력적으로 만들고 싶을 때 트리거됩니다."
 category: general
 tags: [design, frontend, ux, ui, review, polish, anti-pattern, design-system]
 triggers:

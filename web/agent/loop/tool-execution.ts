@@ -68,6 +68,13 @@ export interface ExecuteToolWithTimeoutInput {
   runAbortSignal?: AbortSignal
   externalAbortSignal?: AbortSignal
   execute: (abortSignal: AbortSignal) => Promise<string>
+  /**
+   * Decide whether a structured tool-result envelope produced by `execute`
+   * should REPLACE the generic abort/timeout rejection when the outer race
+   * wins (#139 review: cancellation warning gets lost). Return the envelope
+   * string to surface it, or null to keep the plain rejection.
+   */
+  preferEnvelopeOnRaceLoss?: (envelope: string) => string | null
 }
 
 export function coerceToolArgs(params: unknown): Record<string, unknown> {
@@ -77,6 +84,13 @@ export function coerceToolArgs(params: unknown): Record<string, unknown> {
   }
   throw new Error('invalid_arguments: Tool arguments must be a JSON object')
 }
+
+/**
+ * Grace window after a lost race during which a structured envelope from the
+ * tool promise is still accepted (see preferEnvelopeOnRaceLoss). Bounded so
+ * a never-settling tool cannot hang the caller past the abort itself.
+ */
+const RACE_LOSS_GRACE_MS = 2000
 
 export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput): Promise<string> {
   const timeoutController = new AbortController()
@@ -129,12 +143,41 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
     cleanupListeners.push(() => timeoutController.signal.removeEventListener('abort', onAbort))
   })
 
-  try {
-    const racers: Array<Promise<string>> = [input.execute(timeoutController.signal), abortPromise]
+  // When the abort/timeout racer wins, the tool promise may still settle a
+  // moment later with a structured envelope (e.g. WebMCP's CALL_CANCELLED
+  // result, which carries the non-retryable status and the "page may still
+  // change" warning). Give the caller one shot to swap the generic
+  // rejection for that envelope (#139 review: cancellation warning gets
+  // lost) instead of surfacing a bare abort/timeout error.
+  const raceWithEnvelopeFallback = async (): Promise<string> => {
+    const toolPromise = input.execute(timeoutController.signal)
+    const racers: Array<Promise<string>> = [toolPromise, abortPromise]
     if (timeoutPromise) {
       racers.push(timeoutPromise)
     }
-    return await Promise.race(racers)
+    try {
+      return await Promise.race(racers)
+    } catch (raceError) {
+      if (!input.preferEnvelopeOnRaceLoss) throw raceError
+      try {
+        const envelope = await Promise.race([
+          toolPromise,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), RACE_LOSS_GRACE_MS)),
+        ])
+        if (envelope !== null) {
+          const preferred = input.preferEnvelopeOnRaceLoss(envelope)
+          if (preferred !== null) return preferred
+        }
+      } catch {
+        // The tool promise rejected too — the original race error is the
+        // more accurate failure, so fall through to rethrow it.
+      }
+      throw raceError
+    }
+  }
+
+  try {
+    return await raceWithEnvelopeFallback()
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
     for (const cleanup of cleanupListeners) cleanup()

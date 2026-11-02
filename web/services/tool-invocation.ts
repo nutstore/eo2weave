@@ -131,6 +131,23 @@ export async function invokeTool(
         runAbortSignal: input.getAbortSignal(),
         externalAbortSignal: call.context.abortSignal,
         execute,
+        // A WebMCP call that loses the abort/timeout race resolves moments
+        // later with a structured CALL_CANCELLED envelope (non-retryable +
+        // "the page may still change" warning). Prefer that envelope over
+        // the generic abort/timeout rejection so the model never loses the
+        // warning (#139 review: cancellation warning gets lost).
+        preferEnvelopeOnRaceLoss: (envelope) => {
+          try {
+            const parsed = JSON.parse(envelope) as {
+              ok?: boolean
+              error?: { code?: string }
+            }
+            if (parsed?.ok === false && parsed?.error?.code === 'CALL_CANCELLED') {
+              return envelope
+            }
+          } catch { /* not JSON — keep the plain rejection */ }
+          return null
+        },
       })
     }
 

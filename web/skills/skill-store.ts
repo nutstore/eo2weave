@@ -39,6 +39,33 @@ export interface SkillStoreEntry {
   installed?: boolean
 }
 
+/**
+ * Locales the Skill Store UI ships localized descriptions for. UI language
+ * tags use the `xx-YY` form matching `Locale` from @creatorweave/i18n;
+ * manifest keys mirror these exactly (see description_i18n).
+ */
+export const SKILL_STORE_UI_LOCALES = ['en-US', 'zh-CN', 'ja-JP', 'ko-KR'] as const
+
+/**
+ * Pick the description to display/search for `locale`: the translation from
+ * `description_i18n` when one exists, otherwise the English base description
+ * (#139 review: store ignores translated descriptions). Falls back to the
+ * exact-locale key, then its language prefix (`ja-JP` → `ja`), then base.
+ */
+export function selectLocalizedDescription(
+  entry: Pick<SkillStoreEntry, 'description' | 'description_i18n'>,
+  locale: string,
+): string {
+  const i18n = entry.description_i18n
+  if (i18n && locale !== 'en-US') {
+    const localized =
+      i18n[locale] ??
+      (locale.includes('-') ? i18n[locale.split('-')[0]!] : undefined)
+    if (localized) return localized
+  }
+  return entry.description
+}
+
 export interface SkillStoreManifest {
   version: string
   generated: string

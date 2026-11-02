@@ -1182,6 +1182,12 @@ async function executeWebMCPTool(
     const invokeWithAbort = async (groupKey?: string) => {
       let onAbort: (() => void) | undefined
       try {
+        // Already-aborted run: return the envelope WITHOUT dispatching —
+        // the extension must not receive a write the caller believes was
+        // cancelled (#139 review: aborted writes still start).
+        if (context.abortSignal?.aborted) {
+          return cancellationEnvelope()
+        }
         return await Promise.race([
           bridge.webMCPInvoke(buildInvokePayload(groupKey)),
           ...(
@@ -1233,10 +1239,17 @@ async function executeWebMCPTool(
         targetTabId,
       )
       if (refreshedGroupKey && refreshedGroupKey !== targetTab?.groupKey) {
-        if (context.abortSignal?.aborted) {
-          return toolErrorJson('call_tool', 'CALL_CANCELLED', 'WebMCP tool call was cancelled before retry.', { retryable: false })
+        // No explicit aborted check here: invokeWithAbort re-checks the
+        // signal before dispatching and returns the cancellation envelope
+        // without sending the call (#139 review: aborted writes still start).
+        const retryResponse = await invokeWithAbort(refreshedGroupKey)
+        if (typeof retryResponse === 'string') {
+          // The retry raced the abort and produced a cancellation envelope —
+          // return it instead of processing the string as a response object
+          // (#139 review: retry abort loses cancellation result).
+          return retryResponse
         }
-        response = (await invokeWithAbort(refreshedGroupKey)) as typeof response
+        response = retryResponse
       }
     }
 
@@ -1262,16 +1275,22 @@ async function executeWebMCPTool(
       // A dispatched write that returns an error may have partially applied
       // before failing, regardless of which tab reports the failure (#139
       // review): the tabId cannot rule out side effects, so every failed
-      // write is ambiguous. Known PRE-execution routing failures are the
-      // exception — the tool provably never ran, so a retry is safe.
-      const isRoutingError = ['INVALID_TOOL_NAME', 'TOOL_TARGET_NOT_FOUND', 'TARGET_ORIGIN_MISMATCH'].includes(
-        response.errorCode || '',
-      )
+      // write is ambiguous. KNOWN PRE-execution routing failures are the
+      // exception — the tool provably never ran, so a retry is safe
+      // (#139 review: safe route errors must stay retryable). A routing
+      // error name that arrives WITHOUT a tabId cannot be trusted as
+      // pre-execution (it may follow a failed route-key refresh where the
+      // call was already dispatched to an unknown tab), so it keeps the
+      // ambiguous classification.
+      const errorCode = response.errorCode || ''
+      const knownRoutingError =
+        ['INVALID_TOOL_NAME', 'TOOL_TARGET_NOT_FOUND', 'TARGET_ORIGIN_MISMATCH'].includes(errorCode)
+      const preExecutionRoutingError = knownRoutingError && response.tabId === undefined
       const ambiguousWrite =
-        tool.annotations?.readOnlyHint !== true && !isRoutingError
+        tool.annotations?.readOnlyHint !== true && !preExecutionRoutingError
       return toolErrorJson(
         'call_tool',
-        response.errorCode || 'WEBMCP_INVOKE_FAILED',
+        errorCode || 'WEBMCP_INVOKE_FAILED',
         ambiguousWrite
           ? `${errorMessage} The tool may have partially changed the page before failing — verify the target tab's state before retrying.`
           : errorMessage,
@@ -1309,11 +1328,20 @@ async function executeWebMCPTool(
           savedPath: saveResult.savedPath,
         })
         if (!finalizeResp?.ok) {
+          // The page action ALREADY RAN and returned success — only the
+          // local download pipeline failed (#139 review: download failures
+          // can replay writes). Re-running the page tool for a write would
+          // duplicate its side effects, so non-retryable with verification
+          // guidance; read-only tools keep retryable (repeating is safe).
+          const writeShape = tool.annotations?.readOnlyHint !== true
           return toolErrorJson(
             'call_tool',
             'WEBMCP_PLUGIN_DOWNLOAD_FINALIZE_FAILED',
-            finalizeResp?.error || 'Plugin download finalize failed',
-            { retryable: true }
+            (finalizeResp?.error || 'Plugin download finalize failed') +
+              (writeShape
+                ? ' The page action already ran — verify its result on the target tab before retrying; retrying would repeat the action.'
+                : ''),
+            { retryable: !writeShape }
           )
         }
 
@@ -1339,9 +1367,19 @@ async function executeWebMCPTool(
         }, untrusted ? { contentParts: [{ type: 'text', text: String(wrapUntrustedContent(saveResult.patchedResult, { untrusted, sourceId, toolName: tool.fullName })) }] } : undefined)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        return toolErrorJson('call_tool', 'WEBMCP_PLUGIN_DOWNLOAD_FAILED', message, {
-          retryable: true,
-        })
+        // Same ambiguity as the finalize branch: the page tool already
+        // returned success, so retrying a write replays its completed
+        // action (#139 review: download failures can replay writes).
+        const writeShape = tool.annotations?.readOnlyHint !== true
+        return toolErrorJson(
+          'call_tool',
+          'WEBMCP_PLUGIN_DOWNLOAD_FAILED',
+          message +
+            (writeShape
+              ? ' The page action already ran — verify its result on the target tab before retrying; retrying would repeat the action.'
+              : ''),
+          { retryable: !writeShape },
+        )
       }
     }
 
@@ -1360,6 +1398,18 @@ async function executeWebMCPTool(
     }, untrusted ? { contentParts: [{ type: 'text', text: String(wrapUntrustedContent(response.result, { untrusted, sourceId, toolName: tool.fullName })) }] } : undefined)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    if (tool.annotations?.readOnlyHint !== true) {
+      // A write-shaped invoke that REJECTS may have already applied on the
+      // page before the bridge failed — the rejection carries no provenance
+      // either way (#139 review: writes can be retried after applying).
+      // Treat it like a failed write: non-retryable until verified.
+      return toolErrorJson(
+        'call_tool',
+        'WEBMCP_INVOKE_FAILED',
+        `${message} The write may have already been applied — verify the target tab's state before retrying.`,
+        { retryable: false }
+      )
+    }
     return toolErrorJson('call_tool', 'WEBMCP_INVOKE_FAILED', message, { retryable: true })
   }
 }

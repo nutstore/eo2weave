@@ -3,6 +3,8 @@ name: cw-legal-evidence-chain
 version: "1.1.2"
 description: Use for lawyers' evidence-chain work across all case types. Trigger when organizing case materials, extracting facts and evidence, mapping factual/logical/causal links, finding missing or weak evidence, resolving contradictions, or drafting a lawyer-facing evidence-chain report and supplement plan.
 description.zh-CN: "面向律师的证据链工作技能，适用于各类案件。当需要整理案件材料、梳理事实与证据、构建事实/逻辑/因果链条、发现缺失或薄弱证据、排除矛盾，或起草律师用证据链报告与补证方案时触发。"
+description.ja-JP: "弁護士向けの証拠チェーン作業スキル。あらゆる事件タイプに対応します。事件資料の整理、事実と証拠の梳理、事実/論理/因果チェーンの構築、欠落または薄弱な証拠の発見、矛盾の解消、弁護士向け証拠チェーン報告書と追充実（補強証拠）計画の起草を求められたときにトリガーされます。"
+description.ko-KR: "변호사를 위한 증거 사슬 작업 스킬로, 모든 사건 유형에 적용됩니다. 사건 자료 정리, 사실과 증거의 체계화, 사실/논리/인과 사슬 구축, 누락되거나 약한 증거 발견, 모순 해소, 변호사용 증거 사슬 보고서 및 보완 증거 계획 작성을 요청할 때 트리거됩니다."
 author: CreatorWeave
 category: general
 tags: [legal, lawyer, evidence, evidence-chain, case-analysis, litigation, proof]
