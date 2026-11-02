@@ -1359,27 +1359,32 @@ export function LLMGatewayCard({
           // dynamic imports below. A superseded run that returns late would
           // otherwise overwrite the newer session's registration.
           if (cancelled) return
-          if (models.length > 0) {
-            // Register the fetched catalog with the gateway provider, not
-            // just this card's local list: a login whose discovery failed
-            // committed an EMPTY registration, and without this the provider
-            // would stay registered without usable models until another
-            // operation re-registered it (finding: "login succeeds with an
-            // unusable model catalog"). contextWindow is resolved per model
-            // the same way prepareGatewayModels does — re-registering without
-            // it would silently drop the configured context limits.
-            const [{ registerGatewayModels }, { getModelContextWindow }] = await Promise.all([
-              import('@/agent/providers/llm-gateway-provider'),
-              import('@/agent/providers/model-store'),
-            ])
-            if (cancelled) return
-            registerGatewayModels(models.map((m) => ({
-              id: m.id,
-              name: m.name,
-              capabilities: ['code', 'writing', 'reasoning'] as const,
-              contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
-            })), status)
-          }
+          // Register the fetched catalog with the gateway provider, not
+          // just this card's local list: a login whose discovery failed
+          // committed an EMPTY registration, and without this the provider
+          // would stay registered without usable models until another
+          // operation re-registered it (finding: "login succeeds with an
+          // unusable model catalog"). contextWindow is resolved per model
+          // the same way prepareGatewayModels does — re-registering without
+          // it would silently drop the configured context limits.
+          //
+          // EVERY refresh result is registered, not only non-empty ones:
+          // a catalog that shrank to empty (or whose fetch failed) must
+          // replace the previous registration, or the registry keeps
+          // serving the stale catalog — and `getAvailableProviders` reads
+          // its status — indefinitely (Sourcery: "Gateway registry keeps
+          // stale catalogs").
+          const [{ registerGatewayModels }, { getModelContextWindow }] = await Promise.all([
+            import('@/agent/providers/llm-gateway-provider'),
+            import('@/agent/providers/model-store'),
+          ])
+          if (cancelled) return
+          registerGatewayModels(models.map((m) => ({
+            id: m.id,
+            name: m.name,
+            capabilities: ['code', 'writing', 'reasoning'] as const,
+            contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
+          })), status)
           // Same staleness gate before the card-local state writes: a run
           // whose session was superseded must not touch setAllModels or the
           // pin-seen marks of the newer session either.
