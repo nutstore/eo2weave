@@ -128,6 +128,12 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
 
   it('renders the error banner with Retry instead of the list when loadError is set', () => {
     mockConversationState.loadError = 'OPFS init failed'
+    // A non-empty list proves the failure case really hides conversation
+    // rows — an empty list would pass even if the banner rendered on top
+    // of the list (PR #149 review).
+    mockConversationState.conversations = [{ id: 'c1', title: 'My chat' }]
+    mockContextState.activeWorkspaceId = 'c1'
+    mockContextState.workspaceStats = [{ id: 'c1', status: 'active' }]
     render(
       <Sidebar
         onFileSelect={() => {}}
@@ -144,8 +150,27 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
     // Retry button re-runs loadFromDB.
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(mockConversationState.loadFromDB).toHaveBeenCalledTimes(1)
-    // No conversation rows rendered while the error is present.
-    expect(screen.queryByRole('link', { name: /workspaceLabel/ })).toBeNull()
+    // No conversation rows rendered while the error is present — neither the
+    // row link (role="listitem" + workspaceLabel aria-label) nor its title.
+    expect(screen.queryByRole('listitem', { name: 'Chat: My chat' })).toBeNull()
+    expect(screen.queryByText('My chat')).toBeNull()
+  })
+
+  it('renders a generic message (not a blank line) when loadError is an empty string', () => {
+    mockConversationState.loadError = ''
+    render(
+      <Sidebar
+        onFileSelect={() => {}}
+        onInspect={() => {}}
+        selectedFilePath={null}
+        onSelectWorkspace={() => {}}
+      />,
+    )
+
+    // `loadError !== null` — not truthiness — must gate the banner, or an
+    // Error with an empty message silently hides it.
+    expect(screen.getByTestId('conversation-load-error')).toBeTruthy()
+    expect(screen.queryByText('My chat')).toBeNull()
   })
 
   it('renders the normal list when loadError is null', () => {

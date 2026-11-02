@@ -9,6 +9,7 @@ export const sidebar = {
     activeTab: "Active",
     archivedTab: "Archived",
     historyLoadFailed: "Failed to load conversation history",
+    historyLoadUnknownError: "Unknown error while loading conversation history",
     historyRetrying: "Retrying…",
     newWorkspace: "New Chat",
     workspaceLabel: "Chat: {name}",

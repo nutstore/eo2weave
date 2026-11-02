@@ -1364,7 +1364,7 @@ export const Sidebar = memo(function Sidebar({
           )}
 
           <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-2">
-            {conversationLoadError ? (
+            {conversationLoadError !== null ? (
               <div
                 role="alert"
                 data-testid="conversation-load-error"
@@ -1374,7 +1374,9 @@ export const Sidebar = memo(function Sidebar({
                   {t('sidebar.historyLoadFailed')}
                 </p>
                 <p className="mb-2 break-words text-xs text-muted-foreground">
-                  {conversationLoadError}
+                  {/* An Error with an empty message must not render a blank
+                      failure line — fall back to a generic reason. */}
+                  {conversationLoadError || t('sidebar.historyLoadUnknownError')}
                 </p>
                 <button
                   type="button"

@@ -704,24 +704,17 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           state.cancelledRunIds.clear()
         })
 
-        // Success MARKS the previous load-failure record resolved instead of
-        // deleting it (mirrors project.store, issue #147) — a user who
-        // reloaded into a working app must still be able to attach the
-        // ORIGINAL failure to a bug report via Diagnostics.
-        try {
-          const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
-          if (raw) {
-            const record = JSON.parse(raw) as { resolved?: boolean }
-            sessionStorage.setItem(
-              CONVERSATION_STORE_LOAD_ERROR_KEY,
-              JSON.stringify({ ...record, resolved: true })
-            )
-          }
-        } catch {
-          // sessionStorage unavailable / malformed — leave the record as is.
-        }
+        // NOTE: the persisted load-failure record is marked resolved only
+        // AFTER the active-transcript load below succeeds — a failure there
+        // is still a load failure (PR #149 review) and must stay unresolved.
 
-        // Load messages for the active conversation (it's about to be displayed)
+        // Load messages for the active conversation (it's about to be displayed).
+        // An active-transcript failure is a real load failure too (issue #147,
+        // PR #149 review): swallowing it here would leave the conversation
+        // looking empty with `loaded = true`, so the retry effect never fires.
+        // Route it through the same loadError + diagnostics flow as the
+        // metadata pass — but keep `loaded = true` (metadata is present; the
+        // lazy path in setActive can still recover the transcript later).
         if (activeId) {
           try {
             const msgRepo = getMessageRepository()
@@ -737,11 +730,49 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               }
             })
           } catch (error) {
+            const activeLoadMessage =
+              error instanceof Error
+                ? `Failed to load messages for active conversation: ${error.message}`
+                : 'Failed to load messages for active conversation'
             console.error(
               '[conversation.store] Failed to load messages for active conversation:',
               error
             )
+            set((state) => {
+              state.loadError = activeLoadMessage
+            })
+            try {
+              sessionStorage.setItem(
+                CONVERSATION_STORE_LOAD_ERROR_KEY,
+                JSON.stringify({
+                  message: activeLoadMessage,
+                  stack: error instanceof Error ? error.stack : undefined,
+                  at: new Date().toISOString(),
+                })
+              )
+            } catch {
+              // sessionStorage unavailable (SSR / disabled storage) — console is enough.
+            }
           }
+        }
+
+        // Success (metadata AND active transcript) MARKS the previous
+        // load-failure record resolved instead of deleting it (mirrors
+        // project.store, issue #147) — a user who reloaded into a working app
+        // must still be able to attach the ORIGINAL failure to a bug report
+        // via Diagnostics. Keeping this after the transcript load ensures an
+        // active-transcript failure leaves the record unresolved.
+        try {
+          const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
+          if (raw) {
+            const record = JSON.parse(raw) as { resolved?: boolean }
+            sessionStorage.setItem(
+              CONVERSATION_STORE_LOAD_ERROR_KEY,
+              JSON.stringify({ ...record, resolved: true })
+            )
+          }
+        } catch {
+          // sessionStorage unavailable / malformed — leave the record as is.
         }
       } catch (error) {
         console.error('[conversation.store] Failed to load conversations:', error)
@@ -772,6 +803,21 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] loadFromDB retry succeeded',
             { conversationCount: retryConversations.length },
           )
+          // Fallback-retry success also recovers the load — mark the persisted
+          // failure resolved here too, or Diagnostics would keep reporting the
+          // recovered failure as unresolved (issue #147, PR #149 review).
+          try {
+            const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
+            if (raw) {
+              const record = JSON.parse(raw) as { resolved?: boolean }
+              sessionStorage.setItem(
+                CONVERSATION_STORE_LOAD_ERROR_KEY,
+                JSON.stringify({ ...record, resolved: true })
+              )
+            }
+          } catch {
+            // sessionStorage unavailable / malformed — leave the record as is.
+          }
         } catch (retryErr) {
           console.error(
             '[conversation.store] loadFromDB retry also failed:',
