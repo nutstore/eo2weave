@@ -237,6 +237,30 @@ export function setCachedModels(
     error: result.error,
   }
 
+  // Cross-tab guard (Sourcery round 8, "Older tab overwrites newer disk
+  // cache"): `memoryCache` is per-tab, so this tab's ordering guard above
+  // only sees THIS tab's writes. If another tab completed a NEWER refresh
+  // while ours was in flight, our late result must not clobber the
+  // persisted entry it already wrote to localStorage. Read the disk entry
+  // immediately before replacing it and apply the same fetchedAt ordering:
+  // an older successful write loses to a newer one already on disk. (The
+  // memory cache is still updated so this tab's session state reflects its
+  // own fetch; only the PERSISTED catalog is protected.) Failed results
+  // stay memory-only regardless — they never reach writeToDisk.
+  const diskEntry = readFromDisk(key)
+  if (
+    result.error == null &&
+    result.source === 'dynamic' &&
+    diskEntry != null &&
+    diskEntry.error == null &&
+    result.fetchedAt < diskEntry.fetchedAt
+  ) {
+    // Another tab persisted a newer catalog. Adopt it into memory (so this
+    // tab reads the same fresh data) and skip the overwrite.
+    memoryCache.set(key, diskEntry)
+    return
+  }
+
   memoryCache.set(key, entry)
   if (result.source === 'dynamic') writeToDisk(key, entry)
 
