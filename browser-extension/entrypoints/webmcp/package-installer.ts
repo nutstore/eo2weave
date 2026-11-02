@@ -347,9 +347,20 @@ async function swapPackageIntoPlace(
         'STORAGE_FAILED',
       )
     }
-    if (!liveExists && backupExists) {
+    // RECOVERY GATE: the backup is restored not only when the live tree is
+    // MISSING but also when it is INCOMPLETE. A failed restore in a prior
+    // transaction could leave a partially copied live directory while the
+    // intact backup survived; trusting any existing live directory here
+    // made the retry clear the backup — the only complete copy — after the
+    // pre-swap cleanup below (finding: "Retry deletes preserved package").
+    // A live directory holding a manifest whose file set is EMPTY or
+    // unreadable is not a usable install, so the backup wins.
+    const liveIsComplete = liveExists ? await liveTreeHasManifest(provider, id) : false
+    if ((!liveExists || !liveIsComplete) && backupExists) {
       assertLeaseHeld() // fence: do not recover/clear the backup after lease loss
       try {
+        // A partial live tree must not survive under the restored one.
+        await removeMissingOk(provider, id, lockSignal)
         await copyTree(provider, backup, id, lockSignal)
         // Recovered — the backup is now redundant.
         assertLeaseHeld() // fence the backup cleanup against lease loss
@@ -514,6 +525,24 @@ async function pathExists(provider: FsProvider, path: string): Promise<boolean |
     const e = error as { code?: string; name?: string }
     if (e.code === 'ENOENT' || e.name === 'NotFoundError') return false
     return null // transient/permission failure — the answer is unknown
+  }
+}
+
+/**
+ * Conservative completeness check for a live package directory: it is
+ * "complete" only when a READABLE manifest.json is present. A partially
+ * copied tree (an interrupted restore's live directory) usually lacks the
+ * manifest or holds an unreadable one — either way the preserved backup is
+ * the more trustworthy copy and must not be discarded. An INDETERMINATE
+ * read failure counts as INCOMPLETE (fail closed: keep the backup).
+ */
+async function liveTreeHasManifest(provider: FsProvider, id: string): Promise<boolean> {
+  try {
+    const bytes = await provider.readFile(`${id}/manifest.json`)
+    JSON.parse(new TextDecoder().decode(bytes))
+    return true
+  } catch {
+    return false
   }
 }
 
