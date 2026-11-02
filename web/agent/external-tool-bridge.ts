@@ -1148,19 +1148,14 @@ async function executeWebMCPTool(
   if (validationError) return validationError
 
   const targetTab = toolInfo.tabs.find((tab) => tab.tabId === targetTabId)
-  const targetInstance = targetTab?.groupKey
-    ? store.discoveredTools.find(
-        (instance) => instance.fullName === toolInfo.fullName && instance.tabId === targetTabId
-      )
-    : undefined
-  if (targetTab?.groupKey && targetInstance?.annotations?.readOnlyHint !== true) {
-    return toolErrorJson(
-      'call_tool',
-      'LEGACY_EXACT_TAB_UNSUPPORTED',
-      'This tool may change the page, and the installed browser extension cannot guarantee the selected tab. Update the extension before calling it.',
-      { retryable: false, details: { fullToolName: tool.fullName, tabId: targetTabId } }
-    )
-  }
+  // Legacy routing (extension <= 1.1.7 dist builds) is still invoked and
+  // verified rather than pre-emptively rejected: the payload carries
+  // `preferredTabId = targetTabId`, which those builds honor FIRST (their
+  // tab resolver uses [preferredTabId] when it is a number and re-verifies
+  // origin + groupKey on that exact tab), and the web side re-checks the
+  // responding tabId below (TAB_TARGET_MISMATCH). A wrong-tab write can no
+  // longer land silently — the extension is unpublished, so hard-blocking
+  // every write tool made the whole feature unusable (issue #136).
 
   try {
     // Route fields for both extension generations: newer extensions route by
@@ -1206,7 +1201,9 @@ async function executeWebMCPTool(
       return toolErrorJson(
         'call_tool',
         'TAB_TARGET_MISMATCH',
-        `WebMCP tool returned from tab ${response.tabId ?? 'unknown'} instead of selected tab ${targetTabId}.`,
+        `WebMCP tool returned from tab ${response.tabId ?? 'unknown'} instead of selected tab ${targetTabId}. ` +
+          'If this repeats after the page re-registered its tools, update the browser extension — ' +
+          'newer builds pin the responding tab exactly.',
         { retryable: false, details: { requestedTabId: targetTabId, actualTabId: response.tabId } }
       )
     }

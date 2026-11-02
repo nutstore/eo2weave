@@ -490,16 +490,23 @@ describe('WebMCP legacy extension compatibility', () => {
     }
   })
 
-  it('blocks legacy tools that may write because the old extension can select another tab', async () => {
+  it('legacy write tools are invoked and verified instead of pre-emptively blocked (#136)', async () => {
+    // The legacy payload carries preferredTabId = the selected tab, and the
+    // responding tabId is re-checked below — a wrong-tab write surfaces as
+    // TAB_TARGET_MISMATCH rather than being guessed at up front.
     const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     setLegacyState(() => tool)
-    const invoke = vi.fn()
+    const invoke = vi.fn().mockResolvedValue({ ok: true, tabId: 1, result: { value: 'done' } })
     mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
 
     const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
-    expect(invoke).not.toHaveBeenCalled()
-    expect(result.error.code).toBe('LEGACY_EXACT_TAB_UNSUPPORTED')
+    expect(invoke).toHaveBeenCalled()
+    // The legacy route fields ride along with the modern ones.
+    const payload = invoke.mock.calls[0][0]
+    expect(payload.preferredTabId).toBe(1)
+    expect(payload.groupKey).toBeTruthy()
+    expect(result.error).toBeUndefined()
   })
 
   it('rejects a legacy read result returned from a different tab', async () => {
@@ -522,12 +529,12 @@ describe('WebMCP legacy extension compatibility', () => {
       getToolByCallName: () => tool,
       discoveredTools: [{ ...tool, tabId: 1, annotations: { readOnlyHint: false } }],
     })
-    const invoke = vi.fn()
+    const invoke = vi.fn().mockResolvedValue({ ok: true, tabId: 1, result: { value: 'ok' } })
     mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
 
     const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
-    expect(invoke).not.toHaveBeenCalled()
-    expect(result.error.code).toBe('LEGACY_EXACT_TAB_UNSUPPORTED')
+    expect(invoke).toHaveBeenCalled()
+    expect(result.error).toBeUndefined()
   })
 })
 
