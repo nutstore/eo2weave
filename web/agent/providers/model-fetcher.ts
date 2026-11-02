@@ -57,6 +57,23 @@ export function canFetchModels(providerType: LLMProviderType): boolean {
   return providerType !== CODEX_OAUTH_PROVIDER && !STATIC_ONLY_PROVIDERS.includes(providerType)
 }
 
+/**
+ * Whether a provider's STATIC registry is authoritative BY CONSTRUCTION —
+ * it has no /models endpoint, so an empty static list really means "this
+ * provider serves no models".
+ *
+ * This is NOT the same set as `canFetchModels() === false`: codex-oauth is
+ * also excluded there, but its catalog arrives ASYNCHRONOUSLY from the
+ * browser extension, so an empty/unavailable list for it means "not yet
+ * loaded" (unknown), never a confirmed empty. Consumers classifying catalog
+ * status must use this predicate, not `canFetchModels`, to decide whether a
+ * false-y fetch capability makes the static list authoritative (Sourcery
+ * round 8, "Extension catalog treated as empty").
+ */
+export function hasAuthoritativeStaticRegistry(providerType: LLMProviderType): boolean {
+  return STATIC_ONLY_PROVIDERS.includes(providerType)
+}
+
 // ─── Fetch implementations ──────────────────────────────────────────────────
 
 /**

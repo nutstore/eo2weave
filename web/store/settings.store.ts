@@ -1087,7 +1087,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const { PROVIDER_META, getModelsForProvider } = await import('@/agent/providers/types')
         const { getCachedModels, getCachedModelsResult } = await import('@/agent/providers/model-store')
         const { getProviderCatalogStatus: getDynCatalogStatus } = await import('@/agent/providers/types')
-        const { canFetchModels } = await import('@/agent/providers/model-fetcher')
+        const { canFetchModels, hasAuthoritativeStaticRegistry } = await import('@/agent/providers/model-fetcher')
         let llmGatewayProviderKey: string | undefined
         try {
           const mod = await import('@/agent/providers/llm-gateway-provider')
@@ -1180,6 +1180,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             //   registry → 'empty'. Classifying them 'failed' for an absent
             //   refresh made their usable static models invisible to
             //   reconciliation (Sourcery: "Anthropic models are unusable").
+            //   Extension-fed providers excluded from canFetchModels (e.g.
+            //   codex-oauth) do NOT share this property — see below.
             // - Otherwise, if the last /models refresh RECORDED an error, the
             //   catalog is unknown ('failed' — defer) EVEN when the fallback
             //   list is non-empty: dynamic-only models are missing from it;
@@ -1201,6 +1203,25 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             const dynamicRefreshObserved =
               cachedResults.some((r) => r != null)
             const refreshInformsCatalog = canFetchModels(providerType)
+            // STATIC-ONLY vs EXTENSION-FED distinction (Sourcery round 8,
+            // 🟠 "Extension catalog treated as empty"): `canFetchModels()` is
+            // false for BOTH anthropic (no /models endpoint — its static
+            // registry is authoritative BY CONSTRUCTION) and codex-oauth
+            // (models arrive ASYNCHRONOUSLY from the browser extension).
+            // Treating both the same let a codex-oauth registration that
+            // raced ahead of its extension catalog (or an unavailable
+            // catalog) read as a confirmed empty registry: the stale-pin
+            // sweep removed previously confirmed pins and reconciliation
+            // switched away from the provider while its catalog was merely
+            // not-yet-loaded. Only the static-only set may classify an
+            // empty registry as authoritative 'empty'; an extension-fed
+            // provider with no positively reported catalog is unknown
+            // ('failed' — defer), same as a never-observed /models cache.
+            // codex-oauth normally takes the DYNAMIC-provider branch below
+            // (it registers via registerDynamicProvider); this built-in
+            // branch only sees it if a stale key/config lingers, and even
+            // then it must classify as unknown rather than empty.
+            const staticRegistryAuthoritative = hasAuthoritativeStaticRegistry(providerType)
             // The FAILED refresh check precedes the non-empty fallback
             // (Sourcery round 6, 🟠 "Dynamic models appear delisted"): when
             // the /models fetch errors, the merged static+dynamic catalog is
@@ -1213,9 +1234,13 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             // A never-observed catalog is likewise 'failed' (unknown).
             const catalogStatus: ModelCatalogStatus =
               !refreshInformsCatalog
-                ? authoritativeIds.length > 0
-                  ? 'ready'
-                  : 'empty'
+                ? staticRegistryAuthoritative
+                  ? authoritativeIds.length > 0
+                    ? 'ready'
+                    : 'empty'
+                  // Extension-fed provider with no positively reported
+                  // catalog yet: unknown, NOT authoritative-empty.
+                  : 'failed'
                 : (dynamicRefreshFailed || !dynamicRefreshObserved)
                   ? 'failed'
                   : authoritativeIds.length > 0
