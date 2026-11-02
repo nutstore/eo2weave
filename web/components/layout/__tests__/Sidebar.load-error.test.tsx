@@ -280,6 +280,14 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
     // Error with an empty message silently hides it.
     expect(screen.getByTestId('conversation-load-error')).toBeTruthy()
     expect(screen.queryByText('My chat')).toBeNull()
+
+    // Round-4 (PRRT_kwDORoHsZ86yw1e7, "Empty error reason passes
+    // unnoticed"): the reason line must actually render the generic
+    // unknown-error text — a banner with a blank reason line would pass
+    // without these assertions.
+    expect(
+      screen.getByText('Unknown error while loading conversation history'),
+    ).toBeTruthy()
   })
 
   it('renders the normal list when loadError is null', () => {
