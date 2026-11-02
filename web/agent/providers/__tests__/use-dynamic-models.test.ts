@@ -15,11 +15,11 @@ const mocks = vi.hoisted(() => ({
   setCachedModels: vi.fn(),
 }))
 
-vi.mock('../model-fetcher', () => ({
+vi.mock('@/agent/providers/model-fetcher', () => ({
   fetchModelsForProvider: mocks.fetchModelsForProvider,
 }))
 
-vi.mock('../model-store', () => ({
+vi.mock('@/agent/providers/model-store', () => ({
   getCachedModels: mocks.getCachedModels,
   getCachedModelsResult: mocks.getCachedModelsResult,
   isCacheStale: mocks.isCacheStale,
