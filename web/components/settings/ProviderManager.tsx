@@ -227,22 +227,37 @@ function ProviderCard({
   }, [allModels, markPinnedModelsSeen, providerType])
 
   // Catalog status for THIS card's merged list:
-  // - 'ready'  — the merged list has content and the /models fetch succeeded
-  //              (or the provider is static-only / user-configured).
-  // - 'failed' — the /models fetch FAILED: the list is unknown, so nothing
-  //              may be flagged stale and the selection must not change.
-  // - 'empty'  — authoritative empty: the provider positively reported that
-  //              it serves no models (only reachable for a provider whose
-  //              catalog is user-configured or static-empty).
+  // - 'ready'  — the merged list has content (or the provider is
+  //              user-configured / static-only) and nothing invalidated it.
+  // - 'failed' — the /models fetch FAILED on a fetched catalog: the list is
+  //              unknown, so nothing may be flagged stale and the selection
+  //              must not change.
+  // - 'empty'  — authoritative empty: the catalog is genuinely empty (only
+  //              reachable for a provider whose list is user-configured or
+  //              that positively reported an empty catalog).
   const catalogStatus: 'ready' | 'empty' | 'failed' = useMemo(() => {
+    // A FAILED /models fetch takes precedence over a non-empty merged list
+    // (Sourcery round 6, 🟠 "Dynamic models appear delisted"): when the
+    // refresh errors, the list is the static fallback + whatever dynamic
+    // data the session last captured — dynamic-only models are missing from
+    // it without proof of delisting, so the catalog is UNKNOWN ('failed',
+    // nothing may be flagged stale) rather than a self-evidently 'ready'
+    // authoritative list.
+    //
+    // EXCEPTION — custom providers (Sourcery round 6, "Configured empty
+    // catalogs look unknown"): their model list is USER-CONFIGURED, never
+    // fetched, so a dynamic /models error carries no catalog information
+    // for them at all. The settings store classifies the same provider by
+    // the configured list alone (cp.models.length > 0 ? 'ready' : 'empty');
+    // this card must match, or the card shows stale badges for pins the
+    // reconciliation loop legitimately removed.
+    if (modelsError && !isCustom) return 'failed'
     if (allModels.length > 0) return 'ready'
-    if (modelsError) return 'failed'
-    // No models and no error: the provider's catalog is empty. For a custom
-    // provider the list is user-configured (authoritative); for a dynamic
-    // one it came from an external registry that positively reported an
-    // empty catalog. Both are authoritative 'empty'.
+    // No models and no error — or a custom provider regardless of refresh
+    // errors: the catalog is the user-configured (authoritative) list.
+    // An empty configured list is an authoritative 'empty', not unknown.
     return 'empty'
-  }, [allModels.length, modelsError])
+  }, [allModels.length, modelsError, isCustom])
 
   // Pinned models for this provider (resolved to ModelInfo for display)
   const pinnedModels = useMemo(() => {

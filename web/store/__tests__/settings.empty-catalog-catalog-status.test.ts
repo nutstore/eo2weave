@@ -36,6 +36,13 @@ vi.mock('@/security/api-key-store', () => ({
   loadApiKey: mocks.loadApiKey,
 }))
 
+vi.mock('@/sqlite', () => ({
+  initSQLiteDB: vi.fn(() => Promise.resolve()),
+  getApiKeyRepository: vi.fn(() => ({
+    load: vi.fn(() => Promise.resolve(null)),
+  })),
+}))
+
 vi.mock('@/agent/providers/types', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/agent/providers/types')>()
   return {
@@ -61,6 +68,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
 }))
 
 import { useSettingsStore } from '@/store/settings.store'
+import { getDynamicProviderIds, unregisterDynamicProvider } from '@/agent/providers/types'
 import type { LLMProviderType } from '@/agent/providers/types'
 
 const P = 'openai' as LLMProviderType
@@ -94,10 +102,14 @@ describe('getAvailableProviders: failed vs authoritative-empty catalogs (PR #150
     expect(provider?.catalogStatus).toBe('failed')
   })
 
-  it('reports catalogStatus "ready" when the authoritative list is non-empty', async () => {
+  it('reports catalogStatus "ready" when the authoritative list is non-empty and the refresh succeeded', async () => {
     mocks.getModelsForProvider.mockReturnValue([
       { id: 'm-alive', name: 'Alive' },
     ])
+    // Successful observed refresh (round-6 precedence: a FAILED or
+    // never-observed refresh now beats a non-empty fallback list — see the
+    // "failed refresh wins over a non-empty fallback" test below).
+    mocks.getCachedModelsResult.mockReturnValue({ models: [{ id: 'm-alive' }], source: 'dynamic', fetchedAt: Date.now() } as never)
 
     const results = await useSettingsStore.getState().getAvailableProviders()
     const provider = results.find((r) => r.providerType === P)
@@ -207,7 +219,7 @@ describe('getAvailableProviders: failed vs authoritative-empty catalogs (PR #150
     // Authoritative delisting: same provider NOW lists one model, the pin is
     // gone from it → the caller sees the stale pin through authoritativeIds.
     mocks.getModelsForProvider.mockReturnValue([{ id: 'm-other', name: 'Other' }])
-    mocks.getCachedModelsResult.mockReturnValue(null)
+    mocks.getCachedModelsResult.mockReturnValue({ models: [{ id: 'm-other' }], source: 'dynamic', fetchedAt: Date.now() } as never)
     results = await useSettingsStore.getState().getAvailableProviders()
     provider = results.find((r) => r.providerType === P)!
     expect(provider.catalogStatus).toBe('ready')
@@ -246,5 +258,155 @@ describe('getStalePinnedModels: catalogStatus semantics', () => {
     const state = useSettingsStore.getState()
     expect(state.getStalePinnedModels(P, ['m-a'], 'ready')).toEqual(['m-b'])
     expect(state.getStalePinnedModels(P, ['m-a'])).toEqual(['m-b'])
+  })
+})
+
+// ─── Sourcery round 6 (PRRT_kwDORoHsZ86yz16w / yz17D / yz17N / yz17R) ────────
+
+describe('getAvailableProviders: round-6 catalog-status precedence & generation contract', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.loadApiKey.mockImplementation(async (id: string) => (id === P ? 'key' : null))
+    mocks.getCachedModels.mockReturnValue(null)
+    mocks.getCachedModelsResult.mockReturnValue(null)
+    mocks.getDynamicProviderIds.mockReturnValue([])
+    mocks.isLLMGatewayConfigured.mockReturnValue(false)
+    useSettingsStore.setState({
+      providerType: P,
+      modelName: 'm-dyn',
+      pinnedModelsByProvider: { [P]: ['m-dyn'] },
+      pinnedSeenByProvider: { [P]: ['m-dyn'] },
+      customProviders: [],
+    })
+    // concurrent getAvailableProviders runs also load dynamic providers from
+    // the registry; keep it empty so two runs see identical provider sets.
+    for (const id of getDynamicProviderIds()) unregisterDynamicProvider(id)
+  })
+
+  it('reports "failed" for a NON-EMPTY fallback list when the dynamic refresh recorded an error (High: dynamic models appear delisted)', async () => {
+    // Static floor non-empty, but the /models refresh failed: dynamic-only
+    // models are missing from the merged catalog without proof of delisting.
+    // Before the round-6 precedence swap this read 'ready', the resolver
+    // switched away from dynamic-only selections and the sweep removed
+    // dynamic-only pins. Removing the precedence swap must fail this test.
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm-static', name: 'Static floor' }])
+    mocks.getCachedModelsResult.mockReturnValue({ error: 'fetch failed' })
+    useSettingsStore.setState({
+      pinnedModelsByProvider: { [P]: ['m-static', 'm-dyn'] },
+      pinnedSeenByProvider: { [P]: ['m-static', 'm-dyn'] },
+    })
+
+    const results = await useSettingsStore.getState().getAvailableProviders()
+    const provider = results.find((r) => r.providerType === P)
+    expect(provider?.authoritativeIds).toEqual(['m-static'])
+    expect(provider?.catalogStatus).toBe('failed')
+
+    // Resolver defers and the sweep skips: selection + pins survive.
+    const state = useSettingsStore.getState()
+    expect(state.providerType).toBe(P)
+    expect(state.modelName).toBe('m-dyn')
+    expect(state.pinnedModelsByProvider[P]).toEqual(['m-static', 'm-dyn'])
+  })
+
+  it('reports "failed" (not "ready") for a non-empty list with NO refresh result at all', async () => {
+    // Round-5 semantics extended by the round-6 precedence: never-observed
+    // beats non-empty too — the merged list alone is not proof of readiness.
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm-static', name: 'Static floor' }])
+
+    const results = await useSettingsStore.getState().getAvailableProviders()
+    expect(results.find((r) => r.providerType === P)?.catalogStatus).toBe('failed')
+  })
+
+  it('marks every result current:false when a newer run supersedes this one (High: stale discovery changes selection)', async () => {
+    // A caller-side reconciliation (WorkspaceLayout) must skip a superseded
+    // snapshot. Assert the contract the caller reads, and that a CURRENT
+    // run reports current:true.
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm-dyn', name: 'Dyn' }])
+    mocks.getCachedModelsResult.mockReturnValue({ models: [{ id: 'm-dyn' }], source: 'dynamic', fetchedAt: Date.now() } as never)
+
+    // The first await inside the run is the built-in loadApiKey batch. Gate
+    // BOTH runs behind manual control so run 1 provably starts before run 2
+    // (generation bump), and run 2's bump lands while run 1 is awaiting.
+    let releaseFirstBatch: (() => void) | null = null
+    const firstBatchGate = new Promise<void>((resolve) => { releaseFirstBatch = resolve })
+    let batchCall = 0
+    mocks.loadApiKey.mockImplementation(async () => {
+      batchCall += 1
+      if (batchCall === 1) await firstBatchGate // run 1: hold until run 2 started
+      return 'key'
+    })
+
+    const first = useSettingsStore.getState().getAvailableProviders()
+    // Let run 1 reach its first await: several dynamic imports, the gateway
+    // import and the gated loadApiKey batch all yield. A macrotask turn
+    // (setTimeout 0) guarantees the queued microtasks have drained before
+    // run 2's generation bump lands.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const second = useSettingsStore.getState().getAvailableProviders()
+    // Give run 2 its own turn to bump the generation BEFORE run 1 resumes.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    releaseFirstBatch!()
+    const [, firstResults] = await Promise.all([second, first])
+
+    expect(firstResults.length).toBeGreaterThan(0)
+    expect(firstResults.every((r) => r.current === false)).toBe(true)
+
+    const fresh = await useSettingsStore.getState().getAvailableProviders()
+    expect(fresh.length).toBeGreaterThan(0)
+    expect(fresh.every((r) => r.current === true)).toBe(true)
+  })
+
+  it('does not confirm pins while superseded, so a stale snapshot cannot arm the newer sweep (Superseded runs still confirm pins)', async () => {
+    // The older run captured its snapshot, then a newer run started; the
+    // older run must NOT record 'm-late' as seen from its stale snapshot —
+    // a pin confirmed against a catalog the newer run is about to supersede
+    // is exactly what the newer authoritative sweep would remove.
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm-dyn', name: 'Dyn' }, { id: 'm-late', name: 'Late' }])
+    mocks.getCachedModelsResult.mockReturnValue({ models: [{ id: 'm-dyn' }, { id: 'm-late' }], source: 'dynamic', fetchedAt: Date.now() } as never)
+
+    // Hold run 1 inside the built-in batch, add the pin while it waits, then
+    // start run 2. Run 1 resumes superseded and must skip the seen-mark
+    // flush; run 2 (current) sees m-late in ITS authoritative catalog and
+    // confirms it.
+    let releaseFirstBatch: (() => void) | null = null
+    const firstBatchGate = new Promise<void>((resolve) => { releaseFirstBatch = resolve })
+    let batchCall = 0
+    mocks.loadApiKey.mockImplementation(async () => {
+      batchCall += 1
+      if (batchCall === 1) await firstBatchGate
+      return 'key'
+    })
+
+    const run1 = useSettingsStore.getState().getAvailableProviders()
+    await Promise.resolve()
+    useSettingsStore.setState({
+      pinnedModelsByProvider: { [P]: ['m-dyn', 'm-late'] },
+      pinnedSeenByProvider: { [P]: ['m-dyn'] }, // m-late never confirmed yet
+    })
+    const run2 = useSettingsStore.getState().getAvailableProviders()
+    releaseFirstBatch!()
+    await Promise.all([run2, run1])
+
+    // The seen-set must reflect run 2's CURRENT catalog (which contains
+    // m-late), proving run 1's stale marks were skipped and run 2's marks
+    // were applied. With the flush removed, m-late would stay unconfirmed
+    // (seen === ['m-dyn']) and the pin could later be wiped as "never seen".
+    expect(useSettingsStore.getState().pinnedSeenByProvider[P]).toEqual(['m-dyn', 'm-late'])
+    expect(useSettingsStore.getState().pinnedModelsByProvider[P]).toEqual(['m-dyn', 'm-late'])
+  })
+
+  it('reports "empty" (authoritative) for a configured-empty CUSTOM provider even when a dynamic error is present', async () => {
+    // Round-6 finding "Configured empty catalogs look unknown": the store
+    // already classified custom providers by the configured list alone; this
+    // pins that contract (the ProviderCard side must match it).
+    mocks.loadApiKey.mockImplementation(async (id: string) => (id === P || id === 'custom-x' ? 'key' : null))
+    useSettingsStore.setState({
+      customProviders: [{ id: 'custom-x', name: 'Custom X', baseUrl: 'https://x.example', models: [], apiKey: '' } as never],
+    })
+
+    const results = await useSettingsStore.getState().getAvailableProviders()
+    const provider = results.find((r) => r.providerType === 'custom-x')
+    expect(provider?.catalogStatus).toBe('empty')
+    expect(provider?.authoritativeIds).toEqual([])
   })
 })
