@@ -307,8 +307,20 @@ export interface ConversationMessagesHandle {
    * scroll-to-bottom button's virtual-mode click. Routes through the same
    * funnel as atBottomStateChange so the button's optimistic hide also
    * re-enables the list's followOutput state (a bare ref write does not).
+   * Reserved for CONFIRMED at-bottom values — Virtuoso-verdict resyncs.
    */
   notifyVirtualAtBottom: (atBottom: boolean) => void
+  /**
+   * PR #142 review round 5 (Sourcery, Medium): followOutput-only preview for
+   * the jump START. Writes the shared ref and the list's followOutput state
+   * so the next appended turn is followed immediately (responsiveness), but
+   * deliberately does NOT touch the hub or its listeners: the hub keeps the
+   * last Virtuoso-CONFIRMED position until atBottomStateChange(true) reports
+   * the landing. A jump that stops short or a mid-jump virtualized↔plain
+   * switch therefore replays not-at-bottom (button re-shows, followOutput
+   * off) instead of the never-confirmed optimistic value.
+   */
+  previewVirtualAtBottom: (atBottom: boolean) => void
 }
 
 /** Build runtime props for an AssistantTurnBubble. Returns undefined values when not active. */
@@ -579,10 +591,18 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     },
     // Issue #141 (review round 2): the button's click must re-enable
     // followOutput, which reads this component's `isUserAtBottom` STATE —
-    // not just the shared ref. Route through the single funnel so ref,
-    // state, hub replay value and listeners all update together.
+    // not just the shared ref. notifyVirtualAtBottom routes through the
+    // single funnel so ref, state, hub replay value and listeners all
+    // update together; it is reserved for CONFIRMED at-bottom values
+    // (Virtuoso-verdict resyncs). The jump START uses previewVirtualAtBottom
+    // instead: it re-enables the follow path WITHOUT writing the optimistic
+    // value into the hub (review round 5 — see its doc comment).
     notifyVirtualAtBottom: (atBottom: boolean) => {
       handleVirtualAtBottomChange(atBottom)
+    },
+    previewVirtualAtBottom: (atBottom: boolean) => {
+      if (isUserAtBottomRef) isUserAtBottomRef.current = atBottom
+      setIsUserAtBottom(atBottom)
     },
   }), [turns, shouldVirtualize, handleVirtualAtBottomChange]))
 
