@@ -192,19 +192,56 @@ describe('fetchWithMirrorFallback', () => {
     expect(result.usedMirror).toBe(false)
   })
 
-  it('does not fall back on a 404 (the file does not exist in the repo)', async () => {
+  it('retries a mirror 404 on the remaining candidates and rethrows the last 404', async () => {
+    const tried: string[] = []
+    // CN order: mirror 404s first, direct 404s second — the LAST 404 is
+    // the one rethrown after every origin was asked.
+    await expect(fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
+      throw Object.assign(new Error(`Download failed: HTTP 404 (${candidate})`), { status: 404 })
+    }, { preference: 'cn' })).rejects.toThrow(/HTTP 404/)
+    expect(tried).toEqual([mirror, url])
+  })
+
+  it('falls through a mirror 404 to a canonical origin that has the file', async () => {
+    const tried: string[] = []
+    const result = await fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
+      if (candidate === mirror) throw Object.assign(new Error('Download failed: HTTP 404'), { status: 404 })
+      return 'manifest'
+    }, { preference: 'cn' })
+    expect(tried).toEqual([mirror, url])
+    expect(result.value).toBe('manifest')
+    expect(result.usedMirror).toBe(false)
+  })
+
+  it('does not fall back on a non-retryable client error (403)', async () => {
     const tried: string[] = []
     await expect(fetchWithMirrorFallback(url, async candidate => {
       tried.push(candidate)
-      throw Object.assign(new Error('Download failed: HTTP 404'), { status: 404 })
-    }, { preference: 'global' })).rejects.toThrow(/HTTP 404/)
+      throw Object.assign(new Error('Download failed: HTTP 403'), { status: 403 })
+    }, { preference: 'global' })).rejects.toThrow(/HTTP 403/)
+    expect(tried).toEqual([url])
+  })
+
+  it('does not fall back on a validation (RegistryError) failure', async () => {
+    const tried: string[] = []
+    await expect(fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
+      throw new RegistryError('Registry manifest is not valid JSON')
+    }, { preference: 'global' })).rejects.toThrow(/not valid JSON/)
     expect(tried).toEqual([url])
   })
 
   it('rethrows the last failure when every candidate fails', async () => {
+    const tried: string[] = []
     await expect(fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
       throw new Error(`failed: ${candidate}`)
-    }, { preference: 'global' })).rejects.toThrow(/failed/)
+    }, { preference: 'global' })).rejects.toThrow(new RegExp(`failed: ${mirror.replace(/[/.]/g, '\\$&')}`))
+    // Both candidates were tried and the LAST candidate's error is the one
+    // propagated (an early stop would surface the direct URL's error).
+    expect(tried).toEqual([url, mirror])
   })
 })
 

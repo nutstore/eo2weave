@@ -396,10 +396,23 @@ export interface MirrorFetchResult<T> {
  *
  * The canonical URL is tried FIRST for the `global` preference and the
  * jsDelivr mirror is tried first for the `cn` preference (see
- * `registry-mirrors.ts`). When a candidate fails with a NETWORK error, a
- * timeout or a 5xx, the next candidate is tried; a 404 is NOT retried on a
- * mirror — the file genuinely does not exist in that repo, and hammering
- * the CDN with a path that cannot exist is pointless.
+ * `registry-mirrors.ts`).
+ *
+ * Fallback policy:
+ *   - Transport failures (network errors, timeouts) and 5xx server errors
+ *     move on to the next candidate — that is the mirror's whole purpose;
+ *   - a 404 IS retried on the remaining candidates, because a mirror can
+ *     miss content the canonical origin has (CDN propagation lag, private
+ *     files with an access query jsDelivr cannot serve) — a mirror 404 used
+ *     to abort the whole load and block valid resources (finding: "Mirror
+ *     404 blocks valid origins"). The 404 of the LAST candidate is the one
+ *     rethrown, so a genuinely absent file still fails fast after every
+ *     origin has been asked;
+ *   - validation failures and other NON-retryable client errors (4xx other
+ *     than 404/429) do not fall through either: retrying them on a mirror
+ *     could accept different or stale mirror content instead of surfacing
+ *     the preferred candidate's answer (finding: "Invalid mirrors mask
+ *     catalog errors"). `isRetryableFetchError` is the whitelist.
  *
  * The returned `url` is the one that answered, so callers can report which
  * transport served the bytes without re-deriving it.
@@ -413,17 +426,41 @@ export async function fetchWithMirrorFallback<T>(
   let lastError: unknown
   for (let index = 0; index < candidates.length; index++) {
     const candidate = candidates[index]!
+    const isLast = index === candidates.length - 1
     try {
       const value = await load(candidate)
       return { value, url: candidate, usedMirror: candidate !== url }
     } catch (error) {
       lastError = error
-      // A definitive "not found" is the SAME answer on every mirror — do
-      // not retry it.
-      if (isNotFoundError(error)) throw error
+      // A definitive non-retryable answer (validation failure, a client
+      // error other than 404/429) is the SAME answer a mirror would give —
+      // do not retry it and risk masking the real error with mirror data.
+      if (!isRetryableFetchError(error)) throw error
+      // A 404 from the LAST candidate is final — nothing left to ask.
+      if (isNotFoundError(error) && isLast) throw error
     }
   }
   throw lastError instanceof Error ? lastError : new RegistryError(`Registry unreachable: ${String(lastError)}`)
+}
+
+/**
+ * True when the failure is worth retrying on the next mirror candidate:
+ * transport errors (network, timeout, abort) and HTTP server/429 responses.
+ * Deliberately narrow — a validation error or an unexpected 4xx must reach
+ * the caller instead of being papered over by another origin's response.
+ */
+export function isRetryableFetchError(error: unknown): boolean {
+  const status = (error as { status?: number } | null)?.status
+  if (status === 404) return true // a mirror can miss; ask the next origin
+  if (typeof status === 'number') return status >= 500 || status === 429
+  if (isNotFoundError(error)) return true // 404 phrasing without a status
+  const name = (error as { name?: string } | null)?.name
+  if (name === 'AbortError' || name === 'TimeoutError') return true
+  // RegistryError carries a semantic verdict (invalid manifest, not JSON,
+  // size cap) — that answer does not improve on another transport.
+  if (error instanceof RegistryError) return false
+  // Any other Error is a transport/network failure — retry.
+  return error instanceof Error
 }
 
 /** True when the failure means "this path does not exist" (not a transport failure). */
