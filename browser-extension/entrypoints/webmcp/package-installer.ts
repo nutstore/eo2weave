@@ -33,7 +33,7 @@
  */
 
 import { normalizeProviderPath, type FsProvider } from '@creatorweave/fs-provider'
-import { validateManifest, validatePackage } from '@creatorweave/shared/webmcp-adapter'
+import { toolSourcePath, validateManifest, validatePackage } from '@creatorweave/shared/webmcp-adapter'
 import {
   MAX_PACKAGE_FILE_BYTES,
   MAX_PACKAGE_FILES,
@@ -710,8 +710,21 @@ async function liveTreeIsComplete(provider: FsProvider, id: string): Promise<boo
     // A manifest with a nameless/invalid tool entry is not a valid package
     // manifest — treat the tree as incomplete.
     if (!path) return false
+    // Normalize with the SAME rule the manifest validator applies (finding:
+    // "Valid installs appear incomplete"): `validateManifest` accepts a
+    // tool path beginning with `./` and records the NORMALIZED path, and
+    // installation writes the normalized file. Stat-ing the RAW `./`-prefixed
+    // path here hit the provider's path-traversal guard, the read failed,
+    // and a perfectly valid live install was treated as incomplete — the
+    // recovery gate then restored an OLDER preserved backup over it.
+    let normalized: string
     try {
-      const stat = await provider.stat(`${id}/${path}`)
+      normalized = toolSourcePath(path)
+    } catch {
+      return false
+    }
+    try {
+      const stat = await provider.stat(`${id}/${normalized}`)
       if (stat.kind !== 'file') return false
     } catch {
       return false // missing OR unreadable — treat both as incomplete

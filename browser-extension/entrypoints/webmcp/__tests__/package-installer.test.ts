@@ -473,6 +473,57 @@ describe('installPackage (extension side)', () => {
     expect(await listFiles(provider, '')).toEqual([])
   })
 
+  it('does NOT restore the backup over a live install whose tool paths use the ./ prefix', async () => {
+    // MEDIUM ("Valid installs appear incomplete"): a manifest may declare a
+    // tool path beginning with `./` — the validator normalizes it and the
+    // install writes the normalized file. The completeness check stat-ed the
+    // RAW path, which the provider rejects, so a perfectly valid live
+    // install read as incomplete and the recovery gate restored an OLDER
+    // preserved backup over it.
+    const DOT_MANIFEST = {
+      ...TOOL_MANIFEST,
+      tools: [{ ...TOOL_MANIFEST.tools[0]!, path: './workflows/read.js' }],
+    }
+    // The catalog ships the raw ./ path in the manifest; the installer
+    // normalizes it on write (validateManifest's toolSourcePath).
+    const files = {
+      'manifest.json': JSON.stringify(DOT_MANIFEST),
+      'config.json': '{}',
+      'workflows/read.js': WORKFLOW_SOURCE,
+    }
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    // First install succeeds and writes the NORMALIZED path; the on-disk
+    // manifest keeps the raw `./` tool path.
+    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+    // An OLDER backup exists (as a previous failed replacement would leave).
+    const OLD_WORKFLOW = 'export default { fromOldBackup: true }'
+    const OLD_MANIFEST = { ...TOOL_MANIFEST, version: '0.9.0' }
+    await provider.mkdir('.com.example.pkg.previous', { recursive: true })
+    await provider.writeFile('.com.example.pkg.previous/manifest.json', new TextEncoder().encode(JSON.stringify(OLD_MANIFEST)))
+    await provider.writeFile('.com.example.pkg.previous/workflows/read.js', new TextEncoder().encode(OLD_WORKFLOW))
+    // A later install of a NEW version — its staged write fails, so the
+    // recovery gate decides between the live tree and the backup.
+    const full = { ...files, 'manifest.json': JSON.stringify({ ...DOT_MANIFEST, version: '2.0.0' }) }
+    const failingWrite = provider.writeFile.bind(provider)
+    provider.writeFile = (async (path: string, data: Uint8Array) => {
+      if (path.startsWith('.com.example.pkg.installing/')) throw new Error('EIO: simulated staging write failure')
+      return failingWrite(path, data)
+    }) as typeof provider.writeFile
+    delete (provider as { rename?: unknown }).rename
+
+    await expect(installPackage(registry, await pkgWithFiles(full, { version: '2.0.0' }), provider, { fetchImpl: fetchServing(full) }))
+      .rejects.toThrow(/Failed to write package/)
+
+    // The LIVE install survived: its workflow content is the CURRENT one,
+    // not the backup's older copy.
+    const source = new TextDecoder().decode(await provider.readFile('com.example.pkg/workflows/read.js'))
+    expect(source).toBe(WORKFLOW_SOURCE)
+    const manifest = JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/manifest.json')))
+    expect(manifest.version).toBe('1.0.0')
+  })
+
   it('keeps the backup when the rollback RESTORE copy itself fails', async () => {
     // SECURITY (critical, "Rollback failure deletes last copy"): when the
     // copy-in fails and the rollback's restore copy ALSO fails (a storage
