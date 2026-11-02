@@ -10,7 +10,6 @@
 // ============================================================
 
 import { installWebMcpProvider } from './webmcp/provider'
-import { supportsRemoteStreamCancel } from './webmcp/stream-cancel'
 import { isTrustedCreatorWeaveSenderUrl } from '@creatorweave/shared'
 import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
@@ -206,10 +205,7 @@ export default defineContentScript({
       let cancelSent = false;
 
       function requestStreamCancel() {
-        // Only the background handlers that implement the `cancel` control
-        // message may be cancelled remotely — for the others the relay must
-        // not post a cancel (the port would ignore it anyway).
-        if (!supportsRemoteStreamCancel(type) || cancelSent) return;
+        if (!isCodexStream || cancelSent) return;
         cancelSent = true;
         window.postMessage({
           __agentWebBridge: true,
