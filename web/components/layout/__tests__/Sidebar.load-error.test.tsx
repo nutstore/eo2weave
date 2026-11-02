@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { Sidebar } from '@/components/layout/Sidebar'
 
 /**
@@ -202,6 +202,54 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
     // …but the loaded rows stay usable so the user can pick another chat.
     expect(screen.getByRole('listitem', { name: 'Chat: Failing chat' })).toBeTruthy()
     expect(screen.getByRole('listitem', { name: 'Chat: Other chat' })).toBeTruthy()
+  })
+
+  it('keeps the alert visible until a pending retry settles', async () => {
+    // PR #149 review ("Retry persistence is unchecked"): a deferred
+    // loadFromDB mock proves the alert survives the whole retry — a render
+    // that hid the banner while the retry was still in flight would fail
+    // here.
+    mockConversationState.loadError = 'OPFS init failed'
+    mockConversationState.loadErrorScope = 'metadata'
+    mockConversationState.conversations = [{ id: 'c1', title: 'My chat' }]
+    mockContextState.activeWorkspaceId = 'c1'
+    seedWorkspaces(['c1'])
+
+    let resolveRetry!: () => void
+    mockConversationState.loadFromDB = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRetry = resolve
+        }),
+    )
+
+    render(
+      <Sidebar
+        onFileSelect={() => {}}
+        onInspect={() => {}}
+        selectedFilePath={null}
+        onSelectWorkspace={() => {}}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(mockConversationState.loadFromDB).toHaveBeenCalledTimes(1)
+
+    // The retry is still in flight: the alert must stay visible and the
+    // Retry button must show the "retrying" state.
+    expect(screen.getByTestId('conversation-load-error')).toBeTruthy()
+    expect(screen.getByText('OPFS init failed')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retrying…' })).toBeTruthy()
+
+    resolveRetry()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The retry settled: the button is enabled again and the alert is still
+    // there (the mocked store still reports the error).
+    expect(screen.getByTestId('conversation-load-error')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
   it('renders a generic message (not a blank line) when loadError is an empty string', () => {
