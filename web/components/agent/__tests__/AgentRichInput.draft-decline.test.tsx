@@ -103,9 +103,14 @@ describe('AgentRichInput declined draft restoration', () => {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0))
     })
-    await waitFor(() => {
-      expect(onChange).toHaveBeenCalledWith({ text: 'stored draft', mentionedAgentIds: [] })
-    })
+    // The DECLINE path must emit the CURRENT editor value ('stored draft' —
+    // typed text wins over the incoming 'different draft'). Match on the LAST
+    // call, not any earlier one: `toHaveBeenCalledWith` would otherwise match
+    // the initial-restoration call and pass even if the decline stopped
+    // emitting entirely.
+    expect(onChange.mock.calls.at(-1)).toEqual([
+      { text: 'stored draft', mentionedAgentIds: [] },
+    ])
     // Typed content survives: the editor never receives 'different draft'.
     expect(onChange).not.toHaveBeenCalledWith(
       expect.objectContaining({ text: 'different draft' }),
