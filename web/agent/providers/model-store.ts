@@ -210,6 +210,25 @@ export function setCachedModels(
     return
   }
 
+  // A SUCCESSFUL result that is OLDER than the cached one must not overwrite
+  // it either (Sourcery: "Older refresh overwrites newer catalog"): two
+  // overlapping refreshes for the same provider can resolve out of order —
+  // each stamps fetchedAt when it STARTS (fetchModelsForProvider), so a slow
+  // older request that settles after a newer one carries an earlier
+  // timestamp. Applying it in completion order would revert the catalog to
+  // the stale snapshot (dropping models the newer refresh had already
+  // learned about). fetchedAt is monotonic per provider here because every
+  // writer stamps Date.now() at fetch start; equal timestamps fall through
+  // and apply (indistinguishable).
+  if (
+    result.error == null &&
+    existing != null &&
+    existing.error == null &&
+    result.fetchedAt < existing.fetchedAt
+  ) {
+    return
+  }
+
   const key = getCacheKey(providerType, providerKey)
   const entry: CachedModels = {
     models: result.models,

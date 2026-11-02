@@ -213,6 +213,46 @@ describe('setCachedModels — failed refresh outcomes', () => {
     expect(result?.error).toBeUndefined()
     expect(result?.models.map((m) => m.id)).toEqual(['gpt-x'])
   })
+
+  it('does NOT let an older successful refresh overwrite a newer completed one (out-of-order completion)', () => {
+    // Sourcery "Older refresh overwrites newer catalog": two overlapping
+    // refreshes stamp fetchedAt when they START; if the older request
+    // resolves after the newer one, applying it in completion order reverts
+    // the catalog to the stale snapshot. The stale result must be ignored.
+    const t0 = Date.now()
+    setCachedModels('openai' as never, {
+      models: [
+        { id: 'gpt-new', name: 'GPT new', capabilities: ['code'], contextWindow: 128000 },
+        { id: 'gpt-newer', name: 'GPT newer', capabilities: ['code'], contextWindow: 128000 },
+      ],
+      source: 'dynamic',
+      fetchedAt: t0 + 1000, // newer refresh started later
+    })
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-old', name: 'GPT old', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: t0, // older refresh settles LAST
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.models.map((m) => m.id)).toEqual(['gpt-new', 'gpt-newer'])
+    expect(result?.fetchedAt).toBe(t0 + 1000)
+  })
+
+  it('still accepts a NEWER successful refresh after an older one (ordering guard must not block forward progress)', () => {
+    const t0 = Date.now()
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-old', name: 'GPT old', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: t0,
+    })
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-new', name: 'GPT new', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: t0 + 1000,
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.models.map((m) => m.id)).toEqual(['gpt-new'])
+  })
 })
 
 // ─── Failed entries never read fresh (PR #150 round 6) ──────────────────────
