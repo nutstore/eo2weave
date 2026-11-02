@@ -53,7 +53,11 @@ const checkAiReadinessMock = vi.fn()
 vi.mock('@/lib/skill-install-flow', () => ({
   checkAiReadiness: (...args: unknown[]) => checkAiReadinessMock(...(args as [])),
   buildPrefillText: (name: string, prompt?: string | null) =>
-    prompt ? `/${name} ${prompt}` : `/${name}`,
+    // Keep in sync with the REAL helper (#134): the bare command carries a
+    // trailing space so the slash-command picker stays closed — the page
+    // tests must assert the contract the picker depends on, not a
+    // pre-change snapshot of the helper.
+    prompt ? `/${name} ${prompt}` : `/${name} `,
   mergePrefillText: (existing: string | null | undefined, prefill: string) =>
     (existing ?? '').trim() ? `${prefill}\n${existing!.trim()}` : prefill,
   pickConversationTarget: vi.fn(() => ({ id: 'recent-conv', created: false })),
@@ -301,7 +305,7 @@ describe('SkillInstallPage (issue #126)', () => {
     })
     // Prefill was written before navigation.
     expect(saveDraftMock).toHaveBeenCalledWith('recent-conv', {
-      text: '/cw-legal-evidence-chain',
+      text: '/cw-legal-evidence-chain ',
       mentionedAgentIds: [],
       selectedFiles: [],
     })
@@ -398,7 +402,7 @@ describe('SkillInstallPage (issue #126)', () => {
     ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
     await waitFor(() => {
       expect(saveDraftMock).toHaveBeenCalledWith('recent-conv', {
-        text: '/cw-legal-evidence-chain\nmy unsent question',
+        text: '/cw-legal-evidence-chain \nmy unsent question',
         mentionedAgentIds: ['agent-1'],
         selectedFiles: ['a.md'],
       })

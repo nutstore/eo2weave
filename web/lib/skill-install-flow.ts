@@ -445,6 +445,15 @@ export function mergePrefillText(
   const hasCommandToken = trimmed.startsWith(command) && (rest === '' || rest.startsWith(' '))
   const requestedPrompt = prefill.slice(command.length).trim()
   if (hasCommandToken && (requestedPrompt === '' || rest.trim() === requestedPrompt)) {
+    // Preserve the picker-suppressing trailing space on an idempotent
+    // bare-command match: a draft restored WITHOUT the space puts the
+    // caret right after the command token, which re-opens the slash-
+    // command picker over the prefill (issue #134 review). Prompt-bearing
+    // matches return the draft as-is — their last character is never a
+    // bare command token.
+    if (requestedPrompt === '' && rest === '') {
+      return `${command} `
+    }
     return trimmed
   }
   return `${prefill}\n${trimmed}`

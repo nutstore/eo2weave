@@ -748,9 +748,10 @@ describe('mergePrefillText (issue #128 draft preservation)', () => {
   it('is idempotent when the draft carries the bare prefill with its trailing space (#134)', () => {
     // The bare prefill itself ends in a space (picker suppression): a
     // re-visit must recognize that draft as already-present, not stack a
-    // second command on top.
-    expect(mergePrefillText('/my-skill ', '/my-skill ')).toBe('/my-skill')
-    expect(mergePrefillText('/my-skill', '/my-skill ')).toBe('/my-skill')
+    // second command on top — AND keep the space, or the restored caret
+    // sits right after the command token and the picker re-opens.
+    expect(mergePrefillText('/my-skill ', '/my-skill ')).toBe('/my-skill ')
+    expect(mergePrefillText('/my-skill', '/my-skill ')).toBe('/my-skill ')
   })
 
   it('stacks the prefill when the draft starts with a LONGER command sharing the prefix', () => {
