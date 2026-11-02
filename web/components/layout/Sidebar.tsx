@@ -1395,7 +1395,17 @@ export const Sidebar = memo(function Sidebar({
                   type="button"
                   onClick={() => {
                     setIsRetryingLoad(true)
-                    void reloadConversations().finally(() => setIsRetryingLoad(false))
+                    // Bound the retry: a loadFromDB that never settles must
+                    // not leave the button disabled ("Retrying…") forever.
+                    // Re-enable on settle OR after ~15s, whichever comes
+                    // first (issue #147, PR #149 review).
+                    const settled = reloadConversations().catch(() => {})
+                    const timeout = new Promise<void>((resolve) => {
+                      window.setTimeout(resolve, 15_000)
+                    })
+                    void Promise.race([settled, timeout]).finally(() =>
+                      setIsRetryingLoad(false)
+                    )
                   }}
                   disabled={isRetryingLoad}
                   className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
