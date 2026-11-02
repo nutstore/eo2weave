@@ -108,10 +108,15 @@ function isForbiddenIPv6(groups: number[]): boolean {
   // Unspecified :: and loopback ::1.
   if (groups.every(isZero)) return true
   if (groups.slice(0, 7).every(isZero) && groups[7] === 1) return true
-  // Link-local fe80::/10 and unique-local fc00::/7.
+  // Link-local fe80::/10, unique-local fc00::/7 and the deprecated
+  // site-local fec0::/10.
   const first = groups[0]!
   if ((first & 0xffc0) === 0xfe80) return true
   if ((first & 0xfe00) === 0xfc00) return true
+  // fec0::/10 is deprecated (RFC 3879) but some stacks still route it
+  // site-locally, so a literal here reaches intranet services exactly like
+  // unique-local fc00::/7 (#148 review round 8).
+  if ((first & 0xffc0) === 0xfec0) return true
   // IPv4-mapped ::ffff:0:0/96: groups[0..4] are zero, groups[5] is 0xffff —
   // apply the IPv4 rules to the embedded address. Also the deprecated
   // IPv4-compatible ::/96 form (all six leading groups zero).
@@ -196,6 +201,7 @@ export function assertValidMcpEndpointUrl(rawUrl: string): URL {
     !isLoopbackName &&
     (hostname.endsWith('.local') ||
       hostname.endsWith('.internal') ||
+      hostname.endsWith('.home.arpa') ||
       // Single-label hostname (no dot): on the public internet these do not
       // resolve globally; a bare name would resolve via local search domains.
       (!hostname.includes('.') && !hostname.includes(':')))
@@ -296,6 +302,7 @@ export function assertPublicHttpsDownloadUrl(rawUrl: string): URL {
     hostname.endsWith('.localhost') ||
     hostname.endsWith('.local') ||
     hostname.endsWith('.internal') ||
+    hostname.endsWith('.home.arpa') ||
     // Single-label hostname (no dot): on the public internet these do not
     // resolve globally; a bare name would resolve via local search domains.
     (!hostname.includes('.') && !hostname.includes(':'))

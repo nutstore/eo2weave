@@ -18,6 +18,7 @@ describe('plugin download URL validation', () => {
       'https://localhost/a.pdf',
       'https://printer.local/a.pdf',
       'https://vault.internal/a.pdf',
+      'https://nas.home.arpa/a.pdf',
       'https://127.0.0.1/a.pdf',
       'https://10.0.0.5/a.pdf',
       'https://172.16.4.4/a.pdf',
@@ -54,6 +55,10 @@ describe('plugin download URL validation', () => {
       // Unique-local fc00::/7 (fd00::/8 included).
       'https://[fc00::1]/a.pdf',
       'https://[fd12:3456:789a::1]/a.pdf',
+      // Deprecated IPv6 site-local fec0::/10 — still routed locally by some
+      // stacks, so it must be refused like unique-local (#148 round 8).
+      'https://[fec0::1]/a.pdf',
+      'https://[feef:1234::1]/a.pdf',
       // NAT64 well-known prefix embedding a loopback IPv4.
       'https://[64:ff9b::127.0.0.1]/a.pdf',
       // NAT64 RFC 8215 LOCAL-USE prefix embedding private/loopback IPv4s —
@@ -297,6 +302,8 @@ describe('MCP endpoint URL validation (mcp_proxy_fetch / _stream)', () => {
       'http://nas.local:8443/mcp',
       'https://printer.local/mcp',
       'https://vault.internal/mcp',
+      // RFC 4193 home-network suffix — resolves only inside the LAN.
+      'https://nas.home.arpa:8443/mcp',
       'https://[fe80::1]/mcp',
       'https://[::ffff:10.0.0.5]/mcp',
       'https://[64:ff9b::10.0.0.5]/mcp',

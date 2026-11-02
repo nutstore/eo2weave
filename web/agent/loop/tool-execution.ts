@@ -75,6 +75,16 @@ export interface ExecuteToolWithTimeoutInput {
    * string to surface it, or null to keep the plain rejection.
    */
   preferEnvelopeOnRaceLoss?: (envelope: string) => string | null
+  /**
+   * Fired exactly once when the execution TIMED OUT and its structured
+   * envelope replacement took the envelope-fallback return path — i.e. when
+   * the caller's own timeout catch will NOT run (#148 review round 8: a
+   * WebMCP timeout followed by a CALL_CANCELLED envelope within the grace
+   * window returned the envelope, so the timeout notification was skipped).
+   * The ordinary timeout-rejection path keeps notifying via the caller's
+   * catch, so this never fires twice for one call.
+   */
+  onTimeout?: () => void
 }
 
 export function coerceToolArgs(params: unknown): Record<string, unknown> {
@@ -111,6 +121,13 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
 
   let timeoutId: ReturnType<typeof setTimeout> | null = null
   let didTimeout = false
+  let didFireOnTimeout = false
+  const fireOnTimeoutOnce = () => {
+    if (didTimeout && !didFireOnTimeout) {
+      didFireOnTimeout = true
+      input.onTimeout?.()
+    }
+  }
   const timeoutPromise =
     typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0
       ? new Promise<string>((_, reject) => {
@@ -166,7 +183,18 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
         ])
         if (envelope !== null) {
           const preferred = input.preferEnvelopeOnRaceLoss(envelope)
-          if (preferred !== null) return preferred
+          if (preferred !== null) {
+            // The envelope REPLACED the abort/timeout rejection, so the
+            // caller's timeout catch never runs — fire the timeout
+            // notification here (#148 review round 8: a WebMCP timeout
+            // followed by a CALL_CANCELLED envelope within the grace window
+            // skipped onToolTimeout entirely). didTimeout guards it: an
+            // envelope after a plain user abort is not a timeout, and the
+            // ordinary rejection path keeps notifying via the caller's
+            // catch, so this never duplicates.
+            fireOnTimeoutOnce()
+            return preferred
+          }
         }
       } catch {
         // The tool promise rejected too — the original race error is the
