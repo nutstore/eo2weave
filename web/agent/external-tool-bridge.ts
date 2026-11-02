@@ -24,7 +24,7 @@ import { getMCPManager } from '@/mcp/mcp-manager'
 import { useWebMCPStore } from '@/webmcp/store'
 import { useSettingsStore } from '@/store/settings.store'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
-import { consumeAndSavePluginDownload } from '@/webmcp/plugin-download'
+import { consumeAndSavePluginDownload, SavedAssetAbortedError } from '@/webmcp/plugin-download'
 import {
   getSidePanelBindingId,
   isSidePanelMode,
@@ -1086,6 +1086,34 @@ async function refreshCatalogWithinDeadline(freshAfterInFlight = false): Promise
   }
 }
 
+/**
+ * Best-effort delete of an asset that was saved for a run the caller
+ * cancelled (or whose finalize failed): disk must not keep a file the
+ * result reports as not saved (#139 review: failed finalize hides a saved
+ * file). Returns false when the rollback could not be performed so the
+ * caller can surface the orphaned path instead of silently leaving it.
+ * Never throws — a failed rollback must not mask the error/cancellation
+ * path.
+ */
+async function deleteSavedAssetQuietly(workspaceId: string | null, savedPath: string): Promise<boolean> {
+  // No workspace id ⇒ the save could not have happened through the assets
+  // backend in the first place, so there is nothing to roll back and the
+  // finalize path keeps its normal retryable classification (#139 review:
+  // failed finalize hides a saved file).
+  if (!workspaceId) return true
+  try {
+    const { AssetsBackend } = await import('@/agent/tools/backends/assets-backend')
+    await new AssetsBackend(workspaceId).deleteFile(savedPath)
+    return true
+  } catch { return false /* best-effort: caller surfaces the orphaned path */ }
+}
+
+/** Workspace id used to roll back an asset saved for a cancelled run. */
+function workspaceIdForAssetRollback(context: ToolContext): string | null {
+  const workspaceId = context.workspaceId?.trim()
+  return workspaceId || null
+}
+
 /** Return the current legacy route key after rediscovering the selected tab. */
 async function refreshLegacyRouteKey(
   fullName: string,
@@ -1219,6 +1247,11 @@ async function executeWebMCPTool(
     // The cancellation envelope is a toolErrorJson STRING — it must NOT
     // flow into the response.ok / !response.ok processing below (a string
     // would be misread as WEBMCP_INVOKE_FAILED). Detect it and return as-is.
+    // Cancellation BEFORE the response lands here too: the response (and
+    // with it any plugin-download plan) is dropped entirely and the run
+    // ends with the envelope (#139 review: cancelled transfers must not
+    // keep writing or leave the extension transfer unfinalized — a dropped
+    // plan is the one outcome that provably starts no local transfer).
     let response = await invokeWithAbort(targetTab?.groupKey)
     if (typeof response === 'string') {
       // Cancellation envelope (toolErrorJson string): return as-is instead
@@ -1226,19 +1259,66 @@ async function executeWebMCPTool(
       return response
     }
 
+    // Track whether the refreshed-route retry has been DISPATCHED: a routing
+    // error returned by that second dispatch can no longer be trusted as
+    // pre-execution — the call already went out on the refreshed route and
+    // a write may have run before the route lookup failed (#139 review:
+    // dispatched writes look safe to retry). Only a routing error from the
+    // FIRST dispatch (no retry sent yet) keeps the safe pre-execution
+    // classification.
+    let routeRetryDispatched = false
+
     if (
       !response.ok &&
+      response.tabId === undefined &&
       ['INVALID_TOOL_NAME', 'TOOL_TARGET_NOT_FOUND'].includes(response.errorCode || '')
     ) {
       // A stale route key is the usual cause on legacy extensions. Refresh
       // the catalog once to pick up the current key and retry. Only routing
       // fields change — the arguments are sent unchanged, and this whole
-      // path runs downstream of authorize().
-      const refreshedGroupKey = await refreshLegacyRouteKey(
-        toolInfo.fullName,
-        targetTabId,
-      )
+      // path runs downstream of authorize(). Only a routing error WITHOUT a
+      // tabId reaches this retry: a routing error that carries a tabId may
+      // have followed a completed dispatch (post-execution), so resending
+      // the arguments could repeat a write that already changed the page
+      // (#139 review: route refresh can repeat writes).
+      //
+      // The refresh runs OUTSIDE invokeWithAbort's race, so a slow refresh
+      // after an abort would outlive the caller's race-loss grace period and
+      // surface the generic abort rejection instead of the CALL_CANCELLED
+      // envelope (#139 review: slow route refresh loses cancellation). Race
+      // the refresh against the abort signal too.
+      let onRefreshAbort: (() => void) | undefined
+      const refreshedGroupKey = await Promise.race([
+        refreshLegacyRouteKey(toolInfo.fullName, targetTabId),
+        ...(
+          context.abortSignal
+            ? [
+                new Promise<never>((_, reject) => {
+                  onRefreshAbort = () => reject(new Error('__WEBMCP_RUN_ABORTED__'))
+                  if (context.abortSignal!.aborted) onRefreshAbort()
+                  else context.abortSignal!.addEventListener('abort', onRefreshAbort, { once: true })
+                }),
+              ]
+            : []
+        ),
+      ])
+        .catch((e) => {
+          if ((e as Error).message === '__WEBMCP_RUN_ABORTED__') return undefined
+          throw e
+        })
+        .finally(() => {
+          if (onRefreshAbort && context.abortSignal) {
+            context.abortSignal.removeEventListener('abort', onRefreshAbort)
+          }
+        })
+      if (context.abortSignal?.aborted) {
+        // The abort won the refresh race (or fired while the refresh was
+        // in flight): return the envelope WITHOUT dispatching — no write
+        // may start after the caller stopped waiting.
+        return cancellationEnvelope()
+      }
       if (refreshedGroupKey && refreshedGroupKey !== targetTab?.groupKey) {
+        routeRetryDispatched = true
         // No explicit aborted check here: invokeWithAbort re-checks the
         // signal before dispatching and returns the cancellation envelope
         // without sending the call (#139 review: aborted writes still start).
@@ -1277,15 +1357,18 @@ async function executeWebMCPTool(
       // review): the tabId cannot rule out side effects, so every failed
       // write is ambiguous. KNOWN PRE-execution routing failures are the
       // exception — the tool provably never ran, so a retry is safe
-      // (#139 review: safe route errors must stay retryable). A routing
-      // error name that arrives WITHOUT a tabId cannot be trusted as
-      // pre-execution (it may follow a failed route-key refresh where the
-      // call was already dispatched to an unknown tab), so it keeps the
-      // ambiguous classification.
+      // (#139 review: safe route errors must stay retryable). Two cases
+      // keep the ambiguous classification even for a known routing error
+      // name: it arrives WITH a tabId (the failure may follow a dispatch
+      // to a live tab), or it comes from the DISPATCHED refreshed-route
+      // retry (the call already went out — #139 review: dispatched writes
+      // look safe to retry). In both, a write may have run before the
+      // route lookup failed.
       const errorCode = response.errorCode || ''
       const knownRoutingError =
         ['INVALID_TOOL_NAME', 'TOOL_TARGET_NOT_FOUND', 'TARGET_ORIGIN_MISMATCH'].includes(errorCode)
-      const preExecutionRoutingError = knownRoutingError && response.tabId === undefined
+      const preExecutionRoutingError =
+        knownRoutingError && response.tabId === undefined && !routeRetryDispatched
       const ambiguousWrite =
         tool.annotations?.readOnlyHint !== true && !preExecutionRoutingError
       return toolErrorJson(
@@ -1323,24 +1406,85 @@ async function executeWebMCPTool(
           context
         )
 
-        const finalizeResp = await bridge.webMCPPluginDownloadFinalize({
-          transferId: response.pluginDownloadPlan.transferId,
-          savedPath: saveResult.savedPath,
-        })
+        // The extension finalize can outlive the caller's patience: race it
+        // against the abort signal so a cancelled run rolls the saved asset
+        // back and returns the envelope instead of hanging on the transfer
+        // or COMPLETING it after Stop (#139 review: aborted downloads keep
+        // writing / failed finalize hides a saved file). On abort the
+        // transfer is left unfinalized — the extension side keeps it
+        // pending and the result tells the model the download did not
+        // finish. Never re-dispatch the page action.
+        let onFinalizeAbort: (() => void) | undefined
+        const finalizeResp = await Promise.race([
+          bridge.webMCPPluginDownloadFinalize({
+            transferId: response.pluginDownloadPlan.transferId,
+            savedPath: saveResult.savedPath,
+          }),
+          ...(
+            context.abortSignal
+              ? [
+                  new Promise<never>((_, reject) => {
+                    onFinalizeAbort = () => reject(new Error('__WEBMCP_RUN_ABORTED__'))
+                    if (context.abortSignal!.aborted) onFinalizeAbort()
+                    else context.abortSignal!.addEventListener('abort', onFinalizeAbort, { once: true })
+                  }),
+                ]
+              : []
+          ),
+        ])
+          .catch((e) => {
+            if ((e as Error).message === '__WEBMCP_RUN_ABORTED__') return undefined
+            throw e
+          })
+          .finally(() => {
+            if (onFinalizeAbort && context.abortSignal) {
+              context.abortSignal.removeEventListener('abort', onFinalizeAbort)
+            }
+          })
+        if (context.abortSignal?.aborted) {
+          await deleteSavedAssetQuietly(workspaceIdForAssetRollback(context), saveResult.savedPath)
+          return cancellationEnvelope()
+        }
         if (!finalizeResp?.ok) {
-          // The page action ALREADY RAN and returned success — only the
-          // local download pipeline failed (#139 review: download failures
-          // can replay writes). Re-running the page tool for a write would
-          // duplicate its side effects, so non-retryable with verification
-          // guidance; read-only tools keep retryable (repeating is safe).
+          // The asset is ALREADY on disk but the extension's finalize failed:
+          // roll it back so no persistent file hides behind a failure result
+          // (#139 review: failed finalize hides a saved file). If the
+          // rollback itself fails, expose the saved path in the error
+          // details so the caller can clean it up manually. The page action
+          // ALREADY RAN and returned success — retrying a write would
+          // duplicate its side effects, so non-retryable either way; only
+          // the verification guidance differs.
           const writeShape = tool.annotations?.readOnlyHint !== true
+          const finalizeMessage =
+            (finalizeResp?.error || 'Plugin download finalize failed') +
+            (writeShape
+              ? ' The page action already ran — verify its result on the target tab before retrying; retrying would repeat the action.'
+              : '')
+          const rolledBack = await deleteSavedAssetQuietly(
+            workspaceIdForAssetRollback(context),
+            saveResult.savedPath,
+          )
+          if (!rolledBack) {
+            // The orphaned asset could not be removed: surface its path so
+            // the caller can clean it up manually (#139 review: failed
+            // finalize hides a saved file).
+            return toolErrorJson(
+              'call_tool',
+              'WEBMCP_PLUGIN_DOWNLOAD_FINALIZE_FAILED',
+              finalizeMessage +
+                ` The downloaded asset could not be rolled back and is still saved at vfs://assets/${saveResult.savedPath} — delete it before retrying.`,
+              {
+                retryable: false,
+                details: {
+                  savedAssetPath: `vfs://assets/${saveResult.savedPath}`,
+                },
+              },
+            )
+          }
           return toolErrorJson(
             'call_tool',
             'WEBMCP_PLUGIN_DOWNLOAD_FINALIZE_FAILED',
-            (finalizeResp?.error || 'Plugin download finalize failed') +
-              (writeShape
-                ? ' The page action already ran — verify its result on the target tab before retrying; retrying would repeat the action.'
-                : ''),
+            finalizeMessage,
             { retryable: !writeShape }
           )
         }
@@ -1366,7 +1510,23 @@ async function executeWebMCPTool(
           },
         }, untrusted ? { contentParts: [{ type: 'text', text: String(wrapUntrustedContent(saveResult.patchedResult, { untrusted, sourceId, toolName: tool.fullName })) }] } : undefined)
       } catch (error) {
+        // A post-save abort surfaces as SavedAssetAbortedError: the page
+        // action already ran and the asset landed, but the caller cancelled
+        // before finalize. Roll the asset back so disk matches the cancelled
+        // run, and return the cancellation envelope instead of a plain
+        // error that would hide the saved file (#139 review: failed
+        // finalize hides a saved file). Never re-dispatch the page action.
+        if (error instanceof SavedAssetAbortedError) {
+          await deleteSavedAssetQuietly(workspaceIdForAssetRollback(context), error.savedPath)
+          return cancellationEnvelope()
+        }
         const message = error instanceof Error ? error.message : String(error)
+        if (message === '__WEBMCP_DOWNLOAD_ABORTED__') {
+          // Aborted mid-stream, before anything was saved — nothing to roll
+          // back; the transfer was already cancelled best-effort (#139
+          // review: aborted downloads keep writing).
+          return cancellationEnvelope()
+        }
         // Same ambiguity as the finalize branch: the page tool already
         // returned success, so retrying a write replays its completed
         // action (#139 review: download failures can replay writes).

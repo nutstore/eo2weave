@@ -16,6 +16,21 @@ export interface PluginDownloadSaveResult {
   patchedResult: Record<string, unknown>
 }
 
+/**
+ * The run aborted AFTER the asset was written to disk. Carries the saved
+ * path so the caller can roll the orphaned asset back (#139 review: failed
+ * finalize hides a saved file) instead of leaving a persistent file the
+ * caller believes was never saved.
+ */
+export class SavedAssetAbortedError extends Error {
+  readonly savedPath: string
+  constructor(savedPath: string) {
+    super(`Plugin download aborted after saving asset: ${savedPath}`)
+    this.name = 'SavedAssetAbortedError'
+    this.savedPath = savedPath
+  }
+}
+
 function sanitizeFileName(name: string): string {
   const normalized = name.trim().replace(/[\\/]/g, '_').replace(/\s+/g, ' ')
   // eslint-disable-next-line no-control-regex -- intentionally strip ASCII control chars (NUL etc.) from downloaded file names
@@ -129,12 +144,21 @@ function patchResultForAI(
 
 async function collectDataUrlFromFrames(
   stream: AsyncIterable<WebMCPPluginDownloadFrame>,
-  expectedTransferId: string
+  expectedTransferId: string,
+  context: ToolContext
 ): Promise<{ start: WebMCPPluginDownloadStartFrame; dataUrl: string }> {
   let startFrame: WebMCPPluginDownloadStartFrame | null = null
   let chunks: string[] = []
 
   for await (const frame of stream) {
+    // Observe the run's abort signal between frames: once the caller has
+    // cancelled, the extension transfer must stop being consumed (#139
+    // review: aborted downloads keep writing). The stream is cancelled
+    // best-effort so the extension side stops transferring too.
+    if (context.abortSignal?.aborted) {
+      cancelPluginDownloadStream(stream)
+      throw new Error('__WEBMCP_DOWNLOAD_ABORTED__')
+    }
     if (frame.type === 'error') {
       throw new Error(`[${frame.errorCode}] ${frame.message}`)
     }
@@ -188,6 +212,23 @@ async function collectDataUrlFromFrames(
   return { start: startFrame, dataUrl }
 }
 
+/**
+ * Best-effort cancel of an in-flight plugin-download transfer: the stream
+ * iterator exposes `cancel` (#139 review: cancelled transfers keep writing
+ * assets). Never throws — a missing or failing cancel must not mask the
+ * original abort.
+ */
+export function cancelPluginDownloadStream(
+  stream: AsyncIterable<WebMCPPluginDownloadFrame>
+): void {
+  const cancellable = stream as AsyncIterable<WebMCPPluginDownloadFrame> & {
+    cancel?: () => void
+  }
+  try {
+    cancellable.cancel?.()
+  } catch { /* best-effort: the abort error is already propagating */ }
+}
+
 export async function consumeAndSavePluginDownload(
   bridge: WebMCPBridge,
   plan: WebMCPPluginDownloadPlan,
@@ -201,6 +242,11 @@ export async function consumeAndSavePluginDownload(
   if (!bridge.webMCPPluginDownloadStream) {
     throw new Error('Plugin download streaming is not supported by the browser extension')
   }
+
+  // Already-aborted run: do not start the transfer at all (#139 review:
+  // cancelled transfers keep writing assets).
+  context.abortSignal?.throwIfAborted()
+
   const stream = bridge.webMCPPluginDownloadStream({
     transferId: plan.transferId,
     downloadUrl: plan.downloadUrl,
@@ -208,7 +254,17 @@ export async function consumeAndSavePluginDownload(
     fileName: plan.fileName,
   })
 
-  const { start, dataUrl } = await collectDataUrlFromFrames(stream, plan.transferId)
+  const { start, dataUrl } = await collectDataUrlFromFrames(stream, plan.transferId, context)
+
+  // Abort between stream completion and the save: the downloaded payload is
+  // discarded — the asset must not be written after the caller cancelled.
+  // Surface a distinct marker (not a bare AbortError) so the bridge can
+  // return the cancellation envelope instead of a generic failure (#139
+  // review: aborted downloads keep writing).
+  if (context.abortSignal?.aborted) {
+    throw new Error('__WEBMCP_DOWNLOAD_ABORTED__')
+  }
+
   const safeFileName = sanitizeFileName(start.fileName)
   const saveDir = normalizeSaveDir(start.savePath || plan.savePath || '/')
   const targetPath = saveDir ? `${saveDir}/${safeFileName}` : safeFileName
@@ -217,6 +273,14 @@ export async function consumeAndSavePluginDownload(
   const finalPath = await resolveUniqueAssetPath(backend, targetPath)
   const { blob, mimeType } = dataUrlToBlob(dataUrl)
   await backend.writeFile(finalPath, blob)
+
+  // Abort after the save: the file already landed on disk. Surface a
+  // distinct error so the caller can roll the saved asset back (#139
+  // review: failed finalize hides a saved file) instead of reporting a
+  // plain failure that hides it.
+  if (context.abortSignal?.aborted) {
+    throw new SavedAssetAbortedError(finalPath)
+  }
 
   const vfsPath = `vfs://assets/${finalPath}`
   const patchedResult = patchResultForAI(plan.originalResult, vfsPath, safeFileName)

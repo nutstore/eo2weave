@@ -131,24 +131,26 @@ async function main() {
 
     const content = await readFile(skillMdPath, 'utf8')
     const fm = parseFrontmatter(content)
+    // Localized descriptions (e.g. `description.zh-CN:` in the frontmatter).
+    // When the base `description` is absent but translations exist, fall
+    // back to the FIRST available translation so old consumers that only
+    // read `description` still see something instead of an empty string
+    // (#139 review: localized-only description is hidden).
+    const descriptionTranslations = Object.fromEntries(
+      Object.entries(fm)
+        .filter(([k, v]) => k.startsWith('description.') && typeof v === 'string' && v)
+        .map(([k, v]) => [k.slice('description.'.length), v]),
+    )
+    const firstTranslation = Object.values(descriptionTranslations)[0]
     skills.push({
       id: name,
       name: fm.name || name,
       dirName: name,
-      description: fm.description ?? '',
-      // Optional localized descriptions (e.g. `description.zh-CN:` in the
-      // frontmatter). Purely additive: absent when a skill ships only the
-      // base description, so older consumers are unaffected (#140).
-      ...(Object.entries(fm)
-        .filter(([k, v]) => k.startsWith('description.') && v)
-        .length > 0
-        ? {
-            description_i18n: Object.fromEntries(
-              Object.entries(fm)
-                .filter(([k, v]) => k.startsWith('description.') && typeof v === 'string' && v)
-                .map(([k, v]) => [k.slice('description.'.length), v]),
-            ),
-          }
+      description: fm.description || firstTranslation || '',
+      // Purely additive: absent when a skill ships only the base
+      // description, so older consumers are unaffected (#140).
+      ...(Object.keys(descriptionTranslations).length > 0
+        ? { description_i18n: descriptionTranslations }
         : {}),
       category: fm.category || 'general',
       tags: Array.isArray(fm.tags) ? fm.tags : [],

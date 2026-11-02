@@ -699,9 +699,19 @@ function SkillInstallView() {
               </span>
             )}
           </div>
-          {entry.description && (
-            <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">{selectLocalizedDescription(entry, locale)}</p>
-          )}
+          {(() => {
+            // Guard on the SELECTED localized description, not the base
+            // `entry.description`: a skill can ship an empty base
+            // description with a nonempty `description.<locale>`
+            // translation (pack-skills emits `description: ''` and keeps
+            // the localized fields), and the paragraph would otherwise be
+            // hidden even though selectLocalizedDescription has text to
+            // show (#139 review: localized descriptions are hidden).
+            const localizedDescription = selectLocalizedDescription(entry, locale)
+            return localizedDescription ? (
+              <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">{localizedDescription}</p>
+            ) : null
+          })()}
           <p className="mt-2 text-xs text-muted-foreground">
             {t('skillInstall.versionLabel')} {entry.version || '—'}
             {typeof entry.fileCount === 'number' &&

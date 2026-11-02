@@ -920,4 +920,216 @@ describe('WebMCP catalog lookup recovery', () => {
       useSettingsStore.setState({ enableWebMCP: previous })
     }
   })
+
+  it('does not expose cached WebMCP tools while globally disabled', () => {
+    const previous = useSettingsStore.getState().enableWebMCP
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({
+      getEnabledTools: () => [{ fullName: 'https_example_com__read', tabs: [{ tabId: 1 }] }],
+    })
+    try {
+      useSettingsStore.setState({ enableWebMCP: false })
+      expect(collectAllExternalTools()).toEqual([])
+    } finally {
+      useSettingsStore.setState({ enableWebMCP: previous })
+    }
+  })
+
+  it('does not invoke a tool if WebMCP is disabled during authorization', async () => {
+    const tool = {
+      name: 'read', origin: 'https://example.com', fullName: 'https_example_com__read',
+      hostname: 'example.com', description: '', inputSchema,
+      apiMode: 'documentModelContext' as const,
+      tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
+    }
+    const previous = useSettingsStore.getState().enableWebMCP
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    mocks.getWebMCPState.mockReturnValue({ getEnabledTools: () => [tool], getToolByCallName: () => tool })
+    const invoke = vi.fn()
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+    let approve!: (value: { decision: 'allow'; via: 'auto' }) => void
+    vi.mocked(authorize).mockImplementationOnce(() => new Promise((resolve) => { approve = resolve }))
+
+    try {
+      useSettingsStore.setState({ enableWebMCP: true })
+      const pending = callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext)
+      await vi.waitFor(() => expect(approve).toBeTypeOf('function'))
+      useSettingsStore.setState({ enableWebMCP: false })
+      approve({ decision: 'allow', via: 'auto' })
+      const result = JSON.parse(await pending)
+      expect(invoke).not.toHaveBeenCalled()
+      expect(result.error.code).toBe('WEBMCP_DISABLED')
+    } finally {
+      useSettingsStore.setState({ enableWebMCP: previous })
+    }
+  })
+})
+
+describe('WebMCP #139 round-3 regression coverage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.refreshCatalog.mockReset()
+    mocks.consumeAndSavePluginDownload.mockReset()
+  })
+
+  const round3Schema = { type: 'object' as const, properties: { a: { type: 'string' } } }
+
+  const round3Tool = (groupKey: string, annotations?: Record<string, unknown>) => ({
+    name: 'picture',
+    origin: 'https://example.com',
+    fullName: 'example_com__picture',
+    hostname: 'example.com',
+    description: '',
+    inputSchema: round3Schema,
+    apiMode: 'documentModelContext' as const,
+    ...(annotations ? { annotations } : {}),
+    tabs: [{
+      tabId: 1,
+      title: 'Example',
+      url: 'https://example.com',
+      lastSeenAt: 1,
+      groupKey,
+    }],
+  })
+
+  const setRound3State = (getTool: () => ReturnType<typeof round3Tool>) => {
+    mocks.getWebMCPState.mockImplementation(() => ({
+      getEnabledTools: () => [getTool()],
+      getToolByCallName: () => getTool(),
+      get discoveredTools() {
+        const tool = getTool()
+        return [{ ...tool, tabId: 1, annotations: tool.annotations }]
+      },
+    }))
+  }
+
+  it('does not auto-retry a routing error that carries a tabId (#139 review: route refresh can repeat writes)', async () => {
+    // A routing-shaped error WITH a tabId may have followed a completed
+    // dispatch — resending the same arguments could repeat a write.
+    const tool = round3Tool('stale', { readOnlyHint: false })
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setRound3State(() => tool)
+    mocks.refreshCatalog.mockResolvedValue([])
+    const invoke = vi.fn().mockResolvedValue({
+      ok: false,
+      errorCode: 'INVALID_TOOL_NAME',
+      error: 'route vanished',
+      tabId: 1,
+    })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(invoke).toHaveBeenCalledOnce() // no refreshed-route retry dispatched
+    expect(mocks.refreshCatalog).not.toHaveBeenCalled()
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain("verify the target tab's state before retrying")
+  })
+
+  it('marks a routing error from the DISPATCHED refreshed-route retry ambiguous for writes (#139 review: dispatched writes look safe to retry)', async () => {
+    // First dispatch: pre-execution route miss (no tabId). After the route
+    // refresh, the RETRY is dispatched and comes back with another routing
+    // error without a tabId — the call already went out once, so a write
+    // must keep the ambiguous (non-retryable) classification.
+    let current = round3Tool('stale', { readOnlyHint: false })
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setRound3State(() => current)
+    mocks.refreshCatalog.mockImplementation(async () => {
+      current = round3Tool('fresh', { readOnlyHint: false })
+      return [current]
+    })
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'INVALID_TOOL_NAME',
+        error: 'route miss',
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'INVALID_TOOL_NAME',
+        error: 'route miss on refreshed key',
+      })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+
+    const result = JSON.parse(
+      await callToolExecutor({ full_tool_name: 'example_com__picture', tab_id: 1 }, toolContext),
+    )
+    expect(invoke).toHaveBeenCalledTimes(2)
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain("verify the target tab's state before retrying")
+  })
+
+  it('returns the cancellation envelope when the abort fires during the route-key refresh (#139 review: slow route refresh loses cancellation)', async () => {
+    // The refresh never settles: the abort race must end the call with the
+    // envelope instead of waiting on the catalog.
+    const stale = round3Tool('stale')
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setRound3State(() => stale)
+    mocks.refreshCatalog.mockImplementation(() => new Promise(() => {}))
+    const invoke = vi.fn().mockResolvedValue({ ok: false, errorCode: 'INVALID_TOOL_NAME', error: 'route miss' })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+    const controller = new AbortController()
+
+    const pending = callToolExecutor(
+      { full_tool_name: stale.fullName, tab_id: 1, args: { a: 'x' } },
+      { ...toolContext, abortSignal: controller.signal },
+    )
+    await vi.waitFor(() => expect(mocks.refreshCatalog).toHaveBeenCalledOnce())
+    controller.abort()
+    const raced = await Promise.race([pending, new Promise((r) => setTimeout(() => r('PENDING'), 300))])
+    expect(raced).not.toBe('PENDING')
+    const result = JSON.parse(raced as string)
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(result.error.code).toBe('CALL_CANCELLED')
+  })
+
+  it('rolls back the saved asset and returns CALL_CANCELLED when the abort fires after the save (#139 review: failed finalize hides a saved file)', async () => {
+    const tool = round3Tool('signature', { readOnlyHint: false })
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setRound3State(() => tool)
+    // Stub the assets backend at the MODULE boundary: importing the real
+    // module pulls in the OPFS workspace manager, which needs a live
+    // FileSystemDirectoryHandle the test env cannot provide.
+    const deleteFile = vi.fn().mockResolvedValue(undefined)
+    vi.doMock('@/agent/tools/backends/assets-backend', () => ({
+      AssetsBackend: class {
+        deleteFile = deleteFile
+      },
+    }))
+    try {
+      // deleteSavedAssetQuietly imports the backend lazily — clear the
+      // module registry so the doMock above takes effect on that import.
+      vi.resetModules()
+      const { callToolExecutor: freshExecutor } = await import('../external-tool-bridge')
+      // The fresh module instance re-imports the hoisted test doubles; the
+      // factory vi.mocks at the top of the file still apply, so rebind the
+      // state/bridge mocks on the SHARED mock fns (already done below).
+      mocks.getWebMCPBridge.mockReturnValue({
+        webMCPInvoke: vi.fn().mockResolvedValue({
+          ok: true,
+          tabId: 1,
+          result: { done: true },
+          pluginDownloadPlan: { transferId: 't1' },
+        }),
+        webMCPPluginDownloadStream: vi.fn(),
+        webMCPPluginDownloadFinalize: vi.fn().mockImplementation(() => new Promise(() => {})),
+      })
+      mocks.consumeAndSavePluginDownload.mockResolvedValue({
+        savedPath: 'x.bin', fileName: 'x.bin', mimeType: 'application/octet-stream', size: 1, patchedResult: {},
+      })
+      const controller = new AbortController()
+
+      const pending = freshExecutor(
+        { full_tool_name: tool.fullName, tab_id: 1 },
+        { ...toolContext, workspaceId: 'ws-1', abortSignal: controller.signal },
+      )
+      await vi.waitFor(() => expect(mocks.consumeAndSavePluginDownload).toHaveBeenCalledOnce())
+      controller.abort()
+      const result = JSON.parse(await pending)
+      expect(deleteFile).toHaveBeenCalledWith('x.bin')
+      expect(result.error.code).toBe('CALL_CANCELLED')
+    } finally {
+      vi.doUnmock('@/agent/tools/backends/assets-backend')
+      vi.resetModules()
+    }
+  })
 })

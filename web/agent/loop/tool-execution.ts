@@ -75,6 +75,13 @@ export interface ExecuteToolWithTimeoutInput {
    * string to surface it, or null to keep the plain rejection.
    */
   preferEnvelopeOnRaceLoss?: (envelope: string) => string | null
+  /**
+   * Called exactly once when the timeout fires, BEFORE the race-loss grace
+   * period — even if the losing tool promise later settles with a
+   * cancellation envelope that replaces the rejection (#139 review:
+   * timeout observers miss WebMCP timeouts when the envelope wins).
+   */
+  onTimeout?: () => void
 }
 
 export function coerceToolArgs(params: unknown): Record<string, unknown> {
@@ -166,7 +173,18 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
         ])
         if (envelope !== null) {
           const preferred = input.preferEnvelopeOnRaceLoss(envelope)
-          if (preferred !== null) return preferred
+          if (preferred !== null) {
+            // The structured envelope REPLACES the timeout/abort rejection,
+            // so a caller's timeout catch (buildAgentTools → onToolTimeout)
+            // will never run for this call. Fire onTimeout exactly ONCE
+            // here — when the timeout actually fired and its rejection is
+            // being swapped away (#139 review: timeout callback is skipped
+            // when the cancellation envelope wins the fallback).
+            if (didTimeout) {
+              try { input.onTimeout?.() } catch { /* observer errors must not break the result */ }
+            }
+            return preferred
+          }
         }
       } catch {
         // The tool promise rejected too — the original race error is the

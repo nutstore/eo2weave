@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   coerceToolArgs,
   executeToolWithTimeout,
@@ -104,6 +104,95 @@ describe('tool-execution helpers', () => {
     // original abort rejection must survive.
     rejectExecute(new Error('bridge blew up'))
     await expect(pending).rejects.toThrow('was aborted')
+  })
+
+  it('executeToolWithTimeout fires onTimeout exactly once when the cancellation envelope replaces the timeout rejection (#139 review: timeout callback is skipped)', async () => {
+    vi.useFakeTimers()
+    try {
+      const cancelledEnvelope = JSON.stringify({
+        ok: false,
+        version: 2,
+        tool: 'call_tool',
+        error: { code: 'CALL_CANCELLED', message: 'cancelled', retryable: false },
+      })
+      const onTimeout = vi.fn()
+      const controller = new AbortController()
+      // The tool promise settles with the envelope AFTER the timeout fires —
+      // exactly the grace-window race. The envelope resolves invokeTool
+      // normally, so without this hook onToolTimeout would never run.
+      const pending = executeToolWithTimeout({
+        toolName: 'call_tool',
+        args: {},
+        timeoutMs: 100,
+        runAbortSignal: controller.signal,
+        preferEnvelopeOnRaceLoss: (envelope) =>
+          envelope.includes('CALL_CANCELLED') ? envelope : null,
+        onTimeout,
+        execute: async () => {
+          await new Promise((r) => setTimeout(r, 150))
+          return cancelledEnvelope
+        },
+      })
+      await vi.advanceTimersByTimeAsync(200)
+      const raw = await pending
+      expect(JSON.parse(raw).error.code).toBe('CALL_CANCELLED')
+      expect(onTimeout).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('executeToolWithTimeout does NOT fire onTimeout when the timeout rejection survives (#139 review: no double notification)', async () => {
+    vi.useFakeTimers()
+    try {
+      // onTimeout provided but the tool never produces an envelope: the
+      // rejection propagates to the caller's catch (buildAgentTools →
+      // onToolTimeout), so the callback must stay unfired here.
+      const onTimeout = vi.fn()
+      const controller = new AbortController()
+      const pending = executeToolWithTimeout({
+        toolName: 'call_tool',
+        args: {},
+        timeoutMs: 100,
+        runAbortSignal: controller.signal,
+        preferEnvelopeOnRaceLoss: () => null,
+        onTimeout,
+        execute: () => new Promise<string>(() => {}),
+      })
+      const assertion = expect(pending).rejects.toThrow('timed out')
+      await vi.advanceTimersByTimeAsync(3000)
+      await assertion
+      expect(onTimeout).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('executeToolWithTimeout skips the grace period entirely when preferEnvelopeOnRaceLoss is not supplied', async () => {
+    // Non-WebMCP tools get no preferEnvelopeOnRaceLoss: a lost race must
+    // reject immediately instead of waiting RACE_LOSS_GRACE_MS for an
+    // envelope the tool can never emit (#139 review: unrelated calls wait
+    // two seconds / Stop waits for unrelated tools).
+    vi.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      const pending = executeToolWithTimeout({
+        toolName: 'search',
+        args: {},
+        timeoutMs: null,
+        runAbortSignal: controller.signal,
+        execute: () => new Promise<string>(() => {}),
+      })
+      controller.abort()
+      const assertion = expect(pending).rejects.toThrow('was aborted')
+      await vi.advanceTimersByTimeAsync(0)
+      await assertion
+      // The grace period would only have elapsed at +2000ms; reaching the
+      // rejection at t=0 proves no grace wait happened.
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('truncateLargeToolResult reduces oversized search payload to summary-only result', async () => {
