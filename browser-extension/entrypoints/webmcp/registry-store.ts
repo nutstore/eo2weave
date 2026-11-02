@@ -211,11 +211,21 @@ async function getMountProvider(mount: string): Promise<FsProvider> {
  *      disagreeing with the directory name) — occupied, not installable
  *      over.
  *
+ * When `expectedVersion` is given, an existing directory that already holds
+ * the SAME id on the target mount is only accepted when its manifest
+ * version matches: two concurrent first installs of the same id both pass
+ * the unlocked check, then serialize on the package lock — without the
+ * version agreement the under-lock check would read the winner's freshly
+ * written manifest as "a reinstall of the same package" and the loser
+ * would silently replace it (finding: "Concurrent installs replace
+ * packages"). The manifest's id agrees with the directory name here (the
+ * install validation enforces it), so the version is the discriminator.
+ *
  * Returns the conflicting package description, or null when the install may
  * proceed. A mount that cannot be LISTED — or a manifest that cannot be
  * READ for reasons other than absence — fails the check (fail closed).
  */
-export async function findPackageIdCollision(packageId: string): Promise<string | null> {
+export async function findPackageIdCollision(packageId: string, expectedVersion?: string): Promise<string | null> {
   const mounts = ['webmcp', 'builtin-webmcp']
   for (const mount of mounts) {
     let entries: Array<{ name: string; kind: string }>
@@ -258,8 +268,22 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
           // BOTH packages.
           return `${entry.name} on ${mount} already publishes the package id ${manifestId}`
         }
-        // Same directory on the target mount with the same id — a
-        // re-install of the very same package, which is allowed.
+        // Same directory on the target mount with the same id — usually a
+        // re-install of the very same package, which is allowed. With an
+        // expected version, a DIFFERENT manifest version means another
+        // install transaction already replaced the directory between our
+        // unlocked check and this under-lock one — not a reinstall of what
+        // we downloaded. Reject so the stale transaction cannot overwrite
+        // the newer install.
+        if (expectedVersion !== undefined) {
+          const installedVersion = await readManifestVersion(mount, entry.name)
+          if (installedVersion === 'UNREADABLE') {
+            return `The manifest of ${entry.name} on ${mount} could not be read; try again later`
+          }
+          if (installedVersion !== expectedVersion) {
+            return `${entry.name} on ${mount} already holds version ${installedVersion ?? 'unknown'} of this package`
+          }
+        }
         continue
       }
       if (manifestId === packageId) {
@@ -268,6 +292,26 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
     }
   }
   return null
+}
+
+/**
+ * The version recorded in a directory's manifest, with the same
+ * three-state read contract as `readManifestId`.
+ */
+async function readManifestVersion(mount: string, directory: string): Promise<string | 'INVALID' | 'UNREADABLE'> {
+  try {
+    const provider = await getMountProvider(mount)
+    const bytes = await provider.readFile(`${directory}/manifest.json`)
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes))
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'INVALID'
+    const version = (parsed as { version?: unknown }).version
+    return typeof version === 'string' && version ? version : 'INVALID'
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    const name = (error as { name?: string }).name
+    if (code === 'ENOENT' || name === 'NotFoundError') return 'INVALID'
+    return 'UNREADABLE'
+  }
 }
 
 /**
@@ -297,11 +341,14 @@ export async function installRegistryPackage(
     // `findPackageIdCollision` already allows the one legitimate shape
     // (the same package re-installed over itself), so ANY non-null result
     // here is a conflict that appeared or became visible after the
-    // unlocked check — reject before anything is written.
+    // unlocked check — reject before anything is written. The expected
+    // version makes "same id" strict: a concurrent install that already
+    // swapped a different version into the directory is a conflict, not
+    // a reinstall.
     if (lockSignal.aborted) {
       throw new Error(`The install of ${pkg.id} was aborted: the package lock was lost mid-transaction`)
     }
-    const underLock = await findPackageIdCollision(pkg.id)
+    const underLock = await findPackageIdCollision(pkg.id, pkg.version)
     if (underLock) {
       throw new Error(
         `Cannot install ${pkg.id}: ${underLock}. Remove or rename it first — installing would replace it.`,
