@@ -138,7 +138,15 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
           // is not a verified preview.
           const pkg = packageEntryFromMessage(message)
           if (pkg.id !== packageId) throw new Error(`Package entry id ${pkg.id} does not match ${packageId}`)
-          const preview = await fetchPackageManifestPreview(registry, packageId, { expectedVersion: pkg.version })
+          // The catalog entry's manifest.json checksum rides along: the
+          // preview must verify the fetched bytes are the file the catalog
+          // author published, not just any same-version manifest a mirror
+          // served (finding: "Preview skips catalog checksum").
+          const expectedManifestSha256 = pkg.files.find(file => file.path === `packages/${packageId}/manifest.json`)?.sha256
+          const preview = await fetchPackageManifestPreview(registry, packageId, {
+            expectedVersion: pkg.version,
+            expectedManifestSha256,
+          })
           return { ok: true, tools: preview.tools }
         }
         case 'webmcp_registry_install': {

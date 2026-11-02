@@ -43,15 +43,37 @@ describe('parseRegistryInput', () => {
 
   it('keeps the branch and the subdirectory of a /tree/ URL', () => {
     const registry = parseRegistryInput('https://github.com/nutstore/eo2weave-webmcp-packages/tree/dev/catalog')
-    expect(registry.rawBase).toBe(`https://${RAW_GITHUB_HOST}/nutstore/eo2weave-webmcp-packages/dev`)
-    expect(registry.manifestUrl).toBe(`${registry.rawBase}/catalog/manifest.json`)
+    // rawBase is the REPO ROOT; the ref+directory tail lives in the
+    // manifest URL, so repo-relative package files stay correct even when
+    // the branch itself contains slashes.
+    expect(registry.rawBase).toBe(`https://${RAW_GITHUB_HOST}/nutstore/eo2weave-webmcp-packages`)
+    expect(registry.manifestUrl).toBe(`https://${RAW_GITHUB_HOST}/nutstore/eo2weave-webmcp-packages/dev/catalog/manifest.json`)
   })
 
   it('accepts a raw.githubusercontent URL and keeps its directory', () => {
     const registry = parseRegistryInput(`https://${RAW_GITHUB_HOST}/nutstore/eo2weave-webmcp-packages/main/catalog/manifest.json`)
-    expect(registry.rawBase).toBe(`https://${RAW_GITHUB_HOST}/nutstore/eo2weave-webmcp-packages/main`)
+    expect(registry.rawBase).toBe(`https://${RAW_GITHUB_HOST}/nutstore/eo2weave-webmcp-packages`)
     expect(registry.manifestUrl).toBe(`https://${RAW_GITHUB_HOST}/nutstore/eo2weave-webmcp-packages/main/catalog/manifest.json`)
     expect(registry.label).toBe('nutstore/eo2weave-webmcp-packages')
+  })
+
+  it('keeps the full ref tail of a raw URL whose branch contains a slash', () => {
+    const registry = parseRegistryInput(`https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/registry/manifest.json`)
+    // The manifest URL is the FULL tail (identical under either branch/dir
+    // split) and repo-relative package files derive from it — a file URL
+    // built from a first-segment rawBase addressed the wrong ref.
+    expect(registry.manifestUrl).toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/registry/manifest.json`)
+    expect(registryFileUrl(registry, 'packages/com.example.tools/manifest.json'))
+      .toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/registry/packages/com.example.tools/manifest.json`)
+    // rawBase is the repo root; the ref lives only in the manifest URL tail.
+    expect(registry.rawBase).toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg`)
+  })
+
+  it('derives working package-file URLs for a slashed /tree/ branch', () => {
+    const registry = parseRegistryInput('https://github.com/nutstore/pkg/tree/feature/registry')
+    expect(registry.manifestUrl).toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/registry/manifest.json`)
+    expect(registryFileUrl(registry, 'packages/com.example.tools/manifest.json'))
+      .toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/registry/packages/com.example.tools/manifest.json`)
   })
 
   it('rejects plain HTTP (an interceptor could swap the manifest and its checksums)', () => {
@@ -79,19 +101,25 @@ describe('parseRegistryInput', () => {
 
   it('builds a registry from an explicit manifest URL', () => {
     const registry = registryFromManifestUrl(`https://${RAW_GITHUB_HOST}/nutstore/pkg/main/manifest.json`)
-    expect(registry.rawBase).toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg/main`)
+    expect(registry.rawBase).toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg`)
     expect(registry.label).toBe('nutstore/pkg')
+    expect(registryFileUrl(registry, 'packages/com.example.tools/manifest.json'))
+      .toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg/main/packages/com.example.tools/manifest.json`)
   })
 })
 
 describe('parseRawGithubUrl', () => {
   it('splits a raw URL into owner/repo/ref/path', () => {
     const parsed = parseRawGithubUrl(`https://${RAW_GITHUB_HOST}/nutstore/pkg/main/packages/com.example.tools/manifest.json`)
+    // The ref is the GREEDY middle: raw.githubusercontent resolves ref
+    // paths against the repo's existing refs, so the URL shape alone cannot
+    // split `main` from `packages/com.example.tools` — the whole middle is
+    // kept as the ref and the LAST segment as the file.
     expect(parsed).toEqual({
       owner: 'nutstore',
       repo: 'pkg',
-      ref: 'main',
-      path: 'packages/com.example.tools/manifest.json',
+      ref: 'main/packages/com.example.tools',
+      path: 'manifest.json',
     })
   })
 
@@ -102,6 +130,23 @@ describe('parseRawGithubUrl', () => {
 
   it('returns null when the URL has no file segment', () => {
     expect(parseRawGithubUrl(`https://${RAW_GITHUB_HOST}/nutstore/pkg/main`)).toBeNull()
+  })
+
+  it('keeps the whole middle as the ref when it contains slashes', () => {
+    // The FIRST-segment split made the jsDelivr mirror address the shorter
+    // ref `feature` and read the rest of the branch as a file path. The
+    // greedy split keeps the full middle as the ref (the same split
+    // raw.githubusercontent applies) and only the LAST segment as the file.
+    const parsed = parseRawGithubUrl(`https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/registry/packages/com.example.tools/manifest.json`)
+    expect(parsed).toEqual({
+      owner: 'nutstore',
+      repo: 'pkg',
+      ref: 'feature/registry/packages/com.example.tools',
+      path: 'manifest.json',
+    })
+    expect(jsdelivrUrl(parsed!)).toBe(`https://${JSDELIVR_HOST}/gh/nutstore/pkg@feature/registry/packages/com.example.tools/manifest.json`)
+    // Round-trips: the direct raw URL is rebuilt unchanged.
+    expect(rawGithubUrl(parsed!)).toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/registry/packages/com.example.tools/manifest.json`)
   })
 })
 
@@ -221,6 +266,44 @@ describe('fetchWithMirrorFallback', () => {
       tried.push(candidate)
       throw Object.assign(new Error('Download failed: HTTP 403'), { status: 403 })
     }, { preference: 'global' })).rejects.toThrow(/HTTP 403/)
+    expect(tried).toEqual([url])
+  })
+
+  it('does not fall back on a canonical-origin 404', async () => {
+    // 404 is DEFINITIVE for the canonical raw host: both transports serve
+    // the same git ref, so a mirror retry could only accept stale content
+    // the origin already withdrew.
+    const tried: string[] = []
+    await expect(fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
+      throw Object.assign(new Error(`Download failed: HTTP 404 (${candidate})`), { status: 404 })
+    }, { preference: 'global' })).rejects.toThrow(/HTTP 404/)
+    expect(tried).toEqual([url])
+  })
+
+  it('falls back when the loader wraps a transport failure in a RegistryError', async () => {
+    // loadOnce/fetchRegistryManifest re-label timeouts and network errors as
+    // RegistryError("Registry unreachable…") — the wrap must keep the
+    // TRANSPORT verdict, or the mirror is never tried.
+    const tried: string[] = []
+    const result = await fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
+      if (candidate === url) throw new RegistryError('Registry unreachable: network down', new Error('network down'))
+      return 'manifest'
+    }, { preference: 'global' })
+    expect(tried).toEqual([url, mirror])
+    expect(result.value).toBe('manifest')
+    expect(result.usedMirror).toBe(true)
+  })
+
+  it('stops retrying a canonical-origin 404 at the first candidate', async () => {
+    // A "not found" RegistryError (no wrapped transport error) is semantic —
+    // the file does not exist at this ref on ANY origin.
+    const tried: string[] = []
+    await expect(fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
+      throw new RegistryError(`Registry manifest not found: ${candidate}`)
+    }, { preference: 'global' })).rejects.toThrow(/not found/)
     expect(tried).toEqual([url])
   })
 

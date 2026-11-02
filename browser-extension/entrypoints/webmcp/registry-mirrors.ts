@@ -63,9 +63,12 @@ export interface RawResource {
  * The ref may contain slashes (`feature/registry`): raw.githubusercontent
  * resolves refs greedily against the repo's existing refs, so the FIRST
  * segment boundary is ambiguous from the URL alone. We keep the whole tail
- * as the ref and derive the mirror from it verbatim — jsDelivr addresses
- * the same ambiguity with the same `@<ref>` form, so both URLs stay
- * consistent with each other.
+ * as the ref and derive the mirror from it verbatim (findings: "Mirror
+ * URLs point to wrong branch" — treating only the first segment as the ref
+ * made the jsDelivr URL address a shorter ref and read the rest of the
+ * branch as a file path) — jsDelivr resolves `@<ref>` against the same
+ * greedy ref list the raw host does, so both URLs stay consistent with
+ * each other. The path is whatever follows the LAST segment.
  */
 export function parseRawGithubUrl(url: string): RawResource | null {
   let parsed: URL
@@ -81,14 +84,15 @@ export function parseRawGithubUrl(url: string): RawResource | null {
   if (parts.length < 4) return null
   const [owner, repo, ...rest] = parts
   if (!owner || !repo || !rest.length) return null
-  // The LAST segment is the file name; everything between is the ref path
-  // plus the file's directory. Without a ref-path marker we cannot tell a
-  // slashed ref from a directory, so we treat the first segment as the ref
-  // and the remainder as the path — the same split the registry client
-  // uses for `rawBase` (documented slash-in-branch caveat).
-  const [ref, ...pathParts] = rest
-  if (!ref || !pathParts.length) return null
-  return { owner, repo, ref, path: pathParts.join('/') }
+  // The LAST segment is the file name; everything between is the ref path.
+  // Without a ref-path marker we cannot tell a slashed ref from a
+  // directory, so the whole middle becomes the ref and only the final
+  // segment the path — the same greedy split the raw host itself applies,
+  // and the same split the registry client bakes into its manifest URL.
+  const ref = rest.slice(0, -1).join('/')
+  const path = rest.at(-1)!
+  if (!ref || !path) return null
+  return { owner, repo, ref, path }
 }
 
 /** The canonical direct raw URL for a parsed resource. */

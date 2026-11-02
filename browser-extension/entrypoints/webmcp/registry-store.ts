@@ -221,11 +221,24 @@ async function getMountProvider(mount: string): Promise<FsProvider> {
  * packages"). The manifest's id agrees with the directory name here (the
  * install validation enforces it), so the version is the discriminator.
  *
+ * A version match alone is NOT enough (finding: "Same-version installs
+ * replace different contents"): two overlapping installs of the same
+ * id AND version with DIFFERENT contents both pass a version-only check
+ * and the later transaction silently replaces the earlier package. When
+ * `expectedManifestSha256` is given, the on-disk manifest's sha256 must
+ * match the incoming catalog entry's manifest checksum too — content the
+ * catalog author did not publish is never overwritten by a same-version
+ * install.
+ *
  * Returns the conflicting package description, or null when the install may
  * proceed. A mount that cannot be LISTED — or a manifest that cannot be
  * READ for reasons other than absence — fails the check (fail closed).
  */
-export async function findPackageIdCollision(packageId: string, expectedVersion?: string): Promise<string | null> {
+export async function findPackageIdCollision(
+  packageId: string,
+  expectedVersion?: string,
+  expectedManifestSha256?: string,
+): Promise<string | null> {
   const mounts = ['webmcp', 'builtin-webmcp']
   for (const mount of mounts) {
     let entries: Array<{ name: string; kind: string }>
@@ -283,6 +296,22 @@ export async function findPackageIdCollision(packageId: string, expectedVersion?
           if (installedVersion !== expectedVersion) {
             return `${entry.name} on ${mount} already holds version ${installedVersion ?? 'unknown'} of this package`
           }
+          // Same id AND same version: the CONTENTS decide (finding: "Same
+          // version installs replace different contents"). Two overlapping
+          // installs of the same id+version with different files would
+          // otherwise pass this check and the later one silently replace
+          // the earlier package. The catalog entry's manifest.json
+          // checksum is the reference — the on-disk manifest must hash to
+          // the same value for this to count as a genuine reinstall.
+          if (expectedManifestSha256 !== undefined) {
+            const installedSha = await readManifestSha256(mount, entry.name)
+            if (installedSha === 'UNREADABLE') {
+              return `The manifest of ${entry.name} on ${mount} could not be read; try again later`
+            }
+            if (installedSha !== expectedManifestSha256.toLowerCase()) {
+              return `${entry.name} on ${mount} already holds version ${expectedVersion} with different contents (manifest checksum ${installedSha ?? 'unknown'}); uninstall it first if you want to replace it`
+            }
+          }
         }
         continue
       }
@@ -315,6 +344,25 @@ async function readManifestVersion(mount: string, directory: string): Promise<st
 }
 
 /**
+ * The sha256 of a directory's manifest BYTES, with the same three-state
+ * read contract as `readManifestId`. A manifest that parses but hashes
+ * differently from the catalog entry marks same-version content drift.
+ */
+async function readManifestSha256(mount: string, directory: string): Promise<string | 'INVALID' | 'UNREADABLE'> {
+  try {
+    const provider = await getMountProvider(mount)
+    const bytes = await provider.readFile(`${directory}/manifest.json`)
+    const { sha256Hex } = await import('./package-installer')
+    return await sha256Hex(bytes)
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    const name = (error as { name?: string }).name
+    if (code === 'ENOENT' || name === 'NotFoundError') return 'INVALID'
+    return 'UNREADABLE'
+  }
+}
+
+/**
  * Install one package from its manifest entry into the extension's `webmcp`
  * mount. Verifies every file's sha256 BEFORE writing anything
  * (all-or-nothing).
@@ -329,6 +377,9 @@ export async function installRegistryPackage(
   registry: PackageRegistry,
   pkg: RegistryManifestPackage,
 ): Promise<{ filesWritten: number }> {
+  // The catalog entry's manifest.json checksum doubles as the CONTENT
+  // fingerprint for the same-version reinstall check below.
+  const manifestSha = pkg.files.find(file => file.path === `packages/${pkg.id}/manifest.json`)?.sha256
   const collision = await findPackageIdCollision(pkg.id)
   if (collision) {
     throw new Error(
@@ -348,7 +399,7 @@ export async function installRegistryPackage(
     if (lockSignal.aborted) {
       throw new Error(`The install of ${pkg.id} was aborted: the package lock was lost mid-transaction`)
     }
-    const underLock = await findPackageIdCollision(pkg.id, pkg.version)
+    const underLock = await findPackageIdCollision(pkg.id, pkg.version, manifestSha)
     if (underLock) {
       throw new Error(
         `Cannot install ${pkg.id}: ${underLock}. Remove or rename it first — installing would replace it.`,
@@ -379,6 +430,16 @@ export async function uninstallRegistryPackage(packageId: string): Promise<void>
  * to an empty set made the management page report every installed package
  * as missing while the files were untouched (finding: "Storage errors hide
  * installed state"). The background handler surfaces the error instead.
+ *
+ * A package whose manifest cannot be READ transiently does not disappear
+ * from the list either (finding: "Installed packages disappear from the
+ * list"): silently omitting it made the page offer Install for a package
+ * that was present while `findPackageIdCollision` refused that install —
+ * the user could neither see nor manage it. The directory NAME is a
+ * package id by construction (the installer only ever creates id-named
+ * directories), so the id is reported from the directory and the
+ * background call FAILS instead — the page shows the error rather than a
+ * lie about the installed set.
  */
 export async function listInstalledPackageIds(): Promise<Set<string>> {
   const provider = await getAdapterStorage()
@@ -387,7 +448,12 @@ export async function listInstalledPackageIds(): Promise<Set<string>> {
   for (const entry of entries) {
     if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
     const state = await readManifestId('webmcp', entry.name)
-    if (state === 'INVALID' || state === 'UNREADABLE') continue
+    if (state === 'UNREADABLE') {
+      throw new Error(
+        `The manifest of ${entry.name} could not be read; the installed-package list is unavailable right now`,
+      )
+    }
+    if (state === 'INVALID') continue
     if (state.id === entry.name) ids.add(state.id)
   }
   return ids

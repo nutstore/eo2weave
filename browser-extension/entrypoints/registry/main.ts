@@ -93,6 +93,23 @@ const previewFailures = new Set<string>()
 const previewInFlight = new Map<string, Promise<boolean>>()
 
 /**
+ * Bumped on every refresh/removal/reset of a registry's catalog. A catalog
+ * or preview response that started under an OLDER epoch must not land:
+ * writing it over the refreshed state re-showed stale packages as current
+ * and stale previews as verified (finding: "Refreshes accept stale
+ * registry data"). Previews key on `${manifestUrl}::${packageId}`, which
+ * a refresh of the SAME registry reuses — the epoch is what disambiguates.
+ */
+const catalogEpochs = new Map<string, number>()
+
+function bumpCatalogEpoch(manifestUrl: string): void {
+  catalogEpochs.set(manifestUrl, (catalogEpochs.get(manifestUrl) ?? 0) + 1)
+}
+
+/** Registries whose auto-load FAILED (no automatic retry from render). */
+const catalogLoadFailures = new Set<string>()
+
+/**
  * Load the tool preview for one package (best effort — never blocks the
  * card).
  *
@@ -104,19 +121,33 @@ function loadToolPreview(registry: PackageRegistry, pkg: RegistryManifestPackage
   const key = `${registry.manifestUrl}::${pkg.id}`
   const existing = previewInFlight.get(key)
   if (existing) return existing
-  const promise = (async (): Promise<boolean> => {
+  // The epoch at START: a refresh/removal of this registry while the
+  // preview is in flight bumps it, and the stale result is dropped.
+  const epoch = catalogEpochs.get(registry.manifestUrl) ?? 0
+  const work = (async (): Promise<boolean> => {
     if (toolPreviews.has(key) || previewFailures.has(key)) return false
     try {
       const tools = await previewRegistryPackage(registry, pkg)
+      // A refresh or removal happened meanwhile — the response belongs to
+      // the OLD registry state. Drop it (finding: "Refreshes accept stale
+      // registry data"): re-recording it would re-mark tools verified that
+      // the refreshed catalog no longer publishes.
+      if ((catalogEpochs.get(registry.manifestUrl) ?? 0) !== epoch) return false
       toolPreviews.set(key, tools)
       return true
     } catch {
+      if ((catalogEpochs.get(registry.manifestUrl) ?? 0) !== epoch) return false
       previewFailures.add(key)
       return false
-    } finally {
-      previewInFlight.delete(key)
     }
   })()
+  // Reuse window: while `work` is pending the SAME promise is handed out;
+  // once settled it is removed so a re-render can re-enter for a package
+  // whose epoch changed (the stale-epoch path above returns false without
+  // recording, so the next render retries under the new epoch).
+  const promise = work.finally(() => {
+    if (previewInFlight.get(key) === promise) previewInFlight.delete(key)
+  })
   previewInFlight.set(key, promise)
   return promise
 }
@@ -177,14 +208,23 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
   const refresh = button(t('webmcpPackagesRefresh'), '', async () => {
     refresh.disabled = true
     refresh.textContent = t('webmcpPackagesRefreshing')
+    // Invalidate in-flight catalog/preview work FIRST (finding: "Refreshes
+    // accept stale registry data"): anything that started before this
+    // refresh belongs to the old registry state and must not land.
+    bumpCatalogEpoch(registry.manifestUrl)
+    catalogLoads.delete(registry.manifestUrl)
+    catalogLoadFailures.delete(registry.manifestUrl)
+    toolPreviews.clear()
+    previewFailures.clear()
+    const epoch = catalogEpochs.get(registry.manifestUrl) ?? 0
     try {
       clearError()
       const manifest = await loadRegistryCatalog(registry, true)
-      catalogs.set(registry.manifestUrl, manifest)
-      // The refreshed catalog may list different packages — drop the
-      // stale tool previews so the cards re-fetch them.
-      toolPreviews.clear()
-      previewFailures.clear()
+      // Another refresh/removal started while ours was in flight — ours is
+      // now the stale one and must not overwrite the newer state.
+      if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) {
+        catalogs.set(registry.manifestUrl, manifest)
+      }
     } catch (error) {
       showError(error)
     } finally {
@@ -196,13 +236,20 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
   actions.append(refresh)
   const remove = button(t('webmcpPackagesRemoveRegistry'), 'danger', async () => {
     remove.disabled = true
+    // Invalidate in-flight catalog/preview work for this registry BEFORE
+    // the removal lands (finding: "Refreshes accept stale registry data") —
+    // a pending catalog/preview response would otherwise repopulate state
+    // for a registry the user just removed.
+    bumpCatalogEpoch(registry.manifestUrl)
+    catalogLoads.delete(registry.manifestUrl)
     try {
       clearError()
       await removeRegistry(registry.manifestUrl)
       catalogs.delete(registry.manifestUrl)
       // The registry may be re-added at the same URL with a changed
       // manifest — drop ITS preview cache entries (not every registry's),
-      // or the re-added cards would show stale tools as verified.
+      // or the re-added cards would show stale tools as verified. The epoch
+      // bump above already invalidated everything in flight.
       clearToolPreviews(registry.manifestUrl)
     } catch (error) {
       showError(error)
@@ -361,11 +408,32 @@ async function render(): Promise<void> {
       // registry added in a previous session shows its packages on open
       // (without a separate click). The load is best effort — a registry
       // that is unreachable shows its error, not an empty page.
-      if (!catalogs.has(registry.manifestUrl) && !catalogLoads.has(registry.manifestUrl)) {
+      //
+      // A registry whose auto-load FAILED is NOT retried here (finding:
+      // "Failed catalogs retry indefinitely"): the failure left the catalog
+      // absent, so every render re-started the same request forever. The
+      // failure is remembered and the explicit Refresh button (which clears
+      // the flag) is the retry path.
+      if (
+        !catalogs.has(registry.manifestUrl) &&
+        !catalogLoads.has(registry.manifestUrl) &&
+        !catalogLoadFailures.has(registry.manifestUrl)
+      ) {
         catalogLoads.add(registry.manifestUrl)
+        const epoch = catalogEpochs.get(registry.manifestUrl) ?? 0
         void loadRegistryCatalog(registry)
-          .then(manifest => { catalogs.set(registry.manifestUrl, manifest) })
-          .catch(error => { showError(error) })
+          .then(manifest => {
+            // A refresh/removal raced this auto-load — the response belongs
+            // to the old registry state (finding: "Refreshes accept stale
+            // registry data").
+            if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) {
+              catalogs.set(registry.manifestUrl, manifest)
+            }
+          })
+          .catch(error => {
+            catalogLoadFailures.add(registry.manifestUrl)
+            showError(error)
+          })
           .finally(() => { catalogLoads.delete(registry.manifestUrl); void render() })
       }
       registryList.append(buildRegistryCard(registry))
@@ -429,7 +497,9 @@ document.getElementById('registryAdd')!.addEventListener('click', async () => {
     clearError()
     const registry = await addRegistry(input)
     // Fetch the catalog right away so the packages are visible without an
-    // extra click.
+    // extra click. A failed auto-load of the SAME URL (re-added registry)
+    // gets a fresh attempt — this is the explicit path.
+    catalogLoadFailures.delete(registry.manifestUrl)
     try {
       const manifest = await loadRegistryCatalog(registry)
       catalogs.set(registry.manifestUrl, manifest)

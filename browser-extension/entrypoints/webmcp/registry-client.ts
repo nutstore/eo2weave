@@ -55,9 +55,13 @@ export interface RegistryManifest {
 /** A registry the user added; everything needed to fetch files is derived. */
 export interface PackageRegistry {
   /**
-   * Raw base able to serve any REPO-RELATIVE path (`.../<branch>`). For a
-   * subdirectory manifest URL this stays at the repo root — manifest paths
-   * are repo-relative — while `manifestUrl` keeps the subdirectory.
+   * Raw ROOT able to serve any ref-path (`.../<ref>/<path>`): the manifest
+   * URL keeps the FULL `<ref>` tail (a branch may contain `/`, and raw
+   * hosts resolve refs greedily), while `rawBase` stays at the repo root so
+   * manifest-listed package paths (`packages/<id>/...`, repo-relative)
+   * build correct URLs under either branch/dir split. For a subdirectory
+   * manifest URL this is also the repo root — manifest paths are
+   * repo-relative — while `manifestUrl` keeps the subdirectory.
    */
   rawBase: string
   /** The full raw URL of the registry manifest. */
@@ -67,9 +71,19 @@ export interface PackageRegistry {
 }
 
 export class RegistryError extends Error {
-  constructor(message: string) {
+  /**
+   * The transport failure this error WRAPS, when the message was re-labelled
+   * for the user (a timeout became "Registry request timed out…"). A wrapped
+   * error is still a transport verdict, so the mirror fallback may try the
+   * next candidate; an unwrapped one is a semantic verdict (invalid
+   * manifest, not JSON, size cap) that no other origin can answer better.
+   */
+  readonly wrappedError?: unknown
+
+  constructor(message: string, wrappedError?: unknown) {
     super(message)
     this.name = 'RegistryError'
+    this.wrappedError = wrappedError
   }
 }
 
@@ -174,19 +188,17 @@ export function parseRegistryInput(input: string): PackageRegistry {
     const [owner, repo, ...refPath] = parts
     const label = `${owner}/${repo}`
     // A branch name containing `/` (`feature/registry`) is indistinguishable
-    // from branch `feature` + directory `registry` by URL shape. The
-    // manifest URL keeps the FULL tail, which is identical under either
-    // split, and raw.githubusercontent.com resolves ref-paths greedily
-    // against the repo's existing refs — so both the catalog and
-    // repo-relative file downloads under the first-segment rawBase work for
-    // slashed branches. The only ambiguity left (both `feature` and
-    // `feature/registry` exist AND the manifest sits under only one) is not
-    // resolvable client-side without an API round-trip.
-    const [branch, ...dir] = refPath
-    const rawBase = `${url.protocol}//${RAW_HOST}/${owner}/${repo}/${branch}`
+    // from branch `feature` + directory `registry` by URL shape. raw+
+    // jsDelivr both resolve ref-paths greedily against the repo's existing
+    // refs, so the whole tail works for BOTH the manifest and repo-relative
+    // package-file URLs — package files derive from `manifestUrl`, whose
+    // tail is identical under either split (finding: "Slash branches break
+    // package downloads": deriving from only the FIRST branch segment built
+    // package-file URLs against a shorter ref).
+    const rawBase = `${url.protocol}//${RAW_HOST}/${owner}/${repo}`
     return {
       rawBase,
-      manifestUrl: dir.length ? `${rawBase}/${dir.join('/')}` : `${rawBase}/manifest.json`,
+      manifestUrl: `${rawBase}/${refPath.join('/')}`,
       label,
     }
   }
@@ -206,18 +218,14 @@ export function parseRegistryInput(input: string): PackageRegistry {
       return { rawBase, manifestUrl: `${rawBase}/manifest.json`, label: `${owner}/${repo}` }
     }
     // `/tree/<branch>[/dir]` with the same slash-in-branch caveat as the
-    // raw form: the first segment is the branch, the rest the subdirectory
-    // (matching the documented URL form), and raw.githubusercontent's greedy
-    // ref resolution keeps manifest AND repo-relative file URLs working
-    // when the branch itself contains slashes.
-    const [branch, ...dir] = treePath
+    // raw form: the whole tail is kept in the manifest URL (identical under
+    // either branch/dir split) and repo-relative package files derive from
+    // it, so a slashed branch (`feature/x`) keeps working for downloads
+    // (finding: "Slash branches break package downloads"). GitHub's own
+    // ref resolution is greedy the same way.
     const repoRoot = `${url.protocol}//${RAW_HOST}/${owner}/${repo}`
-    const rawBase = `${repoRoot}/${branch}`
-    return {
-      rawBase,
-      manifestUrl: dir.length ? `${rawBase}/${dir.join('/')}/manifest.json` : `${rawBase}/manifest.json`,
-      label: `${owner}/${repo}`,
-    }
+    const manifestUrl = `${repoRoot}/${treePath.join('/')}/manifest.json`
+    return { rawBase: repoRoot, manifestUrl, label: `${owner}/${repo}` }
   }
 
   throw new RegistryError(`Unsupported registry host: ${url.hostname}. Use a github.com repository URL or a raw.githubusercontent.com URL.`)
@@ -232,19 +240,45 @@ export function registryFromManifestUrl(manifestUrl: string, label?: string): Pa
     throw new RegistryError(`Invalid manifest URL: ${manifestUrl}`)
   }
   const parts = url.pathname.split('/').filter(Boolean)
-  if (parts.length < 2) throw new RegistryError('Manifest URL must include at least owner/repo')
-  // Everything up to the last segment is the raw base (the final segment is
-  // conventionally the manifest file name). Subdirectory manifests keep their
-  // directory in the manifest URL; file paths stay repo-relative.
-  const base = parts.slice(0, -1).join('/')
-  return { rawBase: `${url.protocol}//${url.host}/${base}`, manifestUrl, label: label ?? parts.slice(0, 2).join('/') }
+  // owner/<repo> minimum: the manifest must sit in a repo the raw host can
+  // serve (the ref path follows).
+  if (parts.length < 4) {
+    throw new RegistryError('Manifest URL must include owner, repo and ref path')
+  }
+  // rawBase is the REPO ROOT (owner/repo): the manifest URL keeps the full
+  // `<ref>[/<dir>]` tail — identical under either branch/dir split, so a
+  // branch containing `/` keeps both the catalog and the repo-relative
+  // package-file downloads working (finding: "Slash branches break package
+  // downloads"). Repo-relative package paths append to the root directly.
+  const rawBase = `${url.protocol}//${url.host}/${parts.slice(0, 2).join('/')}`
+  return { rawBase, manifestUrl, label: label ?? parts.slice(0, 2).join('/') }
 }
 
-/** Raw URL for one manifest-listed package file. */
+/**
+ * Raw URL for one manifest-listed package file.
+ *
+ * Package paths are repo-relative (`packages/<id>/...`) but live at a REF,
+ * and the ref may contain slashes that the URL shape alone cannot separate
+ * from the path. The registry's `manifestUrl` carries the full ref+dir
+ * tail, so the file URL REPLACES the manifest file name inside it — a
+ * slash-branch registry therefore derives
+ * `.../<owner>/<repo>/feature/x/packages/<id>/manifest.json`, not the
+ * wrong-ref URL a first-segment rawBase produced (finding: "Slash branches
+ * break package downloads").
+ */
 export function registryFileUrl(registry: PackageRegistry, path: string): string {
   const clean = path.replace(/^\/+/, '')
   if (!clean || clean.includes('..')) throw new RegistryError(`Invalid package file path: ${path}`)
-  return `${registry.rawBase}/${clean}`
+  const manifestUrl = registry.manifestUrl
+  // A raw manifest URL ends in a file name under `<ref>[/<dir>]`; swap that
+  // final segment for the package file path. (The stored manifest URL is
+  // always produced by this module's parsers, which guarantee a final
+  // segment.)
+  const lastSlash = manifestUrl.lastIndexOf('/')
+  if (lastSlash <= manifestUrl.indexOf('://') + 2) {
+    throw new RegistryError(`Registry manifest URL has no file segment: ${manifestUrl}`)
+  }
+  return `${manifestUrl.slice(0, lastSlash + 1)}${clean}`
 }
 
 /**
@@ -274,11 +308,22 @@ async function fetchWithTimeout(url: string, init: RequestInit, fetchImpl: typeo
  * Stream a JSON response under a byte cap with the deadline active through
  * body consumption. Buffering `json()` first would let an oversized body
  * exhaust memory before the size check ran.
+ *
+ * Returns the parsed value AND the raw bytes — the checksum verification
+ * must hash EXACTLY what was received, not a re-serialization of the
+ * parsed object (key order/whitespace would differ).
  */
-async function parseJsonCapped(response: Response, maxBytes: number, done: () => void): Promise<unknown> {
+async function parseJsonCappedBytes(response: Response, maxBytes: number, done: () => void): Promise<{ data: unknown; bytes: Uint8Array }> {
+  let data: unknown
+  let bytes: Uint8Array
   try {
     const reader = response.body?.getReader()
-    if (!reader) return await response.json() // no streaming body (test doubles)
+    if (!reader) { // no streaming body (test doubles)
+      bytes = new Uint8Array(await response.arrayBuffer())
+      if (bytes.length > maxBytes) throw new RegistryError(`Registry manifest exceeds the size limit (${maxBytes} bytes)`)
+      data = JSON.parse(new TextDecoder().decode(bytes))
+      return { data, bytes }
+    }
     const chunks: Uint8Array[] = []
     let total = 0
     for (;;) {
@@ -308,14 +353,21 @@ async function parseJsonCapped(response: Response, maxBytes: number, done: () =>
       merged.set(chunk, offset)
       offset += chunk.byteLength
     }
+    bytes = merged
     try {
-      return JSON.parse(new TextDecoder().decode(merged))
+      data = JSON.parse(new TextDecoder().decode(merged))
     } catch {
       throw new RegistryError('Registry manifest is not valid JSON')
     }
+    return { data, bytes }
   } finally {
     done()
   }
+}
+
+/** JSON-only variant of `parseJsonCappedBytes` for callers that ignore the bytes. */
+async function parseJsonCapped(response: Response, maxBytes: number, done: () => void): Promise<unknown> {
+  return (await parseJsonCappedBytes(response, maxBytes, done)).data
 }
 
 /** Registry ids must satisfy the same reverse-domain rule as package manifests. */
@@ -410,13 +462,15 @@ export interface MirrorFetchResult<T> {
  * Fallback policy:
  *   - Transport failures (network errors, timeouts) and 5xx server errors
  *     move on to the next candidate — that is the mirror's whole purpose;
- *   - a 404 IS retried on the remaining candidates, because a mirror can
- *     miss content the canonical origin has (CDN propagation lag, private
- *     files with an access query jsDelivr cannot serve) — a mirror 404 used
- *     to abort the whole load and block valid resources (finding: "Mirror
- *     404 blocks valid origins"). The 404 of the LAST candidate is the one
- *     rethrown, so a genuinely absent file still fails fast after every
- *     origin has been asked;
+ *   - a 404 falls through ONLY when the answering candidate is a MIRROR:
+ *     a CDN can lag the origin or be unable to serve private files, and a
+ *     mirror 404 that aborted the whole load used to block valid resources
+ *     (finding: "Mirror 404 blocks valid origins"). A 404 from the
+ *     CANONICAL raw URL is terminal (finding: "Missing resources contact
+ *     another host"): the direct host IS the identity of the resource and
+ *     every mirror serves the same git ref, so the 404 of the canonical
+ *     candidate is the one rethrown — asking another origin could only
+ *     accept stale content the canonical origin had withdrawn;
  *   - validation failures and other NON-retryable client errors (4xx other
  *     than 404/429) do not fall through either: retrying them on a mirror
  *     could accept different or stale mirror content instead of surfacing
@@ -441,12 +495,20 @@ export async function fetchWithMirrorFallback<T>(
       return { value, url: candidate, usedMirror: candidate !== url }
     } catch (error) {
       lastError = error
+      // A canonical-origin 404 is terminal (finding: "Missing resources
+      // contact another host"): the direct host IS the identity of the
+      // resource and every mirror serves the same git ref — asking another
+      // origin could only accept stale content the origin had withdrawn.
+      // A MIRROR's 404 falls through (CDN lag; finding: "Mirror 404 blocks
+      // valid origins").
+      if (isNotFoundError(error)) {
+        if (candidate === url || isLast) throw error
+        continue
+      }
       // A definitive non-retryable answer (validation failure, a client
       // error other than 404/429) is the SAME answer a mirror would give —
       // do not retry it and risk masking the real error with mirror data.
       if (!isRetryableFetchError(error)) throw error
-      // A 404 from the LAST candidate is final — nothing left to ask.
-      if (isNotFoundError(error) && isLast) throw error
     }
   }
   throw lastError instanceof Error ? lastError : new RegistryError(`Registry unreachable: ${String(lastError)}`)
@@ -457,17 +519,31 @@ export async function fetchWithMirrorFallback<T>(
  * transport errors (network, timeout, abort) and HTTP server/429 responses.
  * Deliberately narrow — a validation error or an unexpected 4xx must reach
  * the caller instead of being papered over by another origin's response.
+ *
+ * A 404 is NOT retryable (findings: "Missing resources contact another
+ * host"): the raw host is the canonical identity of the resource and both
+ * transports serve the same git ref, so a 404 answer does not improve on
+ * another origin's — retrying one let a stale mirror serve content the
+ * canonical origin had already withdrawn. A 404 from a MIRROR candidate is
+ * still fall-through-able (a CDN can lag the origin), which
+ * `fetchWithMirrorFallback` expresses with `isNotFoundError`, not here.
+ *
+ * A RegistryError that was WRAPPED around a transport failure (timeout,
+ * stalled body — `loadOnce` re-labels those so the user sees a registry
+ * message) stays retryable (finding: "Available mirror is never tried"):
+ * `wrappedError` records the original transport error, and a registry
+ * error WITHOUT one is a semantic verdict (invalid manifest, not JSON,
+ * size cap) that another transport cannot answer better.
  */
 export function isRetryableFetchError(error: unknown): boolean {
   const status = (error as { status?: number } | null)?.status
-  if (status === 404) return true // a mirror can miss; ask the next origin
   if (typeof status === 'number') return status >= 500 || status === 429
-  if (isNotFoundError(error)) return true // 404 phrasing without a status
+  // A 404 phrasing without a status ("not found", "HTTP 404") is likewise
+  // definitive — see above.
+  if (isNotFoundError(error)) return false
   const name = (error as { name?: string } | null)?.name
   if (name === 'AbortError' || name === 'TimeoutError') return true
-  // RegistryError carries a semantic verdict (invalid manifest, not JSON,
-  // size cap) — that answer does not improve on another transport.
-  if (error instanceof RegistryError) return false
+  if (error instanceof RegistryError) return error.wrappedError !== undefined
   // Any other Error is a transport/network failure — retry.
   return error instanceof Error
 }
@@ -509,15 +585,25 @@ export async function fetchRegistryManifest(
       ))
     } catch (error) {
       if (error instanceof RegistryError) throw error
-      throw new RegistryError(`Registry unreachable: ${error instanceof Error ? error.message : String(error)}`)
+      // The timeout wrap KEEPS the transport error: the mirror fallback
+      // must see a retryable (transport) verdict, not a semantic one.
+      throw new RegistryError(`Registry unreachable: ${error instanceof Error ? error.message : String(error)}`, error)
     }
     if (response.status === 404) {
       done()
+      // Definitive — the file does not exist at this ref, and every mirror
+      // serves the same ref. Not retried on the next candidate.
       throw new RegistryError(`Registry manifest not found: ${registry.manifestUrl}`)
     }
     if (!response.ok) {
       done()
-      throw new RegistryError(`Failed to fetch registry manifest: HTTP ${response.status}`)
+      // 5xx/429 are transport-class failures the mirror can cover; other
+      // 4xx answers are definitive and MUST NOT reach another origin —
+      // mark them with the status so `isRetryableFetchError` classifies
+      // them as final (finding: "Client errors trigger mirror attempts").
+      const error = new RegistryError(`Failed to fetch registry manifest: HTTP ${response.status}`)
+      ;(error as { status?: number }).status = response.status
+      throw error
     }
     // The deadline stays armed and the byte cap enforced WHILE streaming.
     const data = await parseJsonCapped(response, MAX_REGISTRY_MANIFEST_BYTES, done)
@@ -565,22 +651,35 @@ export async function fetchRegistryManifest(
 export async function fetchPackageManifestPreview(
   registry: PackageRegistry,
   packageId: string,
-  options?: { fetchImpl?: typeof fetch; timeoutMs?: number; preference?: MirrorPreference; expectedVersion?: string },
+  options?: { fetchImpl?: typeof fetch; timeoutMs?: number; preference?: MirrorPreference; expectedVersion?: string; expectedManifestSha256?: string },
 ): Promise<{ tools: Array<{ name: string; description: string }> }> {
   const doFetch = options?.fetchImpl ?? fetch
   const url = registryFileUrl(registry, `packages/${packageId}/manifest.json`)
-  const load = async (candidate: string): Promise<{ tools: Array<{ name: string; description: string }> }> => {
-    const { response, done } = await fetchWithTimeout(
-      candidate,
-      { credentials: 'omit', cache: 'default' },
-      doFetch,
-      options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS,
-    )
+  const load = async (candidate: string): Promise<{ tools: Array<{ name: string; description: string }>; bytes: Uint8Array }> => {
+    let response: Response
+    let done: () => void
+    try {
+      ({ response, done } = await fetchWithTimeout(
+        candidate,
+        { credentials: 'omit', cache: 'default' },
+        doFetch,
+        options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS,
+      ))
+    } catch (error) {
+      // Keep the transport verdict retryable for the mirror fallback (see
+      // `fetchRegistryManifest.loadOnce`).
+      if (error instanceof RegistryError) throw error
+      throw new RegistryError(`Registry unreachable: ${error instanceof Error ? error.message : String(error)}`, error)
+    }
     if (!response.ok) {
       done()
-      throw new RegistryError(`Failed to fetch package manifest: HTTP ${response.status}`)
+      // Status preserved: 5xx/429 stay mirror-retryable, other 4xx are
+      // definitive (see `fetchRegistryManifest.loadOnce`).
+      const error = new RegistryError(`Failed to fetch package manifest: HTTP ${response.status}`)
+      ;(error as { status?: number }).status = response.status
+      throw error
     }
-    const data = await parseJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES, done)
+    const { data, bytes } = await parseJsonCappedBytes(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES, done)
     if (!isPlainObject(data) || !Array.isArray(data.tools)) {
       throw new RegistryError('The package manifest lists no tools')
     }
@@ -600,7 +699,22 @@ export async function fetchPackageManifestPreview(
         `The package manifest version ${manifest.version} does not match the catalog version ${options.expectedVersion}`,
       )
     }
-    return { tools: manifest.tools.map(tool => ({ name: tool.name, description: tool.description })) }
+    // Verify the fetched bytes against the CATALOG's manifest.json sha256
+    // (finding: "Preview skips catalog checksum"). The install path already
+    // refuses a manifest that does not match what the catalog author
+    // published — a preview that skipped the check marked a changed or
+    // stale mirror's same-version manifest as verified. The catalog entry
+    // is the reference; the mirror never is.
+    if (options?.expectedManifestSha256 !== undefined) {
+      const { sha256Hex } = await import('./package-installer')
+      const actual = await sha256Hex(bytes)
+      if (actual !== options.expectedManifestSha256.toLowerCase()) {
+        throw new RegistryError(
+          `The package manifest does not match the catalog checksum (expected ${options.expectedManifestSha256}, got ${actual})`,
+        )
+      }
+    }
+    return { tools: manifest.tools.map(tool => ({ name: tool.name, description: tool.description })), bytes }
   }
   const result = await fetchWithMirrorFallback(url, load, { preference: options?.preference })
   return result.value
