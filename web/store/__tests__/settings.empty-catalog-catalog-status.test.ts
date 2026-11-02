@@ -106,8 +106,25 @@ describe('getAvailableProviders: failed vs authoritative-empty catalogs (PR #150
     expect(provider?.catalogStatus).toBe('ready')
   })
 
-  it('reports catalogStatus "empty" (authoritative) when the static registry resolves empty with NO refresh error', async () => {
-    // The catalog was loaded successfully and positively reports no models.
+  it('reports catalogStatus "empty" (authoritative) when the static registry resolves empty and the last refresh succeeded', async () => {
+    // The catalog was loaded successfully and positively reports no models:
+    // the cache holds a SUCCESSFUL refresh result (no error) that reported
+    // nothing. A cache with NO result at all means the refresh was never
+    // attempted — that is 'failed' (unknown), covered below.
+    mocks.getModelsForProvider.mockReturnValue([])
+    mocks.getCachedModelsResult.mockReturnValue({ models: [], source: 'dynamic', fetchedAt: Date.now() } as never)
+
+    const results = await useSettingsStore.getState().getAvailableProviders()
+    const provider = results.find((r) => r.providerType === P)
+
+    expect(provider?.authoritativeIds).toEqual([])
+    expect(provider?.catalogStatus).toBe('empty')
+  })
+
+  it('reports catalogStatus "failed" when the catalog has NEVER been observed (no cached result)', async () => {
+    // Sourcery round 5 "Unknown catalogs appear empty": a static-empty
+    // provider with no cached refresh result has not reported anything —
+    // reconciliation must not treat that unknown catalog as confirmed empty.
     mocks.getModelsForProvider.mockReturnValue([])
     mocks.getCachedModelsResult.mockReturnValue(null)
 
@@ -115,7 +132,7 @@ describe('getAvailableProviders: failed vs authoritative-empty catalogs (PR #150
     const provider = results.find((r) => r.providerType === P)
 
     expect(provider?.authoritativeIds).toEqual([])
-    expect(provider?.catalogStatus).toBe('empty')
+    expect(provider?.catalogStatus).toBe('failed')
   })
 
   it('DEFERS selection changes on a failed catalog EVEN when another provider has an available model', async () => {
@@ -150,13 +167,14 @@ describe('getAvailableProviders: failed vs authoritative-empty catalogs (PR #150
   })
 
   it('switches away on an AUTHORITATIVE empty catalog (the model is genuinely gone)', async () => {
-    // The provider confirmed an empty catalog AND another provider has a
-    // model: unlike the failed case, this MUST reconcile to the alternative.
+    // The provider confirmed an empty catalog (a SUCCESSFUL refresh that
+    // reported nothing) AND another provider has a model: unlike the failed
+    // case, this MUST reconcile to the alternative.
     mocks.loadApiKey.mockImplementation(async (id: string) => (id === P || id === 'anthropic' ? 'key' : null))
     mocks.getModelsForProvider.mockImplementation((id: string) =>
       id === P ? [] : id === 'anthropic' ? [{ id: 'a-1', name: 'Claude' }] : [],
     )
-    mocks.getCachedModelsResult.mockReturnValue(null)
+    mocks.getCachedModelsResult.mockReturnValue({ models: [], source: 'dynamic', fetchedAt: Date.now() } as never)
 
     await useSettingsStore.getState().getAvailableProviders()
 
