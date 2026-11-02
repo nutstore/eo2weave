@@ -40,17 +40,35 @@ const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
 
 export { MODEL_DISCOVERY_TIMEOUT_MS }
 
-function withDiscoveryDeadline<T>(p: Promise<T>): Promise<T> {
+function withDiscoveryDeadline<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
+  // Internal abort wiring (Sourcery round 8, "Timed-out discovery keeps
+  // running"): the deadline previously only rejected the RACE — the caller
+  // moved on to the credential commit while `prepareGatewayModels` kept
+  // awaiting a hung fetch forever, and when the caller supplied no signal
+  // (direct-login path) nothing would ever cancel it. An internal
+  // AbortController, chained onto the caller's signal when one exists, lets
+  // the deadline abort the discovery fetch itself so the inner promise
+  // settles instead of leaking. Aborting the internal controller does NOT
+  // touch the caller's signal, so `signal?.throwIfAborted()` still sees only
+  // genuine caller cancellations.
+  const internalController = new AbortController()
+  const onOuterAbort = () => internalController.abort(signal?.reason)
+  signal?.addEventListener('abort', onOuterAbort, { once: true })
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('model discovery timed out')), MODEL_DISCOVERY_TIMEOUT_MS)
+    timer = setTimeout(() => {
+      internalController.abort(new Error('model discovery timed out'))
+      reject(new Error('model discovery timed out'))
+    }, MODEL_DISCOVERY_TIMEOUT_MS)
   })
   return Promise.race([
     p.finally(() => {
       if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', onOuterAbort)
     }),
     deadline.finally(() => {
       if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', onOuterAbort)
     }),
   ])
 }
@@ -132,7 +150,7 @@ async function applyGatewayLoginTokensInner(
     status: 'failed',
   }
   try {
-    discovery = await withDiscoveryDeadline(prepareGatewayModels(accessToken, signal))
+    discovery = await withDiscoveryDeadline(prepareGatewayModels(accessToken, signal), signal)
   } catch (e) {
     if (signal?.aborted) signal.throwIfAborted()
     console.warn('[gateway-login] model discovery failed; committing login with an empty model list:', e)
