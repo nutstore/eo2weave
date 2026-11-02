@@ -772,10 +772,23 @@ export const Sidebar = memo(function Sidebar({
   // reads as "history wiped" — render an error banner with Retry instead,
   // mirroring the projects-page fix (PR #133).
   const conversationLoadError = useConversationStore((s) => s.loadError)
+  // The scope tells the UI WHICH part failed (issue #147, PR #149 review):
+  //  - 'metadata' — the conversation list itself is unavailable; the rows
+  //    must stay hidden, otherwise the sidebar reads as "history wiped".
+  //  - 'transcript' — the list loaded fine and only the ACTIVE
+  //    conversation's transcript read failed. The rows are usable: hiding
+  //    them would strand the user on the failing conversation with no way
+  //    to pick another one.
+  // An unknown scope (null / undefined) is treated like 'metadata' — the
+  // conservative choice that never shows an empty list as if it were fine.
+  const conversationLoadErrorScope = useConversationStore((s) => s.loadErrorScope)
+  const suppressConversationList =
+    conversationLoadError !== null && conversationLoadErrorScope !== 'transcript'
   const reloadConversations = useConversationStore((s) => s.loadFromDB)
   // Keep the banner (and its disabled Retry button) mounted while a retry is
-  // in flight — loadFromDB clears loadError only on success, so the empty
-  // list never flashes as a false "no history" state (PR #133 semantics).
+  // in flight — loadFromDB clears loadError only after the active transcript
+  // read succeeded, so the empty list never flashes as a false "no history"
+  // state (PR #133 semantics).
   const [isRetryingLoad, setIsRetryingLoad] = useState(false)
   const deleteConversation = useConversationStore((s) => s.deleteConversation)
   const deleteConversations = useConversationStore((s) => s.deleteConversations)
@@ -1364,7 +1377,7 @@ export const Sidebar = memo(function Sidebar({
           )}
 
           <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-2">
-            {conversationLoadError !== null ? (
+            {conversationLoadError !== null && (
               <div
                 role="alert"
                 data-testid="conversation-load-error"
@@ -1391,7 +1404,13 @@ export const Sidebar = memo(function Sidebar({
                   {isRetryingLoad ? t('sidebar.historyRetrying') : t('app.retry')}
                 </button>
               </div>
-            ) : (
+            )}
+            {/* A transcript-only failure keeps the loaded rows usable — the
+                user must be able to switch to another conversation (issue #147,
+                PR #149 review). A metadata failure hides them: the list is
+                genuinely empty and rendering it would read as "history
+                wiped". */}
+            {!suppressConversationList &&
             displayedConversations.map((conv) => {
               const isRunning = runningSet.has(conv.id)
               const isActive = conv.id === activeWorkspaceId
@@ -1439,8 +1458,7 @@ export const Sidebar = memo(function Sidebar({
                 />
                 </motion.div>
               )
-            })
-            )}
+            })}
           </div>
           </div>
 

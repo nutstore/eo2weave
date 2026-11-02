@@ -12,6 +12,7 @@ import { Sidebar } from '@/components/layout/Sidebar'
 let mockConversationState: {
   conversations: Array<{ id: string; title: string }>
   loadError: string | null
+  loadErrorScope: 'metadata' | 'transcript' | null
   loadFromDB: ReturnType<typeof vi.fn>
 }
 
@@ -33,7 +34,7 @@ vi.mock('@/store/conversation-runtime.store', () => ({
 
 const mockContextState = {
   activeWorkspaceId: null as string | null,
-  workspaces: [] as Array<{ id: string }>,
+  workspaces: [] as Array<{ id: string; status?: string; pendingCount?: number; lastAccessedAt?: number }>,
   workspaceStats: [] as Array<{ id: string; status?: string; pendingCount?: number }>,
   currentPendingCount: 0,
 }
@@ -115,25 +116,40 @@ function emptyStore() {
   mockConversationState = {
     conversations: [],
     loadError: null,
+    loadErrorScope: null,
     loadFromDB: vi.fn(async () => {}),
   }
+}
+
+/**
+ * Seed the workspace lists the sidebar renders rows from. The rows come from
+ * the context store's `workspaces` (workspaceStats only carries the status
+ * map), so both have to be seeded for a row to appear.
+ */
+function seedWorkspaces(ids: string[]) {
+  mockContextState.workspaces = ids.map((id) => ({ id, status: 'active' }))
+  mockContextState.workspaceStats = ids.map((id) => ({ id, status: 'active' }))
 }
 
 describe('Sidebar — conversation loadError banner (issue #147)', () => {
   beforeEach(() => {
     emptyStore()
     mockContextState.activeWorkspaceId = null
+    mockContextState.workspaces = []
     mockContextState.workspaceStats = []
   })
 
-  it('renders the error banner with Retry instead of the list when loadError is set', () => {
+  it('renders the error banner with Retry instead of the list when the metadata load failed', () => {
     mockConversationState.loadError = 'OPFS init failed'
+    // The METADATA load failed — the conversation list itself is unavailable,
+    // so the rows must stay hidden.
+    mockConversationState.loadErrorScope = 'metadata'
     // A non-empty list proves the failure case really hides conversation
     // rows — an empty list would pass even if the banner rendered on top
     // of the list (PR #149 review).
     mockConversationState.conversations = [{ id: 'c1', title: 'My chat' }]
     mockContextState.activeWorkspaceId = 'c1'
-    mockContextState.workspaceStats = [{ id: 'c1', status: 'active' }]
+    seedWorkspaces(['c1'])
     render(
       <Sidebar
         onFileSelect={() => {}}
@@ -154,6 +170,38 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
     // row link (role="listitem" + workspaceLabel aria-label) nor its title.
     expect(screen.queryByRole('listitem', { name: 'Chat: My chat' })).toBeNull()
     expect(screen.queryByText('My chat')).toBeNull()
+  })
+
+  it('keeps the loaded conversation rows visible when only the transcript failed', () => {
+    // PR #149 review ("Active transcript failure hides all history"): the
+    // metadata loaded, only the ACTIVE conversation's transcript read failed.
+    // Hiding every row would strand the user on the failing conversation
+    // with no way to select another one.
+    mockConversationState.loadError = 'Failed to load messages for active conversation'
+    mockConversationState.loadErrorScope = 'transcript'
+    mockConversationState.conversations = [
+      { id: 'c1', title: 'Failing chat' },
+      { id: 'c2', title: 'Other chat' },
+    ]
+    mockContextState.activeWorkspaceId = 'c1'
+    seedWorkspaces(['c1', 'c2'])
+    render(
+      <Sidebar
+        onFileSelect={() => {}}
+        onInspect={() => {}}
+        selectedFilePath={null}
+        onSelectWorkspace={() => {}}
+      />,
+    )
+
+    // The failure is still surfaced…
+    expect(screen.getByTestId('conversation-load-error')).toBeTruthy()
+    expect(
+      screen.getByText('Failed to load messages for active conversation'),
+    ).toBeTruthy()
+    // …but the loaded rows stay usable so the user can pick another chat.
+    expect(screen.getByRole('listitem', { name: 'Chat: Failing chat' })).toBeTruthy()
+    expect(screen.getByRole('listitem', { name: 'Chat: Other chat' })).toBeTruthy()
   })
 
   it('renders a generic message (not a blank line) when loadError is an empty string', () => {

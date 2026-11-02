@@ -130,9 +130,17 @@ interface ConversationState {
   activeConversationId: string | null
   loaded: boolean
   /** Last loadFromDB error, if any. When set, `loaded` stays false so the
-   *  WorkspaceLayout effect (`if (!loaded) loadFromDB()`) can retry. UI can
-   *  also surface this instead of silently rendering an empty sidebar. */
+   * WorkspaceLayout effect (`if (!loaded) loadFromDB()`) can retry. UI can
+   * also surface this instead of silently rendering an empty sidebar. */
   loadError: string | null
+  /** Scope of `loadError`:
+   *  - 'metadata' — the conversation LIST itself failed to load. No rows are
+   *    available, so the UI must not pretend the history is empty-but-fine.
+   *  - 'transcript' — the list loaded fine, only the ACTIVE conversation's
+   *    transcript read failed. The rows are usable: the user must still be
+   *    able to pick a different conversation (issue #147, PR #149 review).
+   *  - null — no error (or an error of unknown scope). */
+  loadErrorScope: 'metadata' | 'transcript' | null
 
   // Live AgentLoop instances live in `@/store/agent-loop-registry` rather
   // than in this state. They are service objects with private fields that
@@ -475,6 +483,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     activeConversationId: null,
     loaded: false,
     loadError: null,
+    loadErrorScope: null,
     suggestedFollowUps: new Map(),
     cancelledRunIds: new Set(),
     mountedConversations: new Map(),
@@ -770,6 +779,10 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             )
             set((state) => {
               state.loadError = activeLoadMessage
+              // The conversation LIST loaded fine — only this conversation's
+              // transcript failed, so the sidebar can keep the rows usable
+              // (issue #147, PR #149 review).
+              state.loadErrorScope = 'transcript'
             })
             try {
               sessionStorage.setItem(
@@ -799,6 +812,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           // until the transcript read actually succeeded.
           set((state) => {
             state.loadError = null
+            state.loadErrorScope = null
           })
         }
       } catch (error) {
@@ -862,6 +876,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               )
               set((state) => {
                 state.loadError = retryTranscriptMessage
+                // Only the transcript failed — the conversation list is loaded.
+                state.loadErrorScope = 'transcript'
               })
             }
           }
@@ -870,6 +886,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             // The error stays visible until the transcript read succeeded.
             set((state) => {
               state.loadError = null
+              state.loadErrorScope = null
             })
           }
         } catch (retryErr) {
@@ -885,6 +902,9 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           set((state) => {
             state.loaded = false
             state.loadError = retryMessage
+            // The conversation LIST itself is unavailable — the UI must not
+            // render the (empty) list as if the history were loaded.
+            state.loadErrorScope = 'metadata'
           })
           // Persist the failure for diagnostics (issue #147) — same pattern as
           // the project store's sessionStorage init-error record. Without this,
@@ -945,6 +965,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       if (id) {
         // Lazy-load messages if not already loaded (or if they were evicted)
         const conv = get().conversations.find((c) => c.id === id)
+        let transcriptOk = true
         if (conv && (conv.messages.length === 0 || conv.messagesLoaded === false)) {
           try {
             const msgRepo = getMessageRepository()
@@ -972,12 +993,36 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             )
           } catch (error) {
             console.error('[conversation.store] Failed to load messages for conversation:', error)
+            // The lazy path failed for the newly selected conversation — surface
+            // it like any other transcript failure so the sidebar can offer a
+            // Retry (issue #147, PR #149 review).
+            const activeLoadMessage =
+              error instanceof Error
+                ? `Failed to load messages for active conversation: ${error.message}`
+                : 'Failed to load messages for active conversation'
+            transcriptOk = false
+            set((state) => {
+              state.loadError = activeLoadMessage
+              state.loadErrorScope = 'transcript'
+            })
           }
         } else {
           console.log(
             `[conversation.store] setActive(${id?.slice(0, 8)}) cached (${Math.round(performance.now() - t0)}ms)`,
             { alreadyLoaded: conv ? conv.messages.length : -1 }
           )
+        }
+        // A transcript-scoped error belongs to the conversation that failed.
+        // Once the user switches to another conversation and its transcript
+        // loads fine, the stale error must go — otherwise the sidebar keeps
+        // showing a failure banner for a conversation the user left
+        // (issue #147, PR #149 review).
+        if (transcriptOk && get().loadErrorScope === 'transcript') {
+          set((state) => {
+            state.loadError = null
+            state.loadErrorScope = null
+          })
+          markPersistedFailureResolved()
         }
         // NOTE: workspace switching is handled by syncFromRoute in App.tsx.
         // This store only manages conversation data; it does NOT call switchWorkspace.

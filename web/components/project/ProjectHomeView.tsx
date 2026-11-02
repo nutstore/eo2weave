@@ -151,6 +151,7 @@ export default function ProjectHomeView() {
         activeConversationId: null,
         loaded: true,
         loadError: null,
+        loadErrorScope: null,
         suggestedFollowUps: new Map(),
         mountedConversations: new Map(),
       })

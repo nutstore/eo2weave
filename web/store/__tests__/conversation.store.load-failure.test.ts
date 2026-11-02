@@ -9,6 +9,8 @@
  *     record as resolved ("Failed loads appear recovered").
  *  2. A retry must keep the visible load error until the active transcript
  *     read actually succeeded ("Retry hides the load error").
+ *  3. The failure scope tells the UI whether the loaded conversation rows
+ *     are usable ("Active transcript failure hides all history").
  *
  * They drive the store through its PUBLIC API only (loadFromDB / setActive),
  * so they keep passing when the module is split.
@@ -135,6 +137,7 @@ function resetStore() {
     activeConversationId: null,
     loaded: false,
     loadError: null,
+    loadErrorScope: null,
     suggestedFollowUps: new Map(),
     cancelledRunIds: new Set(),
     mountedConversations: new Map(),
@@ -157,6 +160,61 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     sessionStorage.clear()
     resetStore()
     findAllMetaMock.mockResolvedValue([meta(CONV_A, 'first'), meta(CONV_B, 'second')])
+  })
+
+  it('reports a transcript-only failure without hiding the loaded conversations', async () => {
+    // The metadata load succeeds; only the ACTIVE conversation's transcript
+    // read fails. The list is perfectly usable — the store must say so.
+    findByConversationMock.mockRejectedValue(new Error('sqlite read failed'))
+
+    await useConversationStore.getState().loadFromDB()
+
+    const state = useConversationStore.getState()
+    expect(state.conversations.map((c) => c.id)).toEqual([CONV_A, CONV_B])
+    expect(state.loaded).toBe(true)
+    expect(state.loadError).toContain('sqlite read failed')
+    // Scope tells the UI the ROWS are still usable.
+    expect(state.loadErrorScope).toBe('transcript')
+  })
+
+  it('scopes a metadata failure as "metadata" so the UI can hide the list', async () => {
+    findAllMetaMock.mockRejectedValue(new Error('opfs init failed'))
+
+    await useConversationStore.getState().loadFromDB()
+
+    const state = useConversationStore.getState()
+    expect(state.loaded).toBe(false)
+    expect(state.loadError).toContain('opfs init failed')
+    expect(state.loadErrorScope).toBe('metadata')
+  })
+
+  it('clears a stale transcript error when the user switches to a working conversation', async () => {
+    findByConversationMock.mockRejectedValue(new Error('sqlite read failed'))
+    await useConversationStore.getState().loadFromDB()
+    expect(useConversationStore.getState().loadError).toContain('sqlite read failed')
+
+    // The user picks another conversation whose transcript loads fine.
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'm2', role: 'user', content: 'other', timestamp: 2 },
+    ])
+    await useConversationStore.getState().setActive(CONV_B)
+
+    // The banner belongs to the conversation the user left — it must go.
+    expect(useConversationStore.getState().loadError).toBeNull()
+    expect(useConversationStore.getState().loadErrorScope).toBeNull()
+    expect(readPersistedRecord()?.resolved).toBe(true)
+  })
+
+  it('keeps the error visible when switching to a conversation whose transcript also fails', async () => {
+    findByConversationMock.mockRejectedValue(new Error('sqlite read failed'))
+    await useConversationStore.getState().loadFromDB()
+    expect(useConversationStore.getState().loadError).toContain('sqlite read failed')
+
+    await useConversationStore.getState().setActive(CONV_B)
+
+    // The failure is still real — the error must NOT be cleared.
+    expect(useConversationStore.getState().loadError).toContain('sqlite read failed')
+    expect(useConversationStore.getState().loadErrorScope).toBe('transcript')
   })
 
   it('does not mark the persisted failure record resolved when the transcript failed', async () => {
