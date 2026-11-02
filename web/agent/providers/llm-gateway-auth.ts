@@ -1477,9 +1477,9 @@ export async function fetchGatewayModels(
   // failed catalog instead of rejecting (Sourcery: "Invalid JSON rejects
   // model fetch" — res.json() previously threw outside this handling, so
   // callers never received the failed-catalog result).
-  let data: unknown
+  let data: { data?: unknown }
   try {
-    data = await res.json()
+    data = (await res.json()) as { data?: unknown }
   } catch {
     return { models: [], status: 'failed' }
   }

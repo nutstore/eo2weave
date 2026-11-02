@@ -511,6 +511,14 @@ function persistWritesSuppressed(): boolean {
   return suppressPersistWrites > 0
 }
 
+/**
+ * Monotonic generation counter for `getAvailableProviders` discovery runs.
+ * A module-level (not per-call) counter so concurrent runs are ordered
+ * regardless of store instance; see the superseded-guard at the end of each
+ * run.
+ */
+let getAvailableProvidersGeneration = 0
+
 export const useSettingsStore = create<SettingsState, [['zustand/persist', unknown]]>(
   persist<SettingsState, [], [], PersistedSettingsState>(
     (set, get) => ({
@@ -1056,6 +1064,16 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       },
 
       getAvailableProviders: async () => {
+        // Generation token: concurrent discovery runs must not apply each
+        // other's reconciliation. This function awaits many async steps
+        // (API-key reads, dynamic imports, gateway lookups); an OLDER run
+        // that finishes after a newer one would otherwise feed a stale
+        // catalog snapshot to ensureValidModelSelection and the stale-pin
+        // sweep, letting it switch the active model or remove pins based on
+        // information the newer run already superseded (Sourcery: "Older
+        // refresh overrides newer catalog").
+        const generation = ++getAvailableProvidersGeneration
+        const superseded = () => generation !== getAvailableProvidersGeneration
         const { loadApiKey } = await import('@/security/api-key-store')
         const { PROVIDER_META, getModelsForProvider } = await import('@/agent/providers/types')
         const { getCachedModels, getCachedModelsResult } = await import('@/agent/providers/model-store')
@@ -1290,6 +1308,9 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // Auto-remove stale pins (pinned + previously confirmed available +
         // absent from the authoritative list → delisted upstream). Runs on
         // every provider-list load and is idempotent. Guards:
+        // - A SUPERSEDED run (a newer getAvailableProviders() started while
+        //   this one was awaiting) must not apply destructive pin updates
+        //   from a stale snapshot — the newer run owns reconciliation now.
         // - A FAILED catalog ('failed') is missing information, not proof of
         //   delisting — skip it entirely, never wipe pins.
         // - An authoritative EMPTY catalog DOES sweep: getStalePinnedModels
@@ -1297,6 +1318,13 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         //   (empty) contents are authoritative.
         // - Keep the currently selected model even if stale: the user is on
         //   it, and the topbar already flags it (currentModelDelistedTooltip).
+        // A newer discovery run has started while this one was collecting:
+        // this run's snapshot is stale — skip BOTH the destructive pin sweep
+        // and reconciliation, and return the (still valid, read-only) results
+        // to the caller. The newer run re-derives everything from fresher
+        // state (Sourcery: "Older refresh overrides newer catalog").
+        if (superseded()) return results
+
         const current = get()
         for (const r of results) {
           if (r.catalogStatus === 'failed') continue
@@ -1321,6 +1349,12 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           // that was just auto-removed (no flash between refreshes).
           r.models = r.models.filter((m) => !toRemove.includes(m.id))
         }
+
+        // A second superseded-check before reconciliation: the sweep above
+        // awaits nothing, but keep the two destructive steps under one gate
+        // so any future edit that adds awaits to the sweep cannot reopen the
+        // stale-run window.
+        if (superseded()) return results
 
         // Reconcile only after every provider source has been collected. This
         // prevents an early provider from winning while a later provider is
