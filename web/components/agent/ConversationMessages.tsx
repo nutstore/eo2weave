@@ -15,7 +15,7 @@ import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 import { useShallow } from 'zustand/react/shallow'
 import { MessageBubble } from './MessageBubble'
 import { AssistantTurnBubble } from './AssistantTurnBubble'
-import type { VirtualAtBottomListener, VirtualAtBottomHub } from './ScrollToBottomButton'
+import type { VirtualAtBottomListener, VirtualAtBottomHub } from '@/components/agent/ScrollToBottomButton'
 import { groupMessagesIntoTurns } from './group-messages'
 import type { Turn } from './group-messages'
 import { QueuedMessageCard } from './QueuedMessageCard'
@@ -300,6 +300,13 @@ export interface ConversationMessagesHandle {
    * plain mode scrolls the native container.
    */
   scrollToLastTurn: (behavior?: 'smooth' | 'auto') => void
+  /**
+   * Issue #141 (review round 2): explicit at-bottom notification for the
+   * scroll-to-bottom button's virtual-mode click. Routes through the same
+   * funnel as atBottomStateChange so the button's optimistic hide also
+   * re-enables the list's followOutput state (a bare ref write does not).
+   */
+  notifyVirtualAtBottom: (atBottom: boolean) => void
 }
 
 /** Build runtime props for an AssistantTurnBubble. Returns undefined values when not active. */
@@ -480,7 +487,8 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   const [isUserAtBottom, setIsUserAtBottom] = useState(() => isUserAtBottomRef?.current ?? true)
   /**
    * Single funnel for every virtualized at-bottom transition:
-   * - writes the shared isUserAtBottomRef (the cross-component seed), and
+   * - writes the shared isUserAtBottomRef (the cross-component seed),
+   * - records the value on the hub so late subscriber effects can replay it,
    * - pushes the value to registered listeners (ScrollToBottomButton's
    *   visibility), so the button can never disagree with Virtuoso.
    * `setIsUserAtBottom` stays as state writer so followOutput re-reads a
@@ -489,6 +497,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   const handleVirtualAtBottomChange = useCallback<VirtualAtBottomListener>((atBottom: boolean) => {
     if (isUserAtBottomRef) isUserAtBottomRef.current = atBottom
     setIsUserAtBottom(atBottom)
+    if (virtualAtBottomHub) virtualAtBottomHub.lastAtBottom = atBottom
     for (const listener of virtualAtBottomHub?.listeners ?? []) {
       listener(atBottom)
     }
@@ -547,13 +556,16 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
         container.scrollTo({ top: targetTop, behavior: 'smooth' })
       }
     },
-    // Issue #141: "go to latest" for the scroll-to-bottom button. Under
-    // virtualization the DOM holds only the window slice, so the native
-    // scrollHeight is short — scrollToIndex({ index: 'LAST' }) is the only
-    // reliable way to land on the true bottom (footer included).
+    // Issue #141 (review round 2): "go to latest" must land on the true
+    // bottom of the scroller, which INCLUDES the Virtuoso footer (draft
+    // bubble / queued messages). scrollToIndex({ index: 'LAST', align: 'end'
+    // }) aligns to the last DATA turn and leaves footer content below the
+    // viewport. VirtuosoHandle has no scrollToEnd, but scrollTo clamps top
+    // against the scroller's real scrollHeight (footer included) — even with
+    // a customScrollParent, whose offset it compensates for.
     scrollToLastTurn: (behavior: 'smooth' | 'auto' = 'smooth') => {
       if (shouldVirtualize && virtuosoRef.current) {
-        virtuosoRef.current.scrollToIndex({ index: 'LAST', align: 'end', behavior })
+        virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior })
         return
       }
       // Plain renderer: the scroll container is the nearest overflow-y-auto
@@ -563,7 +575,14 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
         container.scrollTo({ top: container.scrollHeight, behavior })
       }
     },
-  }), [turns, shouldVirtualize]))
+    // Issue #141 (review round 2): the button's click must re-enable
+    // followOutput, which reads this component's `isUserAtBottom` STATE —
+    // not just the shared ref. Route through the single funnel so ref,
+    // state, hub replay value and listeners all update together.
+    notifyVirtualAtBottom: (atBottom: boolean) => {
+      handleVirtualAtBottomChange(atBottom)
+    },
+  }), [turns, shouldVirtualize, handleVirtualAtBottomChange]))
 
   const shouldRenderDraftAssistant = isProcessing && (!lastTurn || lastTurn.type !== 'assistant')
   const shouldAttachRuntimeToDraft = shouldRenderDraftAssistant

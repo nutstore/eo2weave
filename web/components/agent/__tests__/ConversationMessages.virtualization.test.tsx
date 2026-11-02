@@ -12,16 +12,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '@/agent/message-types'
 import { ConversationMessages } from '../ConversationMessages'
 import type { ConversationMessagesHandle } from '../ConversationMessages'
+import { ScrollToBottomButton } from '../ScrollToBottomButton'
 import type { VirtualAtBottomHub } from '../ScrollToBottomButton'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 
 const {
   virtuosoSpy,
   virtuosoScrollToIndexSpy,
+  virtuosoScrollToSpy,
   atBottomStateChangeHandlers,
 } = vi.hoisted(() => ({
   virtuosoSpy: vi.fn(),
   virtuosoScrollToIndexSpy: vi.fn(),
+  virtuosoScrollToSpy: vi.fn(),
   // Records every atBottomStateChange callback Virtuoso receives, so tests
   // can fire real transitions (issue #141 scenarios) through OUR wiring.
   atBottomStateChangeHandlers: [] as Array<(atBottom: boolean) => void>,
@@ -53,8 +56,8 @@ vi.mock('react-virtuoso', () => ({
     virtuosoSpy(props)
     useImperativeHandle(ref, () => ({
       scrollToIndex: virtuosoScrollToIndexSpy,
+      scrollTo: virtuosoScrollToSpy,
       scrollIntoView: vi.fn(),
-      scrollTo: vi.fn(),
       scrollBy: vi.fn(),
     }))
     if (typeof props.atBottomStateChange === 'function') {
@@ -176,6 +179,7 @@ describe('ConversationMessages virtualization', () => {
   beforeEach(() => {
     virtuosoSpy.mockClear()
     virtuosoScrollToIndexSpy.mockClear()
+    virtuosoScrollToSpy.mockClear()
     usageBarSpy.mockClear()
     atBottomStateChangeHandlers.length = 0
   })
@@ -343,24 +347,66 @@ describe('ConversationMessages virtualization', () => {
     expect(isUserAtBottomRef.current).toBe(false)
   })
 
-  it('button click lands at bottom via Virtuoso scrollToIndex in virtual mode', async () => {
+  it('button click lands at bottom via Virtuoso scrollTo (footer-inclusive) in virtual mode', async () => {
     const isUserAtBottomRef = { current: false }
-    const { handleRef, container } = renderVirtual(55, { isUserAtBottomRef })
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
+    const { handleRef, container } = renderWithButton(55, { isUserAtBottomRef, virtualAtBottomHub: hub })
     await waitFor(() => {
       expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
       expect(handleRef.current).not.toBeNull()
     })
 
-    // The scroll-to-bottom button clicks through the imperative handle's
-    // scrollToLastTurn — the exact entry point ScrollToBottomButton uses.
-    act(() => handleRef.current!.scrollToLastTurn('smooth'))
+    // The button must be visible (Virtuoso last reported not-at-bottom)
+    const button = await waitFor(() => {
+      const el = container.querySelector('[data-testid="scroll-to-bottom"]')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
 
-    // Must route through Virtuoso (index 'LAST'), NOT a native scrollTop write
-    expect(virtuosoScrollToIndexSpy).toHaveBeenCalledWith({
-      index: 'LAST',
-      align: 'end',
+    // Drive the click through the REAL button — a broken wiring (hub fan-out,
+    // followOutput re-enable, scroll delegation) must fail this test.
+    act(() => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    // Must route through Virtuoso's footer-inclusive scrollTo, NOT a native
+    // scrollTop write and NOT scrollToIndex (which targets the last DATA
+    // turn and leaves the footer below the viewport).
+    expect(virtuosoScrollToSpy).toHaveBeenCalledWith({
+      top: Number.MAX_SAFE_INTEGER,
       behavior: 'smooth',
     })
+    expect(virtuosoScrollToIndexSpy).not.toHaveBeenCalled()
+  })
+
+  it('button click re-enables followOutput for subsequently appended turns', async () => {
+    const isUserAtBottomRef = { current: false }
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
+    const { handleRef, rerender, container } = renderWithButton(55, { isUserAtBottomRef, virtualAtBottomHub: hub })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+      expect(handleRef.current).not.toBeNull()
+    })
+
+    // Not at bottom → followOutput is off
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
+
+    const button = await waitFor(() => {
+      const el = container.querySelector('[data-testid="scroll-to-bottom"]')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+    act(() => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    // The click must have pushed at-bottom through the funnel so the LIST's
+    // followOutput state re-enabled (not just the button's own visibility).
+    await waitFor(() => {
+      expect(isUserAtBottomRef.current).toBe(true)
+    })
+    rerender(56)
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe('smooth')
   })
 
   it('scrollToLastTurn stays on the native DOM path in plain mode', () => {
@@ -369,30 +415,114 @@ describe('ConversationMessages virtualization', () => {
     const { handleRef } = renderPlainWithScrollSpy(scrollToSpy, isUserAtBottomRef)
     act(() => handleRef.current!.scrollToLastTurn('smooth'))
     expect(virtuosoScrollToIndexSpy).not.toHaveBeenCalled()
-    expect(scrollToSpy).toHaveBeenCalledWith({ top: expect.any(Number), behavior: 'smooth' })
+    expect(virtuosoScrollToSpy).not.toHaveBeenCalled()
+    // Nonzero geometry: the plain path must target the container's true
+    // scrollHeight, not just "any number" (top: 0 would be a no-op).
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 1500, behavior: 'smooth' })
   })
 
   it('button visibility toggles with atBottomStateChange through the listener hub', async () => {
     const isUserAtBottomRef = { current: true }
-    const hub: VirtualAtBottomHub = { listeners: new Set() }
-    const received: boolean[] = []
-    hub.listeners.add((atBottom) => received.push(atBottom))
-
-    const { container } = renderVirtual(55, { isUserAtBottomRef, virtualAtBottomHub: hub })
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: null }
+    const { container } = renderWithButton(55, { isUserAtBottomRef, virtualAtBottomHub: hub })
     await waitFor(() => {
       expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
     })
 
-    // Virtuoso fires scrolled-up → every hub listener receives false
+    // No Virtuoso signal yet → button hidden
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
+
+    // Virtuoso fires scrolled-up → the real button becomes visible
     const handler = atBottomStateChangeHandlers.at(-1)!
     act(() => handler(false))
-    expect(received).toEqual([false])
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
     expect(isUserAtBottomRef.current).toBe(false)
 
-    // Scroll back to bottom → true fans out
+    // Scroll back to bottom → button hides again
     act(() => handler(true))
-    expect(received).toEqual([false, true])
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
     expect(isUserAtBottomRef.current).toBe(true)
+  })
+
+  it('button replays the hub state it subscribed after (no missed initial signal)', async () => {
+    const isUserAtBottomRef = { current: false }
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
+    const { rerender, container } = renderWithButton(55, { isUserAtBottomRef, virtualAtBottomHub: hub })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+    })
+
+    // Virtuoso reported not-at-bottom, then the subscription remounted
+    // (virtualized→plain→virtualized mode flip, or a late effect). The
+    // replay on registration must surface the hub's last value WITHOUT any
+    // new atBottomStateChange (no handler calls here).
+    rerender(55)
+
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+  })
+
+  it('plain-mode visibility recomputes from geometry on effect setup (mode switch)', async () => {
+    // Virtualized → plain transition: the plain effect must derive show from
+    // the CURRENT geometry once at setup, not wait for the first scroll
+    // event (which would leave the button stale-hidden or stale-shown).
+    const isUserAtBottomRef = { current: false }
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
+    const handleRef = { current: null as ConversationMessagesHandle | null }
+    const scrollContainerRef = { current: null as HTMLDivElement | null }
+    const noop = vi.fn()
+    const messagesEndRef = { current: null as HTMLDivElement | null }
+    const ui = (virtual: boolean) => (
+      <div
+        className="overflow-y-auto"
+        data-testid="scroll-container"
+        ref={(el) => {
+          scrollContainerRef.current = el
+          if (el) {
+            // Far from bottom: 1500 scrollHeight, 600 clientHeight.
+            Object.defineProperty(el, 'scrollHeight', { value: 1500, configurable: true })
+            Object.defineProperty(el, 'clientHeight', { value: 600, configurable: true })
+            Object.defineProperty(el, 'scrollTop', { value: 0, configurable: true })
+          }
+        }}
+      >
+        <ConversationMessages
+          ref={handleRef}
+          activeMessages={makeMessages(virtual ? 55 : 5)}
+          toolResults={new Map()}
+          isProcessing={false}
+          status="idle"
+          onDeleteAgentLoop={noop}
+          onEditAndResend={noop}
+          onRegenerate={undefined}
+          onCancel={noop}
+          messagesEndRef={messagesEndRef}
+          isUserAtBottomRef={isUserAtBottomRef}
+          virtualAtBottomHub={hub}
+          conversationId="conv-1"
+          mentionAgents={[]}
+        />
+        <ScrollToBottomButton
+          scrollContainerRef={scrollContainerRef}
+          messagesEndRef={messagesEndRef}
+          isUserAtBottomRef={isUserAtBottomRef}
+          convId="conv-1"
+          isVirtualized={virtual}
+          virtuosoRef={handleRef}
+          virtualAtBottomHub={hub}
+        />
+      </div>
+    )
+    const { container, rerender } = render(ui(true))
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+    })
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+
+    // Mode switch to plain while the user is far from the bottom: the
+    // plain-mode setup effect must run handleScroll() once and show the
+    // button immediately (previous behavior waited for a scroll event).
+    rerender(ui(false))
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
   })
 })
 
@@ -452,7 +582,14 @@ function renderPlainWithScrollSpy(
       className="overflow-y-auto"
       data-testid="scroll-container"
       ref={(el) => {
-        if (el) (el as unknown as { scrollTo: unknown }).scrollTo = scrollToSpy
+        if (el) {
+          // Nonzero deterministic geometry: scrollHeight 1500, clientHeight
+          // 600, scrollTop 0 → 900px above bottom → button must show.
+          Object.defineProperty(el, 'scrollHeight', { value: 1500, configurable: true })
+          Object.defineProperty(el, 'clientHeight', { value: 600, configurable: true })
+          Object.defineProperty(el, 'scrollTop', { value: 0, configurable: true })
+          ;(el as unknown as { scrollTo: unknown }).scrollTo = scrollToSpy
+        }
       }}
     >
       <ConversationMessages
@@ -473,6 +610,59 @@ function renderPlainWithScrollSpy(
     </div>,
   )
   return { handleRef, container }
+}
+
+/**
+ * Renders ConversationMessages AND the real ScrollToBottomButton inside the
+ * same scroll container, wired exactly as ConversationView wires them (shared
+ * isUserAtBottomRef + hub). Used for tests that must drive the actual button
+ * instead of calling the imperative handle directly.
+ */
+function renderWithButton(
+  pairs: number,
+  options: { isUserAtBottomRef?: React.MutableRefObject<boolean>; virtualAtBottomHub?: VirtualAtBottomHub } = {},
+) {
+  const handleRef = { current: null as ConversationMessagesHandle | null }
+  const isUserAtBottomRef = options.isUserAtBottomRef ?? { current: true }
+  const noop = vi.fn()
+  const messagesEndRef = { current: null as HTMLDivElement | null }
+  const ui = (count: number) => (
+    <div className="overflow-y-auto" data-testid="scroll-container">
+      <ConversationMessages
+        ref={handleRef}
+        activeMessages={makeMessages(count)}
+        toolResults={new Map()}
+        isProcessing={false}
+        status="idle"
+        onDeleteAgentLoop={noop}
+        onEditAndResend={noop}
+        onRegenerate={undefined}
+        onCancel={noop}
+        messagesEndRef={messagesEndRef}
+        isUserAtBottomRef={isUserAtBottomRef}
+        virtualAtBottomHub={options.virtualAtBottomHub}
+        conversationId="conv-1"
+        mentionAgents={[]}
+      />
+      <ScrollToBottomButton
+        scrollContainerRef={{ current: null }}
+        messagesEndRef={messagesEndRef}
+        isUserAtBottomRef={isUserAtBottomRef}
+        convId="conv-1"
+        isVirtualized
+        virtuosoRef={handleRef}
+        virtualAtBottomHub={options.virtualAtBottomHub}
+      />
+    </div>
+  )
+  const { container, rerender } = render(ui(pairs))
+  return {
+    container,
+    handleRef,
+    isUserAtBottomRef,
+    /** Re-render with a new message count, keeping the SAME button in the tree. */
+    rerender: (nextPairs: number) => rerender(ui(nextPairs)),
+  }
 }
 
 /** Helper so tests can also reach the rendered container. */

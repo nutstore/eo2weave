@@ -41,8 +41,8 @@ import { ConversationEmptyState } from './ConversationEmptyState'
 import { AgentDropdown } from './AgentDropdown'
 import { ModelThinkingControls } from './ModelThinkingControls'
 import { ContextUsageBar } from './ContextUsageBar'
-import { ScrollToBottomButton } from './ScrollToBottomButton'
-import type { RegisterVirtualAtBottomListener, VirtualAtBottomHub } from './ScrollToBottomButton'
+import { ScrollToBottomButton } from '@/components/agent/ScrollToBottomButton'
+import type { VirtualAtBottomHub } from '@/components/agent/ScrollToBottomButton'
 import { MessageNavBar } from './MessageNavBar'
 import { AssetsPopover } from './AssetsPopover'
 import { ProcessesPopover } from './ProcessesPopover'
@@ -120,18 +120,10 @@ export function ConversationView({
   // ── Issue #141: Virtuoso at-bottom listener hub ──
   // The hub object identity is stable for the component's lifetime, so wiring
   // the button to the virtualized at-bottom stream never re-renders
-  // ConversationView. ConversationMessages invokes registered listeners on
-  // every `atBottomStateChange`; ScrollToBottomButton subscribes through
-  // registerVirtualAtBottomListener below.
-  const virtualAtBottomHubRef = useRef<VirtualAtBottomHub>({ listeners: new Set() })
-  const registerVirtualAtBottomListener = useCallback<RegisterVirtualAtBottomListener>((listener) => {
-    const set = virtualAtBottomHubRef.current.listeners
-    if (listener) {
-      set.add(listener)
-    } else {
-      set.clear()
-    }
-  }, [])
+  // ConversationView. ConversationMessages writes the latest value through
+  // the funnel on every `atBottomStateChange` and invokes registered
+  // listeners; ScrollToBottomButton subscribes directly via the hub object.
+  const virtualAtBottomHubRef = useRef<VirtualAtBottomHub>({ listeners: new Set(), lastAtBottom: null })
   const {
     hasInput, setInput, setMentionedAgentIds, inputResetToken, messagesEndRef, scrollContainerRef,
     isUserAtBottomRef,
@@ -410,8 +402,9 @@ export function ConversationView({
 
         {/* Scroll-to-bottom floating button — isolated component to avoid re-rendering ConversationView on scroll.
             Issue #141: in virtualized mode its visibility follows Virtuoso's atBottomStateChange
-            (surfaced through ConversationMessages' listener registry) and clicks delegate to
-            scrollToIndex; the native geometry path stays for the plain renderer. */}
+            (surfaced through the shared hub) and clicks delegate to the list handle (re-enabling
+            followOutput and jumping to the true scroller bottom, footer included); the native
+            geometry path stays for the plain renderer. */}
         <ScrollToBottomButton
           scrollContainerRef={scrollContainerRef}
           messagesEndRef={messagesEndRef}
@@ -419,7 +412,7 @@ export function ConversationView({
           convId={convId ?? undefined}
           isVirtualized={activeMessages.length > VIRTUALIZATION_THRESHOLD}
           virtuosoRef={conversationMessagesRef}
-          registerVirtualAtBottomListener={registerVirtualAtBottomListener}
+          virtualAtBottomHub={virtualAtBottomHubRef.current}
         />
 
         {/* Assets popover — small trigger button, expands to show workspace assets */}
