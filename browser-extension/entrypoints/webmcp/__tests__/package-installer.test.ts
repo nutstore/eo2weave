@@ -587,7 +587,11 @@ describe('installPackage (extension side)', () => {
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
     // An uninstall records the intent NOW; the fresh install afterwards
-    // starts AFTER that record and must succeed.
+    // starts AFTER that record and must succeed. Clear the intent map
+    // first: earlier tests in this file wrote records against a fake
+    // clock, and a stale "future" record would spuriously fence THIS
+    // install when the suite runs in file order.
+    resetUninstallIntentStateForTest()
     await uninstallPackage('com.example.pkg', provider)
     await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
       .resolves.toBeTruthy()
