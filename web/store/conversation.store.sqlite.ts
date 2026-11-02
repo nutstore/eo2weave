@@ -445,6 +445,30 @@ export function evictConversationMessagesIfSafe(conversationId: string): boolean
   return true
 }
 
+/**
+ * Success (metadata AND active transcript) MARKS the previous load-failure
+ * record resolved instead of deleting it (mirrors project.store, issue #147) —
+ * a user who reloaded into a working app must still be able to attach the
+ * ORIGINAL failure to a bug report via Diagnostics. It is called ONLY after
+ * the active transcript load succeeded: a failed transcript load is still an
+ * unresolved failure (issue #147, PR #149 review) and must not be reported
+ * as recovered.
+ */
+function markPersistedFailureResolved(): void {
+  try {
+    const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
+    if (raw) {
+      const record = JSON.parse(raw) as { resolved?: boolean }
+      sessionStorage.setItem(
+        CONVERSATION_STORE_LOAD_ERROR_KEY,
+        JSON.stringify({ ...record, resolved: true })
+      )
+    }
+  } catch {
+    // sessionStorage unavailable / malformed — leave the record as is.
+  }
+}
+
 export const useConversationStoreSQLite = create<ConversationState>()(
   immer((set, get) => ({
     conversations: [],
@@ -715,6 +739,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // Route it through the same loadError + diagnostics flow as the
         // metadata pass — but keep `loaded = true` (metadata is present; the
         // lazy path in setActive can still recover the transcript later).
+        let activeTranscriptLoaded = true
         if (activeId) {
           try {
             const msgRepo = getMessageRepository()
@@ -730,6 +755,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               }
             })
           } catch (error) {
+            activeTranscriptLoaded = false
             const activeLoadMessage =
               error instanceof Error
                 ? `Failed to load messages for active conversation: ${error.message}`
@@ -760,19 +786,11 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // load-failure record resolved instead of deleting it (mirrors
         // project.store, issue #147) — a user who reloaded into a working app
         // must still be able to attach the ORIGINAL failure to a bug report
-        // via Diagnostics. Keeping this after the transcript load ensures an
-        // active-transcript failure leaves the record unresolved.
-        try {
-          const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
-          if (raw) {
-            const record = JSON.parse(raw) as { resolved?: boolean }
-            sessionStorage.setItem(
-              CONVERSATION_STORE_LOAD_ERROR_KEY,
-              JSON.stringify({ ...record, resolved: true })
-            )
-          }
-        } catch {
-          // sessionStorage unavailable / malformed — leave the record as is.
+        // via Diagnostics. It is called ONLY after the active transcript load
+        // succeeded: a failed transcript load is still an unresolved failure
+        // (issue #147, PR #149 review) and must not be reported as recovered.
+        if (activeTranscriptLoaded) {
+          markPersistedFailureResolved()
         }
       } catch (error) {
         console.error('[conversation.store] Failed to load conversations:', error)
@@ -806,17 +824,41 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           // Fallback-retry success also recovers the load — mark the persisted
           // failure resolved here too, or Diagnostics would keep reporting the
           // recovered failure as unresolved (issue #147, PR #149 review).
-          try {
-            const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
-            if (raw) {
-              const record = JSON.parse(raw) as { resolved?: boolean }
-              sessionStorage.setItem(
-                CONVERSATION_STORE_LOAD_ERROR_KEY,
-                JSON.stringify({ ...record, resolved: true })
+          // The retry only re-reads the METADATA though: the active
+          // transcript has to load before the failure is really recovered
+          // (issue #147, PR #149 review).
+          const retryActiveId = get().activeConversationId
+          let retryTranscriptLoaded = true
+          if (retryActiveId) {
+            try {
+              const msgRepo = getMessageRepository()
+              const retryMessages = await msgRepo.findByConversation(retryActiveId)
+              primePersistBaseline(retryActiveId, retryMessages as Message[])
+              set((state) => {
+                const conv = state.conversations.find((c) => c.id === retryActiveId)
+                if (conv) {
+                  conv.messages = retryMessages as Message[]
+                  conv.messagesLoaded = true
+                  healCompressionBaseline(conv)
+                }
+              })
+            } catch (transcriptErr) {
+              retryTranscriptLoaded = false
+              const retryTranscriptMessage =
+                transcriptErr instanceof Error
+                  ? `Failed to load messages for active conversation: ${transcriptErr.message}`
+                  : 'Failed to load messages for active conversation'
+              console.error(
+                '[conversation.store] Failed to load messages for active conversation:',
+                transcriptErr
               )
+              set((state) => {
+                state.loadError = retryTranscriptMessage
+              })
             }
-          } catch {
-            // sessionStorage unavailable / malformed — leave the record as is.
+          }
+          if (retryTranscriptLoaded) {
+            markPersistedFailureResolved()
           }
         } catch (retryErr) {
           console.error(
