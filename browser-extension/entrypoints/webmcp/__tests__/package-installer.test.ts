@@ -436,6 +436,58 @@ describe('installPackage (extension side)', () => {
     expect(await listFiles(provider, '')).toEqual([])
   })
 
+  it('uninstall removes the package directory AND a preserved backup', async () => {
+    // MEDIUM ("Uninstalled packages reappear"): a failed replacement leaves
+    // a `.${id}.previous` backup; removing only the live directory left the
+    // backup behind and a later failed install restored it — the explicitly
+    // uninstalled package came back.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+    // A failed replacement left a preserved backup behind.
+    await provider.mkdir('.com.example.pkg.previous', { recursive: true })
+    await provider.writeFile('.com.example.pkg.previous/manifest.json', new TextEncoder().encode('{}'))
+
+    await uninstallPackage('com.example.pkg', provider)
+
+    expect(await listFiles(provider, '')).toEqual([])
+  })
+
+  it('aborts an install whose id was uninstalled after the install started', async () => {
+    // MEDIUM ("Uninstalled packages return"): an install that STARTS while
+    // the id is absent sees presenceBefore=false, so the presence fence
+    // cannot fire. If a create→uninstall sequence completes while the
+    // download runs, the install would otherwise write the package back and
+    // undo the explicit uninstall. The uninstall-intent fence aborts it.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    const serving = fetchServing(files)
+    const fileUrls = Object.keys(files).map(path => `${RAW}/packages/com.example.pkg/${path}`)
+    let downloadsLeft = fileUrls.length
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (fileUrls.includes(url)) {
+        downloadsLeft -= 1
+        if (downloadsLeft === 0) {
+          // Another install creates the package mid-download…
+          await provider.mkdir('com.example.pkg', { recursive: true })
+          await provider.writeFile('com.example.pkg/config.json', new TextEncoder().encode('{}'))
+          // …and a concurrent uninstall removes it (recording intent).
+          await uninstallPackage('com.example.pkg', provider)
+        }
+      }
+      return serving(input)
+    }) as typeof fetch
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl }))
+      .rejects.toThrow(/was uninstalled while it was being prepared/)
+    expect(await listFiles(provider, '')).toEqual([])
+  })
+
   it('aborts the install when the package was uninstalled while the download ran', async () => {
     // The download+validation happen BEFORE the lock; an uninstall can win
     // the lock race in between. Without the presence fence the install then

@@ -189,6 +189,44 @@ async function downloadFile(
 }
 
 /**
+ * Uninstall INTENT fence (finding: "Uninstalled packages return"): the
+ * pre-download presence probe cannot detect a package that was CREATED and
+ * REMOVED again while the download ran (probe `false` = "was absent" is
+ * indistinguishable from "created then uninstalled mid-download"), so an
+ * install that started before the uninstall can otherwise resurrect the
+ * package the user explicitly removed. Every registry mutation runs in the
+ * single background service worker, so a module-level record of uninstall
+ * INTENT (kept briefly) lets the under-lock flow abort an install whose
+ * id was uninstalled after the install started. A TTL bounds the record:
+ * a LEGITIMATE reinstall started after the uninstall has an intent older
+ * than its own start and proceeds normally.
+ */
+const uninstallIntents = new Map<string, number>()
+const UNINSTALL_INTENT_TTL_MS = 10 * 60_000
+
+function recordUninstallIntent(packageId: string): void {
+  pruneUninstallIntents()
+  uninstallIntents.set(packageId, Date.now())
+}
+
+function pruneUninstallIntents(): void {
+  const now = Date.now()
+  for (const [key, at] of uninstallIntents) {
+    if (now - at > UNINSTALL_INTENT_TTL_MS) uninstallIntents.delete(key)
+  }
+}
+
+/** True when the id was uninstalled at or after `since` (an in-flight install's start). */
+function hasUninstallIntentSince(packageId: string, since: number): boolean {
+  pruneUninstallIntents()
+  const at = uninstallIntents.get(packageId)
+  // `>=` on purpose: the uninstall is recorded at the moment it wins the
+  // lock, which is always at or after the racing install started — and a
+  // fast download can complete within the SAME millisecond as the start.
+  return at !== undefined && at >= since
+}
+
+/**
  * Install one package into the extension's own WebMCP mount. Verifies EVERY
  * file first; a single mismatch aborts with no storage writes. Returns the
  * number of files written.
@@ -246,6 +284,8 @@ export async function installPackage(
   // `false` here is also the NORMAL first-install case, so it never
   // aborts on its own.
   const presenceBefore = options?.presenceBefore !== undefined ? options.presenceBefore : await pathExists(provider, id)
+  // The install's START time anchors the uninstall-intent fence below.
+  const startedAt = Date.now()
 
   // Stage everything in memory BEFORE touching storage — the all-or-nothing
   // guarantee lives here, not in a rollback pass. Size caps bound the staged
@@ -355,6 +395,18 @@ export async function installPackage(
     if (presenceBefore === true && await pathExists(provider, id) === false) {
       throw new PackageInstallError(
         `The install of ${id} was cancelled: the package was removed while it was being prepared`,
+        'LOCK_LOST',
+      )
+    }
+    // UNINSTALL-INTENT FENCE (finding: "Uninstalled packages return"): the
+    // presence fence above only fires when the directory EXISTED before the
+    // download. An install that started while the id was ABSENT, then raced
+    // a create→uninstall sequence, sees `false` here and would otherwise
+    // write the package back — undoing an explicit uninstall. When an
+    // uninstall of THIS id happened after this install started, abort.
+    if (hasUninstallIntentSince(id, startedAt)) {
+      throw new PackageInstallError(
+        `The install of ${id} was cancelled: the package was uninstalled while it was being prepared`,
         'LOCK_LOST',
       )
     }
@@ -842,11 +894,23 @@ export async function uninstallPackage(packageId: string, provider: FsProvider):
         'LOCK_LOST',
       )
     }
+    // UNINSTALL-INTENT record (finding: "Uninstalled packages return"):
+    // recorded INSIDE the lock, before any mutation — an install that
+    // started before this removal re-checks the record under its own lock
+    // acquisition and aborts instead of resurrecting the package.
+    recordUninstallIntent(packageId)
     try {
       await removeMissingOk(provider, packageId, lockSignal)
     } catch (error) {
       throw new PackageInstallError(`Failed to remove package ${packageId}: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
     }
+    // Also remove a PRESERVED backup from a prior failed replacement
+    // (finding: "Uninstalled packages reappear"): `uninstallPackage`
+    // removing only the live directory left `.${id}.previous` behind, and
+    // a later failed install restored that backup — the explicitly
+    // uninstalled package reappeared. The user removed the PACKAGE, not
+    // just its latest version, so internal state goes with it.
+    await removeMissingOk(provider, `.${packageId}.previous`, lockSignal).catch(() => {})
   })
 }
 
