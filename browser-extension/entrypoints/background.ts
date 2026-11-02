@@ -1,13 +1,124 @@
+// Matches the page-side bridge timeout for runBoundPageAction
+// (injected.content.ts sendToBridge, 300s): a queued page action abandoned by
+// its caller is rejected BEFORE its executeScript starts, so an action whose
+// requester has given up can never run later against the tab.
+const PAGE_ACTION_QUEUE_WAIT_MS = 300_000
+
+/**
+ * Dedupe for retried page actions. A bridge timeout does NOT cancel an
+ * action that already started (an in-flight executeScript cannot be
+ * interrupted) — when the caller retries the same submission after a
+ * timeout, the retry would queue behind the first run and execute it a
+ * SECOND time, duplicating side effects.
+ *
+ * The key carries the CALLER-STAMPED REQUEST ID (unique per submission,
+ * threaded through retries by the bridge caller's retry wrapper — see
+ * page-action-request-identity.ts), never a content hash: two
+ * independent submissions — even of byte-identical payloads — always get
+ * different ids and never join each other. A retry of the same
+ * submission (same id) gets exactly-once semantics on both sides of
+ * settlement:
+ *   - the first run still IN FLIGHT → the retry joins its promise;
+ *   - the first run already SETTLED → the retry reads the recorded
+ *     outcome from a short-TTL settled-result cache instead of
+ *     re-executing. Without the cache, the classic
+ *     "started-before-deadline, settled-after-caller-timeout" race
+ *     would let a late retry re-run the action.
+ * Settled entries expire after PAGE_ACTION_RETRY_MEMORY_MS, which covers
+ * the bridge caller's ENTIRE retry horizon (first 300s window + the
+ * retry's own full 300s budget + slack): a settled outcome is retained
+ * for as long as a legitimate retry of that submission can still arrive,
+ * so the retry replays the recorded outcome instead of re-executing the
+ * action. Only after the
+ * window — when the original caller's retry chain is provably dead —
+ * is the entry dropped, and a same-id submission can only be a new run
+ * (every submission has a unique id anyway). Actions without a
+ * recognizable requestId (legacy callers) are never deduped.
+ */
+import {
+  describeSettledOutcome,
+  replayedSettledOutcome,
+  pruneSettledEntries,
+  PAGE_ACTION_RETRY_MEMORY_MS,
+  type PageActionSettledEntry,
+} from '../lib/bash-commands/browser/page-action-settled-outcome'
+import {
+  readDedupeRecord,
+  writeDedupeRecord,
+} from '../lib/bash-commands/browser/page-action-dedupe-store'
+import {
+  forgetTabNavigationEpoch,
+  installTabNavigationEpochListener,
+  navigationEpochChanged,
+  tabNavigationEpoch,
+} from '../lib/bash-commands/browser/page-action-navigation-epoch'
+
+const pageActionInFlight = new Map<string, Promise<unknown>>()
+/**
+ * Settled outcomes by dedupe key, replayed to a late retry within the
+ * retry-memory window. Entries are ENVELOPES ({status, outcome}), not
+ * bare values: a rejected run caches a structured failure (never a
+ * swallowed `undefined`), and a resolved-but-lost `undefined` result is
+ * flagged as a corrupt entry (explicit retryable error) instead of
+ * being replayed as if the action had produced `undefined`.
+ */
+const pageActionSettled = new Map<string, PageActionSettledEntry & { settledAt: number }>()
+
+function prunePageActionSettled(now: number = Date.now()): void {
+  pruneSettledEntries(pageActionSettled, PAGE_ACTION_RETRY_MEMORY_MS, now)
+}
+
+/**
+ * Extract the caller's request identity from the action payload. The page
+ * bridge caller stamps every submission with a UNIQUE `__cwRequestId` and
+ * threads the same id through its own retries. Absent (legacy caller) →
+ * no dedupe.
+ */
+function pageActionRequestId(action: unknown): string {
+  if (!action || typeof action !== 'object') return ''
+  const id = (action as { __cwRequestId?: unknown }).__cwRequestId
+  return typeof id === 'string' && id ? id : ''
+}
+function pageActionDedupeKey(tabId: number, action: unknown): string {
+  const requestId = pageActionRequestId(action)
+  if (!requestId) return ''
+  return `${tabId}:${requestId}`
+}
+/**
+ * Remove the transport-only request-identity stamp before the action is
+ * handed to the page runner — the runner must see the original shape.
+ */
+function stripPageActionRequestId(action: unknown): unknown {
+  if (!action || typeof action !== 'object') return action
+  if ((action as { __cwRequestId?: unknown }).__cwRequestId === undefined) return action
+  const { __cwRequestId: _stripped, ...rest } = action as Record<string, unknown>
+  return rest
+}
+/** Test hook: drop all dedupe entries. */
+export function resetPageActionDedupeForTest(): void {
+  pageActionInFlight.clear()
+  pageActionSettled.clear()
+}
+
 // ============================================================
 // Background Service Worker
 // ============================================================
 import { installAdapterBackground } from './webmcp/adapter-background'
 import { serializeError as serializeBrowserError } from '../lib/bash-commands/browser/errors'
 import { runBrowserRequest, installBrowserLifecycle } from '../lib/bash-commands/browser/runtime'
+import { installCdpIdleWatch } from '../lib/bash-commands/browser/cdp'
+import { captureFrameLoaderId, evaluateBoundExpressionViaCdpUnlocked, isCallerDeadlineExpired as isExpired } from '../lib/bash-commands/browser/cdp-evaluate'
+import { TabLockWaitTimeoutError, withTabLock } from '../lib/bash-commands/browser/cdp'
+import { isCspCompileRejection } from '../lib/bash-commands/browser/csp-rejection'
 import { parseBrowserCommand } from '../lib/bash-commands/browser/command'
 import { discoverWebMCPToolsInCurrentWindow, installAdapterCatalog } from './webmcp/discovery'
 import { invokeWebMCPTool, installAdapterInvoker } from './webmcp/invoke'
 import { createTabWebMCPApi } from './webmcp/tab-api'
+import { createPackageOptInHandler, handlePackageOptInRecoveryAlarm } from './webmcp/package-optin-handler'
+import {
+  clampPageActionDeadline,
+  boundedCaptureTimeoutMs,
+} from '../lib/bash-commands/browser/page-action-request-identity'
 import {
   getHostAuthorizationMap,
   setHostEnabled as setWebMCPHostEnabled,
@@ -1034,6 +1145,7 @@ CODEX = {
 
 export default defineBackground(() => {
   installBrowserLifecycle()
+  installCdpIdleWatch()
   let tabWebMCP: ReturnType<typeof createTabWebMCPApi> | undefined
   const adapterService = installAdapterBackground({
     runBrowser: (owner, request, signal) => {
@@ -1141,6 +1253,12 @@ export default defineBackground(() => {
   if (CODEX_OAUTH_ENABLED) chrome.alarms.create(CODEX_TOKEN_REFRESH_ALARM, { periodInMinutes: 5 });
 
   chrome.alarms.onAlarm.addListener(async (alarm) => {
+    // Side-panel package opt-in recovery reload (findings: "Recovery reload
+    // is lost" / "Enabled state persists without reload"): durable reload
+    // retries for an enabled-but-unloaded package. Returns true when the
+    // alarm belonged to this feature.
+    if (await handlePackageOptInRecoveryAlarm(alarm)) return;
+
     if (CODEX_OAUTH_ENABLED && alarm.name === CODEX_TOKEN_REFRESH_ALARM) {
       await proactiveRefreshIfNeeded();
       await refreshCodexUsageThrottled();
@@ -1289,7 +1407,12 @@ export default defineBackground(() => {
     // Tab closed → its WebMCP registry entry is stale; drop it so the
     // popup/discover snapshot never lists tools from dead tabs.
     unregisterTab(tabId).catch(() => {})
+    forgetTabNavigationEpoch(tabId)
   })
+
+  // Feed the per-tab navigation epochs used by the page-action CSP
+  // fallback's replacement-document guard (see tabNavigationEpoch above).
+  installTabNavigationEpochListener()
 
   /**
    * Forward a schedule trigger to the CreatorWeave page.
@@ -1528,7 +1651,7 @@ export default defineBackground(() => {
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type === 'webmcp_provider_call' || (typeof message?.type === 'string' && (message.type.startsWith('webmcp_adapter_') || message.type.startsWith('webmcp_packages_')))) return false
+    if (message?.type === 'webmcp_provider_call' || message?.type === 'webmcp_package_lock' || message?.type === 'webmcp_packages_changed_notify' || (typeof message?.type === 'string' && (message.type.startsWith('webmcp_adapter_') || message.type.startsWith('webmcp_packages_')))) return false
     // The dedicated bridge listener (registered above) owns these types —
     // answering here would race it and close the channel early.
     if (['browser_command', 'browser_command_ping', 'browser_command_cancel'].includes(message?.type)) return false
@@ -1729,7 +1852,7 @@ export default defineBackground(() => {
       return false
     }
 
-    (async () => {
+    void (async () => {
       try {
         if (message.type === 'extension_get_version') {
           try {
@@ -1815,6 +1938,20 @@ export default defineBackground(() => {
         // Return shape: { url, title, selectedText, providerContext } | null
         // The split makes responsibility clear: url/title/selectedText are
         // "what we recorded", providerContext is "what the upstream site told us".
+        if (message.type === 'webmcp_package_optin_status' || message.type === 'webmcp_package_optin_enable') {
+          // ── Side-panel package opt-in (issue #100) ──
+          // The side panel asks whether the BOUND upstream tab hosts a
+          // builtin WebMCP package that is still disabled, and offers a
+          // one-time opt-in. Package metadata only crosses the bridge; the
+          // enable path re-derives the package from the live tab URL.
+          const targetTabId = await resolveBoundSidePanelTab(_sender, message.binding)
+          const handlePackageOptIn = createPackageOptInHandler({
+            resolveBoundTab: async () => targetTabId,
+          })
+          await handlePackageOptIn(message as unknown as Record<string, unknown>, sendResponse)
+          return
+        }
+
         if (message.type === 'requestPageBodyText') {
           // Page-mode slash commands (/summary /titles on a page without a
           // selection): pull readable body text from the FOLLOWED tab (the
@@ -1961,6 +2098,64 @@ export default defineBackground(() => {
         // untrusted webpages from invoking MAIN-world page actions. The agent
         // layer remains responsible for UI confirmation of write actions.
         if (message.type === 'runBoundPageAction') {
+          // Total deadline = the page-side bridge timeout (sendToBridge, 300s
+          // in injected.content.ts) measured from REQUEST RECEIPT — preflight
+          // (binding + side-panel checks) must consume from the SAME budget
+          // the caller's timer does, or a queued action could acquire the
+          // lock after its caller has already timed out. Date.now() is the
+          // only monotonic-enough clock available in an MV3 worker that can
+          // also survive a mid-request service-worker restart well enough
+          // for a 5-minute budget (restart resets are minutes-scale).
+          const requestReceivedAt = Date.now()
+          // The caller arms its own 300s bridge timeout in the PAGE world
+          // (injected.content.ts sendToBridge) BEFORE the message crosses
+          // postMessage → content script → chrome.runtime.sendMessage. When
+          // that delivery takes measurable time, `requestReceivedAt` starts
+          // the background's budget LATE and the background could acquire
+          // the lock and start the action after the caller has already timed
+          // out. The page therefore ships its absolute timeout epoch in the
+          // payload; the background clamps the received value into a
+          // plausible window (rejects far-past stamps as untrustworthy and
+          // bounds the future slack) and uses the caller's deadline when
+          // available, falling back to receipt + PAGE_ACTION_QUEUE_WAIT_MS.
+          // The stamp is advisory (a liveness hint), not a trust boundary:
+          // an attacker-controlled page value can only make the background
+          // give up EARLIER (its own action, its own budget) — it can never
+          // extend the budget past PAGE_ACTION_QUEUE_WAIT_MS from receipt.
+          const callerDeadlineRaw = (message as { deadlineAt?: unknown }).deadlineAt
+          const callerDeadlineAt = typeof callerDeadlineRaw === 'number' && Number.isFinite(callerDeadlineRaw)
+            ? callerDeadlineRaw
+            : undefined
+          // Plausibility window for the page-supplied deadline stamp, clamped
+          // by clampPageActionDeadline (page-action-request-identity.ts). The
+          // stamp is advisory (a liveness hint), never a trust boundary:
+          //   - within the window → HONORED BUT CAPPED: an unauthenticated
+          //     page value can only make the background give up EARLIER (its
+          //     own action, its own budget) — it can never extend the budget
+          //     past receipt + PAGE_ACTION_QUEUE_WAIT_MS (the cap is
+          //     min(supplied, receipt + window), so a page-supplied value
+          //     near the window edge cannot revive an abandoned action into
+          //     a longer wait);
+          //   - OLDER than the window → the request was delayed in delivery
+          //     past its own lifetime: its caller armed a 300s timeout that
+          //     has already fired and abandoned the action, so the request
+          //     is REJECTED outright (expiredInTransit) — replacing the
+          //     stale deadline with a fresh receipt-based budget would let
+          //     an abandoned action wait for the lock and execute against
+          //     the tab with no listener left.
+          const { deadlineAt, expiredInTransit } = clampPageActionDeadline(
+            callerDeadlineAt,
+            requestReceivedAt,
+            PAGE_ACTION_QUEUE_WAIT_MS,
+          )
+          if (expiredInTransit) {
+            sendResponse({
+              ok: false,
+              errorCode: 'PAGE_ACTION_EXPIRED_IN_TRANSIT',
+              error: 'Page action rejected: the request arrived after its own deadline (delayed delivery past the caller\'s timeout window). The caller has already given up; nothing was executed.',
+            })
+            return
+          }
           const targetTabId = await resolveBoundSidePanelTab(_sender, message.binding)
           if (targetTabId === null) {
             sendResponse({
@@ -1986,8 +2181,132 @@ export default defineBackground(() => {
             sendResponse({ ok: false, errorCode: 'INVALID_REQUEST', error: 'runBoundPageAction requires { action: object }' })
             return
           }
-          try {
-            const results = await chrome.scripting.executeScript({
+          // Serialize the ENTIRE page-action flow (executeScript + CSP
+            // fallback) on the same per-tab operation lock the CDP fallback
+            // evaluator uses. Without this, a concurrent page action could
+            // mutate the tab between an async evaluation's steps — the
+            // fallback would observe or act on inconsistent page state.
+            // maxQueueWaitMs: the page-side bridge gives up on this action
+            // after 300s (injected.content.ts sendToBridge timeout for
+            // runBoundPageAction) while the handler keeps waiting in the
+            // queue. An action abandoned by its caller must not execute
+            // later against the tab — so the wait itself carries the same
+            // deadline, and a waiter that exceeds it rejects WITHOUT ever
+            // starting its executeScript (cancellation before the effect,
+            // the only cancelable stage: an in-flight executeScript cannot
+            // be interrupted). A started action still runs to completion —
+            // the lock ensures no later command overlaps it. The deadline
+            // here is deliberately the SAME total budget as the bridge
+            // timeout and starts no later than it (the preflight above is
+            // bounded by fast, local checks — binding lookup + sidePanel
+            // options — so any preflight time only makes this deadline
+            // fire EARLIER in wall-clock terms than the caller's, never
+            // later): an action whose caller has already timed out can
+            // therefore never acquire the lock and start.
+            let settled = false
+            try {
+            // Remaining budget for the queue wait = the caller's deadline
+            // (see `deadlineAt` above) minus whatever the bridge delivery
+            // AND preflight have already consumed. If the caller's timeout
+            // has already passed, the remaining budget is <= 0 and
+            // withTabLock rejects BEFORE racing the queue — an abandoned
+            // action can never acquire the lock and start.
+            const queueWaitBudget = deadlineAt - Date.now()
+            // RETRY DEDUPE (unique request id per submission, threaded
+            // through retries by the bridge caller): while the same
+            // REQUEST (tab + caller-stamped request id) is in flight, the
+            // retry joins the FIRST run's promise; if that run has
+            // already SETTLED (started before the deadline, settled after
+            // the caller timed out — its in-flight entry is gone), the
+            // short-TTL settled cache still returns the recorded outcome
+            // instead of executing the action a second time. Independent
+            // submissions never collide: each has a unique id, and the
+            // settled cache is keyed by that id (never by payload
+            // content).
+            const dedupeKey = pageActionDedupeKey(targetTabId, action)
+            // RESTART-SAFE DEDUPE (chrome.storage.session): the in-memory
+            // maps die with the service worker. A retry that arrives
+            // after a SW restart would otherwise find no record and
+            // RE-EXECUTE the action. The persisted record is checked
+            // FIRST (it also covers the live-promise case): a settled
+            // record replays its outcome, a still-inflight record with
+            // no live promise means the run was INTERRUPTED by the
+            // restart (outcome unknown — the action MAY have executed)
+            // and fails structured instead of running again. Live-promise
+            // joins below keep the exact join-until-settlement semantics.
+            if (dedupeKey) {
+              const persisted = await readDedupeRecord(dedupeKey)
+              if (persisted?.kind === 'settled') {
+                sendResponse(replayedSettledOutcome(persisted.entry) as Parameters<
+                  typeof sendResponse
+                >[0])
+                return
+              }
+              if (persisted?.kind === 'inflight' && !pageActionInFlight.has(dedupeKey)) {
+                sendResponse({
+                  ok: false,
+                  errorCode: 'PAGE_ACTION_RUN_INTERRUPTED',
+                  error:
+                    'The extension service worker restarted while this action was in flight; its outcome is unknown (the action MAY have executed once). Retry the action if its effect is still needed.',
+                } as Parameters<typeof sendResponse>[0])
+                return
+              }
+            }
+            const inflight = dedupeKey ? pageActionInFlight.get(dedupeKey) : undefined
+            if (inflight) {
+              // Join until SETTLEMENT: the entry is removed when the run
+              // settles (below), so any entry found here is a
+              // still-running action — a retry joins it regardless of how
+              // long it has been going.
+              const shared = await inflight
+              sendResponse(shared)
+              return
+            }
+            if (dedupeKey) {
+              prunePageActionSettled()
+              const recorded = pageActionSettled.get(dedupeKey)
+              if (recorded) {
+                // Replay the stored ENVELOPE: an 'ok' entry replays the
+                // recorded value verbatim; an 'error' entry (cached
+                // rejection or corrupt/lost result) replays the
+                // structured ok:false failure — never a bare undefined.
+                sendResponse(replayedSettledOutcome(recorded) as Parameters<
+                  typeof sendResponse
+                >[0])
+                return
+              }
+            }
+            const executeAction = stripPageActionRequestId(action)
+            // UNFORGABLE INJECTION OUTCOME: everything inside the MAIN-world
+            // `run()` result is page-controlled — a hostile page can wrap
+            // `window.__cwPageAction.run` and return a hand-crafted
+            // { compileError, errorCode, error } triple (the wording is
+            // public) AFTER executing the expression, trying to bait the
+            // background into the CDP fallback and duplicate the side
+            // effects. The page can never forge, though, whether OUR
+            // injected function completed at all: executeScript either
+            // RESOLVES (our function ran to completion inside the isolated
+            // chrome.scripting machinery) or REJECTS with chrome's own error
+            // text. That outcome is captured here, browser-side, and is the
+            // sole gate for the CSP fallback below: the page's tagged result
+            // fields corroborate WHICH failure occurred, but a fallback re-run
+            // additionally requires our function to have COMPLETED — a page
+            // that executed the expression and returned a forged tag does so
+            // from inside a run() that resolved normally, so it can no longer
+            // claim a compile-stage failure.
+            let injectionFailedWithCspRejection = false
+            // Pin the tab's navigation epoch BEFORE the executeScript: the
+            // CSP fallback below re-checks it to prove the document that
+            // reported the compile failure is still the one in the tab
+            // (a cross-document navigation in between replaces it — the
+            // post-hoc loaderId capture would otherwise capture the
+            // REPLACEMENT document's identity and bless the stale run).
+            const fallbackEpoch = tabNavigationEpoch(targetTabId)
+            const runPromise: Promise<unknown> = withTabLock(targetTabId, async () => {
+              settled = true
+              let results: Array<{ result?: unknown }> | undefined
+              try {
+                results = await chrome.scripting.executeScript({
               target: { tabId: targetTabId },
               world: 'MAIN',
               func: async (a: unknown) => {
@@ -2012,11 +2331,201 @@ export default defineBackground(() => {
                   }
                 }
               },
-              args: [action],
-            })
-            const result = Array.isArray(results) ? results[0]?.result : null
+              args: [executeAction],
+                })
+              } catch (injectionErr: any) {
+                // Our injected function never completed — the failure is
+                // chrome's own (frame gone, host permission, or the CSP
+                // refusal surfaced as an executeScript rejection). Only in
+                // this browser-reported rejection can a CSP compile failure
+                // be considered real; the message check below keeps ordinary
+                // injection failures (closed tab, restricted URL) out.
+                const message = injectionErr?.message || String(injectionErr)
+                injectionFailedWithCspRejection = isCspCompileRejection(message)
+                return {
+                  ok: false,
+                  errorCode: 'EXECUTE_SCRIPT_FAILED',
+                  error: message,
+                }
+              }
+            let result = Array.isArray(results) ? results[0]?.result : null
+            // If the caller's deadline expired while the FIRST executeScript
+            // was in flight, stop here: the CDP fallback below would hold
+            // the lock for another full evaluation, and the caller has
+            // already gone. STRUCTURED, not bare: this value is also what
+            // the settlement handler caches for retry dedupe — a bare
+            // `undefined` here would be flagged as a corrupt entry and
+            // replayed to a joining retry as a meaningless failure. The
+            // abandoned branch returns an explicit ok:false outcome so a
+            // retry joining this shared run receives a real, structured
+            // answer (the action DID run once).
+            if (isExpired(deadlineAt)) {
+              result = {
+                ok: false,
+                errorCode: 'PAGE_ACTION_ABANDONED',
+                error: 'Page action abandoned: the caller\'s deadline expired while the action was in flight; the CSP fallback was not started.',
+              }
+              sendResponse(result)
+              return
+            }
+            // Strict-CSP pages: the runner's `evaluate` action compiles the
+            // expression with `new Function` in the page's MAIN world, which
+            // the page's CSP can refuse. The runner tags that compile-stage
+            // failure (thrown BEFORE any user code ran, so the expression is
+            // side-effect-free and safe to re-run); fall back to the CDP
+            // evaluation path, which injects through the debugger and is not
+            // CSP-bound (#106). Same trade-off as the browser.eval fallback in
+            // scripting-eval.ts: the debugger attaches (banner shows) — the
+            // price of evaluating at all on such pages. User-code errors whose
+            // message merely mentions CSP wording never carry the tag, so they
+            // can never trigger a duplicate execution.
+            //
+            // FORGED-RESULT GUARD: the tagged fields live in the page's return
+            // value and are therefore forgeable by a wrapped `run`. The
+            // fallback additionally requires `injectionFailedWithCspRejection`
+            // — the browser-side outcome of OUR executeScript call (an
+            // injection rejection whose message matches the CSP wording).
+            // A page that executed the expression and returned a forged tag
+            // resolved our injected function normally, so the browser-side
+            // flag stays false and the CDP re-run never happens: the decision
+            // to re-run rests on a signal the page cannot fabricate.
+            if (
+              injectionFailedWithCspRejection &&
+              result &&
+              typeof result === 'object' &&
+              (result as Record<string, unknown>).compileError === true &&
+              (result as Record<string, unknown>).errorCode === 'CSP_BLOCKED_COMPILE' &&
+              typeof (result as Record<string, unknown>).error === 'string' &&
+              isCspCompileRejection((result as Record<string, unknown>).error as string) &&
+              (action as { type?: string }).type === 'evaluate'
+            ) {
+              const expression = (action as { expression?: unknown }).expression
+              // Document identity guard — TWO pinned signals, one for each
+              // side of the compile failure:
+              //
+              // 1. EXECUTION EPOCH (this fix): the tab's navigation epoch is
+              //    pinned BEFORE the executeScript that produced the compile
+              //    failure and re-checked here. The epoch increments on every
+              //    cross-document commit (tabs.onUpdated status=loading), so
+              //    a navigation between the failed compile and this point —
+              //    the window where the POST-HOC loaderId capture below can
+              //    observe the REPLACEMENT document and bless it — fails
+              //    closed. Same-document history changes (pushState / hash)
+              //    never fire status=loading and never touch the epoch.
+              //
+              // 2. FRAME LOADER ID (existing): pinned right before the CDP
+              //    dispatch and re-verified inside the evaluator at
+              //    execution time — page scripts can neither read nor forge
+              //    it (Page.getFrameTree).
+              // The two pins bracket the whole compile→execute gap: the
+              // epoch closes the post-failure capture window, the loader id
+              // closes the capture-to-dispatch window.
+              // CAPTURE STILL FAILS CLOSED: a null capture (navigation in
+              // flight, tab gone, transport error) means the failed
+              // document's identity could not be pinned — the fallback is
+              // refused outright (undefined loaderId → the evaluator's
+              // mismatch branch), never run against an unverified document.
+              // An empty / whitespace-only expression is a VALID function
+              // body (an empty body compiles fine and returns undefined) —
+              // the MAIN-world path would have succeeded with it, so it must
+              // NOT be refused here just because its compile error arrived
+              // tagged. Route it through the fallback too: the CDP evaluation
+              // of an empty body returns undefined, matching new Function.
+              if (typeof expression === 'string') {
+                if (navigationEpochChanged(targetTabId, fallbackEpoch)) {
+                  result = {
+                    ok: false,
+                    errorCode: 'PAGE_ACTION_FALLBACK_REPLACED_DOCUMENT',
+                    error:
+                      'CSP fallback refused: the tab navigated or reloaded after the compile failure (the failed document was replaced); the expression was NOT run in the new document. Retry the action if still needed.',
+                  }
+                } else {
+                // The capture waits on a debugger callback while HOLDING the
+                // tab lock. Bound it by the caller's shared deadline (capped
+                // at the fixed debugger-callback timeout): a stalled callback
+                // must not keep the lock after the caller's deadline — the
+                // caller is gone and can never receive the result. A zero
+                // budget gives up immediately (null → the evaluator treats
+                // it as a document mismatch and the fallback is refused,
+                // fail closed).
+                const compileLoaderId = await captureFrameLoaderId(
+                  targetTabId,
+                  boundedCaptureTimeoutMs(deadlineAt),
+                )
+                result = await evaluateBoundExpressionViaCdpUnlocked(
+                  targetTabId,
+                  expression,
+                  compileLoaderId ?? undefined,
+                  deadlineAt,
+                )
+                }
+              }
+            }
+            return result
+            }, { maxQueueWaitMs: Math.max(0, queueWaitBudget) })
+            // Register the in-flight run for retry dedupe BEFORE awaiting it:
+            // a retry that arrives while this run holds the lock joins the
+            // shared promise instead of queueing a duplicate execution. On
+            // SETTLEMENT the in-flight entry is removed and the outcome is
+            // recorded in the short-TTL settled cache — a late retry (caller
+            // timed out just before the run settled) replays the recorded
+            // outcome instead of re-executing the action.
+            if (dedupeKey) {
+              pageActionInFlight.set(dedupeKey, runPromise)
+              // Persist the START so a retry arriving after a SW restart
+              // sees an 'inflight' record and NEVER re-executes the
+              // action (the run dies with the old worker; the retry gets
+              // the structured PAGE_ACTION_RUN_INTERRUPTED failure
+              // instead of a duplicate side effect).
+              void writeDedupeRecord(dedupeKey, { kind: 'inflight', startedAt: Date.now() })
+              // SETTLEMENT RECORD — both branches cache an ENVELOPE:
+              //   - rejection → a structured ok:false failure. The old
+              //     `catch(() => {})` turned a rejected run into
+              //     `undefined` and CACHED that; a retry then replayed
+              //     a meaningless undefined as if the action had
+              //     succeeded. The failure text keeps the root cause.
+              //   - resolve → the recorded value wrapped by
+              //     describeSettledOutcome, which flags a
+              //     resolved-to-undefined run as a CORRUPT entry
+              //     (explicit retryable error) instead of replaying
+              //     `undefined` as a legitimate result: the runner
+              //     always resolves with an object, so a bare
+              //     undefined means the value was lost in transit.
+              void runPromise
+                .catch((err: unknown) => ({
+                  ok: false,
+                  errorCode: 'PAGE_ACTION_RUN_FAILED',
+                  error: err instanceof Error ? err.message : String(err),
+                }))
+                .then((outcome) => {
+                  const envelope = describeSettledOutcome(outcome)
+                  if (pageActionInFlight.get(dedupeKey) === runPromise) {
+                    pageActionInFlight.delete(dedupeKey)
+                  }
+                  prunePageActionSettled()
+                  const settledAt = Date.now()
+                  pageActionSettled.set(dedupeKey, { ...envelope, settledAt })
+                  // Persist the SETTLED record (overwrites the inflight
+                  // one) so a post-restart retry replays the outcome.
+                  void writeDedupeRecord(dedupeKey, { kind: 'settled', entry: envelope, settledAt })
+                })
+            }
+            const result: unknown = await runPromise
+            settled = true
             sendResponse(result ?? { ok: false, errorCode: 'NO_RESULT', error: 'executeScript returned no result' })
-          } catch (err: any) {
+            } catch (err: any) {
+            if (!settled && err instanceof TabLockWaitTimeoutError) {
+              // The action was abandoned while queued — its caller's bridge
+              // request has already timed out (same 300s budget), so this
+              // response is informational; the caller is gone. Crucially the
+              // executeScript NEVER ran, so no side effect reaches the tab.
+              sendResponse({
+                ok: false,
+                errorCode: 'PAGE_ACTION_ABANDONED',
+                error: 'Page action abandoned: the operation queue for this tab did not grant the lock within the caller\'s timeout window; the action was NOT executed.',
+              })
+              return
+            }
             // Common causes: tab gone, restricted URL (chrome://, web store),
             // host permission missing. Surface as structured error.
             sendResponse({
@@ -2024,8 +2533,8 @@ export default defineBackground(() => {
               errorCode: 'EXECUTE_SCRIPT_FAILED',
               error: err?.message || String(err),
             })
-          }
-          return
+            }
+            return
         }
 
         // ── Capture Visible Tab ───────────────────────────────────────

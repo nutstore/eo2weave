@@ -29,6 +29,7 @@ import {
   type ExportFormat,
   type ExportResult,
 } from '@/services/export/data-exporter'
+import { formatSize } from '@/lib/utils'
 
 //=============================================================================
 // Types
@@ -101,13 +102,6 @@ export function ExportPanel({
       : 'border-border hover:bg-muted'
     const disabledClass = isDisabled ? ' opacity-50 cursor-not-allowed' : ''
     return `${baseClass} ${stateClass}${disabledClass}`
-  }
-
-  // Format file size
-  const formatSize = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }
 
   // Format timestamp

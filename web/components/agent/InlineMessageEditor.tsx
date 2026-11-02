@@ -23,6 +23,7 @@ import { SlashCommandExtension, type SlashCommandItem } from './SlashCommandExte
 import { Paperclip, X, ImageIcon, FileIcon, FolderIcon, Loader2 } from 'lucide-react'
 import { extractDroppedFiles } from '@/lib/dragdrop'
 import { useT } from '@/i18n'
+import { formatBytes as formatFileSize } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -199,12 +200,6 @@ function getPlainText(editor: Editor): string {
   })
   if (lineBuf) lines.push(lineBuf)
   return lines.join('\n')
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 // ---------------------------------------------------------------------------

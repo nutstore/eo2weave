@@ -4,8 +4,19 @@ import { FsError, normalizeProviderPath, type FsProvider } from '@creatorweave/f
 export function createProviderHandler(storage: () => Promise<FsProvider>, changed: () => Promise<void>) {
   let mutations: Promise<unknown> = Promise.resolve()
   return async (message: Record<string, unknown>) => {
+    // A caller holding a package lease can pass an AbortSignal; once the
+    // lease is lost the signal aborts and the mutation is refused BEFORE it
+    // touches storage (finding: "Lost lease does not stop mutations").
+    const signal = message.signal as AbortSignal | undefined
+    if (signal?.aborted) throw new FsError('EACCES', 'The operation was aborted: the package lease was lost')
     const run = async () => {
       if (typeof message.path !== 'string') throw new FsError('EINVAL', 'Missing path')
+      // The lease can be lost while this mutation waited behind an earlier
+      // one in the queue (finding: "Lease-lost writes still execute") —
+      // re-check the signal when the mutation is DEQUEUED, not only at
+      // enqueue time, so a queued mutation never touches storage under the
+      // new owner's lease.
+      if (signal?.aborted) throw new FsError('EACCES', 'The operation was aborted: the package lease was lost')
       const path = normalizeProviderPath(message.path)
       const provider = await storage()
       if (provider.readOnly && ['writeFile', 'mkdir', 'remove'].includes(String(message.method)))
@@ -39,6 +50,11 @@ export function createProviderHandler(storage: () => Promise<FsProvider>, change
     }
     try {
       const mutating = ['writeFile', 'mkdir', 'remove'].includes(String(message.method))
+      // Mutations must be FENCED at dequeue: the checked-in-queue `run` above
+      // refuses the operation when the signal aborted while it waited, so a
+      // lease-lost transaction stops before its next write (finding:
+      // "Lease-lost writes still execute"). Only mutations chain the queue;
+      // reads run concurrently and are safe to race.
       const pending = mutations.catch(() => {}).then(run)
       if (mutating) mutations = pending
       return { ok: true, value: await pending }

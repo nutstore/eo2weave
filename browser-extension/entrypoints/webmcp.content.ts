@@ -141,6 +141,15 @@ export default defineContentScript({
     // ── Upstream: background → page agent ──
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.type === 'webmcp_adapter_changed') { refreshAdapters(); return false }
+      if (message?.type === 'webmcp_packages_changed') {
+        // Package catalog changed (install/uninstall/opt-in enable in ANOTHER
+        // context). Rebroadcast as a window event so page-level UI — e.g. the
+        // settings package-registry section — can refresh its installed/
+        // activation badges without a remount. A page event is enough: this
+        // carries NO package data, just "go re-read".
+        window.postMessage({ [ADAPTER_PAGE_MARKER]: true, kind: 'packages-changed' }, window.location.origin)
+        return false
+      }
       if (message?.type === WEBMCP_INVOKE_IN_TAB_TYPE) {
         const requestId = `cw_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
         const timeoutId = window.setTimeout(() => {

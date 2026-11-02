@@ -32,6 +32,7 @@
   "dependencies": {
     "@babel/parser": "7.28.5",
     "@creatorweave/config": "workspace:*",
+    "@creatorweave/fs-provider": "workspace:*",
     "@creatorweave/i18n": "workspace:*",
     "@creatorweave/quickjs-runtime": "workspace:*",
     "@creatorweave/shared": "workspace:*",
@@ -110,8 +111,7 @@
     "xlsx": "^0.18.5",
     "zod": "^4.4.3",
     "zod-from-json-schema": "^0.5.2",
-    "zustand": "^4.5.5",
-    "@creatorweave/fs-provider": "workspace:*"
+    "zustand": "^4.5.5"
   },
   "devDependencies": {
     "@eslint/js": "8",
@@ -119,6 +119,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
+    "@types/axe-core": "^3.0.6",
     "@types/chart.js": "^4.0.1",
     "@types/diff": "^8.0.0",
     "@types/file-saver": "^2.0.7",
@@ -130,6 +131,7 @@
     "@typescript-eslint/parser": "^8.54.0",
     "@vitest/coverage-v8": "^2.1.9",
     "autoprefixer": "^10.4.20",
+    "axe-core": "^4.14.0",
     "eslint": "^8.57.1",
     "eslint-plugin-react-hooks": "^5.1.0",
     "eslint-plugin-react-refresh": "^0.4.16",

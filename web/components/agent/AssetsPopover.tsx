@@ -28,14 +28,9 @@ import { useAssetInventoryStore } from '@/store/asset-inventory.store'
 import type { AssetInventoryItem } from '@/store/asset-inventory.store'
 import { inferMimeType } from '@/types/asset'
 import { readAssetBlob, downloadAssetBlob } from './asset-utils'
+import { formatBytes as formatFileSize } from '@/lib/utils'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
 
 function formatTime(ts: number): string {
   const d = new Date(ts)

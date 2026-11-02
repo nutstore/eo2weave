@@ -2,6 +2,7 @@ import { messagesToChatMessages, type ChatMessage } from '../llm/llm-provider'
 import type { Message } from '../message-types'
 import type { ContextManager } from '../context-manager'
 import { isToolEnvelopeV2 } from '../tools/tool-envelope'
+import { isExpectedAgentAbort } from '@/lib/agent-abort'
 
 export interface ContextOverflowPayload {
   maxContextLimit: number
@@ -83,10 +84,12 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
 
   const attachAbort = (signal: AbortSignal | undefined) => {
     if (!signal) return
-    const onAbort = () => timeoutController.abort()
+    // Forward the source signal's reason so tools can tell WHY they were
+    // cancelled (user Stop vs internal teardown) instead of a bare abort.
+    const onAbort = () => timeoutController.abort(signal.reason)
     signal.addEventListener('abort', onAbort)
     cleanupListeners.push(() => signal.removeEventListener('abort', onAbort))
-    if (signal.aborted) timeoutController.abort()
+    if (signal.aborted) timeoutController.abort(signal.reason)
   }
 
   attachAbort(input.runAbortSignal)
@@ -106,25 +109,22 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
         })
       : null
 
+  // Reject with the source signal's semantic reason when one is present
+  // (user Stop vs internal teardown), keeping the tool-specific context for
+  // plain aborts. Timeout rejections keep their own message.
+  const abortRejection = () =>
+    didTimeout
+      ? new Error(`Tool "${input.toolName}" timed out after ${input.timeoutMs}ms`)
+      : isExpectedAgentAbort(timeoutController.signal.reason)
+        ? timeoutController.signal.reason
+        : new Error(`Tool "${input.toolName}" was aborted`)
+
   const abortPromise = new Promise<string>((_, reject) => {
     if (timeoutController.signal.aborted) {
-      reject(
-        new Error(
-          didTimeout
-            ? `Tool "${input.toolName}" timed out after ${input.timeoutMs}ms`
-            : `Tool "${input.toolName}" was aborted`
-        )
-      )
+      reject(abortRejection())
       return
     }
-    const onAbort = () =>
-      reject(
-        new Error(
-          didTimeout
-            ? `Tool "${input.toolName}" timed out after ${input.timeoutMs}ms`
-            : `Tool "${input.toolName}" was aborted`
-        )
-      )
+    const onAbort = () => reject(abortRejection())
     timeoutController.signal.addEventListener('abort', onAbort, { once: true })
     cleanupListeners.push(() => timeoutController.signal.removeEventListener('abort', onAbort))
   })

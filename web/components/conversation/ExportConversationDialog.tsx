@@ -14,6 +14,9 @@ import {
   AlertCircle,
   Loader2,
 } from 'lucide-react'
+// Canonical size formatter (Sourcery #125: the local copy here escalated only
+// to MB and drifted from every other size display in the app).
+import { formatSize } from '@/lib/utils'
 import {
   BrandButton,
   BrandDialog,
@@ -368,9 +371,5 @@ export function ExportConversationDialog({
 // ============================================================================
 // Utility
 // ============================================================================
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
+// formatSize is imported from '@/lib/utils' (the canonical formatter) — the
+// local copy that only escalated to MB was removed (Sourcery #125).

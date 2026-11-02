@@ -15,6 +15,9 @@ import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
 import { installAdapterCommand } from '../lib/bash-commands/adapter'
 import { installBrowserCommand } from '../lib/bash-commands/browser/provider'
+import {
+  submitPageActionWithRetry,
+} from '../lib/bash-commands/browser/page-action-retry-wrapper'
 
 // Build-time Codex OAuth feature flag (see wxt.config.ts). Store builds
 // (CW_CODEX_OAUTH=0) fold the guards below and treeshake the bridge names.
@@ -835,6 +838,55 @@ export default defineContentScript({
       },
 
       /**
+       * Package opt-in probe: does the BOUND upstream tab host a builtin
+       * WebMCP package (jmail.world, douban, …) that is not enabled yet?
+       * Used by the side panel to decide whether to show the one-time
+       * opt-in modal. Returns package METADATA only (never tool schemas or
+       * page content); `applicable: false` when no package matches.
+       */
+      async webMCPPackageOptInStatus(binding: string) {
+        return sendToBridge('webmcp_package_optin_status', { binding });
+      },
+
+      /**
+       * Package opt-in commit: enable the builtin package for the bound tab's
+       * site (the same extension-side config the packages management page
+       * writes) and reload the upstream page so its tools register. Requires
+       * the one-time consent token minted by `webMCPPackageOptInStatus` — the
+       * background verifies it before writing, so a page script cannot flip
+       * the config by calling this method alone. The background also
+       * re-validates the package against the live tab URL before writing.
+       */
+      async webMCPPackageOptInEnable(binding: string, packageId: string, consentToken: string) {
+        return sendToBridge('webmcp_package_optin_enable', { binding, packageId, consentToken });
+      },
+
+      /**
+       * Cross-context package-transaction lock (background-owned
+       * chrome.storage lease). The settings page wraps each install/
+       * uninstall transaction in acquire → heartbeat → release so a
+       * concurrent operation in ANOTHER context cannot interleave its
+       * remove/write sequences and corrupt the package directory. The
+       * background restricts this message to trusted CreatorWeave pages —
+       * a hostile site can neither pin a package lock nor release someone
+       * else's lease (the owner token is minted background-side).
+       */
+      async webMCPPackageLock(packageId: string, action: 'acquire' | 'heartbeat' | 'release', owner?: string, timeoutMs?: number) {
+        return sendToBridge('webmcp_package_lock', { packageId, action, owner, timeoutMs });
+      },
+
+      /**
+       * Announce an install/uninstall of an EXTERNAL package completed in
+       * this tab so the background re-reads its catalog immediately (the
+       * removed package's tools are withdrawn / the new package's tools
+       * register without waiting for an unrelated refresh). Trusted-page
+       * gated background-side.
+       */
+      async webMCPPackagesChangedNotify() {
+        return sendToBridge('webmcp_packages_changed_notify', {});
+      },
+
+      /**
        * Pull page context from the upstream tab that opened this CreatorWeave
        * side panel. Used by workspace-assistant-context.ts at system-prompt
        * build time. The extension executes
@@ -896,12 +948,48 @@ export default defineContentScript({
        *
        * Returns the raw runner result, always with an `ok` boolean. On
        * failure, includes `errorCode` and `error` string.
+       *
+       * REQUEST IDENTITY: every submission is stamped with a UNIQUE
+       * `__cwRequestId` (applied on a shallow copy — the caller's
+       * action object is never mutated) before it crosses the bridge.
+       * The background keys its retry dedupe on that id:
+       *   - two INDEPENDENT submissions always get different ids, so
+       *     each runs its own execution — even with identical payloads;
+       *   - this wrapper's own RETRY after a BRIDGE_TIMEOUT threads the
+       *     SAME id, so the background joins the already-running
+       *     execution or replays its recorded settled outcome — the
+       *     side effects happen exactly once.
+       * The stamp is stripped by the background before the action
+       * reaches the page runner.
        */
-      async runBoundPageAction(binding: string, action: Record<string, unknown>) {
-        // Page actions (especially fill on ProseMirror/Yjs editors) can take
-        // unbounded time. Use 5 min timeout instead of the default 35s.
-        return sendToBridge('runBoundPageAction', { binding, action }, 300000)
-      },
+       async runBoundPageAction(binding: string, action: Record<string, unknown>) {
+       // Page actions (especially fill on ProseMirror/Yjs editors) can take
+       // unbounded time. Use 5 min timeout instead of the default 35s.
+       // The ABSOLUTE timeout epoch rides along with the request: the
+       // background's own clock starts only after the bridge delivery, so
+       // without this stamp a slow delivery would shift the background's
+       // budget later than the caller's and let an action start after this
+       // side has already timed out. The background clamps the value into a
+       // plausible window (it can only make the background give up earlier,
+       // never extend the budget).
+       const timeoutMs = 300000
+       // REQUEST IDENTITY + RETRY WRAPPER (unique id per submission,
+       // threaded through the retry): the wrapper (shared with the test
+       // suite — see page-action-retry-wrapper.ts) stamps a fresh unique
+       // id on a shallow copy at the original send site and REUSES that
+       // stamped payload on its single BRIDGE_TIMEOUT resubmission, so
+       // the background's dedupe joins the first, still-in-flight
+       // execution (or replays its recorded settled outcome) — never a
+       // second execution. The ABSOLUTE deadline epoch rides along with
+       // each request (fresh budget per attempt); the background clamps
+       // the value so it can only shorten its own receipt-based budget.
+       return submitPageActionWithRetry(
+         (type, payload, ms) => sendToBridge(type, payload, ms),
+         binding,
+         action,
+         timeoutMs,
+       )
+       },
 
       /**
        * Capture the visible viewport of the upstream tab as a PNG/JPEG data URL.

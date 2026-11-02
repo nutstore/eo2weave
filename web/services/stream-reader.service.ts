@@ -320,6 +320,11 @@ export function detectEncodingFromBOM(bytes: Uint8Array): string | null {
 /**
  * Format file size for display
  *
+ * NOTE (issue #14): intentionally kept local, not switched to the canonical
+ * `formatBytes` in `@/lib/utils` — this variant renders EVERY unit with one
+ * decimal ("512.0 B", "1.0 KB"), while the canonical keeps byte counts whole
+ * ("512 B"), and it caps at GB. Kept for log-line formatting stability.
+ *
  * @param bytes - Size in bytes
  * @returns Formatted string
  */

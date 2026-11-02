@@ -8,6 +8,7 @@ import { Plug, Search } from 'lucide-react'
 import { CopyIconButton } from '../CopyIconButton'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
+import { formatBytes } from '@/lib/utils'
 
 // ── search_tools ──
 
@@ -424,8 +425,3 @@ function shortToolName(fullName: string): string {
   return fullName
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}

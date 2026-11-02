@@ -209,6 +209,31 @@ function streamCwOpenAIChatCompletions(
             }`
           )
         }
+        // LLM Gateway credit exhaustion (429 + code "insufficient_credit",
+        // retriable: false — retrying cannot succeed until the user tops
+        // up): stamp a structured [CODE] prefix so the error card offers a
+        // "Recharge" action instead of a useless retry. Body shape:
+        // {"code":"insufficient_credit","message":"credit balance is
+        // exhausted","retriable":false}. Distinguished from the SAME
+        // 429 status carrying code "rate_limited" ( unsettled-request
+        // window) — that one keeps the generic presentation.
+        if (
+          response.status === 429 &&
+          String(model.provider) === 'llm-gateway' &&
+          /"code"\s*:\s*"insufficient_credit"/.test(errorBody)
+        ) {
+          const { t: translateStatic } = await import('@creatorweave/i18n')
+          const { useI18nStore } = await import('@/i18n/store')
+          const locale = useI18nStore.getState().locale
+          const msg = translateStatic(locale, 'conversation.error.gatewayInsufficientCredit')
+          throw new Error(
+            `[GATEWAY_INSUFFICIENT_CREDIT] ${
+              msg !== 'conversation.error.gatewayInsufficientCredit'
+                ? msg
+                : 'Nutstore AI credit balance is exhausted. Please top up to continue.'
+            }`
+          )
+        }
         throw new Error(`HTTP ${response.status}: ${errorBody}`)
       }
 

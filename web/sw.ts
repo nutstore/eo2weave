@@ -4,28 +4,23 @@ export {}
 
 declare const self: ServiceWorkerGlobalScope & typeof globalThis
 
-interface PrecacheEntry {
-  url: string
-  revision?: string | null
-  integrity?: string
-}
+const APPSHELL_CACHE = 'appshell-v3'
+// Caches from previous service worker versions. The activate handler migrates
+// the offline-critical entries of 'dynamic-v2' into APPSHELL_CACHE before
+// deleting it (see migrateLegacyCaches):
+// - 'static-v2': hashed static assets (now owned by the browser HTTP cache);
+//   never migrated (immutable URLs are re-fetched by the browser on miss)
+// - 'dynamic-v2': API/MCP + subresources (now pass-through). Only the offline
+//   shell ('/') and Pyodide wheel entries are migrated; API/MCP responses
+//   must never be served stale, and everything else has no offline contract.
 
-declare global {
-  interface ServiceWorkerGlobalScope {
-    __WB_MANIFEST: Array<string | PrecacheEntry>
-  }
-}
-
-const STATIC_CACHE = 'static-v2'
-const DYNAMIC_CACHE = 'dynamic-v2'
-
-// Keep this dependency-free: the development SW middleware transpiles this
-// file without bundling imports, and browser workers do not provide require().
+// Keep this dependency-free: esbuild compiles this file directly with no
+// bundling of imports, and browser workers do not provide require().
 function buildConversationNotificationUrl(projectId: string, conversationId: string): string {
   return `/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(conversationId)}`
 }
 
-// In local development, bypass precaching and fetch interception so Next HMR
+// In local development, bypass all caching and fetch interception so Next HMR
 // and WASM bundles (Pyodide, SQLite) keep working. The SW is still
 // registered (so showNotification / notificationclick work), but acts as a
 // pass-through.
@@ -34,58 +29,96 @@ const IS_DEV =
   self.location.hostname === '127.0.0.1' ||
   self.location.hostname === ''
 
-const STATIC_RESOURCES = ['/', '/manifest.json']
-
 const API_PATTERNS = [/\/api\//, /\/mcp\//]
+// The full Pyodide offline kit: wheels/packages (.whl/.tar) plus the runtime
+// bootstrap files (pyodide.js, pyodide.asm.wasm, *.mjs, pyodide-lock.json,
+// python stdlib zip, ...). Everything under /assets/pyodide/ participates in
+// the same cache-first + CDN-fallback strategy.
+const PYODIDE_RUNTIME_PREFIX = '/assets/pyodide/'
 const PYODIDE_WHEEL_PATTERN = /^\/assets\/pyodide\/.+\.(?:whl|tar)$/i
 const PYODIDE_VERSION = '0.29.3'
 const PYODIDE_CDN_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`
 
-const IMMUTABLE_ASSET_PATTERN =
-  /^\/assets\/.+-[A-Za-z0-9_-]{6,}\.(?:js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|wasm)$/i
-
-const PRECACHE_URLS = (self.__WB_MANIFEST ?? [])
-  .map((entry) => (typeof entry === 'string' ? entry : entry.url))
-  .filter((url) => typeof url === 'string' && url.startsWith('/'))
-
 self.addEventListener('install', (event) => {
-  if (IS_DEV) {
-    // Dev mode: skip precaching entirely (avoid HMR/WASM cache conflicts)
-    event.waitUntil(self.skipWaiting())
-    return
-  }
-
+  // Precache the minimal offline shell: '/' is the navigation fallback and
+  // '/manifest.json' keeps installability metadata available offline. Static
+  // assets are owned by the browser HTTP cache and API/MCP responses must
+  // never be cached. Without '/', the first offline navigation after install
+  // has no shell to serve.
   event.waitUntil(
     (async () => {
-      const cache = await caches.open(STATIC_CACHE)
-      const urlsToCache = Array.from(new Set([...STATIC_RESOURCES, ...PRECACHE_URLS]))
-
-      for (const url of urlsToCache) {
-        try {
-          await cache.add(url)
-        } catch (error) {
-          console.warn('[ServiceWorker] Failed to precache:', url, error)
-        }
+      try {
+        const cache = await caches.open(APPSHELL_CACHE)
+        await cache.addAll(['/', '/manifest.json'])
+      } catch (error) {
+        console.warn('[ServiceWorker] Failed to precache offline shell:', error)
       }
     })()
   )
-
-  self.skipWaiting()
+  event.waitUntil(self.skipWaiting())
 })
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) =>
-      Promise.all(
+    (async () => {
+      await migrateLegacyCaches()
+      const cacheNames = await caches.keys()
+      await Promise.all(
         cacheNames
-          .filter((name) => name !== STATIC_CACHE && name !== DYNAMIC_CACHE)
+          .filter((name) => name !== APPSHELL_CACHE)
           .map((name) => caches.delete(name))
       )
-    )
+    })()
   )
 
   self.clients.claim()
 })
+
+// Base origin used to build absolute Request URLs for Cache Storage keys
+// (relative Request URLs fail outside a browser page context). This must
+// match the deployed origin of the service worker.
+const SW_ORIGIN = 'https://eo2weave.example.com'
+
+/**
+ * Copy offline-critical entries from the previous version's 'dynamic-v2'
+ * cache into APPSHELL_CACHE before it is deleted: the '/' offline shell (if
+ * the old SW precached or network-first cached it) and Pyodide wheels, so an
+ * offline upgrade does not drop the shell or break Python cold start. Best
+ * effort and fault tolerant: a missing legacy cache is a silent no-op, and
+ * entries already present in APPSHELL_CACHE are left untouched.
+ */
+async function migrateLegacyCaches(): Promise<void> {
+  const LEGACY_DYNAMIC_CACHE = 'dynamic-v2'
+  try {
+    if (!(await caches.has(LEGACY_DYNAMIC_CACHE))) return
+    const [legacy, target] = await Promise.all([
+      caches.open(LEGACY_DYNAMIC_CACHE),
+      caches.open(APPSHELL_CACHE),
+    ])
+    // Cache Storage keys are absolute URLs; build the shell request from the
+    // worker origin explicitly (relative Request URLs fail outside browsers).
+    const shellRequest = new Request(`${SW_ORIGIN}/`)
+    if (await target.match(shellRequest)) {
+      // Do not overwrite a fresher shell already present in the new cache.
+    } else {
+      const shell = await legacy.match(shellRequest)
+      if (shell) await target.put(shellRequest, shell)
+    }
+    const keys = await legacy.keys()
+    await Promise.all(
+      keys
+        .filter((request) => isPyodideWheel(new URL(request.url).pathname))
+        .map(async (request) => {
+          if (await target.match(request)) return
+          const response = await legacy.match(request)
+          if (response) await target.put(request, response)
+        })
+    )
+  } catch (error) {
+    // Migration is best effort; never block activation on it.
+    console.warn('[ServiceWorker] Legacy cache migration failed:', error)
+  }
+}
 
 self.addEventListener('fetch', (event) => {
   // Dev mode: pass through. Without this early return, every HMR request
@@ -98,82 +131,49 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return
   if (url.protocol === 'ws:' || url.protocol === 'wss:') return
 
-  if (url.origin !== self.location.origin) {
-    if (url.hostname.includes('cdn') || url.hostname.includes('unpkg') || url.hostname.includes('jsdelivr')) {
-      event.respondWith(networkFirstStrategy(request))
-    }
-    return
-  }
+  // Cross-origin requests: pass through untouched. The offline shell and the
+  // Pyodide wheel cache are same-origin concerns; claiming a cross-origin
+  // request could answer an external URL with this app's shell or a
+  // CDN-proxied response.
+  if (url.origin !== self.location.origin) return
 
-  if (API_PATTERNS.some((pattern) => pattern.test(url.pathname))) {
-    event.respondWith(networkFirstStrategy(request))
-    return
-  }
+  // Everything not handled below is a deliberate pass-through: no
+  // respondWith() means the request flows exactly as if no SW existed.
+  // Static assets (/_next/static/**, /assets/*-hash.*) are content-hashed
+  // and immutable — the browser HTTP cache owns them; API/MCP responses
+  // must never be served stale from Cache Storage; everything else has no
+  // offline requirement. This deletes the entire SW-failure class
+  // (synthetic 503s breaking webpack's chunk loader) at the root.
 
+  // Business data: freshness belongs to the app layer.
+  if (API_PATTERNS.some((pattern) => pattern.test(url.pathname))) return
+
+  // The real SW job: offline app shell.
   if (isNavigationRequest(request)) {
     event.respondWith(networkFirstWithCacheFallback(request))
     return
   }
 
+  // Offline cold-start of the Python runtime: wheels/packages and the
+  // runtime bootstrap files (pyodide.js, .wasm, .mjs, lock json, stdlib zip).
   if (isPyodideWheel(url.pathname)) {
-    event.respondWith(pyodideWheelCacheWithCdnFallback(request, url))
+    event.respondWith(pyodideCacheWithCdnFallback(request, url))
     return
   }
-
-  if (isImmutableAsset(url.pathname)) {
-    event.respondWith(cacheFirstStrategy(request))
+  if (isPyodideRuntimeFile(url.pathname)) {
+    // Cache-first with CDN fallback; on total failure the original network
+    // error propagates (no synthetic 503 — the browser surfaces the real
+    // network failure, same contract as pass-through).
+    event.respondWith(pyodideCacheWithCdnFallback(request, url))
     return
   }
-
-  if (isStaticResource(url.pathname)) {
-    event.respondWith(networkFirstStrategy(request))
-    return
-  }
-
-  event.respondWith(networkFirstStrategy(request))
 })
-
-async function cacheFirstStrategy(request: Request): Promise<Response> {
-  const cached = await caches.match(request)
-  if (cached) return cached
-
-  try {
-    const networkResponse = await fetch(request)
-    if (networkResponse.ok) {
-      const cache = await caches.open(STATIC_CACHE)
-      await cache.put(request, networkResponse.clone())
-    }
-    return networkResponse
-  } catch (error) {
-    console.error('[ServiceWorker] Cache first failed:', error)
-    return new Response('Offline', { status: 503 })
-  }
-}
-
-async function networkFirstStrategy(request: Request): Promise<Response> {
-  try {
-    const networkResponse = await fetch(request)
-    if (networkResponse.ok) {
-      const cache = await caches.open(DYNAMIC_CACHE)
-      await cache.put(request, networkResponse.clone())
-    }
-    return networkResponse
-  } catch {
-    const cached = await caches.match(request)
-    if (cached) return cached
-
-    return new Response(JSON.stringify({ error: 'Offline', cached: false }), {
-      status: 503,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }
-}
 
 async function networkFirstWithCacheFallback(request: Request): Promise<Response> {
   try {
     const networkResponse = await fetch(request)
     if (networkResponse.ok) {
-      const cache = await caches.open(DYNAMIC_CACHE)
+      const cache = await caches.open(APPSHELL_CACHE)
       await cache.put(request, networkResponse.clone())
     }
     return networkResponse
@@ -190,57 +190,42 @@ async function networkFirstWithCacheFallback(request: Request): Promise<Response
   }
 }
 
-async function pyodideWheelCacheWithCdnFallback(request: Request, url: URL): Promise<Response> {
-  const cache = await caches.open(DYNAMIC_CACHE)
+/**
+ * Cache-first with CDN fallback for the Pyodide offline kit (wheels and
+ * runtime files). On cache miss the file is fetched — wheels from the CDN
+ * (the local build does not ship the full wheel set), runtime files from
+ * their original URL (already served from /assets/pyodide/) — and stored
+ * under the original local URL key. If both cache and network are
+ * unavailable the rejection propagates so respondWith surfaces the real
+ * network error instead of a synthetic 503.
+ */
+async function pyodideCacheWithCdnFallback(request: Request, url: URL): Promise<Response> {
+  const cache = await caches.open(APPSHELL_CACHE)
   const cached = await cache.match(request)
   if (cached) return cached
 
-  // Local build does not include full wheel set; fetch wheels from CDN when absent.
+  const isWheel = isPyodideWheel(url.pathname)
   const fileName = url.pathname.split('/').pop()
   if (!fileName) {
     return new Response('Bad Request', { status: 400 })
   }
-  const cdnUrl = `${PYODIDE_CDN_BASE}${fileName}`
+  // Wheels come from the CDN; runtime bootstrap files are served locally.
+  const targetUrl = isWheel ? `${PYODIDE_CDN_BASE}${fileName}` : request.url
 
-  try {
-    const cdnResponse = await fetch(cdnUrl, { mode: 'cors' })
-    if (cdnResponse.ok) {
-      // Cache under the original local URL key so future local requests hit cache directly.
-      await cache.put(request, cdnResponse.clone())
-    }
-    return cdnResponse
-  } catch {
-    return new Response(JSON.stringify({ error: 'Offline', cached: false }), {
-      status: 503,
-      headers: { 'Content-Type': 'application/json' },
-    })
+  const response = await fetch(targetUrl, { mode: 'cors' })
+  if (response.ok) {
+    // Cache under the original local URL key so future local requests hit cache directly.
+    await cache.put(request, response.clone())
   }
-}
-
-function isStaticResource(pathname: string): boolean {
-  const staticExtensions = [
-    '.js',
-    '.css',
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.gif',
-    '.svg',
-    '.ico',
-    '.woff',
-    '.woff2',
-    '.ttf',
-    '.wasm',
-  ]
-  return staticExtensions.some((ext) => pathname.endsWith(ext))
-}
-
-function isImmutableAsset(pathname: string): boolean {
-  return IMMUTABLE_ASSET_PATTERN.test(pathname)
+  return response
 }
 
 function isPyodideWheel(pathname: string): boolean {
   return PYODIDE_WHEEL_PATTERN.test(pathname)
+}
+
+function isPyodideRuntimeFile(pathname: string): boolean {
+  return pathname.startsWith(PYODIDE_RUNTIME_PREFIX)
 }
 
 function isNavigationRequest(request: Request): boolean {
@@ -356,10 +341,17 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'CACHE_URLS') {
     event.waitUntil(
       (async () => {
-        const cache = await caches.open(DYNAMIC_CACHE)
+        const cache = await caches.open(APPSHELL_CACHE)
         const urls = Array.isArray(event.data?.urls) ? event.data.urls : []
         for (const url of urls) {
           try {
+            // Only same-origin, non-API/MCP URLs may enter the app-shell
+            // cache: this mirrors the fetch handler's own rules so a
+            // stray CACHE_URLS message can never stash API/MCP (or
+            // cross-origin) responses the SW deliberately passes through.
+            const parsed = new URL(url, self.location.origin)
+            if (parsed.origin !== self.location.origin) continue
+            if (API_PATTERNS.some((pattern) => pattern.test(parsed.pathname))) continue
             await cache.add(url)
           } catch (error) {
             console.warn('[ServiceWorker] Failed to cache URL:', url, error)

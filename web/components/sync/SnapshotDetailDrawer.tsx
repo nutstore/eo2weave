@@ -17,6 +17,7 @@ import { useT } from '@/i18n'
 import { Drawer } from '@/components/ui/drawer'
 import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 import { Binary, Trash2, Plus, ArrowRightLeft, Copy, Check, ChevronRight, ChevronDown } from 'lucide-react'
+import { formatBytes } from '@/lib/utils'
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -37,14 +38,6 @@ function formatTime(ts: number | null): string {
 
 function getSnapshotTitle(snapshot: Pick<SnapshotRecord, 'summary' | 'opCount'>, t: ReturnType<typeof useT>): string {
   return snapshot.summary || t('sidebar.snapshotList.autoSnapshotTitle', { count: snapshot.opCount })
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const kb = bytes / 1024
-  if (kb < 1) return `${bytes} B`
-  if (kb < 1024) return `${kb.toFixed(1)} KB`
-  return `${(kb / 1024).toFixed(1)} MB`
 }
 
 function getOpIcon(opType: string) {
@@ -249,9 +242,13 @@ export const SnapshotDetailDrawer: React.FC<SnapshotDetailDrawerProps> = ({
                   {t(`sidebar.snapshotList.fileOp${file.opType.charAt(0).toUpperCase() + file.opType.slice(1)}`)}
                 </span>
                 <span className="shrink-0 text-tertiary">
-                  {file.beforeContentSize > 0 ? formatBytes(file.beforeContentSize) : ''}
-                  {file.beforeContentSize > 0 && file.afterContentSize > 0 ? ' → ' : ''}
-                  {file.afterContentSize > 0 ? formatBytes(file.afterContentSize) : ''}
+                  {/* Side presence (contentKind !== 'none'), not byte size,
+                      decides label/arrow rendering — same fix as
+                      RunChangesCard (issue #124): a real zero-byte file must
+                      show its "0 B" label. */}
+                  {file.beforeContentKind !== 'none' ? formatBytes(file.beforeContentSize) : ''}
+                  {file.beforeContentKind !== 'none' && file.afterContentKind !== 'none' ? ' → ' : ''}
+                  {file.afterContentKind !== 'none' ? formatBytes(file.afterContentSize) : ''}
                 </span>
               </button>
               {isExpanded && (

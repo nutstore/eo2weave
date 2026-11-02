@@ -7,11 +7,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const performDeviceCodeFlowMock = vi.hoisted(() => vi.fn())
+const persistDeviceLoginTokensMock = vi.hoisted(() => vi.fn())
 const applyGatewayLoginTokensMock = vi.hoisted(() => vi.fn())
 const setModelCredentialStatusMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   performDeviceCodeFlow: performDeviceCodeFlowMock,
+  persistDeviceLoginTokens: persistDeviceLoginTokensMock,
 }))
 
 vi.mock('@/lib/gateway-login', () => ({
@@ -33,7 +35,10 @@ describe('gateway-relogin.store', () => {
     vi.resetAllMocks()
     performDeviceCodeFlowMock.mockReset()
     applyGatewayLoginTokensMock.mockReset()
-    applyGatewayLoginTokensMock.mockResolvedValue({ ok: true, accessToken: 'tok', models: [] })
+    applyGatewayLoginTokensMock.mockImplementation(async (_token, options) => {
+      options.onCommit()
+      return { ok: true, accessToken: 'tok', models: [] }
+    })
     setModelCredentialStatusMock.mockReset()
     useGatewayReloginStore.setState({ phase: 'idle', authState: null, error: null })
   })
@@ -58,7 +63,10 @@ describe('gateway-relogin.store', () => {
 
     const ok = await promise
     expect(ok).toBe(true)
-    expect(applyGatewayLoginTokensMock).toHaveBeenCalledWith('tok')
+    expect(applyGatewayLoginTokensMock).toHaveBeenCalledWith('tok', expect.objectContaining({ onCommit: expect.any(Function) }))
+    expect(persistDeviceLoginTokensMock).toHaveBeenCalledWith(
+      expect.objectContaining({ access_token: 'tok' }), 'test-client-id', 'https://ai.jianguoyun.com',
+    )
     expect(onSuccess).toHaveBeenCalledTimes(1)
     // Store settles back to idle so the dialog closes and a later failure
     // can start a fresh flow.

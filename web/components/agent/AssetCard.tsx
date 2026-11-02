@@ -13,19 +13,13 @@ import { inferMimeType } from '@/types/asset'
 import { readAssetBlob, downloadAssetBlob } from './asset-utils'
 import { Lightbox } from './Lightbox'
 import { useT } from '@/i18n'
+import { formatBytes as formatFileSize } from '@/lib/utils'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /** Check if a MIME type is an image */
 function isImageMime(mime: string): boolean {
   return mime.startsWith('image/')
-}
-
-/** Format file size for display */
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 /**

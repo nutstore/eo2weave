@@ -10,6 +10,7 @@
 import React from 'react'
 import { type ChangeDetectionResult, type FileChange, type ChangeType } from '@/opfs/types/opfs-types'
 import { useT } from '@/i18n'
+import { formatBytes } from '@/lib/utils'
 
 interface FileChangeListProps {
   /** Change detection result from workspace store */
@@ -35,13 +36,12 @@ function getChangeTypeStyle(type: ChangeType, t: (key: string) => string): { ico
 }
 
 /**
- * Format file size for display
+ * Format file size for display, preserving the legacy '-' fallback
+ * for missing values that the canonical formatter does not provide.
  */
 function formatFileSize(bytes?: number): string {
   if (!bytes) return '-'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return formatBytes(bytes)
 }
 
 /**

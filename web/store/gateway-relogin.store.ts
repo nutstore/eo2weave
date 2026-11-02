@@ -19,6 +19,7 @@
 import { create } from 'zustand'
 import {
   performDeviceCodeFlow,
+  persistDeviceLoginTokens,
   type AuthState,
 } from '@/agent/providers/llm-gateway-auth'
 import {
@@ -79,11 +80,17 @@ export const useGatewayReloginStore = create<GatewayReloginState>()((set) => ({
     }
 
     try {
+      // Capture the attempt start BEFORE approval: approval can take
+      // minutes, and a logout during it must invalidate this attempt.
+      const attemptStartedAt = Date.now()
       const tokens = await performDeviceCodeFlow(baseURL, clientId, (state) => {
         set({ authState: state })
       })
 
-      await applyGatewayLoginTokens(tokens.access_token)
+      await applyGatewayLoginTokens(tokens.access_token, {
+        attemptStartedAt,
+        onCommit: () => persistDeviceLoginTokens(tokens, clientId, baseURL),
+      })
 
       set({ phase: 'success', authState: { status: 'success' } })
       running = false

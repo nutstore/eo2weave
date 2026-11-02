@@ -21,4 +21,5 @@ export const common = {
     seconds: "s",
     minutes: "min",
     skipToContent: "Skip to main content",
+    dismiss: "Dismiss",
 } as const

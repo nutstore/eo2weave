@@ -9,6 +9,14 @@ const DISCOVERY_TTL_MS = 8000
 
 let lastDiscoveryAt = 0
 let discoveryInFlight: Promise<WebMCPRegisteredTool[]> | null = null
+let discoveryGeneration = 0
+
+/** Detach a stalled discovery so a later request can start a new scan. */
+export function expireWebMCPDiscovery(): void {
+  discoveryGeneration += 1
+  discoveryInFlight = null
+  lastDiscoveryAt = 0
+}
 
 function isExtensionContextInvalidatedError(error: unknown): boolean {
   if (typeof error !== 'string') return false
@@ -45,12 +53,15 @@ async function discoverAndCacheTools(force = false): Promise<WebMCPRegisteredToo
 
   if (discoveryInFlight) return discoveryInFlight
 
-  discoveryInFlight = (async () => {
+  const generation = ++discoveryGeneration
+  const discovery = (async () => {
     const bridge = getWebMCPBridge()
     if (!bridge) {
-      useWebMCPStore.getState().clearCatalog()
+      if (cached.length > 0) {
+        console.warn('[WebMCP] Discovery skipped: bridge unavailable; keeping last catalog')
+      }
       lastDiscoveryAt = 0
-      return []
+      return useWebMCPStore.getState().getAllTools()
     }
 
     const response = await bridge.webMCPDiscover({
@@ -59,6 +70,9 @@ async function discoverAndCacheTools(force = false): Promise<WebMCPRegisteredToo
         ? { binding: getSidePanelBindingId()! }
         : {}),
     })
+    if (generation !== discoveryGeneration || !useSettingsStore.getState().enableWebMCP) {
+      return useWebMCPStore.getState().getAllTools()
+    }
     if (!response.ok) {
       console.warn('[WebMCP] Discovery failed:', response.error || 'unknown error')
       if (isExtensionContextInvalidatedError(response.error)) {
@@ -76,16 +90,20 @@ async function discoverAndCacheTools(force = false): Promise<WebMCPRegisteredToo
     useWebMCPStore.getState().setDiscoveredTools(tools, response.discoveredAt || Date.now())
     lastDiscoveryAt = Date.now()
     return useWebMCPStore.getState().getAllTools()
-  })().finally(() => {
-    discoveryInFlight = null
+  })()
+  let tracked!: Promise<WebMCPRegisteredTool[]>
+  tracked = discovery.finally(() => {
+    if (discoveryInFlight === tracked) discoveryInFlight = null
   })
+  discoveryInFlight = tracked
 
-  return discoveryInFlight
+  return tracked
 }
 
 /** Discover and cache WebMCP tools without registering any tools. */
 export async function discoverWebMCPCatalog(force = false): Promise<WebMCPRegisteredTool[]> {
   if (!useSettingsStore.getState().enableWebMCP) {
+    expireWebMCPDiscovery()
     useWebMCPStore.getState().clearCatalog()
     return []
   }
@@ -98,6 +116,20 @@ export async function refreshWebMCPCatalog(): Promise<WebMCPRegisteredTool[]> {
   // so filter to tools from authorized hosts. Discovery itself still
   // caches the full catalog — authorization is enforced by the extension
   // invoke gate and mirrored here via annotations.
+  // A forced refresh must not reuse a request that began before the caller
+  // observed a route miss. Wait for that request, then start a new discovery.
+  const earlierDiscovery = discoveryInFlight
+  const earlierGeneration = discoveryGeneration
+  if (earlierDiscovery && useSettingsStore.getState().enableWebMCP) {
+    try {
+      await earlierDiscovery
+    } catch {
+      // A fresh request may recover from the earlier failure.
+    }
+  }
+  if (earlierGeneration !== discoveryGeneration || !useSettingsStore.getState().enableWebMCP) {
+    return useWebMCPStore.getState().getEnabledTools()
+  }
   await discoverWebMCPCatalog(true)
   return useWebMCPStore.getState().getEnabledTools()
 }
@@ -112,6 +144,7 @@ export async function applyWebMCPGlobalToggle(
 ): Promise<number> {
   useSettingsStore.getState().setEnableWebMCP(enabled)
   if (!enabled) {
+    expireWebMCPDiscovery()
     useWebMCPStore.getState().clearCatalog()
     return 0
   }

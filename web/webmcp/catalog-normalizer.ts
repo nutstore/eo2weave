@@ -34,6 +34,15 @@ export function buildTabs(tools: WebMCPDiscoveredTool[]): WebMCPTabInstance[] {
       existing.lastSeenAt = Math.max(existing.lastSeenAt, tool.discoveredAt)
       if (!existing.title && tool.tabTitle) existing.title = tool.tabTitle
       if (!existing.url && tool.tabUrl) existing.url = tool.tabUrl
+      // A tab's route key rotates when the page re-registers its tools, so
+      // keep whichever instance is the most recent one.
+      if (
+        tool.groupKey &&
+        tool.groupKey !== existing.groupKey &&
+        tool.discoveredAt >= existing.lastSeenAt
+      ) {
+        existing.groupKey = tool.groupKey
+      }
       continue
     }
 
@@ -42,6 +51,7 @@ export function buildTabs(tools: WebMCPDiscoveredTool[]): WebMCPTabInstance[] {
       title: tool.tabTitle || '',
       url: tool.tabUrl || '',
       lastSeenAt: tool.discoveredAt,
+      groupKey: tool.groupKey,
     })
   }
 

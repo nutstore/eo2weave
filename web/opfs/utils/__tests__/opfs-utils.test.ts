@@ -190,15 +190,20 @@ describe('opfs-utils', () => {
   describe('formatBytes', () => {
     it('should format bytes correctly', () => {
       expect(formatBytes(0)).toBe('0 B')
-      expect(formatBytes(1024)).toBe('1 KB')
-      expect(formatBytes(1024 * 1024)).toBe('1 MB')
+      expect(formatBytes(1024)).toBe('1.0 KB')
+      expect(formatBytes(1024 * 1024)).toBe('1.0 MB')
       expect(formatBytes(1.5 * 1024 * 1024)).toBe('1.5 MB')
-      expect(formatBytes(1024 * 1024 * 1024)).toBe('1 GB')
+      expect(formatBytes(1024 * 1024 * 1024)).toBe('1.0 GB')
     })
 
     it('should handle large values', () => {
-      expect(formatBytes(10 * 1024 * 1024 * 1024)).toBe('10 GB')
+      expect(formatBytes(10 * 1024 * 1024 * 1024)).toBe('10.0 GB')
       expect(formatBytes(1.5 * 1024 * 1024 * 1024 * 1024)).toBe('1.5 TB')
+    })
+
+    it('should handle invalid byte counts', () => {
+      expect(formatBytes(-1)).toBe('-1 B')
+      expect(formatBytes(NaN)).toBe('0 B')
     })
   })
 

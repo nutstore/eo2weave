@@ -506,6 +506,7 @@ export const settings = {
       loginAgain: "다시 로그인",
       serviceUrl: "서비스 URL",
       logout: "로그아웃",
+      recharge: "충전",
       creatingSession: "인증 세션 생성 중...",
       enterCodeHint: "인증 페이지에 아래 코드를 입력하세요",
       copy: "복사",
@@ -517,6 +518,7 @@ export const settings = {
       authHint: "Device Code Flow를 통한 안전한 인증 — API Key 관리가 필요 없습니다.",
       clientIdMissing: "Client ID가 설정되지 않았습니다. NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID 환경 변수를 설정하세요.",
       authFailed: "인증 실패",
+      logoutFailed: "로그아웃이 완료되지 않았습니다——자격 증명이 남아 있을 수 있습니다. 다시 시도해 주세요.",
     },
     // Provider display names (company pinyin/English brand; NOT separate
     // international services like Z.ai)

@@ -31,6 +31,9 @@ import {
 } from '@/sqlite/repositories/fs-overlay.repository'
 import LazyDiffViewer from '@/components/sync/LazyDiffViewer'
 import { useT } from '@/i18n'
+// Canonical formatter — the former local copy returned '' for 0 bytes, which
+// made a present zero-byte side render no label at all (Sourcery, PR #127).
+import { formatBytes } from '@/lib/utils'
 
 /** Above this many files the list collapses behind a "show all" toggle. */
 const LIST_COLLAPSE_THRESHOLD = 5
@@ -42,14 +45,6 @@ const LOAD_CONCURRENCY = 4
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 ' +
   'dark:focus-visible:ring-primary-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-transparent'
-
-function formatBytes(bytes: number): string {
-  if (!bytes || bytes <= 0) return ''
-  if (bytes < 1024) return `${bytes} B`
-  const kb = bytes / 1024
-  if (kb < 1024) return `${kb.toFixed(1)} KB`
-  return `${(kb / 1024).toFixed(1)} MB`
-}
 
 function getOpBadgeCls(opType: string): string {
   switch (opType) {
@@ -316,9 +311,13 @@ export const RunChangesCard: React.FC<RunChangesCardProps> = ({ snapshotId }) =>
                           {fileOpLabel(file.opType)}
                         </span>
                         <span className="shrink-0 text-tertiary">
-                          {formatBytes(file.beforeContentSize)}
-                          {file.beforeContentSize > 0 && file.afterContentSize > 0 ? ' → ' : ''}
-                          {formatBytes(file.afterContentSize)}
+                          {/* Side PRESENCE (contentKind !== 'none'), not byte size,
+                              decides whether a side's label renders: a real
+                              zero-byte file is 'text' with size 0 and must show
+                              its "0 B" label, not be treated as absent (#124). */}
+                          {file.beforeContentKind !== 'none' && formatBytes(file.beforeContentSize)}
+                          {file.beforeContentKind !== 'none' && file.afterContentKind !== 'none' ? ' → ' : ''}
+                          {file.afterContentKind !== 'none' && formatBytes(file.afterContentSize)}
                         </span>
                       </button>
                       {isExpanded && (

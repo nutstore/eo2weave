@@ -65,6 +65,8 @@ export default defineContentScript({
       // inside the background handlers)
       'webmcp_discover_tools',
       'webmcp_provider_call',
+      'webmcp_package_lock',
+      'webmcp_packages_changed_notify',
       'webmcp_invoke_tool',
       'webmcp_get_host_authorization',
       'webmcp_plugin_download_stream',
@@ -74,6 +76,9 @@ export default defineContentScript({
       'requestPageBodyText',
       'runBoundPageAction',
       'captureBoundTab',
+      // Side-panel package opt-in prompt (binding-gated in background)
+      'webmcp_package_optin_status',
+      'webmcp_package_optin_enable',
       // Settle protocol (extension-page sender gated in background)
       'cw_side_panel_settle',
       'cw_side_panel_get_launch_metadata',

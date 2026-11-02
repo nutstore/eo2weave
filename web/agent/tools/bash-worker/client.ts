@@ -29,6 +29,13 @@ import type {
 import { handleVfsRpc, type VfsRpcHandlerConfig } from './vfs-rpc-handler'
 import { ToolTimeoutError } from '../tool-utils'
 import { isSubagentPermissionDenied, SUBAGENT_PERMISSION_DENIED } from '../agent-file-protection'
+import { AGENT_ABORT_PREFIX, isExpectedAgentAbort, registerAgentAbortError } from '@/lib/agent-abort'
+
+/** Error used to reject in-flight bash work when the run signal aborts. */
+const bashAbortedError = () =>
+  registerAgentAbortError(
+    new DOMException(`${AGENT_ABORT_PREFIX}: bash execution aborted`, 'AbortError'),
+  )
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -209,7 +216,7 @@ export function createBashWorkerClient(): BashWorkerClient {
           cleanup()
           const remaining = deadline - Date.now()
           if (opts.abortSignal?.aborted || remaining <= 0) {
-            reject(opts.abortSignal?.aborted ? new Error('bash execution aborted') : new ToolTimeoutError('bash', opts.timeoutMs))
+            reject(opts.abortSignal?.aborted ? bashAbortedError() : new ToolTimeoutError('bash', opts.timeoutMs))
             drainExecutionQueue()
             return
           }
@@ -220,7 +227,7 @@ export function createBashWorkerClient(): BashWorkerClient {
           })
         },
       }
-      const abort = () => entry.cancel(new Error('bash execution aborted'))
+      const abort = () => entry.cancel(bashAbortedError())
       const timer = setTimeout(() => entry.cancel(new ToolTimeoutError('bash', opts.timeoutMs)), opts.timeoutMs)
       executionQueue.push(entry)
       opts.abortSignal?.addEventListener('abort', abort, { once: true })
@@ -257,12 +264,18 @@ export function createBashWorkerClient(): BashWorkerClient {
       }, opts.timeoutMs)
     })
 
-    // Abort: also terminate.
+    // Abort: also terminate. Reject with the signal's semantic reason (user
+    // Stop vs internal teardown) when the signal carries one, so callers can
+    // distinguish cancellation causes in the tool failure they receive.
     const onAbort = () => {
       const pending = pendingExec
       terminateWorker()
       if (pending && pending.requestId === requestId) {
-        pending.reject(new Error('bash execution aborted'))
+        pending.reject(
+          opts.abortSignal?.reason && isExpectedAgentAbort(opts.abortSignal.reason)
+            ? opts.abortSignal.reason
+            : bashAbortedError(),
+        )
         pendingExec = null
       }
     }

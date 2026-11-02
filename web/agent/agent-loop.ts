@@ -23,6 +23,7 @@ import { generateContextSummaryWithLLM } from './loop/context-summary'
 import { getCompressionCutoffTimestamp, type CompressionBaselineState } from './loop/context-compression'
 import { buildRuntimeEnhancedPrompt, triggerPrefetchForMessages } from './loop/enhancements'
 import { executePiCoreLoop } from './loop/pi-core-runner'
+import { abortReasonMessage, createAgentAbortReason, AgentAbortReasonName } from '@/lib/agent-abort'
 import { extractTextContent } from './loop/message-mappers'
 import type { AgentCallbacks, AgentLoopConfig } from './loop/types'
 import { generateId } from './message-types'
@@ -129,16 +130,23 @@ export class AgentLoop {
     this.contextManager.setSystemPrompt(prompt)
   }
 
-  /** Cancel the current agent loop */
-  cancel(): void {
-    this.abortController?.abort()
+  /** Cancel the current agent loop. Internal (non-user) paths pass their own semantic reason. */
+  cancel(reason: AgentAbortReasonName = AgentAbortReasonName.ByUser): void {
+    this.abortController?.abort(createAgentAbortReason(reason))
   }
 
   private async runWithPiAgentCore(
     messages: Message[],
-    callbacks?: AgentCallbacks
+    callbacks?: AgentCallbacks,
+    invocationController?: AbortController | null,
+    invocationCompression?: { baseline: CompressionBaselineState | null; convertCallCount: number; lastSummaryConvertCall: number }
   ): Promise<Message[]> {
-    const signal = this.abortController?.signal
+    // Use the CALLER's captured controller when provided (run() captured it
+    // right after creating it); fall back to the instance field otherwise.
+    // Overlapping runs must abort and read THEIR OWN signal, not whichever
+    // run is currently the latest.
+    const controller = invocationController !== undefined ? invocationController : this.abortController
+    const signal = controller?.signal
     if (!signal) return messages
 
     let allMessages = messages
@@ -167,8 +175,8 @@ export class AgentLoop {
         toolExecutionTimeout: this.toolExecutionTimeout,
         toolTimeoutExemptions: TOOL_TIMEOUT_EXEMPTIONS,
         maxIterations: this.maxIterations,
-        convertCallCount: this.convertCallCount,
-        lastSummaryConvertCall: this.lastSummaryConvertCall,
+        convertCallCount: invocationCompression ? invocationCompression.convertCallCount : this.convertCallCount,
+        lastSummaryConvertCall: invocationCompression ? invocationCompression.lastSummaryConvertCall : this.lastSummaryConvertCall,
         compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
         generateContextSummaryWithLLM: (droppedContent, maxSummaryTokens) =>
           generateContextSummaryWithLLM({
@@ -177,26 +185,40 @@ export class AgentLoop {
             maxSummaryTokens,
             compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
           }),
-        onAbortRequested: () => this.abortController?.abort(),
-        initialCompressionBaseline: this.compressionBaseline,
+        onAbortRequested: () => controller?.abort(createAgentAbortReason(AgentAbortReasonName.Internal)),
+        // Per-invocation compression state: captured by run() BEFORE any await
+        // point (including an explicitly captured null), so an overlapping
+        // run's commits can never leak into this invocation's
+        // trimming/compaction input.
+        initialCompressionBaseline: invocationCompression ? invocationCompression.baseline : this.compressionBaseline,
         disableThinking: this.disableThinking,
         shouldYieldForQueue: this.shouldYieldForQueue,
         sessionId: this.sessionId,
       })
-      this.compressionBaseline = result.compressionBaseline ?? this.compressionBaseline
+      // Commit compression state only while this invocation still owns the
+      // instance (a newer overlapping run must not have its baseline or
+      // counters clobbered by an older, slower run finishing last).
+      // NOTE: executePiCoreLoop reads this.compressionBaseline for trimming
+      // during the run; overlapping runs are prevented at the store layer (a
+      // new run replaces the registered loop before starting), so the read
+      // path cannot race in practice — the commit-side guard below protects
+      // the one overlap window that exists (older run finishing last).
+      if (this.abortController === controller) {
+        this.compressionBaseline = result.compressionBaseline ?? this.compressionBaseline
+        this.convertCallCount = result.convertCallCount
+        this.lastSummaryConvertCall = result.lastSummaryConvertCall
+        this.onCompressionStateUpdate?.({
+          convertCallCount: this.convertCallCount,
+          lastSummaryConvertCall: this.lastSummaryConvertCall,
+        })
+      }
       allMessages = result.allMessages
       shouldStopForElicitation = result.shouldStopForElicitation
       reachedMaxIterations = result.reachedMaxIterations
-      this.convertCallCount = result.convertCallCount
-      this.lastSummaryConvertCall = result.lastSummaryConvertCall
-      this.onCompressionStateUpdate?.({
-        convertCallCount: this.convertCallCount,
-        lastSummaryConvertCall: this.lastSummaryConvertCall,
-      })
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] aborted_during_pi_core_run', {
-          reason: 'signal_aborted',
+          reason: abortReasonMessage(signal.reason) ?? 'signal_aborted',
           messagesCount: allMessages.length,
         })
         const patched = ensureToolCallResults(allMessages)
@@ -222,10 +244,10 @@ export class AgentLoop {
       console.warn('[#LoopStop] stop_for_max_iterations', {
         maxIterations: this.maxIterations,
       })
-      // Abort the signal to stop any in-flight LLM requests inside the
+      // Abort this run's signal to stop any in-flight LLM requests inside the
       // pi-agent-core generator (especially the push-based cw-openai-fetch
       // stream whose async IIFE would otherwise keep running).
-      this.abortController?.abort()
+      controller?.abort(createAgentAbortReason(AgentAbortReasonName.IterationLimit))
       callbacks?.onIterationLimitReached?.(this.maxIterations)
     }
 
@@ -252,7 +274,9 @@ export class AgentLoop {
    */
   async runCompactOnly(messages: Message[], callbacks?: AgentCallbacks): Promise<Message[]> {
     this.abortController = new AbortController()
-    const signal = this.abortController.signal
+    // Same overlapping-run guard as run(): only this invocation's controller.
+    const controller = this.abortController
+    const signal = controller.signal
 
     try {
       // Extract content from non-summary messages for summarization
@@ -310,17 +334,22 @@ export class AgentLoop {
         // covers.  The full message list is NOT modified; only the baseline metadata
         // is persisted so that the next LLM call uses the trimmed context.
         const cutoffTimestamp = getCompressionCutoffTimestamp(messages)
-        if (typeof cutoffTimestamp === 'number') {
-          this.compressionBaseline = { summary, cutoffTimestamp, throughMessageId: messages.at(-1)?.id }
-        }
+        // Commit only while this compaction still owns the loop — an older
+        // runCompactOnly finishing after a newer run must not overwrite the
+        // newer run's baseline or counters.
+        if (this.abortController === controller) {
+          if (typeof cutoffTimestamp === 'number') {
+            this.compressionBaseline = { summary, cutoffTimestamp, throughMessageId: messages.at(-1)?.id }
+          }
 
-        // Update compression state counters
-        this.convertCallCount++
-        this.lastSummaryConvertCall = this.convertCallCount
-        this.onCompressionStateUpdate?.({
-          convertCallCount: this.convertCallCount,
-          lastSummaryConvertCall: this.lastSummaryConvertCall,
-        })
+          // Update compression state counters
+          this.convertCallCount++
+          this.lastSummaryConvertCall = this.convertCallCount
+          this.onCompressionStateUpdate?.({
+            convertCallCount: this.convertCallCount,
+            lastSummaryConvertCall: this.lastSummaryConvertCall,
+          })
+        }
 
         // Build result for compression baseline only (NOT used to replace UI messages)
         const summaryMessage: Message = {
@@ -367,7 +396,9 @@ export class AgentLoop {
       callbacks?.onError?.(err)
       throw err
     } finally {
-      this.abortController = null
+      // Clear the instance reference only if a newer run has not already
+      // replaced it — otherwise we would orphan the newer run's controller.
+      if (this.abortController === controller) this.abortController = null
     }
   }
 
@@ -377,7 +408,13 @@ export class AgentLoop {
    */
   async run(messages: Message[], callbacks?: AgentCallbacks): Promise<Message[]> {
     this.abortController = new AbortController()
-    const signal = this.abortController.signal
+    // Capture this invocation's controller locally: if a second run() starts
+    // before this one finishes, the earlier run's teardown must not abort the
+    // newer run's signal or null out its controller.
+    const controller = this.abortController
+    const signal = controller.signal
+    // Capture ALL per-invocation state BEFORE the first await so an
+    // overlapping run's commits can never leak into this invocation.
     const latestSummary = [...messages].reverse().find(message => message.kind === 'context_summary')
     if (latestSummary?.content) {
       this.compressionBaseline = {
@@ -385,6 +422,11 @@ export class AgentLoop {
         cutoffTimestamp: latestSummary.compressionBoundary?.cutoffTimestamp ?? latestSummary.timestamp + 1,
         throughMessageId: latestSummary.compressionBoundary?.throughMessageId,
       }
+    }
+    const invocationCompression = {
+      baseline: this.compressionBaseline,
+      convertCallCount: this.convertCallCount,
+      lastSummaryConvertCall: this.lastSummaryConvertCall,
     }
 
     if (this.skipEnhancements) {
@@ -406,11 +448,11 @@ export class AgentLoop {
     }
 
     try {
-      return await this.runWithPiAgentCore(messages, callbacks)
+      return await this.runWithPiAgentCore(messages, callbacks, controller, invocationCompression)
     } catch (error) {
       if (signal.aborted) {
         console.warn('[#LoopStop] run_aborted', {
-          reason: 'signal_aborted_outer',
+          reason: abortReasonMessage(signal.reason) ?? 'signal_aborted_outer',
           messagesCount: messages.length,
         })
         callbacks?.onComplete?.(messages)
@@ -429,8 +471,10 @@ export class AgentLoop {
       // Without this, requests left unconsumed when the loop ends (aborted,
       // errored, or completed while a prompt-level auth was still queued)
       // survive as stale popups that keep surfacing across later loops.
-      this.abortController?.abort()
-      this.abortController = null
+      controller.abort(createAgentAbortReason(AgentAbortReasonName.LifecycleTeardown))
+      // Clear the instance reference only if a newer run() has not already
+      // replaced it — otherwise we would orphan the newer run's controller.
+      if (this.abortController === controller) this.abortController = null
     }
   }
 }

@@ -20,6 +20,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@creatorweave/ui'
+import TrackChangesLine from '@/components/sync/TrackChangesLine'
+import { createInlineDiffBudget, fuseHunkLines } from '@/components/sync/inlineDiff'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -268,6 +270,10 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
   const t = useT()
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // Content-type split (issue #96): markdown files render modified line
+  // pairs as single track-changes rows; code files keep line-level diffs.
+  const isMarkdown = /\.(md|mdx)$/i.test(path)
+
   // Multi-line selection: track anchor line per side (like Monaco's Shift+Click)
   const anchorRef = useRef<Record<'original' | 'modified', number | null>>({ original: null, modified: null })
 
@@ -277,6 +283,15 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
   // Compute hunks and line arrays
   const hunks = useMemo(() => computeDiffHunks(original, modified), [original, modified])
   const oldLines = useMemo(() => original.split('\n'), [original])
+
+  // Markdown only: fuse each hunk's changed lines into track-changes rows.
+  // Second-pass (char/word diff) runs only on modified line pairs,
+  // memoized per hunk (issue #96 performance requirement).
+  const fusedRows = useMemo(() => {
+    if (!isMarkdown) return null
+    const budget = createInlineDiffBudget()
+    return hunks.map((hunk) => fuseHunkLines(hunk.lines, budget))
+  }, [hunks, isMarkdown])
 
   // Reset context when file changes
   useEffect(() => {
@@ -343,7 +358,10 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
   function renderToolbar() {
     return (
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-subtle bg-neutral-50/50 px-2 dark:bg-neutral-900/50">
-        <span className="text-[11px] text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500">
+        <span
+          data-testid="diff-toolbar-stats"
+          className="text-[11px] text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500"
+        >
           {stats.hunks === 1
             ? t('sidebar.lazyDiffViewer.oneChangeBlock', { additions: stats.additions, deletions: stats.deletions })
             : t('sidebar.lazyDiffViewer.changeBlocks', { count: stats.hunks, additions: stats.additions, deletions: stats.deletions })
@@ -508,7 +526,10 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
             <span className="w-5 shrink-0 select-none text-center text-neutral-300 text-neutral-600 text-neutral-600 dark:text-neutral-600">
               {commented && <MessageSquare className="inline h-2.5 w-2.5 text-amber-400 dark:text-amber-500" />}
             </span>
-            <span className="whitespace-pre-wrap break-all text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400">
+            <span
+              data-testid="diff-context-line"
+              className="whitespace-pre-wrap break-all text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400"
+            >
               {oldLines[idx]}
             </span>
           </div>
@@ -543,7 +564,10 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
             <span className="w-5 shrink-0 select-none text-center text-neutral-300 text-neutral-600 text-neutral-600 dark:text-neutral-600">
               {commented && <MessageSquare className="inline h-2.5 w-2.5 text-amber-400 dark:text-amber-500" />}
             </span>
-            <span className="whitespace-pre-wrap break-all text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400">
+            <span
+              data-testid="diff-context-line"
+              className="whitespace-pre-wrap break-all text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400"
+            >
               {oldLines[idx]}
             </span>
           </div>
@@ -552,6 +576,83 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
     }
 
     return lines
+  }
+
+  /**
+   * Render a single changed line with the existing full-line green/red
+   * styling. Used for ALL lines in code files, and for pure-added /
+   * pure-removed lines (no counterpart) in markdown files.
+   */
+  function renderFallbackLine(
+    line: { type: 'added' | 'removed'; content: string; oldLineNo?: number; newLineNo?: number },
+    hunkIndex: number,
+    lineIdx: number,
+  ) {
+    // Determine comment/selection state for this line
+    const side = line.type === 'removed' ? 'original' : 'modified'
+    const lineNo = line.type === 'removed' ? line.oldLineNo! : line.newLineNo!
+    const commented = isLineCommented(side, lineNo, comments)
+    const selected = isLineSelected(side, lineNo, selectedTarget)
+
+    if (line.type === 'removed') {
+      return (
+        <div
+          key={`line-${hunkIndex}-${lineIdx}`}
+          className={`flex ${
+            selected
+              ? 'bg-blue-50 dark:bg-blue-950/30 ring-1 ring-inset ring-blue-300 dark:ring-blue-700'
+              : 'bg-red-50 dark:bg-red-950/20'
+          }`}
+        >
+          <span
+            className={lineNoClassName('original', lineNo, 'text-red-300 dark:text-red-500/50')}
+            onClick={(e) => handleLineClick('original', lineNo, e)}
+          >
+            {line.oldLineNo ?? ''}
+          </span>
+          <span
+            className="w-12 shrink-0 select-none text-right pr-3 font-mono text-[13px] leading-[20px] text-red-300 dark:text-red-500/50"
+          />
+          <span className="w-5 shrink-0 select-none text-center font-mono text-[13px] leading-[20px] text-red-400 dark:text-red-400">
+            {commented
+              ? <MessageSquare className="inline h-2.5 w-2.5 text-amber-500 dark:text-amber-400" />
+              : '−'
+            }
+          </span>
+          <span className="whitespace-pre-wrap break-all font-mono text-[13px] leading-[20px] text-red-700 dark:text-red-300">
+            {line.content}
+          </span>
+        </div>
+      )
+    }
+
+    return (
+      <div
+        key={`line-${hunkIndex}-${lineIdx}`}
+        className={`flex ${
+          selected
+            ? 'bg-blue-50 dark:bg-blue-950/30 ring-1 ring-inset ring-blue-300 dark:ring-blue-700'
+            : 'bg-emerald-50 dark:bg-emerald-950/20'
+        }`}
+      >
+        <span className="w-12 shrink-0 select-none text-right pr-3 font-mono text-[13px] leading-[20px] text-emerald-300 dark:text-emerald-500/50" />
+        <span
+          className={lineNoClassName('modified', lineNo, 'text-emerald-300 dark:text-emerald-500/50')}
+          onClick={(e) => handleLineClick('modified', lineNo, e)}
+        >
+          {line.newLineNo ?? ''}
+        </span>
+        <span className="w-5 shrink-0 select-none text-center font-mono text-[13px] leading-[20px] text-emerald-500 dark:text-emerald-400">
+          {commented
+            ? <MessageSquare className="inline h-2.5 w-2.5 text-amber-500 dark:text-amber-400" />
+            : '+'
+          }
+        </span>
+        <span className="whitespace-pre-wrap break-all font-mono text-[13px] leading-[20px] text-emerald-700 dark:text-emerald-300">
+          {line.content}
+        </span>
+      </div>
+    )
   }
 
   function renderHunk(hunk: DiffHunk, hunkIndex: number) {
@@ -572,84 +673,46 @@ const LazyDiffViewer: React.FC<LazyDiffViewerProps> = ({
         {renderContextLines('above', hunkIndex)}
 
         {/* Hunk header */}
-        <div className="flex items-center bg-blue-50/50 px-2 py-0.5 font-mono text-[11px] text-blue-500 dark:bg-blue-950/20 dark:text-blue-400">
+        <div
+          data-testid="diff-hunk-header"
+          className="flex items-center bg-blue-50/50 px-2 py-0.5 font-mono text-[11px] text-blue-500 dark:bg-blue-950/20 dark:text-blue-400"
+        >
           <span className="opacity-60">
             @@ -{hunk.origStartLine},{hunk.origEndLine - hunk.origStartLine + 1} +{hunk.modStartLine},{hunk.modEndLine - hunk.modStartLine + 1} @@
           </span>
         </div>
 
         {/* Changed lines */}
-        {hunk.lines.map((line, lineIdx) => {
-          // Determine comment/selection state for this line
-          const side = line.type === 'removed' ? 'original' : 'modified'
-          const lineNo = line.type === 'removed' ? line.oldLineNo! : line.newLineNo!
-          const commented = isLineCommented(side, lineNo, comments)
-          const selected = isLineSelected(side, lineNo, selectedTarget)
+        {(fusedRows
+          ? fusedRows[hunkIndex].map((row, rowIdx) => {
+              if (row.kind === 'fused') {
+                const side = 'modified' as const
+                const commented = isLineCommented(side, row.newLineNo, comments)
+                const selected = isLineSelected(side, row.newLineNo, selectedTarget)
+                const oldCommented = isLineCommented('original', row.oldLineNo, comments)
+                const oldSelected = isLineSelected('original', row.oldLineNo, selectedTarget)
+                return (
+                  <div key={`row-${hunkIndex}-${rowIdx}`}>
+                    <TrackChangesLine
+                      fragments={row.fragments}
+                      newLineNo={row.newLineNo}
+                      oldLineNo={row.oldLineNo}
+                      clickable={!!onLineSelectForComment || commented || oldCommented}
+                      selected={selected || oldSelected}
+                      oldSideCommented={oldCommented}
+                      newSideCommented={commented}
+                      onLineNoClick={(e) => handleLineClick('modified', row.newLineNo, e)}
+                      onOldLineNoClick={(e) => handleLineClick('original', row.oldLineNo, e)}
+                    />
+                  </div>
+                )
+              }
 
-          if (line.type === 'removed') {
-            return (
-              <div
-                key={`line-${hunkIndex}-${lineIdx}`}
-                className={`flex ${
-                  selected
-                    ? 'bg-blue-50 dark:bg-blue-950/30 ring-1 ring-inset ring-blue-300 dark:ring-blue-700'
-                    : 'bg-red-50 dark:bg-red-950/20'
-                }`}
-              >
-                <span
-                  className={lineNoClassName('original', lineNo, 'text-red-300 dark:text-red-500/50')}
-                  onClick={(e) => handleLineClick('original', lineNo, e)}
-                >
-                  {line.oldLineNo ?? ''}
-                </span>
-                <span
-                  className="w-12 shrink-0 select-none text-right pr-3 font-mono text-[13px] leading-[20px] text-red-300 dark:text-red-500/50"
-                />
-                <span className="w-5 shrink-0 select-none text-center font-mono text-[13px] leading-[20px] text-red-400 dark:text-red-400">
-                  {commented
-                    ? <MessageSquare className="inline h-2.5 w-2.5 text-amber-500 dark:text-amber-400" />
-                    : '−'
-                  }
-                </span>
-                <span className="whitespace-pre-wrap break-all font-mono text-[13px] leading-[20px] text-red-700 dark:text-red-300">
-                  {line.content}
-                </span>
-              </div>
-            )
-          }
-
-          if (line.type === 'added') {
-            return (
-              <div
-                key={`line-${hunkIndex}-${lineIdx}`}
-                className={`flex ${
-                  selected
-                    ? 'bg-blue-50 dark:bg-blue-950/30 ring-1 ring-inset ring-blue-300 dark:ring-blue-700'
-                    : 'bg-emerald-50 dark:bg-emerald-950/20'
-                }`}
-              >
-                <span className="w-12 shrink-0 select-none text-right pr-3 font-mono text-[13px] leading-[20px] text-emerald-300 dark:text-emerald-500/50" />
-                <span
-                  className={lineNoClassName('modified', lineNo, 'text-emerald-300 dark:text-emerald-500/50')}
-                  onClick={(e) => handleLineClick('modified', lineNo, e)}
-                >
-                  {line.newLineNo ?? ''}
-                </span>
-                <span className="w-5 shrink-0 select-none text-center font-mono text-[13px] leading-[20px] text-emerald-500 dark:text-emerald-400">
-                  {commented
-                    ? <MessageSquare className="inline h-2.5 w-2.5 text-amber-500 dark:text-amber-400" />
-                    : '+'
-                  }
-                </span>
-                <span className="whitespace-pre-wrap break-all font-mono text-[13px] leading-[20px] text-emerald-700 dark:text-emerald-300">
-                  {line.content}
-                </span>
-              </div>
-            )
-          }
-
-          return null
-        })}
+              // Pure-added / pure-removed line (no counterpart): full-line styling
+              return renderFallbackLine(row.line, hunkIndex, rowIdx)
+            })
+          : hunk.lines.map((line, lineIdx) => renderFallbackLine(line, hunkIndex, lineIdx))
+        )}
 
         {/* Context below */}
         {renderContextLines('below', hunkIndex)}

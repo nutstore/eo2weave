@@ -1,12 +1,16 @@
 'use client'
 
 import { installBashCommandAPI } from '@/agent/bash-commands/public-api'
+import { installAgentAbortRejectionFilter } from '@/lib/agent-abort'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast, Toaster } from 'sonner'
+import { BrandButton } from '@creatorweave/ui'
 import { UnsupportedBrowser } from '@/components/UnsupportedBrowser'
 import { applyServiceWorkerUpdate } from '@/pwa/register-service-worker'
 import { StorageLoading } from '@/components/StorageLoading'
+import { MemoryModeBanner } from '@/components/MemoryModeBanner'
+import { InitErrorBanner } from '@/components/project/InitErrorBanner'
 import { DatabaseRefreshDialog } from '@/components/DatabaseRefreshDialog'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useProjectStore } from '@/store/project.store'
@@ -20,6 +24,8 @@ import { ExtensionInstallGuide } from '@/components/extension'
 // ExecAuthModal. They now forward into the shared tool-auth.store queue.
 import { ToolAuthModal } from '@/components/agent/ToolAuthModal'
 import { DeviceCodeFlowDialog } from '@/components/agent/DeviceCodeFlowDialog'
+import { PackageOptInModal } from '@/components/sidepanel/PackageOptInModal'
+import type { PackageOptInStatus } from '@/agent/sidepanel-package-prompt'
 import { useGatewayReloginStore } from '@/store/gateway-relogin.store'
 import { ServiceWorkerBridge } from '@/components/ServiceWorkerBridge'
 import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
@@ -39,6 +45,9 @@ import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
  */
 export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   useEffect(() => { installBashCommandAPI() }, [])
+  // Suppress unhandled rejections that carry our own agent-cancelled AbortError
+  // reasons (raw "signal is aborted without reason" would hit the dev overlay).
+  useEffect(() => { installAgentAbortRejectionFilter() }, [])
   const [isRuntimeSupported, setIsRuntimeSupported] = useState(true)
   const [isStorageReady, setIsStorageReady] = useState(false)
   const [loadingProgress, setLoadingProgress] = useState<number | undefined>(undefined)
@@ -46,6 +55,11 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   const [canResetDatabase, setCanResetDatabase] = useState(false)
   const [isDatabaseInaccessible, setIsDatabaseInaccessible] = useState(false)
   const [inaccessibleErrorMessage, setInaccessibleErrorMessage] = useState<string | null>(null)
+  // sqlite-memory fallback is NOT a healthy success (issue #131): everything
+  // the user does is lost on refresh. Track it so a persistent degraded-mode
+  // banner stays mounted for the whole session (Sourcery: "Memory mode still
+  // succeeds").
+  const [isMemoryMode, setIsMemoryMode] = useState(false)
   const t = useT() // i18n hook
   const tRef = useRef(t)
   tRef.current = t
@@ -226,6 +240,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
 
         if (result.success) {
           if (result.mode === 'sqlite-memory') {
+            setIsMemoryMode(true)
             toast.warning(tRef.current('app.sessionStorageOnly'), {
               id: 'storage-init',
               duration: 8000,
@@ -240,6 +255,14 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
           }
         } else {
           const errorMsg = result.error || tRef.current('app.initFailed')
+
+          // Record EVERY storage failure — including database_inaccessible —
+          // before any special-case UI return, so the session diagnostics
+          // record exists even after a later successful refresh (Sourcery:
+          // "Inaccessible database errors go unrecorded"). The stack rides
+          // along from initStorage()'s failure result (Sourcery: "Startup
+          // reports omit stack traces").
+          useProjectStore.getState().reportInitFailure(errorMsg, result.errorStack)
 
           if (errorMsg.toLowerCase().includes('database_inaccessible')) {
             console.error('[App] Database inaccessible - showing refresh dialog')
@@ -260,6 +283,11 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
             setStorageError(errorMsg)
           }
 
+          // Leave isStorageReady false: the gate keeps rendering StorageLoading
+          // (with its error card: message, optional DB export, page reload).
+          // A retry of initStorage() needs the full worker lifecycle torn down,
+          // so the reliable "Retry" is a page reload — StorageLoading already
+          // offers it (Sourcery: "Storage failures block recovery").
           toast.error(errorMsg, { id: 'storage-init', duration: 10000 })
           console.error('[App] Storage initialization failed:', errorMsg)
           return
@@ -267,6 +295,11 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error)
         console.error('[App] Failed to initialize storage:', error)
+
+        useProjectStore.getState().reportInitFailure(
+          errorMsg,
+          error instanceof Error ? error.stack : undefined
+        )
 
         if (errorMsg.toLowerCase().includes('database_inaccessible')) {
           console.error('[App] Database inaccessible - showing refresh dialog')
@@ -525,6 +558,103 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     })
   }, [initialized, isStorageReady, router])
 
+  // ── Side-panel package opt-in prompt (issue #100) ──
+  // When the side panel opens on a site hosted by a builtin WebMCP package
+  // (jmail.world, douban, …) whose activation is still off, offer a one-time
+  // enable (writes the extension-side package config + reloads the upstream
+  // page so the tools register). Non-side-panel sessions never even reach
+  // the bridge probe (getPendingPackagePrompt returns null without a
+  // binding).
+  const [packagePrompt, setPackagePrompt] = useState<PackageOptInStatus | null>(null)
+  useEffect(() => {
+    if (!initialized || !isStorageReady) return
+    if (packagePrompt) return
+    let cancelled = false
+    // Retry bookkeeping (findings: "a slow probe hides the prompt" +
+    // "recovery skips the opt-in prompt"): transient probe failures
+    // (timeout / bridge error) come back with `retryable: true` and are
+    // re-probed with capped backoff. A terminal `null` (no binding yet) is
+    // also re-probed a bounded number of times — clean-URL side-panel
+    // recovery can restore the binding AFTER the first probe ran, and the
+    // re-probe picks the session up then. Terminal outcomes that stay null
+    // (no matching package, enabled, dismissed) just burn two cheap extra
+    // probes and stop.
+    const startedAt = Date.now()
+    const MAX_RETRY_MS = 5 * 60 * 1000
+    const MAX_NULL_PROBES = 3
+    // Late-binding safety net (finding: "Late binding never gets a prompt"):
+    // the bounded null probes above stop after MAX_NULL_PROBES, but the
+    // bridge (`window.__agentWeb`) or the side-panel binding can appear at
+    // ANY time — a slow extension handshake, a clean-URL session recovery.
+    // A slow periodic re-probe (60s, unbounded but nearly free: one bridge
+    // call a minute while no modal is shown) re-offers the prompt whenever
+    // the binding appears, without keeping the aggressive startup backoff
+    // alive forever.
+    const LATE_PROBE_INTERVAL_MS = 60 * 1000
+    let nullProbes = 0
+    let lateTimer: ReturnType<typeof setInterval> | undefined
+    const attempt = (delayMs: number) => {
+      const timer = setTimeout(() => {
+        if (cancelled) return
+        // eslint-disable-next-line no-console
+        console.info('[SidePanelPackagePrompt] probing for pending package opt-in…')
+        import('@/agent/sidepanel-package-prompt')
+          .then(({ getPendingPackagePrompt }) => getPendingPackagePrompt())
+          .then(status => {
+            if (cancelled) return
+            if (status && 'package' in status && status.package) {
+              // eslint-disable-next-line no-console
+              console.info('[SidePanelPackagePrompt] showing opt-in modal for', status.package.id)
+              setPackagePrompt(status as PackageOptInStatus)
+              if (lateTimer) clearInterval(lateTimer)
+              return
+            }
+            if (status && 'retryable' in status && status.retryable) {
+              if (Date.now() - startedAt < MAX_RETRY_MS) {
+                attempt(Math.min((Date.now() - startedAt) / 4, 8000))
+              }
+              return
+            }
+            // null (nothing to offer) — bounded re-probes for late binding
+            // recovery; give up after MAX_NULL_PROBES. The slow periodic
+            // probe below keeps watching for the binding afterwards.
+            nullProbes += 1
+            if (nullProbes < MAX_NULL_PROBES) attempt(5000)
+          })
+          .catch(() => {
+            // probe failure must never surface — best-effort by design
+          })
+      }, delayMs)
+      activeTimer = timer
+    }
+    let activeTimer: ReturnType<typeof setTimeout> | undefined
+    // Delay past the project-route navigation so the workspace UI settles
+    // first; a consent dialog popping over the loading screen reads as a bug.
+    attempt(1200)
+    lateTimer = setInterval(() => {
+      if (cancelled) return
+      import('@/agent/sidepanel-package-prompt')
+        .then(({ getPendingPackagePrompt }) => getPendingPackagePrompt())
+        .then(status => {
+          if (cancelled) return
+          if (status && 'package' in status && status.package) {
+            // eslint-disable-next-line no-console
+            console.info('[SidePanelPackagePrompt] late-bound probe found a prompt for', status.package.id)
+            setPackagePrompt(status as PackageOptInStatus)
+            if (lateTimer) clearInterval(lateTimer)
+          }
+        })
+        .catch(() => {
+          // probe failure must never surface — best-effort by design
+        })
+    }, LATE_PROBE_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      if (activeTimer) clearTimeout(activeTimer)
+      if (lateTimer) clearInterval(lateTimer)
+    }
+  }, [initialized, isStorageReady, packagePrompt])
+
   // --- Service Worker update prompt (was in AppReady) ---
   const swUpdateToastShownRef = useRef(false)
 
@@ -566,26 +696,53 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
           isOpen={true}
           errorMessage={inaccessibleErrorMessage}
         />
+        {/* z-[10000]: DatabaseRefreshDialog's overlay sits at z-[9999]; these
+            controls must float ABOVE it to stay clickable (Sourcery:
+            "Diagnostics controls are covered"). */}
+        <div className="relative z-[10000]">
+          <StorageInitDiagnosticsActions />
+        </div>
         <Toaster position="bottom-right" />
       </>
     )
   }
 
   if (!isStorageReady) {
+    // Storage-layer failure recorded in the project store: show the SAME
+    // InitErrorBanner (single viewport, Retry re-runs initialize() which
+    // re-opens the SQLite worker through getReadyWorkerClient) plus the
+    // diagnostics actions — NOT also the full-screen StorageLoading error
+    // card, which pushed Retry/export controls below the fold (Sourcery:
+    // "Recovery controls start below fold"). The destructive reset/export
+    // paths remain reachable via the app once init recovers.
+    const storeInitError = useProjectStore.getState().initError
+    if (storeInitError) {
+      // InitErrorBanner already carries its OWN diagnostics actions (Run
+      // Diagnostics + Copy Report in its dialog) — rendering
+      // StorageInitDiagnosticsActions here too duplicated the controls on
+      // one failure screen (Sourcery: "Diagnostics controls appear twice").
+      return <InitErrorBanner />
+    }
     return (
-      <StorageLoading
-        progress={loadingProgress}
-        error={storageError}
-        canReset={canResetDatabase}
-        onReset={handleResetDatabase}
-        onExport={handleExportDatabase}
-      />
+      <>
+        <StorageLoading
+          progress={loadingProgress}
+          error={storageError}
+          canReset={canResetDatabase}
+          onReset={handleResetDatabase}
+          onExport={handleExportDatabase}
+        />
+        {/* Ordinary storage-error screen also needs diagnostics access
+            (Sourcery: "Startup errors lack diagnostics"). */}
+        <StorageInitDiagnosticsActions />
+      </>
     )
   }
 
   // Storage ready — render the app tree plus global chrome.
   return (
     <>
+      {isMemoryMode && <MemoryModeBanner />}
       {children}
       <ServiceWorkerBridge />
       <DatabaseRefreshDialog isOpen={false} errorMessage={null} />
@@ -594,6 +751,13 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         onOpenChange={(open) => { if (!open) extensionCloseGuide() }}
       />
       <ToolAuthModal />
+      {packagePrompt?.package && (
+        <PackageOptInModal
+          packageInfo={packagePrompt.package}
+          legacy={packagePrompt.legacy === true}
+          onClose={() => setPackagePrompt(null)}
+        />
+      )}
       {/* Gateway re-login dialog (issue #75) — driven by the relogin store so
           the credential-expired error card can open it from anywhere (chat
           view, side panel) without prop threading. Mounted at this stable root
@@ -623,6 +787,76 @@ function GatewayReloginDialogMount() {
       authState={authState}
       onClose={reset}
     />
+  )
+}
+
+/**
+ * Run-Diagnostics + Copy-Report actions for the STORAGE-FAILURE screens
+ * (StorageLoading error card / DatabaseRefreshDialog). The in-app
+ * InitErrorBanner already carries its own diagnostics actions; these render
+ * beside the pre-app gates so a failed storage init (SQLite worker, OPFS,
+ * database_inaccessible) never leaves the user without a way to collect and
+ * attach the report (Sourcery: "Storage failures lose diagnostics").
+ *
+ * The failure record itself is persisted to sessionStorage by
+ * project-store's reportInitFailure(), so the report works even if a later
+ * successful boot clears the in-memory banner state.
+ */
+function StorageInitDiagnosticsActions() {
+  const t = useT()
+  const [diagRunning, setDiagRunning] = useState(false)
+  const [diagReport, setDiagReport] = useState('')
+  const [diagCopied, setDiagCopied] = useState(false)
+
+  const handleRunDiagnostics = async () => {
+    setDiagRunning(true)
+    setDiagReport('')
+    setDiagCopied(false)
+    try {
+      const { runDiagnostics } = await import('@/storage/diagnostics')
+      const report = await runDiagnostics()
+      setDiagReport(report.markdown)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setDiagReport(`${t('projectHome.dialogs.diagnosticsFailed')}\n\n${detail}`)
+    } finally {
+      setDiagRunning(false)
+    }
+  }
+
+  const handleCopyReport = async () => {
+    if (!diagReport) return
+    const { copyMarkdownToClipboard } = await import('@/storage/diagnostics')
+    const ok = await copyMarkdownToClipboard(diagReport)
+    if (ok) {
+      setDiagCopied(true)
+      window.setTimeout(() => setDiagCopied(false), 2000)
+    }
+  }
+
+  return (
+    <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2">
+      <BrandButton
+        variant="outline"
+        onClick={() => void handleRunDiagnostics()}
+        disabled={diagRunning}
+      >
+        {diagRunning
+          ? t('projectHome.dialogs.diagnosticsInProgress')
+          : t('projectHome.sidebar.runDiagnostics')}
+      </BrandButton>
+      {diagReport && (
+        <BrandButton
+          variant="primary"
+          onClick={() => void handleCopyReport()}
+          disabled={diagRunning}
+        >
+          {diagCopied
+            ? t('projectHome.dialogs.copied')
+            : t('projectHome.dialogs.copyReport')}
+        </BrandButton>
+      )}
+    </div>
   )
 }
 

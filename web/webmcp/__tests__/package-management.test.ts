@@ -8,8 +8,22 @@ import { pkg } from './fixtures'
 vi.mock('../../../browser-extension/entrypoints/webmcp/package-repository', () => ({ readWebMCPCatalog: vi.fn() }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/builtin-storage', () => ({ setBuiltinConfig: vi.fn() }))
 const entry = { directory: pkg.manifest.id, mount: 'webmcp', uri: 'vfs://external/webmcp/com.example.tools/', access: 'read-write' as const, config: {}, activation: 'disabled' as const, diagnostics: [], package: pkg }
-beforeEach(() => { vi.resetAllMocks(); vi.mocked(readWebMCPCatalog).mockResolvedValue([entry]) })
-afterEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.mocked(readWebMCPCatalog).mockResolvedValue([entry])
+  // The management handler holds the cross-context package lease (round 3:
+  // "Management mutations bypass package lock") — chrome.storage.local backs
+  // it; a real map keeps acquire/heartbeat/release working in tests.
+  const data = new Map<string, unknown>()
+  vi.stubGlobal('chrome', {
+    storage: { local: {
+      get: vi.fn(async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {})),
+      set: vi.fn(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, v) }),
+      remove: vi.fn(async (key: string) => { data.delete(key) }),
+    } },
+  })
+})
+afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals() })
 it('toggles user config through the same storage commit/refresh path as Web file tools', async () => {
   const storage = memoryProvider()
   const refresh = vi.fn(async () => {})

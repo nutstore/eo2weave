@@ -39,4 +39,21 @@ describe('WebMCP catalog identity', () => {
       ],
     })
   })
+
+  it('keeps the legacy route key per tab and rotates it to the newest instance', () => {
+    const withKey = (tabId: number, discoveredAt: number, groupKey: string) => ({
+      ...discoveredTool(tabId, `https://www.xiaohongshu.com/explore/${tabId}`, discoveredAt),
+      groupKey,
+    })
+
+    const catalog = buildHostCatalog([
+      withKey(12, 100, 'host_signature_v1'),
+      withKey(12, 200, 'host_signature_v2'),
+      withKey(27, 150, 'host_signature_v1'),
+    ])
+
+    const tabs = catalog['www.xiaohongshu.com'].registeredTools[0].tabs
+    expect(tabs.find((tab) => tab.tabId === 12)?.groupKey).toBe('host_signature_v2')
+    expect(tabs.find((tab) => tab.tabId === 27)?.groupKey).toBe('host_signature_v1')
+  })
 })
