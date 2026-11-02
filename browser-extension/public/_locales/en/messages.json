@@ -659,5 +659,9 @@
   "webmcpPackagesPageTabTitle": {
     "message": "Site packages — EO2Weave",
     "description": "Browser tab title of the registry management page."
+  },
+  "webmcpPackagesNotPersisted": {
+    "message": "The registry list could not be saved to browser storage — changes are only kept for this browser session.",
+    "description": "Shown when the registry list could not be written to chrome.storage.local."
   }
 }

@@ -340,6 +340,14 @@ async function render(): Promise<void> {
   installed = new Set(state.installed)
   activations = state.activations
 
+  // A registry list that could not be persisted (chrome.storage.local
+  // unavailable) reads back empty on the next load — silently redrawing it
+  // made a just-added registry disappear without explanation. The user
+  // must know the list is session-only.
+  if (!state.persisted) {
+    showError(new Error(t('webmcpPackagesNotPersisted')))
+  }
+
   const registryList = document.getElementById('registryList')!
   registryList.replaceChildren()
   if (!state.registries.length) {

@@ -280,5 +280,9 @@
   "webmcpPackagesPageTabTitle": {
     "message": "站点工具包 — EO2Weave",
     "description": "Browser tab title of the registry management page."
+  },
+  "webmcpPackagesNotPersisted": {
+    "message": "仓库列表无法保存到浏览器存储——更改仅在本次浏览器会话中有效。",
+    "description": "Shown when the registry list could not be written to chrome.storage.local."
   }
 }
