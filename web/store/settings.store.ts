@@ -1187,6 +1187,12 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
                     return found ? { id: found.id, name: found.name } : { id: pid, name: pid }
                   })
                 : allModels.map((m) => ({ id: m.id, name: m.name }))
+              // The gateway registry list is authoritative for seen
+              // bookkeeping, same as the built-in / dynamic branches above.
+              // Without this, the gateway's seen set only fills on manual pin
+              // events and a later empty catalog flags every pin as delisted
+              // with no way to self-heal on a plain refresh.
+              get().markPinnedModelsSeen(llmGatewayProviderKey, allModels.map((m) => m.id))
               results.push({
                 providerType: llmGatewayProviderKey,
                 // Locale-aware provider name (zh: 坚果云 AI / others: Nutstore AI);
@@ -1304,6 +1310,11 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       },
 
       getStalePinnedModels: (providerType, availableIds) => {
+        // An EMPTY authoritative list carries no information — the catalog
+        // failed to load (non-200 /models, login timeout, bootstrap catch).
+        // "Unknown" must never read as "everything is gone": return no stale
+        // pins so the topbar, settings page and auto-removal loop all agree.
+        if (availableIds.length === 0) return []
         const state = get()
         const pinned = state.pinnedModelsByProvider[providerType] || []
         const seen = new Set(state.pinnedSeenByProvider[providerType] || [])
