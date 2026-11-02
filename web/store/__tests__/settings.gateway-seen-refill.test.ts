@@ -3,12 +3,13 @@
  *
  * The llm-gateway branch of getAvailableProviders() must refill the
  * "seen" bookkeeping from the authoritative registry list, mirroring the
- * built-in and dynamic-provider branches. Without it, the gateway's seen
- * set only fills on manual pin events and a later empty catalog flags
- * every previously-seen pin as 已下线 (delisted) with no way to self-heal.
+ * built-in and dynamic-provider branches — WITHOUT letting a bookkeeping
+ * failure (the persist middleware's localStorage write throwing) swallow
+ * the gateway result (PR #150 Sourcery: "Gateway disappears after
+ * persistence failure").
  *
  * (The empty-catalog guard inside getStalePinnedModels itself is covered
- * in settings.store.test.ts.)
+ * in settings.empty-catalog-catalog-status.test.ts.)
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -19,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   isLLMGatewayConfigured: vi.fn(() => true),
   getModelsForProvider: vi.fn<(id: string) => Array<{ id: string; name: string }>>(() => []),
   getCachedModels: vi.fn<(type: string, key?: string) => Array<{ id: string; name: string }> | null>(() => null),
+  getProviderCatalogStatus: vi.fn<(type: string) => 'ready' | 'empty' | 'failed' | undefined>(() => undefined),
 }))
 
 vi.mock('@/security/api-key-store', () => ({
@@ -30,6 +32,7 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
   return {
     ...actual,
     getModelsForProvider: mocks.getModelsForProvider,
+    getProviderCatalogStatus: mocks.getProviderCatalogStatus,
   }
 })
 
@@ -57,7 +60,7 @@ vi.mock('@/agent/providers/llm-gateway-auth', async (importOriginal) => {
   }
 })
 
-import { useSettingsStore } from '../settings.store'
+import { useSettingsStore } from '@/store/settings.store'
 import type { LLMProviderType } from '@/agent/providers/types'
 
 const GW = 'llm-gateway' as LLMProviderType
@@ -71,6 +74,8 @@ describe('getAvailableProviders: llm-gateway branch refills pinned-seen (#146)',
       { id: 'gw-model-b', name: 'Model B' },
     ])
     mocks.getCachedModels.mockReturnValue(null)
+    // No recorded registration status: a non-empty list reads as 'ready'.
+    mocks.getProviderCatalogStatus.mockReturnValue('ready')
     useSettingsStore.setState({
       providerType: GW,
       modelName: 'gw-model-a',
@@ -92,23 +97,55 @@ describe('getAvailableProviders: llm-gateway branch refills pinned-seen (#146)',
     // Registry not loaded yet (e.g. right after a login that committed an
     // empty catalog): the gateway still registers with an empty list.
     mocks.getModelsForProvider.mockReturnValue([])
+    mocks.getProviderCatalogStatus.mockReturnValue('failed')
     const results = await useSettingsStore.getState().getAvailableProviders()
 
     // The gateway entry is present with an empty authoritative list.
     const gw = results.find((r) => r.providerType === GW)
     expect(gw).toBeDefined()
     expect(gw?.authoritativeIds).toEqual([])
-    // The empty authoritative list reads as "unknown": nothing stale.
+    // An empty UNKNOWN catalog reads as "unknown": nothing stale.
     expect(useSettingsStore.getState().getStalePinnedModels(GW, [])).toEqual([])
   })
 
   it('auto-removal loop keeps pins when the gateway catalog is empty', async () => {
     mocks.getModelsForProvider.mockReturnValue([])
+    mocks.getProviderCatalogStatus.mockReturnValue('failed')
     const before = useSettingsStore.getState().pinnedModelsByProvider[GW]
 
     await useSettingsStore.getState().getAvailableProviders()
 
     // Empty catalog → no auto-removal, no wiped pins.
     expect(useSettingsStore.getState().pinnedModelsByProvider[GW]).toEqual(before)
+  })
+
+  it('keeps the gateway result when markPinnedModelsSeen throws (persist write failure)', async () => {
+    // PR #150 Sourcery 🟡 "Gateway disappears after persistence failure":
+    // the seen-bookkeeping set() can throw inside the persist middleware
+    // (localStorage write). The gateway branch's surrounding catch must
+    // not swallow it — the gateway entry must still reach `results` so
+    // reconciliation sees the active provider.
+    const spy = vi.spyOn(useSettingsStore.getState(), 'markPinnedModelsSeen')
+      .mockImplementation(() => {
+        throw new Error('persist: localStorage write failed')
+      })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      const results = await useSettingsStore.getState().getAvailableProviders()
+
+      const gw = results.find((r) => r.providerType === GW)
+      expect(gw).toBeDefined()
+      expect(gw?.authoritativeIds).toEqual(['gw-model-a', 'gw-model-b'])
+      // The failure was contained (warned about), not propagated.
+      expect(warn).toHaveBeenCalled()
+      // The active selection is untouched — the gateway did not vanish
+      // from reconciliation.
+      expect(useSettingsStore.getState().providerType).toBe(GW)
+      expect(useSettingsStore.getState().modelName).toBe('gw-model-a')
+    } finally {
+      spy.mockRestore()
+      warn.mockRestore()
+    }
   })
 })

@@ -20,7 +20,7 @@
  */
 
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
-import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderMeta } from './types'
+import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from './types'
 import { registerDynamicProvider, unregisterDynamicProvider } from './types'
 import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayCredentialStatus, getValidAccessToken, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
@@ -98,24 +98,38 @@ export function registerLLMGatewayProvider(): void {
 /**
  * Fetch models from gateway /v1/models and re-register the provider
  * with the updated model list. Call after obtaining a valid access token.
+ *
+ * The catalog status is carried through so the registry can distinguish an
+ * AUTHORITATIVE empty catalog (the gateway answered and serves no models)
+ * from a FAILED refresh (the fetch produced no usable catalog). Only the
+ * former lets consumers conclude that the provider's models are gone.
  */
-export async function prepareGatewayModels(accessToken: string, signal?: AbortSignal): Promise<ModelInfo[]> {
+export async function prepareGatewayModels(
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<{ models: ModelInfo[]; status: ProviderCatalogStatus }> {
   const baseURL = getGatewayBaseURL()
-  const models = await fetchGatewayModels(baseURL, accessToken, signal)
+  const { models, status } = await fetchGatewayModels(baseURL, accessToken, signal)
   signal?.throwIfAborted()
 
-  return models.map((m) => ({
-    id: m.id,
-    name: m.name,
-    capabilities: ['code', 'writing', 'reasoning'] as const,
-    // Resolve contextWindow dynamically so MiniMax-m3 (1M), glm-5.2 (1M),
-    // gpt-4o (128K), etc. each show their real value instead of a flat 200K.
-    contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
-  }))
+  return {
+    models: models.map((m) => ({
+      id: m.id,
+      name: m.name,
+      capabilities: ['code', 'writing', 'reasoning'] as const,
+      // Resolve contextWindow dynamically so MiniMax-m3 (1M), glm-5.2 (1M),
+      // gpt-4o (128K), etc. each show their real value instead of a flat 200K.
+      contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
+    })),
+    status,
+  }
 }
 
 /** Register a previously fetched model list without another async boundary. */
-export function registerGatewayModels(modelInfos: ModelInfo[]): void {
+export function registerGatewayModels(
+  modelInfos: ModelInfo[],
+  status: ProviderCatalogStatus = modelInfos.length > 0 ? 'ready' : 'failed',
+): void {
   const baseURL_str = getGatewayBaseURL()
   const config: Omit<LLMProviderConfig, 'apiKey'> = {
     baseURL: `${baseURL_str}/v1`,
@@ -127,15 +141,16 @@ export function registerGatewayModels(modelInfos: ModelInfo[]): void {
   const meta: ProviderMeta = {
     ...GATEWAY_META,
     models: modelInfos,
+    catalogStatus: status,
   }
 
   registerDynamicProvider(LLM_GATEWAY_PROVIDER_TYPE, config, meta)
 }
 
 export async function updateGatewayModels(accessToken: string): Promise<ModelInfo[]> {
-  const modelInfos = await prepareGatewayModels(accessToken)
-  registerGatewayModels(modelInfos)
-  return modelInfos
+  const { models, status } = await prepareGatewayModels(accessToken)
+  registerGatewayModels(models, status)
+  return models
 }
 
 /**

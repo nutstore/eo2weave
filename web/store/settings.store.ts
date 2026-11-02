@@ -281,8 +281,21 @@ interface SettingsState {
   /**
    * Pinned ids for a provider that were seen before but are missing from
    * the given authoritative list → stale (likely delisted upstream).
+   *
+   * `catalogStatus` says how the authoritative list was obtained:
+   * - `'ready'` — the list was loaded and is non-empty.
+   * - `'empty'` — the list was loaded and IS empty (authoritative: the
+   *   provider positively reported that it serves no models, so every
+   *   previously-seen pin IS stale).
+   * - `'failed'` / `'loading'` / omitted — the list is unknown (fetch
+   *   failed, never attempted). Nothing is reported stale: missing
+   *   information must never read as "everything is gone".
    */
-  getStalePinnedModels: (providerType: string, availableIds: string[]) => string[]
+  getStalePinnedModels: (
+    providerType: string,
+    availableIds: string[],
+    catalogStatus?: 'loading' | 'ready' | 'empty' | 'failed',
+  ) => string[]
   /**
    * Remove the given ids from a provider's pinned list (and its seen
    * bookkeeping). Returns the ids actually removed.
@@ -1045,7 +1058,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       getAvailableProviders: async () => {
         const { loadApiKey } = await import('@/security/api-key-store')
         const { PROVIDER_META, getModelsForProvider } = await import('@/agent/providers/types')
-        const { getCachedModels } = await import('@/agent/providers/model-store')
+        const { getCachedModels, getCachedModelsResult } = await import('@/agent/providers/model-store')
+        const { getProviderCatalogStatus: getDynCatalogStatus } = await import('@/agent/providers/types')
         let llmGatewayProviderKey: string | undefined
         try {
           const mod = await import('@/agent/providers/llm-gateway-provider')
@@ -1059,7 +1073,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           displayName: string
           models: Array<{ id: string; name: string }>
           providerKey: string
-          catalogStatus: Extract<ModelCatalogStatus, 'ready' | 'failed'>
+          catalogStatus: ModelCatalogStatus
           /** Authoritative model ids for this provider (registry / static list),
            *  NOT the pinned-derived display list. Pins missing from here are stale. */
           authoritativeIds: string[]
@@ -1110,12 +1124,27 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             // that's absent from static + dynamic lists is effectively delisted).
             get().markPinnedModelsSeen(providerType, authoritativeIds)
 
+            // Catalog status for a BUILT-IN provider: the static registry is
+            // the floor, the dynamic /models cache adds to it. A non-empty
+            // authoritative list is self-evidently 'ready'. An EMPTY one is
+            // NOT automatically 'failed': if the last /models refresh
+            // RECORDED an error the list is unknown ('failed' — defer), but
+            // if the cache holds a success (or was never attempted because
+            // the provider shipped no dynamic refresh at all), the empty
+            // list is authoritative ('empty' — the provider truly serves no
+            // models and stale pins must be processed).
+            const dynamicRefreshFailed =
+              (getCachedModelsResult(providerType, providerType)?.error != null) ||
+              (getCachedModelsResult(providerType)?.error != null)
+            const catalogStatus: ModelCatalogStatus =
+              authoritativeIds.length > 0 ? 'ready' : dynamicRefreshFailed ? 'failed' : 'empty'
+
             results.push({
               providerType,
               displayName: localizedProviderDisplayName(providerType, meta.displayName),
               models,
               providerKey: providerType,
-              catalogStatus: authoritativeIds.length > 0 ? 'ready' : 'failed',
+              catalogStatus,
               authoritativeIds,
             })
           }
@@ -1133,12 +1162,15 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
               ? pinned.map((id) => ({ id, name: id }))
               : cp.models.map((m) => ({ id: m, name: m }))
 
+            // A custom provider's model list is USER-CONFIGURED, not fetched:
+            // it is authoritative by construction, and an empty list means the
+            // user configured no models — not that a fetch failed.
             results.push({
               providerType: cp.id,
               displayName: cp.name,
               models,
               providerKey: cp.id,
-              catalogStatus: cp.models.length > 0 ? 'ready' : 'failed',
+              catalogStatus: cp.models.length > 0 ? 'ready' : 'empty',
               authoritativeIds: cp.models,
             })
           }
@@ -1168,12 +1200,22 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             // registered from the extension response).
             get().markPinnedModelsSeen(id, allModels.map((m) => m.id))
 
+            // A dynamic provider's registry list comes from an external
+            // source (the browser extension, the gateway). The registry
+            // records HOW it was obtained: a list fetched successfully but
+            // EMPTY is authoritative ('empty'), while a provider whose
+            // registration never carried a usable catalog is 'failed'
+            // (unknown). Without this distinction an empty registry would
+            // switch the user's selection and wipe their pins on a transient
+            // outage.
+            const catalogStatus = getDynCatalogStatus(id) ?? 'failed'
+
             results.push({
               providerType: id,
               displayName: meta?.displayName || id,
               models,
               providerKey: id,
-              catalogStatus: allModels.length > 0 ? 'ready' : 'failed',
+              catalogStatus,
               authoritativeIds: allModels.map((m) => m.id),
             })
           }
@@ -1222,7 +1264,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
                 displayName: localizedProviderDisplayName(llmGatewayProviderKey, gwMeta?.displayName || 'Nutstore AI'),
                 models,
                 providerKey: llmGatewayProviderKey,
-                catalogStatus: allModels.length > 0 ? 'ready' : 'failed',
+                catalogStatus,
                 authoritativeIds: allModels.map((m) => m.id),
               })
             }
@@ -1232,14 +1274,20 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // Auto-remove stale pins (pinned + previously confirmed available +
         // absent from the authoritative list → delisted upstream). Runs on
         // every provider-list load and is idempotent. Guards:
+        // - A FAILED catalog ('failed') is missing information, not proof of
+        //   delisting — skip it entirely, never wipe pins.
         // - An EMPTY authoritativeIds (registry not loaded yet / gateway
         //   before login) is not authoritative — skip, never wipe pins.
+        //   (The authoritative-empty case is handled INSIDE
+        //   getStalePinnedModels, which only reports stale pins for a
+        //   catalog that positively reported its contents.)
         // - Keep the currently selected model even if stale: the user is on
         //   it, and the topbar already flags it (currentModelDelistedTooltip).
         const current = get()
         for (const r of results) {
+          if (r.catalogStatus === 'failed') continue
           if (r.authoritativeIds.length === 0) continue
-          const staleIds = current.getStalePinnedModels(r.providerType, r.authoritativeIds)
+          const staleIds = current.getStalePinnedModels(r.providerType, r.authoritativeIds, r.catalogStatus)
           if (staleIds.length === 0) continue
           const keep = r.providerType === current.providerType ? new Set([current.modelName]) : new Set<string>()
           const toRemove = staleIds.filter((id) => !keep.has(id))
@@ -1257,14 +1305,10 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // prevents an early provider from winning while a later provider is
         // still being restored.
         //
-        // A failed/unknown catalog (empty authoritative list AND no display
-        // models: the /models fetch 500'd, login discovery timed out, or the
-        // registry bootstrap threw) must NOT read as an authoritative empty
-        // catalog — resolveDefaultModelSelection would treat the persisted
-        // selection as invalid and switch the user to another provider while
-        // the outage lasts. Those providers are marked 'failed' at push time
-        // above; resolveDefaultModelSelection defers on failed catalogs and
-        // only sweeps on a genuinely authoritative empty list.
+        // The catalog status travels with each provider: a 'failed' catalog
+        // is UNKNOWN, so the resolver DEFERS the selection change instead of
+        // switching the user off a provider that is merely unreachable. A
+        // 'ready'/'empty' catalog is authoritative and reconciles normally.
         const reconciliationProviders: AvailableProviderLike[] = results.map((result) => ({
           providerType: result.providerType,
           models: result.models,
@@ -1341,12 +1385,23 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         })
       },
 
-      getStalePinnedModels: (providerType, availableIds) => {
-        // An EMPTY authoritative list carries no information — the catalog
-        // failed to load (non-200 /models, login timeout, bootstrap catch).
-        // "Unknown" must never read as "everything is gone": return no stale
-        // pins so the topbar, settings page and auto-removal loop all agree.
-        if (availableIds.length === 0) return []
+      getStalePinnedModels: (providerType, availableIds, catalogStatus) => {
+        // A FAILED / UNKNOWN catalog carries no information — the catalog
+        // failed to load (non-200 /models, login timeout, bootstrap catch) or
+        // was never attempted. "Unknown" must never read as "everything is
+        // gone": return no stale pins so the topbar, settings page and
+        // auto-removal loop all agree. A 'loading' catalog is unknown too.
+        //
+        // An AUTHORITATIVE EMPTY catalog ('empty') is the opposite: the
+        // provider positively reported that it serves no models, so every
+        // previously-seen pin IS stale. The caller must say so explicitly —
+        // an empty list alone is not enough, because the same empty list is
+        // what a failed refresh produces.
+        //
+        // With NO status given, a NON-EMPTY list is self-evidently
+        // authoritative (it has content), while an EMPTY one is unknown.
+        if (catalogStatus === 'failed' || catalogStatus === 'loading') return []
+        if (availableIds.length === 0 && catalogStatus !== 'empty') return []
         const state = get()
         const pinned = state.pinnedModelsByProvider[providerType] || []
         const seen = new Set(state.pinnedSeenByProvider[providerType] || [])

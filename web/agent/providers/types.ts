@@ -59,6 +59,21 @@ export interface ModelInfo {
   }
 }
 
+/**
+ * Status of a provider's registered model catalog.
+ *
+ * - `ready` — the catalog was loaded successfully (non-empty).
+ * - `empty` — the catalog was loaded successfully and IS empty. This is the
+ *   ONLY case where an empty list is authoritative information: the producer
+ *   positively reported "this provider serves no models".
+ * - `failed` — the catalog could not be loaded (fetch error, timeout, never
+ *   attempted). The registered list is then missing information, NOT proof
+ *   that every model is gone.
+ *
+ * An absent status means "unknown" and must be treated like `failed`.
+ */
+export type ProviderCatalogStatus = 'ready' | 'empty' | 'failed'
+
 /** Provider metadata for UI display */
 export interface ProviderMeta {
   category: ProviderCategory
@@ -66,6 +81,12 @@ export interface ProviderMeta {
   icon?: string
   website?: string
   models: ModelInfo[]
+  /**
+   * How the registered model list was obtained. Absent means unknown — the
+   * list carries no information about whether the provider still serves
+   * models, so consumers must not read an empty list as "all delisted".
+   */
+  catalogStatus?: ProviderCatalogStatus
 }
 
 /** Built-in provider types */
@@ -205,6 +226,30 @@ export function registerDynamicProvider(
   DYNAMIC_PROVIDER_CONFIGS.set(id, config)
   DYNAMIC_PROVIDER_METAS.set(id, meta)
   notifyRegistryChanged()
+}
+
+/**
+ * Catalog status of a provider's registered model list.
+ *
+ * - `'ready'` — the list was loaded successfully and is non-empty.
+ * - `'empty'` — the list was loaded successfully and IS empty (authoritative:
+ *   the provider positively reported it serves no models).
+ * - `'failed'` — the list could not be loaded (fetch error, discovery
+ *   timeout, never attempted). The registered list is missing information,
+ *   NOT proof that every model was delisted.
+ *
+ * Returns `undefined` when the provider is unknown or when its status was
+ * never recorded — callers must read that as "unknown" (i.e. like
+ * `'failed'`), never as "authoritatively empty".
+ */
+export function getProviderCatalogStatus(type: string): ProviderCatalogStatus | undefined {
+  const meta = DYNAMIC_PROVIDER_METAS.get(type)
+  if (!meta) return undefined
+  if (meta.catalogStatus) return meta.catalogStatus
+  // A registered list without a recorded status: a non-empty list is
+  // self-evidently ready; an EMPTY one carries no information about whether
+  // the provider still serves models.
+  return meta.models.length > 0 ? 'ready' : 'failed'
 }
 
 /** Remove a custom provider */

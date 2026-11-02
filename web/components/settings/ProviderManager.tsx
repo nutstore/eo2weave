@@ -152,6 +152,7 @@ function ProviderCard({
     models: dynamicModels,
     source: modelsSource,
     loading: modelsLoading,
+    error: modelsError,
     refresh: refreshModels,
   } = useDynamicModels(providerType, providerKey)
 
@@ -225,12 +226,31 @@ function ProviderCard({
     markPinnedModelsSeen(providerType, allModels.map((m) => m.id))
   }, [allModels, markPinnedModelsSeen, providerType])
 
+  // Catalog status for THIS card's merged list:
+  // - 'ready'  — the merged list has content and the /models fetch succeeded
+  //              (or the provider is static-only / user-configured).
+  // - 'failed' — the /models fetch FAILED: the list is unknown, so nothing
+  //              may be flagged stale and the selection must not change.
+  // - 'empty'  — authoritative empty: the provider positively reported that
+  //              it serves no models (only reachable for a provider whose
+  //              catalog is user-configured or static-empty).
+  const catalogStatus: 'ready' | 'empty' | 'failed' = useMemo(() => {
+    if (allModels.length > 0) return 'ready'
+    if (modelsError) return 'failed'
+    // No models and no error: the provider's catalog is empty. For a custom
+    // provider the list is user-configured (authoritative); for a dynamic
+    // one it came from an external registry that positively reported an
+    // empty catalog. Both are authoritative 'empty'.
+    return 'empty'
+  }, [allModels.length, modelsError])
+
   // Pinned models for this provider (resolved to ModelInfo for display)
   const pinnedModels = useMemo(() => {
     const pinnedIds = pinnedModelsByProvider[providerType] || []
-    // Empty list = no trustworthy data (fetch pending/failed) → never flag.
+    // A FAILED catalog is unknown → never flag. An authoritative empty
+    // catalog DOES flag: the provider positively reported it serves nothing.
     const staleIds = new Set(
-      allModels.length > 0 ? getStalePinnedModels(providerType, allModels.map((m) => m.id)) : []
+      getStalePinnedModels(providerType, allModels.map((m) => m.id), catalogStatus)
     )
     return pinnedIds
       .map((id) => {
@@ -247,7 +267,7 @@ function ProviderCard({
         }
       })
       .map((m) => ({ ...m, stale: staleIds.has(m.id) }))
-  }, [pinnedModelsByProvider, providerType, allModels, getStalePinnedModels])
+  }, [pinnedModelsByProvider, providerType, allModels, getStalePinnedModels, catalogStatus])
 
   // Filtered models for the "add model" dialog (all - pinned)
   const filteredModels = useMemo(() => {
@@ -301,13 +321,13 @@ function ProviderCard({
 
   // Remove all stale pinned models for this provider ("clean up delisted" button).
   const handleClearStalePinned = useCallback(() => {
-    const staleIds = getStalePinnedModels(providerType, allModels.map((m) => m.id))
+    const staleIds = getStalePinnedModels(providerType, allModels.map((m) => m.id), catalogStatus)
     if (staleIds.length === 0) return
     const removed = removePinnedModels(providerType, staleIds)
     if (removed.length > 0) {
       toast.success(t('settings.pinnedModels.staleRemoved', { count: removed.length }))
     }
-  }, [getStalePinnedModels, removePinnedModels, providerType, allModels, t])
+  }, [getStalePinnedModels, removePinnedModels, providerType, allModels, t, catalogStatus])
 
   const clearApiKey = useCallback(async () => {
     await deleteApiKey(providerKey)
@@ -1207,6 +1227,13 @@ export function LLMGatewayCard({
   const { triggerProviderRefresh, pinModel, unpinModel, removePinnedModels, markPinnedModelsSeen, getStalePinnedModels, pinnedModelsByProvider, modelCredentialStatus, modelCredentialStatusError, setModelCredentialStatusError } = useSettingsStore()
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [allModels, setAllModels] = useState<Array<{ id: string; name: string }>>([])
+  /**
+   * How the card's model list was obtained. 'failed' means the /models fetch
+   * produced no usable catalog — the list is UNKNOWN, so no pin may be
+   * flagged stale. 'empty' is authoritative (the gateway answered and serves
+   * no models). 'ready' means the list has content.
+   */
+  const [catalogStatus, setCatalogStatus] = useState<'ready' | 'empty' | 'failed'>('failed')
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [modelSearch, setModelSearch] = useState('')
   const [addingManual, setAddingManual] = useState(false)
@@ -1258,15 +1285,14 @@ export function LLMGatewayCard({
     isAuthRunning || authState.status === 'success' || isDeviceFlowError
 
   const pinnedIds = pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE] || []
-  // allModels starts empty on mount (models fetch after expand+login) — an
-  // empty list is NOT authoritative, so suppress stale flags until it loads.
+  // The catalog status decides whether the list is trustworthy: a FAILED
+  // fetch is unknown (never flag), an authoritative EMPTY catalog means the
+  // gateway positively reports it serves no models (flag every seen pin).
   const staleIds = useMemo(
     () => new Set(
-      allModels.length > 0
-        ? getStalePinnedModels(LLM_GATEWAY_PROVIDER_TYPE, allModels.map((m) => m.id))
-        : []
+      getStalePinnedModels(LLM_GATEWAY_PROVIDER_TYPE, allModels.map((m) => m.id), catalogStatus)
     ),
-    [getStalePinnedModels, allModels]
+    [getStalePinnedModels, allModels, catalogStatus]
   )
   const pinned = pinnedIds.map((id) => {
     const found = allModels.find((m) => m.id === id)
@@ -1326,7 +1352,7 @@ export function LLMGatewayCard({
         const clientId = getLLMGatewayClientId()
         const token = await getValidAccessToken(baseURL, clientId)
         if (token && !cancelled) {
-          const models = await fetchGatewayModels(baseURL, token)
+          const { models, status } = await fetchGatewayModels(baseURL, token)
           // A logout/relogin that superseded this effect run must not
           // register its stale catalog: re-check cancellation after EVERY
           // await — the token fetch above, the /models fetch here, and the
@@ -1352,13 +1378,14 @@ export function LLMGatewayCard({
               name: m.name,
               capabilities: ['code', 'writing', 'reasoning'] as const,
               contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
-            })))
+            })), status)
           }
           // Same staleness gate before the card-local state writes: a run
           // whose session was superseded must not touch setAllModels or the
           // pin-seen marks of the newer session either.
           if (cancelled) return
           setAllModels(models)
+          setCatalogStatus(status)
           // Gateway /models response is authoritative — record confirmed pins
           // so pins absent from a later fetch get flagged as stale.
           if (models.length > 0) {

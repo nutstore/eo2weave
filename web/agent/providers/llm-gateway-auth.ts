@@ -15,6 +15,7 @@ import {
 } from '@/agent/providers/gateway-credential-lock'
 import { saveApiKey as saveGatewayApiKey } from '@/security/api-key-store'
 import { useI18nStore } from '@/i18n/store'
+import type { ProviderCatalogStatus } from '@/agent/providers/types'
 
 // ── Types ──
 
@@ -1433,28 +1434,58 @@ export async function logoutGateway(): Promise<void> {
 }
 
 /**
- * Fetch available models from the gateway
+ * Fetch available models from the gateway.
+ *
+ * The result distinguishes an AUTHORITATIVE empty catalog from a FAILED
+ * fetch — the two look identical in the response body (`data: []` vs a
+ * non-200 response) but mean opposite things:
+ *
+ * - `failed` — the request did not produce a usable catalog (non-2xx,
+ *   unparseable body, network error). The provider's model list is UNKNOWN:
+ *   it is missing information, never proof that every model was delisted.
+ *   Callers must not switch the user's selection or flag pins as stale.
+ * - `empty` — the gateway answered successfully and positively reports that
+ *   it serves no models. This IS authoritative information: pins for this
+ *   provider are genuinely gone.
+ * - `ready` — the gateway answered with a non-empty catalog.
  */
 export async function fetchGatewayModels(
   baseURL: string,
   accessToken: string,
   signal?: AbortSignal,
-): Promise<Array<{ id: string; name: string }>> {
-  const res = await fetch(`${baseURL}/v1/models`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal,
-  })
-  if (!res.ok) return []
+): Promise<{ models: Array<{ id: string; name: string }>; status: ProviderCatalogStatus }> {
+  let res: Response
+  try {
+    res = await fetch(`${baseURL}/v1/models`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
+    })
+  } catch (e) {
+    // An explicit cancellation still propagates; only genuine network
+    // failures degrade to a failed (unknown) catalog.
+    if (signal?.aborted || (e instanceof Error && e.name === 'AbortError')) throw e
+    // A network failure carries NO catalog information — it is a failed
+    // refresh, not an authoritative empty list.
+    return { models: [], status: 'failed' }
+  }
+  // A non-2xx response carries NO catalog information — it is a failed
+  // refresh, not an authoritative empty list.
+  if (!res.ok) return { models: [], status: 'failed' }
 
   const data = await res.json()
-  if (!data?.data || !Array.isArray(data.data)) return []
+  // A body that is not a model array is an unusable response, not an
+  // authoritative "no models".
+  if (!data?.data || !Array.isArray(data.data)) return { models: [], status: 'failed' }
 
-  return data.data.map(
+  const models = data.data.map(
     (m: { id?: string; name?: string }) => ({
       id: m.id || '',
       name: m.name || m.id || '',
     })
   )
+  // A SUCCESSFUL response IS authoritative, empty or not: an empty `data:[]`
+  // positively reports that the gateway serves no models.
+  return { models, status: models.length > 0 ? 'ready' : 'empty' }
 }
 
 /**

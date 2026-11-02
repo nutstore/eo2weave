@@ -118,9 +118,19 @@ async function applyGatewayLoginTokensInner(
   // commit (Sourcery: "Approved login can hang"). Cancellation (signal
   // aborted) still propagates — an explicitly cancelled login must not
   // commit.
-  let models: Awaited<ReturnType<typeof prepareGatewayModels>> = []
+  //
+  // The catalog STATUS is carried alongside the list: a failed discovery
+  // must NOT be committed as an AUTHORITATIVE empty catalog, or the store
+  // would later conclude that every pinned model was delisted and switch
+  // the user's selection away from a provider that is merely unreachable
+  // (#146). An authoritative empty catalog (the gateway answered and
+  // serves no models) is committed as such.
+  let discovery: Awaited<ReturnType<typeof prepareGatewayModels>> = {
+    models: [],
+    status: 'failed',
+  }
   try {
-    models = await withDiscoveryDeadline(prepareGatewayModels(accessToken, signal))
+    discovery = await withDiscoveryDeadline(prepareGatewayModels(accessToken, signal))
   } catch (e) {
     if (signal?.aborted) signal.throwIfAborted()
     console.warn('[gateway-login] model discovery failed; committing login with an empty model list:', e)
@@ -151,7 +161,7 @@ async function applyGatewayLoginTokensInner(
     let defaults: string[] = []
     if ((settings.pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
       const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
-      defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
+      defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, discovery.models.map((m) => m.id))
     }
     signal?.throwIfAborted()
     // Bound the key-store reads/writes: a stalled api-key-store op must not
@@ -216,7 +226,7 @@ async function applyGatewayLoginTokensInner(
       signal?.throwIfAborted()
       // No awaits after this point: cancellation cannot interleave the token
       // pair, provider registration, and selected-provider settings commit.
-      registerGatewayModels(models)
+      registerGatewayModels(discovery.models, discovery.status)
       onCommit?.()
       committed = true
       settings.invalidateApiKeyCache(keyId)
@@ -228,7 +238,7 @@ async function applyGatewayLoginTokensInner(
       // the settings card re-registers the fetched catalog on its next
       // /models fetch; an empty modelName here marks the selection for
       // that re-resolution instead of pinning a wrong provider's model.
-      settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, models[0]?.id ?? '')
+      settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, discovery.models[0]?.id ?? '')
       if (defaults.length > 0) {
         settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
         settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
@@ -237,7 +247,7 @@ async function applyGatewayLoginTokensInner(
       settings.setHasApiKey(true)
       settings.setModelCredentialStatus('valid')
       settings.triggerProviderRefresh()
-      return { ok: true, accessToken, models }
+      return { ok: true, accessToken, models: discovery.models }
     } catch (e) {
       // The aborted write may have committed. Roll back only while still
       // holding the lock shared by all gateway login attempts. Bounded the
