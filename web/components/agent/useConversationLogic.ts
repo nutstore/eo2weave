@@ -146,16 +146,31 @@ export function useConversationLogic() {
       // matches the switch-path semantics for an emptied editor.
       //
       // PR #142 review round 2 (Sourcery, Medium): skip the save while the
-      // editor has not yet consumed a pending draft restoration
-      // (draftConvIdRef still set). At that point inputRef holds the
-      // pre-restore EMPTY value, so writing it would erase the stored draft
-      // before the editor's restore effect ever runs.
-      if (convId && !draftConvIdRef.current) {
-        useInputDraftStore.getState().saveDraft(convId, {
-          text: inputRef.current,
-          mentionedAgentIds: mentionedAgentIdsRef.current,
-          selectedFiles: [],
-        })
+      // editor has not yet consumed a pending draft restoration — at that
+      // point inputRef holds the pre-restore EMPTY value, so writing it
+      // would erase the stored draft before the editor's restore effect
+      // ever runs.
+      //
+      // PR #142 review round 5 (Sourcery, Medium): the marker being set does
+      // NOT always mean the editor still holds that pre-restore empty value.
+      // restoreDraftIntoInput (rejected send) sets it while the input holds
+      // live text awaiting editor restoration, and the stored draft is
+      // already cleared at that point. peekDraft discriminates the two
+      // windows: an INTACT stored draft means the pending restoration has
+      // not been consumed yet (keep the round-2 skip); no stored draft
+      // means inputRef holds live unsent content and skipping the save
+      // loses it — persist it.
+      if (convId) {
+        const pendingRestoration = draftConvIdRef.current
+          ? useInputDraftStore.getState().peekDraft(convId)
+          : null
+        if (!pendingRestoration) {
+          useInputDraftStore.getState().saveDraft(convId, {
+            text: inputRef.current,
+            mentionedAgentIds: mentionedAgentIdsRef.current,
+            selectedFiles: [],
+          })
+        }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
