@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
 import { useProjectStore } from '@/store/project.store'
+import { InitErrorBanner } from '@/components/project/InitErrorBanner'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { useConversationStore } from '@/store/conversation.store'
@@ -30,6 +31,7 @@ export default function ProjectHomeView() {
   const projects = useProjectStore((s) => s.projects)
   const projectStats = useProjectStore((s) => s.projectStats)
   const projectLoading = useProjectStore((s) => s.isLoading)
+  const initError = useProjectStore((s) => s.initError)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const createProject = useProjectStore((s) => s.createProject)
   const renameProject = useProjectStore((s) => s.renameProject)
@@ -178,6 +180,14 @@ export default function ProjectHomeView() {
     } finally {
       setIsClearingLocalData(false)
     }
+  }
+
+  // Init failure: never render the "No projects yet" empty state — that
+  // reads as data loss (issue #131). Show the shared error banner with a
+  // Retry that re-runs initialize() instead. Keyed on initError (NOT the
+  // action-level `error`), so a failed rename/delete never locks the page.
+  if (initError) {
+    return <InitErrorBanner />
   }
 
   return (

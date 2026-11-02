@@ -7,7 +7,17 @@ export const app = {
     productName: "怡氧知知",
     initComplete: "初始化完成",
     initFailed: "初始化失败",
+    retry: "重试",
+    projectsInitErrorHint:
+      "你的项目数据是安全的——本次本地存储未能打开，通常重试即可恢复。",
+    projectsInitUnknownHint:
+      "本地存储报告了未知错误。你的项目可能未受影响，但目前无法确认——请运行「诊断」并重试；若问题持续，请将诊断报告附在问题反馈中。",
+    projectsInitCorruptionHint:
+      "本地存储报告了可能的数据问题，项目可能无法正常打开。请勿清除浏览器数据，并运行「诊断」生成报告，以便附在问题反馈中。",
+    projectsInitRetrying: "重试中...",
     sessionStorageOnly: "数据仅在当前会话保存，刷新后将丢失",
+    memoryModeWarning:
+      "警告：当前运行在临时内存模式——关闭或刷新标签页后所有数据都会丢失。浏览器无法打开持久化存储（请检查隐私模式设置或站点权限）。",
     localStorageMode: "使用本地存储模式",
     migrationInProgress: "正在迁移数据",
     migrationComplete: "数据迁移完成",

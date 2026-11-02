@@ -17,6 +17,60 @@
 
 import { getSQLiteDB } from '@/sqlite'
 import { formatBytes } from '@/lib/utils'
+import { PROJECT_STORE_INIT_ERROR_KEY } from '@/lib/app-storage-keys'
+
+interface StoredProjectInitError {
+  message: string
+  kind?: string
+  stack?: string
+  at?: string
+  /** True when a later initialize() succeeded — report kept for context. */
+  resolved?: boolean
+}
+
+/**
+ * Read the project-store initialization failure persisted by
+ * `useProjectStore.initialize()` (sessionStorage). Sourcery: without this,
+ * users attach diagnostics to a bug report and the saved init failure —
+ * often the single most relevant signal for a "blank projects page" report —
+ * is missing from it.
+ */
+function collectProjectInitErrorSection(): DiagnosticSection {
+  const lines: string[] = []
+  const summary: Record<string, string | number | boolean | null | undefined> = {}
+  let status: DiagnosticSection['status'] = 'info'
+
+  let stored: StoredProjectInitError | null = null
+  try {
+    const raw = sessionStorage.getItem(PROJECT_STORE_INIT_ERROR_KEY)
+    if (raw) stored = JSON.parse(raw) as StoredProjectInitError
+  } catch {
+    // sessionStorage unavailable / malformed record — treat as absent.
+  }
+
+  summary.projectStoreInitFailed = stored !== null
+  if (stored) {
+    status = 'error'
+    summary.projectStoreInitErrorAt = stored.at ?? null
+    summary.projectStoreInitErrorKind = stored.kind ?? 'unknown'
+    // Sourcery round 7 ("Startup failure details disappear"): a later
+    // successful initialize() marks the record resolved instead of deleting
+    // it — the report still carries the original failure for bug reports.
+    if (stored.resolved) summary.projectStoreInitErrorResolved = true
+    lines.push('- Last project-store initialization failure:')
+    lines.push(`  - Message: ${stored.message}`)
+    if (stored.kind) lines.push(`  - Kind: ${stored.kind}`)
+    if (stored.resolved) lines.push('  - Resolved: yes (a later init succeeded)')
+    // Full stack when persisted (Sourcery: "Persist the full stack") —
+    // the single most useful signal for debugging a blank-projects report.
+    if (stored.stack) lines.push(`  - Stack: ${stored.stack}`)
+    if (stored.at) lines.push(`  - At: ${stored.at}`)
+  } else {
+    lines.push('- No project-store initialization failure recorded this session.')
+  }
+
+  return { label: 'Project Store Init', status, lines, summary }
+}
 
 export interface DiagnosticSection {
   label: string
@@ -278,6 +332,7 @@ export async function runDiagnostics(): Promise<DiagnosticReport> {
   const sections: DiagnosticSection[] = []
 
   sections.push(await collectSQLiteSection())
+  sections.push(collectProjectInitErrorSection())
   sections.push(collectBrowserStorageSection())
   sections.push(await collectStorageQuotaSection())
   sections.push(collectServiceWorkerSection())

@@ -4,6 +4,7 @@ import { useRouter, useParams } from 'next/navigation'
 import { WorkspaceLayout } from '@/components/layout/WorkspaceLayout'
 import { useProjectStore } from '@/store/project.store'
 import { useConversationStore } from '@/store/conversation.store'
+import { InitErrorBanner } from '@/components/project/InitErrorBanner'
 import { useWorkspaceRouteSync } from '@/hooks/useWorkspaceRouteSync'
 import { projectWorkspacePath, projectsPath } from '@/lib/route-paths'
 
@@ -35,6 +36,7 @@ export default function WorkspaceRouteView() {
 
   const projects = useProjectStore((s) => s.projects)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const initError = useProjectStore((s) => s.initError)
   const activeConversationTitle = useConversationStore((s) => {
     const { activeConversationId, conversations } = s
     if (!activeConversationId) return undefined
@@ -42,6 +44,15 @@ export default function WorkspaceRouteView() {
   })
 
   const activeProject = projects.find((project) => project.id === activeProjectId)
+
+  // Initialization failure on a DIRECT workspace URL (open/refresh
+  // /projects/:id/...): useWorkspaceRouteSync returns early while the store
+  // is uninitialized and WorkspaceLayout would render an unusable empty shell
+  // with no error and no action (Sourcery: "Workspace route stays unusable").
+  // Surface the same banner + Retry the projects page shows.
+  if (initError) {
+    return <InitErrorBanner />
+  }
 
   return (
     <WorkspaceLayout

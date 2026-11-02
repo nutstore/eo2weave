@@ -50,7 +50,13 @@ export interface InitStorageOptions {
 export interface InitStorageResult {
   success: boolean
   mode: StorageMode
+  /** Human-readable failure message when success is false. */
   error?: string
+  /**
+   * Stack of the underlying failure when success is false (Sourcery: keep
+   * the full detail available for the persisted diagnostics record).
+   */
+  errorStack?: string
 }
 
 export const RESET_REQUIRES_TAB_CLOSURE = 'RESET_REQUIRES_TAB_CLOSURE'
@@ -205,6 +211,7 @@ export async function initStorage(options: InitStorageOptions = {}): Promise<Ini
       return { success: true, mode: currentStorageMode }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
+      const errorStack = error instanceof Error ? error.stack : undefined
       const inaccessibleAfterReset = initAfterReset && isDatabaseInaccessibleError(errorMsg)
 
       if (inaccessibleAfterReset) {
@@ -220,6 +227,7 @@ export async function initStorage(options: InitStorageOptions = {}): Promise<Ini
           success: false,
           mode: currentStorageMode,
           error: actionableError,
+          errorStack,
         }
       }
 
@@ -236,6 +244,7 @@ export async function initStorage(options: InitStorageOptions = {}): Promise<Ini
           success: false,
           mode: currentStorageMode,
           error: actionableError,
+          errorStack,
         }
       }
 
@@ -252,6 +261,7 @@ export async function initStorage(options: InitStorageOptions = {}): Promise<Ini
           success: false,
           mode: currentStorageMode,
           error: actionableError,
+          errorStack,
         }
       }
 
@@ -279,6 +289,7 @@ export async function initStorage(options: InitStorageOptions = {}): Promise<Ini
         success: false,
         mode: currentStorageMode,
         error: errorMsg,
+        errorStack,
       }
     }
   })()
