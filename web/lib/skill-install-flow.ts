@@ -432,16 +432,28 @@ export function mergePrefillText(
 ): string {
   const trimmed = (existingText ?? '').trim()
   if (!trimmed) return prefill
-  const command = prefill.split(/\s+/)[0] ?? prefill
+  const command = prefill.trim().split(/\s+/)[0] ?? prefill.trim()
   // "Already present" requires the draft to start with the EXACT command
   // token (word boundary — a longer command sharing the prefix does not
   // count). When the link requests a prompt, that prompt must match the
   // draft's remainder exactly; a bare command counts as present over any
-  // user-typed continuation (keeps re-clicks idempotent).
+  // user-typed continuation (keeps re-clicks idempotent). The bare-command
+  // prefill itself carries a trailing space (issue #134, picker
+  // suppression) — the comparison runs on trimmed text, so a draft ending
+  // in that space still matches.
   const rest = trimmed.slice(command.length)
   const hasCommandToken = trimmed.startsWith(command) && (rest === '' || rest.startsWith(' '))
   const requestedPrompt = prefill.slice(command.length).trim()
   if (hasCommandToken && (requestedPrompt === '' || rest.trim() === requestedPrompt)) {
+    // Preserve the picker-suppressing trailing space on an idempotent
+    // bare-command match: a draft restored WITHOUT the space puts the
+    // caret right after the command token, which re-opens the slash-
+    // command picker over the prefill (issue #134 review). Prompt-bearing
+    // matches return the draft as-is — their last character is never a
+    // bare command token.
+    if (requestedPrompt === '' && rest === '') {
+      return `${command} `
+    }
     return trimmed
   }
   return `${prefill}\n${trimmed}`
@@ -451,11 +463,17 @@ export function mergePrefillText(
  * Build the prefill text: `/{skill-name}` slash command (explicit skill
  * activation, teaches the slash convention), plus the promoter-defined
  * `prompt` suffix when present.
+ *
+ * A bare command gets a single trailing space: the conversation input's
+ * skill picker treats a caret sitting directly after the command token as
+ * active slash-command typing and pops the suggestion list over the
+ * prefilled text. The trailing space moves the caret past the token, so
+ * the picker stays closed (issue #134).
  */
 export function buildPrefillText(skillName: string, prompt?: string | null): string {
   const command = `/${skillName}`
   const suffix = (prompt ?? '').trim()
-  return suffix ? `${command} ${suffix}` : command
+  return suffix ? `${command} ${suffix}` : `${command} `
 }
 
 // ── Init polling ────────────────────────────────────────────────────
