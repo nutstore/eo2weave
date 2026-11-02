@@ -179,6 +179,13 @@ export function useDynamicModels(
         apiKey = await loadApiKey(providerKey ?? providerType)
       } catch (error) {
         failedFetchAt.set(cacheKey, Date.now())
+        // Same as a failed fetch inside doFetch: bump retryTick so the
+        // stale-while-revalidate effect re-runs and arms the remaining-window
+        // retry timer — without this the effect never reruns (its deps did
+        // not change) and a loadApiKey failure would suppress retries for
+        // the rest of the mount (Sourcery: "API-key failure never schedules
+        // retry").
+        setRetryTick((t) => t + 1)
         console.warn(`[use-dynamic-models] Failed to load API key for ${providerType}:`, error)
         return
       }
