@@ -43,13 +43,19 @@ export async function loadRegistryCatalog(registry: PackageRegistry, force = fal
 
 /**
  * Fetch one package's own manifest for the tool preview. The catalog's
- * `toolCount` is a publisher-provided claim; the preview verifies it.
+ * `toolCount` is a publisher-provided claim; the preview verifies it AND
+ * requires the manifest to agree with the catalog entry's id/version, so
+ * the catalog entry rides along in the message.
  */
-export async function previewRegistryPackage(registry: PackageRegistry, packageId: string): Promise<Array<{ name: string; description: string }>> {
+export async function previewRegistryPackage(
+  registry: PackageRegistry,
+  pkg: Pick<RegistryManifestPackage, 'id' | 'version' | 'description' | 'toolCount' | 'files'>,
+): Promise<Array<{ name: string; description: string }>> {
   const result = await send<{ tools: Array<{ name: string; description: string }> }>({
     type: 'webmcp_registry_preview',
     manifestUrl: registry.manifestUrl,
-    packageId,
+    packageId: pkg.id,
+    package: pkg,
   })
   return result.tools
 }

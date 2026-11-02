@@ -133,7 +133,12 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
           const registry = await registryFromMessage(message)
           const packageId = typeof message.packageId === 'string' ? message.packageId : ''
           if (!packageId) throw new Error('Missing package id')
-          const preview = await fetchPackageManifestPreview(registry, packageId)
+          // The catalog entry rides along so the preview can require id AND
+          // version agreement — a manifest that disagrees with the catalog
+          // is not a verified preview.
+          const pkg = packageEntryFromMessage(message)
+          if (pkg.id !== packageId) throw new Error(`Package entry id ${pkg.id} does not match ${packageId}`)
+          const preview = await fetchPackageManifestPreview(registry, packageId, { expectedVersion: pkg.version })
           return { ok: true, tools: preview.tools }
         }
         case 'webmcp_registry_install': {

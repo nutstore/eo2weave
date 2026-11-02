@@ -71,7 +71,8 @@ const catalogs = new Map<string, RegistryManifest>()
 const catalogLoads = new Set<string>()
 
 /**
- * Verified tool lists per package id (from the package's own manifest).
+ * Verified tool lists per catalog entry (from the package's own manifest),
+ * keyed by `manifestUrl::packageId`.
  *
  * The catalog entry's `toolCount` is a publisher-provided CLAIM; the
  * preview fetches the real manifest. A package whose preview failed keeps
@@ -79,6 +80,14 @@ const catalogLoads = new Set<string>()
  */
 const toolPreviews = new Map<string, Array<{ name: string; description: string }>>()
 const previewFailures = new Set<string>()
+/**
+ * In-flight preview requests, keyed the same way. A completion triggers a
+ * full re-render, which would otherwise re-enter `loadToolPreview` for
+ * every still-pending package and AMPLIFY the request count with each
+ * staggered response — the in-flight promise is reused instead (finding:
+ * "Tool previews multiply requests").
+ */
+const previewInFlight = new Map<string, Promise<boolean>>()
 
 /**
  * Load the tool preview for one package (best effort — never blocks the
@@ -88,17 +97,31 @@ const previewFailures = new Set<string>()
  * knows a re-render is needed). A cached preview or a recorded failure
  * returns false — otherwise the re-render would loop forever.
  */
-async function loadToolPreview(registry: PackageRegistry, packageId: string): Promise<boolean> {
-  const key = `${registry.manifestUrl}::${packageId}`
-  if (toolPreviews.has(key) || previewFailures.has(key)) return false
-  try {
-    const tools = await previewRegistryPackage(registry, packageId)
-    toolPreviews.set(key, tools)
-    return true
-  } catch {
-    previewFailures.add(key)
-    return false
-  }
+function loadToolPreview(registry: PackageRegistry, pkg: RegistryManifestPackage): Promise<boolean> {
+  const key = `${registry.manifestUrl}::${pkg.id}`
+  const existing = previewInFlight.get(key)
+  if (existing) return existing
+  const promise = (async (): Promise<boolean> => {
+    if (toolPreviews.has(key) || previewFailures.has(key)) return false
+    try {
+      const tools = await previewRegistryPackage(registry, pkg)
+      toolPreviews.set(key, tools)
+      return true
+    } catch {
+      previewFailures.add(key)
+      return false
+    } finally {
+      previewInFlight.delete(key)
+    }
+  })()
+  previewInFlight.set(key, promise)
+  return promise
+}
+
+/** Drop the preview cache entries of one registry (its catalog changed). */
+function clearToolPreviews(manifestUrl: string): void {
+  for (const key of [...toolPreviews.keys()]) if (key.startsWith(`${manifestUrl}::`)) toolPreviews.delete(key)
+  for (const key of [...previewFailures]) if (key.startsWith(`${manifestUrl}::`)) previewFailures.delete(key)
 }
 
 function button(label: string, className: string, onClick: () => void): HTMLButtonElement {
@@ -141,7 +164,7 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
       // The tool preview arrives after the card was drawn; re-render only
       // when the preview actually CHANGED something (a cached preview
       // returns false, so this cannot loop).
-      void loadToolPreview(registry, pkg.id).then(changed => { if (changed) void render() })
+      void loadToolPreview(registry, pkg).then(changed => { if (changed) void render() })
       body.append(buildPackageRow(registry, pkg))
     }
   }
@@ -174,6 +197,10 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
       clearError()
       await removeRegistry(registry.manifestUrl)
       catalogs.delete(registry.manifestUrl)
+      // The registry may be re-added at the same URL with a changed
+      // manifest — drop ITS preview cache entries (not every registry's),
+      // or the re-added cards would show stale tools as verified.
+      clearToolPreviews(registry.manifestUrl)
     } catch (error) {
       showError(error)
     } finally {

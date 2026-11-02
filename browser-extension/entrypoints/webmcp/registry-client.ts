@@ -550,13 +550,22 @@ export async function fetchRegistryManifest(
  * the tool names; when the preview fails, the count stays UNVERIFIED and
  * the install verifies the manifest for real.
  *
+ * The preview manifest is validated against the SAME schema the installer
+ * applies (`validateManifest`, via a dynamic import that avoids the
+ * client→installer cycle) and must agree with the CATALOG entry's id and
+ * version: a manifest with a tools array that is otherwise malformed, or
+ * names a different package/version than the catalog lists, is not a
+ * verified preview — the installer would reject it at install time and the
+ * page must not mark those tools as verified (findings: "Invalid manifests
+ * appear verified", "Unverified tools appear verified").
+ *
  * The preview goes through the same mirror candidate list as the catalog:
  * a registry that only the CDN can reach must still preview.
  */
 export async function fetchPackageManifestPreview(
   registry: PackageRegistry,
   packageId: string,
-  options?: { fetchImpl?: typeof fetch; timeoutMs?: number; preference?: MirrorPreference },
+  options?: { fetchImpl?: typeof fetch; timeoutMs?: number; preference?: MirrorPreference; expectedVersion?: string },
 ): Promise<{ tools: Array<{ name: string; description: string }> }> {
   const doFetch = options?.fetchImpl ?? fetch
   const url = registryFileUrl(registry, `packages/${packageId}/manifest.json`)
@@ -575,14 +584,23 @@ export async function fetchPackageManifestPreview(
     if (!isPlainObject(data) || !Array.isArray(data.tools)) {
       throw new RegistryError('The package manifest lists no tools')
     }
-    const tools = (data.tools as unknown[])
-      .filter(isPlainObject)
-      .map(tool => ({
-        name: typeof tool.name === 'string' ? tool.name : '',
-        description: typeof tool.description === 'string' ? tool.description : '',
-      }))
-      .filter(tool => tool.name.length > 0)
-    return { tools }
+    // Schema-validate the manifest exactly like the installer will, and
+    // require the catalog's id/version agreement before trusting the tools.
+    const { validateManifest } = await import('@creatorweave/shared/webmcp-adapter')
+    let manifest: import('@creatorweave/shared/webmcp-adapter').WebMCPPackageManifest
+    try {
+      manifest = validateManifest(data, packageId)
+    } catch (error) {
+      throw new RegistryError(
+        `The package manifest is not valid: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    if (options?.expectedVersion !== undefined && manifest.version !== options.expectedVersion) {
+      throw new RegistryError(
+        `The package manifest version ${manifest.version} does not match the catalog version ${options.expectedVersion}`,
+      )
+    }
+    return { tools: manifest.tools.map(tool => ({ name: tool.name, description: tool.description })) }
   }
   const result = await fetchWithMirrorFallback(url, load, { preference: options?.preference })
   return result.value
