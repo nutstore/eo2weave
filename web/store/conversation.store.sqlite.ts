@@ -1063,6 +1063,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // a cached selection skips the read entirely and proves nothing
         // (issue #147, PR #149 review).
         let transcriptReadOk = false
+        // The failure id observed when this selection started (null when
+        // nothing was failing). Overlapping reads are reconciled against
+        // THIS snapshot below (PR #149 round-4 review): a successful read of
+        // conversation B must not resolve or clear a failure that belongs to
+        // conversation A while A's own read is still pending.
+        const failureOwnerAtReadStart = get().loadFailedConversationId
         if (conv && (conv.messages.length === 0 || conv.messagesLoaded === false)) {
           try {
             const msgRepo = getMessageRepository()
@@ -1122,30 +1128,42 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // sidebar keeps showing a failure banner for a conversation the user
         // left (issue #147, PR #149 review). A cached selection never reads,
         // so it neither clears the banner nor counts as recovery.
+        //
+        // Overlapping reads (PR #149 round-4 review): the clearing below
+        // compares against the id captured when THIS selection started, not
+        // the (possibly newer) current failure owner. If conversation A's
+        // read failed and B was selected while A's retry read was still in
+        // flight, B's success does not touch A's failure — A's own read then
+        // resolves it when it settles, because at that point the failure on
+        // record is still the one A observed at start.
         if (transcriptReadOk) {
-          // Capture the recorded failing id BEFORE clearing: the resolution
-          // check must compare against the id of the failure being resolved,
-          // not against the (already cleared) state.
-          const failedId = get().loadFailedConversationId
-          if (get().loadErrorScope === 'transcript') {
+          if (
+            get().loadErrorScope === 'transcript' &&
+            get().loadFailedConversationId === failureOwnerAtReadStart
+          ) {
+            // The failure on record is the SAME one this selection observed
+            // at start — no newer failure was recorded meanwhile. Clear the
+            // stale banner; resolve the persisted record only when this read
+            // actually re-read the conversation the failure names.
             set((state) => {
               state.loadError = null
               state.loadErrorScope = null
               state.loadFailedConversationId = null
             })
-          }
-          // The PERSISTED record is only marked resolved when the
-          // conversation NAMED BY THE FAILURE re-read successfully.
-          // Switching to a different, absent or cached conversation proves
-          // nothing about the failed one — flagging the record recovered
-          // there would let a still-broken conversation masquerade as
-          // healthy in Diagnostics (issue #147, PR #149 review). The id is
-          // passed as proof: a record naming a DIFFERENT conversation stays
-          // unresolved (PR #149 round-4 review) — belt-and-suspenders on top
-          // of the `failedId === id` check, covering legacy records written
-          // before `conversationId` was persisted.
-          if (failedId === id) {
-            markPersistedFailureResolved(id)
+            if (failureOwnerAtReadStart === id) {
+              markPersistedFailureResolved(id)
+            }
+          } else if (get().loadErrorScope !== 'transcript') {
+            // No transcript failure on record (or a newer one belonging to a
+            // different in-flight read, which is left alone above). A
+            // metadata-scoped or legacy record naming this conversation can
+            // still be resolved by this conversation's successful read.
+            if (
+              get().loadFailedConversationId === null ||
+              get().loadFailedConversationId === id
+            ) {
+              markPersistedFailureResolved(id)
+            }
           }
         }
         // NOTE: workspace switching is handled by syncFromRoute in App.tsx.

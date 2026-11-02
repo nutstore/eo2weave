@@ -447,3 +447,50 @@ describe('conversation.store — round-3 Sourcery fixes (issue #147, PR #149)', 
     expect(readPersistedRecord()?.message).toBe('metadata pass failed')
   })
 })
+
+describe('conversation.store — round-4 in-flight transcript read race (PRRT_kwDORoHsZ86yw1e0)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    findAllMetaMock.mockReset()
+    findByConversationMock.mockReset()
+    sessionStorage.clear()
+    resetStore()
+    mockContext.activeWorkspaceId = CONV_A
+    mockContext.workspaces = []
+    findAllMetaMock.mockResolvedValue([meta(CONV_A, 'first'), meta(CONV_B, 'second')])
+  })
+
+  it("B's later success does NOT resolve A's failure while A's own read is in flight", async () => {
+    // conv-a's transcript read FAILS.
+    findByConversationMock.mockRejectedValueOnce(new Error('conv-a failed'))
+    await useConversationStore.getState().loadFromDB()
+    expect(useConversationStore.getState().loadFailedConversationId).toBe(CONV_A)
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
+
+    // The user switches to conv-b while conv-a's (retry) read is still
+    // pending; conv-b's read succeeds first.
+    let resolveA!: (messages: unknown[]) => void
+    const pendingA = new Promise<unknown[]>((resolve) => {
+      resolveA = resolve as (m: unknown[]) => void
+    })
+    findByConversationMock.mockReturnValueOnce(pendingA) // conv-a retry (in flight)
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'm-b2', role: 'user', content: 'b2', timestamp: 5 },
+    ])
+
+    // Kick off conv-a's re-read (still pending), then complete conv-b.
+    const retryA = useConversationStore.getState().setActive(CONV_A)
+    await useConversationStore.getState().setActive(CONV_B)
+
+    // conv-b succeeded, but conv-a was NOT re-read successfully yet: the
+    // record must still be unresolved.
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
+
+    // Now conv-a's own read settles successfully — THIS resolves it.
+    resolveA([{ id: 'm-a3', role: 'user', content: 'a3', timestamp: 6 }])
+    await retryA
+    await vi.waitFor(() => {
+      expect(readPersistedRecord()?.resolved).toBe(true)
+    })
+  })
+})
