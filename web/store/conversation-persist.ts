@@ -28,13 +28,29 @@ let inflightLoadFromDB: Promise<void> | null = null
  * Run `fn` under the module-level inflight guard: while a wrapped load is in
  * flight, subsequent calls receive the same in-flight promise instead of
  * starting a duplicate load. The guard clears when the wrapped promise settles.
+ *
+ * `force` bypasses the guard: an explicit user retry must be able to start a
+ * FRESH load even while the previous one is still pending (e.g. wedged past
+ * the sidebar's 15s retry timeout) — reusing the stuck promise would make the
+ * Retry button a no-op until the original operation settles on its own
+ * (PR #149 round-4 review, "Retry cannot restart stuck load"). The stuck
+ * promise keeps running; its `.finally` below simply clears the slot it no
+ * longer owns only if it still owns it.
  */
-export async function withInflightLoad(fn: () => Promise<void>): Promise<void> {
-  if (inflightLoadFromDB) return inflightLoadFromDB
-  inflightLoadFromDB = fn().finally(() => {
-    inflightLoadFromDB = null
+export async function withInflightLoad(
+  fn: () => Promise<void>,
+  options?: { force?: boolean }
+): Promise<void> {
+  if (inflightLoadFromDB && !options?.force) return inflightLoadFromDB
+  const promise = fn().finally(() => {
+    // Only clear the slot if THIS load still owns it — a forced load may
+    // have replaced this one while it was still pending.
+    if (inflightLoadFromDB === promise) {
+      inflightLoadFromDB = null
+    }
   })
-  return inflightLoadFromDB
+  inflightLoadFromDB = promise
+  return promise
 }
 
 export async function waitForConversationMetaPersist(convId: string): Promise<void> {

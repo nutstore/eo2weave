@@ -14,6 +14,7 @@ let mockConversationState: {
   loadError: string | null
   loadErrorScope: 'metadata' | 'transcript' | null
   loadFromDB: ReturnType<typeof vi.fn>
+  retryLoadFromDB: ReturnType<typeof vi.fn>
 }
 
 vi.mock('@/store/conversation.store', () => ({
@@ -118,6 +119,9 @@ function emptyStore() {
     loadError: null,
     loadErrorScope: null,
     loadFromDB: vi.fn(async () => {}),
+    // The banner's Retry button calls the FORCED retry (it must restart a
+    // wedged load, not re-await it) — the mock mirrors that wiring.
+    retryLoadFromDB: vi.fn(async () => {}),
   }
 }
 
@@ -163,9 +167,12 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
     expect(banner.getAttribute('role')).toBe('alert')
     // The raw error message must be visible — not just a generic title.
     expect(screen.getByText('OPFS init failed')).toBeTruthy()
-    // Retry button re-runs loadFromDB.
+    // Retry button re-runs the load — through the FORCED retry entry point,
+    // so a wedged in-flight load is restarted rather than re-awaited
+    // (PR #149 round-4 review, "Retry cannot restart stuck load").
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(mockConversationState.loadFromDB).toHaveBeenCalledTimes(1)
+    expect(mockConversationState.retryLoadFromDB).toHaveBeenCalledTimes(1)
+    expect(mockConversationState.loadFromDB).toHaveBeenCalledTimes(0)
     // No conversation rows rendered while the error is present — neither the
     // row link (role="listitem" + workspaceLabel aria-label) nor its title.
     expect(screen.queryByRole('listitem', { name: 'Chat: My chat' })).toBeNull()
@@ -216,7 +223,7 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
     seedWorkspaces(['c1'])
 
     let resolveRetry!: () => void
-    mockConversationState.loadFromDB = vi.fn(
+    mockConversationState.retryLoadFromDB = vi.fn(
       () =>
         new Promise<void>((resolve) => {
           resolveRetry = resolve
@@ -233,7 +240,7 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(mockConversationState.loadFromDB).toHaveBeenCalledTimes(1)
+    expect(mockConversationState.retryLoadFromDB).toHaveBeenCalledTimes(1)
 
     // The retry is still in flight: the alert must stay visible and the
     // Retry button must show the "retrying" state.

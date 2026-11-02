@@ -784,7 +784,11 @@ export const Sidebar = memo(function Sidebar({
   const conversationLoadErrorScope = useConversationStore((s) => s.loadErrorScope)
   const suppressConversationList =
     conversationLoadError !== null && conversationLoadErrorScope !== 'transcript'
-  const reloadConversations = useConversationStore((s) => s.loadFromDB)
+  // Explicit retry: bypass the in-flight guard so a load wedged past the
+  // timeout below starts a FRESH run instead of re-awaiting the stuck
+  // promise, which would leave Retry a no-op (PR #149 round-4 review,
+  // "Retry cannot restart stuck load").
+  const retryConversationsLoad = useConversationStore((s) => s.retryLoadFromDB)
   // Keep the banner (and its disabled Retry button) mounted while a retry is
   // in flight — loadFromDB clears loadError only after the active transcript
   // read succeeded, so the empty list never flashes as a false "no history"
@@ -1399,7 +1403,7 @@ export const Sidebar = memo(function Sidebar({
                     // not leave the button disabled ("Retrying…") forever.
                     // Re-enable on settle OR after ~15s, whichever comes
                     // first (issue #147, PR #149 review).
-                    const settled = reloadConversations().catch(() => {})
+                    const settled = retryConversationsLoad().catch(() => {})
                     const timeout = new Promise<void>((resolve) => {
                       window.setTimeout(resolve, 15_000)
                     })

@@ -177,6 +177,11 @@ interface ConversationState {
 
   // Actions
   loadFromDB: () => Promise<void>
+  /** Force a brand-new loadFromDB run even while a previous one is still
+   * pending (in-flight guard bypassed). Used by the sidebar's Retry button:
+   * a load wedged past the retry timeout must not make Retry a no-op that
+   * merely re-awaits the stuck promise (PR #149 round-4 review). */
+  retryLoadFromDB: () => Promise<void>
   createNew: (title?: string, options?: { activate?: boolean }) => Conversation
   setActive: (id: string | null) => Promise<void>
   addMessage: (conversationId: string, message: Message) => void
@@ -532,77 +537,15 @@ function markPersistedFailureResolved(
   }
 }
 
-export const useConversationStoreSQLite = create<ConversationState>()(
-  immer((set, get) => ({
-    conversations: [],
-    activeConversationId: null,
-    loaded: false,
-    loadError: null,
-    loadErrorScope: null,
-    loadFailedConversationId: null,
-    suggestedFollowUps: new Map(),
-    cancelledRunIds: new Set(),
-    mountedConversations: new Map(),
-
-    activeConversation: () => {
-      const { conversations, activeConversationId } = get()
-      if (!activeConversationId) return null
-      return conversations.find((c) => c.id === activeConversationId) || null
-    },
-
-    getConversationStatus: (id: string) => {
-      const { conversations } = get()
-      const conv = conversations.find((c) => c.id === id)
-      return conv?.status || 'idle'
-    },
-
-    isConversationRunning: (id: string) => {
-      const status = get().getConversationStatus(id)
-      return status !== 'idle' && status !== 'error'
-    },
-
-    getRunningConversations: () => {
-      const { conversations } = get()
-      return conversations
-        .filter((c) => c.status !== 'idle' && c.status !== 'error')
-        .map((c) => c.id)
-    },
-
-    // Mount tracking actions
-    mountConversation: (id: string) => {
-      set((state) => {
-        const next = (state.mountedConversations.get(id) || 0) + 1
-        state.mountedConversations.set(id, next)
-        const conv = state.conversations.find((c) => c.id === id)
-        if (conv) {
-          conv.mountRefCount = next
-        }
-      })
-    },
-
-    unmountConversation: (id: string) => {
-      set((state) => {
-        const current = state.mountedConversations.get(id) || 0
-        const next = Math.max(0, current - 1)
-        if (next === 0) {
-          state.mountedConversations.delete(id)
-        } else {
-          state.mountedConversations.set(id, next)
-        }
-        const conv = state.conversations.find((c) => c.id === id)
-        if (conv) {
-          conv.mountRefCount = next
-        }
-      })
-    },
-
-    isConversationMounted: (id: string) => {
-      return (get().mountedConversations.get(id) || 0) > 0
-    },
-
-    loadFromDB: async () => {
-      return withInflightLoad(async () => {
-      const t0 = performance.now()
+/**
+ * The full load implementation, shared by `loadFromDB` (guarded by the
+ * in-flight dedupe) and `retryLoadFromDB` (forced, guard bypassed).
+ */
+async function runLoadFromDB(
+  set: (recipe: (state: ConversationState) => void) => void,
+  get: () => ConversationState
+): Promise<void> {
+  const t0 = performance.now()
       try {
         // Initialize SQLite first
         await initSQLiteDB()
@@ -983,8 +926,88 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           persistLoadErrorRecord(retryMessage, retryErr)
         }
       }
+}
+
+export const useConversationStoreSQLite = create<ConversationState>()(
+  immer((set, get) => ({
+    conversations: [],
+    activeConversationId: null,
+    loaded: false,
+    loadError: null,
+    loadErrorScope: null,
+    loadFailedConversationId: null,
+    suggestedFollowUps: new Map(),
+    cancelledRunIds: new Set(),
+    mountedConversations: new Map(),
+
+    activeConversation: () => {
+      const { conversations, activeConversationId } = get()
+      if (!activeConversationId) return null
+      return conversations.find((c) => c.id === activeConversationId) || null
+    },
+
+    getConversationStatus: (id: string) => {
+      const { conversations } = get()
+      const conv = conversations.find((c) => c.id === id)
+      return conv?.status || 'idle'
+    },
+
+    isConversationRunning: (id: string) => {
+      const status = get().getConversationStatus(id)
+      return status !== 'idle' && status !== 'error'
+    },
+
+    getRunningConversations: () => {
+      const { conversations } = get()
+      return conversations
+        .filter((c) => c.status !== 'idle' && c.status !== 'error')
+        .map((c) => c.id)
+    },
+
+    // Mount tracking actions
+    mountConversation: (id: string) => {
+      set((state) => {
+        const next = (state.mountedConversations.get(id) || 0) + 1
+        state.mountedConversations.set(id, next)
+        const conv = state.conversations.find((c) => c.id === id)
+        if (conv) {
+          conv.mountRefCount = next
+        }
       })
     },
+
+    unmountConversation: (id: string) => {
+      set((state) => {
+        const current = state.mountedConversations.get(id) || 0
+        const next = Math.max(0, current - 1)
+        if (next === 0) {
+          state.mountedConversations.delete(id)
+        } else {
+          state.mountedConversations.set(id, next)
+        }
+        const conv = state.conversations.find((c) => c.id === id)
+        if (conv) {
+          conv.mountRefCount = next
+        }
+      })
+    },
+
+    isConversationMounted: (id: string) => {
+      return (get().mountedConversations.get(id) || 0) > 0
+    },
+
+    loadFromDB: async () =>
+      withInflightLoad(() => runLoadFromDB(set, get)),
+
+    // Explicit user retry: bypass the in-flight guard so a load wedged past
+    // the sidebar's 15s retry timeout starts a FRESH run instead of handing
+    // back the stuck promise (PR #149 round-4 review, "Retry cannot restart
+    // stuck load"). The wedged run keeps running in the background — harmless
+    // (its late write is the same data a successful fresh run produces) — and
+    // withInflightLoad's ownership check makes it leave the new run's guard
+    // slot alone when it finally settles.
+    retryLoadFromDB: async () =>
+      withInflightLoad(() => runLoadFromDB(set, get), { force: true }),
 
     createNew: (title?: string, options?: { activate?: boolean }) => {
       const conversation = createConversation(title)
