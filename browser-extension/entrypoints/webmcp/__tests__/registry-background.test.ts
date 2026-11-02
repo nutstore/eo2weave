@@ -38,6 +38,40 @@ const notifications: string[] = []
   },
 }
 
+// The registry list handler reads the installed-package ids from the OPFS
+// adapter mount (navigator.storage.getDirectory). The fail-closed behaviour
+// (a listing failure throws instead of reading as "nothing installed")
+// means the handler needs a mount to list — an EMPTY in-memory one.
+Object.defineProperty(globalThis, 'navigator', {
+  value: {
+    storage: {
+      getDirectory: async () => {
+        const walk = (path: string[]): FileSystemDirectoryHandle => {
+          const children = new Map<string, FileSystemDirectoryHandle>()
+          const handle = {
+            kind: 'directory' as const,
+            name: path.at(-1) ?? '',
+            async getDirectoryHandle(name: string) {
+              let child = children.get(name)
+              if (!child) { child = walk([...path, name]); children.set(name, child) }
+              return child
+            },
+            async getFileHandle(name: string) {
+              const key = [...path, name].join('/')
+              throw Object.assign(new Error(`${key} not found`), { name: 'NotFoundError' })
+            },
+            async * entries() {
+              for (const name of children.keys()) yield [name, children.get(name)!]
+            },
+          }
+          return handle as unknown as FileSystemDirectoryHandle
+        }
+        return walk([])
+      },
+    },
+  },
+})
+
 const { createRegistryBackground } = await import('../registry-background')
 
 function handler(changed = vi.fn(async () => {})) {

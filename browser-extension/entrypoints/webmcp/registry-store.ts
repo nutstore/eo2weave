@@ -374,37 +374,51 @@ export async function uninstallRegistryPackage(packageId: string): Promise<void>
  * exactly the mismatch the collision check refuses, and reporting it under
  * the directory name would make the matching registry package appear not
  * installed while installing it is rejected).
+ *
+ * THROWS when the mount itself cannot be listed: mapping a listing failure
+ * to an empty set made the management page report every installed package
+ * as missing while the files were untouched (finding: "Storage errors hide
+ * installed state"). The background handler surfaces the error instead.
  */
 export async function listInstalledPackageIds(): Promise<Set<string>> {
-  try {
-    const provider = await getAdapterStorage()
-    const entries = await provider.readdir('')
-    const ids = new Set<string>()
-    for (const entry of entries) {
-      if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
-      const state = await readManifestId('webmcp', entry.name)
-      if (state === 'INVALID' || state === 'UNREADABLE') continue
-      if (state.id === entry.name) ids.add(state.id)
-    }
-    return ids
-  } catch {
-    // OPFS unavailable — nothing installed.
-    return new Set()
+  const provider = await getAdapterStorage()
+  const entries = await provider.readdir('')
+  const ids = new Set<string>()
+  for (const entry of entries) {
+    if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
+    const state = await readManifestId('webmcp', entry.name)
+    if (state === 'INVALID' || state === 'UNREADABLE') continue
+    if (state.id === entry.name) ids.add(state.id)
   }
+  return ids
 }
 
 /**
  * Activation state of one installed package, read from its `config.json` on
  * the mount (the same file the extension's opt-in enable writes). Absence
  * of a config (or of the package entirely) reads as disabled.
+ *
+ * THROWS on a read failure that is NOT a confirmed absence: mapping a
+ * transient config-read error to `disabled` made the management page
+ * report an ENABLED package as inactive (finding: "Storage errors hide
+ * installed state").
  */
 export async function readInstalledPackageActivation(packageId: string): Promise<'enabled' | 'disabled'> {
+  let bytes: Uint8Array
   try {
     const provider = await getAdapterStorage()
-    const bytes = await provider.readFile(`${packageId}/config.json`)
+    bytes = await provider.readFile(`${packageId}/config.json`)
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    const name = (error as { name?: string }).name
+    if (code === 'ENOENT' || name === 'NotFoundError') return 'disabled'
+    throw error
+  }
+  try {
     const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { activation?: unknown }
     return parsed.activation === 'enabled' ? 'enabled' : 'disabled'
   } catch {
+    // A corrupt config reads as disabled — the opt-in flow rewrites it.
     return 'disabled'
   }
 }
