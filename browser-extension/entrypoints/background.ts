@@ -124,7 +124,11 @@ import {
   setHostEnabled as setWebMCPHostEnabled,
   annotateToolsWithHostAuthorization,
 } from './webmcp/authorization'
-import { streamPluginDownload, assertValidMcpEndpointUrl } from './webmcp/plugin-download-transfer'
+import {
+  streamPluginDownload,
+  assertValidMcpEndpointUrl,
+  fetchMcpEndpointNoRedirects,
+} from './webmcp/plugin-download-transfer'
 import type { WebMCPPluginDownloadPlan, WebMCPDiscoveredTool } from './webmcp/types'
 import { registerTab, unregisterTab } from './webmcp/registry'
 import { getRegistryEntries, entriesToDiscoveredTools } from './webmcp/registry'
@@ -2597,11 +2601,14 @@ export default defineBackground(() => {
           const { url, method = 'POST', headers = {}, body = null, timeoutMs } = message;
           try {
             const endpoint = assertValidMcpEndpointUrl(String(url || ''));
-            const resp = await fetchWithTimeout(endpoint.toString(), {
+            // SECURITY: redirects are re-validated per hop (fetch's default
+            // redirect-following would bypass the SSRF checks above — the
+            // same class fixed for plugin downloads in review round 7/8).
+            const resp = await fetchMcpEndpointNoRedirects(endpoint.toString(), {
               method,
               headers,
               body,
-              timeout: typeof timeoutMs === 'number' ? timeoutMs : CONFIG.TIMEOUT_MS,
+              signal: AbortSignal.timeout(typeof timeoutMs === 'number' ? timeoutMs : CONFIG.TIMEOUT_MS),
             });
             const text = await resp.text();
             const responseHeaders: Record<string, string> = {};
@@ -3380,11 +3387,11 @@ export default defineBackground(() => {
           }, streamTimeoutMs);
 
           try {
-            const resp = await fetchWithTimeout(url, {
+            const resp = await fetchMcpEndpointNoRedirects(assertValidMcpEndpointUrl(String(url || '')).href, {
               method,
               headers,
               body,
-              timeout: streamTimeoutMs,
+              signal: AbortSignal.timeout(streamTimeoutMs),
             });
 
             const responseHeaders: Record<string, string> = {};

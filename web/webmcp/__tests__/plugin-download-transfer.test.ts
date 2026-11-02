@@ -312,4 +312,11 @@ describe('MCP endpoint URL validation (mcp_proxy_fetch / _stream)', () => {
     // but the mapped PRIVATE form below must stay refused.
     expect(() => assertValidMcpEndpointUrl('http://[::ffff:192.168.1.1]/mcp')).toThrow()
   })
+
+  it('refuses the unspecified address :: (routes to this host like loopback, but is not loopback)', () => {
+    expect(() => assertValidMcpEndpointUrl('http://[::]/mcp')).toThrow()
+    expect(() => assertValidMcpEndpointUrl('http://[0:0:0:0:0:0:0:0]/mcp')).toThrow()
+    // Invariant sanity: the true loopback ::1 must remain allowed.
+    expect(() => assertValidMcpEndpointUrl('http://[::1]/mcp')).not.toThrow()
+  })
 })

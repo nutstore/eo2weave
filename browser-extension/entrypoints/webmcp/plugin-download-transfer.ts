@@ -148,9 +148,11 @@ function isForbiddenIpLiteral(hostname: string, opts: { allowLoopback: boolean }
     if (opts.allowLoopback) {
       // Loopback exemptions apply to the plain forms only; an IPv4-mapped or
       // NAT64-embedded loopback still routes as its embedded IPv4 address.
-      const allZero = groups.every((g) => g === 0)
+      // NOTE: the plain unspecified address :: is NOT exempted — it routes to
+      // "this host" on many stacks just like a loopback, so only the true
+      // loopback ::1 may pass (it is handled by isForbiddenIPv6 below).
       const isLoopback = groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1
-      if (allZero || isLoopback) return false
+      if (isLoopback) return false
     }
     return isForbiddenIPv6(groups)
   }
@@ -204,6 +206,57 @@ export function assertValidMcpEndpointUrl(rawUrl: string): URL {
     throw new Error(`MCP endpoint host is not allowed: ${hostname}`)
   }
   return url
+}
+
+const MCP_MAX_REDIRECTS = 5
+
+/**
+ * Fetch an already-validated MCP endpoint URL WITHOUT following redirects.
+ *
+ * Same discipline as fetchPublicDownload: every 3xx hop is re-validated with
+ * assertValidMcpEndpointUrl before the next privileged request, capped at 5
+ * hops. Without this, fetch's default redirect-following would bounce the
+ * privileged background request onto ANY target an attacker-controlled (or
+ * compromised) MCP endpoint names in its Location header — including the
+ * intranet/loopback-adjacent hosts assertValidMcpEndpointUrl refuses
+ * (#148 review round 7 / round 8, same class as the download path).
+ *
+ * In Chrome a 3xx met with redirect: 'manual' arrives as an opaque-redirect
+ * filtered response (status 0, empty header list), so the hop loop is
+ * unreachable there and the fetch refuses instead — an unfollowed redirect
+ * can never reach a non-validated endpoint.
+ */
+export async function fetchMcpEndpointNoRedirects(
+  rawUrl: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  let currentUrl = rawUrl
+  for (let hops = 0; hops <= MCP_MAX_REDIRECTS; hops++) {
+    const validated = assertValidMcpEndpointUrl(currentUrl)
+    const response = await fetch(validated.href, {
+      ...init,
+      redirect: 'manual',
+    })
+    if (response.status >= 300 && response.status < 400) {
+      if (hops === MCP_MAX_REDIRECTS) {
+        throw new Error(`MCP endpoint exceeded ${MCP_MAX_REDIRECTS} redirects`)
+      }
+      const location = response.headers.get('location')
+      if (!location) {
+        throw new Error(`MCP endpoint redirect (${response.status}) missing Location header`)
+      }
+      // Resolve relative Location values against the current URL, then the
+      // loop head re-validates the absolute target before it is fetched.
+      currentUrl = new URL(location, validated).href
+      continue
+    }
+    if (response.type === 'opaqueredirect') {
+      throw new Error('MCP endpoint URL redirected; redirects are not followed by the MCP proxy')
+    }
+    return response
+  }
+  // Unreachable: the loop either returns or throws on hop MCP_MAX_REDIRECTS.
+  throw new Error('MCP endpoint redirect loop')
 }
 
 /**
