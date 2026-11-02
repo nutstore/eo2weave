@@ -23,6 +23,7 @@ import {
   RegistryError,
   type PackageRegistry,
   type RegistryManifest,
+  type RegistryManifestFile,
   type RegistryManifestPackage,
 } from './registry-client'
 import { installPackage, uninstallPackage } from './package-installer'
@@ -225,8 +226,12 @@ async function getMountProvider(mount: string): Promise<FsProvider> {
  * replace different contents"): two overlapping installs of the same
  * id AND version with DIFFERENT contents both pass a version-only check
  * and the later transaction silently replaces the earlier package. When
- * `expectedManifestSha256` is given, the on-disk manifest's sha256 must
- * match the incoming catalog entry's manifest checksum too — content the
+ * `expectedContentFingerprint` is given, the on-disk package must hash to
+ * the same whole-content digest (EVERY catalog-listed file, not just the
+ * manifest — finding: "Same version replaces different package contents":
+ * two registries can ship the same id+version with identical manifests but
+ * different tool sources, and a manifest-only checksum let the later
+ * install pass and replace the earlier package's files) — content the
  * catalog author did not publish is never overwritten by a same-version
  * install.
  *
@@ -237,7 +242,8 @@ async function getMountProvider(mount: string): Promise<FsProvider> {
 export async function findPackageIdCollision(
   packageId: string,
   expectedVersion?: string,
-  expectedManifestSha256?: string,
+  expectedContentFingerprint?: string,
+  collisionFingerprintFiles?: RegistryManifestFile[],
 ): Promise<string | null> {
   const mounts = ['webmcp', 'builtin-webmcp']
   for (const mount of mounts) {
@@ -300,16 +306,19 @@ export async function findPackageIdCollision(
           // version installs replace different contents"). Two overlapping
           // installs of the same id+version with different files would
           // otherwise pass this check and the later one silently replace
-          // the earlier package. The catalog entry's manifest.json
-          // checksum is the reference — the on-disk manifest must hash to
-          // the same value for this to count as a genuine reinstall.
-          if (expectedManifestSha256 !== undefined) {
-            const installedSha = await readManifestSha256(mount, entry.name)
-            if (installedSha === 'UNREADABLE') {
-              return `The manifest of ${entry.name} on ${mount} could not be read; try again later`
+          // the earlier package. The WHOLE-CONTENT fingerprint (every
+          // catalog-listed file) is the reference — the on-disk package
+          // must hash to the same value for this to count as a genuine
+          // reinstall; a manifest-only checksum was not enough because a
+          // manifest does not hash its own file contents (finding: "Same
+          // version replaces different package contents").
+          if (expectedContentFingerprint !== undefined) {
+            const installedFingerprint = await readInstalledPackageFingerprint(mount, packageId, collisionFingerprintFiles ?? [])
+            if (installedFingerprint === 'UNREADABLE') {
+              return `The files of ${entry.name} on ${mount} could not be read; try again later`
             }
-            if (installedSha !== expectedManifestSha256.toLowerCase()) {
-              return `${entry.name} on ${mount} already holds version ${expectedVersion} with different contents (manifest checksum ${installedSha ?? 'unknown'}); uninstall it first if you want to replace it`
+            if (installedFingerprint !== expectedContentFingerprint) {
+              return `${entry.name} on ${mount} already holds version ${expectedVersion} with different contents (content fingerprint ${installedFingerprint === 'INVALID' ? 'unavailable' : installedFingerprint}); uninstall it first if you want to replace it`
             }
           }
         }
@@ -344,21 +353,99 @@ async function readManifestVersion(mount: string, directory: string): Promise<st
 }
 
 /**
- * The sha256 of a directory's manifest BYTES, with the same three-state
- * read contract as `readManifestId`. A manifest that parses but hashes
- * differently from the catalog entry marks same-version content drift.
+ * A SHORT digest over every catalog-listed file of an installed package —
+ * the CONTENT fingerprint of a same-version reinstall.
+ *
+ * The manifest.json checksum alone is not one (finding: "Same version
+ * replaces different package contents"): two registries can ship the same
+ * id+version with BYTE-IDENTICAL manifests but different tool sources —
+ * the manifest does not hash its own file contents — so a manifest-only
+ * comparison let the later install pass the collision check and silently
+ * replace the earlier package's files. Hashing every catalog-listed file
+ * binds the fingerprint to the whole package the catalog author published.
+ * Deterministic file order, an unambiguous 0x separator and a length
+ * prefix keep the digest collision-free.
+ *
+ * `expectedFiles` carries the incoming catalog's file list (the reference
+ * path set); the installed tree is read at exactly those paths — an
+ * installed package missing one of them (or holding a file that no longer
+ * parses) reads as a fingerprint mismatch ('INVALID'), a TRANSIENT read
+ * failure as 'UNREADABLE' (fail closed).
  */
-async function readManifestSha256(mount: string, directory: string): Promise<string | 'INVALID' | 'UNREADABLE'> {
+async function readInstalledPackageFingerprint(mount: string, packageId: string, expectedFiles: RegistryManifestFile[]): Promise<string | 'INVALID' | 'UNREADABLE'> {
+  const provider = await getMountProvider(mount)
+  const files = [...expectedFiles].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  const parts: Uint8Array[] = []
+  for (const file of files) {
+    const local = file.path.replace(/^packages\/[^/]+\//, '')
+    try {
+      const bytes = await provider.readFile(`${packageId}/${local}`)
+      const header = new TextEncoder().encode(`${file.path}:${bytes.length}:`)
+      parts.push(header, bytes, new Uint8Array([0]))
+    } catch (error) {
+      const code = (error as { code?: string }).code
+      const name = (error as { name?: string }).name
+      if (code === 'ENOENT' || name === 'NotFoundError') return 'INVALID'
+      return 'UNREADABLE'
+    }
+  }
+  const total = parts.reduce((sum, part) => sum + part.length, 0)
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const part of parts) {
+    merged.set(part, offset)
+    offset += part.length
+  }
+  const { sha256Hex } = await import('./package-installer')
+  return sha256Hex(merged)
+}
+
+/**
+ * The incoming catalog entry's content fingerprint, over the same
+ * deterministic encoding as `readInstalledPackageFingerprint` — but from
+ * the catalog's EXPECTED sha256 per file, so the comparison never needs to
+ * hash the incoming downloads again (the installer verified them already).
+ */
+async function registryPackageFingerprint(files: RegistryManifestFile[]): Promise<string> {
+  const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  const parts: Uint8Array[] = []
+  for (const file of sorted) {
+    const sha = file.sha256.toLowerCase()
+    const hexBytes = new Uint8Array(sha.length / 2)
+    for (let index = 0; index < hexBytes.length; index++) hexBytes[index] = Number.parseInt(sha.slice(index * 2, index * 2 + 2), 16)
+    const header = new TextEncoder().encode(`${file.path}:${hexBytes.length}:`)
+    parts.push(header, hexBytes, new Uint8Array([0]))
+  }
+  const total = parts.reduce((sum, part) => sum + part.length, 0)
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const part of parts) {
+    merged.set(part, offset)
+    offset += part.length
+  }
+  const { sha256Hex } = await import('./package-installer')
+  return sha256Hex(merged)
+}
+
+/**
+ * Whether the package directory is currently PRESENT on the mount.
+ * `null` when the answer is INDETERMINATE (a transient stat failure).
+ *
+ * The install flow probes the mount BEFORE the download and re-checks
+ * INSIDE the lock: a directory that existed before but is gone under the
+ * lock was removed by a concurrent uninstall — the install must not
+ * resurrect it (finding: "Uninstalled package reappears").
+ */
+async function presenceOfInstalledPackage(packageId: string): Promise<boolean | null> {
+  const provider = await getAdapterStorage()
   try {
-    const provider = await getMountProvider(mount)
-    const bytes = await provider.readFile(`${directory}/manifest.json`)
-    const { sha256Hex } = await import('./package-installer')
-    return await sha256Hex(bytes)
+    await provider.stat(packageId)
+    return true
   } catch (error) {
     const code = (error as { code?: string }).code
     const name = (error as { name?: string }).name
-    if (code === 'ENOENT' || name === 'NotFoundError') return 'INVALID'
-    return 'UNREADABLE'
+    if (code === 'ENOENT' || name === 'NotFoundError') return false
+    return null
   }
 }
 
@@ -377,9 +464,18 @@ export async function installRegistryPackage(
   registry: PackageRegistry,
   pkg: RegistryManifestPackage,
 ): Promise<{ filesWritten: number }> {
-  // The catalog entry's manifest.json checksum doubles as the CONTENT
-  // fingerprint for the same-version reinstall check below.
-  const manifestSha = pkg.files.find(file => file.path === `packages/${pkg.id}/manifest.json`)?.sha256
+  // The WHOLE-CONTENT fingerprint (every catalog-listed file) doubles as the
+  // same-version reinstall check below — the manifest checksum alone was not
+  // enough because a manifest does not hash its own file contents (finding:
+  // "Same version replaces different package contents").
+  const contentFingerprint = await registryPackageFingerprint(pkg.files)
+  // Probe the mount BEFORE the download (finding: "Uninstalled package
+  // reappears"): the presence bit fences a download that outlives the
+  // user's uninstall — a directory that existed now but is gone under the
+  // lock means a concurrent removal won the race and the install must not
+  // write the package back. An INDETERMINATE probe (null) falls through to
+  // the under-lock re-check.
+  const presenceBefore = await presenceOfInstalledPackage(pkg.id)
   const collision = await findPackageIdCollision(pkg.id)
   if (collision) {
     throw new Error(
@@ -387,7 +483,7 @@ export async function installRegistryPackage(
     )
   }
   const provider = await getAdapterStorage()
-  return installPackage(registry, pkg, provider, undefined, async lockSignal => {
+  return installPackage(registry, pkg, provider, { presenceBefore }, async lockSignal => {
     // Runs while the installer holds the per-package cross-context lock.
     // `findPackageIdCollision` already allows the one legitimate shape
     // (the same package re-installed over itself), so ANY non-null result
@@ -399,7 +495,21 @@ export async function installRegistryPackage(
     if (lockSignal.aborted) {
       throw new Error(`The install of ${pkg.id} was aborted: the package lock was lost mid-transaction`)
     }
-    const underLock = await findPackageIdCollision(pkg.id, pkg.version, manifestSha)
+    // REMOVAL FENCE (finding: "Uninstalled package reappears"): a directory
+    // that existed before the download but is GONE under the lock was
+    // removed by a concurrent uninstall that won the lock race — the
+    // installer aborts such a transaction before writing. Only a
+    // CONFIRMED pre-download presence gates here: `false` is the normal
+    // first install, and an INDETERMINATE probe is not evidence of a
+    // removal (the collision check below fails closed on unreadable
+    // state anyway).
+    if (presenceBefore === true) {
+      const presenceUnderLock = await presenceOfInstalledPackage(pkg.id)
+      if (presenceUnderLock === false) {
+        throw new Error(`The install of ${pkg.id} was cancelled: the package was removed while it was being prepared`)
+      }
+    }
+    const underLock = await findPackageIdCollision(pkg.id, pkg.version, contentFingerprint, pkg.files)
     if (underLock) {
       throw new Error(
         `Cannot install ${pkg.id}: ${underLock}. Remove or rename it first — installing would replace it.`,
