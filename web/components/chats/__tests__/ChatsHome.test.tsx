@@ -13,6 +13,8 @@ const t = (key: string, params?: Record<string, string | number>) => {
     'chats.home.openChat': '打开对话',
     'chats.home.messageCount': '{count} 条消息',
     'chats.home.backToProjects': '返回项目',
+    'chats.home.loadError': '对话列表加载失败',
+    'chats.home.retry': '重试',
   }
   let text = messages[key] ?? key
   if (params) {
@@ -48,6 +50,45 @@ const chat = (overrides: Partial<StandaloneChatListItem>): StandaloneChatListIte
 describe('ChatsHome — standalone chats home', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('renders the load-error state with retry when loadError is set (round 7)', async () => {
+    const onRetry = vi.fn()
+    const onCreate = vi.fn()
+    render(
+      <ChatsHome
+        chats={[]}
+        isLoading={false}
+        loadError="worker dead"
+        onRetry={onRetry}
+        onCreateChat={onCreate}
+        onOpenChat={vi.fn()}
+      />,
+    )
+
+    // role=alert surfaces the failure instead of a silent spinner...
+    expect(screen.getByRole('alert')).toHaveTextContent('对话列表加载失败')
+    expect(screen.getByRole('alert')).toHaveTextContent('worker dead')
+    // ...creation stays available (a new chat does not depend on the failed read)...
+    expect(screen.getByTestId('create-standalone-chat')).not.toBeDisabled()
+    // ...and Retry re-runs the load.
+    await userEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the spinner (not the error) while loading, even with a stale loadError', () => {
+    render(
+      <ChatsHome
+        chats={[]}
+        isLoading
+        loadError="worker dead"
+        onRetry={vi.fn()}
+        onCreateChat={vi.fn()}
+        onOpenChat={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toBeInTheDocument()
   })
 
   it('renders title, subtitle and the big create button', () => {

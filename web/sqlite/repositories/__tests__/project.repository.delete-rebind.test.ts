@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProjectRepository } from '../project.repository'
+import { ProjectRepository } from '@/sqlite/repositories/project.repository'
 
 // Round-6 finding: `deleteProjectIncludingHostRebind` used to take a
 // CALLER-SNAPSHOTTED list of workspace IDs and rebind each row by id, with a
@@ -26,7 +26,7 @@ const transaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) => Pro
   })
 }))
 
-vi.mock('../../sqlite-database', () => ({
+vi.mock('@/sqlite/sqlite-database', () => ({
   getSQLiteDB: () => ({ transaction }),
   generateId: (prefix: string) => `${prefix}-test`,
 }))

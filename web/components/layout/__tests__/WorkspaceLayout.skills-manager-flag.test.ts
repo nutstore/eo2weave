@@ -17,6 +17,13 @@ import { render, screen } from '@testing-library/react'
 //    effect that consumes the flag is removed or broken.
 
 // ── Heavy child components: trivial stubs ────────────────────────────────────
+// WorkspaceLayout calls useRouter() for the standalone-chats entry; without
+// an app-router provider the real hook throws an invariant in happy-dom.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), prefetch: vi.fn() }),
+  usePathname: () => '/projects',
+  useSearchParams: () => new URLSearchParams(),
+}))
 vi.mock('@/components/layout/TopBar', () => ({ TopBar: () => null }))
 vi.mock('@/components/layout/Sidebar', () => ({ Sidebar: () => null }))
 vi.mock('@/components/layout/FolderPermissionBanner', () => ({

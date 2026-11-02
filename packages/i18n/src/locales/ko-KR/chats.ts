@@ -9,5 +9,7 @@ export const chats = {
         openChat: "대화 열기",
         messageCount: "메시지 {count}개",
         backToProjects: "프로젝트로 돌아가기",
+        loadError: "대화 목록을 불러오지 못했습니다",
+        retry: "다시 시도",
     },
 } as const

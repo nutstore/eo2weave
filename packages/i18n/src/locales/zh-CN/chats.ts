@@ -9,5 +9,7 @@ export const chats = {
         openChat: "打开对话",
         messageCount: "{count} 条消息",
         backToProjects: "返回项目",
+        loadError: "对话列表加载失败",
+        retry: "重试",
     },
 } as const

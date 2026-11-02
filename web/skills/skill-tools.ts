@@ -161,7 +161,13 @@ export const readSkillExecutor: ToolExecutor = async (
   const skill = manager.getSkillByName(skillName)
 
   if (!skill) {
-    const availableSkills = manager.getEnabledSkillNames()
+    // Direct-mode filter (Sourcery round 7): the not-found hint must not
+    // reveal project-skill names to a standalone chat — the full list spans
+    // all sources while project-skill metadata is withheld in direct mode,
+    // so the available list honors the same boundary.
+    const availableSkills = _context.directMode === true
+      ? manager.getEnabledSkillNames({ excludeSources: ['project'] })
+      : manager.getEnabledSkillNames()
     return toolErrorJson('read_skill', 'skill_not_found', `Skill '${skill_name}' not found. Available skills: ${availableSkills.join(', ')}`)
   }
 

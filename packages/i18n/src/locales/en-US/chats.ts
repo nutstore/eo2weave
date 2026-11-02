@@ -9,5 +9,7 @@ export const chats = {
         openChat: "Open chat",
         messageCount: "{count} messages",
         backToProjects: "Back to projects",
+        loadError: "Chats could not be loaded",
+        retry: "Retry",
     },
 } as const

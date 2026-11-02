@@ -36,7 +36,8 @@ vi.mock('@/skills/skill-manager', () => ({
     })),
     getSkillByName: (name: string) =>
       state.skills.find((s) => s.name.toLowerCase() === name.trim().toLowerCase()) ?? null,
-    getEnabledSkillNames: () => state.skills.filter((s) => s.enabled).map((s) => s.name),
+    getEnabledSkillNames: (options?: { excludeSources?: string[] }) =>
+      state.skills.filter((s) => s.enabled && !(options?.excludeSources?.includes(s.source))).map((s) => s.name),
     getSkillResources: async () => [],
   }),
 }))
@@ -114,6 +115,22 @@ describe('read_skill / read_skill_resource direct-mode guard', () => {
     const parsed = JSON.parse(raw) as { ok: boolean; error?: { code?: string } }
     expect(parsed.ok).toBe(false)
     expect(parsed.error?.code).toBe('direct_mode_forbidden')
+  })
+
+  it('read_skill not-found hint withholds project-skill names in direct mode (round 7)', async () => {
+    state.skills = [skill({ id: 'project:root:.skills/secret', name: 'project-skill', source: 'project' })]
+    const raw = await readSkillExecutor({ skill_name: 'missing-skill' }, directContext)
+    const parsed = JSON.parse(raw) as { ok: boolean; error?: { message?: string } }
+    expect(parsed.ok).toBe(false)
+    expect(parsed.error?.message).not.toContain('project-skill')
+  })
+
+  it('read_skill not-found hint keeps project skills in project mode (zero drift)', async () => {
+    state.skills = [skill({ id: 'project:root:.skills/pub', name: 'project-skill', source: 'project' })]
+    const raw = await readSkillExecutor({ skill_name: 'missing-skill' }, projectContext)
+    const parsed = JSON.parse(raw) as { ok: boolean; error?: { message?: string } }
+    expect(parsed.ok).toBe(false)
+    expect(parsed.error?.message).toContain('project-skill')
   })
 
   it('read_skill still serves user skills in direct mode (retained capability)', async () => {

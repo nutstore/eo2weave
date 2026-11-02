@@ -65,10 +65,19 @@ export default function ChatsHomeView() {
     router.push(`/chats/${conv.id}`)
   }, [createNew, router, t])
 
+  // Retry re-runs loadFromDB explicitly: the load-failed path keeps
+  // loaded=false + loadError (so the WorkspaceLayout-style effect re-fires on
+  // the next store change), but a user-visible Retry must not wait for that.
+  const handleRetry = useCallback(() => {
+    loadFromDB()
+  }, [loadFromDB])
+
   return (
     <ChatsHome
       chats={chats}
-      isLoading={!loaded}
+      isLoading={!loaded && !loadError}
+      loadError={loadError}
+      onRetry={loadError ? handleRetry : undefined}
       onCreateChat={handleCreateChat}
       onOpenChat={(id: string) => router.push(`/chats/${id}`)}
     />

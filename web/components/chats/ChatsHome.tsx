@@ -30,6 +30,9 @@ export interface StandaloneChatListItem {
 interface ChatsHomeProps {
   chats: StandaloneChatListItem[]
   isLoading?: boolean
+  /** Set when the initial list load failed — renders the error + retry state. */
+  loadError?: string | null
+  onRetry?: () => void
   onCreateChat: () => void
   onOpenChat: (id: string) => void
 }
@@ -85,7 +88,7 @@ const ChatRow = memo(function ChatRow({
  * (kind='direct'). P3: the site assistant will be pinned above the list
  * (TODO below).
  */
-export function ChatsHome({ chats, isLoading = false, onCreateChat, onOpenChat }: ChatsHomeProps) {
+export function ChatsHome({ chats, isLoading = false, loadError = null, onRetry, onCreateChat, onOpenChat }: ChatsHomeProps) {
   const t = useT()
 
   return (
@@ -104,7 +107,11 @@ export function ChatsHome({ chats, isLoading = false, onCreateChat, onOpenChat }
           </p>
         </header>
 
-        {/* Primary create action */}
+        {/* Primary create action — creation stays available even when the
+            initial list load failed (Sourcery round 7: "avoid indefinitely
+            disabling chat creation solely because the initial list load
+            failed"): a new conversation persists on its own and does not
+            depend on the failed list read. */}
         <button
           type="button"
           data-testid="create-standalone-chat"
@@ -120,7 +127,27 @@ export function ChatsHome({ chats, isLoading = false, onCreateChat, onOpenChat }
 
         {/* Chat list */}
         <section aria-label={t('chats.home.title')} className="space-y-2">
-          {isLoading ? (
+          {loadError && !isLoading ? (
+            <div
+              role="alert"
+              className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-border/60 bg-card px-6 py-12 text-center"
+            >
+              <MessageCircle className="h-8 w-8 text-muted-foreground/50" aria-hidden />
+              <p className="text-sm text-muted-foreground">
+                {t('chats.home.loadError')}
+                <span className="mt-1 block text-xs text-muted-foreground/70">{loadError}</span>
+              </p>
+              {onRetry && (
+                <BrandButton
+                  variant="outline"
+                  className="text-xs"
+                  onClick={onRetry}
+                >
+                  {t('chats.home.retry')}
+                </BrandButton>
+              )}
+            </div>
+          ) : isLoading ? (
             <div
               role="status"
               aria-live="polite"
