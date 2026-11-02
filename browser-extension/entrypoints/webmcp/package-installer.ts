@@ -991,7 +991,19 @@ export async function uninstallPackage(packageId: string, provider: FsProvider):
     // (it was recorded before the failure): it fences any in-flight
     // install started before this removal, and it expires by TTL once no
     // pending install fence needs it.
-    await removeMissingOk(provider, `.${packageId}.previous`, lockSignal).catch(() => {})
+    const backup = `.${packageId}.previous`
+    try {
+      await removeMissingOk(provider, backup, lockSignal)
+    } catch {
+      try {
+        await removeMissingOk(provider, backup, lockSignal)
+      } catch (error) {
+        throw new PackageInstallError(
+          `The package ${packageId} was removed but its preserved backup (${backup}) could not be deleted; a later install could restore it — retry the uninstall: ${error instanceof Error ? error.message : String(error)}`,
+          'STORAGE_FAILED',
+        )
+      }
+    }
   })
 }
 
@@ -1042,3 +1054,15 @@ export async function fetchRegistryManifestCapped(
 /** Re-exported so callers can classify failures without importing two modules. */
 export { RegistryError, isNotFoundError, mirrorCandidates, resolveMirrorPreference }
 export type { MirrorPreference }
+
+/**
+ * TEST-ONLY: clear the module-level uninstall-intent state. Tests that run
+ * under fake timers record intents against a clock that ends up AHEAD of
+ * the real one; without this reset those records read as "uninstalled in
+ * the future" and spuriously fence later tests' installs. Production
+ * expires records by TTL instead — this export never runs there.
+ */
+export function resetUninstallIntentStateForTest(): void {
+  uninstallIntents.clear()
+  pendingFenceInstalls.clear()
+}

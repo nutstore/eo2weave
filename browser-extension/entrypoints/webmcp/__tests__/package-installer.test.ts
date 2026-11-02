@@ -39,7 +39,7 @@ function installChromeStorageMock(): void {
 
 installChromeStorageMock()
 
-const { installPackage, uninstallPackage, sha256Hex, PackageInstallError } = await import('../package-installer')
+const { installPackage, uninstallPackage, sha256Hex, PackageInstallError, resetUninstallIntentStateForTest } = await import('../package-installer')
 const { registryFromManifestUrl, MAX_PACKAGE_FILES } = await import('../registry-client')
 type RegistryManifestPackage = import('../registry-client').RegistryManifestPackage
 
@@ -541,6 +541,57 @@ describe('installPackage (extension side)', () => {
       resetUninstallIntentStateForTest()
       vi.useRealTimers()
     }
+  })
+
+  it('does NOT report a clean uninstall when the preserved backup cannot be removed', async () => {
+    // MEDIUM ("Uninstall succeeds while its backup survives"): the backup
+    // removal failure was swallowed, the uninstall reported success while
+    // `.${id}.previous` stayed on the mount, and a later failed install's
+    // recovery gate restored it — the uninstalled package resurrected. The
+    // failure must surface so the caller can retry.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    // The intent map is module state that earlier tests in this file wrote
+    // against a DIFFERENT clock (fake timers); those stale records would
+    // read as "uninstalled in the future" and spuriously fence THIS
+    // install. Clear them (production expires records by TTL instead).
+    resetUninstallIntentStateForTest()
+    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+    await provider.mkdir('.com.example.pkg.previous', { recursive: true })
+    await provider.writeFile('.com.example.pkg.previous/manifest.json', new TextEncoder().encode('{}'))
+
+    const failingRemove = provider.remove.bind(provider)
+    provider.remove = (async (path: string, options?: { recursive?: boolean }) => {
+      if (path === '.com.example.pkg.previous') throw new Error('EIO: simulated backup removal failure')
+      return failingRemove(path, options)
+    }) as typeof provider.remove
+
+    await expect(uninstallPackage('com.example.pkg', provider)).rejects.toThrow(/preserved backup .* could not be deleted/)
+    // The live directory IS gone; the backup remains (its removal failure
+    // was surfaced, so no caller mistakes the package for cleanly removed).
+    await expect(provider.stat('com.example.pkg')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(provider.stat('.com.example.pkg.previous')).resolves.toBeTruthy()
+  })
+
+  it('installs a package whose only uninstall intent predates the install (no stale fence)', async () => {
+    // GUARD for the intent fence: an intent that PREDATES the install's
+    // start must not abort a legitimate reinstall — the fence compares
+    // `intentAt >= startedAt`, so an old record (in production retired by
+    // the TTL prune) stays inert. This exercises the OTHER side of the T3
+    // change: pruning keeps only records that a pending fence still needs,
+    // never records that would over-fence fresh installs.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    // An uninstall records the intent NOW; the fresh install afterwards
+    // starts AFTER that record and must succeed.
+    await uninstallPackage('com.example.pkg', provider)
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .resolves.toBeTruthy()
+    expect(await listFiles(provider, '')).toEqual(['com.example.pkg'])
   })
 
   it('aborts an install whose id was uninstalled after the install started', async () => {
