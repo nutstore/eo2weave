@@ -123,8 +123,15 @@ function isForbiddenIPv6(groups: number[]): boolean {
     const lo = groups[7]!
     return isForbiddenIPv4([Math.floor(hi / 256), hi % 256, Math.floor(lo / 256), lo % 256])
   }
-  // NAT64 well-known prefix 64:ff9b::/96 embeds an IPv4 target — same rules.
-  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every(isZero)) {
+  // NAT64 well-known prefix 64:ff9b::/96 and the RFC 8215 local-use prefix
+  // 64:ff9b:1::/96 both embed an IPv4 target — same rules. The local-use
+  // variant routes through a LOCAL NAT64 gateway, so an attacker embedding a
+  // private IPv4 there reaches intranet endpoints exactly like the
+  // well-known prefix.
+  if (
+    (groups[0] === 0x64 && groups[1] === 0xff9b && (groups[2] === 0 || groups[2] === 1)) &&
+    groups.slice(3, 6).every(isZero)
+  ) {
     const hi = groups[6]!
     const lo = groups[7]!
     return isForbiddenIPv4([Math.floor(hi / 256), hi % 256, Math.floor(lo / 256), lo % 256])
@@ -197,12 +204,18 @@ export function assertPublicHttpsDownloadUrl(rawUrl: string): URL {
 }
 
 /**
- * Fetch an already-validated public URL WITHOUT following redirects
- * automatically: every 3xx Location target is re-validated with
- * assertPublicHttpsDownloadUrl before the next privileged request, so a
- * redirect cannot bounce the privileged fetch onto a private endpoint
- * (#148 review round 7: redirects reach private endpoints). Capped at 5 hops.
- * `response.url` of the returned (final) response is the validated URL.
+ * Fetch an already-validated public URL WITHOUT following redirects.
+ *
+ * Every 3xx hop is re-validated with assertPublicHttpsDownloadUrl before the
+ * next privileged request (defense-in-depth for engines where the Location
+ * header IS readable with redirect: 'manual'), capped at 5 hops. In Chrome
+ * the 3xx response arrives as an opaque-redirect filtered response (status
+ * 0, empty header list), so the hop loop is unreachable there and the fetch
+ * refuses instead — an unfollowed redirect can never bounce the privileged
+ * fetch onto a private endpoint (#148 review round 7: redirects reach
+ * private endpoints; round 8: opaque-redirect filtering makes the Location
+ * header unreadable in Chrome, so the loop below is dead code there and a
+ * refusing fallback was added).
  */
 async function fetchPublicDownload(
   rawUrl: string,
@@ -228,6 +241,17 @@ async function fetchPublicDownload(
       // loop head re-validates the absolute target before it is fetched.
       currentUrl = new URL(location, validated).href
       continue
+    }
+    // Browsers filter a 3xx response met with redirect: 'manual' into an
+    // opaque-redirect response: status 0, EMPTY header list (fetch spec,
+    // atomic-redirect-handling). The Location header is unreadable there, so
+    // the hop-by-hop revalidation above can never run in Chrome — the only
+    // safe behavior is to refuse: an unfollowed redirect cannot reach a
+    // private endpoint, and silently surfacing "status 0" would mask the
+    // cause. Chrome extensions with host permissions are NOT exempt from
+    // this filtering.
+    if (response.type === 'opaqueredirect') {
+      throw new Error('Download URL redirected; redirects are not followed for plugin downloads')
     }
     return response
   }

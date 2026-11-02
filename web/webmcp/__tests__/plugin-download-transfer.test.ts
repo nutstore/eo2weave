@@ -55,6 +55,11 @@ describe('plugin download URL validation', () => {
       'https://[fd12:3456:789a::1]/a.pdf',
       // NAT64 well-known prefix embedding a loopback IPv4.
       'https://[64:ff9b::127.0.0.1]/a.pdf',
+      // NAT64 RFC 8215 LOCAL-USE prefix embedding private/loopback IPv4s —
+      // routes through a local NAT64 gateway (#148 round 8).
+      'https://[64:ff9b:1::127.0.0.1]/a.pdf',
+      'https://[64:ff9b:1::10.0.0.1]/a.pdf',
+      'https://[64:ff9b:1::7f00:1]/a.pdf',
       // IPv4 reserved families.
       'https://0.1.2.3/a.pdf',            // 0.0.0.0/8
       'https://100.64.0.1/a.pdf',         // CGNAT 100.64/10
@@ -82,8 +87,47 @@ describe('plugin download URL validation', () => {
       'https://8.8.8.8/a.pdf',
       'https://100.200.1.1/a.pdf',            // above CGNAT range
       'https://198.20.0.1/a.pdf',             // outside 198.18/15
+      // NAT64 prefixes embedding a PUBLIC IPv4 must still pass (#148 round 8).
+      'https://[64:ff9b::8.8.8.8]/a.pdf',
+      'https://[64:ff9b:1::8.8.8.8]/a.pdf',
     ]) {
       expect(() => assertPublicHttpsDownloadUrl(ok), ok).not.toThrow()
+    }
+  })
+
+  it('refuses an opaque-redirect response instead of failing with a misleading status 0 (#148 round 8)', async () => {
+    // In Chrome a 3xx met with redirect:'manual' is filtered to an
+    // opaque-redirect response: status 0, empty header list. The Location
+    // header is unreadable, so the hop loop can never run there — the fetch
+    // must refuse with an explicit redirect error, never attempt a follow.
+    const fetchSpy = vi.fn(async (url: string | URL) => ({
+      type: 'opaqueredirect',
+      ok: false,
+      status: 0,
+      url: String(url),
+      headers: new Headers(), // empty: the browser filtered the headers away
+      arrayBuffer: async () => new ArrayBuffer(0),
+    }))
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    try {
+      const frames: Array<{ type?: string; message?: string }> = []
+      await streamPluginDownload(
+        {
+          transferId: 't1',
+          downloadUrl: 'https://cdn.example.com/a.pdf',
+          savePath: '/',
+          fileName: 'a.pdf',
+        } as never,
+        (frame) => { frames.push(frame as { type?: string; message?: string }) },
+      )
+      // Exactly ONE privileged request: the opaque-redirect is refused, and
+      // no second hop is attempted against any URL.
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(frames[0]!.type).toBe('error')
+      expect(frames[0]!.message).toContain('redirect')
+    } finally {
+      globalThis.fetch = originalFetch
     }
   })
 
