@@ -109,7 +109,14 @@ export function ModelQuickSwitch({
       setLoadError(false)
       try {
         const result = await getAvailableProviders()
-        if (!cancelled) {
+        // A superseded run (a newer getAvailableProviders() started while
+        // this one was awaiting) reports current:false on every entry — its
+        // snapshot is stale. Applying it would let an older overlapping run
+        // that resolves late overwrite the newer run's provider data, so
+        // models absent from the current catalog stayed selectable. Same
+        // gate WorkspaceLayout uses for its reconciliation
+        // (Sourcery: "Superseded model lists remain selectable").
+        if (!cancelled && result.every((p) => p.current)) {
           setProviders(result)
         }
       } catch (err) {

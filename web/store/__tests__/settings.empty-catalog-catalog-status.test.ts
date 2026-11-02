@@ -476,4 +476,20 @@ describe('getAvailableProviders: round-6 catalog-status precedence & generation 
     const results2 = await useSettingsStore.getState().getAvailableProviders()
     expect(results2.find((r) => r.providerType === P)?.catalogStatus).toBe('failed')
   })
+
+  it('still marks every result current:true when NO newer run started (UI gate must not discard fresh lists)', async () => {
+    // Round-6 "Superseded model lists remain selectable": UI callers
+    // (ModelQuickSwitch / InlineModelSelector / ModelSettings) gate their
+    // setState on `result.every(p => p.current)`. That gate is only correct
+    // because a run with no newer sibling still reports current:true on
+    // EVERY entry — otherwise a normal refresh would leave the UI on stale
+    // data forever. Pins the current-run half of the contract (the
+    // superseded half is covered above).
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm-dyn', name: 'Dyn' }])
+    mocks.getCachedModelsResult.mockReturnValue({ models: [{ id: 'm-dyn' }], source: 'dynamic', fetchedAt: Date.now() } as never)
+
+    const results = await useSettingsStore.getState().getAvailableProviders()
+    expect(results.length).toBeGreaterThan(0)
+    expect(results.every((r) => r.current === true)).toBe(true)
+  })
 })
