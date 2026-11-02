@@ -38,6 +38,8 @@ import {
  */
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
 
+export { MODEL_DISCOVERY_TIMEOUT_MS }
+
 function withDiscoveryDeadline<T>(p: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, reject) => {

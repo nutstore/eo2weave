@@ -54,7 +54,7 @@ import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHe
 import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
 import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels, hasStoredTokens, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/llm-gateway-auth'
 import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
-import { applyGatewayLoginTokens } from '@/lib/gateway-login'
+import { applyGatewayLoginTokens, MODEL_DISCOVERY_TIMEOUT_MS } from '@/lib/gateway-login'
 import type { AuthState, CreditPackage } from '@/agent/providers/llm-gateway-auth'
 
 // =============================================================================
@@ -1367,7 +1367,20 @@ export function LLMGatewayCard({
         const clientId = getLLMGatewayClientId()
         const token = await getValidAccessToken(baseURL, clientId)
         if (token && !cancelled) {
-          const { models, status } = await fetchGatewayModels(baseURL, token)
+          // Hard deadline mirroring the login discovery path
+          // (withDiscoveryDeadline / MODEL_DISCOVERY_TIMEOUT_MS in
+          // lib/gateway-login.ts): a gateway that never answers /v1/models
+          // must not leave this refresh hanging. On expiry the fetch's
+          // AbortError propagates into the catch below — the SAME handling
+          // as a login whose discovery failed: no registration, no UI
+          // commit, and the catalog stays untouched (never an authoritative
+          // empty list) until the next refresh
+          // (Sourcery: "Gateway discovery can hang").
+          const { models, status } = await fetchGatewayModels(
+            baseURL,
+            token,
+            AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
+          )
           // A logout/relogin that superseded this effect run must not
           // register its stale catalog: re-check cancellation after EVERY
           // await — the token fetch above, the /models fetch here, and the
