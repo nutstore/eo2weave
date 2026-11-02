@@ -9,6 +9,16 @@ import type {
 } from './types'
 
 /**
+ * The run was cancelled at any stage of the plugin-download pipeline:
+ * before the transfer started, while the stream was in flight, after the
+ * asset was saved, or between the save and finalize. The bridge maps this
+ * marker to the CALL_CANCELLED envelope instead of a plain
+ * WEBMCP_PLUGIN_DOWNLOAD_FAILED (#139 review round 5: aborts become
+ * download failures). The message value doubles as the internal sentinel.
+ */
+export const WEBMCP_DOWNLOAD_ABORTED = '__WEBMCP_DOWNLOAD_ABORTED__'
+
+/**
  * Paths currently owned by in-flight downloads (module-level: shared across
  * all concurrent downloads in this JS context). `resolveUniqueAssetPath`
  * probes the filesystem, but two downloads starting in the same tick both
@@ -18,16 +28,67 @@ import type {
  */
 const claimedAssetPaths = new Set<string>()
 
-/** Claim an exclusive save path. Returns false if already claimed. */
-function claimAssetPath(path: string): boolean {
+/**
+ * Claim an exclusive save path. Returns false if already claimed.
+ * Exported so the bridge's rollback can consult the same registry (#139
+ * review round 5: successful downloads lose their files).
+ */
+export function claimAssetPath(path: string): boolean {
   if (claimedAssetPaths.has(path)) return false
   claimedAssetPaths.add(path)
   return true
 }
 
 /** Release a claimed save path after the download settles. */
-function releaseAssetPath(path: string): void {
+export function releaseAssetPath(path: string): void {
   claimedAssetPaths.delete(path)
+}
+
+/**
+ * True while a path is owned by an in-flight download — a rollback must
+ * NOT delete such a file (#139 review round 5: successful downloads lose
+ * their files).
+ */
+export function isAssetPathClaimed(path: string): boolean {
+  return claimedAssetPaths.has(path)
+}
+
+/**
+ * Claim `candidate` and write the payload to it, atomically with respect
+ * to other downloads:
+ * - the exists-probe AND the write run inside a per-workspace Web Lock, so
+ *   two downloads in DIFFERENT contexts cannot both pick the same free
+ *   name (#139 review round 5: successful downloads lose their files);
+ * - the in-context claim set covers same-context races;
+ * - the claim stays registered until the caller releases it, so a concurrent
+ *   rollback refuses to delete this download's file.
+ * Returns the claimed path, or null when the name was already taken (the
+ * caller advances to the next candidate).
+ */
+async function claimAssetPathUnderLock(
+  backend: AssetsBackend,
+  workspaceId: string,
+  candidate: string,
+  blob: Blob
+): Promise<string | null> {
+  const run = async (): Promise<string | null> => {
+    if (await backend.exists(candidate)) return null
+    if (!claimAssetPath(candidate)) return null
+    try {
+      await backend.writeFile(candidate, blob)
+    } catch (e) {
+      releaseAssetPath(candidate)
+      throw e
+    }
+    return candidate
+  }
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined
+  if (!locks) return run()
+  let result: string | null = null
+  await locks.request(`eo2weave-asset-claim:${workspaceId}`, async () => {
+    result = await run()
+  })
+  return result
 }
 
 export interface PluginDownloadSaveResult {
@@ -83,26 +144,6 @@ function splitPath(path: string): { dir: string; fileName: string } {
   return {
     dir: parts.join('/'),
     fileName,
-  }
-}
-
-async function resolveUniqueAssetPath(backend: AssetsBackend, path: string): Promise<string> {
-  if (!(await backend.exists(path))) return path
-
-  const { dir, fileName } = splitPath(path)
-  const dotIndex = fileName.lastIndexOf('.')
-  const base = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName
-  const ext = dotIndex > 0 ? fileName.slice(dotIndex) : ''
-
-  let index = 1
-  // eslint-disable-next-line no-constant-condition -- probe candidate names until a free path is found
-  while (true) {
-    const candidateName = `${base}-${index}${ext}`
-    const candidate = dir ? `${dir}/${candidateName}` : candidateName
-    if (!(await backend.exists(candidate))) {
-      return candidate
-    }
-    index++
   }
 }
 
@@ -181,12 +222,12 @@ async function collectDataUrlFromFrames(
   const abortPromise = context.abortSignal
     ? new Promise<never>((_, reject) => {
         if (context.abortSignal!.aborted) {
-          reject(new Error('__WEBMCP_DOWNLOAD_ABORTED__'))
+          reject(new Error(WEBMCP_DOWNLOAD_ABORTED))
           return
         }
         onAbort = () => {
           cancelPluginDownloadStream(stream)
-          reject(new Error('__WEBMCP_DOWNLOAD_ABORTED__'))
+          reject(new Error(WEBMCP_DOWNLOAD_ABORTED))
         }
         context.abortSignal!.addEventListener('abort', onAbort, { once: true })
       })
@@ -203,7 +244,7 @@ async function collectDataUrlFromFrames(
       // best-effort so the extension side stops transferring too.
       if (context.abortSignal?.aborted) {
         cancelPluginDownloadStream(stream)
-        throw new Error('__WEBMCP_DOWNLOAD_ABORTED__')
+        throw new Error(WEBMCP_DOWNLOAD_ABORTED)
       }
       const { done, value } = await raceNext()
       if (done) break
@@ -308,7 +349,7 @@ export async function consumeAndSavePluginDownload(
   // it as cancellation, not a download failure (#139 review round 5:
   // aborts become download failures).
   if (context.abortSignal?.aborted) {
-    throw new Error('__WEBMCP_DOWNLOAD_ABORTED__')
+    throw new Error(WEBMCP_DOWNLOAD_ABORTED)
   }
 
   const stream = bridge.webMCPPluginDownloadStream({
@@ -326,7 +367,7 @@ export async function consumeAndSavePluginDownload(
   // return the cancellation envelope instead of a generic failure (#139
   // review: aborted downloads keep writing).
   if (context.abortSignal?.aborted) {
-    throw new Error('__WEBMCP_DOWNLOAD_ABORTED__')
+    throw new Error(WEBMCP_DOWNLOAD_ABORTED)
   }
 
   const safeFileName = sanitizeFileName(start.fileName)
@@ -334,20 +375,26 @@ export async function consumeAndSavePluginDownload(
   const targetPath = saveDir ? `${saveDir}/${safeFileName}` : safeFileName
 
   const backend = new AssetsBackend(workspaceId)
-  // Probe + claim atomically enough for this context: re-probe candidates
-  // until one is BOTH unused on disk AND unclaimed by another in-flight
-  // download, then claim it before the write (#139 review round 5:
-  // successful downloads lose their files).
-  let finalPath = await resolveUniqueAssetPath(backend, targetPath)
-  while (!claimAssetPath(finalPath)) {
-    finalPath = await resolveUniqueAssetPath(backend, `${finalPath}-candidate-${Date.now()}`)
+  const { blob, mimeType } = dataUrlToBlob(dataUrl)
+  // Claim the path EXCLUSIVELY: the probe and the write run together under
+  // a per-workspace Web Lock, so two concurrent downloads cannot both
+  // observe "free" and write the same path — one download's rollback would
+  // then delete the other's asset (#139 review round 5: successful
+  // downloads lose their files). The in-context claim set covers the
+  // same-context race; the Web Lock covers the cross-context one (same
+  // rationale as the project auto-create lock).
+  let finalPath = await claimAssetPathUnderLock(backend, workspaceId, targetPath, blob)
+  for (let index = 1; !finalPath; index++) {
+    const { dir, fileName } = splitPath(targetPath)
+    const dotIndex = fileName.lastIndexOf('.')
+    const base = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName
+    const ext = dotIndex > 0 ? fileName.slice(dotIndex) : ''
+    const candidateName = `${base}-${index}${ext}`
+    const candidate = dir ? `${dir}/${candidateName}` : candidateName
+    finalPath = await claimAssetPathUnderLock(backend, workspaceId, candidate, blob)
   }
-  try {
-    const { blob, mimeType } = dataUrlToBlob(dataUrl)
-    await backend.writeFile(finalPath, blob)
-  } catch (e) {
-    releaseAssetPath(finalPath)
-    throw e
+  if (!finalPath) {
+    throw new Error('Could not allocate a unique asset path for the plugin download')
   }
 
   // Abort after the save: the file already landed on disk. The claim is

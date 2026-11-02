@@ -30,6 +30,21 @@ vi.mock('@/webmcp/store', () => ({
 
 vi.mock('@/webmcp/plugin-download', () => ({
   consumeAndSavePluginDownload: mocks.consumeAndSavePluginDownload,
+  // Real class identity: the bridge catches post-save aborts with
+  // `instanceof SavedAssetAbortedError`, and the cancellation marker is
+  // matched by VALUE (#139 review: pre-start abort becomes failure).
+  WEBMCP_DOWNLOAD_ABORTED: '__WEBMCP_DOWNLOAD_ABORTED__',
+  // The bridge consults this registry before deleting a saved asset: a path
+  // still claimed by another in-flight download must not be deleted.
+  isAssetPathClaimed: () => false,
+  SavedAssetAbortedError: class SavedAssetAbortedError extends Error {
+    readonly savedPath: string
+    constructor(savedPath: string) {
+      super(`Plugin download aborted after saving asset: ${savedPath}`)
+      this.name = 'SavedAssetAbortedError'
+      this.savedPath = savedPath
+    }
+  },
 }))
 
 // call_tool now routes through the policy engine (PR-2). These tests target
@@ -639,45 +654,44 @@ describe('WebMCP legacy extension compatibility', () => {
     const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     setLegacyState(() => tool)
-    // Never-settling invoke: the abort race itself (not the invoke result)
-    // must resolve the call with the cancellation envelope.
+    // Never-settling invoke spy: proves the write was NEVER dispatched
+    // (#139 review: pre-dispatch cancellation test still dispatches — the
+    // old version aborted after several macrotask turns, i.e. during the
+    // invoke, where the in-flight abort race alone produces the envelope
+    // and the test passes even for a dispatched write).
+    const invoke = vi.fn().mockImplementation(() => new Promise(() => {}))
     mocks.getWebMCPBridge.mockReturnValue({
-      webMCPInvoke: vi.fn().mockImplementation(() => new Promise(() => {})),
+      webMCPInvoke: invoke,
     })
-    const controller = new AbortController()
-    // Drive the REAL flow: authorization is stubbed at the policy-engine
-    // boundary, so bypass the stale-approval guard by aborting AFTER it has
-    // passed — exactly the gap the review describes ("after the run aborts
-    // after the stale-approval check and before invokeWithAbort dispatches").
-    // The guard reads context.abortSignal at the moment it runs; we let it
-    // pass by keeping the signal live until invoke is ABOUT to be called.
-    let releaseAuth!: (v: { decision: 'allow'; via: 'auto' }) => void
-    vi.mocked(authorize).mockImplementationOnce(
-      () => new Promise((resolve) => { releaseAuth = resolve }),
-    )
+    // Deterministic interleaving for the exact review gap ("after the
+    // stale-approval check and before invokeWithAbort dispatches"): no await
+    // sits between the guard and the dispatch, so a REAL AbortController
+    // can never flip inside that window. A flipping signal makes the
+    // boundary observable: the guard reads `aborted` === false (passes),
+    // invokeWithAbort's pre-dispatch check reads it === true and must return
+    // the envelope WITHOUT sending.
+    let readCount = 0
+    const flippingSignal = {
+      get aborted() { return readCount++ >= 1 },
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    } as unknown as AbortSignal
 
-    const pending = callToolExecutor(
-      { full_tool_name: tool.fullName, tab_id: 1, args: { a: 'x' } },
-      { ...toolContext, abortSignal: controller.signal },
+    const result = JSON.parse(
+      await callToolExecutor(
+        { full_tool_name: tool.fullName, tab_id: 1, args: { a: 'x' } },
+        { ...toolContext, abortSignal: flippingSignal },
+      ),
     )
-    await vi.waitFor(() => expect(releaseAuth).toBeTypeOf('function'))
-    // Let the full authorize→guard→dispatch chain settle with the signal
-    // still LIVE (three awaits separate the guard from the dispatch), so the
-    // guard passes and execution reaches the dispatch boundary.
-    releaseAuth({ decision: 'allow', via: 'auto' })
-    await new Promise((r) => setTimeout(r, 0))
-    await new Promise((r) => setTimeout(r, 0))
-    await new Promise((r) => setTimeout(r, 0))
-    await new Promise((r) => setTimeout(r, 0))
-    controller.abort()
-    // invokeWithAbort's abort race must resolve the never-settling invoke
-    // with the cancellation envelope (#139 review: aborted writes still
-    // start — and cancellation must not wait on the extension).
-
-    const result = JSON.parse(await pending)
     expect(result.error.code).toBe('CALL_CANCELLED')
     expect(result.error.retryable).toBe(false)
     expect(result.error.message).toContain('do not assume it did not run')
+    // The decisive assertion the review demanded: the write was NEVER
+    // dispatched to the extension.
+    expect(invoke).not.toHaveBeenCalled()
+    // Sanity: the signal really was read live (guard first, then the
+    // pre-dispatch check) rather than short-circuited elsewhere.
+    expect(readCount).toBeGreaterThanOrEqual(2)
   })
 
   it('returns CALL_CANCELLED when the refreshed-route retry is aborted mid-flight (#139 review: retry abort loses cancellation result)', async () => {
@@ -1127,6 +1141,184 @@ describe('WebMCP #139 round-3 regression coverage', () => {
       const result = JSON.parse(await pending)
       expect(deleteFile).toHaveBeenCalledWith('x.bin')
       expect(result.error.code).toBe('CALL_CANCELLED')
+    } finally {
+      vi.doUnmock('@/agent/tools/backends/assets-backend')
+      vi.resetModules()
+    }
+  })
+
+  it('surfaces the saved path in the cancellation envelope when the rollback FAILS after an abort (#139 review: cancelled downloads leave orphans / failed rollback hides saved asset)', async () => {
+    const tool = round3Tool('signature', { readOnlyHint: false })
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setRound3State(() => tool)
+    const deleteFile = vi.fn().mockRejectedValue(new Error('disk boom'))
+    vi.doMock('@/agent/tools/backends/assets-backend', () => ({
+      AssetsBackend: class {
+        deleteFile = deleteFile
+      },
+    }))
+    try {
+      vi.resetModules()
+      const { callToolExecutor: freshExecutor } = await import('../external-tool-bridge')
+      mocks.getWebMCPBridge.mockReturnValue({
+        webMCPInvoke: vi.fn().mockResolvedValue({
+          ok: true,
+          tabId: 1,
+          result: { done: true },
+          pluginDownloadPlan: { transferId: 't1' },
+        }),
+        webMCPPluginDownloadStream: vi.fn(),
+        webMCPPluginDownloadFinalize: vi.fn().mockImplementation(() => new Promise(() => {})),
+      })
+      mocks.consumeAndSavePluginDownload.mockResolvedValue({
+        savedPath: 'x.bin', fileName: 'x.bin', mimeType: 'application/octet-stream', size: 1, patchedResult: {},
+      })
+      const controller = new AbortController()
+
+      const pending = freshExecutor(
+        { full_tool_name: tool.fullName, tab_id: 1 },
+        { ...toolContext, workspaceId: 'ws-1', abortSignal: controller.signal },
+      )
+      await vi.waitFor(() => expect(mocks.consumeAndSavePluginDownload).toHaveBeenCalledOnce())
+      controller.abort()
+      const result = JSON.parse(await pending)
+      // Still a cancellation envelope, but the orphan's path must be in the
+      // message and the details so the caller can clean it up.
+      expect(result.error.code).toBe('CALL_CANCELLED')
+      expect(result.error.message).toContain('vfs://assets/x.bin')
+      expect(result.error.details?.savedAssetPath).toBe('vfs://assets/x.bin')
+    } finally {
+      vi.doUnmock('@/agent/tools/backends/assets-backend')
+      vi.resetModules()
+    }
+  })
+
+  it('does NOT dispatch finalize for an already-aborted run and rolls the asset back (#139 review: cancelled runs still finalize transfers)', async () => {
+    const tool = round3Tool('signature', { readOnlyHint: false })
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setRound3State(() => tool)
+    const deleteFile = vi.fn().mockResolvedValue(undefined)
+    vi.doMock('@/agent/tools/backends/assets-backend', () => ({
+      AssetsBackend: class {
+        deleteFile = deleteFile
+      },
+    }))
+    try {
+      vi.resetModules()
+      const { callToolExecutor: freshExecutor } = await import('../external-tool-bridge')
+      const finalize = vi.fn().mockResolvedValue({ ok: true, transferId: 't1' })
+      mocks.getWebMCPBridge.mockReturnValue({
+        webMCPInvoke: vi.fn().mockResolvedValue({
+          ok: true,
+          tabId: 1,
+          result: { done: true },
+          pluginDownloadPlan: { transferId: 't1' },
+        }),
+        webMCPPluginDownloadStream: vi.fn(),
+        webMCPPluginDownloadFinalize: finalize,
+      })
+      mocks.consumeAndSavePluginDownload.mockImplementation(async () => {
+        // The abort lands between the save and finalize — exactly the gap
+        // where the old code dispatched finalize anyway.
+        controller.abort()
+        return {
+          savedPath: 'x.bin', fileName: 'x.bin', mimeType: 'application/octet-stream', size: 1, patchedResult: {},
+        }
+      })
+      const controller = new AbortController()
+
+      const result = JSON.parse(
+        await freshExecutor(
+          { full_tool_name: tool.fullName, tab_id: 1 },
+          { ...toolContext, workspaceId: 'ws-1', abortSignal: controller.signal },
+        ),
+      )
+      // The extension must never learn the transfer completed: the file the
+      // rollback deletes must not stay referenced by a finalized transfer.
+      expect(finalize).not.toHaveBeenCalled()
+      expect(deleteFile).toHaveBeenCalledWith('x.bin')
+      expect(result.error.code).toBe('CALL_CANCELLED')
+    } finally {
+      vi.doUnmock('@/agent/tools/backends/assets-backend')
+      vi.resetModules()
+    }
+  })
+
+  it('maps the pre-start download-abort marker to CALL_CANCELLED instead of WEBMCP_PLUGIN_DOWNLOAD_FAILED (#139 review: pre-start abort becomes failure)', async () => {
+    const tool = round3Tool('signature', { readOnlyHint: false })
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setRound3State(() => tool)
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({
+        ok: true,
+        tabId: 1,
+        result: { done: true },
+        pluginDownloadPlan: { transferId: 't1' },
+      }),
+    })
+    // The real consumeAndSavePluginDownload throws Error(WEBMCP_DOWNLOAD_ABORTED)
+    // when the signal aborted before the transfer started. The abort must
+    // land AFTER the stale-approval guard, so the download path is really
+    // reached: the guard reads the signal once, the download path reads it
+    // again — a flipping signal makes the ordering deterministic.
+    mocks.consumeAndSavePluginDownload.mockRejectedValue(
+      new Error('__WEBMCP_DOWNLOAD_ABORTED__'),
+    )
+    let readCount = 0
+    const flippingSignal = {
+      get aborted() { return readCount++ >= 1 },
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    } as unknown as AbortSignal
+
+    const result = JSON.parse(
+      await callToolExecutor(
+        { full_tool_name: tool.fullName, tab_id: 1 },
+        { ...toolContext, workspaceId: 'ws-1', abortSignal: flippingSignal },
+      ),
+    )
+    expect(result.error.code).toBe('CALL_CANCELLED')
+    expect(result.error.retryable).toBe(false)
+  })
+
+  it('surfaces the orphaned path in the FINALIZE-failure error when the rollback fails (#139 review: failed finalize hides a saved file)', async () => {
+    const tool = round3Tool('signature', { readOnlyHint: false })
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setRound3State(() => tool)
+    const deleteFile = vi.fn().mockRejectedValue(new Error('disk boom'))
+    vi.doMock('@/agent/tools/backends/assets-backend', () => ({
+      AssetsBackend: class {
+        deleteFile = deleteFile
+      },
+    }))
+    try {
+      vi.resetModules()
+      const { callToolExecutor: freshExecutor } = await import('../external-tool-bridge')
+      mocks.getWebMCPBridge.mockReturnValue({
+        webMCPInvoke: vi.fn().mockResolvedValue({
+          ok: true,
+          tabId: 1,
+          result: { done: true },
+          pluginDownloadPlan: { transferId: 't1' },
+        }),
+        webMCPPluginDownloadStream: vi.fn(),
+        webMCPPluginDownloadFinalize: vi.fn().mockResolvedValue({
+          ok: false, error: 'extension finalize blew up',
+        }),
+      })
+      mocks.consumeAndSavePluginDownload.mockResolvedValue({
+        savedPath: 'x.bin', fileName: 'x.bin', mimeType: 'application/octet-stream', size: 1, patchedResult: {},
+      })
+
+      const result = JSON.parse(
+        await freshExecutor(
+          { full_tool_name: tool.fullName, tab_id: 1 },
+          { ...toolContext, workspaceId: 'ws-1' },
+        ),
+      )
+      expect(result.error.code).toBe('WEBMCP_PLUGIN_DOWNLOAD_FINALIZE_FAILED')
+      expect(result.error.details?.savedAssetPath).toBe('vfs://assets/x.bin')
+      expect(result.error.message).toContain('could not be rolled back')
     } finally {
       vi.doUnmock('@/agent/tools/backends/assets-backend')
       vi.resetModules()

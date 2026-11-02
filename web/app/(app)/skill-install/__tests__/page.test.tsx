@@ -374,9 +374,16 @@ describe('SkillInstallPage (issue #126)', () => {
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
     // The install button (always on the details view) proves the page made
-    // it past loading; no description paragraph is rendered for an entry
-    // with neither a base nor a localized description.
+    // it past loading; the description PARAGRAPH itself must be absent —
+    // asserting only on the button would pass even if an empty paragraph
+    // rendered (#139 review: empty description paragraph goes undetected).
     expect(screen.getByText('skillInstall.installButton')).toBeInTheDocument()
+    expect(screen.queryByText(ENTRY.description)).not.toBeInTheDocument()
+    // The localized-description selector resolves to '' for this entry, so
+    // no non-empty paragraph text can exist either: assert the <p> that
+    // would host the description is not rendered next to the skill name.
+    const skillName = screen.getByText('cw-legal-evidence-chain')
+    expect(skillName.parentElement?.querySelector('p.mx-auto.mt-2')).toBeNull()
   })
 
   it('treats an unregistered skill as a failed install (no navigation with a dead slash command)', async () => {

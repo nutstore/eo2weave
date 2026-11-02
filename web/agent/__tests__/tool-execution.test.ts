@@ -192,6 +192,48 @@ describe('tool-execution helpers', () => {
     }
   })
 
+  it('executeToolWithTimeout does NOT fire onTimeout when a USER STOP won the race before the timeout (#139 review: Stop triggers timeout notification)', async () => {
+    // Interleaving from the review: the run aborts (Stop) shortly BEFORE the
+    // timeout fires, the tool settles with the cancellation envelope during
+    // the grace period, and the timeout rejection is swapped away. The
+    // caller's abort path owns the notification — the timer that expired in
+    // the meantime must NOT trigger a second (timeout) notification.
+    vi.useFakeTimers()
+    try {
+      const cancelledEnvelope = JSON.stringify({
+        ok: false,
+        version: 2,
+        tool: 'call_tool',
+        error: { code: 'CALL_CANCELLED', message: 'cancelled', retryable: false },
+      })
+      const onTimeout = vi.fn()
+      const controller = new AbortController()
+      const pending = executeToolWithTimeout({
+        toolName: 'call_tool',
+        args: {},
+        timeoutMs: 100,
+        runAbortSignal: controller.signal,
+        preferEnvelopeOnRaceLoss: (envelope) =>
+          envelope.includes('CALL_CANCELLED') ? envelope : null,
+        onTimeout,
+        execute: async () => {
+          // Stop wins the race at t≈50, the timeout fires at t=100 while the
+          // tool promise is still pending, and the envelope lands at t≈150.
+          await new Promise((r) => setTimeout(r, 50))
+          controller.abort(new Error('user stop'))
+          await new Promise((r) => setTimeout(r, 100))
+          return cancelledEnvelope
+        },
+      })
+      await vi.advanceTimersByTimeAsync(300)
+      const raw = await pending
+      expect(JSON.parse(raw).error.code).toBe('CALL_CANCELLED')
+      expect(onTimeout).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('truncateLargeToolResult reduces oversized search payload to summary-only result', async () => {
     const raw = JSON.stringify({
       results: [{ path: 'a.ts', line: 1, match: 'x'.repeat(3000), preview: 'x'.repeat(3000) }],

@@ -24,7 +24,12 @@ import { getMCPManager } from '@/mcp/mcp-manager'
 import { useWebMCPStore } from '@/webmcp/store'
 import { useSettingsStore } from '@/store/settings.store'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
-import { consumeAndSavePluginDownload, SavedAssetAbortedError } from '@/webmcp/plugin-download'
+import {
+  consumeAndSavePluginDownload,
+  isAssetPathClaimed,
+  SavedAssetAbortedError,
+  WEBMCP_DOWNLOAD_ABORTED,
+} from '@/webmcp/plugin-download'
 import {
   getSidePanelBindingId,
   isSidePanelMode,
@@ -1095,14 +1100,11 @@ async function refreshCatalogWithinDeadline(freshAfterInFlight = false): Promise
  * Never throws — a failed rollback must not mask the error/cancellation
  * path.
  */
-// In-progress asset registrations, shared across concurrent downloads in the
-// same JS context: `resolveUniqueAssetPath` only probes the filesystem, so
-// two downloads started in the same tick can both pick the same "unique"
-// path, and one later rollback would delete the other's file (#139 review
-// round 5: successful downloads lose their files). The path is claimed
-// before the write (in plugin-download.ts via this shared set) and released
-// on completion; rollback refuses to delete a still-claimed path.
-const claimedAssetPaths = new Set<string>()
+// In-progress asset registrations live in plugin-download.ts (the module
+// that claims the path before writing it) — the bridge's rollback consults
+// that same registry through isAssetPathClaimed, so a concurrent download's
+// file is never deleted by another download's rollback (#139 review round 5:
+// successful downloads lose their files).
 
 async function deleteSavedAssetQuietly(workspaceId: string | null, savedPath: string): Promise<boolean> {
   // No workspace id ⇒ the save could not have happened through the assets
@@ -1110,7 +1112,7 @@ async function deleteSavedAssetQuietly(workspaceId: string | null, savedPath: st
   // finalize path keeps its normal retryable classification (#139 review:
   // failed finalize hides a saved file).
   if (!workspaceId) return true
-  if (claimedAssetPaths.has(savedPath)) {
+  if (isAssetPathClaimed(savedPath)) {
     // Still owned by another in-flight download: deleting it would corrupt
     // that download's reported success.
     return false
@@ -1466,6 +1468,23 @@ async function executeWebMCPTool(
         // transfer is left unfinalized — the extension side keeps it
         // pending and the result tells the model the download did not
         // finish. Never re-dispatch the page action.
+        //
+        // Check the signal BEFORE dispatching: an abort between the save
+        // and finalize must not send the finalize message at all — the
+        // extension would record a completed transfer pointing at the very
+        // file the rollback then deletes (#139 review round 5: cancelled
+        // runs still finalize transfers). Arming the abort race happens
+        // before the dispatch so an abort in the same tick as the send
+        // still wins.
+        if (context.abortSignal?.aborted) {
+          const rolledBack = await deleteSavedAssetQuietly(
+            workspaceIdForAssetRollback(context),
+            saveResult.savedPath,
+          )
+          return rolledBack
+            ? cancellationEnvelope()
+            : cancellationEnvelopeWithOrphan(context, saveResult.savedPath)
+        }
         let onFinalizeAbort: (() => void) | undefined
         const finalizeResp = await Promise.race([
           bridge
@@ -1505,8 +1524,16 @@ async function executeWebMCPTool(
             }
           })
         if (context.abortSignal?.aborted) {
-          await deleteSavedAssetQuietly(workspaceIdForAssetRollback(context), saveResult.savedPath)
-          return cancellationEnvelope()
+          // A failed rollback must not hide the orphan: surface its path so
+          // the caller can clean it up (#139 review round 5: cancelled
+          // downloads leave untracked files).
+          const rolledBack = await deleteSavedAssetQuietly(
+            workspaceIdForAssetRollback(context),
+            saveResult.savedPath,
+          )
+          return rolledBack
+            ? cancellationEnvelope()
+            : cancellationEnvelopeWithOrphan(context, saveResult.savedPath)
         }
         if (!finalizeResp?.ok) {
           // The asset is ALREADY on disk but the extension's finalize failed:
@@ -1628,7 +1655,7 @@ async function executeWebMCPTool(
           )
         }
         const message = error instanceof Error ? error.message : String(error)
-        if (message === '__WEBMCP_DOWNLOAD_ABORTED__') {
+        if (message === WEBMCP_DOWNLOAD_ABORTED) {
           // Aborted mid-stream, before anything was saved — nothing to roll
           // back; the transfer was already cancelled best-effort (#139
           // review: aborted downloads keep writing).
