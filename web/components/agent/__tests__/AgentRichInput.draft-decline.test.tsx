@@ -13,7 +13,7 @@
 import { act, render, waitFor } from '@testing-library/react'
 import { type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentRichInput } from '../AgentRichInput'
+import { AgentRichInput } from '@/components/agent/AgentRichInput'
 
 vi.mock('@/store/asset.store', () => ({
   useAssetStore: Object.assign((selector?: (s: unknown) => unknown) => selector?.({}) ?? {}, {
@@ -41,10 +41,10 @@ const { tiptapExtensionStub } = vi.hoisted(() => ({
   tiptapExtensionStub: () => ({ configure: () => ({}) }),
 }))
 
-vi.mock('../FileMentionExtension', () => ({
+vi.mock('@/components/agent/FileMentionExtension', () => ({
   FileMention: tiptapExtensionStub(),
 }))
-vi.mock('../SlashCommandExtension', () => ({
+vi.mock('@/components/agent/SlashCommandExtension', () => ({
   SlashCommandExtension: tiptapExtensionStub(),
 }))
 
@@ -97,6 +97,12 @@ describe('AgentRichInput declined draft restoration', () => {
     // arrives (e.g. restoreDraftIntoInput raced with typing) — the typed
     // text must NOT be overwritten, the current value must be re-emitted,
     // and the pending marker consumed again.
+    // PR #142 review round 5 (Sourcery): record the call count BEFORE the
+    // rerender, then assert the decline ADDED exactly one call — comparing
+    // only the last call's value would still pass if the decline path fired
+    // onDraftRestored but emitted nothing, because .at(-1) would return the
+    // initial-restoration call.
+    const onChangeCallsBeforeDecline = onChange.mock.calls.length
     rerender(
       <Harness draftText="different draft" onChange={onChange} onDraftRestored={onDraftRestored} />,
     )
@@ -108,6 +114,7 @@ describe('AgentRichInput declined draft restoration', () => {
     // call, not any earlier one: `toHaveBeenCalledWith` would otherwise match
     // the initial-restoration call and pass even if the decline stopped
     // emitting entirely.
+    expect(onChange.mock.calls.length).toBe(onChangeCallsBeforeDecline + 1)
     expect(onChange.mock.calls.at(-1)).toEqual([
       { text: 'stored draft', mentionedAgentIds: [] },
     ])
