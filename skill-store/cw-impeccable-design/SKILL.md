@@ -1,6 +1,7 @@
 ---
 name: cw-impeccable-design
 description: "Frontend design skill from pbakaus/impeccable, ported for EO2Weave. Trigger when user asks to design, redesign, refine, polish, audit, critique, distill, harden, animate, colorize, typeset, layout, clarify, adapt, optimize, extract, document, init, shape, bolder, quieter, delight, overdrive, onboard, live-iterate, or ux-review any frontend UI work. Covers websites, landing pages, dashboards, product UI, app shells, components, forms, settings, onboarding, empty states. Handles visual hierarchy, information architecture, cognitive load, a11y, performance, responsive, theming, anti-patterns, typography, spacing, alignment, color, motion, micro-interactions, UX copy, error states, edge cases, i18n, design systems, tokens. Also use for bland designs that need to become bolder, loud designs that need to become quieter, or ambitious visual effects that should feel technically extraordinary."
+description.zh-CN: "来自 pbakaus/impeccable 的前端设计技能，已适配 EO2Weave。当用户要求设计、重设计、打磨、优化、审查 UI，调整排版、配色、动画、布局、层次，或希望界面更有质感、更克制、更愉悦时触发。"
 category: general
 tags: [design, frontend, ux, ui, review, polish, anti-pattern, design-system]
 triggers:

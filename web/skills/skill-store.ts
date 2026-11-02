@@ -23,6 +23,13 @@ export interface SkillStoreEntry {
   name: string
   dirName: string
   description: string
+  /**
+   * Optional localized descriptions keyed by locale (e.g. `zh-CN`),
+   * sourced from `description.<locale>` frontmatter keys (#140). The base
+   * `description` stays the agent-facing trigger text; this map only
+   * localizes the store UI. Absent when a skill ships no translations.
+   */
+  description_i18n?: Record<string, string>
   category: string
   tags: string[]
   version: string

@@ -210,6 +210,9 @@ describe('external tool bridge error isolation', () => {
       inputSchema,
       apiMode: 'documentModelContext' as const,
       tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
+      // Read-only: this test isolates error-passthrough behavior, not the
+      // write-ambiguity path (which appends its own guidance).
+      annotations: { readOnlyHint: true },
     }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     mocks.getWebMCPState.mockReturnValue({
@@ -246,7 +249,8 @@ describe('external tool bridge error isolation', () => {
       inputSchema,
       apiMode: 'documentModelContext' as const,
       tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
-      annotations: { untrustedContentHint: true },
+      // Read-only + untrusted: isolates the untrusted-wrapping behavior.
+      annotations: { untrustedContentHint: true, readOnlyHint: true },
     }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     mocks.getWebMCPState.mockReturnValue({
@@ -527,6 +531,7 @@ describe('WebMCP legacy extension compatibility', () => {
     expect(result.error.code).toBe('TAB_TARGET_MISMATCH')
     expect(result.error.message).toContain('may have changed the page')
     expect(result.error.message).toContain('check both tabs before retrying')
+    expect(result.error.retryable).toBe(false)
   })
 
   it('marks a failed write with unknown tab provenance non-retryable (#138 review: partial writes)', async () => {
@@ -542,7 +547,7 @@ describe('WebMCP legacy extension compatibility', () => {
 
     const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
     expect(result.error.retryable).toBe(false)
-    expect(result.error.message).toContain('verify the target tab')
+    expect(result.error.message).toContain("verify the target tab's state before retrying")
   })
 
   it('a failed READ with unknown tab provenance stays retryable', async () => {
@@ -566,20 +571,23 @@ describe('WebMCP legacy extension compatibility', () => {
     // protocol) — the abort must still resolve the tool call.
     const controller = new AbortController()
     const abortableContext = { ...toolContext, abortSignal: controller.signal }
-    mocks.getWebMCPBridge.mockReturnValue({
-      webMCPInvoke: vi.fn().mockReturnValue(new Promise(() => {})),
-    })
 
     // The auth gate rejects already-aborted calls up front; abort only
-    // AFTER the call is in flight so the race in executeWebMCPTool is hit.
+    // AFTER webMCPInvoke has actually started (explicit signal, not a
+    // timing guess — #139 review flake).
+    let started!: () => void
+    const startedPromise = new Promise<void>((resolve) => { started = resolve })
     let resolveInvoke!: () => void
     mocks.getWebMCPBridge.mockReturnValue({
       webMCPInvoke: vi.fn().mockImplementation(
-        () => new Promise((resolve) => { resolveInvoke = () => resolve({ ok: true, tabId: 1, result: {} }) }),
+        () => {
+          started()
+          return new Promise((resolve) => { resolveInvoke = () => resolve({ ok: true, tabId: 1, result: {} }) })
+        },
       ),
     })
     const pending = callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, abortableContext)
-    await new Promise((r) => setTimeout(r, 10)) // let authorize() pass and the invoke start
+    await startedPromise
     controller.abort()
     const raced = await Promise.race([pending, new Promise((r) => setTimeout(() => r('PENDING'), 300))])
     resolveInvoke() // unhook the fake invoke so nothing leaks

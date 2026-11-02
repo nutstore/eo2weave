@@ -2,6 +2,7 @@
 name: cw-legal-evidence-chain
 version: "1.1.2"
 description: Use for lawyers' evidence-chain work across all case types. Trigger when organizing case materials, extracting facts and evidence, mapping factual/logical/causal links, finding missing or weak evidence, resolving contradictions, or drafting a lawyer-facing evidence-chain report and supplement plan.
+description.zh-CN: "面向律师的证据链工作技能，适用于各类案件。当需要整理案件材料、梳理事实与证据、构建事实/逻辑/因果链条、发现缺失或薄弱证据、排除矛盾，或起草律师用证据链报告与补证方案时触发。"
 author: CreatorWeave
 category: general
 tags: [legal, lawyer, evidence, evidence-chain, case-analysis, litigation, proof]

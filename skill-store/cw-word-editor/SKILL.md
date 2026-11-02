@@ -1,6 +1,7 @@
 ---
 name: cw-word-editor
 description: "LLM Wiki-mode docx editor with 89 EditOps, zero third-party dependencies. Ingest compiles docx → DocumentModel, view provides outline/details/stats/issue detection, writeback applies precise edits."
+description.zh-CN: "LLM Wiki 模式的 docx 编辑器，含 89 个 EditOps、零第三方依赖。Ingest 将 docx 编译为 DocumentModel，view 提供大纲/详情/统计/问题检测，writeback 执行精确编辑。"
 version: "1.0.5"
 category: documents
 tags: [docx, word, document, editing, ooxml]

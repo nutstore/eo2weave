@@ -189,6 +189,18 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
       } catch (toolError) {
         if (toolError instanceof Error && toolError.message.includes('timed out')) {
           input.callbacks?.onToolTimeout?.(toolCall)
+          // A WebMCP write that outlives the tool timeout is AMBIGUOUS: the
+          // extension-side call keeps running with no cancellation path, so
+          // the page may still change after this result (#139 review). The
+          // timeout rejection would otherwise look like a clean retryable
+          // failure and invite a duplicate write.
+          if (toolDef.function.name === 'call_tool') {
+            throw new Error(
+              `${toolError.message}. This was a WebMCP tool call — it may STILL be running in the ` +
+                `browser extension and the target page can change; do not retry it blindly. ` +
+                `Verify the target tab's state first.`,
+            )
+          }
         }
         throw toolError
       }

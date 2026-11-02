@@ -1166,39 +1166,58 @@ async function executeWebMCPTool(
         : {}),
     })
 
-    // Race the invoke against the run's abort signal: the bridge protocol
+    // Race every invoke against the run's abort signal: the bridge protocol
     // has no cancellation path, so the extension call keeps running after
     // the caller stops waiting — but the tool call resolves immediately so
     // the run does not hang past the user's Stop (#138 review, F4). The
     // abandonment note tells the model the page may still change.
-    let response: Awaited<ReturnType<typeof bridge.webMCPInvoke>>
-    try {
-      response = await Promise.race([
-        bridge.webMCPInvoke(buildInvokePayload(targetTab?.groupKey)),
-        ...(
-          context.abortSignal
-            ? [
-                new Promise<never>((_, reject) => {
-                  const onAbort = () =>
-                    reject(new Error('__WEBMCP_RUN_ABORTED__'))
-                  if (context.abortSignal!.aborted) onAbort()
-                  else context.abortSignal!.addEventListener('abort', onAbort, { once: true })
-                }),
-              ]
-            : []
-        ),
-      ])
-    } catch (e) {
-      if ((e as Error).message === '__WEBMCP_RUN_ABORTED__') {
-        return toolErrorJson(
-          'call_tool',
-          'CALL_CANCELLED',
-          'WebMCP tool call was cancelled. The extension call may still be running — ' +
-            'the target page can change after this result; do not assume it did not run.',
-          { retryable: false, details: { fullToolName: tool.fullName, tabId: targetTabId } },
-        )
+    const cancellationEnvelope = () =>
+      toolErrorJson(
+        'call_tool',
+        'CALL_CANCELLED',
+        'WebMCP tool call was cancelled. The extension call may still be running — ' +
+          'the target page can change after this result; do not assume it did not run.',
+        { retryable: false, details: { fullToolName: tool.fullName, tabId: targetTabId } },
+      )
+    const invokeWithAbort = async (groupKey?: string) => {
+      let onAbort: (() => void) | undefined
+      try {
+        return await Promise.race([
+          bridge.webMCPInvoke(buildInvokePayload(groupKey)),
+          ...(
+            context.abortSignal
+              ? [
+                  new Promise<never>((_, reject) => {
+                    onAbort = () => reject(new Error('__WEBMCP_RUN_ABORTED__'))
+                    if (context.abortSignal!.aborted) onAbort()
+                    else context.abortSignal!.addEventListener('abort', onAbort, { once: true })
+                  }),
+                ]
+              : []
+          ),
+        ])
+      } catch (e) {
+        if ((e as Error).message === '__WEBMCP_RUN_ABORTED__') {
+          return cancellationEnvelope()
+        }
+        throw e
+      } finally {
+        // Successful calls must not leak their listener onto the run signal
+        // (#139 review: listeners accumulate across a long run's calls).
+        if (onAbort && context.abortSignal) {
+          context.abortSignal.removeEventListener('abort', onAbort)
+        }
       }
-      throw e
+    }
+
+    // The cancellation envelope is a toolErrorJson STRING — it must NOT
+    // flow into the response.ok / !response.ok processing below (a string
+    // would be misread as WEBMCP_INVOKE_FAILED). Detect it and return as-is.
+    let response = await invokeWithAbort(targetTab?.groupKey)
+    if (typeof response === 'string') {
+      // Cancellation envelope (toolErrorJson string): return as-is instead
+      // of flowing into the response-object checks below.
+      return response
     }
 
     if (
@@ -1217,7 +1236,7 @@ async function executeWebMCPTool(
         if (context.abortSignal?.aborted) {
           return toolErrorJson('call_tool', 'CALL_CANCELLED', 'WebMCP tool call was cancelled before retry.', { retryable: false })
         }
-        response = await bridge.webMCPInvoke(buildInvokePayload(refreshedGroupKey))
+        response = (await invokeWithAbort(refreshedGroupKey)) as typeof response
       }
     }
 
@@ -1240,20 +1259,24 @@ async function executeWebMCPTool(
             toolName: tool.fullName,
           }))
         : 'WebMCP tool invocation failed'
-      // A write-shaped tool that failed WITHOUT reporting which tab it ran
-      // in may have partially mutated that page before failing (#138
-      // review): a blind retry could duplicate the side effects. Surface
-      // the ambiguity and let the caller verify the page first.
-      const writeWithUnknownTab =
-        tool.annotations?.readOnlyHint !== true && response.tabId === undefined
+      // A dispatched write that returns an error may have partially applied
+      // before failing, regardless of which tab reports the failure (#139
+      // review): the tabId cannot rule out side effects, so every failed
+      // write is ambiguous. Known PRE-execution routing failures are the
+      // exception — the tool provably never ran, so a retry is safe.
+      const isRoutingError = ['INVALID_TOOL_NAME', 'TOOL_TARGET_NOT_FOUND', 'TARGET_ORIGIN_MISMATCH'].includes(
+        response.errorCode || '',
+      )
+      const ambiguousWrite =
+        tool.annotations?.readOnlyHint !== true && !isRoutingError
       return toolErrorJson(
         'call_tool',
         response.errorCode || 'WEBMCP_INVOKE_FAILED',
-        writeWithUnknownTab
+        ambiguousWrite
           ? `${errorMessage} The tool may have partially changed the page before failing — verify the target tab's state before retrying.`
           : errorMessage,
         {
-          retryable: !writeWithUnknownTab,
+          retryable: !ambiguousWrite,
           details: {
             fullToolName: tool.fullName,
             tabId: response.tabId,

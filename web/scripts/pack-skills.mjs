@@ -45,7 +45,7 @@ function parseFrontmatter(content) {
     }
     if (inMetadata && !/^[\s\t]/.test(line)) inMetadata = false
 
-    const m = stripped.match(/^(\w+):\s*(.*)$/)
+    const m = stripped.match(/^([\w.\-]+):\s*(.*)$/)
     if (!m) {
       const m2 = line.match(/^\s+(\w+):\s*(.*)$/)
       if (m2 && inMetadata && m2[1] === 'skill_version') {
@@ -136,6 +136,20 @@ async function main() {
       name: fm.name || name,
       dirName: name,
       description: fm.description ?? '',
+      // Optional localized descriptions (e.g. `description.zh-CN:` in the
+      // frontmatter). Purely additive: absent when a skill ships only the
+      // base description, so older consumers are unaffected (#140).
+      ...(Object.entries(fm)
+        .filter(([k, v]) => k.startsWith('description.') && v)
+        .length > 0
+        ? {
+            description_i18n: Object.fromEntries(
+              Object.entries(fm)
+                .filter(([k, v]) => k.startsWith('description.') && typeof v === 'string' && v)
+                .map(([k, v]) => [k.slice('description.'.length), v]),
+            ),
+          }
+        : {}),
       category: fm.category || 'general',
       tags: Array.isArray(fm.tags) ? fm.tags : [],
       version: fm.version || '1.0.0',
