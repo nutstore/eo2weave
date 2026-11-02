@@ -276,5 +276,9 @@
       "count": { "content": "$1" },
       "installed": { "content": "$2" }
     }
+  },
+  "webmcpPackagesPageTabTitle": {
+    "message": "站点工具包 — EO2Weave",
+    "description": "Browser tab title of the registry management page."
   }
 }

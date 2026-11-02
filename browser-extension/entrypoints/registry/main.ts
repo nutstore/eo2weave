@@ -56,6 +56,9 @@ for (const [id, key] of [
 ] as const) {
   document.getElementById(id)!.textContent = t(key)
 }
+// The static <title> in index.html is English-only; keep the browser tab
+// localized like the rest of the page.
+document.title = t('webmcpPackagesPageTabTitle')
 const registryInput = document.getElementById('registryInput') as HTMLInputElement
 registryInput.placeholder = t('webmcpPackagesAddRegistryInputPlaceholder')
 document.getElementById('registryAdd')!.textContent = t('webmcpPackagesAddRegistryButton')
@@ -253,13 +256,17 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
   }
 
   const isInstalled = installed.has(pkg.id)
+  const isEnabled = isInstalled && activations[pkg.id] === 'enabled'
   const state = document.createElement('div')
-  state.className = 'state' + (isInstalled && activations[pkg.id] === 'enabled' ? '' : ' inactive')
+  state.className = 'state' + (isEnabled ? '' : ' inactive')
   state.textContent = isInstalled
-    ? (activations[pkg.id] === 'enabled' ? t('webmcpPackagesInstalledActive') : t('webmcpPackagesInstalledInactive'))
+    ? (isEnabled ? t('webmcpPackagesInstalledActive') : t('webmcpPackagesInstalledInactive'))
     : ''
   body.append(state)
-  if (isInstalled) {
+  // The enable hint is only meaningful for a package that is NOT enabled —
+  // an enabled package showing "open the side panel to enable" contradicted
+  // the card's own active badge.
+  if (isInstalled && !isEnabled) {
     const hint = document.createElement('div')
     hint.className = 'desc'
     hint.textContent = t('webmcpPackagesInstalledInactiveHint')

@@ -655,5 +655,9 @@
         "content": "$2"
       }
     }
+  },
+  "webmcpPackagesPageTabTitle": {
+    "message": "Site packages — EO2Weave",
+    "description": "Browser tab title of the registry management page."
   }
 }
