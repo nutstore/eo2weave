@@ -962,20 +962,20 @@ export const useProjectStore = create<ProjectState>()(
           .then(async () => {
             const remaining = await repo.findAllProjects()
             const nextProjectId = remaining.find((p) => p.id !== projectId)?.id || ''
-            const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
-            const workspaceRepo = getWorkspaceRepository()
-            const orphaned = await workspaceRepo.findAllWorkspacesByProjectIncludingDirect(projectId)
             // Rebind ALL host rows off the deleted project AND delete the
             // project row in ONE SQLite transaction (repository method): an
             // interruption mid-section can no longer leave the project row
             // alive with some workspaces already assigned to the successor —
             // rebinds and the row deletion commit (or roll back) together, so
             // a retry observes the pre-deletion state and re-runs cleanly.
-            await repo.deleteProjectIncludingHostRebind(
-              projectId,
-              nextProjectId,
-              orphaned.map((ws) => ws.id)
-            )
+            //
+            // The workspace-ID snapshot call and the rebind are deliberately
+            // NOT combined here: the repository selects the successor and
+            // rebinds `WHERE project_id = ?` INSIDE its transaction, so
+            // workspaces created after this snapshot (and rows hosting the
+            // dying project from a concurrent tab) are still covered at
+            // commit time — a pre-transaction ID list would miss them.
+            await repo.deleteProjectIncludingHostRebind(projectId, nextProjectId)
 
               // ── OPFS workspace-data cleanup — AFTER the DB commit ──
               // Deliberately deferred and best-effort: the row is gone, so the

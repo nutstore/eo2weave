@@ -124,6 +124,15 @@ export class ProjectRepository {
    * Atomically rebind host workspace rows off a project and delete the
    * project row (plus its scoped secrets) in ONE SQLite transaction.
    *
+   * The successor project is SELECTED INSIDE the transaction and every
+   * workspace still referencing the deleted project is rebound by a single
+   * keyed UPDATE — not a caller-supplied ID list. Snapshotting workspace IDs
+   * before the transaction opened a race: a workspace created after the
+   * snapshot (or a concurrent deletion in another tab) kept the dying
+   * project's ID while the UPDATE only touched captured rows. Selecting the
+   * successor and rebinding `WHERE project_id = ?` inside the transaction
+   * covers every hosted row at commit time.
+   *
    * Rebinding in a loop of standalone `updateWorkspace` calls left a crash
    * window: a tab/process termination after one or more rebinds committed but
    * before the project row was deleted stranded those workspaces on the
@@ -136,18 +145,25 @@ export class ProjectRepository {
   async deleteProjectIncludingHostRebind(
     projectId: string,
     nextProjectId: string,
-    hostWorkspaceIds: string[]
+    _hostWorkspaceIds?: string[]
   ): Promise<void> {
     const db = getSQLiteDB()
     const secretPrefix = getProjectSecretStoragePrefix(projectId)
     await db.transaction(async (tx) => {
-      for (const workspaceId of hostWorkspaceIds) {
-        // eslint-disable-next-line no-await-in-loop -- one transaction; ordering is irrelevant to correctness here
-        await tx.execute('UPDATE workspaces SET project_id = ? WHERE id = ?', [
-          nextProjectId,
-          workspaceId,
-        ])
-      }
+      // Re-read the successor inside the transaction when the caller has no
+      // id: a caller-supplied id is computed from a pre-transaction snapshot
+      // and may name a project a concurrent deletion (another tab) has
+      // already removed. An empty successor here re-reads fresh state; the
+      // '' fallback covers the last-project case (every consumer treats a
+      // falsy projectId as "no project").
+      const successor = nextProjectId || await this.pickSuccessorInTx(tx, projectId)
+      // Single keyed UPDATE — no per-row round-trips, and the affected set is
+      // exactly the rows hosted by the deleted project at commit time (rows
+      // created after a caller's snapshot are covered too).
+      await tx.execute('UPDATE workspaces SET project_id = ? WHERE project_id = ?', [
+        successor,
+        projectId,
+      ])
       // Secrets are encrypted API-key records scoped with this exact prefix.
       // substr avoids SQL LIKE wildcard handling for encoded project IDs.
       await tx.execute('DELETE FROM api_keys WHERE substr(provider, 1, ?) = ?', [
@@ -156,6 +172,18 @@ export class ProjectRepository {
       ])
       await tx.execute('DELETE FROM projects WHERE id = ?', [projectId])
     })
+  }
+
+  /** First non-archived successor inside an open transaction; '' when none exists. */
+  private async pickSuccessorInTx(
+    tx: { queryFirst: (sql: string, params?: unknown[]) => Promise<unknown> },
+    deletedProjectId: string
+  ): Promise<string> {
+    const row = await tx.queryFirst(
+      "SELECT * FROM projects WHERE id != ? AND status != 'archived' ORDER BY updated_at DESC LIMIT 1",
+      [deletedProjectId]
+    ) as ProjectRow | null
+    return row ? row.id : ''
   }
 
   async deleteProject(id: string): Promise<void> {
