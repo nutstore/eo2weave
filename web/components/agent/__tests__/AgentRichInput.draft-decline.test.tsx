@@ -14,6 +14,7 @@ import { act, render, waitFor } from '@testing-library/react'
 import { type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentRichInput } from '@/components/agent/AgentRichInput'
+import { useInputDraftStore } from '@/store/input-draft.store'
 
 vi.mock('@/store/asset.store', () => ({
   useAssetStore: Object.assign((selector?: (s: unknown) => unknown) => selector?.({}) ?? {}, {
@@ -123,5 +124,58 @@ describe('AgentRichInput declined draft restoration', () => {
       expect.objectContaining({ text: 'different draft' }),
     )
     expect(onDraftRestored).toHaveBeenCalledTimes(2)
+  })
+
+  it('decline path keeps the typed text in the draft store when the consumer mirrors onChange into the store (round 5)', async () => {
+    // Reproduces Sourcery round 5 "Declined draft deletes typed input":
+    // WelcomeScreen's handleInputChange saves EVERY emission into the draft
+    // store under the same key its restoreDraft (the onDraftRestored
+    // callback) clears. With the old decline order (emit → onDraftRestored)
+    // the clear deleted the just-saved typed text, so leaving the input
+    // before another edit lost it. With the fixed order
+    // (onDraftRestored → emit) the clear can only remove a stale pending
+    // draft and the emission afterwards re-persists the typed text.
+    const draftKey = 'conv-decline-order'
+    // Consumer contract = WelcomeScreen.handleInputChange: mirror every
+    // emission into the draft store.
+    const onChange = vi.fn(({ text }: { text: string; mentionedAgentIds: string[] }) => {
+      useInputDraftStore.getState().saveDraft(draftKey, {
+        text,
+        mentionedAgentIds: [],
+        selectedFiles: [],
+      })
+    })
+    // Consuming callback contract = WelcomeScreen.restoreDraft: clear the
+    // draft-store entry.
+    const onDraftRestored = vi.fn(() => {
+      useInputDraftStore.getState().clearDraft(draftKey)
+    })
+
+    const { rerender } = render(
+      <Harness draftText="stored draft" onChange={onChange} onDraftRestored={onDraftRestored} />,
+    )
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith({ text: 'stored draft', mentionedAgentIds: [] })
+    })
+    expect(onDraftRestored).toHaveBeenCalledTimes(1)
+
+    // Editor now holds 'stored draft' (non-empty) — the second pending
+    // restoration is DECLINED. Under the old order the emission mirrored
+    // 'stored draft' into the store first and onDraftRestored then cleared
+    // it, losing the unsent text.
+    rerender(
+      <Harness draftText="different draft" onChange={onChange} onDraftRestored={onDraftRestored} />,
+    )
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(onDraftRestored).toHaveBeenCalledTimes(2)
+    // The typed text must survive in the draft store after the declined
+    // restoration — the user can leave the input and still get it back.
+    expect(useInputDraftStore.getState().peekDraft(draftKey)?.text).toBe('stored draft')
   })
 })
