@@ -507,9 +507,17 @@ function persistLoadErrorRecord(
  * failed one (issue #147, PR #149 round-4 review). Legacy records written
  * before the id was persisted (and metadata-scope records, which name no
  * conversation) keep the old behavior: a fully successful load resolves them.
+ *
+ * `requireNamedConversation` (PR #149 round-5 review, "Transcript read
+ * resolves metadata failure"): callers whose proof is a TRANSCRIPT read of a
+ * single conversation (setActive) must pass it — a metadata-scope/legacy
+ * record names a failure of the metadata layer, which such a read never
+ * exercises, so it may only be resolved by a full loadFromDB where the
+ * metadata layer itself re-read successfully.
  */
 function markPersistedFailureResolved(
-  resolvedForConversationId?: string | null
+  resolvedForConversationId?: string | null,
+  options?: { requireNamedConversation?: boolean }
 ): void {
   try {
     const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
@@ -525,6 +533,12 @@ function markPersistedFailureResolved(
         // The recorded failure belongs to a conversation that was NOT the
         // one just re-read — leave it unresolved so Diagnostics keeps
         // reporting it until its own transcript loads.
+        return
+      }
+      if (options?.requireNamedConversation && !record.conversationId) {
+        // A metadata-scope/legacy record: this transcript-only read proves
+        // nothing about the metadata layer — leave it unresolved until a
+        // full load (metadata re-read included) succeeds.
         return
       }
       sessionStorage.setItem(
@@ -1153,16 +1167,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             if (failureOwnerAtReadStart === id) {
               markPersistedFailureResolved(id)
             }
-          } else if (get().loadErrorScope !== 'transcript') {
-            // No transcript failure on record (or a newer one belonging to a
-            // different in-flight read, which is left alone above). A
-            // metadata-scoped or legacy record naming this conversation can
-            // still be resolved by this conversation's successful read.
-            if (
-              get().loadFailedConversationId === null ||
-              get().loadFailedConversationId === id
-            ) {
-              markPersistedFailureResolved(id)
+          } else {
+            // PR #149 round-5 review ("Transcript read resolves metadata
+            // failure"): a metadata-scope or legacy record names a failure of
+            // the METADATA layer, which setActive never re-reads — it only
+            // reads transcripts. A successful transcript read proves nothing
+            // about it, so only a record naming THIS conversation (a
+            // transcript-scope failure whose in-memory state a previous
+            // interleaved selection already cleared) may be resolved here;
+            // metadata records stay unresolved until a full loadFromDB —
+            // where the metadata layer itself re-reads — succeeds.
+            if (failureOwnerAtReadStart === id) {
+              markPersistedFailureResolved(id, { requireNamedConversation: true })
             }
           }
         }
