@@ -62,6 +62,20 @@ describe('fetchGatewayModels: ready / empty / failed statuses', () => {
     expect(result.status).toBe('failed')
   })
 
+  it('returns status "failed" when a 200 body fails to parse (malformed JSON rejects json())', async () => {
+    // Sourcery round 5: the shape-based failure above resolves json(); a
+    // truncated/malformed body makes json() itself REJECT — that rejection
+    // must degrade to a failed catalog, not escape fetchGatewayModels.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => { throw new SyntaxError('Unexpected token < in JSON') },
+    } as unknown as Response)
+    const result = await fetchGatewayModels('https://gw.example', 'tok')
+    expect(result.models).toEqual([])
+    expect(result.status).toBe('failed')
+  })
+
   it('returns status "failed" for a network error (unknown, not empty)', async () => {
     fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
     const result = await fetchGatewayModels('https://gw.example', 'tok')

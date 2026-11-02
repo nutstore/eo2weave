@@ -1472,7 +1472,17 @@ export async function fetchGatewayModels(
   // refresh, not an authoritative empty list.
   if (!res.ok) return { models: [], status: 'failed' }
 
-  const data = await res.json()
+  // A body that cannot be read or parsed (truncated stream, malformed JSON)
+  // is an unusable response, not an authoritative "no models": degrade to a
+  // failed catalog instead of rejecting (Sourcery: "Invalid JSON rejects
+  // model fetch" — res.json() previously threw outside this handling, so
+  // callers never received the failed-catalog result).
+  let data: unknown
+  try {
+    data = await res.json()
+  } catch {
+    return { models: [], status: 'failed' }
+  }
   // A body that is not a model array is an unusable response, not an
   // authoritative "no models".
   if (!data?.data || !Array.isArray(data.data)) return { models: [], status: 'failed' }
