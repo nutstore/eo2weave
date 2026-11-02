@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, memo } from 'react'
+import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { useT } from '@/i18n'
 
@@ -87,12 +87,32 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
   // null = no Virtuoso signal yet (button stays hidden, matching the previous
   // mount state); true/false = Virtuoso's last atBottomStateChange value.
   const [virtualAtBottom, setVirtualAtBottom] = useState<boolean | null>(null)
+  // PR #142 review (Sourcery, Medium): after a click we hide the button
+  // optimistically while the smooth jump is in flight, WITHOUT overwriting
+  // the authoritative virtualAtBottom — Virtuoso still reports not-at-bottom
+  // until the animation lands, so writing true here would desync the state:
+  // an interrupted jump (user scrolls up mid-animation) produces no
+  // atBottomStateChange transition and the stale `true` kept the button
+  // hidden forever. jumpPending is cleared by (a) Virtuoso confirming
+  // at-bottom (jump landed) or (b) a scroll event on the container while
+  // Virtuoso is still not-at-bottom (jump interrupted → resync & re-show).
+  const [jumpPending, setJumpPending] = useState(false)
+  // Mirror for the scroll-listener effect (it must read the live flag without
+  // re-subscribing on every jump).
+  const jumpPendingRef = useRef(false)
+  const setJumpPendingBoth = useCallback((v: boolean) => {
+    jumpPendingRef.current = v
+    setJumpPending(v)
+  }, [])
 
   // ── Virtualized mode: receive Virtuoso's at-bottom state via the hub ──
   useEffect(() => {
     if (!isVirtualized || !virtualAtBottomHub) return
     const listener: VirtualAtBottomListener = (atBottom) => {
       setVirtualAtBottom(atBottom)
+      // Virtuoso's verdict always ends the optimistic jump — true (landed)
+      // and false (a real interruption Virtuoso did report) alike.
+      setJumpPendingBoth(false)
     }
     virtualAtBottomHub.listeners.add(listener)
     // Replay the last broadcast: Virtuoso may have reported a state change
@@ -105,8 +125,9 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
     return () => {
       virtualAtBottomHub.listeners.delete(listener)
       setVirtualAtBottom(null)
+      setJumpPendingBoth(false)
     }
-  }, [isVirtualized, virtualAtBottomHub])
+  }, [isVirtualized, virtualAtBottomHub, setJumpPendingBoth])
 
   // ── Plain mode: native geometry scroll listener ──
   useEffect(() => {
@@ -127,6 +148,47 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
     return () => el.removeEventListener('scroll', handleScroll)
   }, [convId, scrollContainerRef, isUserAtBottomRef, isVirtualized])
 
+  // ── Virtualized mode: interrupted-jump resync (PR #142 review round 3) ──
+  // Virtuoso only broadcasts on at-bottom TRANSITIONS. The click pushes the
+  // optimistic at-bottom through the funnel (to re-enable followOutput), but
+  // Virtuoso's OWN state stays not-at-bottom until the animation lands — so
+  // a jump interrupted by scrolling up fires no transition and the stale
+  // optimistic `true` kept the button hidden forever. While a jump is
+  // pending, a scroll event that Virtuoso did not confirm as a landing means
+  // the jump was interrupted (had it landed, atBottomStateChange(true) would
+  // already have cleared jumpPending): resynchronize the list AND hub with
+  // Virtuoso's actual at-bottom state (not at bottom).
+  useEffect(() => {
+    if (!isVirtualized || !virtualAtBottomHub) return
+    const el = scrollContainerRef.current
+    if (!el) return
+    let lastTop = 0
+    let seen = false
+    const handleInterrupt = () => {
+      if (!jumpPendingRef.current) return
+      // First scroll event after the click just calibrates the baseline —
+      // the smooth animation itself fires scroll events while it runs, and
+      // those move TOWARD the bottom. Only a scroll moving AWAY from the
+      // bottom (scrollTop decreasing) is a genuine user interruption.
+      if (!seen) {
+        seen = true
+        lastTop = el.scrollTop
+        return
+      }
+      if (el.scrollTop >= lastTop) {
+        lastTop = el.scrollTop
+        return
+      }
+      setJumpPendingBoth(false)
+      // Funnel resync: ref + list state (followOutput off) + hub + listeners,
+      // so the button re-shows and streaming no longer yanks the view.
+      virtuosoRef?.current?.notifyVirtualAtBottom(false)
+    }
+    el.addEventListener('scroll', handleInterrupt, { passive: true })
+    return () => el.removeEventListener('scroll', handleInterrupt)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVirtualized, virtualAtBottomHub, scrollContainerRef, setJumpPendingBoth, virtuosoRef])
+
   const handleClick = useCallback(() => {
     if (isVirtualized) {
       // Push at-bottom back through ConversationMessages' funnel FIRST, so
@@ -138,19 +200,22 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
       // delegate to the list handle, which jumps to the true bottom of the
       // scroller (footer content included).
       virtuosoRef?.current?.scrollToLastTurn('smooth')
-      // Optimistic hide, mirroring the plain path's immediate UX; Virtuoso
-      // will re-affirm (or revoke) via atBottomStateChange.
-      setVirtualAtBottom(true)
+      // Optimistic hide WITHOUT overwriting the authoritative virtualAtBottom
+      // (review round 3): the hub keeps Virtuoso's real not-at-bottom value,
+      // so an interrupted jump can resync from it (see the scroll listener).
+      setJumpPendingBoth(true)
       return
     }
     isUserAtBottomRef.current = true
     const el = scrollContainerRef.current
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [scrollContainerRef, isUserAtBottomRef, isVirtualized, virtuosoRef])
+  }, [scrollContainerRef, isUserAtBottomRef, isVirtualized, virtuosoRef, setJumpPendingBoth])
 
   // Visibility per mode — never derived from native geometry while
   // virtualized (that mixed-source desync is exactly the #141 bug).
-  const showButton = isVirtualized ? virtualAtBottom === false : show
+  // jumpPending hides the button optimistically during the smooth jump;
+  // virtualAtBottom keeps Virtuoso's authoritative value the whole time.
+  const showButton = isVirtualized ? virtualAtBottom === false && !jumpPending : show
 
   if (!showButton) return null
 

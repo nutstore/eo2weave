@@ -1023,6 +1023,19 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
       editor.commands.setContent(initialText)
       emitValue(editor)
       onDraftRestored?.()
+    } else {
+      // PR #142 review (Sourcery, Medium): the editor already holds content
+      // the user typed BEFORE this pending draft restoration was consumed.
+      // Decline the restoration — typed text wins, matching the
+      // restoreDraftIntoInput contract — but consume the pending-restoration
+      // bookkeeping anyway. Leaving draftConvIdRef set would make the
+      // unmount cleanup skip saveDraft, so switching conversations loses the
+      // typed text and restores the stale stored draft on return. Emit the
+      // current editor value first so the logic layer's input state
+      // (inputRef) matches what is on screen; onDraftRestored then clears
+      // the pending marker and the unmount save persists the typed text.
+      emitValue(editor)
+      onDraftRestored?.()
     }
   }, [editor, initialText, emitValue, onDraftRestored])
 

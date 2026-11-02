@@ -483,6 +483,60 @@ describe('ConversationMessages virtualization', () => {
     expect(isUserAtBottomRef.current).toBe(true)
   })
 
+  it('interrupted jump re-shows the button and disables followOutput (review round 3)', async () => {
+    // Sourcery: the click's optimistic at-bottom (funnel push) marks the list
+    // and hub at-bottom before the smooth scroll lands. If the user scrolls
+    // up mid-animation, Virtuoso is still not-at-bottom, so NO transition —
+    // and thus no atBottomStateChange — fires. The scroll-away resync must
+    // restore button visibility and turn followOutput back off.
+    const isUserAtBottomRef = { current: false }
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
+    const scrollContainerRef = { current: null as HTMLDivElement | null }
+    const { handleRef, container, rerender } = renderWithButton(55, {
+      isUserAtBottomRef,
+      virtualAtBottomHub: hub,
+      scrollContainerRef,
+    })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+      expect(handleRef.current).not.toBeNull()
+    })
+
+    const button = await waitFor(() => {
+      const el = container.querySelector('[data-testid="scroll-to-bottom"]')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+
+    // Click → optimistic hide + optimistic funnel push (followOutput on).
+    act(() => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
+    expect(isUserAtBottomRef.current).toBe(true)
+
+    // User scrolls UP mid-jump: no atBottomStateChange fires (Virtuoso never
+    // reached bottom), just a scroll event on the scroll container with
+    // decreasing scrollTop. The resync must funnel not-at-bottom back through.
+    const scroller = container.querySelector('[data-testid="scroll-container"]') as HTMLDivElement
+    expect(scroller).not.toBeNull()
+    act(() => {
+      Object.defineProperty(scroller!, 'scrollTop', { value: 400, configurable: true })
+      scroller!.dispatchEvent(new Event('scroll'))
+      Object.defineProperty(scroller!, 'scrollTop', { value: 150, configurable: true })
+      scroller!.dispatchEvent(new Event('scroll'))
+    })
+
+    // Button re-shows and followOutput is disabled again.
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+    })
+    expect(isUserAtBottomRef.current).toBe(false)
+    rerender(56)
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
+    expect(hub.lastAtBottom).toBe(false)
+  })
+
   it('button replays the hub state it subscribed after (no missed initial signal)', async () => {
     const isUserAtBottomRef = { current: false }
     const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
@@ -727,14 +781,24 @@ function renderPlainWithScrollSpy(
  */
 function renderWithButton(
   pairs: number,
-  options: { isUserAtBottomRef?: React.MutableRefObject<boolean>; virtualAtBottomHub?: VirtualAtBottomHub } = {},
+  options: {
+    isUserAtBottomRef?: React.MutableRefObject<boolean>
+    virtualAtBottomHub?: VirtualAtBottomHub
+    /** Shared ref the button mounts its scroll listeners on (interrupted-jump test). */
+    scrollContainerRef?: React.MutableRefObject<HTMLDivElement | null>
+  } = {},
 ) {
   const handleRef = { current: null as ConversationMessagesHandle | null }
   const isUserAtBottomRef = options.isUserAtBottomRef ?? { current: true }
+  const scrollContainerRef = options.scrollContainerRef ?? { current: null as HTMLDivElement | null }
   const noop = vi.fn()
   const messagesEndRef = { current: null as HTMLDivElement | null }
   const ui = (count: number) => (
-    <div className="overflow-y-auto" data-testid="scroll-container">
+    <div
+      className="overflow-y-auto"
+      data-testid="scroll-container"
+      ref={options.scrollContainerRef ? (el) => { options.scrollContainerRef!.current = el } : undefined}
+    >
       <ConversationMessages
         ref={handleRef}
         activeMessages={makeMessages(count)}
@@ -752,7 +816,7 @@ function renderWithButton(
         mentionAgents={[]}
       />
       <ScrollToBottomButton
-        scrollContainerRef={{ current: null }}
+        scrollContainerRef={scrollContainerRef}
         messagesEndRef={messagesEndRef}
         isUserAtBottomRef={isUserAtBottomRef}
         convId="conv-1"
@@ -767,6 +831,7 @@ function renderWithButton(
     container,
     handleRef,
     isUserAtBottomRef,
+    scrollContainerRef,
     /** Re-render with a new message count, keeping the SAME button in the tree. */
     rerender: (nextPairs: number) => rerender(ui(nextPairs)),
   }
