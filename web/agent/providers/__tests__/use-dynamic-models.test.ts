@@ -1,6 +1,6 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useDynamicModels } from '../use-dynamic-models'
+import { useDynamicModels } from '@/agent/providers/use-dynamic-models'
 
 // The negative-cache window lives in the module under test; importing the
 // real module's constant keeps the test in sync with it.
