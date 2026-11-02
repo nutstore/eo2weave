@@ -46,15 +46,124 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary)
 }
 
+/** Reject the private/reserved IPv4 ranges a download host must never be. */
+function isForbiddenIPv4(parts: [number, number, number, number]): boolean {
+  const [a, b, c] = parts
+  return (
+    a === 0 ||                                      // "this network" 0.0.0.0/8
+    a === 10 ||                                     // RFC1918 private
+    (a === 100 && b >= 64 && b <= 127) ||           // CGNAT 100.64/10
+    a === 127 ||                                    // loopback 127/8
+    (a === 169 && b === 254) ||                     // link-local 169.254/16 (metadata)
+    (a === 172 && b >= 16 && b <= 31) ||            // RFC1918 private
+    (a === 192 && b === 168) ||                     // RFC1918 private
+    (a === 192 && b === 0 && (c === 0 || c === 2)) || // 192.0.0/24 + TEST-NET-1
+    (a === 198 && (b === 18 || b === 19)) ||        // benchmarking 198.18/15
+    (a === 198 && b === 51 && c === 100) ||         // TEST-NET-2
+    (a === 203 && b === 0 && c === 113) ||          // TEST-NET-3
+    a >= 224                                        // multicast 224/4 + reserved 240/4
+  )
+}
+
+/**
+ * Parse a literal IPv6 address (no brackets) into its 8 16-bit groups.
+ * Returns null for anything that is not a valid IPv6 literal.
+ */
+function parseIPv6Groups(host: string): number[] | null {
+  if (!host.includes(':')) return null
+  const doubleColons = host.match(/::/g)?.length ?? 0
+  if (doubleColons > 1) return null
+  const [leftRaw, rightRaw] = doubleColons === 1 ? host.split('::') : [host, '']
+  const parseGroups = (part: string): number[] | null => {
+    if (!part) return []
+    const groups: number[] = []
+    for (const piece of part.split(':')) {
+      if (piece.includes('.')) {
+        // Trailing IPv4-embedded form (e.g. ::ffff:127.0.0.1).
+        if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(piece)) return null
+        const octets = piece.split('.').map(Number)
+        if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null
+        groups.push(octets[0]! * 256 + octets[1]!, octets[2]! * 256 + octets[3]!)
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(piece)) return null
+        groups.push(parseInt(piece, 16))
+      }
+    }
+    return groups
+  }
+  const head = parseGroups(leftRaw)
+  const tail = parseGroups(rightRaw)
+  if (!head || !tail) return null
+  if (doubleColons === 0) {
+    return head.length === 8 ? head : null
+  }
+  const fill = 8 - head.length - tail.length
+  if (fill < 1) return null
+  return [...head, ...new Array<number>(fill).fill(0), ...tail]
+}
+
+/** Reject the private/reserved IPv6 ranges a download host must never be. */
+function isForbiddenIPv6(groups: number[]): boolean {
+  const isZero = (g: number) => g === 0
+  // Unspecified :: and loopback ::1.
+  if (groups.every(isZero)) return true
+  if (groups.slice(0, 7).every(isZero) && groups[7] === 1) return true
+  // Link-local fe80::/10 and unique-local fc00::/7.
+  const first = groups[0]!
+  if ((first & 0xffc0) === 0xfe80) return true
+  if ((first & 0xfe00) === 0xfc00) return true
+  // IPv4-mapped ::ffff:0:0/96: groups[0..4] are zero, groups[5] is 0xffff —
+  // apply the IPv4 rules to the embedded address. Also the deprecated
+  // IPv4-compatible ::/96 form (all six leading groups zero).
+  if (
+    (groups.slice(0, 5).every(isZero) && groups[5] === 0xffff) ||
+    groups.slice(0, 6).every(isZero)
+  ) {
+    const hi = groups[6]!
+    const lo = groups[7]!
+    return isForbiddenIPv4([Math.floor(hi / 256), hi % 256, Math.floor(lo / 256), lo % 256])
+  }
+  // NAT64 well-known prefix 64:ff9b::/96 embeds an IPv4 target — same rules.
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every(isZero)) {
+    const hi = groups[6]!
+    const lo = groups[7]!
+    return isForbiddenIPv4([Math.floor(hi / 256), hi % 256, Math.floor(lo / 256), lo % 256])
+  }
+  return false
+}
+
+function isForbiddenIpLiteral(hostname: string): boolean {
+  // hostname: URL.hostname lowercased, trailing dot stripped, NO brackets.
+  if (hostname.includes(':')) {
+    const groups = parseIPv6Groups(hostname)
+    // An IPv6-looking host that does not parse is refused outright.
+    return groups === null || isForbiddenIPv6(groups)
+  }
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
+    const octets = hostname.split('.').map(Number) as [number, number, number, number]
+    if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true
+    return isForbiddenIPv4(octets)
+  }
+  return false
+}
+
 /**
  * A plugin-download plan's URL originates from an UNTRUSTED page tool result.
  * The extension fetches it with background privileges, so a malicious site
  * could otherwise aim it at loopback / private-network endpoints (SSRF-style
  * probing of services on the user's machine or intranet). Validate before the
  * privileged fetch (#139 review round 6: untrusted URLs reach privileged
- * fetch): HTTPS only, public hosts only — no localhost names, no private /
- * loopback / link-local / CGNAT IP literals, no .internal / .local suffixes,
- * no credentials in the URL.
+ * fetch; #148 review round 7: IPv6 literals beyond a few textual prefixes and
+ * redirect targets slipped through): HTTPS only, public hosts only — no
+ * localhost names, no single-label hosts, no .local / .internal suffixes, no
+ * private / loopback / link-local / CGNAT / reserved IP literals (IPv4 and
+ * IPv6, including IPv4-mapped IPv6), no credentials in the URL.
+ *
+ * Known limitation: this checks URL TEXT only. A public hostname that resolves
+ * to a private address (DNS rebinding) cannot be detected from MV3 JS — there
+ * is no DNS API and the browser resolves internally. Resolution-time
+ * enforcement is the native host's responsibility; the extension layer is
+ * defense-in-depth.
  */
 export function assertPublicHttpsDownloadUrl(rawUrl: string): URL {
   let url: URL
@@ -69,68 +178,72 @@ export function assertPublicHttpsDownloadUrl(rawUrl: string): URL {
   if (url.username || url.password) {
     throw new Error('Download URL must not embed credentials')
   }
-  const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
+  const hostname = url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '').replace(/\.$/, '')
   if (
     hostname === 'localhost' ||
     hostname.endsWith('.localhost') ||
     hostname.endsWith('.local') ||
     hostname.endsWith('.internal') ||
-    hostname === '0.0.0.0' ||
-    hostname.endsWith('.0.0.0.0')
+    // Single-label hostname (no dot): on the public internet these do not
+    // resolve globally; a bare name would resolve via local search domains.
+    (!hostname.includes('.') && !hostname.includes(':'))
   ) {
     throw new Error(`Download URL host is not allowed: ${hostname}`)
   }
-  // Bracketed IPv6 literal (URL.hostname keeps the brackets).
-  if (hostname.startsWith('[') && hostname.endsWith(']')) {
-    const ipv6 = hostname.slice(1, -1)
-    const compressed = ipv6.split(':').filter(Boolean).length
-    const lowered = ipv6.toLowerCase()
-    if (
-      lowered === '::1' ||
-      lowered === '::' ||
-      lowered.startsWith('fe80') ||
-      lowered.startsWith('fc') || lowered.startsWith('fd') ||
-      lowered.startsWith('::ffff:127.') || lowered.startsWith('::ffff:10.') ||
-      lowered.startsWith('::ffff:192.168.') || lowered.startsWith('::ffff:169.254.') ||
-      lowered.startsWith('::ffff:172.') ||
-      (compressed < 8 && (lowered.startsWith('64:ff9b') || lowered.startsWith('::ffff')))
-    ) {
-      throw new Error(`Download URL host is not allowed: ${hostname}`)
-    }
-    // Numeric-form IPv6 in private ranges is hard to enumerate exhaustively;
-    // the explicit prefixes above cover loopback, link-local, unique-local,
-    // and IPv4-mapped private forms.
-    return url
-  }
-  if (!hostname.includes(':') && /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
-    const parts = hostname.split('.').map((p) => Number.parseInt(p, 10))
-    const [a, b] = parts as [number, number]
-    const octet = (v: number) => Number.isInteger(v) && v >= 0 && v <= 255
-    if (parts.length !== 4 || !parts.every(octet)) {
-      throw new Error(`Download URL host is not allowed: ${hostname}`)
-    }
-    const isPrivate =
-      a === 0 || a === 10 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 198 && (b === 18 || b === 19)) ||
-      (a === 192 && b === 0 && parts[2] === 0)
-    if (isPrivate) {
-      throw new Error(`Download URL host is not allowed: ${hostname}`)
-    }
+  if (isForbiddenIpLiteral(hostname)) {
+    throw new Error(`Download URL host is not allowed: ${hostname}`)
   }
   return url
 }
 
+/**
+ * Fetch an already-validated public URL WITHOUT following redirects
+ * automatically: every 3xx Location target is re-validated with
+ * assertPublicHttpsDownloadUrl before the next privileged request, so a
+ * redirect cannot bounce the privileged fetch onto a private endpoint
+ * (#148 review round 7: redirects reach private endpoints). Capped at 5 hops.
+ * `response.url` of the returned (final) response is the validated URL.
+ */
+async function fetchPublicDownload(
+  rawUrl: string,
+  abortSignal?: AbortSignal
+): Promise<Response> {
+  const MAX_REDIRECTS = 5
+  let currentUrl = rawUrl
+  for (let hops = 0; hops <= MAX_REDIRECTS; hops++) {
+    const validated = assertPublicHttpsDownloadUrl(currentUrl)
+    const response = await fetch(validated.href, {
+      redirect: 'manual',
+      signal: abortSignal,
+    })
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (!location) {
+        throw new Error(`Download redirect (${response.status}) missing Location header`)
+      }
+      if (hops === MAX_REDIRECTS) {
+        throw new Error(`Download exceeded ${MAX_REDIRECTS} redirects`)
+      }
+      // Resolve relative Location values against the current URL, then the
+      // loop head re-validates the absolute target before it is fetched.
+      currentUrl = new URL(location, validated).href
+      continue
+    }
+    return response
+  }
+  // Unreachable: the loop either returns or throws on hop MAX_REDIRECTS.
+  throw new Error('Download redirect loop')
+}
+
 async function prepareDownload(plan: WebMCPPluginDownloadPlan, abortSignal?: AbortSignal): Promise<PreparedDownload> {
-  assertPublicHttpsDownloadUrl(plan.downloadUrl)
-  const response = await fetch(plan.downloadUrl, { signal: abortSignal })
+  const response = await fetchPublicDownload(plan.downloadUrl, abortSignal)
   if (!response.ok) {
     throw new Error(`Download failed with status ${response.status}`)
   }
+  // Belt-and-braces: after the final hop the response URL must still be the
+  // URL we validated for that hop (browser normalization cannot smuggle a
+  // non-validated destination past redirect: 'manual').
+  assertPublicHttpsDownloadUrl(response.url)
 
   const fileName = sanitizeFileName(plan.fileName || `download_${Date.now()}`)
 

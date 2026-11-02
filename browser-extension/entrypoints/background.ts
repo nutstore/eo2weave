@@ -3259,6 +3259,21 @@ export default defineBackground(() => {
     port.onMessage.addListener((message) => {
       if (message.type === 'webmcp_plugin_download_stream') {
       (async () => {
+        // SECURITY: the download stream runs a privileged background fetch.
+        // The content-script relay runs on <all_urls>, so ANY page can post
+        // the bridge marker and open this port — the marker is not a secret
+        // (#148 review round 7: any webpage can read cross-origin responses).
+        // Gate the port on the same trusted-sender check the message handlers
+        // use (extension's own pages / CreatorWeave app origins only).
+        if (!isTrustedWebMCPSender(port.sender)) {
+          port.postMessage({
+            type: 'error',
+            errorCode: 'UNAUTHORIZED_PLUGIN_DOWNLOAD_SENDER',
+            message: 'Plugin download stream is only available to trusted WebMCP senders',
+          })
+          try { port.disconnect() } catch {}
+          return
+        }
         const plan = message.plan as WebMCPPluginDownloadPlan | undefined
         if (!plan?.transferId || !plan.downloadUrl || !plan.savePath || !plan.fileName) {
           port.postMessage({

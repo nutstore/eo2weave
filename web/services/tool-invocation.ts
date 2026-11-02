@@ -124,6 +124,12 @@ export async function invokeTool(
         timeoutMs = null
       else if (typeof args.timeout === 'number' && args.timeout > 0)
         timeoutMs = Math.min(args.timeout, 300_000)
+      // Only WebMCP tools produce a structured CALL_CANCELLED envelope on a
+      // lost abort race (#148 review round 7: non-WebMCP tools pay a useless
+      // 2-second grace wait for an envelope they can never emit). WebMCP
+      // invocations are dispatched through `call_tool` → the external-tool
+      // bridge; everything else keeps the plain abort/timeout rejection.
+      const isWebMCPInvocation = toolName === 'call_tool'
       raw = await executeToolWithTimeout({
         toolName,
         args,
@@ -136,18 +142,20 @@ export async function invokeTool(
         // "the page may still change" warning). Prefer that envelope over
         // the generic abort/timeout rejection so the model never loses the
         // warning (#139 review: cancellation warning gets lost).
-        preferEnvelopeOnRaceLoss: (envelope) => {
-          try {
-            const parsed = JSON.parse(envelope) as {
-              ok?: boolean
-              error?: { code?: string }
+        preferEnvelopeOnRaceLoss: isWebMCPInvocation
+          ? (envelope) => {
+              try {
+                const parsed = JSON.parse(envelope) as {
+                  ok?: boolean
+                  error?: { code?: string }
+                }
+                if (parsed?.ok === false && parsed?.error?.code === 'CALL_CANCELLED') {
+                  return envelope
+                }
+              } catch { /* not JSON — keep the plain rejection */ }
+              return null
             }
-            if (parsed?.ok === false && parsed?.error?.code === 'CALL_CANCELLED') {
-              return envelope
-            }
-          } catch { /* not JSON — keep the plain rejection */ }
-          return null
-        },
+          : undefined,
       })
     }
 

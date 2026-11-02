@@ -131,25 +131,25 @@ async function main() {
 
     const content = await readFile(skillMdPath, 'utf8')
     const fm = parseFrontmatter(content)
+    const localizedDescriptions = Object.fromEntries(
+      Object.entries(fm)
+        .filter(([k, v]) => k.startsWith('description.') && typeof v === 'string' && v)
+        .map(([k, v]) => [k.slice('description.'.length), v]),
+    )
     skills.push({
       id: name,
       name: fm.name || name,
       dirName: name,
-      description: fm.description ?? '',
+      // A skill may ship only localized descriptions (`description.zh-CN:`).
+      // Fall back to one of them so the base field is never empty — the
+      // install page gates rendering on `entry.description` and consumers
+      // reading only the base field would otherwise see nothing (#148
+      // review round 7: localized skill descriptions stay hidden).
+      description: fm.description ?? Object.values(localizedDescriptions)[0] ?? '',
       // Optional localized descriptions (e.g. `description.zh-CN:` in the
       // frontmatter). Purely additive: absent when a skill ships only the
       // base description, so older consumers are unaffected (#140).
-      ...(Object.entries(fm)
-        .filter(([k, v]) => k.startsWith('description.') && v)
-        .length > 0
-        ? {
-            description_i18n: Object.fromEntries(
-              Object.entries(fm)
-                .filter(([k, v]) => k.startsWith('description.') && typeof v === 'string' && v)
-                .map(([k, v]) => [k.slice('description.'.length), v]),
-            ),
-          }
-        : {}),
+      ...(Object.keys(localizedDescriptions).length > 0 ? { description_i18n: localizedDescriptions } : {}),
       category: fm.category || 'general',
       tags: Array.isArray(fm.tags) ? fm.tags : [],
       version: fm.version || '1.0.0',
