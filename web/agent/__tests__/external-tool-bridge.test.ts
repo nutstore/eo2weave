@@ -490,16 +490,17 @@ describe('WebMCP legacy extension compatibility', () => {
     }
   })
 
-  it('blocks legacy tools that may write because the old extension can select another tab', async () => {
+  it('invokes legacy tools that may write on the preferred tab', async () => {
     const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     setLegacyState(() => tool)
-    const invoke = vi.fn()
+    const invoke = vi.fn().mockResolvedValue({ ok: true, tabId: 1, result: { created: true } })
     mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
 
     const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
-    expect(invoke).not.toHaveBeenCalled()
-    expect(result.error.code).toBe('LEGACY_EXACT_TAB_UNSUPPORTED')
+    expect(invoke).toHaveBeenCalledOnce()
+    expect(invoke.mock.calls[0][0]).toMatchObject({ targetTabId: 1, preferredTabId: 1, groupKey: 'signature' })
+    expect(result.data.result).toEqual({ created: true })
   })
 
   it('rejects a legacy read result returned from a different tab', async () => {
@@ -514,20 +515,17 @@ describe('WebMCP legacy extension compatibility', () => {
     expect(result.error.code).toBe('TAB_TARGET_MISMATCH')
   })
 
-  it('uses the selected tab annotation instead of another tab representative', async () => {
-    const tool = legacyTool('signature')
+  it('reports a legacy write executed in a different tab without retrying it', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
-    mocks.getWebMCPState.mockReturnValue({
-      getEnabledTools: () => [tool],
-      getToolByCallName: () => tool,
-      discoveredTools: [{ ...tool, tabId: 1, annotations: { readOnlyHint: false } }],
-    })
-    const invoke = vi.fn()
+    setLegacyState(() => tool)
+    const invoke = vi.fn().mockResolvedValue({ ok: true, tabId: 2, result: { created: true } })
     mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
 
     const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
-    expect(invoke).not.toHaveBeenCalled()
-    expect(result.error.code).toBe('LEGACY_EXACT_TAB_UNSUPPORTED')
+    expect(invoke).toHaveBeenCalledOnce()
+    expect(result.error.code).toBe('TAB_TARGET_MISMATCH')
+    expect(result.error.message).toContain('may have changed the page')
   })
 })
 

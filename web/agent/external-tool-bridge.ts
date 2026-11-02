@@ -1148,20 +1148,6 @@ async function executeWebMCPTool(
   if (validationError) return validationError
 
   const targetTab = toolInfo.tabs.find((tab) => tab.tabId === targetTabId)
-  const targetInstance = targetTab?.groupKey
-    ? store.discoveredTools.find(
-        (instance) => instance.fullName === toolInfo.fullName && instance.tabId === targetTabId
-      )
-    : undefined
-  if (targetTab?.groupKey && targetInstance?.annotations?.readOnlyHint !== true) {
-    return toolErrorJson(
-      'call_tool',
-      'LEGACY_EXACT_TAB_UNSUPPORTED',
-      'This tool may change the page, and the installed browser extension cannot guarantee the selected tab. Update the extension before calling it.',
-      { retryable: false, details: { fullToolName: tool.fullName, tabId: targetTabId } }
-    )
-  }
-
   try {
     // Route fields for both extension generations: newer extensions route by
     // origin + raw tool name, legacy ones (<= 1.1.7) by `groupKey` +
@@ -1202,11 +1188,11 @@ async function executeWebMCPTool(
       }
     }
 
-    if (response.ok && response.tabId !== targetTabId) {
+    if (response.tabId !== targetTabId && (response.ok || response.tabId !== undefined)) {
       return toolErrorJson(
         'call_tool',
         'TAB_TARGET_MISMATCH',
-        `WebMCP tool returned from tab ${response.tabId ?? 'unknown'} instead of selected tab ${targetTabId}.`,
+        `WebMCP tool ran in tab ${response.tabId ?? 'unknown'} instead of selected tab ${targetTabId}. It may have changed the page; check both tabs before retrying.`,
         { retryable: false, details: { requestedTabId: targetTabId, actualTabId: response.tabId } }
       )
     }
