@@ -187,6 +187,14 @@ export function parseRegistryInput(input: string): PackageRegistry {
     }
     const [owner, repo, ...refPath] = parts
     const label = `${owner}/${repo}`
+    // BRANCH-ROOT input (finding: "Raw branch URLs fail to load"): a URL
+    // with ONLY the ref (`.../owner/repo/main`) has no file segment —
+    // treating the branch as the manifest filename produced a URL ending
+    // in `/main`, and the catalog fetch failed for input the parser had
+    // just accepted. Derive the manifest URL instead. With MORE than one
+    // ref segment the tail is genuinely ambiguous (branch-with-slash +
+    // directory vs. branch + path), so it is kept verbatim — see below.
+    const tail = refPath.length === 1 ? [...refPath, 'manifest.json'] : refPath
     // A branch name containing `/` (`feature/registry`) is indistinguishable
     // from branch `feature` + directory `registry` by URL shape. raw+
     // jsDelivr both resolve ref-paths greedily against the repo's existing
@@ -198,7 +206,7 @@ export function parseRegistryInput(input: string): PackageRegistry {
     const rawBase = `${url.protocol}//${RAW_HOST}/${owner}/${repo}`
     return {
       rawBase,
-      manifestUrl: `${rawBase}/${refPath.join('/')}`,
+      manifestUrl: `${rawBase}/${tail.join('/')}`,
       label,
     }
   }

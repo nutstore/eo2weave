@@ -69,6 +69,19 @@ describe('parseRegistryInput', () => {
     expect(registry.rawBase).toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg`)
   })
 
+  it('derives the manifest URL from a raw BRANCH-ROOT URL with no file segment', () => {
+    // MEDIUM ("Raw branch URLs fail to load"): `.../owner/repo/main` has no
+    // file segment — treating the branch as the manifest filename produced
+    // a URL ending in `/main`, and the catalog fetch failed for input the
+    // parser accepted.
+    const registry = parseRegistryInput(`https://${RAW_GITHUB_HOST}/owner/repo/main`)
+    expect(registry.manifestUrl).toBe(`https://${RAW_GITHUB_HOST}/owner/repo/main/manifest.json`)
+    expect(registry.rawBase).toBe(`https://${RAW_GITHUB_HOST}/owner/repo`)
+    // Package-file URLs stay consistent with the derived manifest URL.
+    expect(registryFileUrl(registry, 'packages/com.example.tools/manifest.json'))
+      .toBe(`https://${RAW_GITHUB_HOST}/owner/repo/main/packages/com.example.tools/manifest.json`)
+  })
+
   it('derives working package-file URLs for a slashed /tree/ branch', () => {
     const registry = parseRegistryInput('https://github.com/nutstore/pkg/tree/feature/registry')
     expect(registry.manifestUrl).toBe(`https://${RAW_GITHUB_HOST}/nutstore/pkg/feature/registry/manifest.json`)
