@@ -87,6 +87,15 @@ export const REGISTRY_FETCH_TIMEOUT_MS = 30_000
 /** Session-level manifest cache TTL (skill-store pattern). */
 export const CACHE_TTL_MS = 5 * 60 * 1000
 /**
+ * Cache generation per manifest URL. An invalidation (or a newer fetch
+ * starting) bumps the generation, so an OLDER fetch finishing afterwards
+ * no longer caches its stale response with a fresh TTL — the late stale
+ * catalog used to replace the refreshed one and kept serving outdated
+ * packages for another full TTL (finding: "Older catalogs replace
+ * refreshed ones").
+ */
+const cacheGenerations = new Map<string, number>()
+/**
  * Byte cap for a registry manifest download. Enforced WHILE the body
  * streams — a hostile registry cannot balloon the management page's memory
  * with an oversized catalog.
@@ -483,6 +492,11 @@ export async function fetchRegistryManifest(
   const cached = manifestCache.get(registry.manifestUrl)
   if (!options?.force && cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data
 
+  // Bump the URL's cache generation: any fetch that started EARLIER (and is
+  // still in flight) must not cache its response over ours.
+  const generation = (cacheGenerations.get(registry.manifestUrl) ?? 0) + 1
+  cacheGenerations.set(registry.manifestUrl, generation)
+
   const loadOnce = async (manifestUrl: string): Promise<{ manifest: RegistryManifest }> => {
     let response: Response
     let done: () => void
@@ -518,7 +532,12 @@ export async function fetchRegistryManifest(
     candidate => loadOnce(candidate),
     { preference: options?.preference },
   )
-  manifestCache.set(registry.manifestUrl, { data: result.value.manifest, ts: Date.now() })
+  // Cache only when this fetch is still the newest one for the URL — a
+  // stale in-flight request finishing after a forced refresh must not
+  // overwrite the refreshed catalog with a fresh TTL.
+  if (cacheGenerations.get(registry.manifestUrl) === generation) {
+    manifestCache.set(registry.manifestUrl, { data: result.value.manifest, ts: Date.now() })
+  }
   return result.value.manifest
 }
 
@@ -571,6 +590,15 @@ export async function fetchPackageManifestPreview(
 
 /** Drop cached manifests (the management page's "refresh" button). */
 export function invalidateRegistryCache(registry?: PackageRegistry): void {
-  if (registry) manifestCache.delete(registry.manifestUrl)
-  else manifestCache.clear()
+  if (registry) {
+    manifestCache.delete(registry.manifestUrl)
+    // A fetch still in flight for this URL must not cache its stale
+    // response now that the cache was invalidated.
+    cacheGenerations.set(registry.manifestUrl, (cacheGenerations.get(registry.manifestUrl) ?? 0) + 1)
+  } else {
+    manifestCache.clear()
+    for (const url of cacheGenerations.keys()) {
+      cacheGenerations.set(url, (cacheGenerations.get(url) ?? 0) + 1)
+    }
+  }
 }
