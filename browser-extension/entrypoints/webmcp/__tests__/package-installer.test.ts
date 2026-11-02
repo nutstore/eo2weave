@@ -77,9 +77,10 @@ async function pkgWithFiles(files: Record<string, string>, overrides: Partial<Re
     path: `packages/com.example.pkg/${filePath}`,
     sha256: await sha256Of(content),
   })))
+  const version = (JSON.parse(files['manifest.json']!) as { version?: string }).version ?? '1.0.0'
   return {
     id: 'com.example.pkg',
-    version: '1.0.0',
+    version,
     description: 'Test package.',
     toolCount: 1,
     files: entries,
@@ -284,24 +285,39 @@ describe('installPackage (extension side)', () => {
     // and then clear the backup — that would leave a mixed package with the
     // backup, the only clean copy, gone.
     const files = fixtureFiles()
-    const pkg = await pkgWithFiles(files)
+    const full = fixtureFiles({ ...TOOL_MANIFEST, version: '2.0.0' })
+    const pkg = await pkgWithFiles(full, { version: '2.0.0' })
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
-
-    const full = fixtureFiles({ ...TOOL_MANIFEST, version: '2.0.0' })
     // Old install in place.
     await provider.mkdir('com.example.pkg', { recursive: true })
     for (const [path, content] of Object.entries(files)) {
       await provider.writeFile(`com.example.pkg/${path}`, new TextEncoder().encode(content))
     }
-    // The replacement writes ONE extra file, then its staged copy-in dies.
-    // The partial-tree removal also fails (storage failure), so a copy-over
-    // rollback would leave BOTH versions' files mixed.
+    // The replacement's staged copy-in dies mid-copy (a storage failure on
+    // one of the package's files), and BOTH the rollback's partial-tree
+    // removal and the backup removal fail (storage failure) too, so a
+    // copy-over rollback would leave BOTH versions' files mixed and would
+    // then try to clear the backup it failed to restore from. `rename` is
+    // stripped so the swap uses the COPY path — the production OPFS
+    // provider has no rename, and that is the path this finding is about.
+    // The FIRST removal of the live tree (before the copy-in) still
+    // succeeds — only the ROLLBACK-time removal fails.
     const failingRemove = provider.remove.bind(provider)
-    ;(provider as { remove: typeof provider.remove }).remove = (async (path: string) => {
-      if (path === 'com.example.pkg') throw new Error('EIO: simulated removal failure')
-      return failingRemove(path)
+    const failingWrite = provider.writeFile.bind(provider)
+    let liveRemovals = 0
+    provider.remove = (async (path: string, options?: { recursive?: boolean }) => {
+      if (path === 'com.example.pkg') {
+        liveRemovals += 1
+        if (liveRemovals >= 2) throw new Error('EIO: simulated removal failure')
+      }
+      return failingRemove(path, options)
     }) as typeof provider.remove
+    provider.writeFile = (async (path: string, data: Uint8Array) => {
+      if (path === 'com.example.pkg/workflows/read.js') throw new Error('EIO: simulated write failure')
+      return failingWrite(path, data)
+    }) as typeof provider.writeFile
+    delete (provider as { rename?: unknown }).rename
 
     await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(full) }))
       .rejects.toThrow(/previous install was preserved/)

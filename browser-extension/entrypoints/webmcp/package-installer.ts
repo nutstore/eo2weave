@@ -328,10 +328,8 @@ async function swapPackageIntoPlace(
     // SECURITY (critical, "Retry deletes last good package"): a PRIOR failed
     // replacement may have left `backup` behind holding the ONLY surviving
     // copy of the package (restoration failed there). If the live directory
-    // is ALSO gone, this backup is not redundant state — it is a recoverable
-    // install. Restore it before proceeding, so the retry can never delete
-    // the last good copy; if the live tree exists, the backup is genuinely
-    // stale and safe to clear below. An INDETERMINATE stat
+    // exists but is NOT VERIFIED COMPLETE, the backup is the more
+    // trustworthy copy and is restored instead. An INDETERMINATE stat
     // (transient/permission failure) must NOT read as "exists": that is
     // exactly how a retry skipped recovery and then deleted the preserved
     // backup. Abort instead — the backup survives untouched and the caller
@@ -537,7 +535,6 @@ async function swapPackageIntoPlace(
         // mid-restore from it).
         if (!backupPreserved && !lockSignal.aborted) await removeMissingOk(provider, backup).catch(() => {})
       }
-      assertLeaseHeld() // fence the final redundant-backup clear
       await removeMissingOk(provider, backup, lockSignal)
     }
   } catch (error) {
