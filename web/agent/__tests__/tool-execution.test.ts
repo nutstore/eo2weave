@@ -234,6 +234,50 @@ describe('tool-execution helpers', () => {
     }
   })
 
+  it('executeToolWithTimeout clears the grace-period timer when the envelope fallback resolves (#139 review: race fallback timers outlive calls)', async () => {
+    // The grace timer (RACE_LOSS_GRACE_MS = 2000) is armed when the initial
+    // race loses to abort/timeout. When the cancellation envelope arrives
+    // BEFORE the grace period expires, the timer must be cleared instead of
+    // winding down for up to two seconds after the call has finished.
+    vi.useFakeTimers()
+    try {
+      const cancelledEnvelope = JSON.stringify({
+        ok: false,
+        version: 2,
+        tool: 'call_tool',
+        error: { code: 'CALL_CANCELLED', message: 'cancelled', retryable: false },
+      })
+      const controller = new AbortController()
+      const pending = executeToolWithTimeout({
+        toolName: 'call_tool',
+        args: {},
+        timeoutMs: null,
+        runAbortSignal: controller.signal,
+        preferEnvelopeOnRaceLoss: (envelope) =>
+          envelope.includes('CALL_CANCELLED') ? envelope : null,
+        execute: async () => {
+          // Abort wins the initial race, then the envelope lands well
+          // inside the grace window.
+          await new Promise((r) => setTimeout(r, 50))
+          controller.abort(new Error('user stop'))
+          await new Promise((r) => setTimeout(r, 100))
+          return cancelledEnvelope
+        },
+      })
+      // The envelope replaces the abort rejection, so the call RESOLVES with
+      // the cancellation envelope; drive the fake clock while it is pending,
+      // then assert that shape before checking timers.
+      await vi.advanceTimersByTimeAsync(200)
+      const raw = await pending
+      expect(JSON.parse(raw).error.code).toBe('CALL_CANCELLED')
+      // Without the fix the 2000ms grace timer is still scheduled here;
+      // with it, no timer outlives the call.
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('truncateLargeToolResult reduces oversized search payload to summary-only result', async () => {
     const raw = JSON.stringify({
       results: [{ path: 'a.ts', line: 1, match: 'x'.repeat(3000), preview: 'x'.repeat(3000) }],

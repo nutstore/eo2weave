@@ -214,10 +214,16 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
       ])
     } catch (raceError) {
       if (!input.preferEnvelopeOnRaceLoss) throw raceError
+      // The grace timer must not outlive the call (#139 review: race
+      // fallback timers outlive calls) — keep its handle and clear it
+      // when the fallback race settles, however it settles.
+      let graceTimer: ReturnType<typeof setTimeout> | undefined
       try {
         const envelope = await Promise.race([
           toolPromise,
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), RACE_LOSS_GRACE_MS)),
+          new Promise<null>((resolve) => {
+            graceTimer = setTimeout(() => resolve(null), RACE_LOSS_GRACE_MS)
+          }),
         ])
         if (envelope !== null) {
           const preferred = input.preferEnvelopeOnRaceLoss(envelope)
@@ -238,6 +244,8 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
       } catch {
         // The tool promise rejected too — the original race error is the
         // more accurate failure, so fall through to rethrow it.
+      } finally {
+        if (graceTimer !== undefined) clearTimeout(graceTimer)
       }
       throw raceError
     }
