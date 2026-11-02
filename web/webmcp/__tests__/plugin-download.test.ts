@@ -30,9 +30,9 @@ import {
   consumeAndSavePluginDownload,
   SavedAssetAbortedError,
   WEBMCP_DOWNLOAD_ABORTED,
-} from '../plugin-download'
+} from '@/webmcp/plugin-download'
 import type { ToolContext } from '@/agent/tools/tool-types'
-import type { WebMCPBridge, WebMCPPluginDownloadFrame } from '../types'
+import type { WebMCPBridge, WebMCPPluginDownloadFrame } from '@/webmcp/types'
 
 const PLAN = {
   transferId: 't1',
