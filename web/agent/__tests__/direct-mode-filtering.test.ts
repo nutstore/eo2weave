@@ -274,17 +274,24 @@ describe('directMode tool filtering', () => {
   // switches into project-agent personas, db_query runs SQL over the host
   // project's OPFS SQLite. A standalone chat has no project, so both are
   // excluded in direct mode — at definition, execution, and no-retry layers.
-  it('project-bound tools (delegate_to, db_query) are excluded from direct mode', () => {
+  it('project-bound tools (delegate_to, db_query) are excluded from direct mode', async () => {
     expect(isToolAllowedInDirectMode('delegate_to')).toBe(false)
     expect(isToolAllowedInDirectMode('db_query')).toBe(false)
 
     const registry = getToolRegistry()
+    // db_query registers only in dev builds; register it here explicitly so
+    // the definition-level exclusion below is non-vacuous (a missing entry
+    // would otherwise pass the not.toContain without proving anything).
+    if (!registry.has('db_query')) {
+      const { dbQueryTool } = await import('@/agent/tools/db-query.tool')
+      registry.register(dbQueryTool.definition, dbQueryTool.executor)
+    }
     const names = (direct: boolean) =>
       registry.getToolDefinitionsForMode('act', { directMode: direct }).map((d) => d.function.name)
 
-    // delegate_to is registered in project contexts (db_query only in dev
-    // builds, so it may legitimately be absent from the registry here).
+    // delegate_to is registered in project contexts.
     expect(names(false)).toContain('delegate_to')
+    expect(names(false)).toContain('db_query')
     expect(names(true)).not.toContain('delegate_to')
     expect(names(true)).not.toContain('db_query')
   })
