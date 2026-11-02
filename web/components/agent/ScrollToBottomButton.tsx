@@ -21,20 +21,39 @@ export interface VirtualAtBottomHub {
   lastAtBottom: boolean | null
 }
 
-interface ScrollToBottomButtonProps {
-  scrollContainerRef: React.RefObject<HTMLDivElement | null>
-  messagesEndRef: React.RefObject<HTMLDivElement | null>
-  isUserAtBottomRef: React.MutableRefObject<boolean>
-  convId: string | undefined
+/**
+ * Props form for virtualized mode (isVirtualized: true). Under virtual
+ * scrolling the DOM only holds the window slice, so the click must delegate
+ * to the message-list handle and visibility must track Virtuoso via the hub —
+ * both are required, hence non-optional here.
+ */
+interface ScrollToBottomButtonVirtualProps {
   /** Message-list handle — the virtual-mode click delegates to it. */
-  virtuosoRef?: React.RefObject<{
+  virtuosoRef: React.RefObject<{
     scrollToLastTurn?: (behavior?: 'smooth' | 'auto') => void
     notifyVirtualAtBottom?: (atBottom: boolean) => void
   } | null>
   /** Whether the conversation is currently rendered through react-virtuoso. */
-  isVirtualized?: boolean
+  isVirtualized: true
   /** Shared hub receiving Virtuoso's atBottomStateChange (virtual mode). */
-  virtualAtBottomHub?: VirtualAtBottomHub | null
+  virtualAtBottomHub: VirtualAtBottomHub
+}
+
+/** Props form for plain mode (isVirtualized: false/omitted) — native geometry. */
+interface ScrollToBottomButtonPlainProps {
+  virtuosoRef?: undefined
+  isVirtualized?: false
+  virtualAtBottomHub?: undefined
+}
+
+type ScrollToBottomButtonProps = ScrollToBottomButtonPropsBase &
+  (ScrollToBottomButtonVirtualProps | ScrollToBottomButtonPlainProps)
+
+interface ScrollToBottomButtonPropsBase {
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>
+  messagesEndRef: React.RefObject<HTMLDivElement | null>
+  isUserAtBottomRef: React.MutableRefObject<boolean>
+  convId: string | undefined
 }
 
 /**
@@ -57,7 +76,7 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
   isUserAtBottomRef,
   convId,
   virtuosoRef,
-  isVirtualized = false,
+  isVirtualized,
   virtualAtBottomHub,
 }: ScrollToBottomButtonProps) {
   const t = useT()

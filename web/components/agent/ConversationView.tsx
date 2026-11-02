@@ -310,6 +310,12 @@ export function ConversationView({
     }
   }, [])
 
+  // The virtual/plain mode split is a stable binary for a given message count
+  // (the count only crosses the threshold by appending messages, never in
+  // place). Expose both literal forms so the JSX below picks the matching
+  // branch of ScrollToBottomButton's discriminated-union props.
+  const isConversationVirtualized = activeMessages.length > VIRTUALIZATION_THRESHOLD
+
   // ── Initial message handling ──
   useInitialMessage({
     initialMessage,
@@ -410,9 +416,9 @@ export function ConversationView({
           messagesEndRef={messagesEndRef}
           isUserAtBottomRef={isUserAtBottomRef}
           convId={convId ?? undefined}
-          isVirtualized={activeMessages.length > VIRTUALIZATION_THRESHOLD}
-          virtuosoRef={conversationMessagesRef}
-          virtualAtBottomHub={virtualAtBottomHubRef.current}
+          {...(isConversationVirtualized
+            ? { isVirtualized: true as const, virtuosoRef: conversationMessagesRef, virtualAtBottomHub: virtualAtBottomHubRef.current }
+            : { isVirtualized: false as const })}
         />
 
         {/* Assets popover — small trigger button, expands to show workspace assets */}

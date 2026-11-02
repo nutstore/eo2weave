@@ -506,9 +506,9 @@ describe('ConversationMessages virtualization', () => {
           messagesEndRef={messagesEndRef}
           isUserAtBottomRef={isUserAtBottomRef}
           convId="conv-1"
-          isVirtualized={virtual}
-          virtuosoRef={handleRef}
-          virtualAtBottomHub={hub}
+          {...(virtual
+            ? { isVirtualized: true as const, virtuosoRef: handleRef, virtualAtBottomHub: hub }
+            : { isVirtualized: false as const })}
         />
       </div>
     )
@@ -651,7 +651,7 @@ function renderWithButton(
         convId="conv-1"
         isVirtualized
         virtuosoRef={handleRef}
-        virtualAtBottomHub={options.virtualAtBottomHub}
+        virtualAtBottomHub={options.virtualAtBottomHub!}
       />
     </div>
   )
