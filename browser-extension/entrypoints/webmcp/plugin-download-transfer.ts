@@ -46,8 +46,8 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary)
 }
 
-async function prepareDownload(plan: WebMCPPluginDownloadPlan): Promise<PreparedDownload> {
-  const response = await fetch(plan.downloadUrl)
+async function prepareDownload(plan: WebMCPPluginDownloadPlan, abortSignal?: AbortSignal): Promise<PreparedDownload> {
+  const response = await fetch(plan.downloadUrl, { signal: abortSignal })
   if (!response.ok) {
     throw new Error(`Download failed with status ${response.status}`)
   }
@@ -79,10 +79,11 @@ function chunkData(data: string, chunkChars = DEFAULT_CHUNK_CHARS): string[] {
 
 export async function streamPluginDownload(
   plan: WebMCPPluginDownloadPlan,
-  emit: (frame: WebMCPPluginDownloadFrame) => void
+  emit: (frame: WebMCPPluginDownloadFrame) => void,
+  abortSignal?: AbortSignal
 ): Promise<void> {
   try {
-    const prepared = await prepareDownload(plan)
+    const prepared = await prepareDownload(plan, abortSignal)
     const chunks = chunkData(prepared.dataUrl)
 
     emit({

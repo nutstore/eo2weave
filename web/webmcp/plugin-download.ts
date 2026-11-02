@@ -8,6 +8,28 @@ import type {
   WebMCPPluginDownloadStartFrame,
 } from './types'
 
+/**
+ * Paths currently owned by in-flight downloads (module-level: shared across
+ * all concurrent downloads in this JS context). `resolveUniqueAssetPath`
+ * probes the filesystem, but two downloads starting in the same tick both
+ * see the same "unique" candidate — the claim makes the pick exclusive so a
+ * later rollback can never delete another download's file (#139 review
+ * round 5: successful downloads lose their files).
+ */
+const claimedAssetPaths = new Set<string>()
+
+/** Claim an exclusive save path. Returns false if already claimed. */
+function claimAssetPath(path: string): boolean {
+  if (claimedAssetPaths.has(path)) return false
+  claimedAssetPaths.add(path)
+  return true
+}
+
+/** Release a claimed save path after the download settles. */
+function releaseAssetPath(path: string): void {
+  claimedAssetPaths.delete(path)
+}
+
 export interface PluginDownloadSaveResult {
   savedPath: string
   fileName: string
@@ -150,51 +172,88 @@ async function collectDataUrlFromFrames(
   let startFrame: WebMCPPluginDownloadStartFrame | null = null
   let chunks: string[] = []
 
-  for await (const frame of stream) {
-    // Observe the run's abort signal between frames: once the caller has
-    // cancelled, the extension transfer must stop being consumed (#139
-    // review: aborted downloads keep writing). The stream is cancelled
-    // best-effort so the extension side stops transferring too.
-    if (context.abortSignal?.aborted) {
-      cancelPluginDownloadStream(stream)
-      throw new Error('__WEBMCP_DOWNLOAD_ABORTED__')
-    }
-    if (frame.type === 'error') {
-      throw new Error(`[${frame.errorCode}] ${frame.message}`)
-    }
-    if (frame.type === 'start') {
-      if (frame.transferId !== expectedTransferId) {
-        throw new Error('Transfer ID mismatch on start frame')
-      }
-      startFrame = toStartFrame(frame)
-      chunks = new Array(startFrame.totalChunks)
-      continue
-    }
+  // Race the PENDING `next()` against the abort signal: the loop below only
+  // checks the signal after a frame arrives, so a stream stalled mid-transfer
+  // would never observe the cancellation (#139 review round 5: stalled
+  // downloads ignore cancellation). When abort wins, the stream is cancelled
+  // best-effort and the distinct marker is thrown.
+  let onAbort: (() => void) | undefined
+  const abortPromise = context.abortSignal
+    ? new Promise<never>((_, reject) => {
+        if (context.abortSignal!.aborted) {
+          reject(new Error('__WEBMCP_DOWNLOAD_ABORTED__'))
+          return
+        }
+        onAbort = () => {
+          cancelPluginDownloadStream(stream)
+          reject(new Error('__WEBMCP_DOWNLOAD_ABORTED__'))
+        }
+        context.abortSignal!.addEventListener('abort', onAbort, { once: true })
+      })
+    : null
+  const iterator = stream[Symbol.asyncIterator]()
+  const raceNext = (): Promise<IteratorResult<WebMCPPluginDownloadFrame>> =>
+    abortPromise ? Promise.race([iterator.next(), abortPromise]) : iterator.next()
 
-    if (frame.type === 'chunk') {
-      if (!startFrame) {
-        throw new Error('Chunk received before start frame')
+  try {
+    for (;;) {
+      // Observe the run's abort signal between frames too: once the caller
+      // has cancelled, the extension transfer must stop being consumed (#139
+      // review: aborted downloads keep writing). The stream is cancelled
+      // best-effort so the extension side stops transferring too.
+      if (context.abortSignal?.aborted) {
+        cancelPluginDownloadStream(stream)
+        throw new Error('__WEBMCP_DOWNLOAD_ABORTED__')
       }
-      if (frame.transferId !== expectedTransferId) {
-        throw new Error('Transfer ID mismatch on chunk frame')
+      const { done, value } = await raceNext()
+      if (done) break
+      const frame = value
+      if (frame.type === 'error') {
+        throw new Error(`[${frame.errorCode}] ${frame.message}`)
       }
-      const chunkFrame = toChunkFrame(frame)
-      if (chunkFrame.index < 0 || chunkFrame.index >= chunks.length) {
-        throw new Error(`Invalid chunk index: ${chunkFrame.index}`)
+      if (frame.type === 'start') {
+        if (frame.transferId !== expectedTransferId) {
+          throw new Error('Transfer ID mismatch on start frame')
+        }
+        startFrame = toStartFrame(frame)
+        chunks = new Array(startFrame.totalChunks)
+        continue
       }
-      chunks[chunkFrame.index] = chunkFrame.data
-      continue
-    }
 
-    if (frame.type === 'end') {
-      if (!startFrame) {
-        throw new Error('End received before start frame')
+      if (frame.type === 'chunk') {
+        if (!startFrame) {
+          throw new Error('Chunk received before start frame')
+        }
+        if (frame.transferId !== expectedTransferId) {
+          throw new Error('Transfer ID mismatch on chunk frame')
+        }
+        const chunkFrame = toChunkFrame(frame)
+        if (chunkFrame.index < 0 || chunkFrame.index >= chunks.length) {
+          throw new Error(`Invalid chunk index: ${chunkFrame.index}`)
+        }
+        chunks[chunkFrame.index] = chunkFrame.data
+        continue
       }
-      if (frame.transferId !== expectedTransferId) {
-        throw new Error('Transfer ID mismatch on end frame')
+
+      if (frame.type === 'end') {
+        if (!startFrame) {
+          throw new Error('End received before start frame')
+        }
+        if (frame.transferId !== expectedTransferId) {
+          throw new Error('Transfer ID mismatch on end frame')
+        }
+        break
       }
-      break
     }
+  } finally {
+    // Drop the abort listener on every exit path — success, error, and
+    // cancellation alike (the signal may outlive this download across a
+    // long run; #139 review: listener accumulation). Best-effort close of
+    // the iterator mirrors what `for await` would do.
+    if (onAbort && context.abortSignal) {
+      context.abortSignal.removeEventListener('abort', onAbort)
+    }
+    void iterator.return?.().catch(() => {})
   }
 
   if (!startFrame) {
@@ -244,8 +303,13 @@ export async function consumeAndSavePluginDownload(
   }
 
   // Already-aborted run: do not start the transfer at all (#139 review:
-  // cancelled transfers keep writing assets).
-  context.abortSignal?.throwIfAborted()
+  // cancelled transfers keep writing assets). Throw the DISTINCT marker
+  // (not the signal's native abort error) so the caller's catch classifies
+  // it as cancellation, not a download failure (#139 review round 5:
+  // aborts become download failures).
+  if (context.abortSignal?.aborted) {
+    throw new Error('__WEBMCP_DOWNLOAD_ABORTED__')
+  }
 
   const stream = bridge.webMCPPluginDownloadStream({
     transferId: plan.transferId,
@@ -270,20 +334,38 @@ export async function consumeAndSavePluginDownload(
   const targetPath = saveDir ? `${saveDir}/${safeFileName}` : safeFileName
 
   const backend = new AssetsBackend(workspaceId)
-  const finalPath = await resolveUniqueAssetPath(backend, targetPath)
-  const { blob, mimeType } = dataUrlToBlob(dataUrl)
-  await backend.writeFile(finalPath, blob)
+  // Probe + claim atomically enough for this context: re-probe candidates
+  // until one is BOTH unused on disk AND unclaimed by another in-flight
+  // download, then claim it before the write (#139 review round 5:
+  // successful downloads lose their files).
+  let finalPath = await resolveUniqueAssetPath(backend, targetPath)
+  while (!claimAssetPath(finalPath)) {
+    finalPath = await resolveUniqueAssetPath(backend, `${finalPath}-candidate-${Date.now()}`)
+  }
+  try {
+    const { blob, mimeType } = dataUrlToBlob(dataUrl)
+    await backend.writeFile(finalPath, blob)
+  } catch (e) {
+    releaseAssetPath(finalPath)
+    throw e
+  }
 
-  // Abort after the save: the file already landed on disk. Surface a
-  // distinct error so the caller can roll the saved asset back (#139
-  // review: failed finalize hides a saved file) instead of reporting a
-  // plain failure that hides it.
+  // Abort after the save: the file already landed on disk. The claim is
+  // RELEASED here (the caller's rollback is now allowed to delete it — no
+  // other download owns this path). Surface a distinct error so the caller
+  // can roll the saved asset back (#139 review: failed finalize hides a
+  // saved file) instead of reporting a plain failure that hides it.
   if (context.abortSignal?.aborted) {
+    releaseAssetPath(finalPath)
     throw new SavedAssetAbortedError(finalPath)
   }
 
   const vfsPath = `vfs://assets/${finalPath}`
   const patchedResult = patchResultForAI(plan.originalResult, vfsPath, safeFileName)
+
+  // Success: the caller (or the user) now owns the file — release the claim
+  // so any future rollback won't be blocked by it.
+  releaseAssetPath(finalPath)
 
   return {
     savedPath: finalPath,

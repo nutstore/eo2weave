@@ -1095,12 +1095,26 @@ async function refreshCatalogWithinDeadline(freshAfterInFlight = false): Promise
  * Never throws — a failed rollback must not mask the error/cancellation
  * path.
  */
+// In-progress asset registrations, shared across concurrent downloads in the
+// same JS context: `resolveUniqueAssetPath` only probes the filesystem, so
+// two downloads started in the same tick can both pick the same "unique"
+// path, and one later rollback would delete the other's file (#139 review
+// round 5: successful downloads lose their files). The path is claimed
+// before the write (in plugin-download.ts via this shared set) and released
+// on completion; rollback refuses to delete a still-claimed path.
+const claimedAssetPaths = new Set<string>()
+
 async function deleteSavedAssetQuietly(workspaceId: string | null, savedPath: string): Promise<boolean> {
   // No workspace id ⇒ the save could not have happened through the assets
   // backend in the first place, so there is nothing to roll back and the
   // finalize path keeps its normal retryable classification (#139 review:
   // failed finalize hides a saved file).
   if (!workspaceId) return true
+  if (claimedAssetPaths.has(savedPath)) {
+    // Still owned by another in-flight download: deleting it would corrupt
+    // that download's reported success.
+    return false
+  }
   try {
     const { AssetsBackend } = await import('@/agent/tools/backends/assets-backend')
     await new AssetsBackend(workspaceId).deleteFile(savedPath)
@@ -1112,6 +1126,44 @@ async function deleteSavedAssetQuietly(workspaceId: string | null, savedPath: st
 function workspaceIdForAssetRollback(context: ToolContext): string | null {
   const workspaceId = context.workspaceId?.trim()
   return workspaceId || null
+}
+
+/**
+ * A finalize bridge call that REJECTED (vs returned `ok: false`). Carries
+ * the saved path so the catch branch rolls the asset back the same way
+ * (#139 review round 5: finalize failures leave saved files).
+ */
+class FinalizeTransportError extends Error {
+  readonly savedPath: string
+  constructor(cause: string, savedPath: string) {
+    super(cause)
+    this.name = 'FinalizeTransportError'
+    this.savedPath = savedPath
+  }
+}
+
+/**
+ * CALL_CANCELLED envelope augmented with the orphaned asset path when the
+ * rollback could not be performed (#139 review round 5: cancelled downloads
+ * leave untracked files) — the caller must be able to locate the file even
+ * though the run was cancelled.
+ */
+function cancellationEnvelopeWithOrphan(context: ToolContext, savedPath: string): string {
+  return toolErrorJson(
+    'call_tool',
+    'CALL_CANCELLED',
+    'WebMCP tool call was cancelled. The downloaded asset could not be rolled back and is still saved at vfs://assets/' +
+      savedPath +
+      ' — delete it manually if it is not needed.',
+    {
+      retryable: false,
+      details: {
+        fullToolName: 'call_tool',
+        savedAssetPath: `vfs://assets/${savedPath}`,
+        workspaceId: workspaceIdForAssetRollback(context),
+      },
+    },
+  )
 }
 
 /** Return the current legacy route key after rediscovering the selected tab. */
@@ -1416,10 +1468,21 @@ async function executeWebMCPTool(
         // finish. Never re-dispatch the page action.
         let onFinalizeAbort: (() => void) | undefined
         const finalizeResp = await Promise.race([
-          bridge.webMCPPluginDownloadFinalize({
-            transferId: response.pluginDownloadPlan.transferId,
-            savedPath: saveResult.savedPath,
-          }),
+          bridge
+            .webMCPPluginDownloadFinalize({
+              transferId: response.pluginDownloadPlan.transferId,
+              savedPath: saveResult.savedPath,
+            })
+            .catch((e) => {
+              // A finalize REJECTION must flow into the same rollback path as
+              // a `!ok` response — wrap it so the catch below can distinguish
+              // it from unrelated errors (#139 review round 5: finalize
+              // failures leave saved files).
+              throw new FinalizeTransportError(
+                e instanceof Error ? e.message : String(e),
+                saveResult.savedPath,
+              )
+            }),
           ...(
             context.abortSignal
               ? [
@@ -1516,9 +1579,53 @@ async function executeWebMCPTool(
         // run, and return the cancellation envelope instead of a plain
         // error that would hide the saved file (#139 review: failed
         // finalize hides a saved file). Never re-dispatch the page action.
+        // When the rollback itself fails, the envelope's details carry the
+        // orphaned path so the caller can still clean it up (#139 review
+        // round 5: cancelled downloads leave untracked files).
         if (error instanceof SavedAssetAbortedError) {
-          await deleteSavedAssetQuietly(workspaceIdForAssetRollback(context), error.savedPath)
+          const rolledBack = await deleteSavedAssetQuietly(
+            workspaceIdForAssetRollback(context),
+            error.savedPath,
+          )
+          if (!rolledBack) {
+            return cancellationEnvelopeWithOrphan(context, error.savedPath)
+          }
           return cancellationEnvelope()
+        }
+        // A finalize call that REJECTS (bridge/extension error) must also
+        // roll the saved asset back — previously it skipped the
+        // `!finalizeResp?.ok` branch entirely and reported a plain download
+        // failure, leaving the file on disk and inviting a duplicate save on
+        // retry (#139 review round 5: finalize failures leave saved files).
+        if (error instanceof FinalizeTransportError) {
+          const writeShape = tool.annotations?.readOnlyHint !== true
+          const finalizeMessage =
+            (error.cause || 'Plugin download finalize failed') +
+            (writeShape
+              ? ' The page action already ran — verify its result on the target tab before retrying; retrying would repeat the action.'
+              : '')
+          const rolledBack = await deleteSavedAssetQuietly(
+            workspaceIdForAssetRollback(context),
+            error.savedPath,
+          )
+          if (!rolledBack) {
+            return toolErrorJson(
+              'call_tool',
+              'WEBMCP_PLUGIN_DOWNLOAD_FINALIZE_FAILED',
+              finalizeMessage +
+                ` The downloaded asset could not be rolled back and is still saved at vfs://assets/${error.savedPath} — delete it before retrying.`,
+              {
+                retryable: false,
+                details: { savedAssetPath: `vfs://assets/${error.savedPath}` },
+              },
+            )
+          }
+          return toolErrorJson(
+            'call_tool',
+            'WEBMCP_PLUGIN_DOWNLOAD_FINALIZE_FAILED',
+            finalizeMessage,
+            { retryable: !writeShape },
+          )
         }
         const message = error instanceof Error ? error.message : String(error)
         if (message === '__WEBMCP_DOWNLOAD_ABORTED__') {

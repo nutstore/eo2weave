@@ -116,15 +116,12 @@ describe('tool-execution helpers', () => {
         error: { code: 'CALL_CANCELLED', message: 'cancelled', retryable: false },
       })
       const onTimeout = vi.fn()
-      const controller = new AbortController()
-      // The tool promise settles with the envelope AFTER the timeout fires —
-      // exactly the grace-window race. The envelope resolves invokeTool
-      // normally, so without this hook onToolTimeout would never run.
+      // No abort signal: the timeout is the only racer that fires, so the
+      // envelope replacement must notify onTimeout (timeout won the race).
       const pending = executeToolWithTimeout({
         toolName: 'call_tool',
         args: {},
         timeoutMs: 100,
-        runAbortSignal: controller.signal,
         preferEnvelopeOnRaceLoss: (envelope) =>
           envelope.includes('CALL_CANCELLED') ? envelope : null,
         onTimeout,

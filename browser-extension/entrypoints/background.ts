@@ -3258,46 +3258,68 @@ export default defineBackground(() => {
 
     port.onMessage.addListener((message) => {
       if (message.type === 'webmcp_plugin_download_stream') {
-        (async () => {
-          const plan = message.plan as WebMCPPluginDownloadPlan | undefined
-          if (!plan?.transferId || !plan.downloadUrl || !plan.savePath || !plan.fileName) {
-            port.postMessage({
-              type: 'error',
-              errorCode: 'INVALID_PLUGIN_DOWNLOAD_PLAN',
-              message: 'Missing transferId/downloadUrl/savePath/fileName for plugin download stream',
-            })
-            port.disconnect()
+      (async () => {
+        const plan = message.plan as WebMCPPluginDownloadPlan | undefined
+        if (!plan?.transferId || !plan.downloadUrl || !plan.savePath || !plan.fileName) {
+          port.postMessage({
+            type: 'error',
+            errorCode: 'INVALID_PLUGIN_DOWNLOAD_PLAN',
+            message: 'Missing transferId/downloadUrl/savePath/fileName for plugin download stream',
+          })
+          port.disconnect()
+          return
+        }
+
+        let streamEndedWithError = false
+        // Client disconnect or explicit cancel must ABORT the in-flight
+        // fetch, not just stop forwarding frames — otherwise the remote
+        // download keeps running in the background and the transfer
+        // completes with no one listening (#139 review round 5: background
+        // downloads keep running). The abort also removes the transfer
+        // record: a cancelled download never counts as completed.
+        const downloadAbort = new AbortController()
+        const stopTransfer = (reason: string) => {
+          downloadAbort.abort(new Error(reason))
+          completedPluginDownloads.delete(plan.transferId)
+        }
+        const safePost = (payload: Record<string, unknown>) => {
+          try {
+            port.postMessage(payload)
+            return true
+          } catch {
+            return false
+          }
+        }
+        port.onDisconnect.addListener(() => {
+          stopTransfer('plugin download stream client disconnected')
+        })
+        port.onMessage.addListener((controlMessage: { type?: string }) => {
+          if (controlMessage?.type === 'cancel') {
+            stopTransfer('plugin download stream cancelled')
+          }
+        })
+        await streamPluginDownload(plan, (frame) => {
+          if (frame.type === 'end') {
+            completedPluginDownloads.set(plan.transferId, { completedAt: Date.now() })
+          }
+          const sent = safePost({ type: 'chunk', data: frame })
+          if (!sent) {
+            stopTransfer('plugin download stream client disconnected')
             return
           }
-
-          let streamEndedWithError = false
-          const safePost = (payload: Record<string, unknown>) => {
-            try {
-              port.postMessage(payload)
-              return true
-            } catch {
-              return false
-            }
-          }
-          await streamPluginDownload(plan, (frame) => {
-            if (frame.type === 'end') {
-              completedPluginDownloads.set(plan.transferId, { completedAt: Date.now() })
-            }
-            const sent = safePost({ type: 'chunk', data: frame })
-            if (!sent) return
-            if (frame.type === 'error') {
-              streamEndedWithError = true
-              safePost({ type: 'done' })
-              try { port.disconnect() } catch {}
-            }
-          })
-
-          if (!streamEndedWithError) {
+          if (frame.type === 'error') {
+            streamEndedWithError = true
             safePost({ type: 'done' })
             try { port.disconnect() } catch {}
           }
-        })()
-        return
+        }, downloadAbort.signal)
+
+        if (!streamEndedWithError) {
+          safePost({ type: 'done' })
+          try { port.disconnect() } catch {}
+        }
+      })()
+      return
       }
 
       if (message.type === 'mcp_proxy_fetch_stream') {
