@@ -711,9 +711,9 @@ describe('pickConversationTarget (issue #126 navigation-target selection)', () =
   })
 })
 
-describe('buildPrefillText (issue #126 input prefill)', () => {
-  it('bare slash command when no prompt param', () => {
-    expect(buildPrefillText('cw-legal-evidence-chain')).toBe('/cw-legal-evidence-chain')
+describe('buildPrefillText (issue #126 input prefill, #134 trailing space)', () => {
+  it('bare command with a trailing space when no prompt param (suppresses the slash-command picker)', () => {
+    expect(buildPrefillText('cw-legal-evidence-chain')).toBe('/cw-legal-evidence-chain ')
   })
 
   it('appends the prompt suffix separated by one space', () => {
@@ -722,8 +722,12 @@ describe('buildPrefillText (issue #126 input prefill)', () => {
     )
   })
 
-  it('trims whitespace-only prompts to the bare command', () => {
-    expect(buildPrefillText('my-skill', '   ')).toBe('/my-skill')
+  it('trims whitespace-only prompts to the bare command (+trailing space)', () => {
+    expect(buildPrefillText('my-skill', '   ')).toBe('/my-skill ')
+  })
+
+  it('trims surrounding whitespace off a real prompt (#134 review: mock/impl parity)', () => {
+    expect(buildPrefillText('my-skill', '  整理证据  ')).toBe('/my-skill 整理证据')
   })
 })
 
@@ -743,6 +747,15 @@ describe('mergePrefillText (issue #128 draft preservation)', () => {
     expect(mergePrefillText('/my-skill my unsent question', '/my-skill')).toBe(
       '/my-skill my unsent question',
     )
+  })
+
+  it('is idempotent when the draft carries the bare prefill with its trailing space (#134)', () => {
+    // The bare prefill itself ends in a space (picker suppression): a
+    // re-visit must recognize that draft as already-present, not stack a
+    // second command on top — AND keep the space, or the restored caret
+    // sits right after the command token and the picker re-opens.
+    expect(mergePrefillText('/my-skill ', '/my-skill ')).toBe('/my-skill ')
+    expect(mergePrefillText('/my-skill', '/my-skill ')).toBe('/my-skill ')
   })
 
   it('stacks the prefill when the draft starts with a LONGER command sharing the prefix', () => {

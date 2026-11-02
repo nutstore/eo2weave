@@ -50,15 +50,22 @@ vi.mock('@/skills/skill-manager', () => ({
 
 const checkAiReadinessMock = vi.fn()
 
-vi.mock('@/lib/skill-install-flow', () => ({
-  checkAiReadiness: (...args: unknown[]) => checkAiReadinessMock(...(args as [])),
-  buildPrefillText: (name: string, prompt?: string | null) =>
-    prompt ? `/${name} ${prompt}` : `/${name}`,
-  mergePrefillText: (existing: string | null | undefined, prefill: string) =>
-    (existing ?? '').trim() ? `${prefill}\n${existing!.trim()}` : prefill,
-  pickConversationTarget: vi.fn(() => ({ id: 'recent-conv', created: false })),
-  waitForCondition: vi.fn(async () => true),
-}))
+vi.mock('@/lib/skill-install-flow', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/skill-install-flow')>()
+  return {
+    // Pure prefill helpers stay REAL (#135 review round 3): the page tests
+    // must observe the production prefill contract (trailing space, prompt
+    // trimming) — a hand-rolled mock would keep passing even if the real
+    // helper regressed and dropped the picker-suppressing space.
+    buildPrefillText: actual.buildPrefillText,
+    mergePrefillText: actual.mergePrefillText,
+    // Only the async/impure helpers get test doubles.
+    checkAiReadiness: (...args: unknown[]) => checkAiReadinessMock(...(args as [])),
+    pickConversationTarget: vi.fn(() => ({ id: 'recent-conv', created: false })),
+    waitForCondition: vi.fn(async () => true),
+  }
+})
 
 vi.mock('@/lib/jianguoyun-ai-console', () => ({
   getNutstoreAIConsoleURL: () => 'https://ai.jianguoyun.com',
@@ -301,7 +308,7 @@ describe('SkillInstallPage (issue #126)', () => {
     })
     // Prefill was written before navigation.
     expect(saveDraftMock).toHaveBeenCalledWith('recent-conv', {
-      text: '/cw-legal-evidence-chain',
+      text: '/cw-legal-evidence-chain ',
       mentionedAgentIds: [],
       selectedFiles: [],
     })
@@ -398,7 +405,7 @@ describe('SkillInstallPage (issue #126)', () => {
     ;(refreshUserSkillsMock as unknown as { __resolveRefresh: () => void }).__resolveRefresh()
     await waitFor(() => {
       expect(saveDraftMock).toHaveBeenCalledWith('recent-conv', {
-        text: '/cw-legal-evidence-chain\nmy unsent question',
+        text: '/cw-legal-evidence-chain \nmy unsent question',
         mentionedAgentIds: ['agent-1'],
         selectedFiles: ['a.md'],
       })
