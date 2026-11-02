@@ -409,4 +409,71 @@ describe('getAvailableProviders: round-6 catalog-status precedence & generation 
     expect(provider?.catalogStatus).toBe('empty')
     expect(provider?.authoritativeIds).toEqual([])
   })
+
+  it('reports a STATIC-ONLY provider (anthropic) as "ready" with NO refresh result at all (High: Anthropic models are unusable)', async () => {
+    // Anthropic ships a non-empty static registry and has no /models
+    // endpoint (STATIC_ONLY_PROVIDERS; fetchModelsForProvider always returns
+    // its static list), so a refresh result is never recorded for it. The
+    // never-observed classification above must not swallow it: the registry
+    // is authoritative by construction. Before the static-only carve-out,
+    // this read 'failed', reconciliation deferred away from Anthropic, and
+    // its models were excluded from fallback — unusable despite being fully
+    // usable.
+    mocks.loadApiKey.mockImplementation(async (id: string) => (id === 'anthropic' ? 'key' : null))
+    mocks.getModelsForProvider.mockImplementation((id: string) =>
+      id === 'anthropic' ? [{ id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' }] : [],
+    )
+    mocks.getCachedModelsResult.mockReturnValue(null)
+    useSettingsStore.setState({
+      providerType: 'anthropic' as LLMProviderType,
+      modelName: 'claude-sonnet-4-20250514',
+    })
+
+    const results = await useSettingsStore.getState().getAvailableProviders()
+    const provider = results.find((r) => r.providerType === 'anthropic')
+    expect(provider?.catalogStatus).toBe('ready')
+    expect(provider?.authoritativeIds).toEqual(['claude-sonnet-4-20250514'])
+
+    // The static models are selectable: the current selection stays valid
+    // (resolver keeps it) — reconciliation never defers or switches away.
+    const state = useSettingsStore.getState()
+    expect(state.providerType).toBe('anthropic')
+    expect(state.modelName).toBe('claude-sonnet-4-20250514')
+  })
+
+  it('falls back to a STATIC-ONLY provider (anthropic) when the active provider is authoritative-empty', async () => {
+    // The pre-fix 'failed' classification also excluded Anthropic from
+    // last-resort fallback: a user whose active catalog positively emptied
+    // could never be reconciled onto Anthropic's static models. As 'ready',
+    // it becomes selectable again.
+    mocks.loadApiKey.mockImplementation(async (id: string) => (id === P || id === 'anthropic' ? 'key' : null))
+    mocks.getModelsForProvider.mockImplementation((id: string) =>
+      id === P ? [] : id === 'anthropic' ? [{ id: 'a-1', name: 'Claude' }] : [],
+    )
+    mocks.getCachedModelsResult.mockImplementation((type: string) =>
+      type === P ? { models: [], source: 'dynamic', fetchedAt: Date.now() } as never : null,
+    )
+
+    await useSettingsStore.getState().getAvailableProviders()
+
+    const state = useSettingsStore.getState()
+    expect(state.providerType).toBe('anthropic')
+    expect(state.modelName).toBe('a-1')
+  })
+
+  it('still reports a refresh-capable provider as "failed" with a recorded error and a non-empty fallback (dynamic-models guard intact)', async () => {
+    // Guard the round-6 precedence the static-only carve-out must not
+    // weaken: a provider that DOES support /models keeps failed-beats-
+    // non-empty semantics for both recorded errors and never-observed
+    // catalogs.
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm-static', name: 'Static floor' }])
+    mocks.getCachedModelsResult.mockReturnValue({ error: 'fetch failed' })
+
+    const results = await useSettingsStore.getState().getAvailableProviders()
+    expect(results.find((r) => r.providerType === P)?.catalogStatus).toBe('failed')
+
+    mocks.getCachedModelsResult.mockReturnValue(null)
+    const results2 = await useSettingsStore.getState().getAvailableProviders()
+    expect(results2.find((r) => r.providerType === P)?.catalogStatus).toBe('failed')
+  })
 })

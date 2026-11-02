@@ -1087,6 +1087,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const { PROVIDER_META, getModelsForProvider } = await import('@/agent/providers/types')
         const { getCachedModels, getCachedModelsResult } = await import('@/agent/providers/model-store')
         const { getProviderCatalogStatus: getDynCatalogStatus } = await import('@/agent/providers/types')
+        const { canFetchModels } = await import('@/agent/providers/model-fetcher')
         let llmGatewayProviderKey: string | undefined
         try {
           const mod = await import('@/agent/providers/llm-gateway-provider')
@@ -1171,9 +1172,17 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
 
             // Catalog status for a BUILT-IN provider: the static registry is
             // the floor, the dynamic /models cache adds to it. Precedence:
-            // - if the last /models refresh RECORDED an error, the catalog is
-            //   unknown ('failed' — defer) EVEN when the fallback list is
-            //   non-empty: dynamic-only models are missing from it;
+            // - STATIC-ONLY providers (e.g. anthropic — no /models endpoint,
+            //   see STATIC_ONLY_PROVIDERS in model-fetcher.ts) have an
+            //   authoritative registry BY CONSTRUCTION: `canFetchModels` is
+            //   false, so a missing/failed refresh result carries no catalog
+            //   information for them. Non-empty registry → 'ready'; empty
+            //   registry → 'empty'. Classifying them 'failed' for an absent
+            //   refresh made their usable static models invisible to
+            //   reconciliation (Sourcery: "Anthropic models are unusable").
+            // - Otherwise, if the last /models refresh RECORDED an error, the
+            //   catalog is unknown ('failed' — defer) EVEN when the fallback
+            //   list is non-empty: dynamic-only models are missing from it;
             // - if there is NO cached refresh result at all, the catalog has
             //   never been observed — that is unknown too ('failed'), not a
             //   confirmed empty catalog (Sourcery: "Unknown catalogs appear
@@ -1182,8 +1191,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             //   provider it has never seen as one that positively reported
             //   no models);
             // - only a SUCCESSFUL refresh makes the list authoritative:
-            //   non-empty → 'ready', positively-nothing (or a provider that
-            //   ships no dynamic refresh at all) → 'empty'.
+            //   non-empty → 'ready', positively-nothing → 'empty'.
             const cachedResults = [
               getCachedModelsResult(providerType, providerType),
               getCachedModelsResult(providerType),
@@ -1192,7 +1200,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
               cachedResults.some((r) => r?.error != null)
             const dynamicRefreshObserved =
               cachedResults.some((r) => r != null)
-            // The FAILED refresh check now precedes the non-empty fallback
+            const refreshInformsCatalog = canFetchModels(providerType)
+            // The FAILED refresh check precedes the non-empty fallback
             // (Sourcery round 6, 🟠 "Dynamic models appear delisted"): when
             // the /models fetch errors, the merged static+dynamic catalog is
             // INCOMPLETE — dynamic-only models the user selected or pinned
@@ -1203,11 +1212,15 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             // sweep skips, and the static floor stays visible in the UI.
             // A never-observed catalog is likewise 'failed' (unknown).
             const catalogStatus: ModelCatalogStatus =
-              dynamicRefreshFailed || !dynamicRefreshObserved
-                ? 'failed'
-                : authoritativeIds.length > 0
+              !refreshInformsCatalog
+                ? authoritativeIds.length > 0
                   ? 'ready'
                   : 'empty'
+                : (dynamicRefreshFailed || !dynamicRefreshObserved)
+                  ? 'failed'
+                  : authoritativeIds.length > 0
+                    ? 'ready'
+                    : 'empty'
 
             results.push({
               providerType,
