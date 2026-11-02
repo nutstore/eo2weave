@@ -3,17 +3,17 @@
  * precedence rules (see model-store.ts for the full rationale).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mergeModelLists, setCachedModels, getCachedModelsResult, __clearMemoryCacheForTests } from '../model-store'
-import type { ModelInfo } from '../types'
+import { mergeModelLists, setCachedModels, getCachedModelsResult, isCacheStale, __clearMemoryCacheForTests } from '@/agent/providers/model-store'
+import type { ModelInfo } from '@/agent/providers/types'
 
 const getModelsMock = vi.hoisted(() => vi.fn())
 
-vi.mock('../types', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../types')>()
+vi.mock('@/agent/providers/types', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/agent/providers/types')>()
   return { ...actual, getModelsForProvider: getModelsMock }
 })
 
-import { getModelsForProvider } from '../types'
+import { getModelsForProvider } from '@/agent/providers/types'
 void getModelsForProvider
 
 const skeleton = (id: string, caps: string[]): ModelInfo => ({
@@ -149,5 +149,43 @@ describe('setCachedModels — failed refresh outcomes', () => {
     })
     expect(localStorage.getItem('cw-models:openai')).not.toBeNull()
     expect(getCachedModelsResult('openai' as never)?.error).toBeUndefined()
+  })
+})
+
+// ─── Failed entries never read fresh (PR #150 round 6) ──────────────────────
+
+describe('isCacheStale — failed results are always stale', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __clearMemoryCacheForTests('openai' as never)
+  })
+
+  it('treats a freshly-recorded FAILURE as stale so the retry window governs instead of the 24h TTL', () => {
+    // Sourcery "Failed refresh suppresses retries": a failed refresh cached
+    // with a fresh fetchedAt made isCacheStale() false for 24h, so
+    // useDynamicModels' stale-gate never re-opened and the provider sat on
+    // its fallback catalog for a day. A failure is NOT fresh catalog data —
+    // it must always read stale (the 5-minute FAILED_FETCH_RETRY_MS
+    // negative-cache in use-dynamic-models.ts still throttles retries).
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    expect(isCacheStale('openai' as never)).toBe(true)
+  })
+
+  it('keeps a fresh SUCCESSFUL result non-stale (unchanged 24h TTL behavior)', () => {
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-x', name: 'GPT', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    expect(isCacheStale('openai' as never)).toBe(false)
+  })
+
+  it('reports stale for a missing entry (unchanged)', () => {
+    expect(isCacheStale('openai' as never)).toBe(true)
   })
 })

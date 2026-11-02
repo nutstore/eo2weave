@@ -156,10 +156,19 @@ export function getCachedModelsResult(
 /**
  * Whether a cached entry is older than MODELS_CACHE_TTL_MS.
  * Missing entry counts as stale (nothing cached = needs fetch).
+ *
+ * A FAILED entry (recorded error) is ALWAYS stale, regardless of fetchedAt
+ * (Sourcery round 6, "Failed refresh suppresses retries"): a failure is not
+ * fresh catalog data, so the negative-result retry window must come from
+ * `useDynamicModels`'s own `failedFetchAt` suppression (5-minute
+ * FAILED_FETCH_RETRY_MS) — not from the 24-hour success TTL. Treating a
+ * fresh failure as fresh would leave a provider on its fallback catalog for
+ * up to a day without a single background retry.
  */
 export function isCacheStale(providerType: LLMProviderType, providerKey?: string): boolean {
   const entry = getCachedModelsResult(providerType, providerKey)
   if (!entry) return true
+  if (entry.error != null) return true
   return Date.now() - entry.fetchedAt > MODELS_CACHE_TTL_MS
 }
 
