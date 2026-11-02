@@ -27,6 +27,7 @@ import { performOcr, isOcrCompatibleImage } from '@/services/ocr.service'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
 import { isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { useInputDraftStore } from '@/store/input-draft.store'
+import { VIRTUALIZATION_THRESHOLD } from '@/components/agent/ConversationMessages'
 import { useActiveConversation } from './useActiveConversation'
 import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
 
@@ -135,6 +136,21 @@ export function useConversationLogic() {
     if (convId) mountConversation(convId)
     return () => {
       if (convId) unmountConversation(convId)
+      // PR #142 review (Sourcery, High): a conversation switch now REMOUNTS
+      // ConversationView (key={activeConversationId} in WorkspaceLayout), so
+      // the [convId] draft effect below never runs its save branch — on a
+      // fresh mount prevConvIdRef is null, so prevId === convId and the save
+      // is skipped. Persist any typed-but-unsent draft HERE, on unmount, so
+      // the text survives the remount and is restored (peekDraft) when the
+      // user switches back. saveDraft treats empty content as "clear", which
+      // matches the switch-path semantics for an emptied editor.
+      if (convId) {
+        useInputDraftStore.getState().saveDraft(convId, {
+          text: inputRef.current,
+          mentionedAgentIds: mentionedAgentIdsRef.current,
+          selectedFiles: [],
+        })
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId])
@@ -215,15 +231,30 @@ export function useConversationLogic() {
   // ── Smart auto-scroll (only scroll when user is already at the bottom) ──
   const activeMessagesLength = activeMessages.length
 
+  // PR #142 review (Sourcery, Medium): under virtual scrolling the message
+  // list is rendered by react-virtuoso, which owns the scroll position via
+  // followOutput. A native scrollTop write on the shared container races
+  // Virtuoso's own tracking and can pull the windowed list off the real
+  // bottom. When virtualization is active, defer auto-scrolling entirely —
+  // followOutput already pins the view while at-bottom, and the Scroll-
+  // to-bottom button covers the not-at-bottom case.
+  const isVirtualizedScroll = activeMessagesLength > VIRTUALIZATION_THRESHOLD
+
   // Scroll-to-bottom state is managed by ScrollToBottomButton component
   // to avoid re-rendering ConversationView (and AgentRichInput) on every scroll event.
 
   useEffect(() => {
+    // Keep the "append vs no-append" counter fresh even when we skip the
+    // native scroll (virtualized mode / user scrolled up), so a later
+    // mode switch or scroll-back doesn't misclassify the next append.
+    lastRenderedMessageCountRef.current = activeMessagesLength
+    // Virtualized mode: Virtuoso's followOutput owns the scroll position —
+    // a native scrollTop write here would fight it (see comment above).
+    if (isVirtualizedScroll) return
     // Don't auto-scroll if user is browsing history above
     if (!isUserAtBottomRef.current) return
     const behavior: ScrollBehavior =
       activeMessagesLength > lastRenderedMessageCountRef.current ? 'smooth' : 'auto'
-    lastRenderedMessageCountRef.current = activeMessagesLength
     // Use scrollTo on the scroll container directly instead of scrollIntoView.
     // scrollIntoView bubbles up through all scrollable ancestors and can
     // shift the layout container itself (pushing it out of the viewport),
