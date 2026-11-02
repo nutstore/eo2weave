@@ -26,7 +26,7 @@ import {
   type RegistryManifestFile,
   type RegistryManifestPackage,
 } from './registry-client'
-import { installPackage, uninstallPackage } from './package-installer'
+import { installPackage, sha256Hex, uninstallPackage } from './package-installer'
 
 const REGISTRIES_STORAGE_KEY = 'webmcp_package_registries'
 
@@ -363,25 +363,45 @@ async function readManifestVersion(mount: string, directory: string): Promise<st
  * comparison let the later install pass the collision check and silently
  * replace the earlier package's files. Hashing every catalog-listed file
  * binds the fingerprint to the whole package the catalog author published.
- * Deterministic file order, an unambiguous 0x separator and a length
- * prefix keep the digest collision-free.
+ *
+ * The ENCODING must be identical to `registryPackageFingerprint`'s (finding:
+ * "Identical installs look different"): that side hashes each catalog
+ * file's sha256 DIGEST bytes, so this side hashes each installed file's
+ * OWN sha256 digest (not the raw file bytes) — hashing the raw bytes
+ * produced digests that never matched the expected side, and every
+ * same-version reinstall of an identical package was rejected as "different
+ * contents". Deterministic file order, an unambiguous `path:32:` header and
+ * a 0x separator keep the digest collision-free.
+ *
+ * The installer-managed `config.json` is EXCLUDED from BOTH sides (finding:
+ * "Identical config packages conflict"): the installer never copies the
+ * catalog's config.json — it writes the disabled default (activation is
+ * exclusively the opt-in flow's job) — so the catalog's config checksum
+ * cannot describe the on-disk file, and including it made an otherwise
+ * identical reinstall read as a conflict.
  *
  * `expectedFiles` carries the incoming catalog's file list (the reference
  * path set); the installed tree is read at exactly those paths — an
- * installed package missing one of them (or holding a file that no longer
- * parses) reads as a fingerprint mismatch ('INVALID'), a TRANSIENT read
- * failure as 'UNREADABLE' (fail closed).
+ * installed package missing one of them reads as a fingerprint mismatch
+ * ('INVALID'), a TRANSIENT read failure as 'UNREADABLE' (fail closed).
  */
 async function readInstalledPackageFingerprint(mount: string, packageId: string, expectedFiles: RegistryManifestFile[]): Promise<string | 'INVALID' | 'UNREADABLE'> {
   const provider = await getMountProvider(mount)
-  const files = [...expectedFiles].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  const files = [...expectedFiles]
+    .filter(file => file.path !== `packages/${packageId}/config.json`)
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
   const parts: Uint8Array[] = []
   for (const file of files) {
     const local = file.path.replace(/^packages\/[^/]+\//, '')
     try {
       const bytes = await provider.readFile(`${packageId}/${local}`)
-      const header = new TextEncoder().encode(`${file.path}:${bytes.length}:`)
-      parts.push(header, bytes, new Uint8Array([0]))
+      // Hash the file's own sha256 digest — the same encoding as the
+      // expected side (see above).
+      const digestHex = await sha256Hex(bytes)
+      const digest = new Uint8Array(digestHex.length / 2)
+      for (let index = 0; index < digest.length; index++) digest[index] = Number.parseInt(digestHex.slice(index * 2, index * 2 + 2), 16)
+      const header = new TextEncoder().encode(`${file.path}:${digest.length}:`)
+      parts.push(header, digest, new Uint8Array([0]))
     } catch (error) {
       const code = (error as { code?: string }).code
       const name = (error as { name?: string }).name
@@ -389,15 +409,7 @@ async function readInstalledPackageFingerprint(mount: string, packageId: string,
       return 'UNREADABLE'
     }
   }
-  const total = parts.reduce((sum, part) => sum + part.length, 0)
-  const merged = new Uint8Array(total)
-  let offset = 0
-  for (const part of parts) {
-    merged.set(part, offset)
-    offset += part.length
-  }
-  const { sha256Hex } = await import('./package-installer')
-  return sha256Hex(merged)
+  return hashFingerprintParts(parts)
 }
 
 /**
@@ -405,9 +417,15 @@ async function readInstalledPackageFingerprint(mount: string, packageId: string,
  * deterministic encoding as `readInstalledPackageFingerprint` — but from
  * the catalog's EXPECTED sha256 per file, so the comparison never needs to
  * hash the incoming downloads again (the installer verified them already).
+ *
+ * The installer-managed `config.json` is excluded here too — see
+ * `readInstalledPackageFingerprint` (finding: "Identical config packages
+ * conflict").
  */
-async function registryPackageFingerprint(files: RegistryManifestFile[]): Promise<string> {
-  const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+async function registryPackageFingerprint(packageId: string, files: RegistryManifestFile[]): Promise<string> {
+  const sorted = [...files]
+    .filter(file => file.path !== `packages/${packageId}/config.json`)
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
   const parts: Uint8Array[] = []
   for (const file of sorted) {
     const sha = file.sha256.toLowerCase()
@@ -416,6 +434,11 @@ async function registryPackageFingerprint(files: RegistryManifestFile[]): Promis
     const header = new TextEncoder().encode(`${file.path}:${hexBytes.length}:`)
     parts.push(header, hexBytes, new Uint8Array([0]))
   }
+  return hashFingerprintParts(parts)
+}
+
+/** sha256 over the fingerprint's concatenated parts (shared encoding tail). */
+async function hashFingerprintParts(parts: Uint8Array[]): Promise<string> {
   const total = parts.reduce((sum, part) => sum + part.length, 0)
   const merged = new Uint8Array(total)
   let offset = 0
@@ -423,7 +446,6 @@ async function registryPackageFingerprint(files: RegistryManifestFile[]): Promis
     merged.set(part, offset)
     offset += part.length
   }
-  const { sha256Hex } = await import('./package-installer')
   return sha256Hex(merged)
 }
 
@@ -468,7 +490,7 @@ export async function installRegistryPackage(
   // same-version reinstall check below — the manifest checksum alone was not
   // enough because a manifest does not hash its own file contents (finding:
   // "Same version replaces different package contents").
-  const contentFingerprint = await registryPackageFingerprint(pkg.files)
+  const contentFingerprint = await registryPackageFingerprint(pkg.id, pkg.files)
   // Probe the mount BEFORE the download (finding: "Uninstalled package
   // reappears"): the presence bit fences a download that outlives the
   // user's uninstall — a directory that existed now but is gone under the
