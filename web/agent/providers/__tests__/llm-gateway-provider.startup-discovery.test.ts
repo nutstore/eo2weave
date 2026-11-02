@@ -14,8 +14,8 @@ const mocks = vi.hoisted(() => ({
   fetchGatewayModels: vi.fn(),
 }))
 
-vi.mock('../llm-gateway-auth', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../llm-gateway-auth')>()
+vi.mock('@/agent/providers/llm-gateway-auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/agent/providers/llm-gateway-auth')>()
   return { ...actual, fetchGatewayModels: mocks.fetchGatewayModels }
 })
 
@@ -30,7 +30,7 @@ const timeoutSpy = vi
   })
 void timeoutSpy
 
-import { updateGatewayModels } from '../llm-gateway-provider'
+import { updateGatewayModels } from '@/agent/providers/llm-gateway-provider'
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
 
