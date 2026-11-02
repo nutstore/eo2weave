@@ -462,13 +462,18 @@ describe('ConversationMessages virtualization', () => {
       button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    // PR #142 review round 5 (Sourcery): the click's followOutput preview
-    // must reach the shared ref (follow path) WITHOUT leaking into the hub —
-    // the hub keeps Virtuoso's confirmed not-at-bottom until the animation
-    // lands. If the hub were written optimistically, a mid-jump mode switch
-    // would replay an unconfirmed at-bottom (button hidden, follow stuck on).
+    // PR #142 review round 6 (Sourcery): the click's followOutput preview
+    // must reach the shared ref AND the list's isUserAtBottom state (the
+    // follow path reads the STATE, not the ref) WITHOUT leaking into the
+    // hub — the hub keeps Virtuoso's confirmed not-at-bottom until the
+    // animation lands. If the hub were written optimistically, a mid-jump
+    // mode switch would replay an unconfirmed at-bottom (button hidden,
+    // follow stuck on). Both assertions below are checked BEFORE the
+    // manual atBottomStateChange(true) confirmation, so a preview that
+    // only wrote the ref (or only fired on confirmation) fails the test.
     await waitFor(() => {
       expect(isUserAtBottomRef.current).toBe(true)
+      expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe('smooth')
     })
     expect(hub.lastAtBottom).toBe(false)
 
