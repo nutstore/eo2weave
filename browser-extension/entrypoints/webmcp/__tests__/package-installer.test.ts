@@ -480,4 +480,53 @@ describe('installPackage (extension side)', () => {
     expect(backupManifest.version).toBe('1.0.0')
     expect(await provider.readFile('.com.example.pkg.previous/workflows/read.js')).toBeInstanceOf(Uint8Array)
   })
+
+  it('releases the package lock only after a pending stale write settles', async () => {
+    // HIGH ("Stale writes corrupt packages"): when the lease is lost while
+    // a storage mutation of the losing transaction is still pending,
+    // `withPackageLock` must not release the lease (letting the next owner
+    // start) until that mutation settles. Exercised through the REAL loss
+    // path: the stored lease is taken over by another owner, the next
+    // heartbeat reports the loss, and the wrapper must stay pending while
+    // the transaction's pending write is still in flight.
+    vi.useFakeTimers()
+    try {
+      const { withPackageLock } = await import('../package-lock')
+      const key = 'webmcp_package_lock_com.example.locktest'
+      let resolveWrite: (() => void) | undefined
+      const pendingWrite = new Promise<void>(resolve => { resolveWrite = resolve })
+      let writeAborted: AbortSignal | undefined
+
+      const transaction = withPackageLock('com.example.locktest', async signal => {
+        writeAborted = signal
+        await pendingWrite // the stale in-flight write
+        if (signal.aborted) throw new Error('aborted: the lease was lost')
+      })
+      // Let the transaction reach its pending write.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(writeAborted).toBeDefined()
+
+      // Another owner steals the stored lease (the holder cannot see it).
+      await chrome.storage.local.set({ [key]: { owner: 'intruder', expiresAt: Date.now() + 60_000 } })
+      // Advance past the heartbeat interval: the holder's heartbeat now
+      // reports the loss and the wrapper's abort fires.
+      await vi.advanceTimersByTimeAsync(5_100)
+
+      // THE FIX UNDER TEST: while the stale write is still pending, the
+      // wrapper must NOT have settled (settling means the finally already
+      // released the lease). Flush microtasks and check.
+      let settled = false
+      void transaction.then(() => { settled = true }, () => { settled = true })
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(settled).toBe(false)
+
+      // The stale write completes; only then does the wrapper settle and
+      // release the lease — the next owner never raced a stale write.
+      resolveWrite!()
+      await expect(transaction).rejects.toThrow(/lease was lost|aborted/i)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

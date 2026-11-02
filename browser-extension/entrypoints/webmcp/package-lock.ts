@@ -238,9 +238,26 @@ export async function withPackageLock<T>(
       })
     })
   })
+  let raceLost = false
+  const outcome = await Promise.race([
+    winner,
+    lost.then(result => { raceLost = true; return result }),
+  ])
   try {
-    const outcome = await Promise.race([winner, lost])
-    if (!outcome.ok) throw outcome.error
+    if (!outcome.ok) {
+      if (raceLost) {
+        // Do NOT release the lease while a mutation of the LOSING
+        // transaction is still pending (finding: "Stale writes corrupt
+        // packages"): `fn`'s writes are fenced against this signal and
+        // stop at their next fence, but a write that was ALREADY in
+        // flight when the lease was lost can still be pending. Releasing
+        // the lease now would let the next owner start mutating while
+        // that stale write lands underneath it. Await the loser (its
+        // fences make it settle promptly) before the finally releases.
+        await loser.catch(() => {})
+      }
+      throw outcome.error
+    }
     const { result } = outcome
     if (lockLost) {
       // `fn` finished right as the lease was lost — the writes are the new
