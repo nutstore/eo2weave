@@ -141,6 +141,13 @@ interface ConversationState {
    *    able to pick a different conversation (issue #147, PR #149 review).
    *  - null — no error (or an error of unknown scope). */
   loadErrorScope: 'metadata' | 'transcript' | null
+  /** The conversation whose transcript read produced the current
+   * `loadError` (when `loadErrorScope === 'transcript'`). The persisted
+   * failure record may only be marked resolved after the transcript of THIS
+   * conversation re-read successfully — switching to any other conversation
+   * (different, absent or cached) proves nothing about the failed one
+   * (issue #147, PR #149 review). */
+  loadFailedConversationId: string | null
 
   // Live AgentLoop instances live in `@/store/agent-loop-registry` rather
   // than in this state. They are service objects with private fields that
@@ -484,6 +491,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     loaded: false,
     loadError: null,
     loadErrorScope: null,
+    loadFailedConversationId: null,
     suggestedFollowUps: new Map(),
     cancelledRunIds: new Set(),
     mountedConversations: new Map(),
@@ -783,6 +791,10 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               // transcript failed, so the sidebar can keep the rows usable
               // (issue #147, PR #149 review).
               state.loadErrorScope = 'transcript'
+              // Remember WHICH conversation failed: the persisted record may
+              // only be marked resolved after THIS conversation's transcript
+              // re-read successfully (issue #147, PR #149 review).
+              state.loadFailedConversationId = activeId
             })
             try {
               sessionStorage.setItem(
@@ -813,6 +825,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           set((state) => {
             state.loadError = null
             state.loadErrorScope = null
+            state.loadFailedConversationId = null
           })
         }
       } catch (error) {
@@ -878,7 +891,26 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                 state.loadError = retryTranscriptMessage
                 // Only the transcript failed — the conversation list is loaded.
                 state.loadErrorScope = 'transcript'
+                // Remember WHICH conversation failed (issue #147, PR #149 review).
+                state.loadFailedConversationId = retryActiveId
               })
+              // A transcript failure after the fallback retry is still a real
+              // load failure — persist it for Diagnostics like the
+              // initial-load catch does, or a bug report carries no trace of
+              // it (issue #147, PR #149 review).
+              try {
+                sessionStorage.setItem(
+                  CONVERSATION_STORE_LOAD_ERROR_KEY,
+                  JSON.stringify({
+                    message: retryTranscriptMessage,
+                    stack:
+                      transcriptErr instanceof Error ? transcriptErr.stack : undefined,
+                    at: new Date().toISOString(),
+                  })
+                )
+              } catch {
+                // sessionStorage unavailable (SSR / disabled storage) — console is enough.
+              }
             }
           }
           if (retryTranscriptLoaded) {
@@ -887,6 +919,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             set((state) => {
               state.loadError = null
               state.loadErrorScope = null
+              state.loadFailedConversationId = null
             })
           }
         } catch (retryErr) {
@@ -965,7 +998,10 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       if (id) {
         // Lazy-load messages if not already loaded (or if they were evicted)
         const conv = get().conversations.find((c) => c.id === id)
-        let transcriptOk = true
+        // True only when a transcript READ actually happened and succeeded —
+        // a cached selection skips the read entirely and proves nothing
+        // (issue #147, PR #149 review).
+        let transcriptReadOk = false
         if (conv && (conv.messages.length === 0 || conv.messagesLoaded === false)) {
           try {
             const msgRepo = getMessageRepository()
@@ -991,6 +1027,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                 immutifyMs: Math.round(performance.now() - tDeserialize),
               }
             )
+            transcriptReadOk = true
           } catch (error) {
             console.error('[conversation.store] Failed to load messages for conversation:', error)
             // The lazy path failed for the newly selected conversation — surface
@@ -1000,11 +1037,28 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               error instanceof Error
                 ? `Failed to load messages for active conversation: ${error.message}`
                 : 'Failed to load messages for active conversation'
-            transcriptOk = false
+            transcriptReadOk = false
             set((state) => {
               state.loadError = activeLoadMessage
               state.loadErrorScope = 'transcript'
+              // Remember WHICH conversation failed (issue #147, PR #149 review).
+              state.loadFailedConversationId = id
             })
+            // A lazy transcript failure is a real load failure — persist it
+            // for Diagnostics like the initial-load catch does, or a bug
+            // report carries no trace of it (issue #147, PR #149 review).
+            try {
+              sessionStorage.setItem(
+                CONVERSATION_STORE_LOAD_ERROR_KEY,
+                JSON.stringify({
+                  message: activeLoadMessage,
+                  stack: error instanceof Error ? error.stack : undefined,
+                  at: new Date().toISOString(),
+                })
+              )
+            } catch {
+              // sessionStorage unavailable (SSR / disabled storage) — console is enough.
+            }
           }
         } else {
           console.log(
@@ -1014,15 +1068,31 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         }
         // A transcript-scoped error belongs to the conversation that failed.
         // Once the user switches to another conversation and its transcript
-        // loads fine, the stale error must go — otherwise the sidebar keeps
-        // showing a failure banner for a conversation the user left
-        // (issue #147, PR #149 review).
-        if (transcriptOk && get().loadErrorScope === 'transcript') {
-          set((state) => {
-            state.loadError = null
-            state.loadErrorScope = null
-          })
-          markPersistedFailureResolved()
+        // READ actually succeeds, the stale error must go — otherwise the
+        // sidebar keeps showing a failure banner for a conversation the user
+        // left (issue #147, PR #149 review). A cached selection never reads,
+        // so it neither clears the banner nor counts as recovery.
+        if (transcriptReadOk) {
+          // Capture the recorded failing id BEFORE clearing: the resolution
+          // check must compare against the id of the failure being resolved,
+          // not against the (already cleared) state.
+          const failedId = get().loadFailedConversationId
+          if (get().loadErrorScope === 'transcript') {
+            set((state) => {
+              state.loadError = null
+              state.loadErrorScope = null
+              state.loadFailedConversationId = null
+            })
+          }
+          // The PERSISTED record is only marked resolved when the
+          // conversation NAMED BY THE FAILURE re-read successfully.
+          // Switching to a different, absent or cached conversation proves
+          // nothing about the failed one — flagging the record recovered
+          // there would let a still-broken conversation masquerade as
+          // healthy in Diagnostics (issue #147, PR #149 review).
+          if (failedId === id) {
+            markPersistedFailureResolved()
+          }
         }
         // NOTE: workspace switching is handled by syncFromRoute in App.tsx.
         // This store only manages conversation data; it does NOT call switchWorkspace.

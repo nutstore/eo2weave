@@ -202,7 +202,10 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     // The banner belongs to the conversation the user left — it must go.
     expect(useConversationStore.getState().loadError).toBeNull()
     expect(useConversationStore.getState().loadErrorScope).toBeNull()
-    expect(readPersistedRecord()?.resolved).toBe(true)
+    // Round-3 (PR #149 review): conv-a was never re-read, so its failure is
+    // NOT verified as recovered — the persisted record stays unresolved
+    // even though the stale banner cleared.
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
   })
 
   it('keeps the error visible when switching to a conversation whose transcript also fails', async () => {
