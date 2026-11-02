@@ -52,6 +52,7 @@ import { useOPFSStore } from '@/store/opfs.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
+import { createAttemptTokenSource } from '@/components/layout/sidebar-retry-guard'
 import { FileTreePanel } from '@/components/file-viewer/FileTreePanel'
 import { PendingSyncPanel } from '@/components/sync/PendingSyncPanel'
 import { SnapshotList } from '@/components/sync/SnapshotList'
@@ -794,6 +795,9 @@ export const Sidebar = memo(function Sidebar({
   // read succeeded, so the empty list never flashes as a false "no history"
   // state (PR #133 semantics).
   const [isRetryingLoad, setIsRetryingLoad] = useState(false)
+  // Module-stable attempt-token source for the retry button's in-flight flag
+  // (see the onClick handler below for why it exists).
+  const retryTokenSource = useRef(createAttemptTokenSource()).current
   const deleteConversation = useConversationStore((s) => s.deleteConversation)
   const deleteConversations = useConversationStore((s) => s.deleteConversations)
   const updateTitle = useConversationStore((s) => s.updateTitle)
@@ -1399,6 +1403,13 @@ export const Sidebar = memo(function Sidebar({
                   type="button"
                   onClick={() => {
                     setIsRetryingLoad(true)
+                    // Attempt-token guard: when retry #1 exceeds the 15s
+                    // timeout and retry #2 starts, #1's settle must NOT
+                    // re-enable the button while #2 is still pending — that
+                    // allowed overlapping retries (PR #149 round-6 review,
+                    // "Retry re-enables prematurely"). Only the LATEST
+                    // attempt may clear the in-flight flag.
+                    const attempt = retryTokenSource.next()
                     // Bound the retry: a loadFromDB that never settles must
                     // not leave the button disabled ("Retrying…") forever.
                     // Re-enable on settle OR after ~15s, whichever comes
@@ -1415,7 +1426,9 @@ export const Sidebar = memo(function Sidebar({
                     })
                     void Promise.race([settled, timeout]).finally(() => {
                       if (timerId !== undefined) window.clearTimeout(timerId)
-                      setIsRetryingLoad(false)
+                      if (retryTokenSource.isCurrent(attempt)) {
+                        setIsRetryingLoad(false)
+                      }
                     })
                   }}
                   disabled={isRetryingLoad}
