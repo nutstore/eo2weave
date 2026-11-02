@@ -131,6 +131,18 @@ function withTimeout<T>(
  * sidebar's Retry stays available.
  */
 const FALLBACK_META_TIMEOUT_MS = 10_000
+
+/**
+ * Bound for the unbounded-promise legs of the INITIAL load: SQLite/OPFS
+ * initialization, the legacy migration pass, the workspace-manager ensure,
+ * and the primary metadata read. Before this bound, a leg whose promise
+ * never settled kept `runLoadFromDB` pending forever — the fallback timeout
+ * was never reached and `loadError` was never recorded, so the sidebar
+ * stayed blank with no Retry (PR #149 round-7 review, "Hung startup offers
+ * no retry"). A hung leg now rejects into the existing catch, which records
+ * a retryable failure and runs the bounded one-shot fallback.
+ */
+const INITIAL_LOAD_TIMEOUT_MS = 15_000
 import { AgentLoop } from '@/agent/agent-loop'
 import { createLLMProvider } from '@/agent/llm/provider-factory'
 import { ContextManager } from '@/agent/context-manager'
@@ -603,29 +615,43 @@ async function runLoadFromDB(
   const loadGeneration = beginConversationLoadGeneration()
   const isCurrentRun = () => isCurrentConversationLoadGeneration(loadGeneration)
       try {
-        // Initialize SQLite first
-        await initSQLiteDB()
+        // Initialize SQLite first. Bounded: a hung OPFS/SQLite handshake must
+        // not wedge startup before the fallback timeout is ever reached
+        // (PR #149 round-7 review, "Hung startup offers no retry").
+        await withTimeout(initSQLiteDB(), INITIAL_LOAD_TIMEOUT_MS, 'SQLite initialization')
         const tSqlite = performance.now()
         // Force one legacy message migration pass in main thread.
         // This repairs cases where worker-side migration was skipped in previous versions.
         try {
           const msgRepo = getMessageRepository()
-          const migrated = await msgRepo.migrateFromJsonBlob()
+          const migrated = await withTimeout(
+            msgRepo.migrateFromJsonBlob(),
+            INITIAL_LOAD_TIMEOUT_MS,
+            'legacy message migration'
+          )
           if (migrated.messages > 0) {
             console.log(
               `[conversation.store] Recovered ${migrated.messages} legacy messages across ${migrated.conversations} conversations`
             )
           }
           const db = getSQLiteDB()
-          const missingConversations = await db.queryFirst<{ count: number }>(
-            `SELECT COUNT(*) as count
-             FROM conversations c
-             WHERE NOT EXISTS (
-               SELECT 1 FROM messages m WHERE m.conversation_id = c.id LIMIT 1
-             )`
+          const missingConversations = await withTimeout(
+            db.queryFirst<{ count: number }>(
+              `SELECT COUNT(*) as count
+               FROM conversations c
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM messages m WHERE m.conversation_id = c.id LIMIT 1
+               )`,
+            ),
+            INITIAL_LOAD_TIMEOUT_MS,
+            'migration missing-conversation probe'
           )
           if ((missingConversations?.count ?? 0) > 0) {
-            const recovered = await msgRepo.recoverFromAppSessions()
+            const recovered = await withTimeout(
+              msgRepo.recoverFromAppSessions(),
+              INITIAL_LOAD_TIMEOUT_MS,
+              'AppSessions message recovery'
+            )
             if (recovered.messages > 0) {
               console.log(
                 `[conversation.store] Recovered ${recovered.messages} messages from AppSessions (${recovered.conversations} conversations, ${recovered.sessions} snapshots)`
@@ -637,7 +663,11 @@ async function runLoadFromDB(
         }
         const tMigrate = performance.now()
 
-        const conversations = await loadConversationsMeta()
+        const conversations = await withTimeout(
+          loadConversationsMeta(),
+          INITIAL_LOAD_TIMEOUT_MS,
+          'conversation metadata read'
+        )
         const tLoadMeta = performance.now()
 
         // Orphan recovery: find ask_user_question tool_calls in committed messages
@@ -716,14 +746,22 @@ async function runLoadFromDB(
         let ensuredSkipped = 0
         try {
           const { getWorkspaceManager } = await import('@/opfs')
-          const manager = await getWorkspaceManager()
+          const manager = await withTimeout(
+            getWorkspaceManager(),
+            INITIAL_LOAD_TIMEOUT_MS,
+            'workspace manager initialization'
+          )
           const activeWsId = useConversationContextStore.getState().activeWorkspaceId
           const target = conversations.find((c) => c.id === activeWsId)
           if (target && !manager.isWorkspaceLoaded(target.id)) {
-            await manager.createWorkspace(
-              `workspaces/${target.id}`,
-              target.id,
-              target.title || DEFAULT_CONVERSATION_NAME,
+            await withTimeout(
+              manager.createWorkspace(
+                `workspaces/${target.id}`,
+                target.id,
+                target.title || DEFAULT_CONVERSATION_NAME,
+              ),
+              INITIAL_LOAD_TIMEOUT_MS,
+              'active workspace ensure'
             )
             ensuredCount++
           } else {
@@ -816,7 +854,11 @@ async function runLoadFromDB(
         if (activeId) {
           try {
             const msgRepo = getMessageRepository()
-            const activeMessages = await msgRepo.findByConversation(activeId)
+            const activeMessages = await withTimeout(
+              msgRepo.findByConversation(activeId),
+              INITIAL_LOAD_TIMEOUT_MS,
+              'active conversation transcript read'
+            )
             primePersistBaseline(activeId, activeMessages as Message[])
             set((state) => {
               const conv = state.conversations.find((c) => c.id === activeId)
@@ -955,7 +997,11 @@ async function runLoadFromDB(
           if (retryActiveId) {
             try {
               const msgRepo = getMessageRepository()
-              const retryMessages = await msgRepo.findByConversation(retryActiveId)
+              const retryMessages = await withTimeout(
+                msgRepo.findByConversation(retryActiveId),
+                INITIAL_LOAD_TIMEOUT_MS,
+                'active conversation transcript read'
+              )
               primePersistBaseline(retryActiveId, retryMessages as Message[])
               set((state) => {
                 const conv = state.conversations.find((c) => c.id === retryActiveId)

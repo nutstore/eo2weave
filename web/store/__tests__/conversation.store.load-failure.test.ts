@@ -113,6 +113,7 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
 })
 
 import { useConversationStore } from '@/store/conversation.store'
+import { initSQLiteDB } from '@/sqlite'
 import { CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 
 const CONV_A = 'conv-a'
@@ -339,6 +340,42 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
       // The failure is persisted for diagnostics too.
       expect(readPersistedRecord()?.message).toContain('timed out')
       await expect(load).resolves.toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('bounds a hung SQLite initialization with a retryable failure', async () => {
+    // PR #149 round-7 review ("Hung startup offers no retry"): the INITIAL
+    // legs (SQLite/OPFS init, migration, metadata read, transcript read)
+    // must be time-bounded too — before this fix a hung init kept
+    // runLoadFromDB pending forever and the fallback timeout was never
+    // reached, leaving the sidebar blank with no Retry.
+    vi.mocked(initSQLiteDB).mockImplementationOnce(() => new Promise(() => {}))
+    // The bounded fallback after the init timeout must be able to recover.
+    findByConversationMock.mockResolvedValue([])
+
+    vi.useFakeTimers()
+    try {
+      const load = useConversationStore.getState().retryLoadFromDB()
+      // Advance past the 15s initial-load bound but stop BEFORE the 300ms
+      // fallback delay elapses: the hung init must already have surfaced as
+      // a retryable metadata failure at this point.
+      await vi.advanceTimersByTimeAsync(15_200)
+
+      const mid = useConversationStore.getState()
+      expect(mid.loadError).toContain('SQLite initialization timed out')
+      expect(mid.loadErrorScope).toBe('metadata')
+      // A retryable failure, not a locked-in empty list.
+      expect(mid.loaded).toBe(false)
+      expect(readPersistedRecord()?.message).toContain('SQLite initialization timed out')
+
+      // The fallback then recovers: the error clears and the persisted
+      // record is marked resolved.
+      await vi.advanceTimersByTimeAsync(1_000)
+      await load
+      expect(useConversationStore.getState().loadError).toBeNull()
+      expect(readPersistedRecord()?.resolved).toBe(true)
     } finally {
       vi.useRealTimers()
     }
