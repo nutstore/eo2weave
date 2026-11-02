@@ -241,15 +241,21 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
     expect(screen.getByText('OPFS init failed')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Retrying…' })).toBeTruthy()
 
+    // Round-3 hardening (PR #149 review): the settled store state must be
+    // what the banner reflects after the retry — mutate the mocked store
+    // (successful retry clears the error) before resolving, and assert the
+    // banner GONE against the changed state.
     resolveRetry()
+    mockConversationState.loadError = null
+    mockConversationState.loadErrorScope = null
     await act(async () => {
       await Promise.resolve()
     })
 
-    // The retry settled: the button is enabled again and the alert is still
-    // there (the mocked store still reports the error).
-    expect(screen.getByTestId('conversation-load-error')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+    // The retry settled onto a clean store: the alert (and its Retry button
+    // with it) is gone — no stale "Retrying…" state is left behind.
+    expect(screen.queryByTestId('conversation-load-error')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retrying…' })).toBeNull()
   })
 
   it('renders a generic message (not a blank line) when loadError is an empty string', () => {
