@@ -51,14 +51,14 @@ const mockContext = {
   deleteWorkspace: vi.fn(() => Promise.resolve()),
 }
 
-vi.mock('../conversation-context.store', () => ({
+vi.mock('@/store/conversation-context.store', () => ({
   getActiveConversation: vi.fn(() => null),
   useConversationContextStore: {
     getState: vi.fn(() => mockContext),
   },
 }))
 
-vi.mock('../settings.store', () => {
+vi.mock('@/store/settings.store', () => {
   const mockSettingsState = {
     providerType: 'openai',
     modelName: 'mock-model',
@@ -119,7 +119,7 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
   }
 })
 
-import { useConversationStore } from '../conversation.store'
+import { useConversationStore } from '@/store/conversation.store'
 import { CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 
 const CONV_A = 'conv-a'
@@ -458,6 +458,36 @@ describe('conversation.store — round-4 in-flight transcript read race (PRRT_kw
     mockContext.activeWorkspaceId = CONV_A
     mockContext.workspaces = []
     findAllMetaMock.mockResolvedValue([meta(CONV_A, 'first'), meta(CONV_B, 'second')])
+  })
+
+  it('transcript success does NOT resolve a metadata-scope failure (round-5, metadata layer never re-read)', async () => {
+    // A metadata-scope failure (e.g. an earlier run's OPFS/SQLite init blew
+    // up after the metadata pass) — the record names no conversation.
+    sessionStorage.setItem(
+      CONVERSATION_STORE_LOAD_ERROR_KEY,
+      JSON.stringify({
+        message: 'opfs init failed',
+        at: new Date().toISOString(),
+      }),
+    )
+
+    // A stale in-memory conversation so setActive takes the lazy-read path.
+    useConversationStore.setState((state) => {
+      state.conversations = [
+        { ...meta(CONV_B, 'stale'), messages: [], messagesLoaded: false, mountRefCount: 0, collectedAssets: [] } as never,
+      ]
+      state.activeConversationId = null
+    })
+
+    // The transcript read succeeds — but the METADATA layer was never
+    // re-read by setActive, so the metadata failure is NOT recovered.
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'm-b5', role: 'user', content: 'b5', timestamp: 7 },
+    ])
+    await useConversationStore.getState().setActive(CONV_B)
+
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
+    expect(readPersistedRecord()?.message).toBe('opfs init failed')
   })
 
   it("B's later success does NOT resolve A's failure while A's own read is in flight", async () => {
