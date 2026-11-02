@@ -113,7 +113,7 @@ import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 
 //=============================================================================
-import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from './conversation-persist'
+import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers, beginConversationLoadGeneration, isCurrentConversationLoadGeneration } from './conversation-persist'
 import { CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 import {
   runAgentImpl,
@@ -560,6 +560,14 @@ async function runLoadFromDB(
   get: () => ConversationState
 ): Promise<void> {
   const t0 = performance.now()
+  // Claim this run's generation NOW. If a forced retry (retryLoadFromDB)
+  // starts later, it claims a newer generation and every guarded write below
+  // (store state AND diagnostics records) becomes a no-op for THIS run when
+  // it eventually settles — a stale run can no longer overwrite the state a
+  // recovered retry installed (PR #149 round-6 review, "Stale retries
+  // overwrite recovered state").
+  const loadGeneration = beginConversationLoadGeneration()
+  const isCurrentRun = () => isCurrentConversationLoadGeneration(loadGeneration)
       try {
         // Initialize SQLite first
         await initSQLiteDB()
@@ -717,6 +725,11 @@ async function runLoadFromDB(
               conversations.some((c) => c.id === w.id)
             )?.id || null)
 
+        // Stale-run gate: if a newer load (e.g. a forced retry) has started,
+        // this run must not write anything it loaded — skip both the store
+        // update and the transcript read that follows (PR #149 round-6).
+        if (!isCurrentRun()) return
+
         set((state) => {
           state.conversations = conversations.map((conv) => ({
             ...conv,
@@ -781,6 +794,9 @@ async function runLoadFromDB(
               }
             })
           } catch (error) {
+            // A stale run's failure must not clobber the recovered state a
+            // newer load already installed (PR #149 round-6 review).
+            if (!isCurrentRun()) return
             activeTranscriptLoaded = false
             const activeLoadMessage =
               error instanceof Error
@@ -833,6 +849,9 @@ async function runLoadFromDB(
           })
         }
       } catch (error) {
+        // A stale run must not write its failure into the store or diagnostics
+        // — a newer load may have already recovered the app (PR #149 round-6).
+        if (!isCurrentRun()) return
         console.error('[conversation.store] Failed to load conversations:', error)
         // Persist the INITIAL failure BEFORE the fallback attempt: when the
         // fallback retry then succeeds, markPersistedFailureResolved needs a
@@ -893,6 +912,9 @@ async function runLoadFromDB(
                 }
               })
             } catch (transcriptErr) {
+              // Stale-run gate (PR #149 round-6 review): a superseded run must
+              // not clobber the state a newer load already wrote.
+              if (!isCurrentRun()) return
               retryTranscriptLoaded = false
               const retryTranscriptMessage =
                 transcriptErr instanceof Error
@@ -929,6 +951,9 @@ async function runLoadFromDB(
             })
           }
         } catch (retryErr) {
+          // Stale-run gate: a superseded run must not flag a failure the
+          // current run already recovered (PR #149 round-6 review).
+          if (!isCurrentRun()) return
           console.error(
             '[conversation.store] loadFromDB retry also failed:',
             retryErr instanceof Error ? retryErr.message : retryErr,

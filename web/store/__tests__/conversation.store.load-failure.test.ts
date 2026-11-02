@@ -35,7 +35,7 @@ vi.mock('@/streaming-bus', () => ({
   emitError: vi.fn(),
 }))
 
-vi.mock('../conversation-context.store', () => ({
+vi.mock('@/store/conversation-context.store', () => ({
   getActiveConversation: vi.fn(() => null),
   useConversationContextStore: {
     getState: vi.fn(() => ({
@@ -51,7 +51,7 @@ vi.mock('../conversation-context.store', () => ({
   },
 }))
 
-vi.mock('../settings.store', () => {
+vi.mock('@/store/settings.store', () => {
   const mockSettingsState = {
     providerType: 'openai',
     modelName: 'mock-model',
@@ -112,7 +112,7 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
   }
 })
 
-import { useConversationStore } from '../conversation.store'
+import { useConversationStore } from '@/store/conversation.store'
 import { CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 
 const CONV_A = 'conv-a'

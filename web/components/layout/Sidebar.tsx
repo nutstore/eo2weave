@@ -1404,12 +1404,19 @@ export const Sidebar = memo(function Sidebar({
                     // Re-enable on settle OR after ~15s, whichever comes
                     // first (issue #147, PR #149 review).
                     const settled = retryConversationsLoad().catch(() => {})
+                    // Keep the timer handle: when the retry settles first the
+                    // pending 15s timeout must be cleared, not left scheduled
+                    // (PR #149 round-6 review, "Stale retries overwrite
+                    // recovered state"). Clearing an already-fired timer is a
+                    // harmless no-op on the timeout path.
+                    let timerId: number | undefined
                     const timeout = new Promise<void>((resolve) => {
-                      window.setTimeout(resolve, 15_000)
+                      timerId = window.setTimeout(resolve, 15_000)
                     })
-                    void Promise.race([settled, timeout]).finally(() =>
+                    void Promise.race([settled, timeout]).finally(() => {
+                      if (timerId !== undefined) window.clearTimeout(timerId)
                       setIsRetryingLoad(false)
-                    )
+                    })
                   }}
                   disabled={isRetryingLoad}
                   className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
