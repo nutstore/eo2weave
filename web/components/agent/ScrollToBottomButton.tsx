@@ -116,13 +116,37 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
   // Corrections arrive without any gesture and no longer cancel jumps.
   const lastUserScrollIntentAtRef = useRef(0)
   const USER_INTENT_WINDOW_MS = 200
+  // Self-heal for paths the gesture gate cannot see (e.g. a scrollbar drag
+  // fires no wheel/touch/key events): if a jump stays pending this long,
+  // Virtuoso never confirmed the landing — resync to not-at-bottom so the
+  // button re-shows and followOutput cannot stay stuck on. Normal smooth
+  // jumps land well within this budget and clear the flag themselves.
+  const PENDING_JUMP_TIMEOUT_MS = 2000
+  const jumpPendingTimerRef = useRef<number | null>(null)
   const markUserScrollIntent = useCallback(() => {
     lastUserScrollIntentAtRef.current = Date.now()
   }, [])
   const setJumpPendingBoth = useCallback((v: boolean) => {
     jumpPendingRef.current = v
     setJumpPending(v)
-  }, [])
+    if (jumpPendingTimerRef.current !== null) {
+      window.clearTimeout(jumpPendingTimerRef.current)
+      jumpPendingTimerRef.current = null
+    }
+    if (v) {
+      jumpPendingTimerRef.current = window.setTimeout(() => {
+        jumpPendingTimerRef.current = null
+        if (!jumpPendingRef.current) return
+        // Stuck jump (no landing, no detectable gesture): resynchronize the
+        // list AND hub with Virtuoso's actual (not-at-bottom) state.
+        virtuosoRef?.current?.notifyVirtualAtBottom(false)
+        setJumpPending(false)
+      }, PENDING_JUMP_TIMEOUT_MS)
+    }
+    // virtuosoRef is a stable React ref object; including it keeps the
+    // exhaustive-deps contract honest.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [virtuosoRef])
 
   // ── Virtualized mode: receive Virtuoso's at-bottom state via the hub ──
   useEffect(() => {
@@ -169,7 +193,6 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
 
   // ── Virtualized mode: interrupted-jump resync (PR #142 review round 3) ──
   // Virtuoso only broadcasts on at-bottom TRANSITIONS. The click previews
-  // at-bottom on the follow path (followOutput re-enables immediately), but
   // Virtuoso's OWN state stays not-at-bottom until the animation lands —
   // so a jump interrupted by the user fires no transition and the jump
   // would otherwise stay pending forever. While a jump is pending, a scroll
@@ -227,6 +250,17 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isVirtualized, virtualAtBottomHub, scrollContainerRef, setJumpPendingBoth, virtuosoRef, markUserScrollIntent])
 
+  // Clear a still-pending jump timer on unmount (no resync — the component
+  // is going away; the next mount starts from the hub's confirmed value).
+  useEffect(() => {
+    return () => {
+      if (jumpPendingTimerRef.current !== null) {
+        window.clearTimeout(jumpPendingTimerRef.current)
+        jumpPendingTimerRef.current = null
+      }
+    }
+  }, [])
+
   const handleClick = useCallback(() => {
     if (isVirtualized) {
       // Preview at-bottom on the FOLLOW path only (review round 5): the
@@ -242,14 +276,11 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
       // scroller (footer content included).
       virtuosoRef?.current?.scrollToLastTurn('smooth')
       // Capture the pre-jump scroll position: the interrupt detector compares
-      // every scroll event against THIS value, so the first user scroll after
-      // the click is already attributable (decreasing scrollTop = interruption)
-      // without a throwaway calibration event (review round 4). Re-captured on
-      // every click, so no baseline survives into the next jump. The click
-      // itself opens the intent window: a genuine first user gesture after
-      // the click also fires wheel/touch/key markers.
+      // every scroll event against THIS value, so a user scroll after the
+      // click is attributable (decreasing scrollTop + recent gesture =
+      // interruption). Re-captured on every click, so no baseline survives
+      // into the next jump.
       interruptBaselineRef.current = scrollContainerRef.current?.scrollTop ?? 0
-      markUserScrollIntent()
       // Optimistic hide WITHOUT touching the authoritative virtualAtBottom
       // (review round 3): the hub keeps Virtuoso's real not-at-bottom value,
       // so an interrupted jump can resync from it (see the scroll listener).
@@ -259,7 +290,7 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
     isUserAtBottomRef.current = true
     const el = scrollContainerRef.current
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [scrollContainerRef, isUserAtBottomRef, isVirtualized, virtuosoRef, setJumpPendingBoth, markUserScrollIntent])
+  }, [scrollContainerRef, isUserAtBottomRef, isVirtualized, virtuosoRef, setJumpPendingBoth])
 
   // Visibility per mode — never derived from native geometry while
   // virtualized (that mixed-source desync is exactly the #141 bug).

@@ -56,14 +56,17 @@ vi.mock('react-virtuoso', () => ({
     virtuosoSpy(props)
     useImperativeHandle(ref, () => ({
       scrollToIndex: virtuosoScrollToIndexSpy,
-      // Faithful to real Virtuoso: a scroll that lands at the bottom fires
-      // atBottomStateChange(true). The click tests rely on this to verify the
-      // jump actually REACHES the bottom (state follows Virtuoso's verdict),
-      // not merely that a scrollTo call was made.
+      // PR #142 review round 5 (Sourcery): the previous mock fired
+      // atBottomStateChange(true) synchronously inside scrollTo, which made
+      // every click test pass vacuously — the landing was already confirmed
+      // before the click handler even set jumpPending, and the assertions
+      // could not distinguish a confirmed landing from the optimistic
+      // pending state. Real Virtuoso only fires atBottomStateChange when the
+      // scroll ANIMATION lands; a smooth scroll in flight reports nothing.
+      // Tests now model the landing explicitly by invoking the recorded
+      // handler (see the click tests below).
       scrollTo: (...args: unknown[]) => {
         virtuosoScrollToSpy(...args)
-        const handler = atBottomStateChangeHandlers.at(-1)
-        if (handler) handler(true)
       },
       scrollIntoView: vi.fn(),
       scrollBy: vi.fn(),
@@ -382,7 +385,7 @@ describe('ConversationMessages virtualization', () => {
   it('button click lands at bottom via Virtuoso scrollTo (footer-inclusive) in virtual mode', async () => {
     const isUserAtBottomRef = { current: false }
     const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
-    const { handleRef, container } = renderWithButton(55, { isUserAtBottomRef, virtualAtBottomHub: hub })
+    const { handleRef, rerender, container } = renderWithButton(55, { isUserAtBottomRef, virtualAtBottomHub: hub })
     await waitFor(() => {
       expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
       expect(handleRef.current).not.toBeNull()
@@ -403,19 +406,39 @@ describe('ConversationMessages virtualization', () => {
 
     // Must route through Virtuoso's footer-inclusive scrollTo, NOT a native
     // scrollTop write and NOT scrollToIndex (which targets the last DATA
-    // turn and leaves the footer below the viewport). The mock's scrollTo
-    // fires atBottomStateChange(true) like the real library, so the
-    // assertions below also prove the jump actually LANDS at the bottom:
-    // the list's followOutput state re-enables and the button hides.
+    // turn and leaves the footer below the viewport).
     expect(virtuosoScrollToSpy).toHaveBeenCalledWith({
       top: Number.MAX_SAFE_INTEGER,
       behavior: 'smooth',
     })
     expect(virtuosoScrollToIndexSpy).not.toHaveBeenCalled()
+
+    // PR #142 review round 5 (Sourcery): the mock no longer confirms the
+    // landing synchronously inside scrollTo. While the jump is in flight the
+    // hub must still hold Virtuoso's last CONFIRMED position (not-at-bottom —
+    // the click's followOutput preview must not leak into it), so a
+    // subscription replay cannot surface an unconfirmed at-bottom.
+    expect(hub.lastAtBottom).toBe(false)
+
+    // Virtuoso's scroll animation lands → the REAL landing signal fires
+    // through our funnel (as the library does when the animation reaches
+    // the bottom). This is the confirmed transition the click was waiting
+    // for — not the optimistic pending state.
+    act(() => atBottomStateChangeHandlers.at(-1)?.(true))
+
+    // Observable confirmed-landing consequences, all of which distinguish a
+    // real landing from the pending state:
+    // - the shared ref the funnel writes is at-bottom;
+    // - the hub replays the CONFIRMED value to late subscribers;
+    // - the button stays hidden (landing, not merely pending);
+    // - followOutput is enabled for subsequently appended turns.
+    expect(isUserAtBottomRef.current).toBe(true)
+    expect(hub.lastAtBottom).toBe(true)
     await waitFor(() => {
-      expect(isUserAtBottomRef.current).toBe(true)
       expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
     })
+    rerender(56)
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe('smooth')
   })
 
   it('button click re-enables followOutput for subsequently appended turns', async () => {
@@ -439,11 +462,20 @@ describe('ConversationMessages virtualization', () => {
       button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    // The click must have pushed at-bottom through the funnel so the LIST's
-    // followOutput state re-enabled (not just the button's own visibility).
+    // PR #142 review round 5 (Sourcery): the click's followOutput preview
+    // must reach the shared ref (follow path) WITHOUT leaking into the hub —
+    // the hub keeps Virtuoso's confirmed not-at-bottom until the animation
+    // lands. If the hub were written optimistically, a mid-jump mode switch
+    // would replay an unconfirmed at-bottom (button hidden, follow stuck on).
     await waitFor(() => {
       expect(isUserAtBottomRef.current).toBe(true)
     })
+    expect(hub.lastAtBottom).toBe(false)
+
+    // The jump lands → Virtuoso confirms at-bottom through the funnel.
+    act(() => atBottomStateChangeHandlers.at(-1)?.(true))
+    expect(hub.lastAtBottom).toBe(true)
+
     rerender(56)
     expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe('smooth')
   })
@@ -508,20 +540,22 @@ describe('ConversationMessages virtualization', () => {
       return el as HTMLElement
     })
 
-    // Click → optimistic hide + optimistic funnel push (followOutput on).
+    // Click → optimistic hide + followOutput preview (follow on).
     act(() => {
       button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
     expect(isUserAtBottomRef.current).toBe(true)
 
-    // User scrolls UP mid-jump: no atBottomStateChange fires (Virtuoso never
-    // reached bottom), just a scroll event on the scroll container with
-    // decreasing scrollTop. The resync must funnel not-at-bottom back through.
+    // User scrolls UP mid-jump: a wheel gesture fires first (real user event
+    // order), then a scroll event on the scroll container with decreasing
+    // scrollTop — and NO atBottomStateChange (Virtuoso never reached bottom).
+    // The resync must funnel not-at-bottom back through.
     const scroller = container.querySelector('[data-testid="scroll-container"]') as HTMLDivElement
     expect(scroller).not.toBeNull()
     act(() => {
       Object.defineProperty(scroller!, 'scrollTop', { value: 400, configurable: true })
+      scroller!.dispatchEvent(new WheelEvent('wheel'))
       scroller!.dispatchEvent(new Event('scroll'))
       Object.defineProperty(scroller!, 'scrollTop', { value: 150, configurable: true })
       scroller!.dispatchEvent(new Event('scroll'))
@@ -575,10 +609,12 @@ describe('ConversationMessages virtualization', () => {
     })
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
 
-    // Exactly ONE scroll event arrives — the user's first gesture, before
-    // any animation scroll event was handled — and it moves UP (500 → 200).
+    // Exactly ONE user gesture + scroll event arrives — the user's first
+    // wheel-driven gesture, before any animation scroll event was handled —
+    // and it moves UP (500 → 200).
     act(() => {
       Object.defineProperty(scroller, 'scrollTop', { value: 200, configurable: true })
+      scroller.dispatchEvent(new WheelEvent('wheel'))
       scroller.dispatchEvent(new Event('scroll'))
     })
 
@@ -619,7 +655,14 @@ describe('ConversationMessages virtualization', () => {
       })
     }
     const scroller = container.querySelector('[data-testid="scroll-container"]') as HTMLDivElement
-    const scroll = (top: number) => {
+    const gestureScrollUp = (top: number) => {
+      act(() => {
+        Object.defineProperty(scroller, 'scrollTop', { value: top, configurable: true })
+        scroller.dispatchEvent(new WheelEvent('wheel'))
+        scroller.dispatchEvent(new Event('scroll'))
+      })
+    }
+    const animationScrollDown = (top: number) => {
       act(() => {
         Object.defineProperty(scroller, 'scrollTop', { value: top, configurable: true })
         scroller.dispatchEvent(new Event('scroll'))
@@ -627,15 +670,15 @@ describe('ConversationMessages virtualization', () => {
     }
 
     // Jump #1 from scrollTop 400: an animation-style scroll DOWN advances the
-    // baseline without ending the jump, then the user scrolls up and the
+    // baseline without ending the jump, then the user wheels up and the
     // resync fires (jump #1 interrupted at scrollTop 250).
     act(() => {
       Object.defineProperty(scroller, 'scrollTop', { value: 400, configurable: true })
     })
     await click()
-    scroll(450)
+    animationScrollDown(450)
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
-    scroll(250)
+    gestureScrollUp(250)
     await waitFor(() => {
       expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
     })
@@ -643,12 +686,12 @@ describe('ConversationMessages virtualization', () => {
 
     // Jump #2 from the interrupted position (250): the baseline must restart
     // there — NOT inherit jump #1's history. A single scroll down to 300 is
-    // the animation (no interrupt), and the very next scroll up to 120 is a
+    // the animation (no interrupt), and the very next wheel-up to 120 is a
     // genuine interruption detected without any calibration event.
     await click()
-    scroll(300)
+    animationScrollDown(300)
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
-    scroll(120)
+    gestureScrollUp(120)
     await waitFor(() => {
       expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
     })
@@ -656,6 +699,173 @@ describe('ConversationMessages virtualization', () => {
     expect(hub.lastAtBottom).toBe(false)
     rerender(56)
     expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
+  })
+
+  it('does not cancel a jump on a browser correction with no user gesture (review round 5)', async () => {
+    // Sourcery round 5: any scrollTop decrease during a pending jump was
+    // treated as a user interruption. Scroll anchoring and Virtuoso row
+    // measurement corrections also decrease scrollTop — with NO user
+    // gesture — and must not cancel the jump: the animation replays past
+    // them and the landing still confirms at-bottom through the funnel.
+    const isUserAtBottomRef = { current: false }
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
+    const scrollContainerRef = { current: null as HTMLDivElement | null }
+    const { handleRef, container, rerender } = renderWithButton(55, {
+      isUserAtBottomRef,
+      virtualAtBottomHub: hub,
+      scrollContainerRef,
+    })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+      expect(handleRef.current).not.toBeNull()
+    })
+
+    const button = await waitFor(() => {
+      const el = container.querySelector('[data-testid="scroll-to-bottom"]')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+    act(() => {
+      Object.defineProperty(
+        container.querySelector('[data-testid="scroll-container"]') as HTMLDivElement,
+        'scrollTop',
+        { value: 500, configurable: true },
+      )
+    })
+    act(() => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
+
+    // A browser correction moves the view UP (500 → 430) without any
+    // wheel/touch/key gesture. The jump must stay pending — no resync.
+    act(() => {
+      const scroller = container.querySelector('[data-testid="scroll-container"]') as HTMLDivElement
+      Object.defineProperty(scroller, 'scrollTop', { value: 430, configurable: true })
+      scroller.dispatchEvent(new Event('scroll'))
+    })
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
+    expect(hub.lastAtBottom).toBe(false)
+
+    // The animation replays past the correction and lands → Virtuoso
+    // confirms at-bottom and the follow path is fully enabled.
+    act(() => atBottomStateChangeHandlers.at(-1)?.(true))
+    expect(isUserAtBottomRef.current).toBe(true)
+    expect(hub.lastAtBottom).toBe(true)
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
+    })
+    rerender(56)
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe('smooth')
+  })
+
+  it('a mid-jump subscription replay surfaces the confirmed position, not the optimistic one (review round 5)', async () => {
+    // Sourcery round 5 'Button hides before reaching bottom': the old click
+    // wrote the optimistic at-bottom into the hub. A virtualized↔plain flip
+    // mid-jump tears down and re-registers the hub subscription, which
+    // REPLAYS hub.lastAtBottom — the never-confirmed true hid the button
+    // and kept followOutput enabled while the list was not at the bottom.
+    const isUserAtBottomRef = { current: false }
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
+    const handleRef = { current: null as ConversationMessagesHandle | null }
+    const scrollContainerRef = { current: null as HTMLDivElement | null }
+    const noop = vi.fn()
+    const messagesEndRef = { current: null as HTMLDivElement | null }
+    const ui = (virtual: boolean) => (
+      <div className="overflow-y-auto" data-testid="scroll-container" ref={(el) => {
+        scrollContainerRef.current = el
+        // Stub the geometry FAR from the bottom: the plain-mode phase of the
+        // flip runs its setup geometry read, and a happy-dom zero-size div
+        // would otherwise read as at-bottom (clobbering the shared ref).
+        if (el) {
+          Object.defineProperty(el, 'scrollHeight', { value: 1500, configurable: true })
+          Object.defineProperty(el, 'clientHeight', { value: 600, configurable: true })
+          Object.defineProperty(el, 'scrollTop', { value: 400, configurable: true })
+        }
+      }}>
+        <ConversationMessages
+          ref={handleRef}
+          activeMessages={makeMessages(virtual ? 55 : 5)}
+          toolResults={new Map()}
+          isProcessing={false}
+          status="idle"
+          onDeleteAgentLoop={noop}
+          onEditAndResend={noop}
+          onRegenerate={undefined}
+          onCancel={noop}
+          messagesEndRef={messagesEndRef}
+          isUserAtBottomRef={isUserAtBottomRef}
+          virtualAtBottomHub={hub}
+          conversationId="conv-1"
+          mentionAgents={[]}
+        />
+        <ScrollToBottomButton
+          scrollContainerRef={scrollContainerRef}
+          messagesEndRef={messagesEndRef}
+          isUserAtBottomRef={isUserAtBottomRef}
+          convId="conv-1"
+          {...(virtual
+            ? { isVirtualized: true as const, virtuosoRef: handleRef, virtualAtBottomHub: hub }
+            : { isVirtualized: false as const })}
+        />
+      </div>
+    )
+    const { container, rerender } = render(ui(true))
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+    })
+
+    const button = await waitFor(() => {
+      const el = container.querySelector('[data-testid="scroll-to-bottom"]')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+    // The user is mid-list when they click (scrollTop 400) — the click
+    // captures that position as the interrupt baseline.
+    act(() => {
+      Object.defineProperty(
+        container.querySelector('[data-testid="scroll-container"]') as HTMLDivElement,
+        'scrollTop',
+        { value: 400, configurable: true },
+      )
+    })
+    // Start a smooth jump.
+    act(() => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // The followOutput preview reached the shared ref…
+    expect(isUserAtBottomRef.current).toBe(true)
+    // …but the hub must still hold Virtuoso's CONFIRMED not-at-bottom.
+    expect(hub.lastAtBottom).toBe(false)
+
+    // The jump is interrupted mid-flight (user wheels up, no landing).
+    act(() => {
+      const scroller = container.querySelector('[data-testid="scroll-container"]') as HTMLDivElement
+      Object.defineProperty(scroller, 'scrollTop', { value: 400, configurable: true })
+      scroller.dispatchEvent(new WheelEvent('wheel'))
+      Object.defineProperty(scroller, 'scrollTop', { value: 200, configurable: true })
+      scroller.dispatchEvent(new Event('scroll'))
+    })
+
+    // The gesture-gated interrupt must already have resynced the list.
+    expect(isUserAtBottomRef.current).toBe(false)
+    expect(hub.lastAtBottom).toBe(false)
+
+    // Mode flip mid-jump → subscription teardown + resubscription → replay.
+    rerender(ui(false))
+    rerender(ui(true))
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+    })
+
+    // The replay must surface the CONFIRMED position (not-at-bottom → the
+    // button is visible and followOutput off), never the optimistic true.
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+    })
+    rerender(ui(true))
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
+    expect(isUserAtBottomRef.current).toBe(false)
   })
 
   it('button replays the hub state it subscribed after (no missed initial signal)', async () => {
