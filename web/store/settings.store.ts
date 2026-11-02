@@ -1208,19 +1208,17 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             // false for BOTH anthropic (no /models endpoint — its static
             // registry is authoritative BY CONSTRUCTION) and codex-oauth
             // (models arrive ASYNCHRONOUSLY from the browser extension).
-            // Treating both the same let a codex-oauth registration that
-            // raced ahead of its extension catalog (or an unavailable
-            // catalog) read as a confirmed empty registry: the stale-pin
+            // Treating both alike let a codex-oauth registration that raced
+            // ahead of its extension catalog (or a catalog that never
+            // arrived) read as a confirmed empty registry: the stale-pin
             // sweep removed previously confirmed pins and reconciliation
             // switched away from the provider while its catalog was merely
-            // not-yet-loaded. Only the static-only set may classify an
-            // empty registry as authoritative 'empty'; an extension-fed
-            // provider with no positively reported catalog is unknown
-            // ('failed' — defer), same as a never-observed /models cache.
-            // codex-oauth normally takes the DYNAMIC-provider branch below
-            // (it registers via registerDynamicProvider); this built-in
-            // branch only sees it if a stale key/config lingers, and even
-            // then it must classify as unknown rather than empty.
+            // not-yet-loaded. Only the static-only set may classify an EMPTY
+            // registry as authoritative 'empty'; an extension-fed provider
+            // with no positively reported catalog is unknown ('failed' —
+            // defer), matching the dynamic-branch behavior for a registry
+            // that never received a catalog. A NON-empty registry is a
+            // positive report in both cases → 'ready'.
             const staticRegistryAuthoritative = hasAuthoritativeStaticRegistry(providerType)
             // The FAILED refresh check precedes the non-empty fallback
             // (Sourcery round 6, 🟠 "Dynamic models appear delisted"): when
@@ -1234,13 +1232,15 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             // A never-observed catalog is likewise 'failed' (unknown).
             const catalogStatus: ModelCatalogStatus =
               !refreshInformsCatalog
-                ? staticRegistryAuthoritative
-                  ? authoritativeIds.length > 0
-                    ? 'ready'
-                    : 'empty'
-                  // Extension-fed provider with no positively reported
-                  // catalog yet: unknown, NOT authoritative-empty.
-                  : 'failed'
+                ? authoritativeIds.length > 0
+                  ? 'ready'
+                  : staticRegistryAuthoritative
+                    // Static-only provider: the empty registry is the
+                    // authoritative answer.
+                    ? 'empty'
+                    // Extension-fed provider: the catalog has not been
+                    // reported yet — unknown, NOT authoritative-empty.
+                    : 'failed'
                 : (dynamicRefreshFailed || !dynamicRefreshObserved)
                   ? 'failed'
                   : authoritativeIds.length > 0
