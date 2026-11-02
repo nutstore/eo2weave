@@ -368,7 +368,12 @@ export async function uninstallRegistryPackage(packageId: string): Promise<void>
  * Dot-prefixed directories are internal installer state (staging/backup),
  * not packages, and are skipped. A directory WITHOUT a valid manifest is
  * also skipped: the management UI must not offer install/uninstall actions
- * for data it cannot interpret.
+ * for data it cannot interpret. The reported id is the manifest's own id —
+ * the package's identity — but ONLY when it agrees with the directory name
+ * (the id doubles as the directory name; a manifest claiming another id is
+ * exactly the mismatch the collision check refuses, and reporting it under
+ * the directory name would make the matching registry package appear not
+ * installed while installing it is rejected).
  */
 export async function listInstalledPackageIds(): Promise<Set<string>> {
   try {
@@ -378,7 +383,8 @@ export async function listInstalledPackageIds(): Promise<Set<string>> {
     for (const entry of entries) {
       if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
       const state = await readManifestId('webmcp', entry.name)
-      if (state !== 'INVALID' && state !== 'UNREADABLE') ids.add(entry.name)
+      if (state === 'INVALID' || state === 'UNREADABLE') continue
+      if (state.id === entry.name) ids.add(state.id)
     }
     return ids
   } catch {
