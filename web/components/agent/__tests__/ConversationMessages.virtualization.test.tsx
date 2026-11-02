@@ -347,6 +347,30 @@ describe('ConversationMessages virtualization', () => {
     expect(isUserAtBottomRef.current).toBe(false)
   })
 
+  it('followOutput returns false when the shared ref seeds NOT-at-bottom (PR #142 review)', async () => {
+    // Sourcery thread: existing tests only seed isUserAtBottomRef=true. A
+    // conversation mounted while the user is NOT at the bottom (e.g. the
+    // seed left behind by the previous conversation before the
+    // WorkspaceLayout remount) must NOT follow appends — otherwise opening a
+    // long conversation yanks the user away from where they were.
+    const isUserAtBottomRef = { current: false }
+    const { rerender, container } = renderVirtual(55, { isUserAtBottomRef })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+    })
+    expect(virtuosoSpy.mock.calls[0][0].followOutput()).toBe(false)
+
+    // Appends stay unfollowed until the funnel flips the state
+    rerender(makeVirtualUi(56, { isUserAtBottomRef }))
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
+
+    // Virtuoso reports at-bottom again → following re-enables
+    const handler = atBottomStateChangeHandlers.at(-1)!
+    act(() => handler(true))
+    rerender(makeVirtualUi(57, { isUserAtBottomRef }))
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe('smooth')
+  })
+
   it('button click lands at bottom via Virtuoso scrollTo (footer-inclusive) in virtual mode', async () => {
     const isUserAtBottomRef = { current: false }
     const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }

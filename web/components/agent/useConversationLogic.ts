@@ -244,17 +244,18 @@ export function useConversationLogic() {
   // to avoid re-rendering ConversationView (and AgentRichInput) on every scroll event.
 
   useEffect(() => {
-    // Keep the "append vs no-append" counter fresh even when we skip the
-    // native scroll (virtualized mode / user scrolled up), so a later
-    // mode switch or scroll-back doesn't misclassify the next append.
+    // Compute append-vs-no-append FIRST, then keep the counter fresh even
+    // when the native scroll is skipped (virtualized mode / user scrolled
+    // up), so a later mode switch or scroll-back classifies the next append
+    // correctly.
+    const behavior: ScrollBehavior =
+      activeMessagesLength > lastRenderedMessageCountRef.current ? 'smooth' : 'auto'
     lastRenderedMessageCountRef.current = activeMessagesLength
     // Virtualized mode: Virtuoso's followOutput owns the scroll position —
     // a native scrollTop write here would fight it (see comment above).
     if (isVirtualizedScroll) return
     // Don't auto-scroll if user is browsing history above
     if (!isUserAtBottomRef.current) return
-    const behavior: ScrollBehavior =
-      activeMessagesLength > lastRenderedMessageCountRef.current ? 'smooth' : 'auto'
     // Use scrollTo on the scroll container directly instead of scrollIntoView.
     // scrollIntoView bubbles up through all scrollable ancestors and can
     // shift the layout container itself (pushing it out of the viewport),
