@@ -234,6 +234,13 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
     catalogLoadFailures.delete(registry.manifestUrl)
     toolPreviews.clear()
     previewFailures.clear()
+    // Keep the registry MARKED AS LOADING through the forced refresh
+    // (finding: "Refresh can be overwritten by auto-load"): without the
+    // marker a render() during the refresh started a NEW ordinary load,
+    // which could finish after the refresh and overwrite the refreshed
+    // catalog with stale data. The marker blocks auto-loads until the
+    // refresh completes.
+    catalogLoads.add(registry.manifestUrl)
     const epoch = catalogEpochs.get(registry.manifestUrl) ?? 0
     try {
       clearError()
@@ -246,6 +253,9 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
     } catch (error) {
       showError(error)
     } finally {
+      // Only clear the marker if we are still the newest operation on this
+      // registry — a newer refresh owns it now.
+      if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) catalogLoads.delete(registry.manifestUrl)
       refresh.disabled = false
       refresh.textContent = t('webmcpPackagesRefresh')
       await render()
@@ -452,7 +462,18 @@ async function render(): Promise<void> {
             catalogLoadFailures.add(registry.manifestUrl)
             showError(error)
           })
-          .finally(() => { catalogLoads.delete(registry.manifestUrl); void render() })
+          .finally(() => {
+            // Only THIS load may clear its own marker (finding: "Refresh can
+            // be overwritten by auto-load"): a refresh deletes the marker to
+            // open the door for its own forced load — a stale auto-load
+            // unconditionally re-adding it let render() start a NEW ordinary
+            // load that could finish after the refresh and overwrite the
+            // refreshed catalog with stale data. A stale auto-load (its
+            // epoch moved on) leaves the marker alone.
+            const current = catalogEpochs.get(registry.manifestUrl) ?? 0
+            if (current === epoch) catalogLoads.delete(registry.manifestUrl)
+            void render()
+          })
       }
       registryList.append(buildRegistryCard(registry))
     }
@@ -518,9 +539,18 @@ document.getElementById('registryAdd')!.addEventListener('click', async () => {
     // extra click. A failed auto-load of the SAME URL (re-added registry)
     // gets a fresh attempt — this is the explicit path.
     catalogLoadFailures.delete(registry.manifestUrl)
+    // EPOCH GUARD (finding: "Older catalog replaces refreshed data"): the
+    // re-add may race a refresh of the SAME URL still in flight — the
+    // refresh bumped the epoch before this add's fetch started. Capture the
+    // epoch BEFORE the fetch and store only when it still matches: an older
+    // add completing last must not overwrite the refreshed catalog.
+    bumpCatalogEpoch(registry.manifestUrl)
+    const epoch = catalogEpochs.get(registry.manifestUrl) ?? 0
     try {
       const manifest = await loadRegistryCatalog(registry)
-      catalogs.set(registry.manifestUrl, manifest)
+      if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) {
+        catalogs.set(registry.manifestUrl, manifest)
+      }
     } catch (error) {
       showError(error)
     }
