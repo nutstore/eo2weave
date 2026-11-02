@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolContext } from '../tool-types'
 import { pythonDefinition, pythonToolExecutor } from '../execute.tool'
 
@@ -81,6 +81,11 @@ function parseError(result: string): { error: string } | null {
 }
 
 describe('run_python tool', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getActiveConversationMock.mockResolvedValue({ id: 'conv-1' })
+  })
+
   it('exposes run_python tool name with python-only params', () => {
     expect(pythonDefinition.function.name).toBe('run_python')
     expect(pythonDefinition.function.parameters.properties.language).toBeUndefined()
