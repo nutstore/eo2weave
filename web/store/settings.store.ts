@@ -22,6 +22,7 @@ import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetc
 import {
   resolveDefaultModelSelection,
   type AvailableProviderLike,
+  type ModelCatalogStatus,
   type ModelCredentialStatus,
   type ModelSelectionResolution,
 } from '@/store/model-selection'
@@ -1058,6 +1059,9 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           displayName: string
           models: Array<{ id: string; name: string }>
           providerKey: string
+          catalogStatus: Extract<ModelCatalogStatus, 'ready' | 'failed'>
+          /** Authoritative model ids for this provider (registry / static list),
+           *  NOT the pinned-derived display list. Pins missing from here are stale. */
           authoritativeIds: string[]
         }> = []
 
@@ -1111,6 +1115,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
               displayName: localizedProviderDisplayName(providerType, meta.displayName),
               models,
               providerKey: providerType,
+              catalogStatus: authoritativeIds.length > 0 ? 'ready' : 'failed',
               authoritativeIds,
             })
           }
@@ -1133,6 +1138,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
               displayName: cp.name,
               models,
               providerKey: cp.id,
+              catalogStatus: cp.models.length > 0 ? 'ready' : 'failed',
               authoritativeIds: cp.models,
             })
           }
@@ -1167,6 +1173,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
               displayName: meta?.displayName || id,
               models,
               providerKey: id,
+              catalogStatus: allModels.length > 0 ? 'ready' : 'failed',
               authoritativeIds: allModels.map((m) => m.id),
             })
           }
@@ -1200,6 +1207,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
                 displayName: localizedProviderDisplayName(llmGatewayProviderKey, gwMeta?.displayName || 'Nutstore AI'),
                 models,
                 providerKey: llmGatewayProviderKey,
+                catalogStatus: allModels.length > 0 ? 'ready' : 'failed',
                 authoritativeIds: allModels.map((m) => m.id),
               })
             }
@@ -1233,11 +1241,20 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // Reconcile only after every provider source has been collected. This
         // prevents an early provider from winning while a later provider is
         // still being restored.
+        //
+        // A failed/unknown catalog (empty authoritative list AND no display
+        // models: the /models fetch 500'd, login discovery timed out, or the
+        // registry bootstrap threw) must NOT read as an authoritative empty
+        // catalog — resolveDefaultModelSelection would treat the persisted
+        // selection as invalid and switch the user to another provider while
+        // the outage lasts. Those providers are marked 'failed' at push time
+        // above; resolveDefaultModelSelection defers on failed catalogs and
+        // only sweeps on a genuinely authoritative empty list.
         const reconciliationProviders: AvailableProviderLike[] = results.map((result) => ({
           providerType: result.providerType,
           models: result.models,
           authoritativeIds: result.authoritativeIds,
-          catalogStatus: result.authoritativeIds.length > 0 || result.models.length > 0 ? 'ready' : 'empty',
+          catalogStatus: result.catalogStatus,
         }))
         get().ensureValidModelSelection(reconciliationProviders, {
           preserveExpiredCredential: get().modelCredentialStatus === 'expired',
