@@ -725,6 +725,10 @@ describe('buildPrefillText (issue #126 input prefill, #134 trailing space)', () 
   it('trims whitespace-only prompts to the bare command (+trailing space)', () => {
     expect(buildPrefillText('my-skill', '   ')).toBe('/my-skill ')
   })
+
+  it('trims surrounding whitespace off a real prompt (#134 review: mock/impl parity)', () => {
+    expect(buildPrefillText('my-skill', '  整理证据  ')).toBe('/my-skill 整理证据')
+  })
 })
 
 describe('mergePrefillText (issue #128 draft preservation)', () => {

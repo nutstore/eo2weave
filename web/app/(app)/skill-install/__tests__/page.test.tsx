@@ -53,11 +53,12 @@ const checkAiReadinessMock = vi.fn()
 vi.mock('@/lib/skill-install-flow', () => ({
   checkAiReadiness: (...args: unknown[]) => checkAiReadinessMock(...(args as [])),
   buildPrefillText: (name: string, prompt?: string | null) =>
-    // Keep in sync with the REAL helper (#134): the bare command carries a
-    // trailing space so the slash-command picker stays closed — the page
-    // tests must assert the contract the picker depends on, not a
-    // pre-change snapshot of the helper.
-    prompt ? `/${name} ${prompt}` : `/${name} `,
+    // Keep in sync with the REAL helper (#134): trim the prompt before
+    // choosing the form (a whitespace-only prompt is absent) and give the
+    // bare command a trailing space so the slash-command picker stays
+    // closed — the page tests must assert the contract the picker depends
+    // on, not a divergent snapshot of the helper.
+    prompt?.trim() ? `/${name} ${prompt.trim()}` : `/${name} `,
   mergePrefillText: (existing: string | null | undefined, prefill: string) =>
     (existing ?? '').trim() ? `${prefill}\n${existing!.trim()}` : prefill,
   pickConversationTarget: vi.fn(() => ({ id: 'recent-conv', created: false })),
