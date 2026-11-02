@@ -1166,7 +1166,40 @@ async function executeWebMCPTool(
         : {}),
     })
 
-    let response = await bridge.webMCPInvoke(buildInvokePayload(targetTab?.groupKey))
+    // Race the invoke against the run's abort signal: the bridge protocol
+    // has no cancellation path, so the extension call keeps running after
+    // the caller stops waiting — but the tool call resolves immediately so
+    // the run does not hang past the user's Stop (#138 review, F4). The
+    // abandonment note tells the model the page may still change.
+    let response: Awaited<ReturnType<typeof bridge.webMCPInvoke>>
+    try {
+      response = await Promise.race([
+        bridge.webMCPInvoke(buildInvokePayload(targetTab?.groupKey)),
+        ...(
+          context.abortSignal
+            ? [
+                new Promise<never>((_, reject) => {
+                  const onAbort = () =>
+                    reject(new Error('__WEBMCP_RUN_ABORTED__'))
+                  if (context.abortSignal!.aborted) onAbort()
+                  else context.abortSignal!.addEventListener('abort', onAbort, { once: true })
+                }),
+              ]
+            : []
+        ),
+      ])
+    } catch (e) {
+      if ((e as Error).message === '__WEBMCP_RUN_ABORTED__') {
+        return toolErrorJson(
+          'call_tool',
+          'CALL_CANCELLED',
+          'WebMCP tool call was cancelled. The extension call may still be running — ' +
+            'the target page can change after this result; do not assume it did not run.',
+          { retryable: false, details: { fullToolName: tool.fullName, tabId: targetTabId } },
+        )
+      }
+      throw e
+    }
 
     if (
       !response.ok &&
@@ -1207,12 +1240,20 @@ async function executeWebMCPTool(
             toolName: tool.fullName,
           }))
         : 'WebMCP tool invocation failed'
+      // A write-shaped tool that failed WITHOUT reporting which tab it ran
+      // in may have partially mutated that page before failing (#138
+      // review): a blind retry could duplicate the side effects. Surface
+      // the ambiguity and let the caller verify the page first.
+      const writeWithUnknownTab =
+        tool.annotations?.readOnlyHint !== true && response.tabId === undefined
       return toolErrorJson(
         'call_tool',
         response.errorCode || 'WEBMCP_INVOKE_FAILED',
-        errorMessage,
+        writeWithUnknownTab
+          ? `${errorMessage} The tool may have partially changed the page before failing — verify the target tab's state before retrying.`
+          : errorMessage,
         {
-          retryable: true,
+          retryable: !writeWithUnknownTab,
           details: {
             fullToolName: tool.fullName,
             tabId: response.tabId,

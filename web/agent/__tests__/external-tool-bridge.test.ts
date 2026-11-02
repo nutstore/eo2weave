@@ -526,6 +526,68 @@ describe('WebMCP legacy extension compatibility', () => {
     expect(invoke).toHaveBeenCalledOnce()
     expect(result.error.code).toBe('TAB_TARGET_MISMATCH')
     expect(result.error.message).toContain('may have changed the page')
+    expect(result.error.message).toContain('check both tabs before retrying')
+  })
+
+  it('marks a failed write with unknown tab provenance non-retryable (#138 review: partial writes)', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    // ok=false and NO tabId: the tool may have partially mutated the page
+    // before failing — the error must NOT be marked retryable, and the
+    // message must tell the caller to verify the page first.
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({ ok: false, error: 'selector not found' }),
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain('verify the target tab')
+  })
+
+  it('a failed READ with unknown tab provenance stays retryable', async () => {
+    const tool = legacyTool('signature') // no annotations -> default read behavior? readOnlyHint undefined counts as write; use explicit read
+    const readTool = { ...tool, annotations: { readOnlyHint: true } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => readTool)
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({ ok: false, error: 'boom' }),
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: readTool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.retryable).toBe(true)
+  })
+
+  it('resolves cancelled WebMCP calls immediately when the run aborts (#138 review: no cancellation path)', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    // The extension call never settles (no cancellation path in the
+    // protocol) — the abort must still resolve the tool call.
+    const controller = new AbortController()
+    const abortableContext = { ...toolContext, abortSignal: controller.signal }
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    })
+
+    // The auth gate rejects already-aborted calls up front; abort only
+    // AFTER the call is in flight so the race in executeWebMCPTool is hit.
+    let resolveInvoke!: () => void
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockImplementation(
+        () => new Promise((resolve) => { resolveInvoke = () => resolve({ ok: true, tabId: 1, result: {} }) }),
+      ),
+    })
+    const pending = callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, abortableContext)
+    await new Promise((r) => setTimeout(r, 10)) // let authorize() pass and the invoke start
+    controller.abort()
+    const raced = await Promise.race([pending, new Promise((r) => setTimeout(() => r('PENDING'), 300))])
+    resolveInvoke() // unhook the fake invoke so nothing leaks
+    expect(raced).not.toBe('PENDING')
+    const result = JSON.parse(raced as string)
+    expect(result.error.code).toBe('CALL_CANCELLED')
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain('may still be running')
   })
 })
 
