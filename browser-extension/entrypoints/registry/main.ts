@@ -67,6 +67,9 @@ let activations: Record<string, 'enabled' | 'disabled'> = {}
 /** Catalogs already fetched, keyed by the registry's manifest URL. */
 const catalogs = new Map<string, RegistryManifest>()
 
+/** Manifest URLs whose catalog is currently being fetched (no re-entry). */
+const catalogLoads = new Set<string>()
+
 /**
  * Verified tool lists per package id (from the package's own manifest).
  *
@@ -124,7 +127,9 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
   if (!catalog) {
     const hint = document.createElement('div')
     hint.className = 'desc'
-    hint.textContent = t('webmcpPackagesNoPackages')
+    hint.textContent = catalogLoads.has(registry.manifestUrl)
+      ? t('webmcpPackagesRefreshing')
+      : t('webmcpPackagesNoPackages')
     body.append(hint)
   } else if (!catalog.packages.length) {
     const hint = document.createElement('div')
@@ -309,7 +314,20 @@ async function render(): Promise<void> {
     placeholder.textContent = t('webmcpPackagesNoRegistries')
     registryList.append(placeholder)
   } else {
-    for (const registry of state.registries) registryList.append(buildRegistryCard(registry))
+    for (const registry of state.registries) {
+      // Load the catalog for a registry the page has not seen yet, so a
+      // registry added in a previous session shows its packages on open
+      // (without a separate click). The load is best effort — a registry
+      // that is unreachable shows its error, not an empty page.
+      if (!catalogs.has(registry.manifestUrl) && !catalogLoads.has(registry.manifestUrl)) {
+        catalogLoads.add(registry.manifestUrl)
+        void loadRegistryCatalog(registry)
+          .then(manifest => { catalogs.set(registry.manifestUrl, manifest) })
+          .catch(error => { showError(error) })
+          .finally(() => { catalogLoads.delete(registry.manifestUrl); void render() })
+      }
+      registryList.append(buildRegistryCard(registry))
+    }
   }
 
   const installedList = document.getElementById('installedList')!
@@ -394,7 +412,7 @@ registryInput.addEventListener('keydown', event => {
 })
 
 chrome.runtime.onMessage.addListener(message => {
-  if (message?.type === 'webmcp_packages_changed' || message?.type === 'webmcp_registry_changed') void render().catch(showError)
+  if (message?.type === 'webmcp_packages_changed' || message?.type === 'webmcpPackagesRegistryChanged') void render().catch(showError)
 })
 window.addEventListener('focus', () => void render().catch(showError))
 void render().catch(showError)

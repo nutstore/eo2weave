@@ -81,7 +81,7 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
   const registry = createRegistryBackground({
     changed: refresh,
     notify: () => {
-      void chrome.runtime.sendMessage({ type: 'webmcp_registry_changed' }).catch(() => {})
+      void chrome.runtime.sendMessage({ type: 'webmcpPackagesRegistryChanged' }).catch(() => {})
     },
   })
   chrome.runtime.onMessage.addListener((message, sender, respond) => {

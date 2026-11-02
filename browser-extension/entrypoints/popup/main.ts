@@ -1223,7 +1223,7 @@ document.getElementById('openGithub')!.addEventListener('click', function () {
     }
     void refresh();
     chrome.runtime.onMessage.addListener(function (message) {
-      if (message?.type === 'webmcp_packages_changed' || message?.type === 'webmcp_registry_changed') void refresh();
+      if (message?.type === 'webmcp_packages_changed' || message?.type === 'webmcpPackagesRegistryChanged') void refresh();
     });
   }).catch(function () {});
 
