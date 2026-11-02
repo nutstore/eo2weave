@@ -87,6 +87,12 @@
       background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 8px 10px;
       display: flex; align-items: flex-start; gap: 8px;
     }
+    /* `display: flex` above overrides the browser's default `[hidden]
+       { display: none }` (the alert starts `hidden` and is dismissed via
+       the same attribute), leaving an EMPTY BOX on the page — restore the
+       hidden behaviour explicitly (finding: "Dismissed error box stays
+       visible"). */
+    .error[hidden] { display: none; }
     .error .dismiss { margin-left: auto; cursor: pointer; color: #b91c1c; font-weight: 700; }
     .note {
       font-size: 11px; color: #737373; margin-top: 20px; line-height: 1.6;

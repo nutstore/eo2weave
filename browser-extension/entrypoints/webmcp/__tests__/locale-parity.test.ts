@@ -71,4 +71,52 @@ describe('extension locale parity', () => {
     expect(ported.length).toBeGreaterThanOrEqual(48)
     for (const key of ported) expect(Object.keys(locales.zh_CN)).toContain(key)
   })
+
+  it('defines EVERY key the extension pages use (a missing key renders blank)', () => {
+    // The count/parity check above permits a REMOVED key: dropping the same
+    // page-used key from BOTH locales keeps the parity and the count (finding:
+    // "Locale test permits missing labels") while chrome.i18n resolves the key
+    // to an EMPTY STRING and the page renders a blank label. This test pins
+    // the exact key set the pages reference (registry page, popup, recipes
+    // page; `webmcpPackagesRegistryChanged` is a runtime MESSAGE type, not a
+    // locale key, and is deliberately absent).
+    const REQUIRED_KEYS = [
+      'webmcpPackagesAddRegistryButton',
+      'webmcpPackagesAddRegistryHint',
+      'webmcpPackagesAddRegistryInputPlaceholder',
+      'webmcpPackagesAdding',
+      'webmcpPackagesDescription',
+      'webmcpPackagesInstall',
+      'webmcpPackagesInstallSuccess',
+      'webmcpPackagesInstalledActive',
+      'webmcpPackagesInstalledInactive',
+      'webmcpPackagesInstalledInactiveHint',
+      'webmcpPackagesInstalledTitle',
+      'webmcpPackagesInstalling',
+      'webmcpPackagesMirrorNote',
+      'webmcpPackagesNoPackages',
+      'webmcpPackagesNoRegistries',
+      'webmcpPackagesNotPersisted',
+      'webmcpPackagesPageNote',
+      'webmcpPackagesPageSubtitle',
+      'webmcpPackagesPageTabTitle',
+      'webmcpPackagesPageTitle',
+      'webmcpPackagesPopupSummary',
+      'webmcpPackagesRefresh',
+      'webmcpPackagesRefreshing',
+      'webmcpPackagesRegistryLabel',
+      'webmcpPackagesRemoveRegistry',
+      'webmcpPackagesTitle',
+      'webmcpPackagesToolsCount',
+      'webmcpPackagesToolsCountUnverified',
+      'webmcpPackagesUninstall',
+      'webmcpPackagesUninstalling',
+      'webmcpPackagesVersion',
+    ] as const
+    for (const locale of LOCALES) {
+      const keys = Object.keys(locales[locale])
+      const missing = REQUIRED_KEYS.filter(key => !keys.includes(key))
+      expect({ locale, missing }).toEqual({ locale, missing: [] })
+    }
+  })
 })

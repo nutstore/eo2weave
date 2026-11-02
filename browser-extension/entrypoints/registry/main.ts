@@ -89,8 +89,18 @@ const previewFailures = new Set<string>()
  * every still-pending package and AMPLIFY the request count with each
  * staggered response — the in-flight promise is reused instead (finding:
  * "Tool previews multiply requests").
+ *
+ * The reuse window is EPOCH-SCOPED (finding: "Refreshed preview stays
+ * unverified"): a promise started under an older catalog epoch is NOT
+ * handed out after a refresh bumps the epoch — its stale result is dropped
+ * internally, and reusing it for the refreshed card would leave the
+ * refreshed render with no live preview (the tool count stayed unverified
+ * until yet another render). A post-refresh render therefore starts a NEW
+ * preview for the refreshed catalog.
  */
 const previewInFlight = new Map<string, Promise<boolean>>()
+/** The catalog epoch each in-flight preview was started under (keyed by promise). */
+const previewInFlightEpoch = new Map<Promise<boolean>, number>()
 
 /**
  * Bumped on every refresh/removal/reset of a registry's catalog. A catalog
@@ -119,11 +129,17 @@ const catalogLoadFailures = new Set<string>()
  */
 function loadToolPreview(registry: PackageRegistry, pkg: RegistryManifestPackage): Promise<boolean> {
   const key = `${registry.manifestUrl}::${pkg.id}`
+  // Reuse only a promise from the CURRENT epoch: after a refresh bumped the
+  // epoch the old promise's result is dropped internally (stale-epoch guard
+  // below) — reusing it for the refreshed card left the refreshed render
+  // without a preview and the tool count unverified (finding: "Refreshed
+  // preview stays unverified").
+  const currentEpoch = catalogEpochs.get(registry.manifestUrl) ?? 0
   const existing = previewInFlight.get(key)
-  if (existing) return existing
+  if (existing && (previewInFlightEpoch.get(existing) ?? currentEpoch) === currentEpoch) return existing
   // The epoch at START: a refresh/removal of this registry while the
   // preview is in flight bumps it, and the stale result is dropped.
-  const epoch = catalogEpochs.get(registry.manifestUrl) ?? 0
+  const epoch = currentEpoch
   const work = (async (): Promise<boolean> => {
     if (toolPreviews.has(key) || previewFailures.has(key)) return false
     try {
@@ -147,8 +163,10 @@ function loadToolPreview(registry: PackageRegistry, pkg: RegistryManifestPackage
   // recording, so the next render retries under the new epoch).
   const promise = work.finally(() => {
     if (previewInFlight.get(key) === promise) previewInFlight.delete(key)
+    previewInFlightEpoch.delete(promise)
   })
   previewInFlight.set(key, promise)
+  previewInFlightEpoch.set(promise, epoch)
   return promise
 }
 
