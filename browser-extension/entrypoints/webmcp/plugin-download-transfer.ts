@@ -2,6 +2,7 @@ import type {
   WebMCPPluginDownloadFrame,
   WebMCPPluginDownloadPlan,
 } from './types'
+import { fetchWithMirrorFallback } from './registry-client'
 
 const DEFAULT_CHUNK_CHARS = 256 * 1024
 
@@ -46,11 +47,29 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary)
 }
 
-async function prepareDownload(plan: WebMCPPluginDownloadPlan): Promise<PreparedDownload> {
-  const response = await fetch(plan.downloadUrl)
+/**
+ * Fetch the download URL, falling back to the jsDelivr mirror when the
+ * canonical host does not answer (issue #143).
+ *
+ * The plugin download URL frequently points at `raw.githubusercontent.com`
+ * (package assets published from a repo), which is unreachable from
+ * mainland-China networks. The same mirror candidate list the registry
+ * client uses applies here: the canonical URL stays the identity of the
+ * resource, the mirror is only a transport fallback.
+ */
+async function fetchDownload(candidate: string): Promise<Response> {
+  const response = await fetch(candidate)
   if (!response.ok) {
-    throw new Error(`Download failed with status ${response.status}`)
+    const error = new Error(`Download failed with status ${response.status}`) as Error & { status?: number }
+    error.status = response.status
+    throw error
   }
+  return response
+}
+
+async function prepareDownload(plan: WebMCPPluginDownloadPlan): Promise<PreparedDownload> {
+  const result = await fetchWithMirrorFallback(plan.downloadUrl, fetchDownload)
+  const response = result.value
 
   const fileName = sanitizeFileName(plan.fileName || `download_${Date.now()}`)
 
