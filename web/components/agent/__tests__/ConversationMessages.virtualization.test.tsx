@@ -12,8 +12,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '@/agent/message-types'
 import { ConversationMessages } from '../ConversationMessages'
 import type { ConversationMessagesHandle } from '../ConversationMessages'
-import { ScrollToBottomButton } from '../ScrollToBottomButton'
-import type { VirtualAtBottomHub } from '../ScrollToBottomButton'
+import { ScrollToBottomButton } from '@/components/agent/ScrollToBottomButton'
+import type { VirtualAtBottomHub } from '@/components/agent/ScrollToBottomButton'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 
 const {
