@@ -33,7 +33,12 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
       if (!manager.initialized) return undefined
       await manager.refreshProviderSkills()
       const { formatSkillMetadata } = await import('@/skills/skill-injection')
-      return Object.fromEntries(manager.getSkillMetadata().filter(skill => skill.enabled).map(skill => [
+      // Direct conversations have no project: project-sourced skills are
+      // host-project data (and their files resolve through the host
+      // project's handles), so their metadata must not be published here —
+      // read_skill rejects them for the same reason.
+      const directMode = input().toolContext.directMode === true
+      return Object.fromEntries(manager.getSkillMetadata().filter(skill => skill.enabled && (!directMode || skill.source !== 'project')).map(skill => [
         skill.source === 'provider' ? skill.id : skill.name, formatSkillMetadata({ ...skill, tags: [...skill.tags].sort(), triggers: {
           ...skill.triggers, keywords: [...skill.triggers.keywords].sort(),
           fileExtensions: skill.triggers.fileExtensions ? [...skill.triggers.fileExtensions].sort() : undefined,
