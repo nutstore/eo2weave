@@ -123,7 +123,16 @@ async function downloadFile(
     try {
       response = await fetchImpl(candidate, { credentials: 'omit', cache: 'no-cache', signal: controller.signal })
       if (!response.ok) {
-        throw new PackageInstallError(`Download failed for ${candidate}: HTTP ${response.status}`, 'DOWNLOAD_FAILED')
+        // Preserve the HTTP status on the error: without it every non-404
+        // 4xx (e.g. a canonical host's 403) read as a generic transport
+        // failure and the mirror fallback retried a DEFINITIVE client
+        // error on another origin instead of surfacing it (finding:
+        // "Canonical client errors are masked"). 404 keeps its own
+        // "missing file" handling via `isNotFoundError`.
+        throw Object.assign(
+          new PackageInstallError(`Download failed for ${candidate}: HTTP ${response.status}`, 'DOWNLOAD_FAILED'),
+          { status: response.status },
+        )
       }
       // Byte cap enforced WHILE streaming, not after the body is in memory.
       return await readBodyCapped(response, MAX_PACKAGE_FILE_BYTES)
@@ -150,7 +159,21 @@ export async function installPackage(
   registry: PackageRegistry,
   pkg: RegistryManifestPackage,
   provider: FsProvider,
-  options?: { fetchImpl?: typeof fetch; timeoutMs?: number; preference?: MirrorPreference },
+  options?: {
+    fetchImpl?: typeof fetch
+    timeoutMs?: number
+    preference?: MirrorPreference
+    /**
+     * Whether the package directory was PRESENT on the mount before the
+     * download started (`null` = indeterminate). When it was, the under-lock
+     * flow re-checks presence and ABORTS if the directory disappeared — a
+     * concurrent uninstall won the lock race and the install must not
+     * resurrect the package it removed (finding: "Uninstalled package
+     * reappears"). Callers that do not supply it get the installer's own
+     * unlocked probe.
+     */
+    presenceBefore?: boolean | null
+  },
   /**
    * Called INSIDE the per-package cross-context lock, after the lock is
    * held and before anything is written: lets the caller re-run its
@@ -174,6 +197,17 @@ export async function installPackage(
   if (pkg.files.length > MAX_PACKAGE_FILES) {
     throw new PackageInstallError(`Package ${id} lists too many files (${pkg.files.length}; the limit is ${MAX_PACKAGE_FILES})`, 'INVALID_PACKAGE')
   }
+  // FENCE against a concurrent uninstall (finding: "Uninstalled package
+  // reappears"): the download+validation above can outlive the user's
+  // removal of the same package, and an install that only checked the
+  // mount BEFORE downloading would then write the package back under the
+  // lock. Capture the pre-download presence (the caller's probe when it
+  // has one, otherwise this installer's own) — the authoritative check
+  // re-runs INSIDE the lock: a directory that existed before the download
+  // but is gone under the lock means a concurrent uninstall won the race.
+  // `false` here is also the NORMAL first-install case, so it never
+  // aborts on its own.
+  const presenceBefore = options?.presenceBefore !== undefined ? options.presenceBefore : await pathExists(provider, id)
 
   // Stage everything in memory BEFORE touching storage — the all-or-nothing
   // guarantee lives here, not in a rollback pass. Size caps bound the staged
@@ -275,6 +309,19 @@ export async function installPackage(
   // `withPackageLock` lease lives in the background's chrome.storage, so
   // every context sees it.
   return withPackageLock(id, async lockSignal => {
+    // REMOVAL FENCE (finding: "Uninstalled package reappears"): a directory
+    // that existed when the download started but is GONE under the lock was
+    // removed by a concurrent uninstall that won the lock race — writing
+    // the package back would resurrect what the user deleted. (A directory
+    // that never existed is the normal first install; an INDETERMINATE
+    // presence probe must NOT read as "removed" — a transient stat failure
+    // is not evidence of a removal.)
+    if (presenceBefore === true && await pathExists(provider, id) === false) {
+      throw new PackageInstallError(
+        `The install of ${id} was cancelled: the package was removed while it was being prepared`,
+        'LOCK_LOST',
+      )
+    }
     if (underLock) await underLock(lockSignal)
     await swapPackageIntoPlace(id, staged, provider, lockSignal)
     return { filesWritten: staged.length }
@@ -532,8 +579,11 @@ async function swapPackageIntoPlace(
       } finally {
         // Fence the backup cleanup too: an aborted transaction must not
         // remove the backup after the lease moved on (the new owner could be
-        // mid-restore from it).
-        if (!backupPreserved && !lockSignal.aborted) await removeMissingOk(provider, backup).catch(() => {})
+        // mid-restore from it). `lockSignal` is REQUIRED here — the
+        // signal-less overload would run an UNFENCED destructive removal
+        // that could delete the backup the NEW owner is using (finding:
+        // "Stale cleanup deletes backup").
+        if (!backupPreserved && !lockSignal.aborted) await removeMissingOk(provider, backup, lockSignal).catch(() => {})
       }
       await removeMissingOk(provider, backup, lockSignal)
     }
@@ -576,34 +626,37 @@ async function pathExists(provider: FsProvider, path: string): Promise<boolean |
  * alone is NOT a complete package. A restore that copied manifest.json
  * first and then failed before the rest of the tree would otherwise read
  * as "complete", and the retry would delete the backup holding the ONLY
- * complete copy of the package. The manifest also lists every file the
- * package ships, so the tree is complete only when the manifest parses
- * AND every listed file exists and is readable on the live tree — the
- * manifest's `files` entries are `packages/<id>/…`-prefixed repo paths, so
- * the check strips that prefix and stats each local file; the installer's
- * own `config.json` is tolerated as extra state. An INDETERMINATE read
- * failure counts as INCOMPLETE (fail closed: keep the backup).
+ * complete copy of the package.
+ *
+ * The completeness reference is the VALID package manifest format —
+ * `validateManifest` produces `{ id, version, description, tools }` and a
+ * package manifest has NO `files` array (finding: "Recovery restores older
+ * package": requiring `files` made every valid manifest read as
+ * incomplete, so recovery always rolled the live install back to an older
+ * backup). The manifest lists its tools with their file paths, so the tree
+ * is complete only when the manifest parses INTO that format AND every
+ * tool file exists on the live tree (the installer's own `config.json` is
+ * tolerated as extra state). An INDETERMINATE read failure counts as
+ * INCOMPLETE (fail closed: keep the backup).
  */
 async function liveTreeIsComplete(provider: FsProvider, id: string): Promise<boolean> {
-  let manifest: { files?: unknown }
+  let manifest: { tools?: unknown }
   try {
     const bytes = await provider.readFile(`${id}/manifest.json`)
     manifest = JSON.parse(new TextDecoder().decode(bytes))
   } catch {
     return false
   }
-  if (typeof manifest !== 'object' || manifest === null || !Array.isArray(manifest.files)) return false
-  const prefix = `packages/${id}/`
-  for (const entry of manifest.files) {
-    // The manifest's `files` entries carry the package's own path list;
-    // accept both the registry's prefixed form and a bare relative path.
-    const relative = typeof entry === 'object' && entry !== null && typeof (entry as { path?: unknown }).path === 'string'
-      ? (entry as { path: string }).path
-      : entry
-    if (typeof relative !== 'string' || relative === 'manifest.json' || relative === `${prefix}manifest.json`) continue
-    const local = relative.startsWith(prefix) ? relative.slice(prefix.length) : relative
+  if (typeof manifest !== 'object' || manifest === null || !Array.isArray(manifest.tools)) return false
+  for (const tool of manifest.tools) {
+    const path = typeof tool === 'object' && tool !== null && typeof (tool as { path?: unknown }).path === 'string'
+      ? (tool as { path: string }).path
+      : undefined
+    // A manifest with a nameless/invalid tool entry is not a valid package
+    // manifest — treat the tree as incomplete.
+    if (!path) return false
     try {
-      const stat = await provider.stat(`${id}/${local}`)
+      const stat = await provider.stat(`${id}/${path}`)
       if (stat.kind !== 'file') return false
     } catch {
       return false // missing OR unreadable — treat both as incomplete

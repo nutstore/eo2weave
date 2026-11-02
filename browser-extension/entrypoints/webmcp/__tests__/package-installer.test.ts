@@ -214,6 +214,29 @@ describe('installPackage (extension side)', () => {
     expect(await listFiles(provider, 'com.example.pkg')).toContain('manifest.json')
   })
 
+  it('stops mirror fallback on a non-404 client error from a candidate (403)', async () => {
+    // A 403 is a DEFINITIVE client error: without the status on the error the
+    // fallback treated it as a generic transport failure and asked a second
+    // origin for a file the first origin refused to serve (finding:
+    // "Canonical client errors are masked").
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    const tried: string[] = []
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      tried.push(url)
+      if (url.startsWith(RAW)) return { ok: false, status: 403 } as unknown as Response
+      return fetchServing(files)(input)
+    }) as typeof fetch
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl, preference: 'global' }))
+      .rejects.toThrow(/HTTP 403/)
+    // The mirror was NEVER asked — the client error stopped the fallback.
+    expect(tried.every(url => !url.startsWith(MIRROR))).toBe(true)
+  })
+
   it('uninstall removes the package directory', async () => {
     const files = fixtureFiles()
     const pkg = await pkgWithFiles(files)
@@ -232,25 +255,53 @@ describe('installPackage (extension side)', () => {
     // must treat the partial live tree as INCOMPLETE and restore over it —
     // trusting the manifest alone would clear the backup and the swap's
     // pre-cleanup would destroy the only complete copy.
+    //
+    // The proof isolates the BACKUP as the content source (finding:
+    // "Recovery tests don't prove backup recovery"): the backup carries
+    // DISTINCT workflow content that is NOT in the download fixture, and
+    // the replacement's own swap write is made to fail AFTER recovery ran.
+    // The final mount can then hold the backup's workflow text ONLY if the
+    // recovery path copied the backup — the failed swap never wrote its
+    // own copy, so the old "assert the download's content" assertions
+    // passed even with recovery broken.
     const files = fixtureFiles()
     const pkg = await pkgWithFiles(files)
     const provider = memoryProvider()
     const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
 
+    // Live tree: a parseable manifest only — visibly incomplete.
     await provider.mkdir('com.example.pkg', { recursive: true })
     await provider.writeFile('com.example.pkg/manifest.json', new TextEncoder().encode(JSON.stringify(TOOL_MANIFEST)))
+    // Backup: the complete package, but with DISTINCT workflow content the
+    // fixture download does not contain.
+    const BACKUP_WORKFLOW = 'export default { fromBackup: true }'
     await provider.mkdir('.com.example.pkg.previous', { recursive: true })
     for (const [path, content] of Object.entries(files)) {
-      await provider.writeFile(`.com.example.pkg.previous/${path}`, new TextEncoder().encode(content))
+      await provider.writeFile(
+        `.com.example.pkg.previous/${path}`,
+        new TextEncoder().encode(path === 'workflows/read.js' ? BACKUP_WORKFLOW : content),
+      )
     }
 
-    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+    // The replacement's own copy-in fails (storage failure on the staged
+    // write), so the download's fixture content never reaches the live
+    // tree — the install reports the storage failure, and whatever survives
+    // on the mount must come from the backup recovery.
+    const failingWrite = provider.writeFile.bind(provider)
+    provider.writeFile = (async (path: string, data: Uint8Array) => {
+      if (path.startsWith('.com.example.pkg.installing/')) throw new Error('EIO: simulated staging write failure')
+      return failingWrite(path, data)
+    }) as typeof provider.writeFile
+    // No `rename` — exercise the COPY swap path (the production OPFS shape).
+    delete (provider as { rename?: unknown }).rename
 
-    // The recovered content came from the backup: the real workflow file is
-    // present (the partial live tree lacked it), proving the backup's copy
-    // won over the partial tree.
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toThrow(/Failed to write package/)
+
     const source = new TextDecoder().decode(await provider.readFile('com.example.pkg/workflows/read.js'))
-    expect(source).toBe(WORKFLOW_SOURCE)
+    expect(source).toBe(BACKUP_WORKFLOW)
+    const manifest = JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/manifest.json')))
+    expect(manifest.id).toBe('com.example.pkg')
   })
 
   it('probes the backup even when an incomplete live directory exists', async () => {
@@ -258,6 +309,10 @@ describe('installPackage (extension side)', () => {
     // the backup holds the complete copy. The old code set backupExists
     // whenever the live directory existed, so the recovery gate never ran
     // and the pre-swap cleanup deleted the preserved copy.
+    //
+    // Same proof shape: DISTINCT backup content + a failing swap write, so
+    // the surviving workflow text can only be the backup's (finding:
+    // "Recovery tests don't prove backup recovery").
     const files = fixtureFiles()
     const pkg = await pkgWithFiles(files)
     const provider = memoryProvider()
@@ -266,16 +321,28 @@ describe('installPackage (extension side)', () => {
     // Live tree: config only (no manifest) — visibly incomplete.
     await provider.mkdir('com.example.pkg', { recursive: true })
     await provider.writeFile('com.example.pkg/config.json', new TextEncoder().encode('{}'))
-    // Backup: the complete package.
+    // Backup: the complete package with DISTINCT workflow content.
+    const BACKUP_WORKFLOW = 'export default { fromBackup: true }'
     await provider.mkdir('.com.example.pkg.previous', { recursive: true })
     for (const [path, content] of Object.entries(files)) {
-      await provider.writeFile(`.com.example.pkg.previous/${path}`, new TextEncoder().encode(content))
+      await provider.writeFile(
+        `.com.example.pkg.previous/${path}`,
+        new TextEncoder().encode(path === 'workflows/read.js' ? BACKUP_WORKFLOW : content),
+      )
     }
 
-    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+    const failingWrite = provider.writeFile.bind(provider)
+    provider.writeFile = (async (path: string, data: Uint8Array) => {
+      if (path.startsWith('.com.example.pkg.installing/')) throw new Error('EIO: simulated staging write failure')
+      return failingWrite(path, data)
+    }) as typeof provider.writeFile
+    delete (provider as { rename?: unknown }).rename
 
-    const manifest = JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/manifest.json')))
-    expect(manifest.id).toBe('com.example.pkg')
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toThrow(/Failed to write package/)
+
+    const source = new TextDecoder().decode(await provider.readFile('com.example.pkg/workflows/read.js'))
+    expect(source).toBe(BACKUP_WORKFLOW)
     expect(await listFiles(provider, 'com.example.pkg')).toContain('workflows')
   })
 
@@ -329,5 +396,41 @@ describe('installPackage (extension side)', () => {
     // workflow file and the new package's files.
     const liveFiles = (await listFiles(provider, 'com.example.pkg')).sort()
     expect(liveFiles).toEqual(['config.json', 'manifest.json', 'workflows'])
+  })
+
+  it('aborts the install when the package was uninstalled while the download ran', async () => {
+    // The download+validation happen BEFORE the lock; an uninstall can win
+    // the lock race in between. Without the presence fence the install then
+    // saw "no collision" and wrote the package back — the user watched a
+    // package they had just removed reappear (finding: "Uninstalled package
+    // reappears").
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+
+    // An old install is present when the install STARTS…
+    await provider.mkdir('com.example.pkg', { recursive: true })
+    await provider.writeFile('com.example.pkg/config.json', new TextEncoder().encode('{}'))
+    // …and a concurrent uninstall removes it while the download is running
+    // (simulated by deleting the directory during the LAST download fetch —
+    // the download phase never touches the mount, so the directory stays
+    // gone when the lock is finally acquired).
+    const serving = fetchServing(files)
+    const fileUrls = Object.keys(files).map(path => `${RAW}/packages/com.example.pkg/${path}`)
+    let downloadsLeft = fileUrls.length
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (fileUrls.includes(url)) {
+        downloadsLeft -= 1
+        if (downloadsLeft === 0) await provider.remove('com.example.pkg', { recursive: true })
+      }
+      return serving(input)
+    }) as typeof fetch
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl }))
+      .rejects.toThrow(/was removed while it was being prepared/)
+    // The removed package was NOT resurrected.
+    expect(await listFiles(provider, '')).toEqual([])
   })
 })
