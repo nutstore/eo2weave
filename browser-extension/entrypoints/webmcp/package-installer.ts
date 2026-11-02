@@ -593,6 +593,16 @@ async function removeMissingOk(provider: FsProvider, path: string, lockSignal?: 
  * as install.
  */
 export async function uninstallPackage(packageId: string, provider: FsProvider): Promise<void> {
+  // A package id is a directory name — a slash makes this a PATH, and the
+  // recursive removal below would delete a SUBTREE inside another package
+  // (`com.example.pkg/workflows`) instead of rejecting the invalid id.
+  // normalizeProviderPath accepts slash-separated paths, so the explicit
+  // slash check is the guard (finding: "Uninstall can delete package
+  // subtrees"). Checked BEFORE the lock so an invalid id never holds or
+  // waits on the lease at all.
+  if (!packageId || packageId.includes('/')) {
+    throw new PackageInstallError(`Invalid package id: ${packageId}`, 'INVALID_PACKAGE')
+  }
   try {
     normalizeProviderPath(packageId)
   } catch {

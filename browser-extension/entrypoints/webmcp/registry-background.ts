@@ -147,6 +147,10 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
         case 'webmcp_registry_uninstall': {
           const packageId = typeof message.packageId === 'string' ? message.packageId : ''
           if (!packageId) throw new Error('Missing package id')
+          // A slash would make the id a PATH and the recursive uninstall
+          // would delete a subtree of another package — reject it before
+          // any lock or removal.
+          if (packageId.includes('/')) throw new Error(`Invalid package id: ${packageId}`)
           await uninstallRegistryPackage(packageId)
           await options.changed().catch(error => console.warn('[WebMCP registry]', error))
           notify()
