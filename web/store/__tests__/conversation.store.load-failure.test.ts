@@ -289,4 +289,58 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     expect(record?.message).toContain('sqlite read failed')
     expect(useConversationStore.getState().loadError).toBeNull()
   })
+
+  it('surfaces a metadata loadError BEFORE awaiting the fallback read', async () => {
+    // PR #149 round-6 review ("Fallback hang hides retry"): when the initial
+    // load rejects and the fallback metadata read hangs, the sidebar's
+    // alert + Retry must already be visible — the failure must be recorded
+    // in-memory BEFORE the fallback is awaited, not only in sessionStorage.
+    findAllMetaMock.mockRejectedValueOnce(new Error('opfs init failed'))
+    // The fallback read never settles.
+    findAllMetaMock.mockReturnValueOnce(new Promise(() => {}))
+
+    let loadSettled = false
+    void useConversationStore.getState().loadFromDB().finally(() => {
+      loadSettled = true
+    })
+
+    // The initial load failed and the fallback (300ms delay + hang) is in
+    // flight — before any timeout fires the error must be visible.
+    await vi.waitFor(() => {
+      expect(findAllMetaMock).toHaveBeenCalledTimes(2)
+    })
+    expect(loadSettled).toBe(false)
+    const state = useConversationStore.getState()
+    expect(state.loadError).toContain('opfs init failed')
+    expect(state.loadErrorScope).toBe('metadata')
+    expect(state.loaded).toBe(false)
+  })
+
+  it('bounds a hanging fallback read with a retryable metadata failure', async () => {
+    // PR #149 round-6 review ("Fallback hang hides retry"): the fallback
+    // metadata read must be time-bounded — a hung read must surface as a
+    // retryable metadata failure instead of hanging the load forever.
+    findAllMetaMock.mockRejectedValueOnce(new Error('opfs init failed'))
+    findAllMetaMock.mockReturnValueOnce(new Promise(() => {}))
+
+    vi.useFakeTimers()
+    try {
+      // Bypass the in-flight dedupe (as the sidebar's Retry does): the
+      // previous test in this file deliberately leaves a hanging fallback
+      // read in flight, and a plain loadFromDB() would re-await it.
+      const load = useConversationStore.getState().retryLoadFromDB()
+      // Advance past the 300ms retry delay AND the 10s fallback timeout.
+      await vi.advanceTimersByTimeAsync(10_500)
+
+      const state = useConversationStore.getState()
+      expect(state.loaded).toBe(false)
+      expect(state.loadError).toContain('timed out')
+      expect(state.loadErrorScope).toBe('metadata')
+      // The failure is persisted for diagnostics too.
+      expect(readPersistedRecord()?.message).toContain('timed out')
+      await expect(load).resolves.toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

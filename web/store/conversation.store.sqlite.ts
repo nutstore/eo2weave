@@ -97,6 +97,40 @@ function handleSubagentStepNotification(
 
 // Enable Immer Map/Set support
 enableMapSet()
+
+/**
+ * Reject after `ms` even if the wrapped promise never settles. The losing
+ * promise is left running (no cancellation) but its result is discarded.
+ */
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  what: string
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${what} timed out after ${ms}ms`))
+    }, ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      }
+    )
+  })
+}
+
+/**
+ * How long the fallback metadata re-read inside loadFromDB's failure path may
+ * take before it is abandoned as a retryable failure (PR #149 round-6 review,
+ * "Fallback hang hides retry"). A hung read must surface as an error so the
+ * sidebar's Retry stays available.
+ */
+const FALLBACK_META_TIMEOUT_MS = 10_000
 import { AgentLoop } from '@/agent/agent-loop'
 import { createLLMProvider } from '@/agent/llm/provider-factory'
 import { ContextManager } from '@/agent/context-manager'
@@ -864,6 +898,18 @@ async function runLoadFromDB(
           error instanceof Error ? error.message : 'Failed to load conversations',
           error
         )
+        // Surface the failure in memory BEFORE the fallback attempt: the
+        // fallback metadata read can hang or take seconds, and without an
+        // in-memory `loadError` the sidebar's alert + Retry stay hidden while
+        // history looks permanently empty (PR #149 round-6 review, "Fallback
+        // hang hides retry"). If the fallback recovers, the success path
+        // below clears this error; if it fails, the final catch overwrites it.
+        set((state) => {
+          state.loaded = false
+          state.loadError =
+            error instanceof Error ? error.message : 'Failed to load conversations'
+          state.loadErrorScope = 'metadata'
+        })
         // One-shot retry, mirroring workspace.store's initialize retry.
         // A transient failure (e.g. SQLite/OPFS hydration race on cold start)
         // previously fell through to `loaded = true` with `conversations: []`,
@@ -873,7 +919,15 @@ async function runLoadFromDB(
         // fires again. Retry once before recording the error.
         try {
           await new Promise((r) => setTimeout(r, 300))
-          const retryConversations = await loadConversationsMeta()
+          // Bound the fallback read: a hung metadata read must not leave the
+          // in-flight state unobservable forever — the timeout rejects into
+          // the catch below, which records a retryable metadata failure
+          // (PR #149 round-6 review, "Fallback hang hides retry").
+          const retryConversations = await withTimeout(
+            loadConversationsMeta(),
+            FALLBACK_META_TIMEOUT_MS,
+            'conversation metadata fallback read'
+          )
           set((state) => {
             state.conversations = retryConversations.map((conv) => ({
               ...conv,
