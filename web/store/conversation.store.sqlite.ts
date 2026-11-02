@@ -723,7 +723,6 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           }))
           state.activeConversationId = activeId
           state.loaded = true
-          state.loadError = null
           state.suggestedFollowUps.clear()
           state.cancelledRunIds.clear()
         })
@@ -731,6 +730,11 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // NOTE: the persisted load-failure record is marked resolved only
         // AFTER the active-transcript load below succeeds — a failure there
         // is still a load failure (PR #149 review) and must stay unresolved.
+        // For the same reason `loadError` is NOT cleared here: the metadata
+        // is installed before the transcript read finishes, and clearing the
+        // error at that point would make a retry look successful while the
+        // conversation area still renders empty messages (issue #147,
+        // PR #149 review).
 
         // Load messages for the active conversation (it's about to be displayed).
         // An active-transcript failure is a real load failure too (issue #147,
@@ -791,6 +795,11 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // (issue #147, PR #149 review) and must not be reported as recovered.
         if (activeTranscriptLoaded) {
           markPersistedFailureResolved()
+          // The error (and the sidebar's Retry affordance) stays visible
+          // until the transcript read actually succeeded.
+          set((state) => {
+            state.loadError = null
+          })
         }
       } catch (error) {
         console.error('[conversation.store] Failed to load conversations:', error)
@@ -813,7 +822,6 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             state.activeConversationId =
               (retryConversations.length > 0 ? retryConversations[0].id : null)
             state.loaded = true
-            state.loadError = null
             state.suggestedFollowUps.clear()
             state.cancelledRunIds.clear()
           })
@@ -859,6 +867,10 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           }
           if (retryTranscriptLoaded) {
             markPersistedFailureResolved()
+            // The error stays visible until the transcript read succeeded.
+            set((state) => {
+              state.loadError = null
+            })
           }
         } catch (retryErr) {
           console.error(

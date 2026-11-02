@@ -7,6 +7,8 @@
  *
  *  1. An active-transcript failure must NOT mark the persisted diagnostics
  *     record as resolved ("Failed loads appear recovered").
+ *  2. A retry must keep the visible load error until the active transcript
+ *     read actually succeeded ("Retry hides the load error").
  *
  * They drive the store through its PUBLIC API only (loadFromDB / setActive),
  * so they keep passing when the module is split.
@@ -170,6 +172,42 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     expect(record).not.toBeNull()
     expect(record?.message).toContain('sqlite read failed')
     expect(record?.resolved).toBeFalsy()
+  })
+
+  it('keeps the load error visible until the active transcript read succeeds', async () => {
+    // First load fails on the transcript.
+    findByConversationMock.mockRejectedValueOnce(new Error('sqlite read failed'))
+    await useConversationStore.getState().loadFromDB()
+    expect(useConversationStore.getState().loadError).toContain('sqlite read failed')
+
+    // The retry's transcript read is deferred: while it is in flight the
+    // error must STAY visible (the retry must not look successful).
+    let resolveTranscript!: (messages: unknown[]) => void
+    findByConversationMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveTranscript = resolve
+      })
+    )
+
+    const retry = useConversationStore.getState().loadFromDB()
+    // Let the metadata pass complete.
+    await vi.waitFor(() => {
+      expect(findByConversationMock).toHaveBeenCalledTimes(2)
+    })
+    // Snapshot the state WHILE the transcript read is still pending, then
+    // settle it before asserting: a failed assertion must not leave the
+    // deferred load pending and hang the following tests.
+    const errorWhilePending = useConversationStore.getState().loadError
+
+    resolveTranscript([{ id: 'm1', role: 'user', content: 'hi', timestamp: 1 }])
+    await retry
+
+    // The transcript read is still pending — the error must still be there.
+    expect(errorWhilePending).toContain('sqlite read failed')
+    // Now the load really succeeded — the error is gone and the record is
+    // marked resolved.
+    expect(useConversationStore.getState().loadError).toBeNull()
+    expect(readPersistedRecord()?.resolved).toBe(true)
   })
 
   it('marks the persisted failure resolved only after a fully successful load', async () => {
