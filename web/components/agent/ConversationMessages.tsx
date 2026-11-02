@@ -15,6 +15,7 @@ import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 import { useShallow } from 'zustand/react/shallow'
 import { MessageBubble } from './MessageBubble'
 import { AssistantTurnBubble } from './AssistantTurnBubble'
+import type { VirtualAtBottomListener, VirtualAtBottomHub } from './ScrollToBottomButton'
 import { groupMessagesIntoTurns } from './group-messages'
 import type { Turn } from './group-messages'
 import { QueuedMessageCard } from './QueuedMessageCard'
@@ -28,8 +29,11 @@ import type { FileMentionItem } from './FileMentionExtension'
  * rendering. Counted in raw messages rather than turns because agent
  * conversations are message-dense (a single user turn can fan out into dozens
  * of tool/assistant messages inside the agent loop).
+ *
+ * Exported so ConversationView can scope the ScrollToBottomButton to the same
+ * mode (issue #141) without duplicating the constant.
  */
-const VIRTUALIZATION_THRESHOLD = 100
+export const VIRTUALIZATION_THRESHOLD = 100
 
 /** Async window sizing of the Virtuoso scroller (px). */
 const SCROLL_DECCELERATION = 700
@@ -277,11 +281,25 @@ type ConversationMessagesProps = {
   onSearchFiles?: (query: string) => Promise<FileMentionItem[]>
   /** Open the shared FilePreview drawer with a pre-loaded blob */
   onPreviewAsset?: (name: string, blob: Blob) => void
+  /**
+   * Issue #141: registry of Virtuoso at-bottom listeners. When provided, every
+   * `atBottomStateChange` is fanned out to the registered listeners (the
+   * scroll-to-bottom button subscribes through ConversationView) so the
+   * button's visibility tracks Virtuoso instead of native DOM geometry.
+   */
+  virtualAtBottomHub?: VirtualAtBottomHub | null
 }
 
 export interface ConversationMessagesHandle {
   getUserNavItems: () => Array<{ turnIndex: number; preview: string; number: number }>
   scrollToTurnIndex: (index: number, align?: 'start' | 'center' | 'end') => void
+  /**
+   * Issue #141: jump to the latest turn. Virtualized mode routes through
+   * Virtuoso's scrollToIndex (index: 'LAST'), which works under windowed
+   * rendering where a raw scrollTop assignment cannot reach the real bottom;
+   * plain mode scrolls the native container.
+   */
+  scrollToLastTurn: (behavior?: 'smooth' | 'auto') => void
 }
 
 /** Build runtime props for an AssistantTurnBubble. Returns undefined values when not active. */
@@ -332,8 +350,15 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   mentionAgents,
   onSearchFiles,
   onPreviewAsset,
+  virtualAtBottomHub,
 }: ConversationMessagesProps, ref: React.Ref<ConversationMessagesHandle | null>) {
   const t = useT()
+
+  // ── Issue #141: publish Virtuoso's at-bottom state to subscribers ──
+  // ConversationView passes the listener hub; handleVirtualAtBottomChange
+  // (below) invokes its listeners on every `atBottomStateChange` so
+  // ScrollToBottomButton's visibility follows Virtuoso — native scrollHeight
+  // geometry is meaningless under windowed rendering.
 
   // ── Subscribe to streaming data directly from runtime store ──
   // This component is the ONLY place that reads streaming data at high frequency.
@@ -449,7 +474,25 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   // Virtuoso's own at-bottom tracking (drives followOutput). Seeded from the
   // shared isUserAtBottomRef maintained by ConversationView/ScrollToBottomButton
   // so the very first streaming turn respects the current scroll position.
+  // Issue #141: this state is now the SINGLE source of truth for the
+  // virtualized path — atBottomStateChange is the only writer below, and the
+  // ScrollToBottomButton mirrors the same value through the listener channel.
   const [isUserAtBottom, setIsUserAtBottom] = useState(() => isUserAtBottomRef?.current ?? true)
+  /**
+   * Single funnel for every virtualized at-bottom transition:
+   * - writes the shared isUserAtBottomRef (the cross-component seed), and
+   * - pushes the value to registered listeners (ScrollToBottomButton's
+   *   visibility), so the button can never disagree with Virtuoso.
+   * `setIsUserAtBottom` stays as state writer so followOutput re-reads a
+   * fresh value per data append.
+   */
+  const handleVirtualAtBottomChange = useCallback<VirtualAtBottomListener>((atBottom: boolean) => {
+    if (isUserAtBottomRef) isUserAtBottomRef.current = atBottom
+    setIsUserAtBottom(atBottom)
+    for (const listener of virtualAtBottomHub?.listeners ?? []) {
+      listener(atBottom)
+    }
+  }, [isUserAtBottomRef, virtualAtBottomHub])
   const rootRef = useRef<HTMLDivElement | null>(null)
   // Resolve the scroll parent synchronously during the layout phase, BEFORE the
   // browser paints. Virtuoso mounts on the very first commit for large
@@ -502,6 +545,22 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
       if (container) {
         const targetTop = (el as HTMLElement).offsetTop
         container.scrollTo({ top: targetTop, behavior: 'smooth' })
+      }
+    },
+    // Issue #141: "go to latest" for the scroll-to-bottom button. Under
+    // virtualization the DOM holds only the window slice, so the native
+    // scrollHeight is short — scrollToIndex({ index: 'LAST' }) is the only
+    // reliable way to land on the true bottom (footer included).
+    scrollToLastTurn: (behavior: 'smooth' | 'auto' = 'smooth') => {
+      if (shouldVirtualize && virtuosoRef.current) {
+        virtuosoRef.current.scrollToIndex({ index: 'LAST', align: 'end', behavior })
+        return
+      }
+      // Plain renderer: the scroll container is the nearest overflow-y-auto
+      // ancestor of our own root (same resolution rule as the layout effect).
+      const container = rootRef.current?.closest('[class*="overflow-y-auto"]') as HTMLElement | null
+      if (container) {
+        container.scrollTo({ top: container.scrollHeight, behavior })
       }
     },
   }), [turns, shouldVirtualize]))
@@ -614,7 +673,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
           computeItemKey={(_index, turn) => (turn.type === 'user' ? turn.message.id : turn.messages[0].id)}
           initialTopMostItemIndex={Math.max(0, turns.length - 1)}
           followOutput={() => (isUserAtBottom ? 'smooth' : false)}
-          atBottomStateChange={setIsUserAtBottom}
+          atBottomStateChange={handleVirtualAtBottomChange}
           increaseViewportBy={INCREASE_VIEWPORT_BY}
           scrollSeekConfiguration={scrollSeekConfiguration}
           components={{

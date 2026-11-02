@@ -6,20 +6,25 @@
  * depending on Virtuoso's real DOM measurement inside happy-dom.
  */
 
-import { render, waitFor } from '@testing-library/react'
+import { render, waitFor, act } from '@testing-library/react'
 import { forwardRef, useImperativeHandle, memo } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '@/agent/message-types'
 import { ConversationMessages } from '../ConversationMessages'
 import type { ConversationMessagesHandle } from '../ConversationMessages'
+import type { VirtualAtBottomHub } from '../ScrollToBottomButton'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 
 const {
   virtuosoSpy,
   virtuosoScrollToIndexSpy,
+  atBottomStateChangeHandlers,
 } = vi.hoisted(() => ({
   virtuosoSpy: vi.fn(),
   virtuosoScrollToIndexSpy: vi.fn(),
+  // Records every atBottomStateChange callback Virtuoso receives, so tests
+  // can fire real transitions (issue #141 scenarios) through OUR wiring.
+  atBottomStateChangeHandlers: [] as Array<(atBottom: boolean) => void>,
 }))
 
 /**
@@ -52,6 +57,9 @@ vi.mock('react-virtuoso', () => ({
       scrollTo: vi.fn(),
       scrollBy: vi.fn(),
     }))
+    if (typeof props.atBottomStateChange === 'function') {
+      atBottomStateChangeHandlers.push(props.atBottomStateChange as (atBottom: boolean) => void)
+    }
     const data = (props.data ?? []) as unknown[]
     const itemContent = props.itemContent as (index: number, item: unknown) => React.ReactNode
     const computeItemKey = props.computeItemKey as (index: number, item: unknown) => string
@@ -138,7 +146,7 @@ function makeMessages(pairs: number): Message[] {
   return messages
 }
 
-function renderMessages(messages: Message[]) {
+function renderMessages(messages: Message[], options: { isUserAtBottomRef?: React.MutableRefObject<boolean> } = {}) {
   const handleRef = { current: null as ConversationMessagesHandle | null }
   const messagesEndRef = { current: null as HTMLDivElement | null }
   const noop = vi.fn()
@@ -155,6 +163,7 @@ function renderMessages(messages: Message[]) {
         onRegenerate={undefined}
         onCancel={noop}
         messagesEndRef={messagesEndRef}
+        isUserAtBottomRef={options.isUserAtBottomRef ?? { current: true }}
         conversationId="conv-1"
         mentionAgents={[]}
       />
@@ -168,6 +177,7 @@ describe('ConversationMessages virtualization', () => {
     virtuosoSpy.mockClear()
     virtuosoScrollToIndexSpy.mockClear()
     usageBarSpy.mockClear()
+    atBottomStateChangeHandlers.length = 0
   })
 
   it('renders short conversations with the plain renderer (no Virtuoso)', () => {
@@ -297,7 +307,173 @@ describe('ConversationMessages virtualization', () => {
 
     runtimeState.pendingMessageQueues.delete('conv-1')
   })
+
+  // ── Issue #141: scroll-to-bottom under virtual scrolling ──
+
+  it('follows new messages when the user is at the bottom (followOutput)', async () => {
+    // Simulate the streaming flow: conversation starts at-bottom, then a new
+    // turn is appended. followOutput must return 'smooth' while at-bottom and
+    // the seed must come from the shared ref.
+    const isUserAtBottomRef = { current: true }
+    const { rerender, container } = renderVirtual(55, { isUserAtBottomRef })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+    })
+    expect(virtuosoSpy.mock.calls[0][0].followOutput()).toBe('smooth')
+
+    // New turn arrives while still at-bottom → follow stays on
+    rerender(makeVirtualUi(56, { isUserAtBottomRef }))
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe('smooth')
+  })
+
+  it('stops following new messages when the user scrolled up', async () => {
+    const isUserAtBottomRef = { current: true }
+    const { rerender, container } = renderVirtual(55, { isUserAtBottomRef })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+    })
+
+    // User scrolls up → Virtuoso fires atBottomStateChange(false) through OUR
+    // funnel, which must mirror into the shared ref that followOutput reads.
+    const handler = atBottomStateChangeHandlers.at(-1)!
+    act(() => handler(false))
+
+    rerender(makeVirtualUi(56, { isUserAtBottomRef }))
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
+    expect(isUserAtBottomRef.current).toBe(false)
+  })
+
+  it('button click lands at bottom via Virtuoso scrollToIndex in virtual mode', async () => {
+    const isUserAtBottomRef = { current: false }
+    const { handleRef, container } = renderVirtual(55, { isUserAtBottomRef })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+      expect(handleRef.current).not.toBeNull()
+    })
+
+    // The scroll-to-bottom button clicks through the imperative handle's
+    // scrollToLastTurn — the exact entry point ScrollToBottomButton uses.
+    act(() => handleRef.current!.scrollToLastTurn('smooth'))
+
+    // Must route through Virtuoso (index 'LAST'), NOT a native scrollTop write
+    expect(virtuosoScrollToIndexSpy).toHaveBeenCalledWith({
+      index: 'LAST',
+      align: 'end',
+      behavior: 'smooth',
+    })
+  })
+
+  it('scrollToLastTurn stays on the native DOM path in plain mode', () => {
+    const scrollToSpy = vi.fn()
+    const isUserAtBottomRef = { current: false }
+    const { handleRef } = renderPlainWithScrollSpy(scrollToSpy, isUserAtBottomRef)
+    act(() => handleRef.current!.scrollToLastTurn('smooth'))
+    expect(virtuosoScrollToIndexSpy).not.toHaveBeenCalled()
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: expect.any(Number), behavior: 'smooth' })
+  })
+
+  it('button visibility toggles with atBottomStateChange through the listener hub', async () => {
+    const isUserAtBottomRef = { current: true }
+    const hub: VirtualAtBottomHub = { listeners: new Set() }
+    const received: boolean[] = []
+    hub.listeners.add((atBottom) => received.push(atBottom))
+
+    const { container } = renderVirtual(55, { isUserAtBottomRef, virtualAtBottomHub: hub })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+    })
+
+    // Virtuoso fires scrolled-up → every hub listener receives false
+    const handler = atBottomStateChangeHandlers.at(-1)!
+    act(() => handler(false))
+    expect(received).toEqual([false])
+    expect(isUserAtBottomRef.current).toBe(false)
+
+    // Scroll back to bottom → true fans out
+    act(() => handler(true))
+    expect(received).toEqual([false, true])
+    expect(isUserAtBottomRef.current).toBe(true)
+  })
 })
+
+/** Render a virtualized conversation with configurable props (issue #141 tests). */
+function makeVirtualUi(
+  pairs: number,
+  options: { isUserAtBottomRef?: React.MutableRefObject<boolean>; virtualAtBottomHub?: VirtualAtBottomHub; handleRef?: { current: ConversationMessagesHandle | null } } = {},
+) {
+  const noop = vi.fn()
+  const messagesEndRef = { current: null as HTMLDivElement | null }
+  return (
+    <div className="overflow-y-auto" data-testid="scroll-container">
+      <ConversationMessages
+        ref={options.handleRef ?? undefined}
+        activeMessages={makeMessages(pairs)}
+        toolResults={new Map()}
+        isProcessing={false}
+        status="idle"
+        onDeleteAgentLoop={noop}
+        onEditAndResend={noop}
+        onRegenerate={undefined}
+        onCancel={noop}
+        messagesEndRef={messagesEndRef}
+        isUserAtBottomRef={options.isUserAtBottomRef ?? { current: true }}
+        virtualAtBottomHub={options.virtualAtBottomHub}
+        conversationId="conv-1"
+        mentionAgents={[]}
+      />
+    </div>
+  )
+}
+
+function renderVirtual(
+  pairs: number,
+  options: { isUserAtBottomRef?: React.MutableRefObject<boolean>; virtualAtBottomHub?: VirtualAtBottomHub } = {},
+) {
+  const handleRef = { current: null as ConversationMessagesHandle | null }
+  const opts = { ...options, handleRef }
+  const { container, rerender } = render(makeVirtualUi(pairs, opts))
+  return {
+    container,
+    handleRef,
+    rerender: (ui: React.ReactElement) => rerender(ui),
+  }
+}
+
+/** Plain renderer (< threshold) with a spy scroll container for the DOM path. */
+function renderPlainWithScrollSpy(
+  scrollToSpy: ReturnType<typeof vi.fn>,
+  isUserAtBottomRef: React.MutableRefObject<boolean>,
+) {
+  const handleRef = { current: null as ConversationMessagesHandle | null }
+  const noop = vi.fn()
+  const messagesEndRef = { current: null as HTMLDivElement | null }
+  const { container } = render(
+    <div
+      className="overflow-y-auto"
+      data-testid="scroll-container"
+      ref={(el) => {
+        if (el) (el as unknown as { scrollTo: unknown }).scrollTo = scrollToSpy
+      }}
+    >
+      <ConversationMessages
+        ref={handleRef}
+        activeMessages={makeMessages(5)}
+        toolResults={new Map()}
+        isProcessing={false}
+        status="idle"
+        onDeleteAgentLoop={noop}
+        onEditAndResend={noop}
+        onRegenerate={undefined}
+        onCancel={noop}
+        messagesEndRef={messagesEndRef}
+        isUserAtBottomRef={isUserAtBottomRef}
+        conversationId="conv-1"
+        mentionAgents={[]}
+      />
+    </div>,
+  )
+  return { handleRef, container }
+}
 
 /** Helper so tests can also reach the rendered container. */
 function renderConversation(messages: Message[]) {

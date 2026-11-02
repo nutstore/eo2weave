@@ -35,12 +35,14 @@ import type { FileMentionItem } from './FileMentionExtension'
 import { useInitialMessage } from './useInitialMessage'
 import { ConversationMessages } from './ConversationMessages'
 import type { ConversationMessagesHandle } from './ConversationMessages'
+import { VIRTUALIZATION_THRESHOLD } from './ConversationMessages'
 import { ConversationUsageBar } from './ConversationUsageBar'
 import { ConversationEmptyState } from './ConversationEmptyState'
 import { AgentDropdown } from './AgentDropdown'
 import { ModelThinkingControls } from './ModelThinkingControls'
 import { ContextUsageBar } from './ContextUsageBar'
 import { ScrollToBottomButton } from './ScrollToBottomButton'
+import type { RegisterVirtualAtBottomListener, VirtualAtBottomHub } from './ScrollToBottomButton'
 import { MessageNavBar } from './MessageNavBar'
 import { AssetsPopover } from './AssetsPopover'
 import { ProcessesPopover } from './ProcessesPopover'
@@ -68,6 +70,14 @@ interface ConversationViewProps {
   onPreviewAsset?: (fileName: string, blob: Blob) => void
 }
 
+/**
+ * ConversationView must be rendered with `key={convId}` (WorkspaceLayout does
+ * this) so a conversation switch fully remounts it: `isUserAtBottomRef` is
+ * re-seeded to true and Virtuoso re-runs `initialTopMostItemIndex` (jump to
+ * the latest turn). Without the remount, a stale at-bottom seed from the
+ * previous conversation made followOutput skip the new conversation's latest
+ * messages (issue #141).
+ */
 export function ConversationView({
   initialMessage,
   onInitialMessageConsumed,
@@ -106,6 +116,22 @@ export function ConversationView({
     return !getProviderConfig(providerType)
   }, [hasUsableModel, providerType])
   const hasSelectableModel = hasUsableModel || modelCredentialStatus === 'expired' || selectedProviderUnregistered
+
+  // ── Issue #141: Virtuoso at-bottom listener hub ──
+  // The hub object identity is stable for the component's lifetime, so wiring
+  // the button to the virtualized at-bottom stream never re-renders
+  // ConversationView. ConversationMessages invokes registered listeners on
+  // every `atBottomStateChange`; ScrollToBottomButton subscribes through
+  // registerVirtualAtBottomListener below.
+  const virtualAtBottomHubRef = useRef<VirtualAtBottomHub>({ listeners: new Set() })
+  const registerVirtualAtBottomListener = useCallback<RegisterVirtualAtBottomListener>((listener) => {
+    const set = virtualAtBottomHubRef.current.listeners
+    if (listener) {
+      set.add(listener)
+    } else {
+      set.clear()
+    }
+  }, [])
   const {
     hasInput, setInput, setMentionedAgentIds, inputResetToken, messagesEndRef, scrollContainerRef,
     isUserAtBottomRef,
@@ -377,16 +403,23 @@ export function ConversationView({
               mentionAgents={mentionAgents}
               onSearchFiles={debouncedSearchFiles}
               onPreviewAsset={onPreviewAsset}
+              virtualAtBottomHub={virtualAtBottomHubRef.current}
             />
           )}
         </div>
 
-        {/* Scroll-to-bottom floating button — isolated component to avoid re-rendering ConversationView on scroll */}
+        {/* Scroll-to-bottom floating button — isolated component to avoid re-rendering ConversationView on scroll.
+            Issue #141: in virtualized mode its visibility follows Virtuoso's atBottomStateChange
+            (surfaced through ConversationMessages' listener registry) and clicks delegate to
+            scrollToIndex; the native geometry path stays for the plain renderer. */}
         <ScrollToBottomButton
           scrollContainerRef={scrollContainerRef}
           messagesEndRef={messagesEndRef}
           isUserAtBottomRef={isUserAtBottomRef}
           convId={convId ?? undefined}
+          isVirtualized={activeMessages.length > VIRTUALIZATION_THRESHOLD}
+          virtuosoRef={conversationMessagesRef}
+          registerVirtualAtBottomListener={registerVirtualAtBottomListener}
         />
 
         {/* Assets popover — small trigger button, expands to show workspace assets */}
