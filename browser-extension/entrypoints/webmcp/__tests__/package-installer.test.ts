@@ -398,6 +398,44 @@ describe('installPackage (extension side)', () => {
     expect(liveFiles).toEqual(['config.json', 'manifest.json', 'workflows'])
   })
 
+  it('falls through a stale mirror to the canonical origin instead of aborting the install', async () => {
+    // MEDIUM ("Stale mirrors abort installs"): a mirror can serve STALE
+    // bytes with a successful 200. Checking the checksum only after the
+    // fallback returned aborted the whole install even when the NEXT
+    // candidate served the catalog-matching file. The verification now
+    // runs inside the candidate attempt and a mismatch falls through.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    const staleFiles = { ...files, 'workflows/read.js': 'export default { stale: true }' }
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      // The FIRST candidate (the canonical raw host) serves STALE bytes.
+      if (url.startsWith(RAW)) return fetchServing(staleFiles)(input)
+      // The mirror has the catalog-matching file.
+      return fetchServing(files)(input)
+    }) as typeof fetch
+
+    const result = await installPackage(registry, pkg, provider, { fetchImpl, preference: 'global' })
+
+    expect(result.filesWritten).toBeGreaterThan(0)
+    const source = new TextDecoder().decode(await provider.readFile('com.example.pkg/workflows/read.js'))
+    expect(source).toBe(WORKFLOW_SOURCE)
+  })
+
+  it('still reports SHA256_MISMATCH when EVERY candidate serves stale bytes', async () => {
+    const staleFiles = { ...fixtureFiles(), 'workflows/read.js': 'export default { stale: true }' }
+    const pkg = await pkgWithFiles(fixtureFiles())
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(staleFiles) }))
+      .rejects.toThrow(/Checksum mismatch/)
+    // Nothing was written.
+    expect(await listFiles(provider, '')).toEqual([])
+  })
+
   it('aborts the install when the package was uninstalled while the download ran', async () => {
     // The download+validation happen BEFORE the lock; an uninstall can win
     // the lock race in between. Without the presence fence the install then

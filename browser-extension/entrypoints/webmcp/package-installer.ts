@@ -102,18 +102,29 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<Uin
 }
 
 /**
- * Download one file, with the mirror fallback.
+ * Download one file, verifying its catalog sha256, with the mirror fallback.
  *
  * The canonical URL is tried first (global preference) or the jsDelivr
  * mirror first (CN preference). A transport failure moves on to the next
  * candidate; a 404 is definitive and aborts the download.
+ *
+ * CHECKSUM-AWARE CANDIDATE SELECTION (finding: "Stale mirrors abort
+ * installs"): a mirror can serve STALE bytes with a successful 200 —
+ * checking the checksum only after the fallback returned would abort the
+ * whole install even when a LATER candidate still serves the
+ * catalog-matching file. The verification therefore runs INSIDE the
+ * candidate loader and a mismatch is marked `retryable`, so the fallback
+ * moves on to the next candidate; when no candidate matches, the last
+ * mismatch is surfaced as the definitive SHA256_MISMATCH failure.
  */
 async function downloadFile(
   url: string,
   fetchImpl: typeof fetch,
+  expectedSha256: string,
   timeoutMs: number = REGISTRY_FETCH_TIMEOUT_MS,
   preference?: MirrorPreference,
 ): Promise<Uint8Array> {
+  const expected = expectedSha256.toLowerCase()
   const load = async (candidate: string): Promise<Uint8Array> => {
     const controller = new AbortController()
     // The deadline covers the WHOLE download — headers AND body. Clearing it
@@ -135,7 +146,25 @@ async function downloadFile(
         )
       }
       // Byte cap enforced WHILE streaming, not after the body is in memory.
-      return await readBodyCapped(response, MAX_PACKAGE_FILE_BYTES)
+      const bytes = await readBodyCapped(response, MAX_PACKAGE_FILE_BYTES)
+      // Verify INSIDE the candidate attempt: a mismatching candidate is a
+      // stale-content verdict the NEXT candidate may still answer correctly
+      // (the mirror fallback retries it), while the LAST candidate's
+      // mismatch is rethrown below as the install's definitive failure.
+      const actual = await sha256Hex(bytes)
+      if (actual !== expected) {
+        throw Object.assign(
+          new PackageInstallError(
+            `Checksum mismatch for ${candidate}: expected ${expectedSha256}, got ${actual}`,
+            'SHA256_MISMATCH',
+          ),
+          // `retryable` — see `isRetryableFetchError`: a loader that
+          // INSPECTED the bytes can distinguish a mirror's stale content
+          // from a canonical origin's final mismatch.
+          { retryable: true },
+        )
+      }
+      return bytes
     } catch (error) {
       if (controller.signal.aborted) {
         throw new PackageInstallError(`Download timed out after ${timeoutMs / 1000}s: ${candidate}`, 'DOWNLOAD_FAILED')
@@ -146,8 +175,17 @@ async function downloadFile(
       clearTimeout(timer)
     }
   }
-  return fetchWithMirrorFallback(url, load, { preference })
-    .then(result => result.value)
+  try {
+    return await fetchWithMirrorFallback(url, load, { preference })
+      .then(result => result.value)
+  } catch (error) {
+    if (error instanceof PackageInstallError && error.code === 'SHA256_MISMATCH') {
+      // No candidate served the catalog-matching bytes — surface the
+      // mismatch WITHOUT the retryable mark (nothing left to fall back to).
+      throw new PackageInstallError(error.message, 'SHA256_MISMATCH')
+    }
+    throw error
+  }
 }
 
 /**
@@ -240,11 +278,9 @@ export async function installPackage(
       throw new PackageInstallError(`Package ${id} lists ${file.path} twice (aliased path)`, 'INVALID_PACKAGE')
     }
     seenPaths.add(relative)
-    const bytes = await downloadFile(url, fetchImpl, options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS, options?.preference)
-    const actual = await sha256Hex(bytes)
-    if (actual !== file.sha256.toLowerCase()) {
-      throw new PackageInstallError(`Checksum mismatch for ${url}: expected ${file.sha256}, got ${actual}`, 'SHA256_MISMATCH')
-    }
+    const bytes = await downloadFile(url, fetchImpl, file.sha256, options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS, options?.preference)
+    // The download already verified the sha256 per candidate (finding:
+    // "Stale mirrors abort installs") — nothing to re-check here.
     totalBytes += bytes.length
     if (totalBytes > MAX_PACKAGE_TOTAL_BYTES) {
       throw new PackageInstallError(`Package ${id} exceeds the total size limit (${MAX_PACKAGE_TOTAL_BYTES} bytes)`, 'INVALID_PACKAGE')
