@@ -537,6 +537,127 @@ describe('ConversationMessages virtualization', () => {
     expect(hub.lastAtBottom).toBe(false)
   })
 
+  it('detects an interruption on the FIRST user scroll after the click (review round 4)', async () => {
+    // Sourcery: the round-3 detector discarded the first scroll event as
+    // "calibration". If the user's first scroll arrives before any animation
+    // event — and no later event or at-bottom transition follows — the jump
+    // stays pending forever, the button stays hidden, and streaming keeps
+    // pulling the user down. The baseline is now captured AT CLICK TIME, so
+    // a single decreasing scroll event must resync immediately.
+    const isUserAtBottomRef = { current: false }
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
+    const scrollContainerRef = { current: null as HTMLDivElement | null }
+    const { handleRef, container } = renderWithButton(55, {
+      isUserAtBottomRef,
+      virtualAtBottomHub: hub,
+      scrollContainerRef,
+    })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+      expect(handleRef.current).not.toBeNull()
+    })
+
+    const button = await waitFor(() => {
+      const el = container.querySelector('[data-testid="scroll-to-bottom"]')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+
+    const scroller = container.querySelector('[data-testid="scroll-container"]') as HTMLDivElement
+    expect(scroller).not.toBeNull()
+    // The user is mid-list when they click (scrollTop 500); the click must
+    // capture THAT position as the interrupt baseline.
+    act(() => {
+      Object.defineProperty(scroller, 'scrollTop', { value: 500, configurable: true })
+    })
+    act(() => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
+
+    // Exactly ONE scroll event arrives — the user's first gesture, before
+    // any animation scroll event was handled — and it moves UP (500 → 200).
+    act(() => {
+      Object.defineProperty(scroller, 'scrollTop', { value: 200, configurable: true })
+      scroller.dispatchEvent(new Event('scroll'))
+    })
+
+    // The interruption must be detected on this first event alone: button
+    // re-shows, followOutput is off, the funnel is back at not-at-bottom.
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+    })
+    expect(isUserAtBottomRef.current).toBe(false)
+    expect(hub.lastAtBottom).toBe(false)
+  })
+
+  it('recaptures the interrupt baseline on every click (review round 4)', async () => {
+    // Sourcery: the calibration flag and scroll baseline persisted across
+    // clicks (they lived in the scroll-listener effect's closure). The
+    // baseline must restart from the pre-jump position of EACH jump.
+    const isUserAtBottomRef = { current: false }
+    const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }
+    const scrollContainerRef = { current: null as HTMLDivElement | null }
+    const { handleRef, container, rerender } = renderWithButton(55, {
+      isUserAtBottomRef,
+      virtualAtBottomHub: hub,
+      scrollContainerRef,
+    })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull()
+      expect(handleRef.current).not.toBeNull()
+    })
+
+    const click = async () => {
+      const el = await waitFor(() => {
+        const b = container.querySelector('[data-testid="scroll-to-bottom"]')
+        expect(b).not.toBeNull()
+        return b as HTMLElement
+      })
+      act(() => {
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+    }
+    const scroller = container.querySelector('[data-testid="scroll-container"]') as HTMLDivElement
+    const scroll = (top: number) => {
+      act(() => {
+        Object.defineProperty(scroller, 'scrollTop', { value: top, configurable: true })
+        scroller.dispatchEvent(new Event('scroll'))
+      })
+    }
+
+    // Jump #1 from scrollTop 400: an animation-style scroll DOWN advances the
+    // baseline without ending the jump, then the user scrolls up and the
+    // resync fires (jump #1 interrupted at scrollTop 250).
+    act(() => {
+      Object.defineProperty(scroller, 'scrollTop', { value: 400, configurable: true })
+    })
+    await click()
+    scroll(450)
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
+    scroll(250)
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+    })
+    expect(isUserAtBottomRef.current).toBe(false)
+
+    // Jump #2 from the interrupted position (250): the baseline must restart
+    // there — NOT inherit jump #1's history. A single scroll down to 300 is
+    // the animation (no interrupt), and the very next scroll up to 120 is a
+    // genuine interruption detected without any calibration event.
+    await click()
+    scroll(300)
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull()
+    scroll(120)
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull()
+    })
+    expect(isUserAtBottomRef.current).toBe(false)
+    expect(hub.lastAtBottom).toBe(false)
+    rerender(56)
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
+  })
+
   it('button replays the hub state it subscribed after (no missed initial signal)', async () => {
     const isUserAtBottomRef = { current: false }
     const hub: VirtualAtBottomHub = { listeners: new Set(), lastAtBottom: false }

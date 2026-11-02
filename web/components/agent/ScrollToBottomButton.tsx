@@ -100,6 +100,13 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
   // Mirror for the scroll-listener effect (it must read the live flag without
   // re-subscribing on every jump).
   const jumpPendingRef = useRef(false)
+  // Running scroll baseline for interrupted-jump detection: captured at click
+  // time (before the animation starts) and advanced on every scroll toward
+  // the bottom. The very first scroll event after a click — even one arriving
+  // before any animation event — is thus compared against a real starting
+  // position instead of being consumed as calibration, and every jump
+  // re-captures it so no stale baseline leaks into the next jump.
+  const interruptBaselineRef = useRef(0)
   const setJumpPendingBoth = useCallback((v: boolean) => {
     jumpPendingRef.current = v
     setJumpPending(v)
@@ -162,21 +169,16 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
     if (!isVirtualized || !virtualAtBottomHub) return
     const el = scrollContainerRef.current
     if (!el) return
-    let lastTop = 0
-    let seen = false
     const handleInterrupt = () => {
       if (!jumpPendingRef.current) return
-      // First scroll event after the click just calibrates the baseline —
-      // the smooth animation itself fires scroll events while it runs, and
-      // those move TOWARD the bottom. Only a scroll moving AWAY from the
-      // bottom (scrollTop decreasing) is a genuine user interruption.
-      if (!seen) {
-        seen = true
-        lastTop = el.scrollTop
-        return
-      }
-      if (el.scrollTop >= lastTop) {
-        lastTop = el.scrollTop
+      // The baseline was captured when the jump started (handleClick), so a
+      // scroll event moving TOWARD the bottom (scrollTop increasing — the
+      // smooth animation itself, or momentum) only advances it. A scroll
+      // moving AWAY from the bottom (scrollTop decreasing) is a genuine user
+      // interruption, and the FIRST user scroll is detected as such instead
+      // of being discarded as calibration.
+      if (el.scrollTop >= interruptBaselineRef.current) {
+        interruptBaselineRef.current = el.scrollTop
         return
       }
       setJumpPendingBoth(false)
@@ -200,6 +202,12 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
       // delegate to the list handle, which jumps to the true bottom of the
       // scroller (footer content included).
       virtuosoRef?.current?.scrollToLastTurn('smooth')
+      // Capture the pre-jump scroll position: the interrupt detector compares
+      // every scroll event against THIS value, so the first user scroll after
+      // the click is already attributable (decreasing scrollTop = interruption)
+      // without a throwaway calibration event (review round 4). Re-captured on
+      // every click, so no baseline survives into the next jump.
+      interruptBaselineRef.current = scrollContainerRef.current?.scrollTop ?? 0
       // Optimistic hide WITHOUT overwriting the authoritative virtualAtBottom
       // (review round 3): the hub keeps Virtuoso's real not-at-bottom value,
       // so an interrupted jump can resync from it (see the scroll listener).
