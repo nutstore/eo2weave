@@ -27,7 +27,7 @@ import { performOcr, isOcrCompatibleImage } from '@/services/ocr.service'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
 import { isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { useInputDraftStore } from '@/store/input-draft.store'
-import { VIRTUALIZATION_THRESHOLD } from '@/components/agent/ConversationMessages'
+import { VIRTUALIZATION_THRESHOLD } from '@/components/agent/virtualization-constants'
 import { useActiveConversation } from './useActiveConversation'
 import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
 

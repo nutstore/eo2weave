@@ -23,19 +23,11 @@ import { Clock } from 'lucide-react'
 import { useT } from '@/i18n'
 import type { DraftAssistantStep, Message, ToolCall } from '@/agent/message-types'
 import type { FileMentionItem } from './FileMentionExtension'
+import { VIRTUALIZATION_THRESHOLD } from '@/components/agent/virtualization-constants'
 
 /**
- * Threshold (in messages) above which the conversation switches to virtualized
- * rendering. Counted in raw messages rather than turns because agent
- * conversations are message-dense (a single user turn can fan out into dozens
- * of tool/assistant messages inside the agent loop).
- *
- * Exported so ConversationView can scope the ScrollToBottomButton to the same
- * mode (issue #141) without duplicating the constant.
+ * Async window sizing of the Virtuoso scroller (px).
  */
-export const VIRTUALIZATION_THRESHOLD = 100
-
-/** Async window sizing of the Virtuoso scroller (px). */
 const SCROLL_DECCELERATION = 700
 
 /**
