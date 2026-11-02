@@ -223,4 +223,95 @@ describe('installPackage (extension side)', () => {
     await uninstallPackage('com.example.pkg', provider)
     expect(await listFiles(provider, '')).toEqual([])
   })
+
+  it('restores a manifest-only partial tree from the backup instead of trusting it', async () => {
+    // A prior restore copied manifest.json and died before the rest of the
+    // package: the live tree holds a parseable manifest but no content
+    // files, and the backup holds the only COMPLETE copy. The recovery gate
+    // must treat the partial live tree as INCOMPLETE and restore over it —
+    // trusting the manifest alone would clear the backup and the swap's
+    // pre-cleanup would destroy the only complete copy.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+
+    await provider.mkdir('com.example.pkg', { recursive: true })
+    await provider.writeFile('com.example.pkg/manifest.json', new TextEncoder().encode(JSON.stringify(TOOL_MANIFEST)))
+    await provider.mkdir('.com.example.pkg.previous', { recursive: true })
+    for (const [path, content] of Object.entries(files)) {
+      await provider.writeFile(`.com.example.pkg.previous/${path}`, new TextEncoder().encode(content))
+    }
+
+    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+
+    // The recovered content came from the backup: the real workflow file is
+    // present (the partial live tree lacked it), proving the backup's copy
+    // won over the partial tree.
+    const source = new TextDecoder().decode(await provider.readFile('com.example.pkg/workflows/read.js'))
+    expect(source).toBe(WORKFLOW_SOURCE)
+  })
+
+  it('probes the backup even when an incomplete live directory exists', async () => {
+    // Same precondition, reached differently: the live directory exists AND
+    // the backup holds the complete copy. The old code set backupExists
+    // whenever the live directory existed, so the recovery gate never ran
+    // and the pre-swap cleanup deleted the preserved copy.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+
+    // Live tree: config only (no manifest) — visibly incomplete.
+    await provider.mkdir('com.example.pkg', { recursive: true })
+    await provider.writeFile('com.example.pkg/config.json', new TextEncoder().encode('{}'))
+    // Backup: the complete package.
+    await provider.mkdir('.com.example.pkg.previous', { recursive: true })
+    for (const [path, content] of Object.entries(files)) {
+      await provider.writeFile(`.com.example.pkg.previous/${path}`, new TextEncoder().encode(content))
+    }
+
+    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+
+    const manifest = JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/manifest.json')))
+    expect(manifest.id).toBe('com.example.pkg')
+    expect(await listFiles(provider, 'com.example.pkg')).toContain('workflows')
+  })
+
+  it('keeps the backup when the rollback cannot remove the partial live tree', async () => {
+    // A failing replacement whose PARTIAL live tree cannot be removed must
+    // NOT copy the backup over the leftovers (copyTree keeps extra files)
+    // and then clear the backup — that would leave a mixed package with the
+    // backup, the only clean copy, gone.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+
+    const full = fixtureFiles({ ...TOOL_MANIFEST, version: '2.0.0' })
+    // Old install in place.
+    await provider.mkdir('com.example.pkg', { recursive: true })
+    for (const [path, content] of Object.entries(files)) {
+      await provider.writeFile(`com.example.pkg/${path}`, new TextEncoder().encode(content))
+    }
+    // The replacement writes ONE extra file, then its staged copy-in dies.
+    // The partial-tree removal also fails (storage failure), so a copy-over
+    // rollback would leave BOTH versions' files mixed.
+    const failingRemove = provider.remove.bind(provider)
+    ;(provider as { remove: typeof provider.remove }).remove = (async (path: string) => {
+      if (path === 'com.example.pkg') throw new Error('EIO: simulated removal failure')
+      return failingRemove(path)
+    }) as typeof provider.remove
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(full) }))
+      .rejects.toThrow(/previous install was preserved/)
+
+    // The backup survives with the COMPLETE old package...
+    const backupManifest = JSON.parse(new TextDecoder().decode(await provider.readFile('.com.example.pkg.previous/manifest.json')))
+    expect(backupManifest.version).toBe('1.0.0')
+    // ...and the live tree was NOT left as a copy-over mixture of the old
+    // workflow file and the new package's files.
+    const liveFiles = (await listFiles(provider, 'com.example.pkg')).sort()
+    expect(liveFiles).toEqual(['config.json', 'manifest.json', 'workflows'])
+  })
 })

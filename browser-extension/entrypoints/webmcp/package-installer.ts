@@ -337,7 +337,14 @@ async function swapPackageIntoPlace(
     // backup. Abort instead — the backup survives untouched and the caller
     // can retry.
     const liveExists = await pathExists(provider, id)
-    const backupExists = liveExists === false ? await pathExists(provider, backup) : false
+    // The backup is probed REGARDLESS of the live directory: a previous
+    // failed restore can leave an INCOMPLETE live directory AND the only
+    // complete copy in the backup at the same time. Keying the probe on
+    // `liveExists === false` made such a retry report "no backup", delete
+    // the preserved copy during the pre-swap cleanup, and a later storage
+    // failure then left only the partial package (finding: "Retry deletes
+    // preserved package").
+    const backupExists = await pathExists(provider, backup)
     if (liveExists === null || backupExists === null) {
       // The abort must also keep the backup out of the cleanup below — it
       // may be the only surviving copy.
@@ -353,9 +360,10 @@ async function swapPackageIntoPlace(
     // intact backup survived; trusting any existing live directory here
     // made the retry clear the backup — the only complete copy — after the
     // pre-swap cleanup below (finding: "Retry deletes preserved package").
-    // A live directory holding a manifest whose file set is EMPTY or
-    // unreadable is not a usable install, so the backup wins.
-    const liveIsComplete = liveExists ? await liveTreeHasManifest(provider, id) : false
+    // A live directory that is not VERIFIED COMPLETE (finding: "Recovery
+    // deletes the working backup" — a parseable manifest alone is not the
+    // package) is not a usable install, so the backup wins.
+    const liveIsComplete = liveExists ? await liveTreeIsComplete(provider, id) : false
     if ((!liveExists || !liveIsComplete) && backupExists) {
       assertLeaseHeld() // fence: do not recover/clear the backup after lease loss
       try {
@@ -392,6 +400,11 @@ async function swapPackageIntoPlace(
           )
         }
         await provider.writeFile(`${staging}/${file.path}`, file.bytes)
+        // FENCE after every awaited write: a write that lands after the
+        // lease was lost would keep mutating the package directory the NEW
+        // owner is already racing (finding: "Stale installs corrupt
+        // packages") — stop before the next file instead.
+        assertLeaseHeld()
       }
     } catch (error) {
       if (error instanceof PackageInstallError) throw error
@@ -411,6 +424,10 @@ async function swapPackageIntoPlace(
       let hadOld = false
       try {
         await provider.rename!(id, backup)
+        // FENCE after the awaited rename (finding: "Stale installs corrupt
+        // packages"): the read/await may have outlived the lease, and every
+        // subsequent mutation must be abandoned once it has.
+        assertLeaseHeld()
         hadOld = true
       } catch (error) {
         // No previous install — that is the normal first-install case.
@@ -419,11 +436,17 @@ async function swapPackageIntoPlace(
       }
       try {
         await provider.rename!(staging, id)
+        // FENCE after the awaited rename — same rule as above.
+        assertLeaseHeld()
       } catch (renameError) {
         // Roll the old install back — the new tree failed to take over.
+        // The rollback rename is fenced too: after lease loss the NEW owner
+        // owns the directory and a stale rename must not fight it.
+        assertLeaseHeld()
         if (hadOld) {
           try {
             await provider.rename!(backup, id)
+            assertLeaseHeld() // fence after the awaited rollback rename
           } catch {
             // SECURITY (critical): restoration failed, so the backup now
             // holds the ONLY copy of the previously working package.
@@ -440,7 +463,13 @@ async function swapPackageIntoPlace(
         }
         throw renameError
       }
-      await removeMissingOk(provider, backup)
+      // Fence the backup clear: the swap landed but the lease may have been
+      // lost while the last rename was pending — the stale transaction must
+      // not delete the backup the NEW owner's recovery could still need
+      // (finding: "Stale cleanup deletes new backup"). `removeMissingOk`
+      // rechecks the lease immediately before the destructive mutation, so
+      // a lease lost between the gate above and the removal still fences.
+      await removeMissingOk(provider, backup, lockSignal)
     } else {
       // No rename support: copy the old tree aside, copy the new tree in,
       // and restore the copy if the swap fails.
@@ -473,22 +502,32 @@ async function swapPackageIntoPlace(
             // First install: nothing to restore — remove the PARTIAL live
             // directory so the management UI never reports a half package.
             assertLeaseHeld() // fence the cleanup writes against lease loss
-            await removeMissingOk(provider, id).catch(() => {})
+            await removeMissingOk(provider, id, lockSignal).catch(() => {})
+            // Redundant backup of a FIRST install — nothing to restore over
+            // — so `backupPreserved` stays false and the finally block may
+            // clean it.
           } else {
-            assertLeaseHeld() // fence the rollback writes against lease loss
-            await removeMissingOk(provider, id).catch(() => {})
+            // ROLLBACK RULE: the old tree may only be restored INTO a clean
+            // directory. Removing the partial live tree is part of the
+            // rollback itself — swallowing its failure and copying over the
+            // leftovers would let `copyTree` overwrite matching files while
+            // keeping EXTRA files from the failed replacement, and the
+            // backup cleanup would then delete the only clean copy: a
+            // mixed, half-old half-new package (finding: "Failed rollback
+            // can discard old files"). A failed removal PRESERVES the
+            // backup and reports the rollback failure instead.
             try {
-              assertLeaseHeld() // fence: the restore copy is destructive
-              await copyTree(provider, backup, id, lockSignal)
-            } catch (restoreError) {
-              // The restore failed — same rule as the rename path: keep
-              // the backup (it is the last good copy) and say so.
+              assertLeaseHeld() // fence the rollback removal against lease loss
+              await removeMissingOk(provider, id, lockSignal)
+            } catch (cleanupError) {
               backupPreserved = true
               throw new PackageInstallError(
-                `Failed to write package ${id} to storage AND the previous install could not be restored; its backup was preserved at ${backup}`,
+                `Failed to write package ${id} to storage AND the failed replacement could not be fully removed; the previous install was preserved at ${backup}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
                 'STORAGE_FAILED',
               )
             }
+            assertLeaseHeld() // fence: the restore copy is destructive
+            await copyTree(provider, backup, id, lockSignal)
           }
           throw copyError
         }
@@ -511,8 +550,14 @@ async function swapPackageIntoPlace(
     // the only remaining copy of the working package and MUST survive. Both
     // cleanups are FENCED against lease loss — a stale transaction must not
     // delete the new owner's backup.
-    if (!lockSignal.aborted) await removeMissingOk(provider, staging).catch(() => {})
-    if (!backupPreserved && !lockSignal.aborted) await removeMissingOk(provider, backup).catch(() => {})
+    // The fence is INSIDE `removeMissingOk`, not the flag read above: a
+    // lease lost between checking `lockSignal.aborted` and the removal's
+    // awaited mutation would let stale cleanup delete the staging dir or
+    // the backup the NEW transaction is using (finding: "Stale cleanup
+    // deletes new backup"). `removeMissingOk` rechecks the signal
+    // immediately before its destructive mutation and throws instead.
+    await removeMissingOk(provider, staging, lockSignal).catch(() => {})
+    if (!backupPreserved) await removeMissingOk(provider, backup, lockSignal).catch(() => {})
   }
 }
 
@@ -529,21 +574,45 @@ async function pathExists(provider: FsProvider, path: string): Promise<boolean |
 }
 
 /**
- * Conservative completeness check for a live package directory: it is
- * "complete" only when a READABLE manifest.json is present. A partially
- * copied tree (an interrupted restore's live directory) usually lacks the
- * manifest or holds an unreadable one — either way the preserved backup is
- * the more trustworthy copy and must not be discarded. An INDETERMINATE
- * read failure counts as INCOMPLETE (fail closed: keep the backup).
+ * Conservative completeness check for a live package directory (finding:
+ * "Recovery deletes the working backup", CRITICAL): a PARSEABLE manifest
+ * alone is NOT a complete package. A restore that copied manifest.json
+ * first and then failed before the rest of the tree would otherwise read
+ * as "complete", and the retry would delete the backup holding the ONLY
+ * complete copy of the package. The manifest also lists every file the
+ * package ships, so the tree is complete only when the manifest parses
+ * AND every listed file exists and is readable on the live tree — the
+ * manifest's `files` entries are `packages/<id>/…`-prefixed repo paths, so
+ * the check strips that prefix and stats each local file; the installer's
+ * own `config.json` is tolerated as extra state. An INDETERMINATE read
+ * failure counts as INCOMPLETE (fail closed: keep the backup).
  */
-async function liveTreeHasManifest(provider: FsProvider, id: string): Promise<boolean> {
+async function liveTreeIsComplete(provider: FsProvider, id: string): Promise<boolean> {
+  let manifest: { files?: unknown }
   try {
     const bytes = await provider.readFile(`${id}/manifest.json`)
-    JSON.parse(new TextDecoder().decode(bytes))
-    return true
+    manifest = JSON.parse(new TextDecoder().decode(bytes))
   } catch {
     return false
   }
+  if (typeof manifest !== 'object' || manifest === null || !Array.isArray(manifest.files)) return false
+  const prefix = `packages/${id}/`
+  for (const entry of manifest.files) {
+    // The manifest's `files` entries carry the package's own path list;
+    // accept both the registry's prefixed form and a bare relative path.
+    const relative = typeof entry === 'object' && entry !== null && typeof (entry as { path?: unknown }).path === 'string'
+      ? (entry as { path: string }).path
+      : entry
+    if (typeof relative !== 'string' || relative === 'manifest.json' || relative === `${prefix}manifest.json`) continue
+    const local = relative.startsWith(prefix) ? relative.slice(prefix.length) : relative
+    try {
+      const stat = await provider.stat(`${id}/${local}`)
+      if (stat.kind !== 'file') return false
+    } catch {
+      return false // missing OR unreadable — treat both as incomplete
+    }
+  }
+  return true
 }
 
 /**
@@ -585,13 +654,21 @@ async function copyTree(provider: FsProvider, from: string, to: string, lockSign
   throwIfLeaseLost(lockSignal, `the tree copy of ${from}`)
   await provider.mkdir(to, { recursive: true })
   for (const entry of entries) {
-    throwIfLeaseLost(lockSignal, `the tree copy of ${from}`)
     const source = `${from}/${entry.name}`
     const target = `${to}/${entry.name}`
     if (entry.kind === 'directory') {
       await copyTree(provider, source, target, lockSignal)
     } else {
-      await provider.writeFile(target, await provider.readFile(source))
+      // FENCE the read→write pair, not just the loop: a read that stays
+      // pending until the lease is lost must not complete by writing into
+      // the directory the NEW owner now holds (finding: "Stale installs
+      // corrupt packages").
+      const bytes = await provider.readFile(source)
+      throwIfLeaseLost(lockSignal, `the tree copy of ${from}`)
+      await provider.writeFile(target, bytes)
+      // FENCE after the awaited write too: stop before the next entry once
+      // the lease is gone (finding: "Stale installs corrupt packages").
+      throwIfLeaseLost(lockSignal, `the tree copy of ${from}`)
     }
   }
   return true
