@@ -279,6 +279,39 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(useConversationStore.getState().activeConversationId).not.toBe(conv.id)
   })
 
+  it('rejects a concurrent second dispatch while the first run awaits workspace setup', async () => {
+    const conv = useConversationStore.getState().createNew('lock-race', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    let releaseEnsure!: () => void
+    const ensureGate = new Promise<void>((resolve) => { releaseEnsure = resolve })
+    ensureWorkspaceMock.mockImplementationOnce(() => ensureGate)
+
+    const loopRuns: number[] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      loopRuns.push(Date.now())
+      return [
+        { id: 'assistant-lock', role: 'assistant', content: 'done', timestamp: Date.now() },
+      ]
+    }
+
+    const first = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    const second = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+
+    // Let the pending-claim microtasks settle, then unblock the first run's
+    // workspace ensure. The second dispatch must have been rejected while
+    // waiting, never reaching its own agent loop.
+    releaseEnsure()
+    await Promise.all([first, second])
+    await Promise.resolve()
+
+    expect(loopRuns).toHaveLength(1)
+    const rt = useConversationRuntimeStore.getState().runtimes.get(conv.id)
+    expect(rt?.activeRunId ?? null).toBeNull()
+    expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
+    expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages.some((m) => m.id === 'assistant-lock')).toBe(true)
+  })
+
   it('should finalize non-current tool steps by toolCallId in interleaved calls', async () => {
     const store = useConversationStore.getState()
     const conv = store.createNew('test')

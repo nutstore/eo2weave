@@ -87,6 +87,14 @@ type StoreGet = () => {
 type StoreSet = (updater: (state: AgentRunStoreDraft) => void) => void
 
 /**
+ * Per-conversation run-start claims. Set synchronously at dispatch and
+ * released once the run lock (activeRunId) is acquired — or on any
+ * early-return before that point. Single-browser-tab app: JS is single
+ * threaded, so a synchronous map insert IS the atomic claim.
+ */
+const runClaimSlots = new Map<string, { claimed: boolean; owner: string }>()
+
+/**
  * Bridge onto the facade-module symbols runAgent touches. The delegate casts
  * the facade side into this interface; members are enumerated by what the
  * moved body actually references.
@@ -133,6 +141,22 @@ export async function runAgentImpl(
         return
       }
 
+      // Claim the per-conversation run slot SYNCHRONOUSLY, before any await.
+      // The status-based guard above only observes state this call set later;
+      // two concurrent dispatches for the same conversation could otherwise
+      // both pass it while racing each other's workspace/ensure awaits, and
+      // the later lock acquisition would orphan the loser's loop mid-flight.
+      // The slot holds the claim; ownership is confirmed (and the real
+      // activeRunId published) by the claim block further down, and released
+      // on every early-return before that block.
+      const claimToken = `claim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      const claimSlot = { claimed: true, owner: claimToken }
+      runClaimSlots.set(conversationId, claimSlot)
+      const releaseClaim = () => {
+        if (runClaimSlots.get(conversationId) === claimSlot) runClaimSlots.delete(conversationId)
+      }
+      const claimIsOurs = () => runClaimSlots.get(conversationId) === claimSlot
+
       // ── Unregistered dynamic provider guard (#87, Sourcery rounds 2+3) ──
       // runAgent is the shared dispatch boundary for every AI action —
       // sendMessage, QuickActionsPanel, FilePreview, SyncPreviewPanel and
@@ -162,6 +186,7 @@ export async function runAgentImpl(
         // disappears after a page reload). No run lock has been acquired
         // yet at this point, so the isCurrentRun gating inside failRunEarly
         // would no-op — hence the inline mirror here.
+        releaseClaim()
         set((state) => {
           const c = state.conversations.find((c) => c.id === conversationId)
           if (c) {
@@ -220,6 +245,14 @@ export async function runAgentImpl(
           await workspaceStore.switchWorkspace(conversationId)
         }
 
+        // The await above is the one window where a competing dispatch could
+        // have taken over this conversation (had we not held the claim).
+        // Bail out if the claim was lost or another run started meanwhile.
+        if (!claimIsOurs() || get().isConversationRunning(conversationId)) {
+          releaseClaim()
+          return
+        }
+
         // FIX (parallel isolation): Resolve directoryHandle from THIS run's
         // conversationId (= workspaceId), NOT from the global active-project
         // pointer. Previously the caller passed useAgentStore.directoryHandle
@@ -243,6 +276,13 @@ export async function runAgentImpl(
 
         const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
         let runEpoch = 0
+        // The synchronous start claim guaranteed no concurrent dispatch raced
+        // us to this point; convert it into the real run lock now.
+        if (!claimIsOurs()) {
+          releaseClaim()
+          return
+        }
+        releaseClaim()
         // Ownership is deliberately in-memory and run scoped. The overlay has
         // one pending row per path, so paths already pending when this run
         // begins are never eligible for automatic application.
@@ -450,6 +490,7 @@ export async function runAgentImpl(
               'The selected provider is unavailable — sign in again to use it.'
             )
           )
+          releaseClaim()
           return
         }
 
@@ -467,6 +508,7 @@ export async function runAgentImpl(
 
         if (!providerConfig?.baseUrl || !providerConfig.modelName) {
           failRunEarly('请先配置自定义服务商和模型')
+          releaseClaim()
           return
         }
 
@@ -476,6 +518,7 @@ export async function runAgentImpl(
         const apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
         if (!apiKey && !isCustomProviderType(providerType)) {
           failRunEarly('API Key 未设置，请先在设置中配置')
+          releaseClaim()
           return
         }
 
@@ -511,6 +554,7 @@ export async function runAgentImpl(
               'The selected provider is unavailable — sign in again to use it.'
             )
           )
+          releaseClaim()
           return
         }
 
