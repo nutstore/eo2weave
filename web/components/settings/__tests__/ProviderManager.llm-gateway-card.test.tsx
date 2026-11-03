@@ -7,9 +7,12 @@
  * even though the user simply needed to log in again.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+
+const LLM_GATEWAY_PROVIDER_TYPE = 'llm-gateway'
 
 type CredentialStatus = 'unknown' | 'valid' | 'expired' | 'missing'
 
@@ -125,13 +128,13 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/agent/providers/types')>()
   return {
     ...actual,
-    // The registered catalog under test: a 'ready' registration from the
-    // startup restore carries these models, and the timeout must keep the
-    // LIST while downgrading only the STATUS to 'failed'.
+    // STATEFUL mock backed by the real dynamic-provider registry: the test
+    // registers real entries via registerDynamicProvider and the mock
+    // reflects what is actually registered — a failed refresh that CLEARS
+    // the registry is detectable, which a fixed GLM-returning stub could
+    // never see (Sourcery: "getModelsForProvider mock always returns GLM").
     getModelsForProvider: (type: string) =>
-      type === 'llm-gateway'
-        ? [{ id: 'glm-5.2', name: 'GLM', capabilities: ['code'] as const, contextWindow: 200_000 }]
-        : [],
+      actual.getModelsForProvider(type as Parameters<typeof actual.getModelsForProvider>[0]),
     getProviderCatalogStatus: gatewayMock.getProviderCatalogStatus,
   }
 })
@@ -197,7 +200,18 @@ describe('LLMGatewayCard credential state', () => {
     settingsState.setModelCredentialStatus.mockImplementation((status: CredentialStatus) => {
       settingsState.modelCredentialStatus = status
     })
+    // Seed the REAL dynamic-provider registry with the last-known gateway
+    // catalog: the stateful getModelsForProvider mock reads this registry,
+    // so each test controls what "previously registered" means.
+    registerDynamicProvider(LLM_GATEWAY_PROVIDER_TYPE,
+      { baseURL: 'https://ai.jianguoyun.com/v1', modelName: 'glm-5.2', headers: {}, apiMode: 'chat-completions' },
+      { category: 'chinese', displayName: 'Nutstore AI', models: [{ id: 'glm-5.2', name: 'GLM', capabilities: ['code'] as const, contextWindow: 200_000 }], catalogStatus: 'ready' },
+    )
     useI18nStore.setState({ locale: 'en-US' })
+  })
+
+  afterEach(() => {
+    unregisterDynamicProvider(LLM_GATEWAY_PROVIDER_TYPE)
   })
 
   it('offers only a re-login action when the session expired', async () => {
@@ -503,7 +517,13 @@ describe('LLMGatewayCard credential state', () => {
     await waitFor(() => expect(gatewayMock.registerGatewayModels).toHaveBeenCalled())
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Add from model library' }))
+    // The registry-backed assertion: the previously registered GLM entry
+    // must still be served by getModelsForProvider after the failed refresh
+    // — the mock reflects the real dynamic-provider registry, so a failed
+    // refresh that had cleared the registration would fail this test.
     expect(screen.getByRole('button', { name: /GLM/ })).toBeTruthy()
+    const { getModelsForProvider } = await import('@/agent/providers/types')
+    expect(getModelsForProvider('llm-gateway').map((m) => m.id)).toEqual(['glm-5.2'])
   })
 
   it('also downgrades a prior authoritative-empty catalog when the /models refresh times out', async () => {
