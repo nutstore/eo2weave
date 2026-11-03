@@ -165,6 +165,21 @@ describe('per-conversation Agent routing', () => {
     expect(mocks.ui.activeAgentId).toBe('alpha')
   })
 
+  it('does not persist a transient (delegated handoff) override as the saved selection', async () => {
+    // A delegated handoff forces the target persona via overrideId for THIS
+    // run only — it must not replace the conversation's saved Agent.
+    expect(
+      await resolveConversationAgentId('project-b', 'chat-b', 'resource-loop', '继续', {
+        transient: true,
+      })
+    ).toBe('resource-loop')
+    expect(mocks.preferences.agentIdByWorkspace['chat-b']).toBeUndefined()
+
+    // Non-transient behavior is unchanged: an explicit override persists.
+    await resolveConversationAgentId('project-b', 'chat-b', 'resource-loop', '继续')
+    expect(mocks.preferences.agentIdByWorkspace['chat-b']).toBe('resource-loop')
+  })
+
   it('explicit selection takes priority over @, and an unknown explicit identity fails', async () => {
     expect(
       await resolveConversationAgentId('project-b', 'chat-b', 'default', '@resource-loop hello')

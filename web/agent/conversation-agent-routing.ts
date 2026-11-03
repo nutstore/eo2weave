@@ -8,7 +8,8 @@ export async function resolveConversationAgentId(
   projectId: string | null,
   conversationId: string,
   overrideId: string | null | undefined,
-  message: string | null | undefined
+  message: string | null | undefined,
+  opts?: { transient?: boolean }
 ): Promise<string> {
   const preferences = useWorkspacePreferencesStore.getState()
   const savedId = preferences.agentIdByWorkspace[conversationId]
@@ -43,8 +44,12 @@ export async function resolveConversationAgentId(
     'default'
   // A deliberate UI selection made while the catalog was loading belongs
   // to the next turn; do not replace it with this run's earlier snapshot.
-  if (useWorkspacePreferencesStore.getState().agentIdByWorkspace[conversationId] === savedId) {
-    preferences.setWorkspaceAgentId(conversationId, agentId)
+  // A transient resolution (delegated handoff) resolves the persona for THIS
+  // run only — persisting it would make every later turn run as the delegate.
+  if (!opts?.transient) {
+    if (useWorkspacePreferencesStore.getState().agentIdByWorkspace[conversationId] === savedId) {
+      preferences.setWorkspaceAgentId(conversationId, agentId)
+    }
   }
   return agentId
 }
