@@ -8,7 +8,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { streamPluginDownload } from '../plugin-download-transfer'
+import { assertPublicHttpsDownloadUrl, streamPluginDownload } from '../plugin-download-transfer'
 import type { WebMCPPluginDownloadFrame, WebMCPPluginDownloadPlan } from '../types'
 
 const RAW = 'https://raw.githubusercontent.com/owner/repo/main/asset.zip'
@@ -38,6 +38,44 @@ afterEach(() => {
 })
 
 describe('streamPluginDownload', () => {
+  it('rejects a host with attacker-controlled DNS before fetching', async () => {
+    expect(() => assertPublicHttpsDownloadUrl('https://downloads.example.com/file.zip')).toThrow(/host is not allowed/)
+  })
+
+  it('does not try the mirror after the caller cancels a download', async () => {
+    const controller = new AbortController()
+    const tried: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      tried.push(String(input))
+      controller.abort()
+      init?.signal?.throwIfAborted()
+      throw new Error('aborted')
+    }))
+    const frames: WebMCPPluginDownloadFrame[] = []
+    await streamPluginDownload(plan(), frame => frames.push(frame), controller.signal)
+    expect(tried).toEqual([RAW])
+    expect(frames).toEqual([])
+  })
+
+  it('does not fetch when cancellation preceded the download', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    await streamPluginDownload(plan(), () => {}, controller.signal)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('stops emitting chunks when the consumer cancels after the start frame', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response('payload')))
+    const controller = new AbortController()
+    const frames: WebMCPPluginDownloadFrame[] = []
+    await streamPluginDownload(plan(), frame => {
+      frames.push(frame)
+      if (frame.type === 'start') controller.abort()
+    }, controller.signal)
+    expect(frames.map(frame => frame.type)).toEqual(['start'])
+  })
   it('downloads from the canonical URL when it answers', async () => {
     const tried: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {

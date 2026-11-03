@@ -551,6 +551,38 @@ describe('installPackage (extension side)', () => {
     }
   })
 
+  it('keeps a same-millisecond install fenced after its peer fails', async () => {
+    vi.useFakeTimers()
+    try {
+      const files = fixtureFiles()
+      const pkg = await pkgWithFiles(files)
+      const provider = memoryProvider()
+      const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+      const serving = fetchServing(files)
+      let releaseDownload: (() => void) | undefined
+      const downloadGate = new Promise<void>(resolve => { releaseDownload = resolve })
+      const fileUrls = Object.keys(files).map(path => `${RAW}/packages/com.example.pkg/${path}`)
+      let downloadsLeft = fileUrls.length
+      const heldFetch = (async (input: RequestInfo | URL) => {
+        if (fileUrls.includes(String(input)) && --downloadsLeft === 0) await downloadGate
+        return serving(input)
+      }) as typeof fetch
+      const failingFetch = (async () => { throw new Error('network unavailable') }) as typeof fetch
+
+      const failed = expect(installPackage(registry, pkg, provider, { fetchImpl: failingFetch })).rejects.toThrow()
+      const pending = installPackage(registry, pkg, provider, { fetchImpl: heldFetch })
+      await vi.advanceTimersByTimeAsync(50)
+      await failed
+      await uninstallPackage('com.example.pkg', provider)
+      await vi.advanceTimersByTimeAsync(11 * 60_000)
+      releaseDownload!()
+      await expect(pending).rejects.toThrow(/was uninstalled while it was being prepared/)
+    } finally {
+      resetUninstallIntentStateForTest()
+      vi.useRealTimers()
+    }
+  })
+
   it('does NOT report a clean uninstall when the preserved backup cannot be removed', async () => {
     // MEDIUM ("Uninstall succeeds while its backup survives"): the backup
     // removal failure was swallowed, the uninstall reported success while

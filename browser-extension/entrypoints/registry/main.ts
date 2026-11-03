@@ -350,7 +350,27 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
 
   const actions = document.createElement('div')
   actions.className = 'actions'
+  const installLabel = isInstalled ? 'webmcpPackagesRepair' : 'webmcpPackagesInstall'
+  const install = button(t(installLabel), isInstalled ? '' : 'primary', async () => {
+    install.disabled = true
+    const previous = install.textContent
+    install.textContent = t('webmcpPackagesInstalling')
+    try {
+      clearError()
+      const result = await installRegistryPackage(registry, pkg)
+      installed.add(pkg.id)
+      activations[pkg.id] = 'disabled'
+      showSuccess(t('webmcpPackagesInstallSuccess', [pkg.id, String(result.filesWritten)]))
+    } catch (error) {
+      showError(error)
+    } finally {
+      install.textContent = previous
+      install.disabled = false
+      await render()
+    }
+  })
   if (isInstalled) {
+    actions.append(install)
     const uninstall = button(t('webmcpPackagesUninstall'), 'danger', async () => {
       uninstall.disabled = true
       const previous = uninstall.textContent
@@ -368,24 +388,6 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
     })
     actions.append(uninstall)
   } else {
-    const install = button(t('webmcpPackagesInstall'), 'primary', async () => {
-      install.disabled = true
-      const previous = install.textContent
-      install.textContent = t('webmcpPackagesInstalling')
-      try {
-        clearError()
-        const result = await installRegistryPackage(registry, pkg)
-        installed.add(pkg.id)
-        activations[pkg.id] = 'disabled'
-        showSuccess(t('webmcpPackagesInstallSuccess', [pkg.id, String(result.filesWritten)]))
-      } catch (error) {
-        showError(error)
-      } finally {
-        install.textContent = previous
-        install.disabled = false
-        await render()
-      }
-    })
     actions.append(install)
   }
   row.append(body, actions)

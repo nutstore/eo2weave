@@ -152,8 +152,20 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
         case 'webmcp_registry_install': {
           const registry = await registryFromMessage(message)
           const pkg = packageEntryFromMessage(message)
+          const current = (await loadRegistryCatalog(registry, { force: true })).packages.find(entry => entry.id === pkg.id)
+          const fileIdentity = (entry: RegistryManifestPackage) => JSON.stringify(entry.files
+            .map(file => [file.path, file.sha256])
+            .sort((a, b) => a[0]!.localeCompare(b[0]!)))
+          if (!current || current.version !== pkg.version || fileIdentity(current) !== fileIdentity(pkg)) {
+            throw new Error(`Package ${pkg.id} has changed or was withdrawn from the registry; refresh the catalog`)
+          }
           const result = await installRegistryPackage(registry, pkg)
-          await options.changed().catch(error => console.warn('[WebMCP registry]', error))
+          try {
+            await options.changed()
+          } catch (error) {
+            notify()
+            return { ok: false, committed: true, error: `Package ${pkg.id} was installed, but its routes could not be refreshed: ${error instanceof Error ? error.message : String(error)}` }
+          }
           notify()
           return { ok: true, filesWritten: result.filesWritten }
         }
@@ -165,7 +177,12 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
           // any lock or removal.
           if (packageId.includes('/')) throw new Error(`Invalid package id: ${packageId}`)
           await uninstallRegistryPackage(packageId)
-          await options.changed().catch(error => console.warn('[WebMCP registry]', error))
+          try {
+            await options.changed()
+          } catch (error) {
+            notify()
+            return { ok: false, committed: true, error: `Package ${packageId} was removed, but its routes could not be refreshed: ${error instanceof Error ? error.message : String(error)}` }
+          }
           notify()
           return { ok: true }
         }

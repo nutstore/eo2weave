@@ -6,9 +6,10 @@
  * had none).
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   fetchWithMirrorFallback,
+  fetchRegistryManifest,
   isNotFoundError,
   parseRegistryInput,
   RegistryError,
@@ -255,6 +256,29 @@ describe('mirror candidates', () => {
 describe('fetchWithMirrorFallback', () => {
   const url = `https://${RAW_GITHUB_HOST}/nutstore/pkg/main/manifest.json`
   const mirror = `https://${JSDELIVR_HOST}/gh/nutstore/pkg@main/manifest.json`
+
+  it('tries a ref-root file URL after the beside-manifest URL returns 404', async () => {
+    const alt = `https://${RAW_GITHUB_HOST}/nutstore/pkg/main/packages/example/manifest.json`
+    const tried: string[] = []
+    const result = await fetchWithMirrorFallback(url, async candidate => {
+      tried.push(candidate)
+      if (candidate !== alt) throw Object.assign(new Error('HTTP 404'), { status: 404 })
+      return 'package file'
+    }, { candidates: [url, mirror, alt], allowCanonicalNotFoundFallback: true })
+    expect(tried).toEqual([url, mirror, alt])
+    expect(result.value).toBe('package file')
+  })
+
+  it('reads an authorizing catalog only from the canonical origin', async () => {
+    const registry = registryFromManifestUrl(url)
+    const requested: string[] = []
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      requested.push(String(input))
+      throw new Error('origin unavailable')
+    }) as typeof fetch
+    await expect(fetchRegistryManifest(registry, { force: true, preference: 'cn', fetchImpl })).rejects.toThrow(/origin unavailable/)
+    expect(requested).toEqual([url])
+  })
 
   it('falls back to the mirror when the direct host fails', async () => {
     const tried: string[] = []

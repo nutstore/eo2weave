@@ -26,7 +26,7 @@ import {
   type RegistryManifestFile,
   type RegistryManifestPackage,
 } from './registry-client'
-import { installPackage, sha256Hex, uninstallPackage } from './package-installer'
+import { installPackage, liveTreeIsComplete, sha256Hex, uninstallPackage } from './package-installer'
 
 const REGISTRIES_STORAGE_KEY = 'webmcp_package_registries'
 
@@ -267,6 +267,7 @@ export async function findPackageIdCollision(
       const manifestId = state === 'INVALID' ? null : state.id
       if (!manifestId) {
         if (entry.name === packageId) {
+          if (mount === 'webmcp' && await hasPreservedBackup(provider, packageId)) continue
           // The target directory exists but holds no valid manifest —
           // treat it as occupied anyway: the installer must never delete
           // data it cannot interpret.
@@ -300,6 +301,10 @@ export async function findPackageIdCollision(
             return `The manifest of ${entry.name} on ${mount} could not be read; try again later`
           }
           if (installedVersion !== expectedVersion) {
+            if (mount === 'webmcp' && await hasPreservedBackup(provider, packageId)) {
+              const fingerprint = await readInstalledPackageFingerprint(mount, packageId, collisionFingerprintFiles ?? [])
+              if (fingerprint === 'INVALID' && !await liveTreeIsComplete(provider, packageId)) continue
+            }
             return `${entry.name} on ${mount} already holds version ${installedVersion ?? 'unknown'} of this package`
           }
           // Same id AND same version: the CONTENTS decide (finding: "Same
@@ -318,6 +323,7 @@ export async function findPackageIdCollision(
               return `The files of ${entry.name} on ${mount} could not be read; try again later`
             }
             if (installedFingerprint !== expectedContentFingerprint) {
+              if (installedFingerprint === 'INVALID' && await hasPreservedBackup(provider, packageId)) continue
               return `${entry.name} on ${mount} already holds version ${expectedVersion} with different contents (content fingerprint ${installedFingerprint === 'INVALID' ? 'unavailable' : installedFingerprint}); uninstall it first if you want to replace it`
             }
           }
@@ -330,6 +336,19 @@ export async function findPackageIdCollision(
     }
   }
   return null
+}
+
+async function hasPreservedBackup(provider: FsProvider, packageId: string): Promise<boolean> {
+  const backup = `.${packageId}.previous`
+  try {
+    const stat = await provider.stat(backup)
+    if (stat.kind !== 'directory') return false
+  } catch (error) {
+    const missing = error as { code?: string; name?: string }
+    if (missing.code === 'ENOENT' || missing.name === 'NotFoundError') return false
+    throw error
+  }
+  return liveTreeIsComplete(provider, backup, packageId)
 }
 
 /**

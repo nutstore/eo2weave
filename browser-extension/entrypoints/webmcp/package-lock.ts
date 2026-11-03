@@ -38,15 +38,8 @@
  * Two further rules close the stale-mutation gap (finding: "Stale writes
  * still overlap"):
  *
- *   - GRANT QUANTIZATION: `acquireLease` never writes a replacement lease
- *     with the raw `Date.now() + TTL` deadline. It rounds UP to the next
- *     whole-TTL boundary, so a takeover of an EXPIRED lease happens at
- *     least a full TTL after the moment the old owner's last SUCCESSFUL
- *     heartbeat could have kept it alive. A holder that is still heart-
- *     beating learns of the takeover from its very next heartbeat (≤ 5s)
- *     — always long before any replacement can be granted — instead of
- *     possibly losing the lease and acquiring again unnoticed (the
- *     `existing.expiresAt <= Date.now()` steal), mid-transaction.
+ *   - A new lease gets a full TTL from its grant time. A global clock
+ *     boundary could otherwise expire it immediately after acquisition.
  *   - QUISCENCE: a transaction that LOSES its lease registers its still-
  *     pending callback promise on a per-package quiescence gate BEFORE the
  *     wrapper releases the lease, and the next `acquireLease` sequence
@@ -146,11 +139,6 @@ async function waitUntilPackageQuiescent(packageId: string): Promise<void> {
   if (gate) await gate.catch(() => {})
 }
 
-/** Quantize a lease grant UP to a whole-TTL boundary (see the header comment). */
-function quantizedExpiry(now: number): number {
-  return (Math.floor(now / PACKAGE_LOCK_LEASE_TTL_MS) + 1) * PACKAGE_LOCK_LEASE_TTL_MS
-}
-
 /** Low-level acquire: returns the owner token, or null on timeout. */
 async function acquireLease(packageId: string, timeoutMs: number = ACQUIRE_TIMEOUT_MS): Promise<string | null> {
   const owner = randomOwner()
@@ -181,13 +169,7 @@ async function acquireLease(packageId: string, timeoutMs: number = ACQUIRE_TIMEO
         await waitUntilPackageQuiescent(packageId)
         const atWrite = readLease((await chrome.storage.local.get(key))[key])
         if (atWrite && atWrite.expiresAt > Date.now()) return false
-        // GRANT QUANTIZATION (finding: "Stale writes still overlap"): never
-        // grant a fresh raw `now + TTL` deadline. Rounding UP to the next
-        // whole-TTL boundary guarantees a takeover of an expired lease is
-        // quantized away from the old owner's last possible live heartbeat,
-        // so a still-running holder observes the takeover at its NEXT
-        // HEARTBEAT — never via a silent mid-transaction steal-and-regain.
-        await chrome.storage.local.set({ [key]: { owner, expiresAt: quantizedExpiry(Date.now()) } satisfies LockLease })
+        await chrome.storage.local.set({ [key]: { owner, expiresAt: Date.now() + PACKAGE_LOCK_LEASE_TTL_MS } satisfies LockLease })
         // Read-back: the last writer wins; if we are not the owner any more,
         // another acquirer overwrote us and we must wait for it instead.
         const verify = readLease((await chrome.storage.local.get(key))[key])

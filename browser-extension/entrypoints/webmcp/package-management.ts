@@ -40,7 +40,11 @@ export function createPackageManagement(
           // the intent INSIDE the lock, before the removal, exactly like
           // the uninstall flow does.
           recordUninstallIntent(entry.directory)
-          return await writeUser({ method: 'remove', path: entry.directory, recursive: true, signal })
+          const result = await writeUser({ method: 'remove', path: entry.directory, recursive: true, signal })
+          if (!result.ok) return result
+          const backup = await writeUser({ method: 'remove', path: `.${entry.directory}.previous`, recursive: true, signal })
+          if (!backup.ok && backup.code !== 'ENOENT') return backup
+          return result
         })
       }
       const config = parseWebMCPConfig(message.config)

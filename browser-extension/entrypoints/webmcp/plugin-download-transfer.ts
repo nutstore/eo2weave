@@ -313,6 +313,11 @@ export function assertPublicHttpsDownloadUrl(rawUrl: string): URL {
   if (isForbiddenIpLiteral(hostname)) {
     throw new Error(`Download URL host is not allowed: ${hostname}`)
   }
+  // Browser fetch does not expose or pin the connected IP. Limit privileged
+  // downloads to hosts whose DNS cannot be controlled by a download plan.
+  if (hostname !== 'raw.githubusercontent.com' && hostname !== 'cdn.jsdelivr.net') {
+    throw new Error(`Download URL host is not allowed: ${hostname}`)
+  }
   return url
 }
 
@@ -390,9 +395,10 @@ async function fetchDownload(
   candidate: string,
   abortSignal?: AbortSignal
 ): Promise<{ buffer: ArrayBuffer; contentType: string | null }> {
+  abortSignal?.throwIfAborted()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS)
-  const onOuterAbort = () => controller.abort()
+  const onOuterAbort = () => controller.abort(abortSignal?.reason)
   abortSignal?.addEventListener('abort', onOuterAbort, { once: true })
   try {
     const response = await fetchPublicDownload(candidate, controller.signal)
@@ -405,6 +411,7 @@ async function fetchDownload(
     // answers headers then stalls the stream aborts here, and the fallback
     // loop moves on to the next candidate.
     const buffer = await response.arrayBuffer()
+    abortSignal?.throwIfAborted()
     return { buffer, contentType: response.headers.get('content-type') }
   } catch (error) {
     if (controller.signal.aborted && !abortSignal?.aborted) {
@@ -421,9 +428,12 @@ async function prepareDownload(
   plan: WebMCPPluginDownloadPlan,
   abortSignal?: AbortSignal
 ): Promise<PreparedDownload> {
-  const result = await fetchWithMirrorFallback(plan.downloadUrl, (candidate) =>
-    fetchDownload(candidate, abortSignal)
+  const result = await fetchWithMirrorFallback(
+    plan.downloadUrl,
+    candidate => fetchDownload(candidate, abortSignal),
+    { signal: abortSignal },
   )
+  abortSignal?.throwIfAborted()
   const fileName = sanitizeFileName(plan.fileName || `download_${Date.now()}`)
 
   const mimeType =
@@ -455,6 +465,7 @@ export async function streamPluginDownload(
   try {
     const prepared = await prepareDownload(plan, abortSignal)
     const chunks = chunkData(prepared.dataUrl)
+    abortSignal?.throwIfAborted()
 
     emit({
       type: 'start',
@@ -467,6 +478,7 @@ export async function streamPluginDownload(
     })
 
     for (let i = 0; i < chunks.length; i++) {
+      abortSignal?.throwIfAborted()
       emit({
         type: 'chunk',
         transferId: plan.transferId,
@@ -475,11 +487,13 @@ export async function streamPluginDownload(
       })
     }
 
+    abortSignal?.throwIfAborted()
     emit({
       type: 'end',
       transferId: plan.transferId,
     })
   } catch (error) {
+    if (abortSignal?.aborted) return
     const message = error instanceof Error ? error.message : String(error)
     emit({
       type: 'error',

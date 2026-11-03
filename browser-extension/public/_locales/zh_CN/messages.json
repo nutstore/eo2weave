@@ -157,6 +157,7 @@
     }
   },
   "webmcpPackagesInstall": { "message": "安装" },
+  "webmcpPackagesRepair": { "message": "修复" },
   "webmcpPackagesInstalling": { "message": "安装中…" },
   "webmcpPackagesInstalled": { "message": "已安装" },
   "webmcpPackagesInstallSuccess": {

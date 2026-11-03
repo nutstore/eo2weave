@@ -120,6 +120,43 @@ describe('installRegistryPackage (same-version reinstall fingerprint)', () => {
   beforeEach(async () => {
     const m = await mount
     await m.remove('com.example.pkg', { recursive: true }).catch(() => {})
+    await m.remove('.com.example.pkg.previous', { recursive: true }).catch(() => {})
+  })
+
+  it.each(['invalid manifest', 'missing workflow'])('recovers a partial live package with a preserved backup (%s)', async damage => {
+    const files = fixtureFiles()
+    const pkg = await pkgFromFiles(files)
+    installFetchServing(files)
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    const m = await mount
+    await m.mkdir('com.example.pkg/workflows', { recursive: true })
+    await m.mkdir('.com.example.pkg.previous/workflows', { recursive: true })
+    for (const [path, content] of Object.entries(files)) {
+      const bytes = new TextEncoder().encode(content)
+      await m.writeFile(`.com.example.pkg.previous/${path}`, bytes)
+      if (damage !== 'missing workflow' || path !== 'workflows/read.js') {
+        await m.writeFile(`com.example.pkg/${path}`, bytes)
+      }
+    }
+    if (damage === 'invalid manifest') {
+      await m.writeFile('com.example.pkg/manifest.json', new TextEncoder().encode('{broken'))
+    }
+    await expect(installRegistryPackage(registry, pkg)).resolves.toBeTruthy()
+    expect(await m.readFile('com.example.pkg/workflows/read.js')).toEqual(new TextEncoder().encode(WORKFLOW_SOURCE))
+  })
+
+  it('does not delete an invalid live directory when the backup is invalid too', async () => {
+    const files = fixtureFiles()
+    const pkg = await pkgFromFiles(files)
+    installFetchServing(files)
+    const m = await mount
+    await m.mkdir('com.example.pkg', { recursive: true })
+    await m.writeFile('com.example.pkg/manifest.json', new TextEncoder().encode('{broken'))
+    await m.mkdir('.com.example.pkg.previous', { recursive: true })
+    await m.writeFile('.com.example.pkg.previous/manifest.json', new TextEncoder().encode('{}'))
+    await expect(installRegistryPackage(registryFromManifestUrl(`${RAW}/manifest.json`), pkg))
+      .rejects.toThrow(/not a valid package/)
+    expect(await m.readFile('com.example.pkg/manifest.json')).toEqual(new TextEncoder().encode('{broken'))
   })
 
   it('accepts a same-version reinstall of an IDENTICAL package', async () => {

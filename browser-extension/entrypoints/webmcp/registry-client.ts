@@ -19,12 +19,9 @@
  * This is the extension-side port of the web app's
  * `web/webmcp/package-registry-client.ts` (issue #117). The URL derivation,
  * the manifest validation and the safety caps are kept byte-for-byte
- * equivalent; the ONE behavioural addition is the MIRROR FALLBACK (see
- * `registry-mirrors.ts`): when the canonical `raw.githubusercontent.com`
- * host does not answer, the client retries through the jsDelivr CDN mirror
- * instead of failing the whole catalog load. The direct raw URL stays the
- * canonical identity of the resource — the mirror is only a transport
- * fallback.
+ * equivalent. Catalogs are fetched from the canonical origin because their
+ * hashes authorize installations. Package files can use the jsDelivr mirror
+ * after their bytes are checked against those hashes.
  *
  * Manifests are cached in memory for 5 minutes per registry (session-level)
  * so re-opening the management page does not re-fetch.
@@ -528,15 +525,15 @@ export interface MirrorFetchResult<T> {
  * Fallback policy:
  *   - Transport failures (network errors, timeouts) and 5xx server errors
  *     move on to the next candidate — that is the mirror's whole purpose;
- *   - a 404 falls through ONLY when the answering candidate is a MIRROR:
+ *   - a 404 falls through when the answering candidate is a MIRROR:
  *     a CDN can lag the origin or be unable to serve private files, and a
  *     mirror 404 that aborted the whole load used to block valid resources
  *     (finding: "Mirror 404 blocks valid origins"). A 404 from the
  *     CANONICAL raw URL is terminal (finding: "Missing resources contact
  *     another host"): the direct host IS the identity of the resource and
  *     every mirror serves the same git ref, so the 404 of the canonical
- *     candidate is the one rethrown — asking another origin could only
- *     accept stale content the canonical origin had withdrawn;
+ *     candidate is the one rethrown by default. Package-file callers can
+ *     opt into trying a distinct ref-root path after a canonical 404;
  *   - validation failures and other NON-retryable client errors (4xx other
  *     than 404/429) do not fall through either: retrying them on a mirror
  *     could accept different or stale mirror content instead of surfacing
@@ -549,26 +546,24 @@ export interface MirrorFetchResult<T> {
 export async function fetchWithMirrorFallback<T>(
   url: string,
   load: (candidate: string) => Promise<T>,
-  options?: { preference?: MirrorPreference; candidates?: string[] },
+  options?: { preference?: MirrorPreference; candidates?: string[]; signal?: AbortSignal; allowCanonicalNotFoundFallback?: boolean },
 ): Promise<MirrorFetchResult<T>> {
   const candidates = options?.candidates ?? mirrorCandidates(url, options?.preference ?? resolveMirrorPreference())
   let lastError: unknown
   for (let index = 0; index < candidates.length; index++) {
+    options?.signal?.throwIfAborted()
     const candidate = candidates[index]!
     const isLast = index === candidates.length - 1
     try {
       const value = await load(candidate)
       return { value, url: candidate, usedMirror: candidate !== url }
     } catch (error) {
+      options?.signal?.throwIfAborted()
       lastError = error
-      // A canonical-origin 404 is terminal (finding: "Missing resources
-      // contact another host"): the direct host IS the identity of the
-      // resource and every mirror serves the same git ref — asking another
-      // origin could only accept stale content the origin had withdrawn.
-      // A MIRROR's 404 falls through (CDN lag; finding: "Mirror 404 blocks
-      // valid origins").
+      // Catalog 404s are terminal at the canonical origin. Package-file
+      // callers opt into ref-root alternatives for subdirectory registries.
       if (isNotFoundError(error)) {
-        if (candidate === url || isLast) throw error
+        if ((candidate === url && !options?.allowCanonicalNotFoundFallback) || isLast) throw error
         continue
       }
       // A definitive non-retryable answer (validation failure, a client
@@ -686,21 +681,17 @@ export async function fetchRegistryManifest(
     return { manifest: validateRegistryManifest(data) }
   }
 
-  const result = await fetchWithMirrorFallback(
-    registry.manifestUrl,
-    // A 404 is definitive (the file does not exist in the repo) and is NOT
-    // retried on a mirror; every other failure (network error, timeout, 5xx)
-    // is worth a retry on the CDN.
-    candidate => loadOnce(candidate),
-    { preference: options?.preference },
-  )
+  // The catalog authorizes package hashes. A CDN response cannot establish
+  // what the publisher currently authorizes, so read catalogs from their
+  // canonical origin; mirrors remain available for hash-checked file bytes.
+  const result = await loadOnce(registry.manifestUrl)
   // Cache only when this fetch is still the newest one for the URL — a
   // stale in-flight request finishing after a forced refresh must not
   // overwrite the refreshed catalog with a fresh TTL.
   if (cacheGenerations.get(registry.manifestUrl) === generation) {
-    manifestCache.set(registry.manifestUrl, { data: result.value.manifest, ts: Date.now() })
+    manifestCache.set(registry.manifestUrl, { data: result.manifest, ts: Date.now() })
   }
-  return result.value.manifest
+  return result.manifest
 }
 
 /**
@@ -721,8 +712,8 @@ export async function fetchRegistryManifest(
  * page must not mark those tools as verified (findings: "Invalid manifests
  * appear verified", "Unverified tools appear verified").
  *
- * The preview goes through the same mirror candidate list as the catalog:
- * a registry that only the CDN can reach must still preview.
+ * Previewed package bytes may come from a mirror, but the catalog checksum
+ * that authorizes those bytes comes from the canonical registry origin.
  */
 export async function fetchPackageManifestPreview(
   registry: PackageRegistry,
@@ -811,7 +802,7 @@ export async function fetchPackageManifestPreview(
   for (const alt of registryAltFileUrls(registry, `packages/${packageId}/manifest.json`)) {
     if (!candidates.includes(alt)) candidates.push(alt)
   }
-  const result = await fetchWithMirrorFallback(url, load, { preference: options?.preference, candidates })
+  const result = await fetchWithMirrorFallback(url, load, { preference: options?.preference, candidates, allowCanonicalNotFoundFallback: true })
   return result.value
 }
 

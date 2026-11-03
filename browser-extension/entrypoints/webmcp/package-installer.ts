@@ -107,7 +107,7 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<Uin
  *
  * The canonical URL is tried first (global preference) or the jsDelivr
  * mirror first (CN preference). A transport failure moves on to the next
- * candidate; a 404 is definitive and aborts the download.
+ * candidate; a 404 can try the ref-root path for a subdirectory registry.
  *
  * CHECKSUM-AWARE CANDIDATE SELECTION (finding: "Stale mirrors abort
  * installs"): a mirror can serve STALE bytes with a successful 200 —
@@ -188,7 +188,7 @@ async function downloadFile(
     for (const alt of altUrls) {
       if (!candidates.includes(alt)) candidates.push(alt)
     }
-    return await fetchWithMirrorFallback(url, load, { preference, candidates })
+    return await fetchWithMirrorFallback(url, load, { preference, candidates, allowCanonicalNotFoundFallback: altUrls.length > 0 })
       .then(result => result.value)
   } catch (error) {
     if (error instanceof PackageInstallError && error.code === 'SHA256_MISMATCH') {
@@ -223,21 +223,23 @@ const UNINSTALL_INTENT_TTL_MS = 10 * 60_000
  * lock, so a download that outlasts the intent TTL must not let
  * `pruneUninstallIntents` drop the record that pending fence still needs.
  */
-const pendingFenceInstalls = new Map<string, Set<number>>()
+const pendingFenceInstalls = new Map<string, Map<number, number>>()
 
 function beginInstallFenceWindow(packageId: string, startedAt: number): void {
   let starts = pendingFenceInstalls.get(packageId)
   if (!starts) {
-    starts = new Set()
+    starts = new Map()
     pendingFenceInstalls.set(packageId, starts)
   }
-  starts.add(startedAt)
+  starts.set(startedAt, (starts.get(startedAt) ?? 0) + 1)
 }
 
 function endInstallFenceWindow(packageId: string, startedAt: number): void {
   const starts = pendingFenceInstalls.get(packageId)
   if (!starts) return
-  starts.delete(startedAt)
+  const remaining = (starts.get(startedAt) ?? 0) - 1
+  if (remaining > 0) starts.set(startedAt, remaining)
+  else starts.delete(startedAt)
   if (starts.size === 0) pendingFenceInstalls.delete(packageId)
 }
 
@@ -265,7 +267,7 @@ function pruneUninstallIntents(): void {
     // record would let that install resurrect the removed package. Keep it
     // until every such pending install has settled its fence.
     const starts = pendingFenceInstalls.get(key)
-    if (starts && [...starts].some(startedAt => startedAt <= at)) continue
+    if (starts && [...starts.keys()].some(startedAt => startedAt <= at)) continue
     uninstallIntents.delete(key)
   }
 }
@@ -350,122 +352,120 @@ export async function installPackage(
   // is still pending (see `pruneUninstallIntents`); removed when the fence
   // has been evaluated under the lock.
   beginInstallFenceWindow(id, startedAt)
-
-  // Stage everything in memory BEFORE touching storage — the all-or-nothing
-  // guarantee lives here, not in a rollback pass. Size caps bound the staged
-  // buffer so a hostile manifest cannot exhaust browser memory.
-  const staged: Array<{ path: string; bytes: Uint8Array }> = []
-  const seenPaths = new Set<string>()
-  let totalBytes = 0
-  let manifestBytes: Uint8Array | undefined
-  for (const file of pkg.files) {
-    const url = registryFileUrl(registry, file.path)
-    // Manifest paths are repo-relative (`packages/<id>/...`); on the mount
-    // the package root IS the directory, so strip the `packages/<id>/` prefix.
-    const prefix = `packages/${id}/`
-    if (!file.path.startsWith(prefix)) {
-      throw new PackageInstallError(`File ${file.path} does not belong to package ${id}`, 'INVALID_PACKAGE')
+  try {
+    // Stage everything in memory BEFORE touching storage — the all-or-nothing
+    // guarantee lives here, not in a rollback pass. Size caps bound the staged
+    // buffer so a hostile manifest cannot exhaust browser memory.
+    const staged: Array<{ path: string; bytes: Uint8Array }> = []
+    const seenPaths = new Set<string>()
+    let totalBytes = 0
+    let manifestBytes: Uint8Array | undefined
+    for (const file of pkg.files) {
+      const url = registryFileUrl(registry, file.path)
+      // Manifest paths are repo-relative (`packages/<id>/...`); on the mount
+      // the package root IS the directory, so strip the `packages/<id>/` prefix.
+      const prefix = `packages/${id}/`
+      if (!file.path.startsWith(prefix)) {
+        throw new PackageInstallError(`File ${file.path} does not belong to package ${id}`, 'INVALID_PACKAGE')
+      }
+      const rawRelative = file.path.slice(prefix.length)
+      let relative: string
+      try {
+        relative = normalizeProviderPath(rawRelative)
+      } catch {
+        throw new PackageInstallError(`Invalid file path in package ${id}: ${file.path}`, 'INVALID_PACKAGE')
+      }
+      // A path that is not already in its normalized form aliases another entry
+      // (`workflows/./read.js` == `workflows/read.js`); write neither.
+      if (relative !== rawRelative) {
+        throw new PackageInstallError(`File path ${file.path} is not normalized (aliased path)`, 'INVALID_PACKAGE')
+      }
+      if (seenPaths.has(relative)) {
+        throw new PackageInstallError(`Package ${id} lists ${file.path} twice (aliased path)`, 'INVALID_PACKAGE')
+      }
+      seenPaths.add(relative)
+      const bytes = await downloadFile(url, fetchImpl, file.sha256, options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS, options?.preference, registryAltFileUrls(registry, file.path))
+      // The download already verified the sha256 per candidate (finding:
+      // "Stale mirrors abort installs") — nothing to re-check here.
+      totalBytes += bytes.length
+      if (totalBytes > MAX_PACKAGE_TOTAL_BYTES) {
+        throw new PackageInstallError(`Package ${id} exceeds the total size limit (${MAX_PACKAGE_TOTAL_BYTES} bytes)`, 'INVALID_PACKAGE')
+      }
+      if (relative === 'manifest.json') manifestBytes = bytes
+      staged.push({ path: relative, bytes })
     }
-    const rawRelative = file.path.slice(prefix.length)
-    let relative: string
+
+    // Validate the package EXACTLY like the extension catalog will read it:
+    // manifest schema, id match against the registry entry AND the install
+    // directory, urlRegex rules, tool source presence and workflow contracts.
+    // Without this the install reports success while the catalog withdraws the
+    // package as invalid and it can never be enabled.
+    if (!manifestBytes) {
+      throw new PackageInstallError(`Package ${id} is missing manifest.json`, 'INVALID_PACKAGE')
+    }
+    let manifestJson: unknown
     try {
-      relative = normalizeProviderPath(rawRelative)
+      manifestJson = JSON.parse(new TextDecoder().decode(manifestBytes))
     } catch {
-      throw new PackageInstallError(`Invalid file path in package ${id}: ${file.path}`, 'INVALID_PACKAGE')
+      throw new PackageInstallError(`Package ${id} has a malformed manifest.json`, 'INVALID_PACKAGE')
     }
-    // A path that is not already in its normalized form aliases another entry
-    // (`workflows/./read.js` == `workflows/read.js`); write neither.
-    if (relative !== rawRelative) {
-      throw new PackageInstallError(`File path ${file.path} is not normalized (aliased path)`, 'INVALID_PACKAGE')
-    }
-    if (seenPaths.has(relative)) {
-      throw new PackageInstallError(`Package ${id} lists ${file.path} twice (aliased path)`, 'INVALID_PACKAGE')
-    }
-    seenPaths.add(relative)
-    const bytes = await downloadFile(url, fetchImpl, file.sha256, options?.timeoutMs ?? REGISTRY_FETCH_TIMEOUT_MS, options?.preference, registryAltFileUrls(registry, file.path))
-    // The download already verified the sha256 per candidate (finding:
-    // "Stale mirrors abort installs") — nothing to re-check here.
-    totalBytes += bytes.length
-    if (totalBytes > MAX_PACKAGE_TOTAL_BYTES) {
-      throw new PackageInstallError(`Package ${id} exceeds the total size limit (${MAX_PACKAGE_TOTAL_BYTES} bytes)`, 'INVALID_PACKAGE')
-    }
-    if (relative === 'manifest.json') manifestBytes = bytes
-    staged.push({ path: relative, bytes })
-  }
-
-  // Validate the package EXACTLY like the extension catalog will read it:
-  // manifest schema, id match against the registry entry AND the install
-  // directory, urlRegex rules, tool source presence and workflow contracts.
-  // Without this the install reports success while the catalog withdraws the
-  // package as invalid and it can never be enabled.
-  if (!manifestBytes) {
-    throw new PackageInstallError(`Package ${id} is missing manifest.json`, 'INVALID_PACKAGE')
-  }
-  let manifestJson: unknown
-  try {
-    manifestJson = JSON.parse(new TextDecoder().decode(manifestBytes))
-  } catch {
-    throw new PackageInstallError(`Package ${id} has a malformed manifest.json`, 'INVALID_PACKAGE')
-  }
-  const toolPaths = new Set<string>()
-  try {
-    const manifest = validateManifest(manifestJson, id)
-    if (manifest.id !== id) {
-      throw new PackageInstallError(`Package manifest id ${manifest.id} does not match registry id ${id}`, 'INVALID_PACKAGE')
-    }
-    // The registry entry's version claim must agree with the downloaded
-    // manifest — otherwise the management card would report a version the
-    // user did not actually get.
-    if (manifest.version !== pkg.version) {
-      throw new PackageInstallError(
-        `Package manifest version ${manifest.version} does not match registry version ${pkg.version}`,
-        'INVALID_PACKAGE',
-      )
-    }
-    for (const tool of manifest.tools) toolPaths.add(tool.path)
-    const sources: Record<string, string> = Object.create(null)
-    for (const file of staged) {
-      if (toolPaths.has(file.path)) sources[file.path] = new TextDecoder().decode(file.bytes)
-    }
-    validatePackage(manifest, sources, id)
-  } catch (error) {
-    if (error instanceof PackageInstallError) throw error
-    throw new PackageInstallError(`Package ${id} is not a valid package: ${error instanceof Error ? error.message : String(error)}`, 'INVALID_PACKAGE')
-  }
-
-  // SECURITY: the registry's own config.json is NEVER copied — a manifest
-  // could ship `activation: "enabled"` and the package would activate
-  // without the #102 on-site consent flow. Activation is always reset to
-  // the disabled default here; enabling is exclusively the opt-in flow's job.
-  const configIndex = staged.findIndex(file => file.path === 'config.json')
-  const configBytes = new TextEncoder().encode(JSON.stringify(INSTALLER_DEFAULT_CONFIG) + '\n')
-  if (configIndex >= 0) staged[configIndex] = { path: 'config.json', bytes: configBytes }
-  else staged.push({ path: 'config.json', bytes: configBytes })
-
-  // Serialize all mutations of one package id ACROSS CONTEXTS (the
-  // management page, the background service worker): an install racing an
-  // uninstall/opt-in enable would otherwise interleave remove/mkdir/write
-  // and can leave the directory half-written. The extension's own
-  // `withPackageLock` lease lives in the background's chrome.storage, so
-  // every context sees it.
-  return withPackageLock(id, async lockSignal => {
-    // REMOVAL FENCE (finding: "Uninstalled package reappears"): a directory
-    // that existed when the download started but is GONE under the lock was
-    // removed by a concurrent uninstall that won the lock race — writing
-    // the package back would resurrect what the user deleted. (A directory
-    // that never existed is the normal first install; an INDETERMINATE
-    // presence probe must NOT read as "removed" — a transient stat failure
-    // is not evidence of a removal.)
-    // UNINSTALL-INTENT FENCE (finding: "Uninstalled packages return"): the
-    // presence fence above only fires when the directory EXISTED before the
-    // download. An install that started while the id was ABSENT, then raced
-    // a create→uninstall sequence, sees `false` here and would otherwise
-    // write the package back — undoing an explicit uninstall. When an
-    // uninstall of THIS id happened after this install started, abort.
-    // Both fences run BEFORE any caller hook or write, and once they have
-    // been evaluated the fence window is closed — later intent prunes need
-    // not keep records for this install any more (success or failure alike).
+    const toolPaths = new Set<string>()
     try {
+      const manifest = validateManifest(manifestJson, id)
+      if (manifest.id !== id) {
+        throw new PackageInstallError(`Package manifest id ${manifest.id} does not match registry id ${id}`, 'INVALID_PACKAGE')
+      }
+      // The registry entry's version claim must agree with the downloaded
+      // manifest — otherwise the management card would report a version the
+      // user did not actually get.
+      if (manifest.version !== pkg.version) {
+        throw new PackageInstallError(
+          `Package manifest version ${manifest.version} does not match registry version ${pkg.version}`,
+          'INVALID_PACKAGE',
+        )
+      }
+      for (const tool of manifest.tools) toolPaths.add(tool.path)
+      const sources: Record<string, string> = Object.create(null)
+      for (const file of staged) {
+        if (toolPaths.has(file.path)) sources[file.path] = new TextDecoder().decode(file.bytes)
+      }
+      validatePackage(manifest, sources, id)
+    } catch (error) {
+      if (error instanceof PackageInstallError) throw error
+      throw new PackageInstallError(`Package ${id} is not a valid package: ${error instanceof Error ? error.message : String(error)}`, 'INVALID_PACKAGE')
+    }
+
+    // SECURITY: the registry's own config.json is NEVER copied — a manifest
+    // could ship `activation: "enabled"` and the package would activate
+    // without the #102 on-site consent flow. Activation is always reset to
+    // the disabled default here; enabling is exclusively the opt-in flow's job.
+    const configIndex = staged.findIndex(file => file.path === 'config.json')
+    const configBytes = new TextEncoder().encode(JSON.stringify(INSTALLER_DEFAULT_CONFIG) + '\n')
+    if (configIndex >= 0) staged[configIndex] = { path: 'config.json', bytes: configBytes }
+    else staged.push({ path: 'config.json', bytes: configBytes })
+
+    // Serialize all mutations of one package id ACROSS CONTEXTS (the
+    // management page, the background service worker): an install racing an
+    // uninstall/opt-in enable would otherwise interleave remove/mkdir/write
+    // and can leave the directory half-written. The extension's own
+    // `withPackageLock` lease lives in the background's chrome.storage, so
+    // every context sees it.
+    return await withPackageLock(id, async lockSignal => {
+      // REMOVAL FENCE (finding: "Uninstalled package reappears"): a directory
+      // that existed when the download started but is GONE under the lock was
+      // removed by a concurrent uninstall that won the lock race — writing
+      // the package back would resurrect what the user deleted. (A directory
+      // that never existed is the normal first install; an INDETERMINATE
+      // presence probe must NOT read as "removed" — a transient stat failure
+      // is not evidence of a removal.)
+      // UNINSTALL-INTENT FENCE (finding: "Uninstalled packages return"): the
+      // presence fence above only fires when the directory EXISTED before the
+      // download. An install that started while the id was ABSENT, then raced
+      // a create→uninstall sequence, sees `false` here and would otherwise
+      // write the package back — undoing an explicit uninstall. When an
+      // uninstall of THIS id happened after this install started, abort.
+      // Both fences run BEFORE any caller hook or write. The outer finally
+      // closes the window on every success and failure path.
       if (presenceBefore === true && await pathExists(provider, id) === false) {
         throw new PackageInstallError(
           `The install of ${id} was cancelled: the package was removed while it was being prepared`,
@@ -478,13 +478,13 @@ export async function installPackage(
           'LOCK_LOST',
         )
       }
-    } finally {
-      endInstallFenceWindow(id, startedAt)
-    }
-    if (underLock) await underLock(lockSignal)
-    await swapPackageIntoPlace(id, staged, provider, lockSignal)
-    return { filesWritten: staged.length }
-  })
+      if (underLock) await underLock(lockSignal)
+      await swapPackageIntoPlace(id, staged, provider, lockSignal)
+      return { filesWritten: staged.length }
+    })
+  } finally {
+    endInstallFenceWindow(id, startedAt)
+  }
 }
 
 /**
@@ -837,17 +837,17 @@ async function pathExists(provider: FsProvider, path: string): Promise<boolean |
  * `validateManifest` itself applies. An INDETERMINATE read failure counts as
  * INCOMPLETE (fail closed: keep the backup).
  */
-async function liveTreeIsComplete(provider: FsProvider, id: string): Promise<boolean> {
+export async function liveTreeIsComplete(provider: FsProvider, directory: string, expectedId = directory): Promise<boolean> {
   let manifestJson: unknown
   try {
-    const bytes = await provider.readFile(`${id}/manifest.json`)
+    const bytes = await provider.readFile(`${directory}/manifest.json`)
     manifestJson = JSON.parse(new TextDecoder().decode(bytes))
   } catch {
     return false
   }
   let manifest: ReturnType<typeof validateManifest>
   try {
-    manifest = validateManifest(manifestJson, id)
+    manifest = validateManifest(manifestJson, expectedId)
   } catch {
     return false // parseable but INVALID — not the package the installer writes
   }
@@ -862,7 +862,7 @@ async function liveTreeIsComplete(provider: FsProvider, id: string): Promise<boo
   // the file to PARSE here would let a restored backup overwrite a
   // legitimately enabled package over a config the opt-in flow can rewrite.
   try {
-    await provider.readFile(`${id}/config.json`)
+    await provider.readFile(`${directory}/config.json`)
   } catch {
     return false
   }
@@ -870,7 +870,7 @@ async function liveTreeIsComplete(provider: FsProvider, id: string): Promise<boo
   for (const tool of manifest.tools) {
     let bytes: Uint8Array
     try {
-      bytes = await provider.readFile(`${id}/${tool.path}`)
+      bytes = await provider.readFile(`${directory}/${tool.path}`)
     } catch {
       return false // missing OR unreadable — treat both as incomplete
     }
@@ -881,7 +881,7 @@ async function liveTreeIsComplete(provider: FsProvider, id: string): Promise<boo
     sources[tool.path] = new TextDecoder().decode(bytes)
   }
   try {
-    validatePackage(manifest, sources, id)
+    validatePackage(manifest, sources, expectedId)
   } catch {
     return false // tool source content invalid — not a usable install
   }
@@ -1047,15 +1047,13 @@ export const INSTALLER_DEFAULT_CONFIG = { activation: 'disabled' as const }
  * package files — a hostile registry cannot stall the management page or
  * balloon its memory.
  *
- * The mirror fallback lives in `fetchRegistryManifest` (the caching client);
- * this helper is the uncached variant used by callers that want the raw
- * bytes under their own deadline, so it applies the same candidate list.
+ * Catalog hashes authorize package bytes, so this uncached path also reads
+ * only from the canonical registry origin.
  */
 export async function fetchRegistryManifestCapped(
   registry: PackageRegistry,
   fetchImpl: typeof fetch,
   timeoutMs: number = REGISTRY_FETCH_TIMEOUT_MS,
-  preference?: MirrorPreference,
 ): Promise<import('./registry-client').RegistryManifest> {
   const load = async (candidate: string): Promise<import('./registry-client').RegistryManifest> => {
     const controller = new AbortController()
@@ -1079,8 +1077,7 @@ export async function fetchRegistryManifestCapped(
       clearTimeout(timer)
     }
   }
-  const result = await fetchWithMirrorFallback(registry.manifestUrl, load, { preference })
-  return result.value
+  return load(registry.manifestUrl)
 }
 
 /** Re-exported so callers can classify failures without importing two modules. */

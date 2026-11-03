@@ -60,6 +60,7 @@ Object.defineProperty(globalThis, 'navigator', {
               const key = [...path, name].join('/')
               throw Object.assign(new Error(`${key} not found`), { name: 'NotFoundError' })
             },
+            async removeEntry(name: string) { children.delete(name) },
             async * entries() {
               for (const name of children.keys()) yield [name, children.get(name)!]
             },
@@ -121,6 +122,14 @@ describe('createRegistryBackground', () => {
     const response = await handle({ type: 'webmcp_registry_nonsense' })
     expect(response.ok).toBe(false)
     expect(String(response.error)).toMatch(/Unknown registry operation/)
+  })
+
+  it('reports a committed removal separately from a failed route refresh', async () => {
+    const { handle, notify } = handler(vi.fn(async () => { throw new Error('refresh failed') }))
+    const response = await handle({ type: 'webmcp_registry_uninstall', packageId: 'com.example.pkg' })
+    expect(response).toMatchObject({ ok: false, committed: true })
+    expect(String(response.error)).toMatch(/removed.*routes could not be refreshed.*refresh failed/)
+    expect(notify).toHaveBeenCalled()
   })
 
   it('removes a registry from the list', async () => {

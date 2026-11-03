@@ -12,8 +12,8 @@ import pkg from './package.json';
 const CODEX_OAUTH = process.env.CW_CODEX_OAUTH !== '0';
 // Deploy region pin ('cn' | 'global' | '' = unset).
 //
-// The region decides which TRANSPORT the extension prefers for registry /
-// package downloads: the CN region prefers the jsDelivr CDN mirror
+// The region decides which TRANSPORT the extension prefers for package
+// file downloads: the CN region prefers the jsDelivr CDN mirror
 // (raw.githubusercontent.com is effectively unreachable from mainland
 // China), the global region prefers the direct raw host. With no pin the
 // preference follows the browser's UI language at runtime (see
@@ -50,9 +50,7 @@ export default defineConfig({
       // chrome.i18n resolves a missing key to an EMPTY STRING, so a locale
       // that drifted from the reference one ships a blank label with no
       // error anywhere. Fail the build instead (issue #143).
-      const { createRequire } = await import('node:module')
-      const require = createRequire(import.meta.url)
-      const { checkExtensionLocaleParity } = require('./scripts/check-extension-locale-parity.mjs')
+      const { checkExtensionLocaleParity } = await import('./scripts/check-extension-locale-parity.mjs')
       checkExtensionLocaleParity()
     },
     'build:done': (wxt) => {
