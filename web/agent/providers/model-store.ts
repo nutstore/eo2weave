@@ -262,7 +262,32 @@ export function setCachedModels(
   }
 
   memoryCache.set(key, entry)
-  if (result.source === 'dynamic') writeToDisk(key, entry)
+  if (result.source === 'dynamic') {
+    writeToDisk(key, entry)
+
+    // Post-write verification (Sourcery round 10, "older tab still overwrites
+    // newer cache"): the pre-write disk check above reads BEFORE our write, so
+    // two tabs whose refreshes overlap can BOTH pass it — tab A reads the old
+    // entry, tab B reads the same old entry, B writes its newer catalog, then
+    // A's older write lands last and silently reverts the shared cache to the
+    // stale snapshot. localStorage has no cross-tab compare-and-swap, so the
+    // check-then-act window cannot be closed by pre-checks alone. Instead the
+    // write is VERIFIED: re-read the disk and if it no longer holds what we
+    // wrote — a concurrent tab persisted a newer entry between our read and
+    // our write, or after our write — restore that newer entry. The losing
+    // (older) tab always repairs, and the winning tab never writes again, so
+    // the repair converges instead of ping-ponging.
+    const diskAfterWrite = readFromDisk(key)
+    if (
+      diskAfterWrite != null &&
+      diskAfterWrite.error == null &&
+      diskAfterWrite !== entry &&
+      diskAfterWrite.fetchedAt > entry.fetchedAt
+    ) {
+      writeToDisk(key, diskAfterWrite)
+      memoryCache.set(key, diskAfterWrite)
+    }
+  }
 
   // Notify listeners that models have been updated
   // (e.g. image gen tool may need to register/unregister)
