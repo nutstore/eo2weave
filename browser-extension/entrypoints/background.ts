@@ -3275,6 +3275,47 @@ export default defineBackground(() => {
     if (port.name !== 'agent_bridge_stream') return;
 
     port.onMessage.addListener((message) => {
+      if (CODEX_OAUTH_ENABLED && message.type === 'codex_image_generate') {
+        if (!isTrustedWebMCPSender(port.sender)) {
+          port.postMessage({ type: 'error', errorCode: 'UNAUTHORIZED_SENDER', message: 'Untrusted Codex image request sender' });
+          port.disconnect();
+          return;
+        }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(new Error('Image generation timed out')), 5 * 60 * 1000);
+        port.onDisconnect.addListener(() => controller.abort());
+        port.onMessage.addListener((control: { type?: string }) => {
+          if (control?.type === 'cancel') controller.abort();
+        });
+        void (async () => {
+          try {
+            let tokens = await CODEX!.getCodexTokens();
+            if (controller.signal.aborted) return;
+            if (!tokens?.access_token) throw new Error('Not authorized. Please sign in to Codex.');
+            const request = () => fetch('https://chatgpt.com/backend-api/codex/images/generations', {
+              method: 'POST', body: JSON.stringify(message.body ?? {}),
+              headers: CODEX!.codexHeaders(tokens!.access_token!), signal: controller.signal,
+            });
+            let response = await request();
+            if (response.status === 401 && tokens.refresh_token && !controller.signal.aborted) {
+              tokens = await CODEX!.refreshCodexAccessToken(tokens);
+              if (controller.signal.aborted) return;
+              response = await request();
+            }
+            const text = await response.text();
+            if (!controller.signal.aborted) port.postMessage({ type: 'chunk', data: { ok: response.ok, status: response.status, text } });
+          } catch (error) {
+            if (!controller.signal.aborted) {
+              try { port.postMessage({ type: 'error', errorCode: 'CODEX_IMAGE_ERROR', message: error instanceof Error ? error.message : String(error) }); } catch {}
+            }
+          } finally {
+            clearTimeout(timeout);
+            try { port.postMessage({ type: 'done' }); } catch {}
+            try { port.disconnect(); } catch {}
+          }
+        })();
+        return;
+      }
       if (message.type === 'webmcp_plugin_download_stream') {
       (async () => {
         // SECURITY: the download stream runs a privileged background fetch.

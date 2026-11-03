@@ -11,6 +11,7 @@ import { formatErrorForUser, withAutoRetry } from './error-handling'
 import { isToolAllowedInMode, type AgentMode } from './agent-mode'
 import { getToolPolicy, type ToolPolicy } from './policy-engine'
 import { useSettingsStore } from '@/store/settings.store'
+import { useExtensionStore } from '@/store/extension.store'
 
 /**
  * Compatibility aliases for renamed tools. The canonical (new) name maps to
@@ -766,6 +767,14 @@ function ensureImageGenListener(): void {
       instance.registerImageGenTool()
       const has = instance.has('generate_image')
       if (had !== has) notifyToolsChanged()
+    }
+  })
+
+  useExtensionStore.subscribe((state, prev) => {
+    if (state.status !== prev.status && instance) {
+      const had = instance.has('generate_image')
+      instance.registerImageGenTool()
+      if (had !== instance.has('generate_image')) notifyToolsChanged()
     }
   })
 
