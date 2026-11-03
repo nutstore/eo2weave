@@ -127,7 +127,7 @@ describe('useProjectAgentsInit', () => {
         await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
       }
       const attemptsAfterRetries = mocks.getProject.mock.calls.length
-      expect(attemptsAfterRetries).toBeGreaterThanOrEqual(3)
+      expect(attemptsAfterRetries).toBe(3)
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
       expect(mocks.getProject.mock.calls.length).toBe(attemptsAfterRetries)
     } finally {
