@@ -14,6 +14,7 @@ describe('message-mappers', () => {
     const empty = piToInternalMessage({ ...base, content: [{ type: 'thinking', thinking: 'thinking' }], stopReason: 'length' } as never)!
     expect(empty).toMatchObject({ kind: 'empty', stopReason: 'length', content: null })
     expect(internalToPiMessages([empty], model, '')).toEqual([])
+    expect(internalToPiMessages([{ id: 'u', role: 'user', kind: 'empty', content: 'keep', timestamp: 1 }], model, '')).toHaveLength(1)
 
     const partial = piToInternalMessage({ ...base, content: [{ type: 'text', text: 'partial' }], stopReason: 'length' } as never)!
     expect(partial.stopReason).toBe('length')

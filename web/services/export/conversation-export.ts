@@ -92,6 +92,7 @@ export interface ConversationExportData {
     role: string
     recordType: MessageRecordType
     kind?: Message['kind']
+    stopReason?: Message['stopReason']
     delegationNote?: Message['delegationNote']
     readImageHandoff?: Message['readImageHandoff']
     content: string | null
@@ -641,6 +642,7 @@ function buildJSONString(
       role: msg.role,
       recordType: getMessageRecordType(msg),
       kind: msg.kind,
+      stopReason: msg.stopReason,
       delegationNote: msg.delegationNote,
       readImageHandoff: msg.readImageHandoff ? {
         ...msg.readImageHandoff,

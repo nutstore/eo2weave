@@ -97,6 +97,12 @@ describe('conversation-export', () => {
   })
 
   describe('basic export (no attachments)', () => {
+    it('exports incomplete turn metadata in JSON', async () => {
+      const conv = makeConversation([makeMessage({ role: 'assistant', kind: 'empty', stopReason: 'length', content: null })])
+      await exportConversation(conv, { format: 'json', includeImages: false })
+      const data = JSON.parse(await lastSave().blob.text())
+      expect(data.messages[0]).toMatchObject({ kind: 'empty', stopReason: 'length' })
+    })
     it.each(['json', 'markdown', 'html'] as const)('excludes runtime patches and labels synthetic records in %s', async (format) => {
       const conv = makeConversation([
         makeMessage({ role: 'user', content: 'Real question' }),

@@ -138,21 +138,16 @@ export async function processPiLoopEvents(
       // Detect error assistant messages from the LLM provider (e.g. HTTP 404, 429, 500).
       // pi-agent-core finishes the loop normally for these, but we need to propagate
       // the error so the UI shows it instead of silently completing with an empty message.
-      const rawMessage = typedEvent.message as unknown as Record<string, unknown>
-      if (
-        rawMessage?.role === 'assistant' &&
-        (rawMessage as any).stopReason === 'error' &&
-        typeof (rawMessage as any).errorMessage === 'string'
-      ) {
-        throw new Error((rawMessage as any).errorMessage)
-      }
+      const providerError = typedEvent.message.role === 'assistant' &&
+        typedEvent.message.stopReason === 'error' && typeof typedEvent.message.errorMessage === 'string'
+        ? typedEvent.message.errorMessage : undefined
 
       const mapped = input.mapPiToInternal(typedEvent.message)
       if (!mapped || mapped.role === 'user') continue
       if (mapped.role === 'assistant') {
         assistantMessageStarted = false
       }
-      if (mapped.role === 'assistant' && mapped.kind !== 'empty') {
+      if (mapped.role === 'assistant' && mapped.kind !== 'empty' && mapped.kind !== 'error' && mapped.kind !== 'aborted') {
         assistantMessageCount++
         const hasIterationLimit = input.maxIterations > 0
         if (hasIterationLimit && assistantMessageCount > input.maxIterations) {
@@ -169,6 +164,7 @@ export async function processPiLoopEvents(
       })
       setAllMessages(nextMessages)
       input.callbacks?.onMessagesUpdated?.(nextMessages)
+      if (providerError !== undefined) throw new Error(providerError)
       if (mapped.role === 'tool' && mapped.toolCallId) {
         const pending = pendingToolCompletions.get(mapped.toolCallId)
         if (pending) {

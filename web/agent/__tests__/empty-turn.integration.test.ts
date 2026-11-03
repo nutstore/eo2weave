@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentMessage } from '@earendil-works/pi-agent-core'
-import { executePiCoreLoop } from '../loop/pi-core-runner'
+import { executePiCoreLoop } from '@/agent/loop/pi-core-runner'
 
 const stream = vi.hoisted(() => vi.fn())
 const tools = vi.hoisted(() => ({ current: [] as unknown[] }))
@@ -18,6 +18,7 @@ function response(content: unknown[], stopReason = 'stop') {
     role: 'assistant',
     content,
     stopReason,
+    ...(stopReason === 'error' ? { errorMessage: 'provider failed' } : {}),
     api: 'openai-completions',
     provider: 'openai',
     model: 'm',
@@ -139,7 +140,50 @@ describe('empty turn recovery through pi-agent-core', () => {
 
   it('does not retry an aborted response', async () => {
     stream.mockReturnValue(response([], 'aborted'))
-    await executePiCoreLoop(input(new AbortController().signal))
+    const result = await executePiCoreLoop(input(new AbortController().signal))
+    expect(result.allMessages.at(-1)).toMatchObject({ kind: 'aborted', stopReason: 'aborted' })
     expect(stream).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists provider error state before propagating the failure', async () => {
+    stream.mockReturnValue(response([], 'error'))
+    const onMessagesUpdated = vi.fn()
+    await expect(
+      executePiCoreLoop({
+        ...input(new AbortController().signal),
+        callbacks: { onMessagesUpdated },
+      })
+    ).rejects.toThrow('provider failed')
+    expect(onMessagesUpdated).toHaveBeenLastCalledWith(
+      expect.arrayContaining([expect.objectContaining({ kind: 'error', stopReason: 'error' })])
+    )
+    expect(stream).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries a later empty turn after a successful tool call', async () => {
+    const execute = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'result' }],
+      details: {},
+    }))
+    tools.current = [
+      {
+        name: 'read',
+        label: 'read',
+        description: 'read',
+        parameters: { type: 'object', properties: {} },
+        execute,
+      },
+    ]
+    stream
+      .mockReturnValueOnce(response([], 'length'))
+      .mockReturnValueOnce(
+        response([{ type: 'toolCall', id: 't', name: 'read', arguments: {} }], 'toolUse')
+      )
+      .mockReturnValueOnce(response([], 'length'))
+      .mockReturnValueOnce(response([{ type: 'text', text: 'done' }]))
+    const result = await executePiCoreLoop(input(new AbortController().signal))
+    expect(result.allMessages.at(-1)?.content).toBe('done')
+    expect(stream).toHaveBeenCalledTimes(4)
+    expect(execute).toHaveBeenCalledTimes(1)
   })
 })

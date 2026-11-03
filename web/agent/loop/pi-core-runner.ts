@@ -310,7 +310,11 @@ export async function executePiCoreLoop(
         const hasOutput = message.content.some(item =>
           item.type === 'toolCall' || (item.type === 'text' && item.text.trim().length > 0)
         )
-        if (hasOutput || message.stopReason === 'error' || message.stopReason === 'aborted' || emptyTurnRetried || input.signal?.aborted) return
+        if (hasOutput) {
+          emptyTurnRetried = false
+          return
+        }
+        if (message.stopReason === 'error' || message.stopReason === 'aborted' || emptyTurnRetried || input.signal?.aborted) return
         emptyTurnRetried = true
         emptyTurnRetryPending = true
         return { context: { ...turnContext, messages: turnContext.messages.slice(0, -1) } }

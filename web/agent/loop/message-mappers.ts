@@ -45,9 +45,8 @@ function mapInternalToPiMessage(
   model: Model<Api>,
   compressedMemoryPrefix: string
 ): PiMessage[] {
-  if (msg.kind === 'run_changes' || msg.kind === 'empty') {
-    // A pure UI card ("what this run changed") — no model-facing content.
-    // Drop it so it never enters the LLM context budget.
+  if (msg.kind === 'run_changes' || (msg.role === 'assistant' && (msg.kind === 'empty' || msg.kind === 'error'))) {
+    // UI-only cards and failed assistant turns do not belong in model history.
     return []
   }
   if (msg.kind === 'context_summary') {
@@ -319,7 +318,9 @@ function mapPiToInternalMessage(message: PiAgentMessage): Message | null {
     )
     assistant.timestamp = message.timestamp || assistant.timestamp || now
     assistant.stopReason = message.stopReason
-    if (!text.trim() && toolCalls.length === 0 && message.stopReason !== 'error' && message.stopReason !== 'aborted') {
+    if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+      assistant.kind = message.stopReason
+    } else if (!text.trim() && toolCalls.length === 0) {
       assistant.kind = 'empty'
     }
     return assistant
