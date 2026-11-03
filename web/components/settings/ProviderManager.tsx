@@ -1378,7 +1378,19 @@ export function LLMGatewayCard({
       try {
         const baseURL = getLLMGatewayBaseURL()
         const clientId = getLLMGatewayClientId()
+        const generationBeforeToken = getGatewayAuthSessionGeneration()
         const token = await getValidAccessToken(baseURL, clientId)
+        if (!token && !cancelled && hasStoredTokens() && generationBeforeToken === getGatewayAuthSessionGeneration()) {
+          // A transient refresh failure leaves the credential pair in place,
+          // but the previous catalog can no longer be treated as verified.
+          const gateway = await import('@/agent/providers/llm-gateway-provider')
+          if (cancelled || generationBeforeToken !== getGatewayAuthSessionGeneration()) return
+          refreshVersion = gateway.beginGatewayCatalogRefresh()
+          gateway.registerGatewayModels([], 'failed', refreshVersion)
+          setAllModels(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => ({ id: m.id, name: m.name })))
+          setCatalogStatus('failed')
+          return
+        }
         if (token && !cancelled) {
           authGenerationAtStart = getGatewayAuthSessionGeneration()
           const gateway = await import('@/agent/providers/llm-gateway-provider')

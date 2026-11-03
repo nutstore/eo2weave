@@ -63,7 +63,7 @@ const gatewayMock = vi.hoisted(() => ({
     })
   ),
   logoutGateway: vi.fn(),
-  getValidAccessToken: vi.fn(async () => 'stale-access-token'),
+  getValidAccessToken: vi.fn<() => Promise<string | null>>(async () => 'stale-access-token'),
   fetchGatewayModels: vi.fn(async () => ({
     models: [] as Array<{ id: string; name: string }>,
     status: 'failed' as const,
@@ -516,6 +516,19 @@ describe('LLMGatewayCard credential state', () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Add from model library' }))
     expect(screen.getByRole('button', { name: /GLM/ })).toBeTruthy()
+  })
+
+  it('downgrades the catalog when token refresh temporarily returns no token', async () => {
+    settingsState.modelCredentialStatus = 'valid'
+    gatewayMock.getValidAccessToken.mockResolvedValueOnce(null)
+
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => {
+      expect(gatewayMock.registerGatewayModels).toHaveBeenCalledWith([], 'failed', expect.any(Number))
+    })
+    expect(getModelsForProvider('llm-gateway').map((model) => model.id)).toEqual(['glm-5.2'])
+    expect(gatewayMock.prepareGatewayModels).not.toHaveBeenCalled()
   })
 
   it('also downgrades a prior authoritative-empty catalog when the /models refresh times out', async () => {

@@ -170,8 +170,13 @@ describe('llm-gateway-auth token refresh hardening', () => {
       seedStoredTokens()
       const controller = new AbortController()
       const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal)
+      let refreshSignal: AbortSignal | undefined
       const fetchMock = vi.fn()
-        .mockImplementationOnce(() => new Promise<Response>(() => {}))
+        .mockImplementationOnce((_url: string, init: RequestInit) => {
+          refreshSignal = init.signal as AbortSignal
+          return new Promise<Response>((_resolve, reject) =>
+            refreshSignal!.addEventListener('abort', () => reject(refreshSignal!.reason), { once: true }))
+        })
         .mockResolvedValueOnce(refreshResponse('retry-token'))
       vi.stubGlobal('fetch', fetchMock)
       try {
@@ -179,6 +184,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
         await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
         controller.abort(new Error('refresh timed out'))
         await expect(first).resolves.toMatchObject({ status: 'temporary_error' })
+        expect(refreshSignal?.aborted).toBe(true)
 
         timeoutSpy.mockRestore()
         await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({
@@ -193,17 +199,28 @@ describe('llm-gateway-auth token refresh hardening', () => {
     it('stops a discovery caller at its deadline while a shared refresh continues', async () => {
       seedStoredTokens()
       let complete!: (response: Response) => void
-      vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { complete = resolve })))
+      let sharedSignal: AbortSignal | undefined
+      const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+        sharedSignal = init.signal as AbortSignal
+        return new Promise<Response>((resolve, reject) => {
+          complete = resolve
+          sharedSignal!.addEventListener('abort', () => reject(sharedSignal!.reason), { once: true })
+        })
+      })
+      vi.stubGlobal('fetch', fetchMock)
       const controller = new AbortController()
       const discovery = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID, controller.signal)
 
       await vi.waitFor(() => expect(complete).toBeDefined())
       controller.abort(new Error('discovery timed out'))
       await expect(discovery).rejects.toThrow('discovery timed out')
+      expect(sharedSignal?.aborted).toBe(false)
 
       const shared = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
       complete(refreshResponse())
       await expect(shared).resolves.toMatchObject({ status: 'success' })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
     })
 
     it('keeps the stored refresh_token and refresh_expires_at when the response has neither', async () => {
