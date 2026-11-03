@@ -330,10 +330,23 @@ def create_staging_file(directory: Path) -> tuple[int, Path, int | None]:
             fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_RDWR | BINARY_FLAG, REPORT_CREATE_MODE)
         except FileExistsError:
             continue
-        publish_mode = desired_publish_mode(stat.S_IMODE(os.fstat(fd).st_mode))
-        if publish_mode is not None:
-            # Narrow to owner-only before anything is written.
-            apply_publish_mode(fd, STAGING_OWNER_MODE)
+        try:
+            publish_mode = desired_publish_mode(stat.S_IMODE(os.fstat(fd).st_mode))
+            if publish_mode is not None:
+                # Narrow to owner-only before anything is written.
+                apply_publish_mode(fd, STAGING_OWNER_MODE)
+        except BaseException:
+            # Setup failed before atomic_write's own cleanup exists: leave
+            # neither a leaked descriptor nor a stray staging file behind.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+            raise
         return fd, candidate, publish_mode
     raise RuntimeError(f"cannot create a unique staging file in {directory}")
 
@@ -439,9 +452,30 @@ def cleanup_stale_staging(output_dir: Path, *, now: float | None = None) -> None
         if owner_process_is_alive(entry.name):
             continue
         try:
-            entry.unlink()
+            entry_stat = entry.stat()
+            if not stat.S_ISREG(entry_stat.st_mode):
+                continue
         except OSError:
             continue
+        # Re-verify identity immediately before unlinking: a writer that
+        # swaps the entry between the checks and this unlink must not get
+        # their file deleted by this sweep.
+        try:
+            dir_fd = os.open(output_dir, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            try:
+                named = os.stat(entry.name, dir_fd=dir_fd, follow_symlinks=False)
+                if (named.st_dev, named.st_ino) != (entry_stat.st_dev, entry_stat.st_ino):
+                    continue  # the entry changed — leave it alone
+                os.unlink(entry.name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+        finally:
+            os.close(dir_fd)
 
 
 def is_own_staging_name(name: str) -> bool:
@@ -478,12 +512,13 @@ def owner_process_is_alive(name: str) -> bool:
         return True
     try:
         os.kill(pid, 0)
-    except (ProcessLookupError, OverflowError):
-        # ProcessLookupError: no such process. OverflowError: the number in
-        # the name is outside the platform's representable PID range, so it
-        # cannot name a live process this sweep could classify — treat it as
-        # unclassifiable and KEEP the file rather than crash the render.
-        return False
+    except ProcessLookupError:
+        return False  # no such process on this host
+    except OverflowError:
+        # The number in the name is outside the platform's representable PID
+        # range, so liveness cannot be classified — the safe default is to
+        # KEEP the file rather than delete something we could not check.
+        return True
     except PermissionError:
         return True  # the process exists but belongs to another user
     except OSError:
