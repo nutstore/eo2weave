@@ -9,8 +9,11 @@ after rendering, but core states must remain identical to JSON.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
+import os
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -204,6 +207,32 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def atomic_write(text: str, output_file: Path) -> str:
+    """Publish text atomically and return the published content's SHA-256 checksum.
+
+    The staging file is unique to this invocation (tempfile.mkstemp with the
+    report's basename as prefix), so two concurrent renders of the same output
+    path never share or clobber one fixed `.tmp-partial` file. os.replace() is
+    atomic on POSIX: the final path only ever holds a complete report.
+    """
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fd, staging_name = tempfile.mkstemp(
+        dir=output_file.parent, prefix=output_file.name + ".", suffix=".tmp-partial"
+    )
+    staging = Path(staging_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staging, output_file)
+    except BaseException:
+        staging.unlink(missing_ok=True)
+        raise
+    digest = hashlib.sha256(output_file.read_bytes()).hexdigest()
+    return digest
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -221,15 +250,10 @@ def main() -> int:
         return 1
 
     report = render(data, errors, warnings, strict=args.strict)
-    args.output_file.parent.mkdir(parents=True, exist_ok=True)
-    temp_output = args.output_file.with_name(args.output_file.name + ".tmp-partial")
-    try:
-        temp_output.write_text(report, encoding="utf-8")
-        temp_output.replace(args.output_file)
-    except BaseException:
-        temp_output.unlink(missing_ok=True)
-        raise
+    digest = atomic_write(report, args.output_file)
     print(f"Rendered {args.output_file} with {len(warnings)} warning(s) ({'strict' if args.strict else 'compatibility-only'} validation)")
+    print(f"OUTPUT_SHA256 {digest}")
+    print(f"OUTPUT_PATH {args.output_file.resolve()}")
     return 0
 
 
