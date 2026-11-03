@@ -13,7 +13,9 @@ import hashlib
 import importlib.util
 import json
 import os
-import tempfile
+import re
+import secrets
+import stat
 import time
 from collections import Counter
 from pathlib import Path
@@ -212,14 +214,177 @@ STAGING_PREFIX = "render-staging-"
 STAGING_SUFFIX = ".tmp-partial"
 STAGING_STALE_SECONDS = 6 * 3600
 
+# A published report must keep the mode a normal open(path, "w") would have
+# produced under the active umask. The kernel applies the umask when a file is
+# CREATED, so the staging file is created with 0o666 and the resulting mode is
+# read back from the descriptor: no umask probe file and no os.umask() call.
+REPORT_CREATE_MODE = 0o666
+
+# The group and other WRITE bits are withheld from the published report.
+# 0o666 & ~umask grants them under a permissive umask, and a peer that can
+# write the staged inode can rewrite the report bytes between the checksum
+# pass and the publish, so the emitted checksum would stop describing the
+# published bytes. Their READ bits are kept: that is what makes the report
+# readable for collaborators.
+PUBLISH_MODE_DENIED = 0o022
+
+# Windows must read and write the staging descriptor in binary mode: in text
+# mode the runtime translates "\n" into "\r\n" and stops reading at a Ctrl-Z
+# byte, so the checksum would describe bytes that are not the published bytes.
+BINARY_FLAG = getattr(os, "O_BINARY", 0)
+
+# The PID carried in a staging file name. Linux PIDs fit in 10 digits; the
+# limit keeps a name with a huge numeric part from being treated as a PID.
+MAX_PID_DIGITS = 10
+
+
+def supports_posix_modes() -> bool:
+    """True on platforms that carry POSIX permission bits (not Windows)."""
+    return os.name != "nt"
+
+
+def desired_publish_mode(fd: int) -> int | None:
+    """Return the mode the published report must carry.
+
+    The staging file was created with 0o666, so the kernel already applied
+    the active umask: the mode read back from the descriptor is exactly the
+    mode a normal open(path, "w") would have produced under that umask. The
+    group and other WRITE bits are then withheld — their READ bits are kept,
+    so the report stays readable for collaborators, but a peer can no longer
+    rewrite the staged bytes after they have been hashed.
+
+    Returns None on platforms without POSIX permission bits (Windows),
+    where the mode is not meaningful.
+    """
+    if not supports_posix_modes():
+        return None
+    return stat.S_IMODE(os.fstat(fd).st_mode) & ~PUBLISH_MODE_DENIED
+
+
+def apply_publish_mode(fd: int, mode: int | None, staging_path: Path | None = None) -> bool:
+    """Apply `mode` to the inode behind `fd`; True when it was applied.
+
+    The mode is applied through the already-open descriptor, so it lands on
+    the very inode that was hashed and published — never on a file another
+    render may have put at the destination path in the meantime.
+
+    Windows carries no POSIX permission bits, so this is a no-op there (the
+    mode is None). A platform without os.fchmod falls back to os.chmod on
+    the descriptor, and — only when that is not supported either — to
+    os.chmod on the staging path, guarded by an inode identity check so a
+    swapped path is not chmod'ed. A failed mode update must never turn a
+    render into an error: the report is published either way and its digest
+    is still returned.
+    """
+    if mode is None or not supports_posix_modes():
+        return True
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is not None:
+        try:
+            fchmod(fd, mode)
+            return True
+        except (OSError, NotImplementedError):
+            return False
+    try:
+        os.chmod(fd, mode)
+        return True
+    except (OSError, TypeError, NotImplementedError):
+        pass
+    if staging_path is not None:
+        try:
+            if not path_names_inode(staging_path, fd):
+                return False
+            os.chmod(staging_path, mode)
+            return path_names_inode(staging_path, fd)
+        except (OSError, TypeError, NotImplementedError):
+            return False
+    return False
+
+
+def create_staging_file(directory: Path) -> tuple[int, Path]:
+    """Create a unique staging file in `directory`.
+
+    Returns (fd, path): an open read-write descriptor and the staging path.
+    The file is created with O_EXCL, so a name collision can never reuse an
+    existing file, and with 0o666 so that the kernel applies the active
+    umask: the file's mode is exactly the mode a normal open(path, "w")
+    would have produced. The name carries this render's PID and a random
+    token, so only this renderer's own files can be recognised as its
+    staging files.
+    """
+    for _ in range(16):
+        candidate = directory / f"{STAGING_PREFIX}{os.getpid()}-{secrets.token_hex(8)}{STAGING_SUFFIX}"
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_RDWR | BINARY_FLAG, REPORT_CREATE_MODE)
+        except FileExistsError:
+            continue
+        return fd, candidate
+    raise RuntimeError(f"cannot create a unique staging file in {directory}")
+
+
+def write_all(fd: int, payload: bytes) -> None:
+    """Write every byte of `payload` through `fd`."""
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+
+
+def hash_fd(fd: int) -> tuple[str, int]:
+    """Return (sha256 hexdigest, size) of the file behind `fd`.
+
+    The descriptor is rewound first, so this always hashes the file's current
+    content. The bytes are read through the descriptor, never through the
+    path, so the digest describes the very inode that will be published even
+    if the path is replaced in the meantime.
+    """
+    hasher = hashlib.sha256()
+    size = 0
+    os.lseek(fd, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        hasher.update(chunk)
+        size += len(chunk)
+    return hasher.hexdigest(), size
+
+
+def path_names_inode(path: Path, fd: int) -> bool:
+    """True when `path` still refers to the file behind `fd`.
+
+    The check uses os.lstat, NOT os.stat: os.stat follows symlinks, so a
+    replacement symlink pointing at the opened inode would pass the check
+    while os.replace would move the symlink itself and publish a
+    replaceable symlink instead of the verified report. lstat reports the
+    symlink's own inode, which differs from the opened inode, so the
+    publish is aborted.
+    """
+    try:
+        named = os.lstat(path)
+        opened = os.fstat(fd)
+    except OSError:
+        return False
+    return (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino)
+
 
 def cleanup_stale_staging(output_dir: Path, *, now: float | None = None) -> None:
     """Best-effort sweep of abandoned staging files in `output_dir`.
 
-    A staging file is treated as abandoned only when its name matches this
-    renderer's staging pattern AND its mtime is older than
-    STAGING_STALE_SECONDS; recently created files may belong to a concurrent
-    render and are never touched.
+    Only this renderer's OWN staging files are candidates: their names
+    carry the renderer's PID and a random token
+    ("render-staging-<pid>-<token>.tmp-partial"). A file that merely looks
+    similar — a user's own file, or a concurrent render's staging file from
+    another process — does not match this renderer's pattern and is never
+    touched.
+
+    A candidate is only removed when it is clearly abandoned: its PID is
+    not a live process AND its mtime is older than STAGING_STALE_SECONDS.
+    A staging file whose owning process is still running is never removed,
+    so a long-running render never loses its staging file. When the owning
+    process cannot be classified, the safe default is to keep the file:
+    leaking one stale file is far less harmful than deleting a live
+    render's staging file or a user's file.
     """
     current = time.time() if now is None else now
     try:
@@ -227,67 +392,168 @@ def cleanup_stale_staging(output_dir: Path, *, now: float | None = None) -> None
     except OSError:
         return
     for entry in entries:
-        name = entry.name
-        if not (name.startswith(STAGING_PREFIX) and name.endswith(STAGING_SUFFIX)):
+        if not is_own_staging_name(entry.name):
             continue
         try:
             if current - entry.stat().st_mtime < STAGING_STALE_SECONDS:
                 continue
+        except OSError:
+            continue
+        if owner_process_is_alive(entry.name):
+            continue
+        try:
             entry.unlink()
         except OSError:
             continue
+
+
+def is_own_staging_name(name: str) -> bool:
+    """True when `name` is a staging file created by THIS render.
+
+    The renderer creates "render-staging-<pid>-<token>.tmp-partial". A name
+    that does not carry a numeric PID and a token is not one of ours — it
+    is either a user's file or a file from an older renderer version, and
+    both must survive the cleanup sweep.
+    """
+    if not (name.startswith(STAGING_PREFIX) and name.endswith(STAGING_SUFFIX)):
+        return False
+    middle = name[len(STAGING_PREFIX):-len(STAGING_SUFFIX)]
+    pid_text, _, token = middle.partition("-")
+    if not token or not re.fullmatch(r"[0-9a-f]+", token):
+        return False
+    return bool(pid_text.isdigit()) and len(pid_text) <= MAX_PID_DIGITS
+
+
+def owner_process_is_alive(name: str) -> bool:
+    """True when the process that created `name` may still be running.
+
+    Returns True when the owner cannot be classified (unknown PID), so an
+    uncertain case never deletes a file.
+    """
+    middle = name[len(STAGING_PREFIX):-len(STAGING_SUFFIX)]
+    pid_text = middle.partition("-")[0]
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        return True
+    if pid <= 0:
+        # PID 0 addresses the whole process group; never signal it.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # the process exists but belongs to another user
+    except OSError:
+        return True
+    return True
 
 
 def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
     """Publish text atomically; return (sha256, size) of THIS invocation's bytes.
 
     Safety properties:
-    - The staging file is unique per invocation (tempfile.mkstemp with a short
-      fixed prefix), so concurrent renders never share one staging path and
-      valid output basenames cannot overflow the filesystem name limit.
-    - The digest is computed incrementally from the staged bytes BEFORE
-      publishing (and the file is re-read through the same open file handle in
-      chunks), so the returned checksum always describes this invocation's
-      content even if another render replaces the destination afterwards, and
-      no full-size in-memory copy of the report is ever allocated.
+    - The staging file is unique per invocation (the render's PID and a
+      random token are in its name), so concurrent renders never share one
+      staging path and valid output basenames cannot overflow the
+      filesystem name limit.
     - os.replace() is atomic on POSIX: the final path only ever holds a
       complete report.
-    - The staging file's permissions are widened per the process umask before
-      publishing so a shared handoff directory keeps the report readable by
-      others (mkstemp's default is owner-only 0600).
+    - The process-wide umask is never read or written. The kernel applies
+      the umask when a file is CREATED, so creating the staging file with
+      0o666 yields exactly the mode a normal open(path, "w") would have
+      produced — no os.umask() probe and no throwaway probe file.
+    - The group and other WRITE bits are withheld from the published mode
+      (their READ bits are kept), so a peer cannot rewrite the staged bytes
+      between the checksum pass and the publish.
+    - The mode is set on the staging inode BEFORE the file becomes visible
+      at the destination, so a reader never sees an owner-only report and
+      no post-publish chmod can fail after the report is published.
+    - Everything happens on ONE open descriptor: the report is written,
+      hashed, re-hashed, mode-set and published through the same inode. The
+      digest therefore always describes the bytes that were published, even
+      if another process rewrites the staging path in the meantime.
+    - The staged bytes are hashed twice — once to compute the checksum and
+      once again immediately before the publish — so a staging file that
+      changed underneath us aborts the publish instead of publishing bytes the
+      emitted checksum does not describe.
     """
     output_file.parent.mkdir(parents=True, exist_ok=True)
     cleanup_stale_staging(output_file.parent)
-    fd, staging_name = tempfile.mkstemp(
-        dir=output_file.parent, prefix=STAGING_PREFIX, suffix=STAGING_SUFFIX
-    )
-    staging = Path(staging_name)
+    fd, staging = create_staging_file(output_file.parent)
+    published = False
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-            # mkstemp creates the file 0600; restore the umask's group/other
-            # bits so the published report keeps the shared-readable mode a
-            # normal open() would have produced.
-            umask = os.umask(0)
-            os.umask(umask)
-            os.fchmod(stream.fileno(), 0o666 & ~umask)
-        # Hash exactly this invocation's staged bytes, incrementally in bounded
-        # chunks, BEFORE publishing: no full-size in-memory copy, and the
-        # digest always describes this run's content even if a concurrent
-        # render replaces the destination afterwards.
-        hasher = hashlib.sha256()
-        size = 0
-        with staging.open("rb") as binary:
-            for chunk in iter(lambda: binary.read(65536), b""):
-                hasher.update(chunk)
-                size += len(chunk)
+        # The kernel applied the umask when the staging file was CREATED, so
+        # the mode read back from the descriptor is exactly the mode a normal
+        # open(path, "w") would have produced. The group and other WRITE
+        # bits are withheld: their READ bits are kept (that is what makes
+        # the report readable for collaborators), but a peer must not be able
+        # to rewrite the staged bytes between the checksum pass and the
+        # publish. The mode is set BEFORE anything is written, so the staged
+        # bytes are never group/other-writable.
+        publish_mode = desired_publish_mode(fd)
+        if not apply_publish_mode(fd, publish_mode, staging):
+            print("WARNING: the published report's permissions could not be set to the "
+                  "umask-adjusted mode; it keeps the mode the kernel gave it")
+        # The report bytes are written through the descriptor in BINARY
+        # mode: a text wrapper would translate newlines on Windows, so the
+        # checksum would describe bytes that are not the published bytes.
+        payload = text.encode("utf-8")
+        write_all(fd, payload)
+        os.fsync(fd)
+        digest, size = hash_fd(fd)
+        # Re-hash immediately before publishing. A same-user process (or a
+        # root process) can still rewrite the staging file; re-verifying
+        # guarantees the checksum we publish describes the bytes that are
+        # actually moved into place.
+        verified, verified_size = hash_fd(fd)
+        if verified != digest or verified_size != size:
+            raise RuntimeError(
+                "staged report changed while it was being verified; nothing was published"
+            )
+        # The identity check must not follow symlinks: a concurrent writer
+        # that replaced the staging name with a symlink to the opened inode
+        # would otherwise pass the check, and os.replace would move the
+        # symlink itself.
+        if not path_names_inode(staging, fd):
+            raise RuntimeError(
+                "the staging file was replaced before it could be published; nothing was published"
+            )
+        if os.name == "nt":
+            # Windows can refuse to rename a file that still has an open
+            # descriptor, so the descriptor MUST be closed before the
+            # rename. The mode was already set on the inode, so the report
+            # is published with its final permissions either way.
+            os.close(fd)
+            fd = -1
         os.replace(staging, output_file)
+        published = True
+        if fd >= 0:
+            # On POSIX the descriptor stays open across the rename, so the
+            # inode that was hashed can still be compared with the inode the
+            # destination now holds. A concurrent writer that swapped the
+            # staging name between the identity check and the rename is
+            # detected here instead of silently publishing someone else's
+            # bytes.
+            try:
+                if not path_names_inode(output_file, fd):
+                    print("WARNING: the published path does not hold the report this run "
+                          "hashed; another writer swapped the staging name — do not deliver "
+                          "without re-verifying")
+            except OSError:
+                pass
     except BaseException:
-        staging.unlink(missing_ok=True)
+        if not published:
+            staging.unlink(missing_ok=True)
         raise
-    return hasher.hexdigest(), size
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    return digest, size
 
 
 def main() -> int:
@@ -310,12 +576,13 @@ def main() -> int:
     digest, size = atomic_write(report, args.output_file)
     print(f"Rendered {args.output_file} with {len(warnings)} warning(s) ({'strict' if args.strict else 'compatibility-only'} validation)")
     try:
-        info = os.stat(args.output_file)
-        if info.st_size != size:
-            print("WARNING: published file size differs from this run's staged report; "
-                  "another render likely replaced it after publish — do not deliver without re-verifying")
+        published = hashlib.sha256(args.output_file.read_bytes()).hexdigest()
     except OSError:
-        pass
+        published = None
+    if published is not None and published != digest:
+        print("WARNING: the published report's checksum differs from this run's staged "
+              "report; another render likely replaced it after publish — do not deliver "
+              "without re-verifying")
     print(f"OUTPUT_SHA256 {digest}")
     print(f"OUTPUT_PATH {args.output_file.resolve()}")
     return 0
