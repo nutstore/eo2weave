@@ -6,6 +6,7 @@ import { getWebMCPMounts, readEnabledWebMCPPackages } from './package-repository
 import { getBuiltinStorage, BUILTIN_CONFIG_STORAGE_KEY } from './builtin-storage'
 import { USER_PACKAGE_CONFIG_SENTINEL_PREFIX } from './package-optin-handler'
 import { createPackageManagement } from './package-management'
+import { createRegistryBackground } from './registry-background'
 import { getAdapterStorage } from './provider-storage'
 import { createProviderHandler } from './provider-handler'
 import { createAdapterService } from './adapter-service'
@@ -77,6 +78,12 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
   const builtinCall = createProviderHandler(getBuiltinStorage, refresh)
   const skillCall = createProviderHandler(getExtensionSkillStorage, async () => {})
   const manage = createPackageManagement(providerCall, refresh)
+  const registry = createRegistryBackground({
+    changed: refresh,
+    notify: () => {
+      void chrome.runtime.sendMessage({ type: 'webmcpPackagesRegistryChanged' }).catch(() => {})
+    },
+  })
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (!isRecord(message) || typeof message.type !== 'string') return false
     if (message.type === 'webmcp_adapter_validate') {
@@ -229,6 +236,26 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
         return false
       }
       void refresh().then(() => respond({ ok: true }), () => respond({ ok: false }))
+      return true
+    }
+    if (message.type.startsWith('webmcp_registry_')) {
+      // EXTENSION PAGES ONLY: the registry writes into the extension's own
+      // OPFS mount, so it must never be reachable from a web page.
+      //   - `webmcp_registry_list` is a READ: the popup shows the summary,
+      //     so it is allowed there too;
+      //   - every mutation (add / remove / catalog / install / uninstall)
+      //     is restricted to the registry management page.
+      if (sender.id !== chrome.runtime.id) { respond({ ok: false, code: 'EACCES', error: 'Untrusted registry caller' }); return false }
+      const senderUrl = (sender.url || '').split(/[?#]/)[0]
+      const registryPage = chrome.runtime.getURL('/registry.html')
+      const allowed = message.type === 'webmcp_registry_list'
+        ? [registryPage, chrome.runtime.getURL('/popup.html')]
+        : [registryPage]
+      if (!allowed.includes(senderUrl)) {
+        respond({ ok: false, code: 'EACCES', error: 'Registry management requires the extension registry page' })
+        return false
+      }
+      void registry(message).then(respond)
       return true
     }
     if (message.type.startsWith('webmcp_packages_')) {

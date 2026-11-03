@@ -10,6 +10,17 @@ import pkg from './package.json';
 // becomes `false` and treeshaking removes every OpenAI endpoint / client_id /
 // UA string from the bundle. Default ON (internal builds keep full features).
 const CODEX_OAUTH = process.env.CW_CODEX_OAUTH !== '0';
+// Deploy region pin ('cn' | 'global' | '' = unset).
+//
+// The region decides which TRANSPORT the extension prefers for package
+// file downloads: the CN region prefers the jsDelivr CDN mirror
+// (raw.githubusercontent.com is effectively unreachable from mainland
+// China), the global region prefers the direct raw host. With no pin the
+// preference follows the browser's UI language at runtime (see
+// `registry-mirrors.ts`).
+const DEPLOY_REGION = process.env.CW_DEPLOY_REGION === 'cn' || process.env.CW_DEPLOY_REGION === 'global'
+  ? process.env.CW_DEPLOY_REGION
+  : '';
 // Store-build marker (independent of Codex stripping): the CWS build omits the
 // pinned manifest `key` (see below). Set CW_STORE_BUILD=1 via `build:store` /
 // `zip:store`. Combine with CW_CODEX_OAUTH=0 if a Codex-free store zip is ever
@@ -36,6 +47,11 @@ export default defineConfig({
     'build:before': async () => {
       const { copyQuickJs } = await import('./scripts/copy-quickjs.mjs')
       await copyQuickJs()
+      // chrome.i18n resolves a missing key to an EMPTY STRING, so a locale
+      // that drifted from the reference one ships a blank label with no
+      // error anywhere. Fail the build instead (issue #143).
+      const { checkExtensionLocaleParity } = await import('./scripts/check-extension-locale-parity.mjs')
+      checkExtensionLocaleParity()
     },
     'build:done': (wxt) => {
       const isDevBuild = wxt.config.mode === 'development';
@@ -82,6 +98,7 @@ export default defineConfig({
   vite: () => ({
     define: {
       __CW_CODEX_OAUTH__: JSON.stringify(CODEX_OAUTH),
+      __CW_DEPLOY_REGION__: JSON.stringify(DEPLOY_REGION),
     },
     // NOTE: rollupOptions.output is ignored by WXT for its HTML entries, and a
     // post-build rename breaks WXT's own lstat pass — so the `_virtual_*`

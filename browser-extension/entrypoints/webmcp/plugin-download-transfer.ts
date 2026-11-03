@@ -2,6 +2,7 @@ import type {
   WebMCPPluginDownloadFrame,
   WebMCPPluginDownloadPlan,
 } from './types'
+import { fetchWithMirrorFallback } from './registry-client'
 
 const DEFAULT_CHUNK_CHARS = 256 * 1024
 
@@ -312,6 +313,11 @@ export function assertPublicHttpsDownloadUrl(rawUrl: string): URL {
   if (isForbiddenIpLiteral(hostname)) {
     throw new Error(`Download URL host is not allowed: ${hostname}`)
   }
+  // Browser fetch does not expose or pin the connected IP. Limit privileged
+  // downloads to hosts whose DNS cannot be controlled by a download plan.
+  if (hostname !== 'raw.githubusercontent.com' && hostname !== 'cdn.jsdelivr.net') {
+    throw new Error(`Download URL host is not allowed: ${hostname}`)
+  }
   return url
 }
 
@@ -371,23 +377,69 @@ async function fetchPublicDownload(
   throw new Error('Download redirect loop')
 }
 
-async function prepareDownload(plan: WebMCPPluginDownloadPlan, abortSignal?: AbortSignal): Promise<PreparedDownload> {
-  const response = await fetchPublicDownload(plan.downloadUrl, abortSignal)
-  if (!response.ok) {
-    throw new Error(`Download failed with status ${response.status}`)
-  }
-  // Belt-and-braces: after the final hop the response URL must still be the
-  // URL we validated for that hop (browser normalization cannot smuggle a
-  // non-validated destination past redirect: 'manual').
-  assertPublicHttpsDownloadUrl(response.url)
+/** Per-candidate download deadline: headers AND body must arrive within it. */
+const DOWNLOAD_TIMEOUT_MS = 30_000
 
+/**
+ * Fetch one download candidate, consuming its body INSIDE the attempt, so the
+ * mirror fallback sees a body failure/stall the same way it sees a header
+ * failure (#143 mirror fallback; the deadline covers the WHOLE download).
+ *
+ * Security discipline is inherited from fetchPublicDownload: every candidate
+ * (canonical AND mirror) is validated with assertPublicHttpsDownloadUrl before
+ * the privileged fetch, redirects are never followed (opaque-redirect is
+ * refused), and the caller's abort signal is threaded through so client
+ * disconnect/cancel aborts the in-flight upstream request.
+ */
+async function fetchDownload(
+  candidate: string,
+  abortSignal?: AbortSignal
+): Promise<{ buffer: ArrayBuffer; contentType: string | null }> {
+  abortSignal?.throwIfAborted()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS)
+  const onOuterAbort = () => controller.abort(abortSignal?.reason)
+  abortSignal?.addEventListener('abort', onOuterAbort, { once: true })
+  try {
+    const response = await fetchPublicDownload(candidate, controller.signal)
+    if (!response.ok) {
+      const error = new Error(`Download failed with status ${response.status}`) as Error & { status?: number }
+      error.status = response.status
+      throw error
+    }
+    // The body is consumed while the deadline is still armed: a host that
+    // answers headers then stalls the stream aborts here, and the fallback
+    // loop moves on to the next candidate.
+    const buffer = await response.arrayBuffer()
+    abortSignal?.throwIfAborted()
+    return { buffer, contentType: response.headers.get('content-type') }
+  } catch (error) {
+    if (controller.signal.aborted && !abortSignal?.aborted) {
+      throw new Error(`Download timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s: ${candidate}`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+    abortSignal?.removeEventListener('abort', onOuterAbort)
+  }
+}
+
+async function prepareDownload(
+  plan: WebMCPPluginDownloadPlan,
+  abortSignal?: AbortSignal
+): Promise<PreparedDownload> {
+  const result = await fetchWithMirrorFallback(
+    plan.downloadUrl,
+    candidate => fetchDownload(candidate, abortSignal),
+    { signal: abortSignal },
+  )
+  abortSignal?.throwIfAborted()
   const fileName = sanitizeFileName(plan.fileName || `download_${Date.now()}`)
 
   const mimeType =
-    response.headers.get('content-type')?.split(';')[0]?.trim() || guessMimeType(fileName)
+    result.value.contentType?.split(';')[0]?.trim() || guessMimeType(fileName)
 
-  const arrayBuffer = await response.arrayBuffer()
-  const base64 = arrayBufferToBase64(arrayBuffer)
+  const base64 = arrayBufferToBase64(result.value.buffer)
   const dataUrl = `data:${mimeType};base64,${base64}`
 
   return {
@@ -396,7 +448,6 @@ async function prepareDownload(plan: WebMCPPluginDownloadPlan, abortSignal?: Abo
     dataUrl,
   }
 }
-
 function chunkData(data: string, chunkChars = DEFAULT_CHUNK_CHARS): string[] {
   if (chunkChars <= 0) return [data]
   const chunks: string[] = []
@@ -414,6 +465,7 @@ export async function streamPluginDownload(
   try {
     const prepared = await prepareDownload(plan, abortSignal)
     const chunks = chunkData(prepared.dataUrl)
+    abortSignal?.throwIfAborted()
 
     emit({
       type: 'start',
@@ -426,6 +478,7 @@ export async function streamPluginDownload(
     })
 
     for (let i = 0; i < chunks.length; i++) {
+      abortSignal?.throwIfAborted()
       emit({
         type: 'chunk',
         transferId: plan.transferId,
@@ -434,11 +487,13 @@ export async function streamPluginDownload(
       })
     }
 
+    abortSignal?.throwIfAborted()
     emit({
       type: 'end',
       transferId: plan.transferId,
     })
   } catch (error) {
+    if (abortSignal?.aborted) return
     const message = error instanceof Error ? error.message : String(error)
     emit({
       type: 'error',

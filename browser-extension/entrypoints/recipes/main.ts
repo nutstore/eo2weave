@@ -5,7 +5,7 @@ function t(key: string, substitutions?: string | string[]): string {
 }
 const errorDisplay = document.getElementById('pageError')!
 function showError(error: unknown) { errorDisplay.textContent = error instanceof Error ? error.message : String(error) }
-for (const [id, key] of [['pageTitle', 'webmcpPackagesTitle'], ['pageSubtitle', 'webmcpPackagesSubtitle'], ['pageNote', 'webmcpPackagesNote']])
+for (const [id, key] of [['pageTitle', 'webmcpPackagesPageTitle'], ['pageSubtitle', 'webmcpPackagesPageSubtitle'], ['pageNote', 'webmcpPackagesPageNote']])
   document.getElementById(id)!.textContent = t(key)
 
 function buildCard(entry: ManagedWebMCPPackage): HTMLElement {
