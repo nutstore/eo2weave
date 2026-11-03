@@ -1012,16 +1012,24 @@ async function runLoadFromDB(
         const selectionGenerationAtLoad = activeSelectionGeneration
 
         if (workspaceEnsureError !== null) {
-          const workspaceLoadMessage = workspaceEnsureError instanceof Error
-            ? `Failed to open active workspace: ${workspaceEnsureError.message}`
-            : 'Failed to open active workspace'
-          set((state) => {
-            state.loadError = workspaceLoadMessage
-            state.loadErrorScope = 'workspace'
-            state.loadFailedConversationId = null
-            state.loadFailedWorkspaceId = activeWsId
-          })
-          persistLoadErrorRecord(workspaceLoadMessage, workspaceEnsureError, null, activeWsId)
+          // The ensure targeted the workspace captured BEFORE the ensure was
+          // pending. If the active selection changed meanwhile (and this run
+          // preserved the user's newer choice), the failed workspace is no
+          // longer the visible one — recording its failure would leave a
+          // stale retry banner over a successfully loaded selection
+          // (PR #152 review, "Old workspace failure stays visible").
+          if (get().activeConversationId === activeWsId) {
+            const workspaceLoadMessage = workspaceEnsureError instanceof Error
+              ? `Failed to open active workspace: ${workspaceEnsureError.message}`
+              : 'Failed to open active workspace'
+            set((state) => {
+              state.loadError = workspaceLoadMessage
+              state.loadErrorScope = 'workspace'
+              state.loadFailedConversationId = null
+              state.loadFailedWorkspaceId = activeWsId
+            })
+            persistLoadErrorRecord(workspaceLoadMessage, workspaceEnsureError, null, activeWsId)
+          }
         }
 
         // NOTE: the persisted load-failure record is marked resolved only
@@ -1220,13 +1228,20 @@ async function runLoadFromDB(
               ? `Failed to open active workspace: ${workspaceErr.message}`
               : 'Failed to open active workspace'
             console.warn('[conversation.store] Fallback active workspace ensure failed:', workspaceErr)
-            set((state) => {
-              state.loadError = workspaceLoadMessage
-              state.loadErrorScope = 'workspace'
-              state.loadFailedConversationId = null
-              state.loadFailedWorkspaceId = retryActiveId
-            })
-            persistLoadErrorRecord(workspaceLoadMessage, workspaceErr, null, retryActiveId)
+            // The ensure targeted the id captured when the fallback began. If
+            // the active selection changed while it was pending, the failed
+            // workspace is no longer the visible one — recording its failure
+            // would leave a stale retry banner over the user's newer choice
+            // (PR #152 review, "Old workspace failure stays visible").
+            if (get().activeConversationId === retryActiveId) {
+              set((state) => {
+                state.loadError = workspaceLoadMessage
+                state.loadErrorScope = 'workspace'
+                state.loadFailedConversationId = null
+                state.loadFailedWorkspaceId = retryActiveId
+              })
+              persistLoadErrorRecord(workspaceLoadMessage, workspaceErr, null, retryActiveId)
+            }
           }
           let retryTranscriptLoaded = true
           if (retryActiveId) {
@@ -1402,6 +1417,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     retryLoadFromDB: async () => {
       if (get().loaded &&
           (get().loadErrorScope === 'transcript' || get().loadErrorScope === 'workspace')) {
+        // Targeted retry: with a workspace-scoped failure visible, the retry
+        // path runs ensureActiveWorkspace itself, so a success here is the
+        // workspace recovery a workspace-scoped diagnostics record requires
+        // before it may be marked resolved (PR #152 review). This is also why
+        // a transcript-scoped failure must NOT fall through to the full load
+        // below: the full load would run the workspace ensure and resolve a
+        // record the transcript retry alone never justified.
         return withInflightLoad(() => retryLoadedFailure(set, get), { force: true })
       }
       // A load timeout only rejects this store's await. The SQLite manager
@@ -1482,7 +1504,15 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               'conversation transcript read'
             )
             if (!isCurrentTranscriptRead(id, transcriptGeneration)) return
-            markPersistedFailureResolved(id, { requireNamedConversation: true })
+            // A transcript read never exercises the OPFS workspace layer, so
+            // it must not resolve a workspace-scoped record even when the ids
+            // coincide (PR #152 review, "Workspace failure reported as
+            // recovered") — only a path where ensureActiveWorkspace ran and
+            // succeeded may.
+            markPersistedFailureResolved(id, {
+              requireNamedConversation: true,
+              requireWorkspaceEnsure: true,
+            })
             if (selectionGeneration !== activeSelectionGeneration || get().activeConversationId !== id) return
             const tDeserialize = performance.now()
             primePersistBaseline(id, messages as Message[])
