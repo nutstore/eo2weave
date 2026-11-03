@@ -1529,13 +1529,17 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // Even a successful empty response is insufficient evidence that
         // every previously seen pin was removed. A non-empty list can prove
         // that a particular previously seen ID is absent.
-        if (catalogStatus === 'failed' || catalogStatus === 'loading') return []
+        if (catalogStatus === 'failed' || catalogStatus === 'loading' ||
+            (providerType === 'llm-gateway' && catalogStatus === 'empty')) return []
         if (availableIds.length === 0) return []
         const state = get()
         const pinned = state.pinnedModelsByProvider[providerType] || []
         const seen = new Set(state.pinnedSeenByProvider[providerType] || [])
         const available = new Set(availableIds)
-        return pinned.filter((id) => seen.has(id) && !available.has(id))
+        return pinned.filter((id) =>
+          seen.has(id) && !available.has(id) &&
+          !(providerType === state.providerType && id === state.modelName)
+        )
       },
 
       removePinnedModels: (providerType, modelIds) => {

@@ -131,6 +131,45 @@ describe('updateGatewayModels startup discovery deadline', () => {
     expect(getModelsForProvider('llm-gateway').map((m) => m.id)).toEqual(['new-model'])
   })
 
+  it('retains an older successful list as unavailable when the newer refresh fails', async () => {
+    let finishOld!: (result: { models: Array<{ id: string; name: string }>; status: 'ready' }) => void
+    mocks.fetchGatewayModels
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve }))
+      .mockResolvedValueOnce({ models: [], status: 'failed' })
+
+    const oldRefresh = updateGatewayModels('token')
+    await updateGatewayModels('token')
+    finishOld({ models: [{ id: 'old-model', name: 'Old' }], status: 'ready' })
+    await oldRefresh
+
+    expect(getModelsForProvider('llm-gateway').map((model) => model.id)).toEqual(['old-model'])
+    expect(getProviderCatalogStatus('llm-gateway')).toBe('failed')
+  })
+
+  it('retains an older successful list without losing a newer empty response', async () => {
+    let finishOld!: (result: { models: Array<{ id: string; name: string }>; status: 'ready' }) => void
+    mocks.fetchGatewayModels
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve }))
+      .mockResolvedValueOnce({ models: [], status: 'empty' })
+
+    const oldRefresh = updateGatewayModels('token')
+    await updateGatewayModels('token')
+    finishOld({ models: [{ id: 'old-model', name: 'Old' }], status: 'ready' })
+    await oldRefresh
+
+    expect(getModelsForProvider('llm-gateway').map((model) => model.id)).toEqual(['old-model'])
+    expect(getProviderCatalogStatus('llm-gateway')).toBe('empty')
+  })
+
+  it('does not discover with a token from a superseded auth session', async () => {
+    const tokenGeneration = mocks.generation
+    mocks.generation++
+
+    await updateGatewayModels('old-account-token', tokenGeneration)
+
+    expect(mocks.fetchGatewayModels).not.toHaveBeenCalled()
+  })
+
   it('does not let an older timeout downgrade a newer successful catalog', async () => {
     let failOld!: (error: Error) => void
     mocks.fetchGatewayModels

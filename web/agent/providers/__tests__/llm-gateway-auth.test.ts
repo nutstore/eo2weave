@@ -166,6 +166,30 @@ describe('llm-gateway-auth token refresh hardening', () => {
   })
 
   describe('refresh preserves the stored refresh token (real backend contract)', () => {
+    it('allows another refresh attempt after a hung refresh reaches its deadline', async () => {
+      seedStoredTokens()
+      const controller = new AbortController()
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal)
+      const fetchMock = vi.fn()
+        .mockImplementationOnce(() => new Promise<Response>(() => {}))
+        .mockResolvedValueOnce(refreshResponse('retry-token'))
+      vi.stubGlobal('fetch', fetchMock)
+      try {
+        const first = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+        controller.abort(new Error('refresh timed out'))
+        await expect(first).resolves.toMatchObject({ status: 'temporary_error' })
+
+        timeoutSpy.mockRestore()
+        await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({
+          status: 'success', accessToken: 'retry-token',
+        })
+        expect(fetchMock).toHaveBeenCalledTimes(2)
+      } finally {
+        timeoutSpy.mockRestore()
+      }
+    })
+
     it('stops a discovery caller at its deadline while a shared refresh continues', async () => {
       seedStoredTokens()
       let complete!: (response: Response) => void

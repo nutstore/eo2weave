@@ -152,7 +152,7 @@ export function ModelQuickSwitch({
     [providers]
   )
   const gatewayCatalogUnavailable = providers.some(
-    (p) => p.providerType === 'llm-gateway' && p.catalogStatus === 'failed',
+    (p) => p.providerType === 'llm-gateway' && (p.catalogStatus === 'failed' || p.catalogStatus === 'empty'),
   )
 
   // Enrich each model with hasVision and stale:
@@ -165,8 +165,7 @@ export function ModelQuickSwitch({
   //   list (registry / static list) — not from `models`, which is pinned-derived
   //   and would always contain every pin (making stale detection impossible).
   //   The catalog status travels with the comparison so an UNKNOWN catalog
-  //   (never loaded / fetch failed) reports nothing stale, while an
-  //   AUTHORITATIVE empty catalog does report the pins as stale (#146).
+  //   (never loaded / fetch failed / empty response) reports nothing stale.
   const enrichedProviders = useMemo<AvailableProvider[]>(() => {
     const { getStalePinnedModels } = useSettingsStore.getState()
     return visibleProviders.map((p) => {
@@ -378,7 +377,7 @@ export function ModelQuickSwitch({
       const token = await gateway.getValidAccessToken(
         gateway.getLLMGatewayBaseURL(), gateway.getLLMGatewayClientId(),
       )
-      if (token) await gateway.updateGatewayModels(token)
+      if (token) await gateway.updateGatewayModels(token, gateway.getGatewayAuthSessionGeneration())
     } catch (error) {
       console.error('[ModelQuickSwitch] Failed to refresh gateway models:', error)
     } finally {

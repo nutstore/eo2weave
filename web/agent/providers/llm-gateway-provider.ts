@@ -21,7 +21,7 @@
 
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from '@/agent/providers/types'
-import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+import { getModelsForProvider, getProviderCatalogStatus, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, invalidateGatewayAccessToken, refreshAccessTokenWithStatus, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'
@@ -118,8 +118,12 @@ export async function prepareGatewayModels(
   signal?: AbortSignal,
   recoverRejectedToken = false,
   onAuthGenerationChange?: (generation: number) => void,
+  expectedAuthGeneration = getGatewayAuthSessionGeneration(),
 ): Promise<{ models: ModelInfo[]; status: ProviderCatalogStatus; authGeneration?: number; reauthRequired?: boolean }> {
   const baseURL = getGatewayBaseURL()
+  if (expectedAuthGeneration !== getGatewayAuthSessionGeneration()) {
+    return { models: [], status: 'failed', authGeneration: expectedAuthGeneration }
+  }
   let authGeneration = getGatewayAuthSessionGeneration()
   let result = await fetchGatewayModels(baseURL, accessToken, signal)
   if (recoverRejectedToken && result.authRejected && authGeneration === getGatewayAuthSessionGeneration()) {
@@ -147,9 +151,9 @@ export async function prepareGatewayModels(
       // gpt-4o (128K), etc. each show their real value instead of a flat 200K.
       contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
     })),
-    // An empty gateway response cannot prove that every previously seen
-    // model disappeared. Keep the last known list and defer delisting.
-    status: result.status === 'empty' ? 'failed' : result.status,
+    // Preserve the successful-empty outcome separately from a fetch failure.
+    // Neither outcome proves that previously seen models were delisted.
+    status: result.status,
     authGeneration,
   }
 }
@@ -162,12 +166,16 @@ export function registerGatewayModels(
 ): void {
   if (refreshVersion !== undefined && !isGatewayCatalogRefreshCurrent(refreshVersion)) return
   if (refreshVersion === undefined) catalogRefreshVersion++
-  // A failed response says nothing about the catalog. Keep the last usable
-  // list for display, while the failed status prevents delisting decisions.
-  const catalogStatus = status === 'empty' ? 'failed' : status
-  const models = catalogStatus === 'failed'
+  // Failed and successful-empty responses cannot establish which previously
+  // seen models disappeared. Keep the last usable list for display, while
+  // recording the actual outcome for retry and reconciliation.
+  const models = status === 'failed' || status === 'empty'
     ? getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
     : modelInfos
+  commitGatewayCatalog(models, status)
+}
+
+function commitGatewayCatalog(models: ModelInfo[], status: ProviderCatalogStatus): void {
   const baseURL_str = getGatewayBaseURL()
   const config: Omit<LLMProviderConfig, 'apiKey'> = {
     baseURL: `${baseURL_str}/v1`,
@@ -179,10 +187,20 @@ export function registerGatewayModels(
   const meta: ProviderMeta = {
     ...GATEWAY_META,
     models,
-    catalogStatus,
+    catalogStatus: status,
   }
 
   registerDynamicProvider(LLM_GATEWAY_PROVIDER_TYPE, config, meta)
+}
+
+/** Seed the cache from an older success only while no newer usable list exists. */
+function retainSupersededGatewayModels(models: ModelInfo[], authGeneration: number): void {
+  if (authGeneration !== getGatewayAuthSessionGeneration() || models.length === 0) return
+  if (getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).length > 0) return
+  if (getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE) === 'ready') return
+  // The newer refresh still owns availability. Older data only fills the
+  // otherwise empty cache and cannot make it authoritative.
+  commitGatewayCatalog(models, getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE) === 'empty' ? 'empty' : 'failed')
 }
 
 /**
@@ -193,7 +211,7 @@ export function registerGatewayModels(
  */
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
 
-export async function updateGatewayModels(accessToken: string): Promise<ModelInfo[]> {
+export async function updateGatewayModels(accessToken: string, expectedAuthGeneration = getGatewayAuthSessionGeneration()): Promise<ModelInfo[]> {
   // Startup restore (AppBootstrap awaits this before isStorageReady) and any
   // other caller must not hang forever on a gateway that accepts the saved
   // token but never answers /v1/models. Bound the discovery with the SAME
@@ -201,7 +219,8 @@ export async function updateGatewayModels(accessToken: string): Promise<ModelInf
   // on expiry register a FAILED (unknown) catalog — never an authoritative
   // empty one — so consumers keep deferring until a later refresh succeeds
   // (Sourcery: "Startup discovery can hang").
-  const sessionGeneration = getGatewayAuthSessionGeneration()
+  if (expectedAuthGeneration !== getGatewayAuthSessionGeneration()) return getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
+  const sessionGeneration = expectedAuthGeneration
   let activeGeneration = sessionGeneration
   const refreshVersion = beginGatewayCatalogRefresh()
   try {
@@ -210,6 +229,7 @@ export async function updateGatewayModels(accessToken: string): Promise<ModelInf
       AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
       true,
       (generation) => { activeGeneration = generation },
+      expectedAuthGeneration,
     )
     if (reauthRequired) {
       clearGatewayCatalogForReauth(refreshVersion)
@@ -217,6 +237,8 @@ export async function updateGatewayModels(accessToken: string): Promise<ModelInf
     }
     if ((authGeneration ?? sessionGeneration) === getGatewayAuthSessionGeneration() && isGatewayCatalogRefreshCurrent(refreshVersion)) {
       registerGatewayModels(models, status, refreshVersion)
+    } else if (status === 'ready' && !isGatewayCatalogRefreshCurrent(refreshVersion)) {
+      retainSupersededGatewayModels(models, authGeneration ?? sessionGeneration)
     }
   } catch (error) {
     if (activeGeneration === getGatewayAuthSessionGeneration() && isGatewayCatalogRefreshCurrent(refreshVersion)) {
@@ -321,6 +343,7 @@ export async function fetchGatewayRateLimits(): Promise<RateLimitsResponse> {
 export {
   performDeviceCodeFlow,
   getValidAccessToken,
+  getGatewayAuthSessionGeneration,
   hasStoredTokens,
   hasValidAccessToken,
   logoutGateway,

@@ -216,7 +216,7 @@ describe('gateway last known catalog', () => {
     registerGatewayModels([], 'empty')
 
     expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([model])
-    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('empty')
   })
 
   it('clears cached models when another tab changes the credential pair', () => {

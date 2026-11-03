@@ -1313,9 +1313,7 @@ export function LLMGatewayCard({
     isAuthRunning || authState.status === 'success' || isDeviceFlowError
 
   const pinnedIds = pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE] || []
-  // The catalog status decides whether the list is trustworthy: a FAILED
-  // fetch is unknown (never flag), an authoritative EMPTY catalog means the
-  // gateway positively reports it serves no models (flag every seen pin).
+  // A failed or empty gateway catalog cannot prove a pin was delisted.
   const staleIds = useMemo(
     () => new Set(
       getStalePinnedModels(LLM_GATEWAY_PROVIDER_TYPE, allModels.map((m) => m.id), catalogStatus)
@@ -1382,9 +1380,9 @@ export function LLMGatewayCard({
         const clientId = getLLMGatewayClientId()
         const token = await getValidAccessToken(baseURL, clientId)
         if (token && !cancelled) {
+          authGenerationAtStart = getGatewayAuthSessionGeneration()
           const gateway = await import('@/agent/providers/llm-gateway-provider')
           if (cancelled) return
-          authGenerationAtStart = getGatewayAuthSessionGeneration()
           refreshVersion = gateway.beginGatewayCatalogRefresh()
           // Hard deadline mirroring the login discovery path
           // (withDiscoveryDeadline / MODEL_DISCOVERY_TIMEOUT_MS in
@@ -1401,6 +1399,7 @@ export function LLMGatewayCard({
             AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
             true,
             (generation) => { authGenerationAtStart = generation },
+            authGenerationAtStart,
           )
           if (reauthRequired) {
             if (cancelled || !gateway.isGatewayCatalogRefreshCurrent(refreshVersion)) return
@@ -1432,7 +1431,7 @@ export function LLMGatewayCard({
           // whose session was superseded must not touch setAllModels or the
           // pin-seen marks of the newer session either.
           if (cancelled || (authGeneration !== undefined && authGeneration !== getGatewayAuthSessionGeneration()) || !gateway.isGatewayCatalogRefreshCurrent(refreshVersion)) return
-          setAllModels(status === 'failed'
+          setAllModels(status === 'failed' || status === 'empty'
             ? getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => ({ id: m.id, name: m.name }))
             : models.map((m) => ({ id: m.id, name: m.name })))
           setCatalogStatus(status)

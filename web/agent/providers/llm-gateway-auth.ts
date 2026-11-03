@@ -881,10 +881,12 @@ export async function refreshAccessToken(
   baseURL: string,
   refreshToken: string
 ): Promise<TokenResponse> {
-  return gatewayFetch<TokenResponse>(baseURL, '/v1/auth/refresh', {
+  const signal = AbortSignal.timeout(15_000)
+  return abortableRequest(gatewayFetch<TokenResponse>(baseURL, '/v1/auth/refresh', {
     method: 'POST',
     body: JSON.stringify({ refresh_token: refreshToken }),
-  })
+    signal,
+  }), signal)
 }
 
 /**
@@ -1178,7 +1180,11 @@ function abortableRefreshResult(
   refresh: Promise<RefreshResult>,
   signal?: AbortSignal,
 ): Promise<RefreshResult> {
-  if (!signal) return refresh
+  return abortableRequest(refresh, signal)
+}
+
+function abortableRequest<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return request
   if (signal.aborted) return Promise.reject(signal.reason)
   // A refresh can be shared by model discovery and another caller. Bound the
   // discovery caller without cancelling the shared credential operation.
@@ -1188,7 +1194,7 @@ function abortableRefreshResult(
       reject(signal.reason)
     }
     signal.addEventListener('abort', onAbort, { once: true })
-    void refresh.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+    void request.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
   })
 }
 

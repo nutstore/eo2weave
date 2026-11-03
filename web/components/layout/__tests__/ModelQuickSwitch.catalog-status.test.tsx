@@ -18,7 +18,7 @@ const { state, refreshModels, getToken } = vi.hoisted(() => ({
       catalogStatus: 'failed',
     }]),
     getStalePinnedModels: vi.fn((_provider: string, _ids: string[], status?: string) =>
-      status === 'failed' ? [] : ['glm-5.2']),
+      status === 'failed' || status === 'empty' ? [] : ['glm-5.2']),
     switchProviderAndModel: vi.fn(),
     triggerProviderRefresh: vi.fn(),
   },
@@ -37,6 +37,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   getLLMGatewayBaseURL: () => 'https://gateway.example',
   getLLMGatewayClientId: () => 'client',
   getValidAccessToken: getToken,
+  getGatewayAuthSessionGeneration: () => 0,
   updateGatewayModels: refreshModels,
 }))
 vi.mock('@/i18n', () => ({ useT: () => (key: string) => ({
@@ -75,7 +76,24 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
     expect(state.switchProviderAndModel).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry model list' }))
-    await waitFor(() => expect(refreshModels).toHaveBeenCalledWith('token'))
+    await waitFor(() => expect(refreshModels).toHaveBeenCalledWith('token', 0))
     expect(state.triggerProviderRefresh).toHaveBeenCalled()
+  })
+
+  it('shows the same retry state for a successful empty gateway response', async () => {
+    state.getAvailableProviders.mockResolvedValueOnce([{
+      providerType: 'llm-gateway',
+      displayName: 'Nutstore AI',
+      providerKey: 'llm-gateway',
+      current: true,
+      models: [{ id: 'glm-5.2', name: 'GLM' }],
+      authoritativeIds: ['glm-5.2'],
+      catalogStatus: 'empty',
+    }])
+    render(<ModelQuickSwitch />)
+
+    expect(await screen.findByText('Model list unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('Delisted')).not.toBeInTheDocument()
+    expect(state.getStalePinnedModels).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'], 'empty')
   })
 })
