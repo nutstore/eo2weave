@@ -568,10 +568,16 @@ function persistLoadErrorRecord(
  * record names a failure of the metadata layer, which such a read never
  * exercises, so it may only be resolved by a full loadFromDB where the
  * metadata layer itself re-read successfully.
+ *
+ * `requireWorkspaceEnsure` (PR #152 review, "Workspace failure reported as
+ * recovered"): callers whose proof is a transcript read must pass true — a
+ * WORKSPACE-scope record names an OPFS ensure failure, which no transcript
+ * read exercises, so it may only be resolved by a path where the workspace
+ * ensure itself succeeded (which passes false or omits the option).
  */
 function markPersistedFailureResolved(
   resolvedForConversationId?: string | null,
-  options?: { requireNamedConversation?: boolean }
+  options?: { requireNamedConversation?: boolean; requireWorkspaceEnsure?: boolean }
 ): void {
   try {
     const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
@@ -595,6 +601,13 @@ function markPersistedFailureResolved(
         // A metadata-scope/legacy record: this transcript-only read proves
         // nothing about the metadata layer — leave it unresolved until a
         // full load (metadata re-read included) succeeds.
+        return
+      }
+      if (record.workspaceId && options?.requireWorkspaceEnsure) {
+        // A workspace-scoped record and this caller's proof is a transcript
+        // read only: the read does NOT prove the OPFS workspace opened —
+        // leave it unresolved until a path that ran ensureActiveWorkspace
+        // successfully resolves it (PR #152 review).
         return
       }
       sessionStorage.setItem(
@@ -658,6 +671,17 @@ function isCurrentTranscriptRead(id: string, generation: number): boolean {
   return transcriptReadGenerations.get(id) === generation
 }
 
+/**
+ * One targeted retry at a time per conversation: `withTimeout` rejects this
+ * store's await but leaves the underlying `findByConversation` request
+ * running in the worker, so an immediate re-retry would queue a second
+ * outstanding read behind a still-stalled first one. While a retry for a
+ * conversation is in flight, further targeted retries return immediately
+ * (the visible error stays, so the sidebar's Retry remains available once
+ * the in-flight read settles) (PR #152 review, "Timed-out reads accumulate").
+ */
+const inflightRetries = new Map<string, Promise<void>>()
+
 async function retryLoadedFailure(
   set: (recipe: (state: ConversationState) => void) => void,
   get: () => ConversationState
@@ -667,58 +691,93 @@ async function retryLoadedFailure(
   const id = scope === 'transcript' ? get().loadFailedConversationId : get().loadFailedWorkspaceId
   if (!id || !errorAtStart || (scope !== 'transcript' && scope !== 'workspace')) return
 
-  const generation = beginConversationLoadGeneration()
-  const stillCurrent = () => isCurrentConversationLoadGeneration(generation)
-  try {
-    if (scope === 'transcript') {
-      const transcriptGeneration = claimTranscriptRead(id)
-      const messages = await withTimeout(
-        getMessageRepository().findByConversation(id),
-        INITIAL_LOAD_TIMEOUT_MS,
-        'conversation transcript read'
-      )
-      if (!stillCurrent() || !isCurrentTranscriptRead(id, transcriptGeneration)) return
-      primePersistBaseline(id, messages as Message[])
-      set((state) => {
-        const conversation = state.conversations.find((item) => item.id === id)
-        if (conversation) {
-          conversation.messages = messages as Message[]
-          conversation.messagesLoaded = true
-          healCompressionBaseline(conversation)
-        }
-      })
-    } else {
-      await ensureActiveWorkspace(get().conversations, id)
-      if (!stillCurrent()) return
-    }
+  const inflight = inflightRetries.get(id)
+  if (inflight) return inflight.catch(() => {})
 
-    if (get().loadError === errorAtStart && get().loadErrorScope === scope &&
-        (scope === 'transcript' ? get().loadFailedConversationId === id :
-          get().loadFailedWorkspaceId === id)) {
-      markPersistedFailureResolved(id)
+  const run = (async () => {
+    const generation = beginConversationLoadGeneration()
+    const stillCurrent = () => isCurrentConversationLoadGeneration(generation)
+    try {
+      if (scope === 'transcript') {
+        const transcriptGeneration = claimTranscriptRead(id)
+        const messages = await withTimeout(
+          getMessageRepository().findByConversation(id),
+          INITIAL_LOAD_TIMEOUT_MS,
+          'conversation transcript read'
+        )
+        if (!stillCurrent() || !isCurrentTranscriptRead(id, transcriptGeneration)) return
+        const conversationBeforeInstall = get().conversations.find((item) => item.id === id)
+        // If messages were added to this conversation while the read was
+        // pending, the freshly-read snapshot is older than what the user
+        // already sees — installing it would make the new messages
+        // disappear (PR #152 review, "New messages disappear"). Skip the
+        // install; the in-memory state (already synced to the DB by the
+        // writers) stays authoritative.
+        const changedDuringRead =
+          conversationBeforeInstall !== undefined &&
+          conversationBeforeInstall.messagesLoaded !== false &&
+          conversationBeforeInstall.messages.length > (messages as Message[]).length
+        if (!changedDuringRead) {
+          primePersistBaseline(id, messages as Message[])
+          set((state) => {
+            const conversation = state.conversations.find((item) => item.id === id)
+            if (conversation) {
+              conversation.messages = messages as Message[]
+              conversation.messagesLoaded = true
+              healCompressionBaseline(conversation)
+            }
+          })
+        }
+      } else {
+        await ensureActiveWorkspace(get().conversations, id)
+        if (!stillCurrent()) return
+      }
+
+      if (get().loadError === errorAtStart && get().loadErrorScope === scope &&
+          (scope === 'transcript' ? get().loadFailedConversationId === id :
+            get().loadFailedWorkspaceId === id)) {
+        // A workspace retry ran ensureActiveWorkspace itself — its success is
+        // exactly the proof a workspace-scoped record requires, so it may
+        // resolve it. A transcript retry never exercised the workspace layer
+        // and must NOT (PR #152 review).
+        markPersistedFailureResolved(id, { requireWorkspaceEnsure: scope === 'transcript' })
+        set((state) => {
+          state.loadError = null
+          state.loadErrorScope = null
+          state.loadFailedConversationId = null
+          state.loadFailedWorkspaceId = null
+        })
+      }
+    } catch (error) {
+      // All three must match THIS retry: a stale run's caught error must not
+      // overwrite a newer failure — including a failure recorded for a
+      // DIFFERENT conversation while this retry was pending (PR #152 review,
+      // "Wrong conversation failure is shown").
+      if (!stillCurrent() || get().loadError !== errorAtStart || get().loadErrorScope !== scope ||
+          (scope === 'transcript'
+            ? get().loadFailedConversationId !== id
+            : get().loadFailedWorkspaceId !== id)) return
+      const message = error instanceof Error ? error.message : String(error)
+      const loadMessage = scope === 'transcript'
+        ? `Failed to load messages for active conversation: ${message}`
+        : `Failed to open active workspace: ${message}`
       set((state) => {
-        state.loadError = null
-        state.loadErrorScope = null
-        state.loadFailedConversationId = null
-        state.loadFailedWorkspaceId = null
+        state.loadError = loadMessage
+        state.loadErrorScope = scope
+        state.loadFailedConversationId = scope === 'transcript' ? id : null
+        state.loadFailedWorkspaceId = scope === 'workspace' ? id : null
       })
+      persistLoadErrorRecord(
+        loadMessage, error, scope === 'transcript' ? id : null,
+        scope === 'workspace' ? id : null
+      )
     }
-  } catch (error) {
-    if (!stillCurrent() || get().loadError !== errorAtStart || get().loadErrorScope !== scope) return
-    const message = error instanceof Error ? error.message : String(error)
-    const loadMessage = scope === 'transcript'
-      ? `Failed to load messages for active conversation: ${message}`
-      : `Failed to open active workspace: ${message}`
-    set((state) => {
-      state.loadError = loadMessage
-      state.loadErrorScope = scope
-      state.loadFailedConversationId = scope === 'transcript' ? id : null
-      state.loadFailedWorkspaceId = scope === 'workspace' ? id : null
-    })
-    persistLoadErrorRecord(
-      loadMessage, error, scope === 'transcript' ? id : null,
-      scope === 'workspace' ? id : null
-    )
+  })()
+  inflightRetries.set(id, run)
+  try {
+    await run
+  } finally {
+    if (inflightRetries.get(id) === run) inflightRetries.delete(id)
   }
 }
 
