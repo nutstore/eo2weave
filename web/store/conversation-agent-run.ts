@@ -72,7 +72,7 @@ type StoreGet = () => {
     maxTokens: number,
     directoryHandle: FileSystemDirectoryHandle | null,
     agentOverrideId?: string | null,
-    options?: { background?: boolean }
+    options?: { background?: boolean; transient?: boolean }
   ): Promise<void>
   generateTitle(
     id: string,
@@ -93,6 +93,14 @@ type StoreSet = (updater: (state: AgentRunStoreDraft) => void) => void
  * threaded, so a synchronous map insert IS the atomic claim.
  */
 const runClaimSlots = new Map<string, { claimed: boolean; owner: string }>()
+
+/**
+ * Upper bound for the pre-run workspace setup await. A workspace ensure that
+ * never settles would hold the run claim forever and reject every later
+ * dispatch for the conversation; on expiry the claim is released and the
+ * failure is surfaced so the conversation stays recoverable.
+ */
+const WORKSPACE_SETUP_TIMEOUT_MS = 15_000
 
 /**
  * Bridge onto the facade-module symbols runAgent touches. The delegate casts
@@ -125,12 +133,15 @@ export async function runAgentImpl(
       maxTokens: number,
       directoryHandle: FileSystemDirectoryHandle | null,
       agentOverrideId?: string | null,
-      options?: { background?: boolean }
+      options?: { background?: boolean; transient?: boolean }
 ): Promise<void> {
   const { handleSubagentStepNotification } = store
   // Background runs (external agents driving EO2Weave) must NOT steal the
   // user's active workspace — they only ensure the workspace exists.
   const background = options?.background === true
+  // Transient runs (delegated handoffs) resolve the override persona for THIS
+  // run only — it must not be persisted as the conversation's saved Agent.
+  const transientAgent = options?.transient === true
 
       const state = get()
       const conv = state.conversations.find((c) => c.id === conversationId)
@@ -150,17 +161,24 @@ export async function runAgentImpl(
       // activeRunId published) by the claim block further down, and released
       // on every early-return before that block.
       //
-      // A conversation that already holds a claim is REJECTED, not stolen:
-      // replacing the slot would strand the first dispatch mid-setup (its
-      // claimIsOurs() turns false and it bails without running) while the
-      // second one proceeds — the valid first request would be lost if the
-      // second exits early. The claim is released by its owner, so the
-      // rejected dispatch simply returns and lets the owner finish.
+      // A conversation that already holds a claim is NOT stolen and NOT
+      // silently dropped: this dispatch has already appended its user message
+      // to the conversation, so a bare return would leave the newer message
+      // unanswered forever. Instead, enqueue a re-run trigger into the same
+      // per-conversation queue the UI send path uses — the owner's end-of-run
+      // "Consume queued messages" block dequeues it and starts a follow-up
+      // turn. `rerunOnly: true` tells the consumer the user message is already
+      // persisted, so it must NOT create a duplicate one.
       if (runClaimSlots.has(conversationId)) {
         console.warn(
-          '[conversation.store] Dispatch rejected — conversation already has a pending run claim:',
+          '[conversation.store] Dispatch overlaps a pending run claim — queued a re-run trigger:',
           conversationId
         )
+        useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+          text: '',
+          enqueuedAt: Date.now(),
+          rerunOnly: true,
+        })
         return
       }
       const claimToken = `claim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -254,11 +272,24 @@ export async function runAgentImpl(
         // the conversationId as its workspaceId explicitly.
         const workspaceStore = useConversationContextStore.getState()
         try {
-          if (background) {
-            await workspaceStore.ensureWorkspace(conversationId, conv.title)
-          } else if (workspaceStore.activeWorkspaceId !== conversationId) {
-            await workspaceStore.switchWorkspace(conversationId)
-          }
+          // Bound the setup await: a workspace ensure that never settles (e.g.
+          // a stalled OPFS/SQLite bridge) would otherwise hold the claim
+          // forever and every later dispatch would be rejected. Same shape as
+          // META_PERSIST_WAIT_TIMEOUT_MS in webmcp/app-tools/workspace-setup.
+          const setupPromise = background
+            ? workspaceStore.ensureWorkspace(conversationId, conv.title)
+            : workspaceStore.activeWorkspaceId !== conversationId
+              ? workspaceStore.switchWorkspace(conversationId)
+              : Promise.resolve()
+          await Promise.race([
+            setupPromise,
+            new Promise<never>((_, reject) => {
+              setTimeout(
+                () => reject(new Error('WORKSPACE_SETUP_TIMEOUT')),
+                WORKSPACE_SETUP_TIMEOUT_MS
+              )
+            }),
+          ])
         } catch (setupError) {
           // FIX: this await window exits through the OUTER error handler when
           // setup/switch rejects — which never touches runClaimSlots, so the
@@ -266,6 +297,45 @@ export async function runAgentImpl(
           // rejected as already-claimed. Release the claim here and rethrow so
           // the outer handler keeps its normal rollback/failure behavior.
           releaseClaim()
+          if (setupError instanceof Error && setupError.message === 'WORKSPACE_SETUP_TIMEOUT') {
+            // Timeout: the conversation must be recoverable, so surface the
+            // failure instead of relying on the generic catch (which would
+            // leave no error banner while the claim is already gone). Mirror
+            // the providerMissing failure shape below.
+            const timeoutMessage = i18nText(
+              'conversation.toast.workspaceSetupTimeout',
+              'Preparing the workspace timed out — the run was stopped. Try again.'
+            )
+            toast.error(timeoutMessage)
+            set((state) => {
+              const c = state.conversations.find((c) => c.id === conversationId)
+              if (c) {
+                c.status = 'error'
+                c.error = timeoutMessage
+                c.activeRunId = null
+              }
+            })
+            useConversationRuntimeStore.setState((state) => {
+              const r = ensureRuntime(state, conversationId)
+              r.status = 'error'
+              r.error = timeoutMessage
+              r.activeRunId = null
+              r.draftAssistant = null
+              r.currentToolCall = null
+              r.activeToolCalls = []
+              r.streamingToolArgs = ''
+              r.streamingToolArgsByCallId = {}
+              r.streamingContent = ''
+              r.streamingReasoning = ''
+            })
+            const errorConv = get().conversations.find((c) => c.id === conversationId)
+            if (errorConv) {
+              persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
+                console.error('[conversation.store] Failed to persist workspace-setup timeout failure:', err)
+              })
+            }
+            return
+          }
           throw setupError
         }
 
@@ -561,6 +631,7 @@ export async function runAgentImpl(
 
         let activeAgentId = await resolveConversationAgentId(
           resolvedProjectId, conversationId, agentOverrideId, lastUserMessage?.content,
+          transientAgent ? { transient: true } : undefined,
         )
 
         // ── Final registry recheck immediately before provider construction
@@ -2005,14 +2076,17 @@ export async function runAgentImpl(
           })
 
           // Restart with the target agent persona. agentOverrideId forces the
-          // persona even if the latest message @mentions someone else.
+          // persona even if the latest message @mentions someone else. The
+          // handoff is transient: the delegate must NOT become the
+          // conversation's saved Agent selection.
           await get().runAgent(
             conversationId,
             providerType,
             modelName,
             maxTokens,
             directoryHandle,
-            targetAgentId
+            targetAgentId,
+            { transient: true }
           )
           return
         }
@@ -2117,17 +2191,10 @@ export async function runAgentImpl(
       if (finalStatus === 'idle') {
         const nextMsg = useConversationRuntimeStore.getState().dequeueMessage(conversationId)
         if (nextMsg) {
-          const userMsg = createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
-            contentParts: nextMsg.contentParts,
-            readImageHandoff: nextMsg.readImageHandoff,
-          })
-          const currentConv = get().conversations.find((c) => c.id === conversationId)
-          if (currentConv) {
-            get().updateMessages(conversationId, [...currentConv.messages, userMsg])
-            // Schedule the next run on the next microtask to avoid re-entrancy.
-            // FIX (parallel isolation): Pass null — runAgent now resolves the
-            // directoryHandle from conversationId internally, so the global
-            // active-project pointer can no longer cross-contaminate this run.
+          if (nextMsg.rerunOnly) {
+            // Re-run trigger from an overlapping dispatch: its user message is
+            // ALREADY in conv.messages, so start the follow-up turn directly —
+            // creating another user message would duplicate it.
             queueMicrotask(() => {
               get().runAgent(
                 conversationId,
@@ -2139,6 +2206,30 @@ export async function runAgentImpl(
                 nextMsg.background ? { background: true } : undefined,
               )
             })
+          } else {
+            const userMsg = createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
+              contentParts: nextMsg.contentParts,
+              readImageHandoff: nextMsg.readImageHandoff,
+            })
+            const currentConv = get().conversations.find((c) => c.id === conversationId)
+            if (currentConv) {
+              get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+              // Schedule the next run on the next microtask to avoid re-entrancy.
+              // FIX (parallel isolation): Pass null — runAgent now resolves the
+              // directoryHandle from conversationId internally, so the global
+              // active-project pointer can no longer cross-contaminate this run.
+              queueMicrotask(() => {
+                get().runAgent(
+                  conversationId,
+                  providerType,
+                  modelName,
+                  maxTokens,
+                  null,
+                  nextMsg.agentOverrideId ?? null,
+                  nextMsg.background ? { background: true } : undefined,
+                )
+              })
+            }
           }
         }
       }
