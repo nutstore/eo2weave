@@ -1336,6 +1336,8 @@ export function LLMGatewayCard({
     }
   }, [staleIds, removePinnedModels, t])
 
+  // eslint-disable-next-line no-console
+  console.log('DBG8 cardStatus:', catalogStatus, 'models:', allModels.length)
   const unpinned = allModels.filter((m) => !pinnedIds.includes(m.id))
   const filteredUnpinned = !modelSearch.trim()
     ? unpinned
@@ -1726,10 +1728,18 @@ export function LLMGatewayCard({
   const handleAddManual = useCallback(() => {
     const trimmed = manualDraft.trim()
     if (!trimmed) return
+    // Catalog-verified pinning only (Sourcery: "Manual pinning bypasses
+    // catalog verification"): the API-library button is already gated on
+    // allModels.length, but the manual-add control stayed active while the
+    // catalog was failed/empty — pinning an id the gateway never confirmed
+    // would flag it stale the moment a real catalog proves absence. Same
+    // contract as the commit in 7df3cbd2 ("disable pinning from unverified
+    // catalog").
+    if (catalogStatus !== 'ready') return
     pinModel(LLM_GATEWAY_PROVIDER_TYPE, trimmed)
     setManualDraft('')
     setAddingManual(false)
-  }, [manualDraft, pinModel])
+  }, [manualDraft, pinModel, catalogStatus])
 
   const handleFetchRateLimits = useCallback(async () => {
     setRateLimitsLoading(true)
@@ -1960,8 +1970,9 @@ export function LLMGatewayCard({
                     </BrandButton>
                     <button
                       type="button"
-                      className="inline-flex items-center gap-1 rounded-md px-2.5 h-8 text-[11px] font-medium text-white"
+                      className="inline-flex items-center gap-1 rounded-md px-2.5 h-8 text-[11px] font-medium text-white disabled:opacity-50"
                       style={{ background: 'var(--brand, #0d9488)' }}
+                      disabled={catalogStatus !== 'ready'}
                       onClick={handleAddManual}
                     >
                       {t('settings.modelManagement.addModel')}

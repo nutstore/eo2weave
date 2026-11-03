@@ -8,7 +8,7 @@
  */
 
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
@@ -67,11 +67,11 @@ const gatewayMock = vi.hoisted(() => ({
   ),
   logoutGateway: vi.fn(),
   getValidAccessToken: vi.fn(async () => 'stale-access-token'),
-  fetchGatewayModels: vi.fn(async () => ({
-    models: [] as Array<{ id: string; name: string }>,
-    status: 'failed' as const,
+  fetchGatewayModels: vi.fn<() => Promise<{ models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }>>(async () => ({
+    models: [{ id: 'glm-5.2', name: 'GLM' }],
+    status: 'ready',
   })),
-  prepareGatewayModels: vi.fn(),
+  prepareGatewayModels: vi.fn<() => Promise<{ models: Array<{ id: string; name: string; capabilities?: string[] }>; status: 'ready' | 'empty' | 'failed'; authGeneration?: number; reauthRequired?: boolean }>>(),
   getGatewayCredentialStatus: vi.fn(() => 'unknown'),
   hasStoredTokens: vi.fn(() => true),
   registerGatewayModels: vi.fn(),
@@ -80,27 +80,32 @@ const gatewayMock = vi.hoisted(() => ({
   getProviderCatalogStatus: vi.fn(
     () => 'ready' as 'ready' | 'empty' | 'failed' | undefined,
   ),
+  setProviderCatalogStatusForTests: null as null | (() => void),
   persistDeviceLoginTokens: vi.fn(),
   fetchGatewayRateLimits: vi.fn(async () => {
     throw new Error('Nutstore AI login has expired. Please log in again.')
   }),
 }))
 
-vi.mock('@/agent/providers/llm-gateway-auth', () => ({
-  performDeviceCodeFlow: gatewayMock.performDeviceCodeFlow,
-  persistDeviceLoginTokens: gatewayMock.persistDeviceLoginTokens,
-  logoutGateway: gatewayMock.logoutGateway,
-  getValidAccessToken: gatewayMock.getValidAccessToken,
-  getGatewayAuthSessionGeneration: () => 0,
-  fetchGatewayModels: gatewayMock.fetchGatewayModels,
-  getGatewayCredentialStatus: gatewayMock.getGatewayCredentialStatus,
-  hasStoredTokens: gatewayMock.hasStoredTokens,
-  // Consumed by handleLogout's purge-failure badge re-derivation (which key
-  // to check for a surviving refresh-token backup). Missing here, the
-  // binding access throws inside that catch and silently keeps the card
-  // logged out — exactly the bug the purge-failure test guards against.
-  LLM_GATEWAY_REFRESH_TOKEN_KEY_ID: '__llm_gateway_refresh_token__',
-}))
+vi.mock('@/agent/providers/llm-gateway-auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/agent/providers/llm-gateway-auth')>()
+  return {
+    ...actual,
+    performDeviceCodeFlow: gatewayMock.performDeviceCodeFlow,
+    persistDeviceLoginTokens: gatewayMock.persistDeviceLoginTokens,
+    logoutGateway: gatewayMock.logoutGateway,
+    getValidAccessToken: gatewayMock.getValidAccessToken,
+    getGatewayAuthSessionGeneration: () => 0,
+    fetchGatewayModels: gatewayMock.fetchGatewayModels,
+    getGatewayCredentialStatus: gatewayMock.getGatewayCredentialStatus,
+    hasStoredTokens: gatewayMock.hasStoredTokens,
+    // Consumed by handleLogout's purge-failure badge re-derivation (which key
+    // to check for a surviving refresh-token backup). Missing here, the
+    // binding access throws inside that catch and silently keeps the card
+    // logged out — exactly the bug the purge-failure test guards against.
+    LLM_GATEWAY_REFRESH_TOKEN_KEY_ID: '__llm_gateway_refresh_token__',
+  }
+})
 
 const applyGatewayLoginTokensMock = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/gateway-login', () => ({
@@ -108,8 +113,11 @@ vi.mock('@/lib/gateway-login', () => ({
   MODEL_DISCOVERY_TIMEOUT_MS: 15_000,
 }))
 
-vi.mock('@/agent/providers/llm-gateway-provider', () => ({
-  LLM_GATEWAY_PROVIDER_TYPE: 'llm-gateway',
+vi.mock('@/agent/providers/llm-gateway-provider', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/agent/providers/llm-gateway-provider')>()
+  return {
+    ...actual,
+    LLM_GATEWAY_PROVIDER_TYPE: 'llm-gateway',
   getLLMGatewayApiKeyProviderKey: () => '__llm_gateway_token__',
   getLLMGatewayBaseURL: () => 'https://ai.jianguoyun.com',
   getLLMGatewayClientId: () => 'test-client-id',
@@ -122,7 +130,8 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   prepareGatewayModels: gatewayMock.prepareGatewayModels,
   beginGatewayCatalogRefresh: () => ++gatewayMock.catalogVersion,
   isGatewayCatalogRefreshCurrent: (version: number) => version === gatewayMock.catalogVersion,
-}))
+  }
+})
 
 vi.mock('@/agent/providers/types', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/agent/providers/types')>()
@@ -135,7 +144,13 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
     // never see (Sourcery: "getModelsForProvider mock always returns GLM").
     getModelsForProvider: (type: string) =>
       actual.getModelsForProvider(type as Parameters<typeof actual.getModelsForProvider>[0]),
-    getProviderCatalogStatus: gatewayMock.getProviderCatalogStatus,
+    // STATEFUL as well: read the status the REAL registry recorded (the
+    // card writes it through gatewayMock.registerGatewayModels → the real
+    // registerDynamicProvider). A fixed 'ready' stub would leave the card's
+    // catalogStatus stuck on ready even after a failed refresh registered
+    // 'failed'.
+    getProviderCatalogStatus: (type: string) =>
+      actual.getProviderCatalogStatus(type as Parameters<typeof actual.getProviderCatalogStatus>[0]),
   }
 })
 
@@ -145,8 +160,8 @@ vi.mock('sonner', () => ({
 
 vi.mock('@creatorweave/ui', () => ({
   BrandInput: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
-  BrandButton: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button {...props}>{props.children}</button>
+  BrandButton: ({ disabled, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+    <button disabled={disabled} {...props}>{props.children}</button>
   ),
   BrandDialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
     open ? <div>{children}</div> : null,
@@ -562,5 +577,60 @@ describe('LLMGatewayCard credential state', () => {
     await act(async () => { rejectOld(new Error('timeout')) })
 
     expect(gatewayMock.registerGatewayModels).not.toHaveBeenCalled()
+  })
+
+  it('does not pin a manually typed model while the catalog is not ready (Sourcery: Manual pinning bypasses catalog verification)', async () => {
+    // Commit 7df3cbd2 gated the API-library button on a verified catalog;
+    // the manual-add control stayed active. Pinning an id the gateway never
+    // confirmed would flag it stale the moment a real catalog proves
+    // absence — the manual pin must be refused for a failed catalog.
+    settingsState.modelCredentialStatus = 'valid'
+    settingsState.pinnedModelsByProvider = {}
+    gatewayMock.fetchGatewayModels.mockResolvedValueOnce({ models: [], status: 'failed' })
+
+    const user = userEvent.setup()
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => expect(gatewayMock.registerGatewayModels).toHaveBeenCalled())
+    // The manual-add flow: toggle the input (the "Manual input" chip), type
+    // into the only textbox the logged-in card renders, commit with Enter.
+    await user.click(screen.getByRole('button', { name: 'Manual input' }))
+    const manualInput = screen.getByRole('textbox')
+    await user.type(manualInput, 'some-unverified-model{Enter}')
+
+    expect(settingsState.pinModel).not.toHaveBeenCalled()
+    // The confirm button (the styled "Add Model" chip) is disabled while the
+    // catalog is not ready.
+    const addModelButton = screen.getAllByRole('button').find((b) => b.textContent === 'Add Model')
+    expect(addModelButton).toBeDefined()
+    expect(addModelButton!).toBeDisabled()
+  })
+
+  it('pins a manually typed model when the catalog is ready', async () => {
+    // The guard must not swallow the working path: a ready catalog keeps
+    // manual pinning functional (typo'd ids the user wants anyway).
+    settingsState.modelCredentialStatus = 'valid'
+    settingsState.pinnedModelsByProvider = {}
+
+    const user = userEvent.setup()
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => expect(gatewayMock.registerGatewayModels).toHaveBeenCalled())
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Add from model library' }) as HTMLButtonElement).disabled).toBe(false),
+    )
+    await user.click(screen.getByRole('button', { name: 'Manual input' }))
+    const manualInput = screen.getByRole('textbox')
+    fireEvent.change(manualInput, { target: { value: 'glm-5.2' } })
+    const addModelButton = await waitFor(() => {
+      const btn = screen.getAllByRole('button').find((b) => b.textContent === 'Add Model')
+      expect(btn).toBeDefined()
+      return btn!
+    })
+    // Clicking the confirm chip pins through the store action — the guard
+    // must not swallow the ready-catalog path.
+    act(() => { fireEvent.click(addModelButton) })
+
+    expect(settingsState.pinModel).toHaveBeenCalledWith('llm-gateway', 'glm-5.2')
   })
 })
