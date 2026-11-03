@@ -15,6 +15,7 @@ import {
 } from '@/agent/providers/gateway-credential-lock'
 import { saveApiKey as saveGatewayApiKey } from '@/security/api-key-store'
 import { useI18nStore } from '@/i18n/store'
+import type { ProviderCatalogStatus } from '@/agent/providers/types'
 
 // ── Types ──
 
@@ -1433,28 +1434,85 @@ export async function logoutGateway(): Promise<void> {
 }
 
 /**
- * Fetch available models from the gateway
+ * Fetch available models from the gateway.
+ *
+ * The result distinguishes an AUTHORITATIVE empty catalog from a FAILED
+ * fetch — the two look identical in the response body (`data: []` vs a
+ * non-200 response) but mean opposite things:
+ *
+ * - `failed` — the request did not produce a usable catalog (non-2xx,
+ *   unparseable body, network error). The provider's model list is UNKNOWN:
+ *   it is missing information, never proof that every model was delisted.
+ *   Callers must not switch the user's selection or flag pins as stale.
+ * - `empty` — the gateway answered successfully and positively reports that
+ *   it serves no models. This IS authoritative information: pins for this
+ *   provider are genuinely gone.
+ * - `ready` — the gateway answered with a non-empty catalog.
  */
 export async function fetchGatewayModels(
   baseURL: string,
   accessToken: string,
   signal?: AbortSignal,
-): Promise<Array<{ id: string; name: string }>> {
-  const res = await fetch(`${baseURL}/v1/models`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal,
-  })
-  if (!res.ok) return []
-
-  const data = await res.json()
-  if (!data?.data || !Array.isArray(data.data)) return []
-
-  return data.data.map(
-    (m: { id?: string; name?: string }) => ({
-      id: m.id || '',
-      name: m.name || m.id || '',
+): Promise<{ models: Array<{ id: string; name: string }>; status: ProviderCatalogStatus }> {
+  let res: Response
+  try {
+    res = await fetch(`${baseURL}/v1/models`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
     })
-  )
+  } catch (e) {
+    // An explicit cancellation still propagates; only genuine network
+    // failures degrade to a failed (unknown) catalog.
+    if (signal?.aborted || (e instanceof Error && e.name === 'AbortError')) throw e
+    // A network failure carries NO catalog information — it is a failed
+    // refresh, not an authoritative empty list.
+    return { models: [], status: 'failed' }
+  }
+  // A non-2xx response carries NO catalog information — it is a failed
+  // refresh, not an authoritative empty list.
+  if (!res.ok) return { models: [], status: 'failed' }
+
+  // A body that cannot be read or parsed (truncated stream, malformed JSON)
+  // is an unusable response, not an authoritative "no models": degrade to a
+  // failed catalog instead of rejecting (Sourcery: "Invalid JSON rejects
+  // model fetch" — res.json() previously threw outside this handling, so
+  // callers never received the failed-catalog result).
+  let data: { data?: unknown }
+  try {
+    data = (await res.json()) as { data?: unknown }
+  } catch (e) {
+    // An abort landing while the body read is still pending (the discovery
+    // deadline firing after the headers arrived) is NOT a failed catalog —
+    // it carries no catalog information at all. Re-throw it so the caller's
+    // timeout/cancellation handling runs instead of committing an empty
+    // result that would drop previously registered models (Sourcery:
+    // "Timed-out body read erases gateway models").
+    if (signal?.aborted || (e instanceof Error && e.name === 'AbortError')) throw e
+    return { models: [], status: 'failed' }
+  }
+  // A body that is not a model array is an unusable response, not an
+  // authoritative "no models".
+  if (!data?.data || !Array.isArray(data.data)) return { models: [], status: 'failed' }
+
+  // Per-entry validation (Sourcery round 6, "Malformed gateway models are
+  // accepted"): a gateway that answers 200 with garbage entries — null,
+  // non-objects, or entries without a usable string `id` — is not sending a
+  // catalog. Mapping blind dereferenced null entries or empty-string ids
+  // produced either a thrown rejection (callers never saw the failed status)
+  // or a 'ready' status over an unusable list (empty-string ids selectable).
+  // Malformed SHAPE is treated like malformed JSON (b244dfeb): a failed,
+  // retryable catalog — never an authoritative empty one.
+  type RawModel = { id?: unknown; name?: unknown }
+  const usable: Array<{ id: string; name: string }> = []
+  for (const entry of data.data) {
+    if (typeof entry !== 'object' || entry === null) return { models: [], status: 'failed' }
+    const m = entry as RawModel
+    if (typeof m.id !== 'string' || m.id.trim() === '') return { models: [], status: 'failed' }
+    usable.push({ id: m.id, name: typeof m.name === 'string' && m.name !== '' ? m.name : m.id })
+  }
+  // A SUCCESSFUL response IS authoritative, empty or not: an empty `data:[]`
+  // positively reports that the gateway serves no models.
+  return { models: usable, status: usable.length > 0 ? 'ready' : 'empty' }
 }
 
 /**

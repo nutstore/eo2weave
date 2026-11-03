@@ -38,18 +38,49 @@ import {
  */
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
 
-function withDiscoveryDeadline<T>(p: Promise<T>): Promise<T> {
+export { MODEL_DISCOVERY_TIMEOUT_MS }
+
+/**
+ * Run the model discovery under a hard deadline that ALSO aborts the
+ * discovery request itself.
+ *
+ * The deadline previously only rejected the RACE: the caller moved on to
+ * the credential commit while `prepareGatewayModels` kept awaiting a hung
+ * fetch forever, and with no caller-supplied signal (the direct-login
+ * path) nothing would ever cancel it — the request and its resources
+ * stayed outstanding (Sourcery round 8, "Timed-out discovery keeps
+ * running").
+ *
+ * `start` receives the signal the discovery must use: an INTERNAL
+ * AbortController's signal, chained onto the caller's signal when one
+ * exists (so a caller cancellation still cancels the fetch). Expiry
+ * aborts the internal controller — the fetch settles instead of leaking.
+ * Aborting the internal controller never touches the caller's own signal,
+ * so `signal?.throwIfAborted()` still sees only genuine caller
+ * cancellations.
+ */
+function withDiscoveryDeadline<T>(
+  start: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
+  const internalController = new AbortController()
+  const onOuterAbort = () => internalController.abort(signal?.reason)
+  signal?.addEventListener('abort', onOuterAbort, { once: true })
+  const cleanup = () => {
+    if (timer !== undefined) clearTimeout(timer)
+    signal?.removeEventListener('abort', onOuterAbort)
+  }
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('model discovery timed out')), MODEL_DISCOVERY_TIMEOUT_MS)
+    timer = setTimeout(() => {
+      internalController.abort(new Error('model discovery timed out'))
+      reject(new Error('model discovery timed out'))
+    }, MODEL_DISCOVERY_TIMEOUT_MS)
   })
+  const discovery = start(internalController.signal)
   return Promise.race([
-    p.finally(() => {
-      if (timer !== undefined) clearTimeout(timer)
-    }),
-    deadline.finally(() => {
-      if (timer !== undefined) clearTimeout(timer)
-    }),
+    discovery.finally(cleanup),
+    deadline.finally(cleanup),
   ])
 }
 
@@ -118,9 +149,22 @@ async function applyGatewayLoginTokensInner(
   // commit (Sourcery: "Approved login can hang"). Cancellation (signal
   // aborted) still propagates — an explicitly cancelled login must not
   // commit.
-  let models: Awaited<ReturnType<typeof prepareGatewayModels>> = []
+  //
+  // The catalog STATUS is carried alongside the list: a failed discovery
+  // must NOT be committed as an AUTHORITATIVE empty catalog, or the store
+  // would later conclude that every pinned model was delisted and switch
+  // the user's selection away from a provider that is merely unreachable
+  // (#146). An authoritative empty catalog (the gateway answered and
+  // serves no models) is committed as such.
+  let discovery: Awaited<ReturnType<typeof prepareGatewayModels>> = {
+    models: [],
+    status: 'failed',
+  }
   try {
-    models = await withDiscoveryDeadline(prepareGatewayModels(accessToken, signal))
+    discovery = await withDiscoveryDeadline(
+      (discoverySignal) => prepareGatewayModels(accessToken, discoverySignal),
+      signal,
+    )
   } catch (e) {
     if (signal?.aborted) signal.throwIfAborted()
     console.warn('[gateway-login] model discovery failed; committing login with an empty model list:', e)
@@ -151,7 +195,7 @@ async function applyGatewayLoginTokensInner(
     let defaults: string[] = []
     if ((settings.pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
       const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
-      defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, models.map((m) => m.id))
+      defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, discovery.models.map((m) => m.id))
     }
     signal?.throwIfAborted()
     // Bound the key-store reads/writes: a stalled api-key-store op must not
@@ -216,7 +260,7 @@ async function applyGatewayLoginTokensInner(
       signal?.throwIfAborted()
       // No awaits after this point: cancellation cannot interleave the token
       // pair, provider registration, and selected-provider settings commit.
-      registerGatewayModels(models)
+      registerGatewayModels(discovery.models, discovery.status)
       onCommit?.()
       committed = true
       settings.invalidateApiKeyCache(keyId)
@@ -228,7 +272,7 @@ async function applyGatewayLoginTokensInner(
       // the settings card re-registers the fetched catalog on its next
       // /models fetch; an empty modelName here marks the selection for
       // that re-resolution instead of pinning a wrong provider's model.
-      settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, models[0]?.id ?? '')
+      settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, discovery.models[0]?.id ?? '')
       if (defaults.length > 0) {
         settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
         settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
@@ -237,7 +281,7 @@ async function applyGatewayLoginTokensInner(
       settings.setHasApiKey(true)
       settings.setModelCredentialStatus('valid')
       settings.triggerProviderRefresh()
-      return { ok: true, accessToken, models }
+      return { ok: true, accessToken, models: discovery.models }
     } catch (e) {
       // The aborted write may have committed. Roll back only while still
       // holding the lock shared by all gateway login attempts. Bounded the

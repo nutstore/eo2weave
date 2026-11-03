@@ -15,6 +15,13 @@ interface AvailableProvider {
   providerKey: string
   /** Authoritative model ids (registry list) — pins missing from here are stale. */
   authoritativeIds?: string[]
+  /**
+   * How the authoritative list was obtained. 'failed' means the catalog is
+   * UNKNOWN (never loaded / fetch failed) — an empty list then carries no
+   * information and must not flag pins as stale. 'empty' means the provider
+   * positively reported that it serves no models (authoritative).
+   */
+  catalogStatus?: 'loading' | 'ready' | 'empty' | 'failed'
 }
 
 /** Flattened model entry used when searching across providers. */
@@ -102,7 +109,14 @@ export function ModelQuickSwitch({
       setLoadError(false)
       try {
         const result = await getAvailableProviders()
-        if (!cancelled) {
+        // A superseded run (a newer getAvailableProviders() started while
+        // this one was awaiting) reports current:false on every entry — its
+        // snapshot is stale. Applying it would let an older overlapping run
+        // that resolves late overwrite the newer run's provider data, so
+        // models absent from the current catalog stayed selectable. Same
+        // gate WorkspaceLayout uses for its reconciliation
+        // (Sourcery: "Superseded model lists remain selectable").
+        if (!cancelled && result.every((p) => p.current)) {
           setProviders(result)
         }
       } catch (err) {
@@ -146,11 +160,18 @@ export function ModelQuickSwitch({
   // - stale: pinned before but missing from the provider's AUTHORITATIVE id
   //   list (registry / static list) — not from `models`, which is pinned-derived
   //   and would always contain every pin (making stale detection impossible).
+  //   The catalog status travels with the comparison so an UNKNOWN catalog
+  //   (never loaded / fetch failed) reports nothing stale, while an
+  //   AUTHORITATIVE empty catalog does report the pins as stale (#146).
   const enrichedProviders = useMemo<AvailableProvider[]>(() => {
     const { getStalePinnedModels } = useSettingsStore.getState()
     return visibleProviders.map((p) => {
       const staleIds = new Set(
-        getStalePinnedModels(p.providerType, p.authoritativeIds ?? p.models.map((m) => m.id))
+        getStalePinnedModels(
+          p.providerType,
+          p.authoritativeIds ?? p.models.map((m) => m.id),
+          p.catalogStatus,
+        )
       )
       return {
         ...p,

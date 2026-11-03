@@ -401,6 +401,14 @@ export function WorkspaceLayout({
   useEffect(() => {
     syncModelForWorkspace(activeConversationId ?? null)
     void useSettingsStore.getState().getAvailableProviders().then((providers) => {
+      // A SUPERSEDED run must not reconcile: when a newer
+      // getAvailableProviders() started while this one was awaiting, this
+      // snapshot is stale and the store already skipped its own
+      // reconciliation for it (Sourcery: "Stale discovery changes
+      // selection"). Feeding it into ensureValidModelSelection here would
+      // let the stale catalog switch the active model after the newer run
+      // began. The newer run re-derives everything from fresher state.
+      if (!providers.every((p) => p.current)) return
       ensureValidModelSelection(providers, { preserveExpiredCredential: true })
     }).catch((error) => {
       console.warn('[WorkspaceLayout] model reconciliation deferred:', error)

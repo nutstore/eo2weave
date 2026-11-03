@@ -1,6 +1,10 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useDynamicModels } from '../use-dynamic-models'
+import { useDynamicModels } from '@/agent/providers/use-dynamic-models'
+
+// The negative-cache window lives in the module under test; importing the
+// real module's constant keeps the test in sync with it.
+const FAILED_FETCH_RETRY_MS = 5 * 60 * 1000
 
 const mocks = vi.hoisted(() => ({
   fetchModelsForProvider: vi.fn(),
@@ -11,11 +15,11 @@ const mocks = vi.hoisted(() => ({
   setCachedModels: vi.fn(),
 }))
 
-vi.mock('../model-fetcher', () => ({
+vi.mock('@/agent/providers/model-fetcher', () => ({
   fetchModelsForProvider: mocks.fetchModelsForProvider,
 }))
 
-vi.mock('../model-store', () => ({
+vi.mock('@/agent/providers/model-store', () => ({
   getCachedModels: mocks.getCachedModels,
   getCachedModelsResult: mocks.getCachedModelsResult,
   isCacheStale: mocks.isCacheStale,
@@ -58,5 +62,93 @@ describe('useDynamicModels stale refresh', () => {
 
     await waitFor(() => expect(mocks.loadApiKey).toHaveBeenCalledWith('deepseek'))
     expect(mocks.fetchModelsForProvider).not.toHaveBeenCalled()
+  })
+
+  it('retries automatically after the failed-fetch negative-cache window expires (Sourcery: failed fetches do not retry)', async () => {
+    vi.useFakeTimers()
+    try {
+      // First fetch fails → records failedFetchAt and suppresses the
+      // automatic retry for FAILED_FETCH_RETRY_MS (5 min). The mounted
+      // provider's deps never change, so only the scheduled retry timer can
+      // re-trigger the fetch.
+      mocks.fetchModelsForProvider.mockRejectedValueOnce(new Error('network down'))
+
+      renderHook(() => useDynamicModels('deepseek', 'deepseek'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocks.fetchModelsForProvider).toHaveBeenCalledTimes(1)
+
+      // Still inside the window: no retry.
+      await vi.advanceTimersByTimeAsync(FAILED_FETCH_RETRY_MS - 1000)
+      expect(mocks.fetchModelsForProvider).toHaveBeenCalledTimes(1)
+
+      // Window expired: the scheduled timer fires and the hook retries.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(mocks.fetchModelsForProvider).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not retry while the negative-cache window is active', async () => {
+    vi.useFakeTimers()
+    try {
+      // Seed the module-level failedFetchAt map via a first failing fetch
+      // that resolves late, so the SWR effect is already inside its window
+      // when it re-runs.
+      let rejectFetch: ((e: Error) => void) | null = null
+      mocks.fetchModelsForProvider.mockImplementationOnce(
+        () => new Promise((_resolve, reject) => { rejectFetch = reject }),
+      )
+
+      const { unmount } = renderHook(() => useDynamicModels('deepseek', 'deepseek'))
+      await vi.advanceTimersByTimeAsync(0)
+      rejectFetch!(new Error('network down'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocks.fetchModelsForProvider).toHaveBeenCalledTimes(1)
+
+      // Unmount and remount well inside the window: the remount must NOT
+      // fire a doomed request (negative cache still holds), and the
+      // remaining-window retry timer must be armed for later.
+      unmount()
+      await vi.advanceTimersByTimeAsync(FAILED_FETCH_RETRY_MS - 2000)
+      renderHook(() => useDynamicModels('deepseek', 'deepseek'))
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(mocks.fetchModelsForProvider).toHaveBeenCalledTimes(1)
+
+      // Window expires: exactly one scheduled retry.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(mocks.fetchModelsForProvider).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('schedules a retry when loadApiKey rejects during the stale-cache refresh (Sourcery: API-key failure never schedules retry)', async () => {
+    vi.useFakeTimers()
+    try {
+      // The credential read fails while the stale-cache refresh is running:
+      // recordFailure() inside doFetch never runs, so the ONLY way the
+      // negative-cache window arms a retry timer is the catch bumping
+      // retryTick. Without it the mounted provider never retries.
+      mocks.loadApiKey.mockRejectedValueOnce(new Error('key store locked'))
+
+      renderHook(() => useDynamicModels('deepseek', 'deepseek'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocks.fetchModelsForProvider).not.toHaveBeenCalled()
+
+      // Still inside the 5-minute negative-cache window: no retry yet.
+      await vi.advanceTimersByTimeAsync(FAILED_FETCH_RETRY_MS - 1000)
+      expect(mocks.loadApiKey).toHaveBeenCalledTimes(1)
+      expect(mocks.fetchModelsForProvider).not.toHaveBeenCalled()
+
+      // Window expires: the armed timer fires and the hook retries the
+      // credential load (which now succeeds), then the fetch.
+      await vi.advanceTimersByTimeAsync(1000)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocks.loadApiKey).toHaveBeenCalledTimes(2)
+      expect(mocks.fetchModelsForProvider).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

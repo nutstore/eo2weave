@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { provider, keyStore, settings } = vi.hoisted(() => ({
   provider: {
     update: vi.fn<() => Promise<Array<{ id: string; name: string }>>>(),
-    prepare: vi.fn<() => Promise<Array<{ id: string; name: string }>>>(),
+    prepare: vi.fn<(accessToken: string, signal?: AbortSignal) => Promise<{ models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }>>(),
     register: vi.fn(),
   },
   keyStore: {
@@ -58,7 +58,7 @@ describe('applyGatewayLoginTokens cancellation', () => {
     keyStore.save.mockImplementation(async (_id, key) => { savedKey = key })
     keyStore.delete.mockImplementation(async () => { savedKey = null })
     provider.update.mockResolvedValue([{ id: 'new-model', name: 'New' }])
-    provider.prepare.mockResolvedValue([{ id: 'new-model', name: 'New' }])
+    provider.prepare.mockResolvedValue({ models: [{ id: 'new-model', name: 'New' }], status: 'ready' })
   })
 
   it('does not persist a credential when cancelled during model preparation', async () => {
@@ -66,9 +66,9 @@ describe('applyGatewayLoginTokens cancellation', () => {
     // provider.prepare has been invoked and its promise is still pending,
     // then cancel. Aborting before the awaited import reaches prepare would
     // pass trivially even if cancellation mid-preparation were mishandled.
-    let finish!: (models: Array<{ id: string; name: string }>) => void
-    const models = new Promise<Array<{ id: string; name: string }>>((resolve) => { finish = resolve })
-    provider.update.mockReturnValue(models)
+    let finish!: (result: { models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }) => void
+    const models = new Promise<{ models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }>((resolve) => { finish = resolve })
+    provider.update.mockReturnValue(Promise.resolve([{ id: 'new-model', name: 'New' }]))
     provider.prepare.mockReturnValue(models)
     const controller = new AbortController()
     const commit = vi.fn()
@@ -76,7 +76,7 @@ describe('applyGatewayLoginTokens cancellation', () => {
     // Preparation started and is pending → NOW the cancellation is mid-flight.
     await vi.waitFor(() => expect(provider.prepare).toHaveBeenCalledTimes(1))
     controller.abort()
-    finish([{ id: 'new-model', name: 'New' }])
+    finish({ models: [{ id: 'new-model', name: 'New' }], status: 'ready' })
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     expect(savedKey).toBe('previous-key')
     expect(keyStore.save).not.toHaveBeenCalled()
@@ -303,6 +303,68 @@ describe('applyGatewayLoginTokens cancellation', () => {
       await vi.runAllTimersAsync()
       await expect(pending).resolves.toMatchObject({ ok: true, models: [] })
       expect(savedKey).toBe('new-key')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('aborts the hung discovery fetch when the deadline expires without a caller signal (no leaked request)', async () => {
+    // Sourcery round 8, "Timed-out discovery keeps running": the deadline
+    // used to reject only the RACE — with no caller-supplied signal (direct
+    // login path) prepareGatewayModels kept awaiting the hung fetch forever
+    // after the login had committed. The deadline must abort the discovery
+    // itself so the inner request settles.
+    vi.useFakeTimers()
+    try {
+      let discoverySettled = false
+      provider.prepare.mockImplementation(
+        (_token: string, signal?: AbortSignal) =>
+          new Promise<{ models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }>(
+            (_resolve, reject) => {
+              if (!signal) throw new Error('expected an internal signal')
+              signal.addEventListener('abort', () => {
+                discoverySettled = true
+                reject(signal.reason)
+              })
+            },
+          ),
+      )
+      const pending = applyGatewayLoginTokens('new-key')
+      await vi.waitFor(() => expect(provider.prepare).toHaveBeenCalledTimes(1))
+      expect(discoverySettled).toBe(false)
+
+      await vi.runAllTimersAsync()
+      await expect(pending).resolves.toMatchObject({ ok: true, models: [] })
+      // The inner discovery did NOT stay pending past the deadline: the
+      // deadline aborted its signal and the fetch settled.
+      expect(discoverySettled).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does NOT abort the caller-supplied signal when only the deadline expires', async () => {
+    // The internal deadline abort must stay INTERNAL: an expired discovery
+    // deadline means the login proceeds best-effort — the caller's signal
+    // (a device-code login UI cancellation channel) must remain live so a
+    // later explicit cancellation during the commit path still propagates.
+    vi.useFakeTimers()
+    try {
+      const callerController = new AbortController()
+      provider.prepare.mockImplementation(
+        (_token: string, signal?: AbortSignal) =>
+          new Promise<{ models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }>(
+            (_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(signal.reason))
+            },
+          ),
+      )
+      const pending = applyGatewayLoginTokens('new-key', { signal: callerController.signal })
+      await vi.waitFor(() => expect(provider.prepare).toHaveBeenCalledTimes(1))
+
+      await vi.runAllTimersAsync()
+      await expect(pending).resolves.toMatchObject({ ok: true, models: [] })
+      expect(callerController.signal.aborted).toBe(false)
     } finally {
       vi.useRealTimers()
     }

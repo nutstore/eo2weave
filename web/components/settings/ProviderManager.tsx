@@ -45,7 +45,7 @@ import type {
 } from '@/agent/providers/types'
 import { useDynamicModels } from '@/agent/providers/use-dynamic-models'
 import { canFetchModels } from '@/agent/providers/model-fetcher'
-import { getCachedModels, getModelContextWindow, mergeModelLists } from '@/agent/providers/model-store'
+import { getCachedModels, getCachedModelsResult, getModelContextWindow, mergeModelLists } from '@/agent/providers/model-store'
 import { getDefaultPinnedModels } from '@/agent/providers/default-models'
 import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -54,7 +54,7 @@ import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHe
 import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
 import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels, hasStoredTokens, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/llm-gateway-auth'
 import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
-import { applyGatewayLoginTokens } from '@/lib/gateway-login'
+import { applyGatewayLoginTokens, MODEL_DISCOVERY_TIMEOUT_MS } from '@/lib/gateway-login'
 import type { AuthState, CreditPackage } from '@/agent/providers/llm-gateway-auth'
 
 // =============================================================================
@@ -108,7 +108,7 @@ interface ProviderCardProps {
   onToggle: () => void
 }
 
-function ProviderCard({
+export function ProviderCard({
   providerType,
   displayName,
   website,
@@ -152,6 +152,7 @@ function ProviderCard({
     models: dynamicModels,
     source: modelsSource,
     loading: modelsLoading,
+    error: modelsError,
     refresh: refreshModels,
   } = useDynamicModels(providerType, providerKey)
 
@@ -225,12 +226,59 @@ function ProviderCard({
     markPinnedModelsSeen(providerType, allModels.map((m) => m.id))
   }, [allModels, markPinnedModelsSeen, providerType])
 
+  // Catalog status for THIS card's merged list:
+  // - 'ready'  — the merged list has content (or the provider is
+  //              user-configured / static-only) and nothing invalidated it.
+  // - 'failed' — the /models fetch FAILED on a fetched catalog: the list is
+  //              unknown, so nothing may be flagged stale and the selection
+  //              must not change.
+  // - 'empty'  — authoritative empty: the catalog is genuinely empty (only
+  //              reachable for a provider whose list is user-configured or
+  //              that positively reported an empty catalog).
+  const catalogStatus: 'ready' | 'empty' | 'failed' = useMemo(() => {
+    // A FAILED /models fetch takes precedence over a non-empty merged list
+    // (Sourcery round 6, 🟠 "Dynamic models appear delisted"): when the
+    // refresh errors, the list is the static fallback + whatever dynamic
+    // data the session last captured — dynamic-only models are missing from
+    // it without proof of delisting, so the catalog is UNKNOWN ('failed',
+    // nothing may be flagged stale) rather than a self-evidently 'ready'
+    // authoritative list.
+    //
+    // EXCEPTION — custom providers (Sourcery round 6, "Configured empty
+    // catalogs look unknown"): their model list is USER-CONFIGURED, never
+    // fetched, so a dynamic /models error carries no catalog information
+    // for them at all. The settings store classifies the same provider by
+    // the configured list alone (cp.models.length > 0 ? 'ready' : 'empty');
+    // this card must match, or the card shows stale badges for pins the
+    // reconciliation loop legitimately removed.
+    //
+    // NEVER-OBSERVED refresh (Sourcery round 9, "Unloaded catalog flags pin
+    // stale"): a refresh-capable provider whose /models refresh has never
+    // completed has no recorded result either way. The static fallback list
+    // is then NOT a positive report — the same unobserved catalog is
+    // classified 'failed' (unknown) by getAvailableProviders, so this card
+    // must agree or a dynamic-only pin would be flagged stale here while
+    // the reconciliation sweep correctly skips it. A failed refresh below
+    // is the same unknown; the negative-cache retry re-observes it shortly.
+    if (modelsError && !isCustom) return 'failed'
+    if (supportsModelRefresh && !isCustom) {
+      const observed = getCachedModelsResult(providerType, providerKey) !== null
+      if (!observed) return 'failed'
+    }
+    if (allModels.length > 0) return 'ready'
+    // No models and no error — or a custom provider regardless of refresh
+    // errors: the catalog is the user-configured (authoritative) list.
+    // An empty configured list is an authoritative 'empty', not unknown.
+    return 'empty'
+  }, [allModels.length, modelsError, isCustom, supportsModelRefresh, providerType, providerKey])
+
   // Pinned models for this provider (resolved to ModelInfo for display)
   const pinnedModels = useMemo(() => {
     const pinnedIds = pinnedModelsByProvider[providerType] || []
-    // Empty list = no trustworthy data (fetch pending/failed) → never flag.
+    // A FAILED catalog is unknown → never flag. An authoritative empty
+    // catalog DOES flag: the provider positively reported it serves nothing.
     const staleIds = new Set(
-      allModels.length > 0 ? getStalePinnedModels(providerType, allModels.map((m) => m.id)) : []
+      getStalePinnedModels(providerType, allModels.map((m) => m.id), catalogStatus)
     )
     return pinnedIds
       .map((id) => {
@@ -247,7 +295,7 @@ function ProviderCard({
         }
       })
       .map((m) => ({ ...m, stale: staleIds.has(m.id) }))
-  }, [pinnedModelsByProvider, providerType, allModels, getStalePinnedModels])
+  }, [pinnedModelsByProvider, providerType, allModels, getStalePinnedModels, catalogStatus])
 
   // Filtered models for the "add model" dialog (all - pinned)
   const filteredModels = useMemo(() => {
@@ -301,13 +349,13 @@ function ProviderCard({
 
   // Remove all stale pinned models for this provider ("clean up delisted" button).
   const handleClearStalePinned = useCallback(() => {
-    const staleIds = getStalePinnedModels(providerType, allModels.map((m) => m.id))
+    const staleIds = getStalePinnedModels(providerType, allModels.map((m) => m.id), catalogStatus)
     if (staleIds.length === 0) return
     const removed = removePinnedModels(providerType, staleIds)
     if (removed.length > 0) {
       toast.success(t('settings.pinnedModels.staleRemoved', { count: removed.length }))
     }
-  }, [getStalePinnedModels, removePinnedModels, providerType, allModels, t])
+  }, [getStalePinnedModels, removePinnedModels, providerType, allModels, t, catalogStatus])
 
   const clearApiKey = useCallback(async () => {
     await deleteApiKey(providerKey)
@@ -1207,6 +1255,13 @@ export function LLMGatewayCard({
   const { triggerProviderRefresh, pinModel, unpinModel, removePinnedModels, markPinnedModelsSeen, getStalePinnedModels, pinnedModelsByProvider, modelCredentialStatus, modelCredentialStatusError, setModelCredentialStatusError } = useSettingsStore()
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [allModels, setAllModels] = useState<Array<{ id: string; name: string }>>([])
+  /**
+   * How the card's model list was obtained. 'failed' means the /models fetch
+   * produced no usable catalog — the list is UNKNOWN, so no pin may be
+   * flagged stale. 'empty' is authoritative (the gateway answered and serves
+   * no models). 'ready' means the list has content.
+   */
+  const [catalogStatus, setCatalogStatus] = useState<'ready' | 'empty' | 'failed'>('failed')
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [modelSearch, setModelSearch] = useState('')
   const [addingManual, setAddingManual] = useState(false)
@@ -1258,15 +1313,14 @@ export function LLMGatewayCard({
     isAuthRunning || authState.status === 'success' || isDeviceFlowError
 
   const pinnedIds = pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE] || []
-  // allModels starts empty on mount (models fetch after expand+login) — an
-  // empty list is NOT authoritative, so suppress stale flags until it loads.
+  // The catalog status decides whether the list is trustworthy: a FAILED
+  // fetch is unknown (never flag), an authoritative EMPTY catalog means the
+  // gateway positively reports it serves no models (flag every seen pin).
   const staleIds = useMemo(
     () => new Set(
-      allModels.length > 0
-        ? getStalePinnedModels(LLM_GATEWAY_PROVIDER_TYPE, allModels.map((m) => m.id))
-        : []
+      getStalePinnedModels(LLM_GATEWAY_PROVIDER_TYPE, allModels.map((m) => m.id), catalogStatus)
     ),
-    [getStalePinnedModels, allModels]
+    [getStalePinnedModels, allModels, catalogStatus]
   )
   const pinned = pinnedIds.map((id) => {
     const found = allModels.find((m) => m.id === id)
@@ -1326,39 +1380,59 @@ export function LLMGatewayCard({
         const clientId = getLLMGatewayClientId()
         const token = await getValidAccessToken(baseURL, clientId)
         if (token && !cancelled) {
-          const models = await fetchGatewayModels(baseURL, token)
+          // Hard deadline mirroring the login discovery path
+          // (withDiscoveryDeadline / MODEL_DISCOVERY_TIMEOUT_MS in
+          // lib/gateway-login.ts): a gateway that never answers /v1/models
+          // must not leave this refresh hanging. On expiry the fetch's
+          // AbortError propagates into the catch below — which (Sourcery:
+          // "Timeout leaves stale catalog authoritative") DOWNGRADES the
+          // previously registered catalog to 'failed' (unknown) so
+          // reconciliation and the stale-pin sweep defer instead of serving
+          // the outdated model IDs as authoritative during the outage, and
+          // commits the same unknown to the card-local status.
+          const { models, status } = await fetchGatewayModels(
+            baseURL,
+            token,
+            AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
+          )
           // A logout/relogin that superseded this effect run must not
           // register its stale catalog: re-check cancellation after EVERY
           // await — the token fetch above, the /models fetch here, and the
           // dynamic imports below. A superseded run that returns late would
           // otherwise overwrite the newer session's registration.
           if (cancelled) return
-          if (models.length > 0) {
-            // Register the fetched catalog with the gateway provider, not
-            // just this card's local list: a login whose discovery failed
-            // committed an EMPTY registration, and without this the provider
-            // would stay registered without usable models until another
-            // operation re-registered it (finding: "login succeeds with an
-            // unusable model catalog"). contextWindow is resolved per model
-            // the same way prepareGatewayModels does — re-registering without
-            // it would silently drop the configured context limits.
-            const [{ registerGatewayModels }, { getModelContextWindow }] = await Promise.all([
-              import('@/agent/providers/llm-gateway-provider'),
-              import('@/agent/providers/model-store'),
-            ])
-            if (cancelled) return
-            registerGatewayModels(models.map((m) => ({
-              id: m.id,
-              name: m.name,
-              capabilities: ['code', 'writing', 'reasoning'] as const,
-              contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
-            })))
-          }
+          // Register the fetched catalog with the gateway provider, not
+          // just this card's local list: a login whose discovery failed
+          // committed an EMPTY registration, and without this the provider
+          // would stay registered without usable models until another
+          // operation re-registered it (finding: "login succeeds with an
+          // unusable model catalog"). contextWindow is resolved per model
+          // the same way prepareGatewayModels does — re-registering without
+          // it would silently drop the configured context limits.
+          //
+          // EVERY refresh result is registered, not only non-empty ones:
+          // a catalog that shrank to empty (or whose fetch failed) must
+          // replace the previous registration, or the registry keeps
+          // serving the stale catalog — and `getAvailableProviders` reads
+          // its status — indefinitely (Sourcery: "Gateway registry keeps
+          // stale catalogs").
+          const [{ registerGatewayModels }, { getModelContextWindow }] = await Promise.all([
+            import('@/agent/providers/llm-gateway-provider'),
+            import('@/agent/providers/model-store'),
+          ])
+          if (cancelled) return
+          registerGatewayModels(models.map((m) => ({
+            id: m.id,
+            name: m.name,
+            capabilities: ['code', 'writing', 'reasoning'] as const,
+            contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
+          })), status)
           // Same staleness gate before the card-local state writes: a run
           // whose session was superseded must not touch setAllModels or the
           // pin-seen marks of the newer session either.
           if (cancelled) return
           setAllModels(models)
+          setCatalogStatus(status)
           // Gateway /models response is authoritative — record confirmed pins
           // so pins absent from a later fetch get flagged as stale.
           if (models.length > 0) {
@@ -1366,7 +1440,43 @@ export function LLMGatewayCard({
           }
         }
       } catch {
-        // ignore
+        // The refresh timed out or failed outright. A previously SUCCESSFUL
+        // catalog that is still registered while the gateway is unreachable
+        // would stay 'ready' — reconciliation and the stale-pin sweep would
+        // keep treating its outdated model IDs as authoritative for the
+        // whole outage (Sourcery: "Timeout leaves stale catalog
+        // authoritative"). Degrade the registry to 'failed' (unknown —
+        // never an authoritative empty list) so consumers defer until the
+        // next refresh succeeds, and mirror that unknown in the card-local
+        // status so the settings UI defers in step. A superseded run
+        // (logout/relogin cancelled this effect) must not touch either.
+        if (cancelled) return
+        try {
+          const [{ registerGatewayModels }, { getProviderCatalogStatus }] = await Promise.all([
+            import('@/agent/providers/llm-gateway-provider'),
+            import('@/agent/providers/types'),
+          ])
+          // Downgrade ANY authoritative registration ('ready' AND 'empty' —
+          // Sourcery round 9, 🟠 "Gateway outage keeps stale empty status"):
+          // a prior successful EMPTY catalog that stays 'empty' through the
+          // outage is still treated as authoritative by discovery, so the
+          // sweep would remove its seen pins and reconciliation would still
+          // act on it while the gateway cannot confirm anything. Only a
+          // 'failed' (unknown) registration needs no downgrade.
+          const currentStatus = getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)
+          if (currentStatus === 'ready' || currentStatus === 'empty') {
+            registerGatewayModels(
+              getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => ({
+                id: m.id,
+                name: m.name,
+                capabilities: ['code', 'writing', 'reasoning'] as const,
+                contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
+              })),
+              'failed',
+            )
+          }
+        } catch { /* registry not initialised — nothing to downgrade */ }
+        setCatalogStatus('failed')
       }
     })()
     return () => { cancelled = true }

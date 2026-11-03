@@ -3,17 +3,17 @@
  * precedence rules (see model-store.ts for the full rationale).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mergeModelLists } from '../model-store'
-import type { ModelInfo } from '../types'
+import { mergeModelLists, setCachedModels, getCachedModels, getCachedModelsResult, isCacheStale, __clearMemoryCacheForTests } from '@/agent/providers/model-store'
+import type { ModelInfo } from '@/agent/providers/types'
 
 const getModelsMock = vi.hoisted(() => vi.fn())
 
-vi.mock('../types', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../types')>()
+vi.mock('@/agent/providers/types', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/agent/providers/types')>()
   return { ...actual, getModelsForProvider: getModelsMock }
 })
 
-import { getModelsForProvider } from '../types'
+import { getModelsForProvider } from '@/agent/providers/types'
 void getModelsForProvider
 
 const skeleton = (id: string, caps: string[]): ModelInfo => ({
@@ -104,5 +104,191 @@ describe('mergeModelLists — custom provider', () => {
       customModelIds: ['my-model'],
     })
     expect(merged.map((m) => m.id)).toEqual(['my-model', 'api-only'])
+  })
+})
+
+// ─── Failed-refresh bookkeeping (PR #150 round 5) ───────────────────────────
+
+describe('setCachedModels — failed refresh outcomes', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __clearMemoryCacheForTests('openai' as never)
+  })
+
+  it('records a FAILED fetch (source static + error) so consumers can see the catalog is unknown', () => {
+    // Sourcery "Failed fetches become authoritative empty": setCachedModels
+    // used to drop every source-'static' result, so a failed refresh left no
+    // trace and getAvailableProviders classified the outage as an
+    // authoritative empty catalog.
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBe('network down')
+    expect(result?.models).toEqual([])
+  })
+
+  it('keeps a failed result MEMORY-ONLY (it must not outlive the session)', () => {
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    expect(localStorage.getItem('cw-models:openai')).toBeNull()
+  })
+
+  it('still persists successful dynamic results to localStorage', () => {
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-x', name: 'GPT', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    expect(localStorage.getItem('cw-models:openai')).not.toBeNull()
+    expect(getCachedModelsResult('openai' as never)?.error).toBeUndefined()
+  })
+
+  it('does NOT replace a non-empty cached catalog with a later failed refresh (Sourcery: fresh models disappear)', () => {
+    // A failed refresh's static-fallback list is no richer than the cached
+    // dynamic catalog; overwriting it hid previously fetched dynamic-only
+    // models until another refresh succeeded. The failure carries catalog
+    // information only when there is nothing better cached, so a non-empty
+    // successful entry wins.
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-dyn', name: 'GPT Dynamic', capabilities: ['code'] }],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBeUndefined()
+    expect(result?.models.map((m) => m.id)).toEqual(['gpt-dyn'])
+    expect(getCachedModels('openai' as never)?.map((m) => m.id)).toEqual(['gpt-dyn'])
+  })
+
+  it('still records a failed refresh when the cached list is empty or missing (outage must not read as authoritative empty)', () => {
+    // The downgrade guard above must not swallow the f244f533 fix: with no
+    // usable cached models, the failure IS the freshest catalog information.
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    let result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBe('network down')
+
+    __clearMemoryCacheForTests('openai' as never)
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down again',
+    })
+    result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBe('network down again')
+  })
+
+  it('lets a successful dynamic refresh recover after a failed one (error entry is replaced)', () => {
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-x', name: 'GPT', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.error).toBeUndefined()
+    expect(result?.models.map((m) => m.id)).toEqual(['gpt-x'])
+  })
+
+  it('does NOT let an older successful refresh overwrite a newer completed one (out-of-order completion)', () => {
+    // Sourcery "Older refresh overwrites newer catalog": two overlapping
+    // refreshes stamp fetchedAt when they START; if the older request
+    // resolves after the newer one, applying it in completion order reverts
+    // the catalog to the stale snapshot. The stale result must be ignored.
+    const t0 = Date.now()
+    setCachedModels('openai' as never, {
+      models: [
+        { id: 'gpt-new', name: 'GPT new', capabilities: ['code'], contextWindow: 128000 },
+        { id: 'gpt-newer', name: 'GPT newer', capabilities: ['code'], contextWindow: 128000 },
+      ],
+      source: 'dynamic',
+      fetchedAt: t0 + 1000, // newer refresh started later
+    })
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-old', name: 'GPT old', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: t0, // older refresh settles LAST
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.models.map((m) => m.id)).toEqual(['gpt-new', 'gpt-newer'])
+    expect(result?.fetchedAt).toBe(t0 + 1000)
+  })
+
+  it('still accepts a NEWER successful refresh after an older one (ordering guard must not block forward progress)', () => {
+    const t0 = Date.now()
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-old', name: 'GPT old', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: t0,
+    })
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-new', name: 'GPT new', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: t0 + 1000,
+    })
+    const result = getCachedModelsResult('openai' as never)
+    expect(result?.models.map((m) => m.id)).toEqual(['gpt-new'])
+  })
+})
+
+// ─── Failed entries never read fresh (PR #150 round 6) ──────────────────────
+
+describe('isCacheStale — failed results are always stale', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __clearMemoryCacheForTests('openai' as never)
+  })
+
+  it('treats a freshly-recorded FAILURE as stale so the retry window governs instead of the 24h TTL', () => {
+    // Sourcery "Failed refresh suppresses retries": a failed refresh cached
+    // with a fresh fetchedAt made isCacheStale() false for 24h, so
+    // useDynamicModels' stale-gate never re-opened and the provider sat on
+    // its fallback catalog for a day. A failure is NOT fresh catalog data —
+    // it must always read stale (the 5-minute FAILED_FETCH_RETRY_MS
+    // negative-cache in use-dynamic-models.ts still throttles retries).
+    setCachedModels('openai' as never, {
+      models: [],
+      source: 'static',
+      fetchedAt: Date.now(),
+      error: 'network down',
+    })
+    expect(isCacheStale('openai' as never)).toBe(true)
+  })
+
+  it('keeps a fresh SUCCESSFUL result non-stale (unchanged 24h TTL behavior)', () => {
+    setCachedModels('openai' as never, {
+      models: [{ id: 'gpt-x', name: 'GPT', capabilities: ['code'], contextWindow: 128000 }],
+      source: 'dynamic',
+      fetchedAt: Date.now(),
+    })
+    expect(isCacheStale('openai' as never)).toBe(false)
+  })
+
+  it('reports stale for a missing entry (unchanged)', () => {
+    expect(isCacheStale('openai' as never)).toBe(true)
   })
 })

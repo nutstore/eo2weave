@@ -64,11 +64,17 @@ const gatewayMock = vi.hoisted(() => ({
   ),
   logoutGateway: vi.fn(),
   getValidAccessToken: vi.fn(async () => 'stale-access-token'),
-  fetchGatewayModels: vi.fn(async () => []),
+  fetchGatewayModels: vi.fn(async () => ({
+    models: [] as Array<{ id: string; name: string }>,
+    status: 'failed' as const,
+  })),
   getGatewayCredentialStatus: vi.fn(() => 'unknown'),
   hasStoredTokens: vi.fn(() => true),
   registerGatewayModels: vi.fn(),
   updateGatewayModels: vi.fn(async () => []),
+  getProviderCatalogStatus: vi.fn(
+    () => 'ready' as 'ready' | 'empty' | 'failed' | undefined,
+  ),
   persistDeviceLoginTokens: vi.fn(),
   fetchGatewayRateLimits: vi.fn(async () => {
     throw new Error('Nutstore AI login has expired. Please log in again.')
@@ -107,6 +113,21 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   // DYNAMIC import of this module (finding: "unusable model catalog").
   registerGatewayModels: gatewayMock.registerGatewayModels,
 }))
+
+vi.mock('@/agent/providers/types', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/agent/providers/types')>()
+  return {
+    ...actual,
+    // The registered catalog under test: a 'ready' registration from the
+    // startup restore carries these models, and the timeout must keep the
+    // LIST while downgrading only the STATUS to 'failed'.
+    getModelsForProvider: (type: string) =>
+      type === 'llm-gateway'
+        ? [{ id: 'glm-5.2', name: 'GLM', capabilities: ['code'] as const, contextWindow: 200_000 }]
+        : [],
+    getProviderCatalogStatus: gatewayMock.getProviderCatalogStatus,
+  }
+})
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -433,5 +454,50 @@ describe('LLMGatewayCard credential state', () => {
     expect(screen.getByRole('button', { name: 'Log out' })).toBeTruthy()
     // The device-flow auth panel must NOT have taken over the card body.
     expect(screen.queryByText('Authentication failed')).toBeNull()
+  })
+
+  it('downgrades the registered catalog to unknown when the /models refresh times out', async () => {
+    // Sourcery round 9 (PR #150), "Timeout leaves stale catalog
+    // authoritative": a SUCCESSFUL catalog is already registered ('ready' —
+    // e.g. the startup restore via updateGatewayModels) and a later card
+    // refresh TIMES OUT. Leaving the registry untouched kept the outdated
+    // model IDs 'ready' for the whole outage — reconciliation and the
+    // stale-pin sweep kept trusting them. The catch must degrade the
+    // registry status to 'failed' (unknown, keeping the model list).
+    settingsState.modelCredentialStatus = 'valid'
+    gatewayMock.getProviderCatalogStatus.mockReturnValue('ready')
+    gatewayMock.fetchGatewayModels.mockRejectedValueOnce(
+      new DOMException('The operation was aborted due to timeout.', 'TimeoutError'),
+    )
+
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => {
+      expect(gatewayMock.registerGatewayModels).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ id: 'glm-5.2' })]),
+        'failed',
+      )
+    })
+  })
+
+  it('also downgrades a prior authoritative-empty catalog when the /models refresh times out', async () => {
+    // Sourcery round 9 (PR #150), 🟠 "Gateway outage keeps stale empty
+    // status": a prior successful EMPTY catalog ('empty') is authoritative —
+    // discovery sweeps its seen pins and reconciles off it. The timeout must
+    // strip that authority too, not only a 'ready' one.
+    settingsState.modelCredentialStatus = 'valid'
+    gatewayMock.getProviderCatalogStatus.mockReturnValue('empty')
+    gatewayMock.fetchGatewayModels.mockRejectedValueOnce(
+      new DOMException('The operation was aborted due to timeout.', 'TimeoutError'),
+    )
+
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => {
+      expect(gatewayMock.registerGatewayModels).toHaveBeenCalledWith(
+        expect.anything(),
+        'failed',
+      )
+    })
   })
 })

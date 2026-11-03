@@ -210,6 +210,22 @@ describe('useSettingsStore', () => {
       // Removing an id that isn't pinned is a no-op.
       expect(useSettingsStore.getState().removePinnedModels(P, ['ghost'])).toEqual([])
     })
+
+    // (#146) An EMPTY authoritative list means "catalog unknown" (failed
+    // /models fetch, login discovery timeout, bootstrap catch), not
+    // "everything is gone". The comparison itself must guard so the topbar,
+    // settings page and auto-removal loop agree by construction.
+    it('getStalePinnedModels returns [] for an empty available list (unknown, not all-absent)', () => {
+      const s = useSettingsStore.getState()
+      s.setPinnedModels(P, ['m-alive', 'm-gone'])
+      s.markPinnedModelsSeen(P, ['m-alive', 'm-gone'])
+
+      // Same provider genuinely listing one model still flags the absent one.
+      expect(s.getStalePinnedModels(P, ['m-alive'])).toEqual(['m-gone'])
+
+      // Empty catalog: nothing is reported stale and no pin is flagged.
+      expect(s.getStalePinnedModels(P, [])).toEqual([])
+    })
   })
 
   // (#84 review round 2) Restoring a workspace whose override points at a
