@@ -34,23 +34,47 @@ export function useProjectAgentsInit(): void {
     if (state.isInitialized && state.loadedProjectId === activeProjectId) return
 
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
     ;(async () => {
-      try {
-        const { ProjectManager } = await import('@/opfs')
-        const pm = await ProjectManager.create()
-        if (cancelled) return
-        const store = useAgentsStore.getState()
-        store.setProjectManager(pm)
-        await store.initialize(activeProjectId)
-      } catch (error) {
-        if (!cancelled) {
+      const MAX_RETRIES = 3
+      const RETRY_DELAY_MS = 5_000
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const { ProjectManager } = await import('@/opfs')
+          const pm = await ProjectManager.create()
+          if (cancelled) return
+          const store = useAgentsStore.getState()
+          store.setProjectManager(pm)
+          await store.initialize(activeProjectId)
+          // initialize records failures in store state instead of rejecting
+          // (timeout included), so success must be verified from the state:
+          // without this check a transient failure would end the loop as a
+          // "success" and never be retried.
+          const after = useAgentsStore.getState()
+          if (!after.isInitialized || after.loadedProjectId !== activeProjectId) {
+            throw new Error(after.error || 'Agent catalog initialization failed')
+          }
+          return
+        } catch (error) {
+          if (cancelled) return
           console.warn('[useProjectAgentsInit] Failed to initialize agents:', error)
+          // Initialization failures are usually transient (OPFS bridge hiccup,
+          // extension restart). The effect only re-runs on a project change,
+          // so without a retry the catalog would stay unavailable until the
+          // user switches projects or reloads. The store's initialize is
+          // idempotent, so a retry after success is a cheap no-op.
+          if (attempt >= MAX_RETRIES) return
+          await new Promise<void>((resolve) => {
+            retryTimer = setTimeout(resolve, RETRY_DELAY_MS)
+          })
+          if (cancelled) return
         }
       }
     })()
 
     return () => {
       cancelled = true
+      clearTimeout(retryTimer)
     }
   }, [activeProjectId])
 }

@@ -75,4 +75,63 @@ describe('useProjectAgentsInit', () => {
     expect(useAgentsStore.getState().agents).toEqual([])
   })
 
+  it('retries initialization after a transient failure instead of giving up', async () => {
+    vi.useFakeTimers()
+    try {
+      // First two ProjectManager resolves fail (transient bridge hiccups),
+      // the third succeeds.
+      mocks.getProject.mockImplementationOnce(async () => {
+        throw new Error('bridge hiccup 1')
+      })
+      mocks.getProject.mockImplementationOnce(async () => {
+        throw new Error('bridge hiccup 2')
+      })
+
+      renderHook(() => useProjectAgentsInit())
+
+      // Attempt 1 fails; the retry is scheduled, not abandoned.
+      await vi.waitFor(() => expect(useAgentsStore.getState().error).toBe('bridge hiccup 1'))
+      expect(useAgentsStore.getState().isInitialized).toBe(false)
+
+      // Attempt 2 (after the 5s backoff) also fails.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      await vi.waitFor(() => expect(useAgentsStore.getState().error).toBe('bridge hiccup 2'))
+
+      // Attempt 3 succeeds — the catalog becomes available without a project
+      // change or reload.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      await vi.waitFor(() => expect(useAgentsStore.getState().isInitialized).toBe(true))
+      expect(useAgentsStore.getState().loadedProjectId).toBe('project-a')
+      expect(useAgentsStore.getState().agents.map((a) => a.id)).toContain('project-a-agent')
+      expect(useAgentsStore.getState().error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops retrying after three failed attempts', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.getProject.mockImplementation(async () => {
+        throw new Error('bridge down')
+      })
+
+      renderHook(() => useProjectAgentsInit())
+
+      // 3 attempts total, each 5s apart — after the last one no further
+      // ProjectManager resolutions may be scheduled.
+      for (let i = 0; i < 3; i++) {
+        await vi.waitFor(() =>
+          expect(useAgentsStore.getState().error).toBe('bridge down')
+        )
+        await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      }
+      const attemptsAfterRetries = mocks.getProject.mock.calls.length
+      expect(attemptsAfterRetries).toBeGreaterThanOrEqual(3)
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      expect(mocks.getProject.mock.calls.length).toBe(attemptsAfterRetries)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
