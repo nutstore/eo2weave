@@ -73,6 +73,21 @@ export async function withInflightLoad(
   return promise
 }
 
+/**
+ * Test-only: a test that deliberately leaves a load/retry leg hung (e.g. a
+ * workspace ensure whose promise never settles) keeps `inflightLoadFromDB`
+ * occupied forever — its `.finally` never runs — so the NEXT test's
+ * `loadFromDB()` silently receives the stuck promise instead of starting a
+ * fresh run, and every assertion about load state reads a load that never
+ * happened. Test setups call this between scenarios to release the slot.
+ * The abandoned run keeps running in the background; per-run load-generation
+ * checks discard its late writes, and its `.finally`'s ownership check leaves
+ * the (already null) slot alone when it eventually settles.
+ */
+export function resetInflightLoadForTests(): void {
+  inflightLoadFromDB = null
+}
+
 export async function waitForConversationMetaPersist(convId: string): Promise<void> {
   const pending = pendingConversationMetaPersists.get(convId)
   if (pending) {
