@@ -9,8 +9,12 @@ after rendering, but core states must remain identical to JSON.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
+import os
+import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -204,6 +208,88 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+STAGING_PREFIX = "render-staging-"
+STAGING_SUFFIX = ".tmp-partial"
+STAGING_STALE_SECONDS = 6 * 3600
+
+
+def cleanup_stale_staging(output_dir: Path, *, now: float | None = None) -> None:
+    """Best-effort sweep of abandoned staging files in `output_dir`.
+
+    A staging file is treated as abandoned only when its name matches this
+    renderer's staging pattern AND its mtime is older than
+    STAGING_STALE_SECONDS; recently created files may belong to a concurrent
+    render and are never touched.
+    """
+    current = time.time() if now is None else now
+    try:
+        entries = list(output_dir.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        name = entry.name
+        if not (name.startswith(STAGING_PREFIX) and name.endswith(STAGING_SUFFIX)):
+            continue
+        try:
+            if current - entry.stat().st_mtime < STAGING_STALE_SECONDS:
+                continue
+            entry.unlink()
+        except OSError:
+            continue
+
+
+def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
+    """Publish text atomically; return (sha256, size) of THIS invocation's bytes.
+
+    Safety properties:
+    - The staging file is unique per invocation (tempfile.mkstemp with a short
+      fixed prefix), so concurrent renders never share one staging path and
+      valid output basenames cannot overflow the filesystem name limit.
+    - The digest is computed incrementally from the staged bytes BEFORE
+      publishing (and the file is re-read through the same open file handle in
+      chunks), so the returned checksum always describes this invocation's
+      content even if another render replaces the destination afterwards, and
+      no full-size in-memory copy of the report is ever allocated.
+    - os.replace() is atomic on POSIX: the final path only ever holds a
+      complete report.
+    - The staging file's permissions are widened per the process umask before
+      publishing so a shared handoff directory keeps the report readable by
+      others (mkstemp's default is owner-only 0600).
+    """
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_staging(output_file.parent)
+    fd, staging_name = tempfile.mkstemp(
+        dir=output_file.parent, prefix=STAGING_PREFIX, suffix=STAGING_SUFFIX
+    )
+    staging = Path(staging_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+            # mkstemp creates the file 0600; restore the umask's group/other
+            # bits so the published report keeps the shared-readable mode a
+            # normal open() would have produced.
+            umask = os.umask(0)
+            os.umask(umask)
+            os.fchmod(stream.fileno(), 0o666 & ~umask)
+        # Hash exactly this invocation's staged bytes, incrementally in bounded
+        # chunks, BEFORE publishing: no full-size in-memory copy, and the
+        # digest always describes this run's content even if a concurrent
+        # render replaces the destination afterwards.
+        hasher = hashlib.sha256()
+        size = 0
+        with staging.open("rb") as binary:
+            for chunk in iter(lambda: binary.read(65536), b""):
+                hasher.update(chunk)
+                size += len(chunk)
+        os.replace(staging, output_file)
+    except BaseException:
+        staging.unlink(missing_ok=True)
+        raise
+    return hasher.hexdigest(), size
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -221,15 +307,17 @@ def main() -> int:
         return 1
 
     report = render(data, errors, warnings, strict=args.strict)
-    args.output_file.parent.mkdir(parents=True, exist_ok=True)
-    temp_output = args.output_file.with_name(args.output_file.name + ".tmp-partial")
-    try:
-        temp_output.write_text(report, encoding="utf-8")
-        temp_output.replace(args.output_file)
-    except BaseException:
-        temp_output.unlink(missing_ok=True)
-        raise
+    digest, size = atomic_write(report, args.output_file)
     print(f"Rendered {args.output_file} with {len(warnings)} warning(s) ({'strict' if args.strict else 'compatibility-only'} validation)")
+    try:
+        info = os.stat(args.output_file)
+        if info.st_size != size:
+            print("WARNING: published file size differs from this run's staged report; "
+                  "another render likely replaced it after publish — do not deliver without re-verifying")
+    except OSError:
+        pass
+    print(f"OUTPUT_SHA256 {digest}")
+    print(f"OUTPUT_PATH {args.output_file.resolve()}")
     return 0
 
 

@@ -1199,6 +1199,40 @@ document.getElementById('openGithub')!.addEventListener('click', function () {
   });
 })();
 
+// ── Site packages entry → the extension's package registry page ──
+// Lists the user's registries + installed packages (issue #143). The
+// management lives in the EXTENSION (the packages are in the extension's
+// own OPFS mount), so the entry opens the extension page, not a web app
+// route.
+(function () {
+  var btn = document.getElementById('sitePackagesBtn');
+  var sub = document.getElementById('sitePackagesSubtitle');
+  if (!btn || !sub) return;
+
+  import('../webmcp/registry-client-page').then(function (client) {
+    async function refresh() {
+      try {
+        var state = await client.listRegistries();
+        var installed = state.installed.length;
+        var registries = state.registries.length;
+        sub!.textContent = registries
+          ? chrome.i18n.getMessage('webmcpPackagesPopupSummary', [String(registries), String(installed)])
+            || (registries + ' registries · ' + installed + ' installed')
+          : (installed + ' installed');
+      } catch { sub!.textContent = '—'; }
+    }
+    void refresh();
+    chrome.runtime.onMessage.addListener(function (message) {
+      if (message?.type === 'webmcp_packages_changed' || message?.type === 'webmcpPackagesRegistryChanged') void refresh();
+    });
+  }).catch(function () {});
+
+  btn.addEventListener('click', function () {
+    chrome.tabs.create({ url: chrome.runtime.getURL('/registry.html') });
+    window.close();
+  });
+})();
+
 // ── External agent MCP bridge (WebMCP tools for out-of-browser MCP clients) ──
 // Any MCP stdio client works: Codex, Claude Code, Cursor, …
 // Toggle sends webmcp_bridge_set_enabled to the background, which owns the

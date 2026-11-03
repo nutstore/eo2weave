@@ -383,13 +383,8 @@ export function WorkspaceLayout({
   }, [])
 
   // Phase 4: Load conversations on mount (independent of Sidebar rendering).
-  // Also re-run when `loadError` flips (null→error or error→null): a failed
-  // load keeps `loaded=false`, which would otherwise never wake this effect
-  // back up. Tying it to loadError lets a later store change (e.g. project
-  // switch completing) reattempt the load instead of locking in an empty
-  // sidebar. The `inflightLoadFromDB` guard inside loadFromDB prevents
-  // overlapping calls.
-  const loadError = useConversationStore((s) => s.loadError)
+  // A failed load stays visible until the user retries. A changed error
+  // message must not start another automatic load after the fallback fails.
   useEffect(() => {
     // Don't load conversations while the workspace store is still settling.
     // syncFromRoute's project switch transiently clears workspaceStore
@@ -400,7 +395,7 @@ export function WorkspaceLayout({
     // loadFromDB ran with an empty workspace list — when the store later
     // settles, this effect re-fires and retries.
     if (!loaded && workspaceReady) loadFromDB()
-  }, [loaded, loadError, loadFromDB, workspaceReady])
+  }, [loaded, loadFromDB, workspaceReady])
 
   // Pre-initialize Pyodide runtime in the background so first Python execution is fast
   useEffect(() => {
@@ -424,6 +419,14 @@ export function WorkspaceLayout({
   useEffect(() => {
     syncModelForWorkspace(activeConversationId ?? null)
     void useSettingsStore.getState().getAvailableProviders().then((providers) => {
+      // A SUPERSEDED run must not reconcile: when a newer
+      // getAvailableProviders() started while this one was awaiting, this
+      // snapshot is stale and the store already skipped its own
+      // reconciliation for it (Sourcery: "Stale discovery changes
+      // selection"). Feeding it into ensureValidModelSelection here would
+      // let the stale catalog switch the active model after the newer run
+      // began. The newer run re-derives everything from fresher state.
+      if (!providers.every((p) => p.current)) return
       ensureValidModelSelection(providers, { preserveExpiredCredential: true })
     }).catch((error) => {
       console.warn('[WorkspaceLayout] model reconciliation deferred:', error)
@@ -1011,7 +1014,14 @@ export function WorkspaceLayout({
                 <span className="sr-only">{t('common.loading')}</span>
               </div>
             ) : hasActiveConversation ? (
+              // key={activeConversationId}: a conversation switch must fully
+              // remount ConversationView (issue #141) — isUserAtBottomRef is
+              // re-seeded to true and Virtuoso re-runs initialTopMostItemIndex
+              // (jump to the latest turn). Without the remount, a stale
+              // at-bottom seed from the previous conversation made
+              // followOutput skip the new conversation's latest messages.
               <ConversationView
+                key={activeConversationId}
                 initialMessage={pendingMessage}
                 onInitialMessageConsumed={handleInitialMessageConsumed}
                 onPreviewAsset={handleAssetPreview}

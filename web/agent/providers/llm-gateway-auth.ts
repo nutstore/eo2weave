@@ -15,6 +15,7 @@ import {
 } from '@/agent/providers/gateway-credential-lock'
 import { saveApiKey as saveGatewayApiKey } from '@/security/api-key-store'
 import { useI18nStore } from '@/i18n/store'
+import { unregisterDynamicProvider, type ProviderCatalogStatus } from '@/agent/providers/types'
 
 // ── Types ──
 
@@ -103,6 +104,21 @@ export interface RateLimitsResponse {
 // ── Token Persistence ──
 
 const TOKEN_STORAGE_KEY = 'llm-gateway-tokens'
+
+// Another tab can replace or clear the session without touching this tab's
+// registry. Drop its cached models before the next discovery can retain them.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== TOKEN_STORAGE_KEY) return
+    const refreshToken = (value: string | null): string | null => {
+      try { return value ? (JSON.parse(value) as StoredTokens).refresh_token : null } catch { return null }
+    }
+    if (refreshToken(event.oldValue) !== refreshToken(event.newValue)) {
+      bumpAuthSessionGeneration()
+      unregisterDynamicProvider('llm-gateway')
+    }
+  })
+}
 
 /**
  * Single source of truth for the api-key-store key holding the gateway
@@ -579,6 +595,9 @@ async function clearStoredTokens(
     const current = loadStoredTokens()
     if (expectedRefreshToken && current?.refresh_token !== expectedRefreshToken) return false
     bumpAuthSessionGeneration()
+    // The session is no longer trusted from this point onward. Drop its
+    // model catalog before key-store purging, which can fail or time out.
+    unregisterDynamicProvider('llm-gateway')
     localStorage.removeItem(TOKEN_STORAGE_KEY)
     // Record the logout timestamp so a login attempt that was pending
     // (device-code approval / model preparation) in another tab cannot
@@ -861,10 +880,12 @@ export async function refreshAccessToken(
   baseURL: string,
   refreshToken: string
 ): Promise<TokenResponse> {
-  return gatewayFetch<TokenResponse>(baseURL, '/v1/auth/refresh', {
+  const signal = AbortSignal.timeout(15_000)
+  return abortableRequest(gatewayFetch<TokenResponse>(baseURL, '/v1/auth/refresh', {
     method: 'POST',
     body: JSON.stringify({ refresh_token: refreshToken }),
-  })
+    signal,
+  }), signal)
 }
 
 /**
@@ -1129,13 +1150,14 @@ export async function performDeviceCodeFlow(
  */
 export function refreshAccessTokenWithStatus(
   baseURL: string,
-  clientId: string
+  clientId: string,
+  signal?: AbortSignal,
 ): Promise<RefreshResult> {
   const generation = authSessionGeneration
   // Reuse the in-flight refresh only within the same credential session — a
   // logout or new login invalidates the result the promise will resolve with.
   if (refreshInFlight && generation === (refreshInFlight as InFlightRefresh).generation) {
-    return refreshInFlight
+    return abortableRefreshResult(refreshInFlight, signal)
   }
   const request = refreshAccessTokenWithStatusImpl(baseURL, clientId)
   const tracked: InFlightRefresh = Object.assign(request, { generation })
@@ -1150,7 +1172,29 @@ export function refreshAccessTokenWithStatus(
       if (refreshInFlight === tracked) refreshInFlight = null
     },
   )
-  return tracked
+  return abortableRefreshResult(tracked, signal)
+}
+
+function abortableRefreshResult(
+  refresh: Promise<RefreshResult>,
+  signal?: AbortSignal,
+): Promise<RefreshResult> {
+  return abortableRequest(refresh, signal)
+}
+
+function abortableRequest<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return request
+  if (signal.aborted) return Promise.reject(signal.reason)
+  // A refresh can be shared by model discovery and another caller. Bound the
+  // discovery caller without cancelling the shared credential operation.
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void request.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+  })
 }
 
 interface InFlightRefresh extends Promise<RefreshResult> {
@@ -1167,6 +1211,10 @@ let refreshInFlight: Promise<RefreshResult> | null = null
  * for a replaced session must not overwrite the new token pair.
  */
 let authSessionGeneration = 0
+
+export function getGatewayAuthSessionGeneration(): number {
+  return authSessionGeneration
+}
 
 /** Invalidate async work belonging to the previous credential set. */
 function bumpAuthSessionGeneration(): void {
@@ -1432,29 +1480,93 @@ export async function logoutGateway(): Promise<void> {
   }
 }
 
+/** Expire a token rejected by the gateway only if it still owns the session. */
+export async function invalidateGatewayAccessToken(accessToken: string): Promise<void> {
+  const stored = loadStoredTokens()
+  if (stored?.access_token !== accessToken) return
+  await clearStoredTokens(stored.refresh_token, 'expired')
+}
+
 /**
- * Fetch available models from the gateway
+ * Fetch available models from the gateway.
+ *
+ * The result distinguishes an AUTHORITATIVE empty catalog from a FAILED
+ * fetch — the two look identical in the response body (`data: []` vs a
+ * non-200 response) but mean opposite things:
+ *
+ * - `failed` — the request did not produce a usable catalog (non-2xx,
+ *   unparseable body, network error). The provider's model list is UNKNOWN:
+ *   it is missing information, never proof that every model was delisted.
+ *   Callers must not switch the user's selection or flag pins as stale.
+ * - `empty` — the gateway answered successfully and positively reports that
+ *   it serves no models. This IS authoritative information: pins for this
+ *   provider are genuinely gone.
+ * - `ready` — the gateway answered with a non-empty catalog.
  */
 export async function fetchGatewayModels(
   baseURL: string,
   accessToken: string,
   signal?: AbortSignal,
-): Promise<Array<{ id: string; name: string }>> {
-  const res = await fetch(`${baseURL}/v1/models`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal,
-  })
-  if (!res.ok) return []
-
-  const data = await res.json()
-  if (!data?.data || !Array.isArray(data.data)) return []
-
-  return data.data.map(
-    (m: { id?: string; name?: string }) => ({
-      id: m.id || '',
-      name: m.name || m.id || '',
+): Promise<{ models: Array<{ id: string; name: string }>; status: ProviderCatalogStatus; authRejected?: boolean }> {
+  let res: Response
+  try {
+    res = await fetch(`${baseURL}/v1/models`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
     })
-  )
+  } catch (e) {
+    // An explicit cancellation still propagates; only genuine network
+    // failures degrade to a failed (unknown) catalog.
+    if (signal?.aborted || (e instanceof Error && e.name === 'AbortError')) throw e
+    // A network failure carries NO catalog information — it is a failed
+    // refresh, not an authoritative empty list.
+    return { models: [], status: 'failed' }
+  }
+  // A non-2xx response carries NO catalog information — it is a failed
+  // refresh, not an authoritative empty list.
+  if (!res.ok) return { models: [], status: 'failed', authRejected: res.status === 401 }
+
+  // A body that cannot be read or parsed (truncated stream, malformed JSON)
+  // is an unusable response, not an authoritative "no models": degrade to a
+  // failed catalog instead of rejecting (Sourcery: "Invalid JSON rejects
+  // model fetch" — res.json() previously threw outside this handling, so
+  // callers never received the failed-catalog result).
+  let data: { data?: unknown }
+  try {
+    data = (await res.json()) as { data?: unknown }
+  } catch (e) {
+    // An abort landing while the body read is still pending (the discovery
+    // deadline firing after the headers arrived) is NOT a failed catalog —
+    // it carries no catalog information at all. Re-throw it so the caller's
+    // timeout/cancellation handling runs instead of committing an empty
+    // result that would drop previously registered models (Sourcery:
+    // "Timed-out body read erases gateway models").
+    if (signal?.aborted || (e instanceof Error && e.name === 'AbortError')) throw e
+    return { models: [], status: 'failed' }
+  }
+  // A body that is not a model array is an unusable response, not an
+  // authoritative "no models".
+  if (!data?.data || !Array.isArray(data.data)) return { models: [], status: 'failed' }
+
+  // Per-entry validation (Sourcery round 6, "Malformed gateway models are
+  // accepted"): a gateway that answers 200 with garbage entries — null,
+  // non-objects, or entries without a usable string `id` — is not sending a
+  // catalog. Mapping blind dereferenced null entries or empty-string ids
+  // produced either a thrown rejection (callers never saw the failed status)
+  // or a 'ready' status over an unusable list (empty-string ids selectable).
+  // Malformed SHAPE is treated like malformed JSON (b244dfeb): a failed,
+  // retryable catalog — never an authoritative empty one.
+  type RawModel = { id?: unknown; name?: unknown }
+  const usable: Array<{ id: string; name: string }> = []
+  for (const entry of data.data) {
+    if (typeof entry !== 'object' || entry === null) return { models: [], status: 'failed' }
+    const m = entry as RawModel
+    if (typeof m.id !== 'string' || m.id.trim() === '') return { models: [], status: 'failed' }
+    usable.push({ id: m.id, name: typeof m.name === 'string' && m.name !== '' ? m.name : m.id })
+  }
+  // A SUCCESSFUL response IS authoritative, empty or not: an empty `data:[]`
+  // positively reports that the gateway serves no models.
+  return { models: usable, status: usable.length > 0 ? 'ready' : 'empty' }
 }
 
 /**

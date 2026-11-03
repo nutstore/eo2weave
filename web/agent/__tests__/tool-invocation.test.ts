@@ -10,7 +10,10 @@ function input(execute: (name: string, args: unknown, context: ToolContext) => P
     mode: 'act', toolExecutionTimeout: 1000, toolTimeoutExemptions: new Set(),
     getAbortSignal: () => undefined,
     toolRegistry: {
-      getToolDefinitionsForMode: () => [{ function: { name: 'read' } }], execute,
+      getToolDefinitionsForMode: () => [
+        { function: { name: 'read' } },
+        { function: { name: 'call_tool', parameters: { type: 'object', properties: {} } } },
+      ], execute,
     },
   } as unknown as ToolInvocationInput
 }
@@ -53,5 +56,51 @@ describe('shared tool invocation', () => {
     config.allowedToolNames = () => names
     await expect(invokeTool(config, {toolName:'run_code',toolCallId:'a',args:{},context:{directoryHandle:null}})).rejects.toThrow('Tool unavailable: read')
     expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips the envelope grace wait for MCP-backed call_tool (#148 round 8: MCP cancellations were delayed)', async () => {
+    // An MCP full name (serverId:toolName) loses the abort race — it must
+    // surface the abort error immediately, not wait out a 2s envelope grace
+    // window for an envelope MCP calls never produce.
+    const controller = new AbortController()
+    const config = input(() =>
+      new Promise<string>(() => {
+        setTimeout(() => controller.abort(), 20)
+      }),
+    )
+    config.getAbortSignal = () => controller.signal
+    const started = Date.now()
+    await expect(invokeTool(config, {
+      toolName: 'call_tool',
+      toolCallId: 'mcp1',
+      args: { full_tool_name: 'my-server:slow_tool' },
+      context: { directoryHandle: null },
+    })).rejects.toThrow(/was aborted/)
+    expect(Date.now() - started).toBeLessThan(1500)
+  })
+
+  it('keeps the envelope grace wait for WebMCP call_tool', async () => {
+    const controller = new AbortController()
+    const cancelledEnvelope = JSON.stringify({
+      ok: false,
+      version: 2,
+      tool: 'call_tool',
+      error: { code: 'CALL_CANCELLED', message: 'cancelled', retryable: false },
+    })
+    const config = input(async () => {
+      controller.abort()
+      await new Promise((r) => setTimeout(r, 20))
+      return cancelledEnvelope
+    })
+    config.getAbortSignal = () => controller.signal
+
+    // WebMCP full name (https_ host prefix + __ separator): the envelope wins.
+    const webmcp = await invokeTool(config, {
+      toolName: 'call_tool',
+      toolCallId: 'wm1',
+      args: { full_tool_name: 'https_example_com__write_doc' },
+      context: { directoryHandle: null },
+    })
+    expect(JSON.parse(webmcp.raw).error.code).toBe('CALL_CANCELLED')
   })
 })

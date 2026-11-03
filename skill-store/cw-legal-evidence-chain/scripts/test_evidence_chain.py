@@ -6,11 +6,15 @@ Covers backward compatibility: a valid legacy-style chain must still pass.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import os
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -297,6 +301,69 @@ def case_renderer_labels() -> None:
 
 # ---------------- round recorder ----------------
 
+def case_atomic_write_digest_permissions_and_cleanup() -> None:
+    """OUTPUT_SHA256 must describe the staged bytes actually published; staging
+    files must be shared-readable per umask and cleaned up on failure."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        src = tmp / "chain.json"
+        src.write_text(json.dumps(valid_chain(), ensure_ascii=False), encoding="utf-8")
+        out = tmp / ("报告" + "x" * 200 + ".md")  # long basename must not break mkstemp
+        result = subprocess.run([sys.executable, str(RENDER_PATH), "--strict", str(src), str(out)],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, f"render with long output basename must succeed: {result.stdout} {result.stderr}"
+        digest_line = next(line for line in result.stdout.splitlines() if line.startswith("OUTPUT_SHA256"))
+        actual = hashlib.sha256(out.read_bytes()).hexdigest()
+        assert digest_line.split()[1] == actual, "emitted checksum must match the published bytes"
+        mode = stat.S_IMODE(out.stat().st_mode)
+        assert mode & 0o044, f"published report must stay group/other-readable per umask, got {oct(mode)}"
+        assert not list(tmp.glob("render-staging-*")), "no staging residue after success"
+        # stale staging files are swept; fresh foreign staging files survive
+        stale = tmp / "render-staging-stale123.tmp-partial"
+        stale.write_text("junk", encoding="utf-8")
+        old = time.time() - 7 * 3600
+        os.utime(stale, (old, old))
+        fresh = tmp / "render-staging-fresh456.tmp-partial"
+        fresh.write_text("junk", encoding="utf-8")
+        assert run_cli(RENDER_PATH, "--strict", str(src), str(out)) == 0
+        assert not stale.exists(), "stale staging file must be swept"
+        assert fresh.exists(), "recent staging file may belong to a concurrent render and must survive"
+        fresh.unlink()
+
+
+def case_atomic_write_failure_cleans_staging() -> None:
+    """An injected os.replace failure must remove this run's staging file and
+    leave the previously published report untouched."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        src = tmp / "chain.json"
+        src.write_text(json.dumps(valid_chain(), ensure_ascii=False), encoding="utf-8")
+        out = tmp / "report.md"
+        assert run_cli(RENDER_PATH, "--strict", str(src), str(out)) == 0
+        before_bytes = out.read_bytes()
+        script = f"""
+import sys
+from pathlib import Path
+sys.path.insert(0, {str(SCRIPTS)!r})
+import render_evidence_chain as ren
+
+def failing_replace(src, dst):
+    raise OSError("injected replace failure")
+ren.os.replace = failing_replace
+try:
+    ren.atomic_write("partial content", Path({str(out)!r}))
+except OSError:
+    sys.exit(7)
+sys.exit(0)
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.returncode == 7, f"injected failure must propagate: {result.stdout} {result.stderr}"
+        assert out.read_bytes() == before_bytes, "failed publish must not touch the existing report"
+        assert not list(tmp.glob("render-staging-*")), "staging must be cleaned on failure"
+
+
+# ---------------- round recorder ----------------
+
 def round_fixtures(tmp: Path) -> dict[str, Path]:
     chain = valid_chain()
     before = tmp / "A-before.json"
@@ -538,6 +605,8 @@ CASES = [
     case_reopened_gap_validates,
     case_incremental_close_without_evidence_fails,
     case_renderer_labels,
+    case_atomic_write_digest_permissions_and_cleanup,
+    case_atomic_write_failure_cleans_staging,
     case_record_happy_path,
     case_answered_request_needs_response,
     case_open_request_targeting_met_criterion,

@@ -118,13 +118,13 @@
       "version": { "content": "$2" }
     }
   },
-  "webmcpPackagesTitle": {
+  "webmcpPackagesPageTitle": {
     "message": "WebMCP 包"
   },
-  "webmcpPackagesSubtitle": {
+  "webmcpPackagesPageSubtitle": {
     "message": "管理内建和自定义 WebMCP 工作流包。启用后，工具会注册到 URL 匹配的页面。"
   },
-  "webmcpPackagesNote": {
+  "webmcpPackagesPageNote": {
     "message": "两类包均使用 manifest.json、config.json 和工作流文件。内建包只读挂载于 vfs://external/builtin-webmcp/，自定义包可读写挂载于 vfs://external/webmcp/。activation 缺省时禁用。启用后的工作流在扩展中执行，无需打开 CreatorWeave 或连接工作区 host。"
   },
   "webmcpSourceBuiltin": {
@@ -144,5 +144,146 @@
   },
   "webmcpPackageDeleteConfirm": {
     "message": "确定删除 WebMCP 包“$1”吗？\n\n这将从 OPFS 中永久删除该包及其全部文件：\n$2\n\n此操作无法撤销。"
+  },
+  "webmcpPackagesTitle": { "message": "站点工具包" },
+  "webmcpPackagesDescription": { "message": "从包仓库安装站点工具包。安装后的包默认未激活——到匹配站点打开侧边栏即可启用。" },
+  "webmcpPackagesRegistryLabel": { "message": "包仓库" },
+  "webmcpPackagesRefresh": { "message": "刷新" },
+  "webmcpPackagesRefreshing": { "message": "刷新中…" },
+  "webmcpPackagesLoadFailed": {
+    "message": "加载包仓库失败：$ERROR$",
+    "placeholders": {
+      "error": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesInstall": { "message": "安装" },
+  "webmcpPackagesRepair": { "message": "修复" },
+  "webmcpPackagesInstalling": { "message": "安装中…" },
+  "webmcpPackagesInstalled": { "message": "已安装" },
+  "webmcpPackagesInstallSuccess": {
+    "message": "$ID$ 已安装（$COUNT$ 个文件校验通过）",
+    "placeholders": {
+      "id": { "content": "$1" },
+      "count": { "content": "$2" }
+    }
+  },
+  "webmcpPackagesInstallFailed": {
+    "message": "安装失败：$ERROR$",
+    "placeholders": {
+      "error": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesUninstall": { "message": "移除" },
+  "webmcpPackagesUninstalling": { "message": "移除中…" },
+  "webmcpPackagesUninstallSuccess": {
+    "message": "$ID$ 已移除",
+    "placeholders": {
+      "id": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesUninstallFailed": {
+    "message": "移除失败：$ERROR$",
+    "placeholders": {
+      "error": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesInstalledInactive": { "message": "已安装 · 未激活" },
+  "webmcpPackagesInstalledInactiveHint": { "message": "到匹配站点打开侧边栏即可启用。" },
+  "webmcpPackagesInstalledActive": { "message": "已安装 · 已激活" },
+  "webmcpPackagesToolsCount": {
+    "message": "$COUNT$ 个工具",
+    "placeholders": {
+      "count": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesToolsCountUnverified": { "message": "（未核验）" },
+  "webmcpPackagesInstalledTitle": { "message": "已安装的包" },
+  "webmcpPackagesVersion": {
+    "message": "v$VERSION$",
+    "placeholders": {
+      "version": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesAddRegistryTitle": { "message": "添加自定义包仓库" },
+  "webmcpPackagesAddRegistryInputPlaceholder": { "message": "github.com/owner/repo，或直接粘贴 raw 清单地址" },
+  "webmcpPackagesAddRegistryHint": { "message": "支持完整 GitHub 地址、owner/repo 简写或 raw.githubusercontent.com 直链，自动推导 raw 清单路径（分支默认 main）。" },
+  "webmcpPackagesAddRegistryButton": { "message": "添加" },
+  "webmcpPackagesAdding": { "message": "添加中…" },
+  "webmcpPackagesAddSuccess": {
+    "message": "仓库已添加：$LABEL$",
+    "placeholders": {
+      "label": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesAddFailed": {
+    "message": "无效的仓库地址：$ERROR$",
+    "placeholders": {
+      "error": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesRemoveRegistry": { "message": "移除仓库" },
+  "webmcpPackagesNoPackages": { "message": "该仓库暂无可用包。" },
+  "webmcpPackagesNoRegistries": { "message": "尚未添加包仓库。在下方添加一个仓库以浏览可安装的站点包。" },
+  "webmcpPackagesConfirmInstallTitle": {
+    "message": "安装 $ID$？",
+    "placeholders": {
+      "id": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesConfirmInstallBody": {
+    "message": "将下载并校验该站点包的 $COUNT$ 个工具文件。安装后保持未激活，直到你在匹配站点上启用。",
+    "placeholders": {
+      "count": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesConfirmInstallBodyUnverified": { "message": "无法核验该包的工具清单（预览失败），将在安装时下载并校验。安装后保持未激活，直到你在匹配站点上启用。" },
+  "webmcpPackagesConfirmInstallConfirm": { "message": "安装" },
+  "webmcpPackagesConfirmInstallCancel": { "message": "取消" },
+  "webmcpPackagesActionFailed": {
+    "message": "操作失败：$ERROR$",
+    "placeholders": {
+      "error": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesErrorUnreachable": { "message": "无法连接包仓库，请检查地址和网络连接。" },
+  "webmcpPackagesErrorNotFound": { "message": "未找到包仓库或包清单（404）。" },
+  "webmcpPackagesErrorTimeout": { "message": "包仓库请求超时，请重试。" },
+  "webmcpPackagesErrorTooLarge": { "message": "包仓库响应超出大小限制。" },
+  "webmcpPackagesErrorBusy": { "message": "已有安装或移除操作正在进行，请稍后再试。" },
+  "webmcpPackagesErrorCollision": {
+    "message": "该包与现有包冲突。$DETAIL$",
+    "placeholders": {
+      "detail": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesErrorGeneric": {
+    "message": "操作失败。$DETAIL$",
+    "placeholders": {
+      "detail": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesAddSessionOnly": {
+    "message": "$LABEL$ 仅在本次会话内生效——浏览器存储不可用，刷新后列表将丢失。",
+    "placeholders": {
+      "label": { "content": "$1" }
+    }
+  },
+  "webmcpPackagesDismissError": { "message": "关闭" },
+  "webmcpPackagesCatalogRefreshUnavailable": { "message": "操作已成功，但暂时无法刷新扩展的工具目录 — 下次刷新时生效。" },
+  "webmcpPackagesMirrorNote": { "message": "GitHub 不可达时，下载会自动切换到 CDN 镜像源。" },
+  "webmcpPackagesPopupSummary": {
+    "message": "$COUNT$ 个包仓库 · 已安装 $INSTALLED$ 个",
+    "placeholders": {
+      "count": { "content": "$1" },
+      "installed": { "content": "$2" }
+    }
+  },
+  "webmcpPackagesPageTabTitle": {
+    "message": "站点工具包 — EO2Weave",
+    "description": "Browser tab title of the registry management page."
+  },
+  "webmcpPackagesNotPersisted": {
+    "message": "仓库列表无法保存到浏览器存储——更改仅在本次浏览器会话中有效。",
+    "description": "Shown when the registry list could not be written to chrome.storage.local."
   }
 }

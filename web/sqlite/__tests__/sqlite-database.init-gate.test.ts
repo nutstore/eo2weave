@@ -26,6 +26,7 @@ describe('SQLiteDatabaseManager init failure gates (PR #133 Sourcery)', () => {
   })
 
   afterEach(async () => {
+    SQLiteDatabaseManager.getInstance().dispose()
     await SQLiteDatabaseManager.getInstance()
       .close()
       .catch(() => undefined)
@@ -106,5 +107,89 @@ describe('SQLiteDatabaseManager init failure gates (PR #133 Sourcery)', () => {
 
     await expect(attempt).rejects.toThrow('retry attempt: quota exhausted')
     expect(constructed).toBeGreaterThanOrEqual(2)
+  })
+
+  it('restarts an initialization whose worker stopped responding', async () => {
+    let constructed = 0
+    let terminated = 0
+    class RecoveringWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: ErrorEvent) => void) | null = null
+      private readonly attempt = ++constructed
+      postMessage(request: { type: string; id: string }) {
+        if (this.attempt === 1) return
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: { type: request.type, id: request.id, success: true, mode: 'opfs' },
+          } as MessageEvent)
+        })
+      }
+      terminate() { terminated++ }
+    }
+    globals.Worker = RecoveringWorker as any
+
+    const db = SQLiteDatabaseManager.getInstance()
+    const startedAt = Date.now()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(startedAt)
+    const stuck = db.initialize()
+    await vi.waitFor(() => expect(constructed).toBe(1))
+
+    db.restartPendingInitialization(15_000)
+    expect(terminated).toBe(0)
+    now.mockReturnValue(startedAt + 15_000)
+    db.restartPendingInitialization(15_000)
+    await expect(stuck).rejects.toThrow('superseded')
+    await expect(db.initialize()).resolves.toBeUndefined()
+    expect(constructed).toBe(2)
+    expect(terminated).toBe(1)
+  })
+
+  it('does not let an old close path clear a replacement initialization', async () => {
+    let constructed = 0
+    let closeRequested = false
+    let releaseClose!: () => void
+    let respondInit!: () => void
+    const closeGate = new Promise<void>((resolve) => { releaseClose = resolve })
+    class HealthyWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: ErrorEvent) => void) | null = null
+      constructor() { constructed++ }
+      postMessage(request: { type: string; id: string }) {
+        if (request.type === 'init') {
+          respondInit = () => this.onmessage?.({
+            data: { type: 'init', id: request.id, success: true, mode: 'opfs' },
+          } as MessageEvent)
+          return
+        }
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: { type: request.type, id: request.id, success: true, mode: 'opfs' },
+          } as MessageEvent)
+        })
+      }
+      terminate() {}
+    }
+    globals.Worker = HealthyWorker as any
+
+    const db = SQLiteDatabaseManager.getInstance()
+    vi.spyOn(db as any, 'acquireInitLock').mockResolvedValue(() => {})
+    ;(db as any).workerClient = {
+      initialize: () => Promise.reject(new Error('init failed')),
+      close: () => { closeRequested = true; return closeGate },
+      dispose: () => {},
+    }
+    const old = db.initialize()
+    await vi.waitFor(() => expect(closeRequested).toBe(true))
+    db.restartPendingInitialization()
+    const replacement = db.initialize()
+
+    await vi.waitFor(() => expect(typeof respondInit).toBe('function'))
+    respondInit()
+    await expect(replacement).resolves.toBeUndefined()
+    releaseClose()
+    await expect(old).rejects.toThrow()
+    expect(constructed).toBe(1)
+    expect((db as any).initialized).toBe(true)
+    expect((db as any).workerClient?.isReady()).toBe(true)
   })
 })

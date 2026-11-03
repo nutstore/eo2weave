@@ -3,6 +3,7 @@ import { parseWebMCPConfig, serializeWebMCPConfig } from '@creatorweave/shared/w
 import { readWebMCPCatalog } from './package-repository'
 import { setBuiltinConfig } from './builtin-storage'
 import { withPackageLock } from './package-lock'
+import { recordUninstallIntent } from './package-installer'
 
 /** UI and execution read the same catalog; source code is fetched only on request. */
 export function createPackageManagement(
@@ -29,9 +30,22 @@ export function createPackageManagement(
       // torn, or in the wrong activation state.
       if (message.type === 'webmcp_packages_delete') {
         if (entry.mount !== 'webmcp' || entry.access !== 'read-write') throw new FsError('EROFS', 'Built-in packages cannot be deleted')
-        return await withPackageLock(entry.directory, async signal =>
-          writeUser({ method: 'remove', path: entry.directory, recursive: true, signal }),
-        )
+        return await withPackageLock(entry.directory, async signal => {
+          // UNINSTALL-INTENT record (finding: "Deleted package resurrects"):
+          // this handler removes the directory under the SAME lock as the
+          // install flow, but unlike `uninstallPackage` it recorded no
+          // intent — an install that started while the id was absent
+          // (`presenceBefore === false`) skipped the presence fence and
+          // recreated the package the user had just deleted here. Record
+          // the intent INSIDE the lock, before the removal, exactly like
+          // the uninstall flow does.
+          recordUninstallIntent(entry.directory)
+          const result = await writeUser({ method: 'remove', path: entry.directory, recursive: true, signal })
+          if (!result.ok) return result
+          const backup = await writeUser({ method: 'remove', path: `.${entry.directory}.previous`, recursive: true, signal })
+          if (!backup.ok && backup.code !== 'ENOENT') return backup
+          return result
+        })
       }
       const config = parseWebMCPConfig(message.config)
       if (config.activation === 'enabled' && (!entry.package || entry.diagnostics.some(error => !error.startsWith('config.json:'))))

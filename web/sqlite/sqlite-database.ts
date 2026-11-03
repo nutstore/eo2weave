@@ -122,6 +122,7 @@ export interface SQLiteTransaction {
 
 class SQLiteWorkerClient {
   private worker: Worker | null = null
+  private disposed = false
   private initialized = false
   private initPromise: Promise<void> | null = null
   private pendingRequests = new Map<
@@ -197,6 +198,7 @@ class SQLiteWorkerClient {
       total: number
     }) => void
   ): Promise<void> {
+    if (this.disposed) throw new Error('SQLite worker client disposed')
     if (this.initialized) return
     if (this.initPromise) return this.initPromise
     if (this.initializing) {
@@ -225,6 +227,8 @@ class SQLiteWorkerClient {
             )
           }
         }
+
+        if (this.disposed) throw new Error('SQLite initialization superseded')
 
         // Use the separate worker file instead of inline blob worker
         // Blob workers cannot resolve bare import specifiers like @sqlite.org/sqlite-wasm
@@ -495,8 +499,9 @@ class SQLiteWorkerClient {
     }
   }
 
-  dispose(): void {
-    this.invalidateWorker(new Error('SQLite worker disposed'))
+  dispose(reason = new Error('SQLite worker disposed')): void {
+    this.disposed = true
+    this.invalidateWorker(reason)
   }
 
   /** Get the current database mode (opfs or memory) */
@@ -602,6 +607,8 @@ class SQLiteDatabaseManager {
   private initialized = false
   private initPromise: Promise<void> | null = null
   private initializing = false // Guard for StrictMode double init
+  private initializationGeneration = 0
+  private initializationStartedAt: number | null = null
   /**
    * Issue #131 req 5: Web Locks scope serializing SQLite initialization
    * ACROSS TABS. OPFS sync handles are per-origin exclusive resources; when
@@ -650,6 +657,22 @@ class SQLiteDatabaseManager {
     return SQLiteDatabaseManager.instance
   }
 
+  /** Discard a stalled initialization before an explicit user retry. */
+  restartPendingInitialization(minElapsedMs = 0): void {
+    if (!this.initPromise || this.initialized) return
+    if (
+      this.initializationStartedAt === null ||
+      Date.now() - this.initializationStartedAt < minElapsedMs
+    ) return
+    this.initializationGeneration++
+    this.workerClient?.dispose(new Error('SQLite initialization superseded'))
+    this.workerClient = null
+    this.initPromise = null
+    this.initializing = false
+    this.initRetryCount = 0
+    this.initializationStartedAt = null
+  }
+
   async initialize(
     onMigrationProgress?: (progress: {
       step: string
@@ -669,6 +692,8 @@ class SQLiteDatabaseManager {
     }
 
     this.initializing = true
+    const generation = ++this.initializationGeneration
+    this.initializationStartedAt = Date.now()
 
     // Create the worker client synchronously (as the old inline IIFE did) so
     // callers that immediately query join the in-flight initPromise instead
@@ -685,12 +710,16 @@ class SQLiteDatabaseManager {
       } catch (error) {
         this.initializing = false
         this.initPromise = null
+        this.initializationStartedAt = null
         throw error
       }
     }
 
     this.initPromise = this.acquireInitLock().then((releaseInitLock) =>
-      this.runInitialization(onMigrationProgress).finally(() => releaseInitLock())
+      (generation === this.initializationGeneration
+        ? this.runInitialization(generation, onMigrationProgress)
+        : Promise.reject(new Error('SQLite initialization superseded'))
+      ).finally(() => releaseInitLock())
     )
 
     return this.initPromise
@@ -702,6 +731,7 @@ class SQLiteDatabaseManager {
    * cross-tab init lock (acquireInitLock) can wrap it cleanly.
    */
   private async runInitialization(
+    generation: number,
     onMigrationProgress?: (progress: {
       step: string
       details: string
@@ -714,16 +744,23 @@ class SQLiteDatabaseManager {
         this.workerClient = new SQLiteWorkerClient()
       }
       await this.workerClient.initialize(onMigrationProgress)
+      if (generation !== this.initializationGeneration) {
+        throw new Error('SQLite initialization superseded')
+      }
       this.initialized = true
       this.initializing = false
       this.initRetryCount = 0 // Reset on success
+      this.initializationStartedAt = null
     } catch (error) {
+      if (generation !== this.initializationGeneration) throw error
       console.error('[SQLite] Failed to initialize:', error)
+      const failedClient = this.workerClient
       try {
-        await this.workerClient?.close()
+        await failedClient?.close()
       } catch {
         // Ignore cleanup failures; we'll recreate worker on next init.
       }
+      if (generation !== this.initializationGeneration) throw error
 
       // Issue #131 / Sourcery: the retry budget below only re-arms the GATE
       // (initPromise/initializing) so the next caller may retry — it never
@@ -746,21 +783,31 @@ class SQLiteDatabaseManager {
             `Retrying in ${backoff}ms...`
         )
         await new Promise((resolve) => setTimeout(resolve, backoff))
+        if (generation !== this.initializationGeneration) {
+          throw new Error('SQLite initialization superseded')
+        }
         try {
           this.workerClient = new SQLiteWorkerClient()
           await this.workerClient.initialize(onMigrationProgress)
+          if (generation !== this.initializationGeneration) {
+            throw new Error('SQLite initialization superseded')
+          }
           this.initialized = true
           this.initializing = false
           this.initRetryCount = 0 // Reset on success
+          this.initializationStartedAt = null
           return
         } catch (retryError) {
+          if (generation !== this.initializationGeneration) throw retryError
           console.error('[SQLite] Init retry failed:', retryError)
+          const failedRetryClient = this.workerClient
           lastError = retryError
           try {
-            await this.workerClient?.close()
+            await failedRetryClient?.close()
           } catch {
             // Ignore cleanup failures; we'll recreate worker on next init.
           }
+          if (generation !== this.initializationGeneration) throw retryError
           this.workerClient = null
         }
       }
@@ -773,6 +820,7 @@ class SQLiteDatabaseManager {
 
       this.initPromise = null
       this.initializing = false
+      this.initializationStartedAt = null
 
       throw lastError
     }

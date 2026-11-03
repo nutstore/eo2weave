@@ -6,14 +6,14 @@
  * so it can reference the image in its response via markdown.
  *
  * Conditional registration: only available when:
- *   1. settings.imageGenModel is set
- *   2. The model can be matched in the current provider's model cache
+ *   Codex OAuth has an enabled image bridge, or the selected image model is
+ *   present in the current provider's model cache.
  */
 
 import type { ToolDefinition, ToolExecutor, ToolPromptDoc, ToolContext } from './tool-types'
 import { resolveVfsTarget } from './vfs-resolver'
 import { toolOkJson, toolErrorJson } from './tool-envelope'
-import { generateImage } from '@/agent/llm/image-gen'
+import { CODEX_IMAGE_MODEL_ID, generateImage, hasCodexImageBridge } from '@/agent/llm/image-gen'
 import { useSettingsStore } from '@/store/settings.store'
 import { normalizeBaseUrl } from '@/agent/llm/pi-ai-url-utils'
 import { getCachedModels } from '@/agent/providers/model-store'
@@ -27,15 +27,15 @@ import type { LLMProviderType } from '@/agent/providers/types'
  * Check if image generation is available for the current provider.
  *
  * The tool should only be registered when:
- *   1. settings.imageGenModel has a value
- *   2. The model can be found in the current provider's model cache
+ *   Codex OAuth requires an enabled image bridge. Other providers require a
+ *   selected model in the provider's model cache.
  */
 export function isImageGenAvailable(): boolean {
   const { imageGenModel } = useSettingsStore.getState()
-  if (!imageGenModel) return false
-
   const effectiveConfig = useSettingsStore.getState().getEffectiveProviderConfig()
   if (!effectiveConfig) return false
+  if (effectiveConfig.apiKeyProviderKey === 'codex-oauth') return hasCodexImageBridge()
+  if (!imageGenModel) return false
 
   // Check the provider's model cache — only exact match against the full
   // imageGenModel ID (e.g. "openai/gpt-image-2"). We do NOT match by short ID
@@ -166,7 +166,7 @@ export const imageGenExecutor: ToolExecutor = async (
     )
   }
 
-  const imageModelId = settingsState.imageGenModel
+  const imageModelId = effectiveConfig.apiKeyProviderKey === 'codex-oauth' ? CODEX_IMAGE_MODEL_ID : settingsState.imageGenModel
 
   try {
     const { getApiKeyRepository } = await import('@/sqlite')
@@ -192,6 +192,10 @@ export const imageGenExecutor: ToolExecutor = async (
       },
       context.abortSignal,
     )
+
+    if (result.stopReason === 'aborted') {
+      return toolErrorJson('generate_image', 'cancelled', 'Image generation was cancelled.')
+    }
 
     // 3. Check for errors
     if (result.stopReason === 'error') {

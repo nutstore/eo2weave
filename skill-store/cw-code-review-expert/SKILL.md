@@ -1,6 +1,9 @@
 ---
 name: cw-code-review-expert
 description: Conduct a rigorous, evidence-based code review for a change set, pull request, diff, or selected files. Use when users ask to review code, assess a PR, find bugs/security/performance risks, validate a refactor, or request a second engineering opinion. Inspect scope before details, load targeted checklists progressively, prioritize only actionable findings as P0-P3, and report before making any code changes.
+description.zh-CN: "对变更集、Pull Request、diff 或选定文件进行严谨、基于证据的代码审查。当用户要求审查代码、评估 PR、查找缺陷/安全/性能风险、验证重构质量或需要第二工程意见时使用。先看整体范围再看细节，逐条给出可执行的修改建议。"
+description.ja-JP: "変更セット、プルリクエスト、diff、または選択したファイルに対して、証拠に基づく厳格なコードレビューを実行します。コードレビュー、PR の評価、バグ/セキュリティ/パフォーマンスリスクの発見、リファクタリング品質の検証、セカンドオピニオンを求められたときに使用します。詳細の前に全体のスコープを確認し、実行可能な修正提案を優先度付きで提示します。"
+description.ko-KR: "변경 세트, 풀 리퀘스트, diff 또는 선택한 파일에 대해 엄격하고 근거 기반의 코드 리뷰를 수행합니다. 코드 리뷰, PR 평가, 버그/보안/성능 위험 발견, 리팩터링 품질 검증, 두 번째 엔지니어링 의견을 요청할 때 사용합니다. 세부 사항보다 전체 범위를 먼저 확인하고, 실행 가능한 수정 제안을 우선순위와 함께 제시합니다."
 category: coding
 tags: [code-review, security, architecture, quality, performance]
 triggers:

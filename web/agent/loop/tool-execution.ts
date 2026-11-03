@@ -68,6 +68,23 @@ export interface ExecuteToolWithTimeoutInput {
   runAbortSignal?: AbortSignal
   externalAbortSignal?: AbortSignal
   execute: (abortSignal: AbortSignal) => Promise<string>
+  /**
+   * Decide whether a structured tool-result envelope produced by `execute`
+   * should REPLACE the generic abort/timeout rejection when the outer race
+   * wins (#139 review: cancellation warning gets lost). Return the envelope
+   * string to surface it, or null to keep the plain rejection.
+   */
+  preferEnvelopeOnRaceLoss?: (envelope: string) => string | null
+  /**
+   * Fired exactly once when the execution TIMED OUT and its structured
+   * envelope replacement took the envelope-fallback return path — i.e. when
+   * the caller's own timeout catch will NOT run (#148 review round 8: a
+   * WebMCP timeout followed by a CALL_CANCELLED envelope within the grace
+   * window returned the envelope, so the timeout notification was skipped).
+   * The ordinary timeout-rejection path keeps notifying via the caller's
+   * catch, so this never fires twice for one call.
+   */
+  onTimeout?: () => void
 }
 
 export function coerceToolArgs(params: unknown): Record<string, unknown> {
@@ -77,6 +94,13 @@ export function coerceToolArgs(params: unknown): Record<string, unknown> {
   }
   throw new Error('invalid_arguments: Tool arguments must be a JSON object')
 }
+
+/**
+ * Grace window after a lost race during which a structured envelope from the
+ * tool promise is still accepted (see preferEnvelopeOnRaceLoss). Bounded so
+ * a never-settling tool cannot hang the caller past the abort itself.
+ */
+const RACE_LOSS_GRACE_MS = 2000
 
 export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput): Promise<string> {
   const timeoutController = new AbortController()
@@ -97,6 +121,13 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
 
   let timeoutId: ReturnType<typeof setTimeout> | null = null
   let didTimeout = false
+  let didFireOnTimeout = false
+  const fireOnTimeoutOnce = () => {
+    if (didTimeout && !didFireOnTimeout) {
+      didFireOnTimeout = true
+      input.onTimeout?.()
+    }
+  }
   const timeoutPromise =
     typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0
       ? new Promise<string>((_, reject) => {
@@ -129,12 +160,52 @@ export async function executeToolWithTimeout(input: ExecuteToolWithTimeoutInput)
     cleanupListeners.push(() => timeoutController.signal.removeEventListener('abort', onAbort))
   })
 
-  try {
-    const racers: Array<Promise<string>> = [input.execute(timeoutController.signal), abortPromise]
+  // When the abort/timeout racer wins, the tool promise may still settle a
+  // moment later with a structured envelope (e.g. WebMCP's CALL_CANCELLED
+  // result, which carries the non-retryable status and the "page may still
+  // change" warning). Give the caller one shot to swap the generic
+  // rejection for that envelope (#139 review: cancellation warning gets
+  // lost) instead of surfacing a bare abort/timeout error.
+  const raceWithEnvelopeFallback = async (): Promise<string> => {
+    const toolPromise = input.execute(timeoutController.signal)
+    const racers: Array<Promise<string>> = [toolPromise, abortPromise]
     if (timeoutPromise) {
       racers.push(timeoutPromise)
     }
-    return await Promise.race(racers)
+    try {
+      return await Promise.race(racers)
+    } catch (raceError) {
+      if (!input.preferEnvelopeOnRaceLoss) throw raceError
+      try {
+        const envelope = await Promise.race([
+          toolPromise,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), RACE_LOSS_GRACE_MS)),
+        ])
+        if (envelope !== null) {
+          const preferred = input.preferEnvelopeOnRaceLoss(envelope)
+          if (preferred !== null) {
+            // The envelope REPLACED the abort/timeout rejection, so the
+            // caller's timeout catch never runs — fire the timeout
+            // notification here (#148 review round 8: a WebMCP timeout
+            // followed by a CALL_CANCELLED envelope within the grace window
+            // skipped onToolTimeout entirely). didTimeout guards it: an
+            // envelope after a plain user abort is not a timeout, and the
+            // ordinary rejection path keeps notifying via the caller's
+            // catch, so this never duplicates.
+            fireOnTimeoutOnce()
+            return preferred
+          }
+        }
+      } catch {
+        // The tool promise rejected too — the original race error is the
+        // more accurate failure, so fall through to rethrow it.
+      }
+      throw raceError
+    }
+  }
+
+  try {
+    return await raceWithEnvelopeFallback()
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
     for (const cleanup of cleanupListeners) cleanup()

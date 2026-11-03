@@ -393,13 +393,13 @@
       }
     }
   },
-  "webmcpPackagesTitle": {
+  "webmcpPackagesPageTitle": {
     "message": "WebMCP Packages"
   },
-  "webmcpPackagesSubtitle": {
+  "webmcpPackagesPageSubtitle": {
     "message": "Manage built-in and custom WebMCP workflow packages. Enable a package to expose its tools on matching pages."
   },
-  "webmcpPackagesNote": {
+  "webmcpPackagesPageNote": {
     "message": "Both sources use manifest.json, config.json and workflow files. Built-in packages are mounted read-only at vfs://external/builtin-webmcp/. Custom packages are writable at vfs://external/webmcp/. Missing activation defaults to disabled. Enabled workflows execute in the extension and do not require CreatorWeave or a workspace host."
   },
   "webmcpSourceBuiltin": {
@@ -419,5 +419,252 @@
   },
   "webmcpPackageDeleteConfirm": {
     "message": "Delete WebMCP package “$1”?\n\nThis permanently deletes the package and all its files from OPFS:\n$2\n\nThis cannot be undone."
+  },
+  "webmcpPackagesTitle": {
+    "message": "Site packages"
+  },
+  "webmcpPackagesDescription": {
+    "message": "Install site tool packages from a package registry. Installed packages stay inactive until you enable them on the matching site (open the side panel there)."
+  },
+  "webmcpPackagesRegistryLabel": {
+    "message": "Package registry"
+  },
+  "webmcpPackagesRefresh": {
+    "message": "Refresh"
+  },
+  "webmcpPackagesRefreshing": {
+    "message": "Refreshing…"
+  },
+  "webmcpPackagesLoadFailed": {
+    "message": "Failed to load the package registry: $ERROR$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesInstall": {
+    "message": "Install"
+  },
+  "webmcpPackagesRepair": {
+    "message": "Repair"
+  },
+  "webmcpPackagesInstalling": {
+    "message": "Installing…"
+  },
+  "webmcpPackagesInstalled": {
+    "message": "Installed"
+  },
+  "webmcpPackagesInstallSuccess": {
+    "message": "$ID$ installed ($COUNT$ files verified)",
+    "placeholders": {
+      "id": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  },
+  "webmcpPackagesInstallFailed": {
+    "message": "Installation failed: $ERROR$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesUninstall": {
+    "message": "Remove"
+  },
+  "webmcpPackagesUninstalling": {
+    "message": "Removing…"
+  },
+  "webmcpPackagesUninstallSuccess": {
+    "message": "$ID$ removed",
+    "placeholders": {
+      "id": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesUninstallFailed": {
+    "message": "Removal failed: $ERROR$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesInstalledInactive": {
+    "message": "Installed · inactive"
+  },
+  "webmcpPackagesInstalledInactiveHint": {
+    "message": "Open the side panel on a matching site to enable it."
+  },
+  "webmcpPackagesInstalledActive": {
+    "message": "Installed · active"
+  },
+  "webmcpPackagesToolsCount": {
+    "message": "$COUNT$ tools",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesToolsCountUnverified": {
+    "message": "(unverified)"
+  },
+  "webmcpPackagesInstalledTitle": {
+    "message": "Installed packages"
+  },
+  "webmcpPackagesVersion": {
+    "message": "v$VERSION$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesAddRegistryTitle": {
+    "message": "Add custom package repository"
+  },
+  "webmcpPackagesAddRegistryInputPlaceholder": {
+    "message": "github.com/owner/repo — or a raw manifest URL"
+  },
+  "webmcpPackagesAddRegistryHint": {
+    "message": "Accepts a full GitHub URL, an owner/repo shorthand, or a direct raw.githubusercontent.com URL. The raw manifest path is derived automatically (branch defaults to main)."
+  },
+  "webmcpPackagesAddRegistryButton": {
+    "message": "Add"
+  },
+  "webmcpPackagesAdding": {
+    "message": "Adding…"
+  },
+  "webmcpPackagesAddSuccess": {
+    "message": "Registry added: $LABEL$",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesAddFailed": {
+    "message": "Invalid registry URL: $ERROR$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesRemoveRegistry": {
+    "message": "Remove registry"
+  },
+  "webmcpPackagesNoPackages": {
+    "message": "This registry lists no packages yet."
+  },
+  "webmcpPackagesNoRegistries": {
+    "message": "No package registry added yet. Add one below to browse installable site packages."
+  },
+  "webmcpPackagesConfirmInstallTitle": {
+    "message": "Install $ID$?",
+    "placeholders": {
+      "id": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesConfirmInstallBody": {
+    "message": "$COUNT$ tools for this site package will be downloaded and verified. The package stays inactive until you enable it on the matching site.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesConfirmInstallBodyUnverified": {
+    "message": "The package's tool list could not be verified (preview failed). It will be downloaded and checked at install time. The package stays inactive until you enable it on the matching site."
+  },
+  "webmcpPackagesConfirmInstallConfirm": {
+    "message": "Install"
+  },
+  "webmcpPackagesConfirmInstallCancel": {
+    "message": "Cancel"
+  },
+  "webmcpPackagesActionFailed": {
+    "message": "Operation failed: $ERROR$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesErrorUnreachable": {
+    "message": "Could not reach the package registry. Check the URL and your connection."
+  },
+  "webmcpPackagesErrorNotFound": {
+    "message": "The registry or package manifest was not found (404)."
+  },
+  "webmcpPackagesErrorTimeout": {
+    "message": "The registry request timed out. Try again."
+  },
+  "webmcpPackagesErrorTooLarge": {
+    "message": "The registry response exceeded the size limit."
+  },
+  "webmcpPackagesErrorBusy": {
+    "message": "Another install or removal is already running. Try again in a moment."
+  },
+  "webmcpPackagesErrorCollision": {
+    "message": "This package conflicts with an existing one. $DETAIL$",
+    "placeholders": {
+      "detail": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesErrorGeneric": {
+    "message": "The operation failed. $DETAIL$",
+    "placeholders": {
+      "detail": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesAddSessionOnly": {
+    "message": "$LABEL$ was added for this session only — browser storage is unavailable, so the list will not survive a reload.",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "webmcpPackagesDismissError": {
+    "message": "Dismiss"
+  },
+  "webmcpPackagesCatalogRefreshUnavailable": {
+    "message": "The operation succeeded, but the extension's tool catalog could not be refreshed right now — it updates on the next refresh."
+  },
+  "webmcpPackagesMirrorNote": {
+    "message": "Downloads fall back to a CDN mirror when GitHub is unreachable."
+  },
+  "webmcpPackagesPopupSummary": {
+    "message": "$COUNT$ registries · $INSTALLED$ installed",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "installed": {
+        "content": "$2"
+      }
+    }
+  },
+  "webmcpPackagesPageTabTitle": {
+    "message": "Site packages — EO2Weave",
+    "description": "Browser tab title of the registry management page."
+  },
+  "webmcpPackagesNotPersisted": {
+    "message": "The registry list could not be saved to browser storage — changes are only kept for this browser session.",
+    "description": "Shown when the registry list could not be written to chrome.storage.local."
   }
 }

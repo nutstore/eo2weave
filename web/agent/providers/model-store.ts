@@ -156,10 +156,19 @@ export function getCachedModelsResult(
 /**
  * Whether a cached entry is older than MODELS_CACHE_TTL_MS.
  * Missing entry counts as stale (nothing cached = needs fetch).
+ *
+ * A FAILED entry (recorded error) is ALWAYS stale, regardless of fetchedAt
+ * (Sourcery round 6, "Failed refresh suppresses retries"): a failure is not
+ * fresh catalog data, so the negative-result retry window must come from
+ * `useDynamicModels`'s own `failedFetchAt` suppression (5-minute
+ * FAILED_FETCH_RETRY_MS) — not from the 24-hour success TTL. Treating a
+ * fresh failure as fresh would leave a provider on its fallback catalog for
+ * up to a day without a single background retry.
  */
 export function isCacheStale(providerType: LLMProviderType, providerKey?: string): boolean {
   const entry = getCachedModelsResult(providerType, providerKey)
   if (!entry) return true
+  if (entry.error != null) return true
   return Date.now() - entry.fetchedAt > MODELS_CACHE_TTL_MS
 }
 
@@ -172,7 +181,53 @@ export function setCachedModels(
   result: FetchModelsResult,
   providerKey?: string
 ): void {
-  if (result.source !== 'dynamic') return
+  // Persist every refresh OUTCOME, including failed ones (source 'static'
+  // with an `error`). A failed fetch carries real information — the catalog
+  // is UNKNOWN — and consumers read that error back via
+  // getCachedModelsResult() to avoid classifying an outage as an
+  // authoritative empty catalog. Failures are stored in MEMORY ONLY: a
+  // negative result must not outlive the session (an offline tab that later
+  // closes should not leave the next session believing the catalog is
+  // broken), while successes stay written to localStorage as before.
+  if (result.source !== 'dynamic' && !result.error) return
+
+  // A failed result must not DOWNGRADE a non-empty cached catalog
+  // (Sourcery: "Fresh models disappear after failed refresh"): the failure's
+  // static-fallback list is no richer than what the last successful fetch
+  // already cached, and overwriting would hide previously fetched
+  // dynamic-only models until another refresh succeeds — including the
+  // late-arrival case where a slow failed request resolves after a newer
+  // successful one. An empty-or-missing cached list is still replaced: that
+  // entry carries no models to lose, and recording the error is what keeps
+  // the outage from reading as an authoritative 'empty'.
+  const existing = getCachedModelsResult(providerType, providerKey)
+  if (
+    result.error != null &&
+    existing != null &&
+    existing.error == null &&
+    existing.models.length > 0
+  ) {
+    return
+  }
+
+  // A SUCCESSFUL result that is OLDER than the cached one must not overwrite
+  // it either (Sourcery: "Older refresh overwrites newer catalog"): two
+  // overlapping refreshes for the same provider can resolve out of order —
+  // each stamps fetchedAt when it STARTS (fetchModelsForProvider), so a slow
+  // older request that settles after a newer one carries an earlier
+  // timestamp. Applying it in completion order would revert the catalog to
+  // the stale snapshot (dropping models the newer refresh had already
+  // learned about). fetchedAt is monotonic per provider here because every
+  // writer stamps Date.now() at fetch start; equal timestamps fall through
+  // and apply (indistinguishable).
+  if (
+    result.error == null &&
+    existing != null &&
+    existing.error == null &&
+    result.fetchedAt < existing.fetchedAt
+  ) {
+    return
+  }
 
   const key = getCacheKey(providerType, providerKey)
   const entry: CachedModels = {
@@ -182,8 +237,57 @@ export function setCachedModels(
     error: result.error,
   }
 
+  // Cross-tab guard (Sourcery round 8, "Older tab overwrites newer disk
+  // cache"): `memoryCache` is per-tab, so this tab's ordering guard above
+  // only sees THIS tab's writes. If another tab completed a NEWER refresh
+  // while ours was in flight, our late result must not clobber the
+  // persisted entry it already wrote to localStorage. Read the disk entry
+  // immediately before replacing it and apply the same fetchedAt ordering:
+  // an older successful write loses to a newer one already on disk. (The
+  // memory cache is still updated so this tab's session state reflects its
+  // own fetch; only the PERSISTED catalog is protected.) Failed results
+  // stay memory-only regardless — they never reach writeToDisk.
+  const diskEntry = readFromDisk(key)
+  if (
+    result.error == null &&
+    result.source === 'dynamic' &&
+    diskEntry != null &&
+    diskEntry.error == null &&
+    result.fetchedAt < diskEntry.fetchedAt
+  ) {
+    // Another tab persisted a newer catalog. Adopt it into memory (so this
+    // tab reads the same fresh data) and skip the overwrite.
+    memoryCache.set(key, diskEntry)
+    return
+  }
+
   memoryCache.set(key, entry)
-  writeToDisk(key, entry)
+  if (result.source === 'dynamic') {
+    writeToDisk(key, entry)
+
+    // Post-write verification (Sourcery round 10, "older tab still overwrites
+    // newer cache"): the pre-write disk check above reads BEFORE our write, so
+    // two tabs whose refreshes overlap can BOTH pass it — tab A reads the old
+    // entry, tab B reads the same old entry, B writes its newer catalog, then
+    // A's older write lands last and silently reverts the shared cache to the
+    // stale snapshot. localStorage has no cross-tab compare-and-swap, so the
+    // check-then-act window cannot be closed by pre-checks alone. Instead the
+    // write is VERIFIED: re-read the disk and if it no longer holds what we
+    // wrote — a concurrent tab persisted a newer entry between our read and
+    // our write, or after our write — restore that newer entry. The losing
+    // (older) tab always repairs, and the winning tab never writes again, so
+    // the repair converges instead of ping-ponging.
+    const diskAfterWrite = readFromDisk(key)
+    if (
+      diskAfterWrite != null &&
+      diskAfterWrite.error == null &&
+      diskAfterWrite !== entry &&
+      diskAfterWrite.fetchedAt > entry.fetchedAt
+    ) {
+      writeToDisk(key, diskAfterWrite)
+      memoryCache.set(key, diskAfterWrite)
+    }
+  }
 
   // Notify listeners that models have been updated
   // (e.g. image gen tool may need to register/unregister)

@@ -36,12 +36,14 @@ import type { FileMentionItem } from './FileMentionExtension'
 import { useInitialMessage } from './useInitialMessage'
 import { ConversationMessages } from './ConversationMessages'
 import type { ConversationMessagesHandle } from './ConversationMessages'
+import { VIRTUALIZATION_THRESHOLD } from '@/components/agent/virtualization-constants'
 import { ConversationUsageBar } from './ConversationUsageBar'
 import { ConversationEmptyState } from './ConversationEmptyState'
 import { AgentDropdown } from './AgentDropdown'
 import { ModelThinkingControls } from './ModelThinkingControls'
 import { ContextUsageBar } from './ContextUsageBar'
-import { ScrollToBottomButton } from './ScrollToBottomButton'
+import { ScrollToBottomButton } from '@/components/agent/ScrollToBottomButton'
+import type { VirtualAtBottomHub } from '@/components/agent/ScrollToBottomButton'
 import { MessageNavBar } from './MessageNavBar'
 import { AssetsPopover } from './AssetsPopover'
 import { ProcessesPopover } from './ProcessesPopover'
@@ -69,6 +71,14 @@ interface ConversationViewProps {
   onPreviewAsset?: (fileName: string, blob: Blob) => void
 }
 
+/**
+ * ConversationView must be rendered with `key={convId}` (WorkspaceLayout does
+ * this) so a conversation switch fully remounts it: `isUserAtBottomRef` is
+ * re-seeded to true and Virtuoso re-runs `initialTopMostItemIndex` (jump to
+ * the latest turn). Without the remount, a stale at-bottom seed from the
+ * previous conversation made followOutput skip the new conversation's latest
+ * messages (issue #141).
+ */
 export function ConversationView({
   initialMessage,
   onInitialMessageConsumed,
@@ -112,6 +122,14 @@ export function ConversationView({
   const isDirect = useConversationStore(
     (s) => !!s.activeConversationId && s.conversations.find((c) => c.id === s.activeConversationId)?.kind === 'direct'
   )
+
+  // ── Issue #141: Virtuoso at-bottom listener hub ──
+  // The hub object identity is stable for the component's lifetime, so wiring
+  // the button to the virtualized at-bottom stream never re-renders
+  // ConversationView. ConversationMessages writes the latest value through
+  // the funnel on every `atBottomStateChange` and invokes registered
+  // listeners; ScrollToBottomButton subscribes directly via the hub object.
+  const virtualAtBottomHubRef = useRef<VirtualAtBottomHub>({ listeners: new Set(), lastAtBottom: null })
   const {
     hasInput, setInput, setMentionedAgentIds, inputResetToken, messagesEndRef, scrollContainerRef,
     isUserAtBottomRef,
@@ -298,6 +316,12 @@ export function ConversationView({
     }
   }, [])
 
+  // The virtual/plain mode split is a stable binary for a given message count
+  // (the count only crosses the threshold by appending messages, never in
+  // place). Expose both literal forms so the JSX below picks the matching
+  // branch of ScrollToBottomButton's discriminated-union props.
+  const isConversationVirtualized = activeMessages.length > VIRTUALIZATION_THRESHOLD
+
   // ── Initial message handling ──
   useInitialMessage({
     initialMessage,
@@ -383,16 +407,24 @@ export function ConversationView({
               mentionAgents={mentionAgents}
               onSearchFiles={debouncedSearchFiles}
               onPreviewAsset={onPreviewAsset}
+              virtualAtBottomHub={virtualAtBottomHubRef.current}
             />
           )}
         </div>
 
-        {/* Scroll-to-bottom floating button — isolated component to avoid re-rendering ConversationView on scroll */}
+        {/* Scroll-to-bottom floating button — isolated component to avoid re-rendering ConversationView on scroll.
+            Issue #141: in virtualized mode its visibility follows Virtuoso's atBottomStateChange
+            (surfaced through the shared hub) and clicks delegate to the list handle (re-enabling
+            followOutput and jumping to the true scroller bottom, footer included); the native
+            geometry path stays for the plain renderer. */}
         <ScrollToBottomButton
           scrollContainerRef={scrollContainerRef}
           messagesEndRef={messagesEndRef}
           isUserAtBottomRef={isUserAtBottomRef}
           convId={convId ?? undefined}
+          {...(isConversationVirtualized
+            ? { isVirtualized: true as const, virtuosoRef: conversationMessagesRef, virtualAtBottomHub: virtualAtBottomHubRef.current }
+            : { isVirtualized: false as const })}
         />
 
         {/* Assets popover — small trigger button, expands to show workspace assets */}

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getMCPManager: vi.fn(),
   getWebMCPBridge: vi.fn(),
   getWebMCPState: vi.fn(),
+  consumeAndSavePluginDownload: vi.fn(),
 }))
 
 vi.mock('@/webmcp/manager', () => ({
@@ -27,6 +28,10 @@ vi.mock('@/webmcp/store', () => ({
   useWebMCPStore: { getState: mocks.getWebMCPState },
 }))
 
+vi.mock('@/webmcp/plugin-download', () => ({
+  consumeAndSavePluginDownload: mocks.consumeAndSavePluginDownload,
+}))
+
 // call_tool now routes through the policy engine (PR-2). These tests target
 // error-wrapping behavior only, so authorization is stubbed to allow.
 vi.mock('../policy-engine', () => ({
@@ -44,6 +49,7 @@ describe('external tool bridge error isolation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.refreshCatalog.mockReset()
+    mocks.consumeAndSavePluginDownload.mockReset()
     mocks.getWebMCPBridge.mockReturnValue(null)
     mocks.getWebMCPState.mockReturnValue({
       getEnabledTools: () => [],
@@ -210,6 +216,9 @@ describe('external tool bridge error isolation', () => {
       inputSchema,
       apiMode: 'documentModelContext' as const,
       tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
+      // Read-only: this test isolates error-passthrough behavior, not the
+      // write-ambiguity path (which appends its own guidance).
+      annotations: { readOnlyHint: true },
     }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     mocks.getWebMCPState.mockReturnValue({
@@ -246,7 +255,8 @@ describe('external tool bridge error isolation', () => {
       inputSchema,
       apiMode: 'documentModelContext' as const,
       tabs: [{ tabId: 1, title: 'Example', url: 'https://example.com', lastSeenAt: 1 }],
-      annotations: { untrustedContentHint: true },
+      // Read-only + untrusted: isolates the untrusted-wrapping behavior.
+      annotations: { untrustedContentHint: true, readOnlyHint: true },
     }
     mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
     mocks.getWebMCPState.mockReturnValue({
@@ -340,6 +350,7 @@ describe('WebMCP legacy extension compatibility', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.refreshCatalog.mockReset()
+    mocks.consumeAndSavePluginDownload.mockReset()
   })
 
   const legacySchema = { type: 'object' as const, properties: { a: { type: 'string' } } }
@@ -526,6 +537,286 @@ describe('WebMCP legacy extension compatibility', () => {
     expect(invoke).toHaveBeenCalledOnce()
     expect(result.error.code).toBe('TAB_TARGET_MISMATCH')
     expect(result.error.message).toContain('may have changed the page')
+    expect(result.error.message).toContain('check both tabs before retrying')
+    expect(result.error.retryable).toBe(false)
+  })
+
+  it('marks a failed write with unknown tab provenance non-retryable (#138 review: partial writes)', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    // ok=false and NO tabId: the tool may have partially mutated the page
+    // before failing — the error must NOT be marked retryable, and the
+    // message must tell the caller to verify the page first.
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({ ok: false, error: 'selector not found' }),
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain("verify the target tab's state before retrying")
+  })
+
+  it('keeps a pre-execution routing error retryable even after a failed route-key refresh (#139 review: safe route errors)', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    // Route miss with NO tabId, and the route-key refresh fails to produce a
+    // replacement — the tool provably never ran, so the error stays retryable.
+    mocks.refreshCatalog.mockResolvedValue([])
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({
+        ok: false,
+        errorCode: 'INVALID_TOOL_NAME',
+        error: 'No route cache entry for tool and group',
+      }),
+    })
+
+    vi.useFakeTimers()
+    try {
+      const pending = callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext)
+      await vi.advanceTimersByTimeAsync(3100)
+      const result = JSON.parse(await pending)
+      expect(result.error.code).toBe('INVALID_TOOL_NAME')
+      expect(result.error.retryable).toBe(true)
+      expect(result.error.message).not.toContain('verify the target tab')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a routing error reported WITH a tabId non-retryable (#139 review: dispatch-following failures)', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    // A routing-shaped error that carries a tabId cannot be trusted as
+    // pre-execution — the failure may follow the dispatch to a live tab.
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({
+        ok: false,
+        errorCode: 'TOOL_TARGET_NOT_FOUND',
+        error: 'target vanished',
+        tabId: 1,
+      }),
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain("verify the target tab's state before retrying")
+  })
+
+  it('marks a rejected write invoke non-retryable with verification guidance (#139 review: writes can be retried after applying)', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    // The bridge rejects AFTER the dispatch may have applied on the page —
+    // the caller must not blindly retry the write.
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockRejectedValue(new Error('extension message port closed')),
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.code).toBe('WEBMCP_INVOKE_FAILED')
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain('may have already been applied')
+    expect(result.error.message).toContain("verify the target tab's state before retrying")
+  })
+
+  it('keeps a rejected READ invoke retryable (#139 review: repeating a read is safe)', async () => {
+    const readTool = { ...legacyTool('signature'), annotations: { readOnlyHint: true } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => readTool)
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockRejectedValue(new Error('extension message port closed')),
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: readTool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.retryable).toBe(true)
+    expect(result.error.message).not.toContain('may have already been applied')
+  })
+
+  it('returns the cancellation envelope without dispatching when the run aborts before the invoke (#139 review: aborted writes still start)', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    // Never-settling invoke: the abort race itself (not the invoke result)
+    // must resolve the call with the cancellation envelope.
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockImplementation(() => new Promise(() => {})),
+    })
+    const controller = new AbortController()
+    // Drive the REAL flow: authorization is stubbed at the policy-engine
+    // boundary, so bypass the stale-approval guard by aborting AFTER it has
+    // passed — exactly the gap the review describes ("after the run aborts
+    // after the stale-approval check and before invokeWithAbort dispatches").
+    // The guard reads context.abortSignal at the moment it runs; we let it
+    // pass by keeping the signal live until invoke is ABOUT to be called.
+    let releaseAuth!: (v: { decision: 'allow'; via: 'auto' }) => void
+    vi.mocked(authorize).mockImplementationOnce(
+      () => new Promise((resolve) => { releaseAuth = resolve }),
+    )
+
+    const pending = callToolExecutor(
+      { full_tool_name: tool.fullName, tab_id: 1, args: { a: 'x' } },
+      { ...toolContext, abortSignal: controller.signal },
+    )
+    await vi.waitFor(() => expect(releaseAuth).toBeTypeOf('function'))
+    // Let the full authorize→guard→dispatch chain settle with the signal
+    // still LIVE (three awaits separate the guard from the dispatch), so the
+    // guard passes and execution reaches the dispatch boundary.
+    releaseAuth({ decision: 'allow', via: 'auto' })
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    controller.abort()
+    // invokeWithAbort's abort race must resolve the never-settling invoke
+    // with the cancellation envelope (#139 review: aborted writes still
+    // start — and cancellation must not wait on the extension).
+
+    const result = JSON.parse(await pending)
+    expect(result.error.code).toBe('CALL_CANCELLED')
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain('do not assume it did not run')
+  })
+
+  it('returns CALL_CANCELLED when the refreshed-route retry is aborted mid-flight (#139 review: retry abort loses cancellation result)', async () => {
+    const stale = legacyTool('stale')
+    const fresh = legacyTool('fresh')
+    let current = stale
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => current)
+    mocks.refreshCatalog.mockImplementation(async () => {
+      current = fresh
+      return [fresh]
+    })
+    let started!: () => void
+    const startedPromise = new Promise<void>((resolve) => { started = resolve })
+    let settleRetry!: () => void
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'INVALID_TOOL_NAME',
+        error: 'route miss',
+      })
+      .mockImplementationOnce(() => {
+        started()
+        return new Promise((resolve) => { settleRetry = () => resolve({ ok: true, tabId: 1, result: {} }) })
+      })
+    mocks.getWebMCPBridge.mockReturnValue({ webMCPInvoke: invoke })
+    const controller = new AbortController()
+
+    const pending = callToolExecutor(
+      { full_tool_name: stale.fullName, tab_id: 1, args: { a: 'x' } },
+      { ...toolContext, abortSignal: controller.signal },
+    )
+    await startedPromise
+    controller.abort() // abort while the REFRESHED-route retry is in flight
+    const raced = await Promise.race([pending, new Promise((r) => setTimeout(() => r('PENDING'), 300))])
+    settleRetry() // unhook the fake invoke so nothing leaks
+    expect(raced).not.toBe('PENDING')
+    const result = JSON.parse(raced as string)
+    expect(result.error.code).toBe('CALL_CANCELLED')
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain('may still be running')
+  })
+
+  it('marks a post-invocation plugin-download failure non-retryable for write tools (#139 review: download failures can replay writes)', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    // The page action SUCCEEDED and returned a download plan; the finalize
+    // step then fails. Retrying would replay the completed page action.
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({
+        ok: true,
+        tabId: 1,
+        result: { done: true },
+        pluginDownloadPlan: { transferId: 't1' },
+      }),
+      webMCPPluginDownloadStream: vi.fn(),
+      webMCPPluginDownloadFinalize: vi.fn().mockResolvedValue({ ok: false, error: 'finalize exploded' }),
+    })
+    mocks.consumeAndSavePluginDownload.mockResolvedValue({
+      savedPath: 'x.bin', fileName: 'x.bin', mimeType: 'application/octet-stream', size: 1, patchedResult: {},
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.code).toBe('WEBMCP_PLUGIN_DOWNLOAD_FINALIZE_FAILED')
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain('already ran')
+    expect(result.error.message).toContain('verify its result on the target tab')
+  })
+
+  it('keeps a post-invocation plugin-download failure retryable for read-only tools (#139 review: repeating a read is safe)', async () => {
+    const readTool = { ...legacyTool('signature'), annotations: { readOnlyHint: true } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => readTool)
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({
+        ok: true,
+        tabId: 1,
+        result: { done: true },
+        pluginDownloadPlan: { transferId: 't1' },
+      }),
+      webMCPPluginDownloadStream: vi.fn(),
+      webMCPPluginDownloadFinalize: vi.fn().mockResolvedValue({ ok: false, error: 'finalize exploded' }),
+    })
+    mocks.consumeAndSavePluginDownload.mockResolvedValue({
+      savedPath: 'x.bin', fileName: 'x.bin', mimeType: 'application/octet-stream', size: 1, patchedResult: {},
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: readTool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.retryable).toBe(true)
+    expect(result.error.message).not.toContain('already ran')
+  })
+
+  it('a failed READ with unknown tab provenance stays retryable', async () => {
+    const tool = legacyTool('signature') // no annotations -> default read behavior? readOnlyHint undefined counts as write; use explicit read
+    const readTool = { ...tool, annotations: { readOnlyHint: true } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => readTool)
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockResolvedValue({ ok: false, error: 'boom' }),
+    })
+
+    const result = JSON.parse(await callToolExecutor({ full_tool_name: readTool.fullName, tab_id: 1 }, toolContext))
+    expect(result.error.retryable).toBe(true)
+  })
+
+  it('resolves cancelled WebMCP calls immediately when the run aborts (#138 review: no cancellation path)', async () => {
+    const tool = { ...legacyTool('signature'), annotations: { readOnlyHint: false } }
+    mocks.getMCPManager.mockReturnValue({ getAllTools: () => new Map() })
+    setLegacyState(() => tool)
+    // The extension call never settles (no cancellation path in the
+    // protocol) — the abort must still resolve the tool call.
+    const controller = new AbortController()
+    const abortableContext = { ...toolContext, abortSignal: controller.signal }
+
+    // The auth gate rejects already-aborted calls up front; abort only
+    // AFTER webMCPInvoke has actually started (explicit signal, not a
+    // timing guess — #139 review flake).
+    let started!: () => void
+    const startedPromise = new Promise<void>((resolve) => { started = resolve })
+    let resolveInvoke!: () => void
+    mocks.getWebMCPBridge.mockReturnValue({
+      webMCPInvoke: vi.fn().mockImplementation(
+        () => {
+          started()
+          return new Promise((resolve) => { resolveInvoke = () => resolve({ ok: true, tabId: 1, result: {} }) })
+        },
+      ),
+    })
+    const pending = callToolExecutor({ full_tool_name: tool.fullName, tab_id: 1 }, abortableContext)
+    await startedPromise
+    controller.abort()
+    const raced = await Promise.race([pending, new Promise((r) => setTimeout(() => r('PENDING'), 300))])
+    resolveInvoke() // unhook the fake invoke so nothing leaks
+    expect(raced).not.toBe('PENDING')
+    const result = JSON.parse(raced as string)
+    expect(result.error.code).toBe('CALL_CANCELLED')
+    expect(result.error.retryable).toBe(false)
+    expect(result.error.message).toContain('may still be running')
   })
 })
 

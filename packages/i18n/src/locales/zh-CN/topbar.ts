@@ -26,6 +26,8 @@ export const topbar = {
       codexUnavailableWarning: "Codex 不可用，请重新登录",
       providerUnavailableWarning: "服务商不可用，请重新登录",
       temporarilyUnavailable: "暂时无法验证",
+      catalogUnavailable: "模型列表暂时无法更新",
+      retryCatalog: "重试",
       noPinnedModels: "暂无常用模型，请在设置中添加",
       searchPlaceholder: "搜索模型…",
       noResults: "无匹配模型",

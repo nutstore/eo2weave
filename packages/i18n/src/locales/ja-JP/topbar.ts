@@ -26,6 +26,8 @@ export const topbar = {
       codexUnavailableWarning: "Codex は利用できません。再度サインインしてください",
       providerUnavailableWarning: "プロバイダーは利用できません。再度サインインしてください",
       temporarilyUnavailable: "一時的に確認できません",
+      catalogUnavailable: "モデル一覧を一時的に更新できません",
+      retryCatalog: "再試行",
       noPinnedModels: "まだピン留めされたモデルはありません。設定で追加してください。",
       searchPlaceholder: "モデルを検索…",
       noResults: "一致するモデルはありません",

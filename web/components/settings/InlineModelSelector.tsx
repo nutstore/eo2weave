@@ -58,7 +58,12 @@ export function InlineModelSelector() {
       setLoading(true)
       try {
         const result = await getAvailableProviders()
-        if (!cancelled) {
+        // Skip a superseded run (current:false — a newer getAvailableProviders()
+        // started while this one was awaiting): applying its stale snapshot
+        // would let an older overlapping run that resolves late overwrite the
+        // newer run's provider data (Sourcery: "Superseded model lists remain
+        // selectable"). Same gate WorkspaceLayout uses.
+        if (!cancelled && result.every((p) => p.current)) {
           const withModels: ProviderWithModels[] = result.map((p) => {
             const staticModels = getModelsForProvider(p.providerType)
             const allModels = mergeModelLists(

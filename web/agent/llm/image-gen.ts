@@ -8,6 +8,8 @@
 
 import { generateImages, getImageModel, type AssistantImages } from '@earendil-works/pi-ai'
 
+export const CODEX_IMAGE_MODEL_ID = 'gpt-image-2'
+
 export interface ImageGenConfig {
   apiKey: string
   baseUrl: string
@@ -15,6 +17,12 @@ export interface ImageGenConfig {
   providerKey: string
   /** Desired aspect ratio, e.g. "16:9", "1:1", "4:3", "3:4" */
   aspectRatio?: string
+}
+
+export function hasCodexImageBridge(): boolean {
+  if (typeof window === 'undefined') return false
+  const bridge = (window as unknown as { __agentWeb?: { ready?: boolean; codexImageGenerationEnabled?: boolean; codexGenerateImage?: unknown } }).__agentWeb
+  return !!bridge?.ready && bridge.codexImageGenerationEnabled === true && typeof bridge.codexGenerateImage === 'function'
 }
 
 /**
@@ -25,6 +33,9 @@ export async function generateImage(
   config: ImageGenConfig,
   signal?: AbortSignal
 ): Promise<AssistantImages> {
+  if (config.providerKey === 'codex-oauth') {
+    return generateCodexImage(prompt, config.aspectRatio, signal)
+  }
   // Parse provider from modelId: "google/gemini-2.5-flash-image" → provider="google", id="gemini-2.5-flash-image"
   const slashIndex = config.modelId.indexOf('/')
   const provider = slashIndex > 0 ? config.modelId.slice(0, slashIndex) : config.providerKey
@@ -70,4 +81,36 @@ export async function generateImage(
         : undefined,
     }
   )
+}
+
+async function generateCodexImage(prompt: string, aspectRatio?: string, signal?: AbortSignal): Promise<AssistantImages> {
+  const result: AssistantImages = {
+    api: 'codex-images', provider: 'codex-oauth', model: CODEX_IMAGE_MODEL_ID,
+    output: [], stopReason: 'stop', timestamp: Date.now(),
+  }
+  try {
+    const bridge = (window as unknown as { __agentWeb?: {
+      ready?: boolean
+      codexGenerateImage?: (body: Record<string, unknown>, signal?: AbortSignal) => Promise<{
+        ok: boolean; status?: number; text?: string; message?: string; error?: string
+      }>
+    } }).__agentWeb
+    if (!bridge?.ready || !bridge.codexGenerateImage) throw new Error('Image generation is unavailable for this provider.')
+    if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+    const response = await bridge.codexGenerateImage({
+      prompt: aspectRatio ? `${prompt}\n\nAspect ratio: ${aspectRatio}.` : prompt,
+      model: CODEX_IMAGE_MODEL_ID, background: 'auto', quality: 'auto', size: 'auto',
+    }, signal)
+    if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+    if (!response.ok) throw new Error(response.text || response.message || response.error || `Codex image request failed (${response.status ?? 'unknown'}).`)
+    const payload = JSON.parse(response.text || '{}') as { data?: Array<{ b64_json?: string }> }
+    for (const image of payload.data ?? []) {
+      if (image.b64_json) result.output.push({ type: 'image', data: image.b64_json, mimeType: 'image/png' })
+    }
+    if (!result.output.length) throw new Error('Codex image response contained no image data.')
+  } catch (error) {
+    result.stopReason = signal?.aborted ? 'aborted' : 'error'
+    result.errorMessage = error instanceof Error ? error.message : String(error)
+  }
+  return result
 }

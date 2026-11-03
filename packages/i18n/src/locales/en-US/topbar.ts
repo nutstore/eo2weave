@@ -25,6 +25,8 @@ export const topbar = {
       codexUnavailableWarning: "Codex unavailable — sign in again",
       providerUnavailableWarning: "Provider unavailable — sign in again",
       temporarilyUnavailable: "Temporarily unable to verify",
+      catalogUnavailable: "Model list temporarily unavailable",
+      retryCatalog: "Retry",
       noPinnedModels: "No models pinned yet. Add models in Settings.",
       searchPlaceholder: "Search models…",
       noResults: "No matching models",

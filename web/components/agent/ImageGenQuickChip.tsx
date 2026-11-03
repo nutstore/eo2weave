@@ -21,6 +21,7 @@ import { Sparkles, X } from 'lucide-react'
 import { useT } from '@/i18n'
 import { isImageGenAvailable } from '@/agent/tools/image-gen.tool'
 import { useSettingsStore } from '@/store/settings.store'
+import { useExtensionStore } from '@/store/extension.store'
 import { onModelsUpdated } from '@/agent/providers/model-store'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 import type { LLMProviderType } from '@/agent/providers/types'
@@ -37,6 +38,7 @@ import type { LLMProviderType } from '@/agent/providers/types'
 function useImageGenAvailable(): boolean {
   const imageGenModel = useSettingsStore((s) => s.imageGenModel)
   const providerType = useSettingsStore((s) => s.providerType) as LLMProviderType
+  const extensionStatus = useExtensionStore((s) => s.status)
   const [cacheVersion, setCacheVersion] = useState(0)
 
   // The model cache lives outside zustand; onModelsUpdated fires when a
@@ -54,6 +56,7 @@ function useImageGenAvailable(): boolean {
     void imageGenModel
     void providerType
     void cacheVersion
+    void extensionStatus
     try {
       return isImageGenAvailable()
     } catch (error) {
@@ -64,7 +67,7 @@ function useImageGenAvailable(): boolean {
       console.warn('[ImageGenQuickChip] availability check failed, hiding chip:', error)
       return false
     }
-  }, [imageGenModel, providerType, cacheVersion])
+  }, [imageGenModel, providerType, cacheVersion, extensionStatus])
 }
 
 export function ImageGenQuickChip({ onPrefill }: { onPrefill: (text: string) => void }) {

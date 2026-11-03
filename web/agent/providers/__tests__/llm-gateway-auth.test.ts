@@ -64,9 +64,11 @@ import {
   getGatewayCredentialStatus,
   getValidAccessToken,
   logoutGateway,
+  invalidateGatewayAccessToken,
   performDeviceCodeFlow,
   persistDeviceLoginTokens,
 } from '@/agent/providers/llm-gateway-auth'
+import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
 const BASE_URL = 'https://ai.jianguoyun.com'
 const CLIENT_ID = 'test-client-id'
@@ -160,10 +162,68 @@ describe('llm-gateway-auth token refresh hardening', () => {
 
   afterEach(() => {
     localStorage.clear()
+    unregisterDynamicProvider('llm-gateway')
     vi.unstubAllGlobals()
   })
 
   describe('refresh preserves the stored refresh token (real backend contract)', () => {
+    it('allows another refresh attempt after a hung refresh reaches its deadline', async () => {
+      seedStoredTokens()
+      const controller = new AbortController()
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal)
+      let refreshSignal: AbortSignal | undefined
+      const fetchMock = vi.fn()
+        .mockImplementationOnce((_url: string, init: RequestInit) => {
+          refreshSignal = init.signal as AbortSignal
+          return new Promise<Response>((_resolve, reject) =>
+            refreshSignal!.addEventListener('abort', () => reject(refreshSignal!.reason), { once: true }))
+        })
+        .mockResolvedValueOnce(refreshResponse('retry-token'))
+      vi.stubGlobal('fetch', fetchMock)
+      try {
+        const first = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+        controller.abort(new Error('refresh timed out'))
+        await expect(first).resolves.toMatchObject({ status: 'temporary_error' })
+        expect(refreshSignal?.aborted).toBe(true)
+
+        timeoutSpy.mockRestore()
+        await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({
+          status: 'success', accessToken: 'retry-token',
+        })
+        expect(fetchMock).toHaveBeenCalledTimes(2)
+      } finally {
+        timeoutSpy.mockRestore()
+      }
+    })
+
+    it('stops a discovery caller at its deadline while a shared refresh continues', async () => {
+      seedStoredTokens()
+      let complete!: (response: Response) => void
+      let sharedSignal: AbortSignal | undefined
+      const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+        sharedSignal = init.signal as AbortSignal
+        return new Promise<Response>((resolve, reject) => {
+          complete = resolve
+          sharedSignal!.addEventListener('abort', () => reject(sharedSignal!.reason), { once: true })
+        })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const controller = new AbortController()
+      const discovery = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID, controller.signal)
+
+      await vi.waitFor(() => expect(complete).toBeDefined())
+      controller.abort(new Error('discovery timed out'))
+      await expect(discovery).rejects.toThrow('discovery timed out')
+      expect(sharedSignal?.aborted).toBe(false)
+
+      const shared = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      complete(refreshResponse())
+      await expect(shared).resolves.toMatchObject({ status: 'success' })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
     it('keeps the stored refresh_token and refresh_expires_at when the response has neither', async () => {
       const seeded = seedStoredTokens()
 
@@ -558,6 +618,10 @@ describe('llm-gateway-auth token refresh hardening', () => {
 
     it('logout rejects instead of reporting success when the purge fails', async () => {
       seedStoredTokens()
+      registerDynamicProvider('llm-gateway',
+        { baseURL: BASE_URL, modelName: 'old-model', headers: {} },
+        { category: 'chinese', displayName: 'Nutstore AI', models: [{ id: 'old-model', name: 'Old', capabilities: ['code'] }], catalogStatus: 'ready' },
+      )
       // The refresh-token backup deletion fails: a surviving backup could be
       // resurrected by the SQLite fallback, so logout must NOT report
       // complete — the caller gets a retryable error.
@@ -571,6 +635,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       // The local pair is still wiped (that part succeeded) and the purge
       // failure must be visible to the UI through the settings store flag.
       expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+      expect(getModelsForProvider('llm-gateway')).toEqual([])
     })
 
     it('purge failure marks the credential status write as failed for the UI', async () => {
@@ -701,6 +766,43 @@ describe('llm-gateway-auth token refresh hardening', () => {
       await vi.waitFor(() => {
         expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
       })
+    })
+
+    it('invalidates only the access token rejected by the gateway', async () => {
+      seedStoredTokens()
+      await invalidateGatewayAccessToken('different-token')
+      expect(localStorage.getItem(TOKENS_KEY)).not.toBeNull()
+
+      await invalidateGatewayAccessToken('stale-access-token')
+      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+      expect(getGatewayCredentialStatus()).toBe('expired')
+    })
+
+    it('clears the prior gateway catalog after logout so another account cannot inherit it', async () => {
+      registerDynamicProvider('llm-gateway',
+        { baseURL: `${BASE_URL}/v1`, modelName: 'old-model', headers: {} },
+        { category: 'chinese', displayName: 'Nutstore AI', models: [{ id: 'old-model', name: 'Old', capabilities: ['code'] }], catalogStatus: 'ready' },
+      )
+      try {
+        await logoutGateway()
+        expect(getModelsForProvider('llm-gateway')).toEqual([])
+      } finally {
+        unregisterDynamicProvider('llm-gateway')
+      }
+    })
+
+    it('clears the prior gateway catalog when the refresh token expires', async () => {
+      seedStoredTokens({ refresh_expires_at: Date.now() - 1000 })
+      registerDynamicProvider('llm-gateway',
+        { baseURL: `${BASE_URL}/v1`, modelName: 'old-model', headers: {} },
+        { category: 'chinese', displayName: 'Nutstore AI', models: [{ id: 'old-model', name: 'Old', capabilities: ['code'] }], catalogStatus: 'ready' },
+      )
+      try {
+        await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'expired' })
+        expect(getModelsForProvider('llm-gateway')).toEqual([])
+      } finally {
+        unregisterDynamicProvider('llm-gateway')
+      }
     })
 
     it('credential status reports "expired" after invalid_grant and "missing" after logout', async () => {
