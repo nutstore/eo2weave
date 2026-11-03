@@ -13,9 +13,11 @@ const { provider, keyStore, settings } = vi.hoisted(() => ({
   },
   settings: {
     modelName: 'old-model',
-    pinnedModelsByProvider: { 'llm-gateway': ['old-model'] },
+    pinnedModelsByProvider: {} as Record<string, string[]>,
     invalidateApiKeyCache: vi.fn(),
     switchProviderAndModel: vi.fn(),
+    setPinnedModels: vi.fn(),
+    markPinnedModelsSeen: vi.fn(),
     setHasApiKey: vi.fn(),
     setModelCredentialStatus: vi.fn(),
     setModelCredentialStatusError: vi.fn(),
@@ -54,6 +56,7 @@ describe('applyGatewayLoginTokens cancellation', () => {
     vi.clearAllMocks()
     __resetGatewayCredentialFencingForTests()
     savedKey = 'previous-key'
+    settings.pinnedModelsByProvider = { 'llm-gateway': ['old-model'] }
     keyStore.load.mockImplementation(async () => savedKey)
     keyStore.save.mockImplementation(async (_id, key) => { savedKey = key })
     keyStore.delete.mockImplementation(async () => { savedKey = null })
@@ -368,5 +371,46 @@ describe('applyGatewayLoginTokens cancellation', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('marks every DISCOVERED model id seen after a successful login (Sourcery: Mark discovered models seen)', async () => {
+    // Issue #146 follow-up: the login used to mark only the curated
+    // defaults as seen (and only when defaults were non-empty). A pin that
+    // was previously confirmed then left the defaults list (or a newly
+    // discovered model that is not a curated default) stayed unconfirmed,
+    // so the delisted badge compared it against `seen` incorrectly. The
+    // commit must mark the whole discovered catalog seen.
+    provider.prepare.mockResolvedValue({
+      models: [
+        { id: 'glm-5.2', name: 'GLM' },
+        { id: 'minimax-m3', name: 'MiniMax' },
+      ],
+      status: 'ready',
+    })
+
+    await expect(applyGatewayLoginTokens('fresh-key')).resolves.toMatchObject({ ok: true })
+
+    expect(settings.markPinnedModelsSeen).toHaveBeenCalledWith('llm-gateway', [
+      'glm-5.2',
+      'minimax-m3',
+    ])
+  })
+
+  it('clears the stale flag of a previously delisted pin once its model is discovered again', async () => {
+    // The badge came back after re-login (the original #146 symptom):
+    // markPinnedModelsSeen prunes `seen` entries whose pins are gone, so
+    // re-marking a returning model id must clear its stale flag. Defaults
+    // stay pinned (the pin list is empty here), and the discovered ids are
+    // confirmed even though they are NOT curated defaults.
+    settings.pinnedModelsByProvider = {}
+    provider.prepare.mockResolvedValue({
+      models: [{ id: 'glm-5.2', name: 'GLM' }],
+      status: 'ready',
+    })
+
+    await expect(applyGatewayLoginTokens('fresh-key')).resolves.toMatchObject({ ok: true })
+
+    expect(settings.setPinnedModels).not.toHaveBeenCalled()
+    expect(settings.markPinnedModelsSeen).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'])
   })
 })

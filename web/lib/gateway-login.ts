@@ -275,7 +275,17 @@ async function applyGatewayLoginTokensInner(
       settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, discovery.models[0]?.id ?? '')
       if (defaults.length > 0) {
         settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
-        settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
+      }
+      // Issue #146: every successful login marks ALL discovered model ids as
+      // seen, not only the curated defaults (Sourcery: "Mark discovered
+      // models seen"). The pin's `seen` bookkeeping is what keeps the
+      // delisted badge honest — a confirmed pin absent from a later
+      // authoritative catalog must be flagged, and a pin that just came
+      // back must clear its stale flag. Defaults-only marking left restored
+      // pins flagged and newly discovered models unconfirmed.
+      const discoveredIds = discovery.models.map((m) => m.id)
+      if (discoveredIds.length > 0) {
+        settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, discoveredIds)
       }
 
       settings.setHasApiKey(true)
