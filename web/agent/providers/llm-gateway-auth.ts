@@ -864,11 +864,13 @@ export async function cancelDeviceSession(
  */
 export async function refreshAccessToken(
   baseURL: string,
-  refreshToken: string
+  refreshToken: string,
+  signal?: AbortSignal
 ): Promise<TokenResponse> {
   return gatewayFetch<TokenResponse>(baseURL, '/v1/auth/refresh', {
     method: 'POST',
     body: JSON.stringify({ refresh_token: refreshToken }),
+    signal,
   })
 }
 
@@ -1134,15 +1136,18 @@ export async function performDeviceCodeFlow(
  */
 export function refreshAccessTokenWithStatus(
   baseURL: string,
-  clientId: string
+  clientId: string,
+  signal?: AbortSignal
 ): Promise<RefreshResult> {
   const generation = authSessionGeneration
   // Reuse the in-flight refresh only within the same credential session — a
   // logout or new login invalidates the result the promise will resolve with.
+  // The caller's signal still bounds the WAIT: a shared refresh belongs to no
+  // single deadline, so the aborted caller must not stay pending behind it.
   if (refreshInFlight && generation === (refreshInFlight as InFlightRefresh).generation) {
-    return refreshInFlight
+    return signal ? raceWithAbort(refreshInFlight, signal) : refreshInFlight
   }
-  const request = refreshAccessTokenWithStatusImpl(baseURL, clientId)
+  const request = refreshAccessTokenWithStatusImpl(baseURL, clientId, signal)
   const tracked: InFlightRefresh = Object.assign(request, { generation })
   refreshInFlight = tracked
   // Clear on settle via then(onFulfilled, onRejected): unlike finally(), this
@@ -1165,6 +1170,29 @@ interface InFlightRefresh extends Promise<RefreshResult> {
 let refreshInFlight: Promise<RefreshResult> | null = null
 
 /**
+ * Race a (possibly shared) promise against the caller's abort signal so a
+ * caller bounded by its own deadline is released when it fires — even when
+ * the underlying operation keeps running for other callers.
+ */
+function raceWithAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    p.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
+/**
  * Session generation — bumped on every credential-set change (new login via
  * saveStoredTokens, logout/clear via clearStoredTokens). Async work started
  * under one generation must not write under a newer one: a late shadow save
@@ -1184,7 +1212,8 @@ function bumpAuthSessionGeneration(): void {
 
 async function refreshAccessTokenWithStatusImpl(
   baseURL: string,
-  clientId: string
+  clientId: string,
+  signal?: AbortSignal
 ): Promise<RefreshResult> {
   // Snapshot BEFORE the first await — logout/login during the refresh window
   // is detected by comparing against this value after each await boundary.
@@ -1192,6 +1221,7 @@ async function refreshAccessTokenWithStatusImpl(
   // Use the async fallback loader — recovers refresh_token from SQLite
   // when localStorage has been cleared (browser eviction, user clear, etc.)
   const stored = await loadStoredTokensWithFallback()
+  signal?.throwIfAborted()
   if (!stored) {
     console.warn('[llm-gateway] forceRefresh: no stored tokens (localStorage + SQLite both empty)')
     // The token pair is gone, but the api-key-store may still hold the
@@ -1224,7 +1254,8 @@ async function refreshAccessTokenWithStatusImpl(
   console.warn('[llm-gateway] forceRefresh: calling /v1/auth/refresh ...')
 
   try {
-    const tokens = await refreshAccessToken(baseURL, stored.refresh_token)
+    const tokens = await refreshAccessToken(baseURL, stored.refresh_token, signal)
+    signal?.throwIfAborted()
 
     // Schema validation (defensive — the backend contract says the refresh
     // endpoint returns only access_token/expires_in/token_type, but a broken
@@ -1308,6 +1339,11 @@ async function refreshAccessTokenWithStatusImpl(
       return { status: 'success', accessToken: tokens.access_token }
     })
   } catch (e) {
+    // An abort is NOT a refresh outcome — it is the caller's deadline
+    // (model discovery) firing. Re-throw it so the caller's own
+    // timeout/cancellation handling runs instead of reading a
+    // 'temporary_error' that would mask the deadline.
+    if (signal?.aborted || (e instanceof Error && e.name === 'AbortError')) throw e
     // Only clear tokens if the refresh_token is definitively invalid.
     // Network errors (TypeError), 5xx, etc. should NOT wipe tokens —
     // they are transient and the user shouldn't have to re-login.

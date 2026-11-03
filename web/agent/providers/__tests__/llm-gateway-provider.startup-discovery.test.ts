@@ -161,3 +161,53 @@ describe('updateGatewayModels startup discovery deadline', () => {
     expect(getModelsForProvider('llm-gateway')).toEqual([])
   })
 })
+
+describe('updateGatewayModels: 401 refresh is bounded by the discovery deadline', () => {
+  beforeEach(() => {
+    mocks.fetchGatewayModels.mockReset()
+    mocks.refreshAccessTokenWithStatus.mockReset()
+    mocks.generation = 0
+    unregisterDynamicProvider('llm-gateway')
+  })
+
+  it('threads the discovery signal into the rejected-token refresh so a stalled refresh cannot outlive the deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      // First /v1/models answers 401 (authRejected); the refresh endpoint
+      // then stalls forever and only settles when the discovery signal
+      // aborts it.
+      mocks.fetchGatewayModels.mockResolvedValueOnce({
+        models: [], status: 'failed', authRejected: true,
+      })
+      let refreshSignal: AbortSignal | null = null
+      mocks.refreshAccessTokenWithStatus.mockImplementation(
+        (_baseURL: string, _clientId: string, signal?: AbortSignal) => {
+          refreshSignal = signal
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason))
+          })
+        },
+      )
+
+      const pending = updateGatewayModels('stale-token')
+      const expectation = expect(pending).rejects.toThrow('model discovery timed out')
+
+      await vi.advanceTimersByTimeAsync(MODEL_DISCOVERY_TIMEOUT_MS - 1)
+      // The refresh was invoked WITH the discovery signal...
+      expect(refreshSignal).not.toBeNull()
+      // ...and the deadline has not fired yet: both stages still pending.
+      let settled = false
+      pending.catch(() => {}).then(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(settled).toBe(false)
+
+      // Deadline fires: the discovery settles (does NOT hang on the stalled
+      // refresh), and the signal that aborted it is the one the refresh got.
+      await vi.advanceTimersByTimeAsync(1)
+      await expectation
+      expect((refreshSignal as AbortSignal | null)?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

@@ -124,7 +124,11 @@ export async function prepareGatewayModels(
   let authGeneration = getGatewayAuthSessionGeneration()
   let result = await fetchGatewayModels(baseURL, accessToken, signal)
   if (recoverRejectedToken && result.authRejected && authGeneration === getGatewayAuthSessionGeneration()) {
-    const refreshed = await refreshAccessTokenWithStatus(baseURL, getGatewayClientId())
+    // The discovery signal bounds the WHOLE refresh, not just /v1/models:
+    // a 401 whose refresh endpoint stalls would otherwise leave this
+    // discovery pending long after the models deadline has fired
+    // (Sourcery: "Stalled refresh blocks discovery").
+    const refreshed = await refreshAccessTokenWithStatus(baseURL, getGatewayClientId(), signal)
     if (refreshed.status === 'success') {
       authGeneration = getGatewayAuthSessionGeneration()
       result = await fetchGatewayModels(baseURL, refreshed.accessToken, signal)
