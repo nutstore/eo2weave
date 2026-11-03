@@ -34,6 +34,27 @@
  * after the write or keeps waiting. (If a future context ever acquired the
  * lease directly from a page, this guarantee would not hold — the queue is
  * per JS context.)
+ *
+ * Two further rules close the stale-mutation gap (finding: "Stale writes
+ * still overlap"):
+ *
+ *   - GRANT QUANTIZATION: `acquireLease` never writes a replacement lease
+ *     with the raw `Date.now() + TTL` deadline. It rounds UP to the next
+ *     whole-TTL boundary, so a takeover of an EXPIRED lease happens at
+ *     least a full TTL after the moment the old owner's last SUCCESSFUL
+ *     heartbeat could have kept it alive. A holder that is still heart-
+ *     beating learns of the takeover from its very next heartbeat (≤ 5s)
+ *     — always long before any replacement can be granted — instead of
+ *     possibly losing the lease and acquiring again unnoticed (the
+ *     `existing.expiresAt <= Date.now()` steal), mid-transaction.
+ *   - QUISCENCE: a transaction that LOSES its lease registers its still-
+ *     pending callback promise on a per-package quiescence gate BEFORE the
+ *     wrapper releases the lease, and the next `acquireLease` sequence
+ *     waits on that gate (inside the same per-package queue) before it
+ *     even reads the lease. The fences make the loser stop STARTING new
+ *     writes; the gate makes the winner wait out the one write that was
+ *     already in flight — so a stale write can never land under a new
+ *     owner's lease.
  */
 
 export { USER_PACKAGE_LOCK_KEY_PREFIX } from './package-lock-protocol'
@@ -109,12 +130,40 @@ function runExclusively<T>(packageId: string, step: () => Promise<T>): Promise<T
   return gate
 }
 
+/**
+ * Quiescence gates per package id (finding: "Stale writes still overlap").
+ * When a transaction LOSES its lease while its callback still has a
+ * mutation in flight, the wrapper registers that pending callback here
+ * BEFORE the `finally` releases the lease; the next acquirer's lease
+ * sequence waits on the gate first. Without it, the released lease could
+ * be granted to a new owner while the LOSING transaction's write was still
+ * pending — the stale write landing under the new owner's lease.
+ */
+const quiescenceGates = new Map<string, Promise<unknown>>()
+
+async function waitUntilPackageQuiescent(packageId: string): Promise<void> {
+  const gate = quiescenceGates.get(packageId)
+  if (gate) await gate.catch(() => {})
+}
+
+/** Quantize a lease grant UP to a whole-TTL boundary (see the header comment). */
+function quantizedExpiry(now: number): number {
+  return (Math.floor(now / PACKAGE_LOCK_LEASE_TTL_MS) + 1) * PACKAGE_LOCK_LEASE_TTL_MS
+}
+
 /** Low-level acquire: returns the owner token, or null on timeout. */
 async function acquireLease(packageId: string, timeoutMs: number = ACQUIRE_TIMEOUT_MS): Promise<string | null> {
   const owner = randomOwner()
   const key = lockKey(packageId)
   const deadline = Date.now() + timeoutMs
   for (;;) {
+    // QUISCENCE (finding: "Stale writes still overlap"): before even READING
+    // the lease, wait out any losing transaction's still-pending mutation
+    // that the previous owner registered on this package. The wait runs
+    // before the read (and the conditioned write below runs as its own
+    // queued step), so the grant decision is made no earlier than the
+    // moment every stale mutation has settled.
+    await waitUntilPackageQuiescent(packageId)
     const stored = await chrome.storage.local.get(key)
     const existing = readLease(stored[key])
     if (!existing || existing.expiresAt <= Date.now()) {
@@ -126,9 +175,19 @@ async function acquireLease(packageId: string, timeoutMs: number = ACQUIRE_TIMEO
       // token over it. (Same guarantee as before, without the storage-level
       // interleaving window between the three storage calls.)
       const won = await runExclusively(packageId, async () => {
+        // Re-wait INSIDE the queue too: a losing transaction may have
+        // registered its gate after the read above but before this queued
+        // step ran (the takeover that aborts it happens in between).
+        await waitUntilPackageQuiescent(packageId)
         const atWrite = readLease((await chrome.storage.local.get(key))[key])
         if (atWrite && atWrite.expiresAt > Date.now()) return false
-        await chrome.storage.local.set({ [key]: { owner, expiresAt: Date.now() + PACKAGE_LOCK_LEASE_TTL_MS } satisfies LockLease })
+        // GRANT QUANTIZATION (finding: "Stale writes still overlap"): never
+        // grant a fresh raw `now + TTL` deadline. Rounding UP to the next
+        // whole-TTL boundary guarantees a takeover of an expired lease is
+        // quantized away from the old owner's last possible live heartbeat,
+        // so a still-running holder observes the takeover at its NEXT
+        // HEARTBEAT — never via a silent mid-transaction steal-and-regain.
+        await chrome.storage.local.set({ [key]: { owner, expiresAt: quantizedExpiry(Date.now()) } satisfies LockLease })
         // Read-back: the last writer wins; if we are not the owner any more,
         // another acquirer overwrote us and we must wait for it instead.
         const verify = readLease((await chrome.storage.local.get(key))[key])
@@ -227,6 +286,21 @@ export async function withPackageLock<T>(
   // the new owner's lease.
   const loser = fn(controller.signal)
   void loser.catch(() => {}) // never an unhandled rejection while racing
+  // QUISCENCE (finding: "Stale writes still overlap"): registered by the
+  // abort listener — the MOMENT the lease loss is detected, while `fn` (and
+  // its in-flight write) is still pending. The wrapper's `finally` runs only
+  // after `await loser` in the loss path, and a replacement owner with an
+  // already-expired/free lease could acquire in that window; the gate
+  // registered here closes it. The GATE promise settles only when `fn`
+  // settles, so any acquire attempt raised between "lease lost" and "stale
+  // write settled" waits out the stale write.
+  controller.signal.addEventListener('abort', () => {
+    const gate = loser.catch(() => {})
+    quiescenceGates.set(packageId, gate)
+    void gate.finally(() => {
+      if (quiescenceGates.get(packageId) === gate) quiescenceGates.delete(packageId)
+    })
+  })
   const winner = loser.then(result => ({ ok: true as const, result }), (error: unknown) => ({ ok: false as const, error }))
   const lost = new Promise<{ ok: false; error: unknown }>(resolve => {
     controller.signal.addEventListener('abort', () => {
