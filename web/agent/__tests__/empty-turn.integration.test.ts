@@ -181,7 +181,7 @@ describe('empty turn recovery through pi-agent-core', () => {
     expect(stream).toHaveBeenCalledTimes(1)
   })
 
-  it('omits aborted assistant turns from the next provider history', async () => {
+  it('omits aborted assistant turns from the next provider history while keeping valid ones', async () => {
     let sentMessages: AgentMessage[] = []
     const baseInput = input(new AbortController().signal)
     stream.mockImplementationOnce((_model, context) => {
@@ -194,6 +194,20 @@ describe('empty turn recovery through pi-agent-core', () => {
       initialMessages: [
         ...baseInput.initialMessages,
         {
+          id: 'valid-answer',
+          role: 'assistant',
+          content: 'earlier answer',
+          kind: 'normal',
+          stopReason: 'stop',
+          timestamp: 1,
+        },
+        {
+          id: 'followup',
+          role: 'user',
+          content: 'continue please',
+          timestamp: 1,
+        },
+        {
           id: 'aborted',
           role: 'assistant',
           content: null,
@@ -204,7 +218,15 @@ describe('empty turn recovery through pi-agent-core', () => {
       ],
     })
 
-    expect(sentMessages.some((message) => message.role === 'assistant')).toBe(false)
+    // The ordinary assistant turn must survive; only the aborted turn is dropped.
+    expect(
+      sentMessages.some(
+        (message) =>
+          message.role === 'assistant' &&
+          JSON.stringify(message.content).includes('earlier answer')
+      )
+    ).toBe(true)
+    expect(sentMessages.some((message) => message.role === 'assistant' && (message as { id?: string }).id === 'aborted')).toBe(false)
   })
 
   it('persists provider error state before propagating the failure', async () => {
@@ -217,7 +239,13 @@ describe('empty turn recovery through pi-agent-core', () => {
       })
     ).rejects.toThrow('provider failed')
     expect(onMessagesUpdated).toHaveBeenLastCalledWith(
-      expect.arrayContaining([expect.objectContaining({ kind: 'error', stopReason: 'error' })])
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'error',
+          stopReason: 'error',
+          errorMessage: 'provider failed',
+        }),
+      ])
     )
     expect(stream).toHaveBeenCalledTimes(1)
   })
