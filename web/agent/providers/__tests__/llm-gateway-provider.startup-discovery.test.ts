@@ -95,14 +95,28 @@ describe('updateGatewayModels startup discovery deadline', () => {
   })
 
   it('passes the discovery deadline into a rejected-token refresh', async () => {
-    mocks.fetchGatewayModels.mockResolvedValue({ models: [], status: 'failed', authRejected: true })
-    mocks.refreshAccessTokenWithStatus.mockResolvedValue({ status: 'temporary_error' })
+    vi.useFakeTimers()
+    try {
+      let discoverySignal: AbortSignal | undefined
+      mocks.fetchGatewayModels.mockImplementation((_baseURL, _token, signal) => {
+        discoverySignal = signal
+        return Promise.resolve({ models: [], status: 'failed', authRejected: true })
+      })
+      mocks.refreshAccessTokenWithStatus.mockImplementation((_baseURL, _clientId, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })),
+      )
 
-    await updateGatewayModels('rejected-token')
+      const pending = updateGatewayModels('rejected-token')
+      const expectation = expect(pending).rejects.toThrow('model discovery timed out')
+      await vi.advanceTimersByTimeAsync(MODEL_DISCOVERY_TIMEOUT_MS)
 
-    expect(mocks.refreshAccessTokenWithStatus).toHaveBeenCalledWith(
-      expect.any(String), expect.any(String), expect.any(AbortSignal),
-    )
+      expect(mocks.refreshAccessTokenWithStatus).toHaveBeenCalledWith(
+        expect.any(String), expect.any(String), discoverySignal,
+      )
+      await expectation
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('discards a catalog response after the gateway session changes', async () => {

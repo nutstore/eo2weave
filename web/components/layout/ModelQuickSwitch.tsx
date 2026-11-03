@@ -30,6 +30,11 @@ interface FlatModel {
   model: { id: string; name: string; hasVision?: boolean; stale?: boolean }
 }
 
+function isUnverifiedGateway(provider: AvailableProvider): boolean {
+  return provider.providerType === 'llm-gateway' &&
+    (provider.catalogStatus === 'loading' || provider.catalogStatus === 'empty' || provider.catalogStatus === 'failed')
+}
+
 interface ModelQuickSwitchProps {
   /** Show the thinking level beside the model when rendered in the composer toolbar. */
   compact?: boolean
@@ -152,8 +157,7 @@ export function ModelQuickSwitch({
     [providers]
   )
   const gatewayCatalogUnavailable = providers.some(
-    (p) => p.providerType === 'llm-gateway' &&
-      (p.catalogStatus === 'failed' || p.catalogStatus === 'empty' || p.catalogStatus === 'loading'),
+    isUnverifiedGateway,
   )
 
   // Enrich each model with hasVision and stale:
@@ -367,6 +371,7 @@ export function ModelQuickSwitch({
   useEffect(() => () => cancelThinkingClose(), [])
 
   const handleSelect = (provider: AvailableProvider, nextModelName: string) => {
+    if (isUnverifiedGateway(provider)) return
     switchProviderAndModel(provider.providerType, nextModelName)
     setOpen(false)
   }
@@ -550,13 +555,15 @@ export function ModelQuickSwitch({
                 const selected =
                   provider.providerType === providerType && model.id === modelName
                 const isActive = idx === searchResultIdx
+                const unverifiedGateway = isUnverifiedGateway(provider)
                 return (
                   <button
                     key={`${provider.providerKey}:${model.id}`}
                     type="button"
                     onClick={() => handleSelect(provider, model.id)}
+                    disabled={unverifiedGateway}
                     aria-selected={selected}
-                    className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
+                    className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50 ${
                       selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : isActive ? 'bg-primary/10 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'
                     }`}>
                     <span className="flex min-w-0 items-baseline gap-2">
@@ -619,13 +626,15 @@ export function ModelQuickSwitch({
                     <div className="space-y-0.5 border-t border-border/40 px-1.5 py-1.5">
                       {visibleModels.map((model) => {
                         const selected = isCurrentProvider && model.id === modelName
+                        const unverifiedGateway = isUnverifiedGateway(provider)
                         return (
                           <button
                             key={`${provider.providerKey}:${model.id}`}
                             type="button"
                             onClick={() => handleSelect(provider, model.id)}
+                            disabled={unverifiedGateway}
                             aria-selected={selected}
-                            className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'}`}
+                            className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50 ${selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'}`}
                           >
                             <span className="flex min-w-0 items-center gap-2">
                               <span className="truncate" title={model.name}>{model.name}</span>

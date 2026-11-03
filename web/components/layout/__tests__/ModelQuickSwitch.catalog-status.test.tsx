@@ -13,12 +13,11 @@ const { state, refreshModels, getToken } = vi.hoisted(() => ({
       displayName: 'Nutstore AI',
       providerKey: 'llm-gateway',
       current: true,
-      models: [{ id: 'glm-5.2', name: 'GLM' }],
+      models: [{ id: 'glm-5.2', name: 'GLM' }, { id: 'other-model', name: 'Other' }],
       authoritativeIds: ['glm-5.2'],
       catalogStatus: 'failed',
     }]),
-    getStalePinnedModels: vi.fn((_provider: string, _ids: string[], status?: string) =>
-      status === 'failed' || status === 'empty' || status === 'loading' ? [] : ['glm-5.2']),
+    getStalePinnedModels: vi.fn<(...args: [string, string[], 'loading' | 'ready' | 'empty' | 'failed' | undefined]) => string[]>(),
     switchProviderAndModel: vi.fn(),
     triggerProviderRefresh: vi.fn(),
   },
@@ -26,7 +25,16 @@ const { state, refreshModels, getToken } = vi.hoisted(() => ({
   getToken: vi.fn(async () => 'token'),
 }))
 
-vi.mock('@/store/settings.store', () => {
+vi.mock('@/store/settings.store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/store/settings.store')>()
+  actual.useSettingsStore.setState({
+    providerType: 'llm-gateway',
+    modelName: 'glm-5.2',
+    pinnedModelsByProvider: { 'llm-gateway': ['glm-5.2', 'other-model'] },
+    pinnedSeenByProvider: { 'llm-gateway': ['glm-5.2', 'other-model'] },
+  })
+  state.getStalePinnedModels.mockImplementation((...args) =>
+    actual.useSettingsStore.getState().getStalePinnedModels(...args))
   const useSettingsStore = ((selector?: (s: typeof state) => unknown) =>
     selector ? selector(state) : state) as unknown as typeof import('@/store/settings.store').useSettingsStore
   ;(useSettingsStore as unknown as { getState: () => typeof state }).getState = () => state
@@ -86,7 +94,7 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
       displayName: 'Nutstore AI',
       providerKey: 'llm-gateway',
       current: true,
-      models: [{ id: 'glm-5.2', name: 'GLM' }],
+      models: [{ id: 'glm-5.2', name: 'GLM' }, { id: 'other-model', name: 'Other' }],
       authoritativeIds: ['glm-5.2'],
       catalogStatus: 'empty',
     }])
@@ -95,6 +103,10 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
     expect(await screen.findByText('Model list unavailable')).toBeInTheDocument()
     expect(screen.queryByText('Delisted')).not.toBeInTheDocument()
     expect(state.getStalePinnedModels).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'], 'empty')
+    const cachedModel = screen.getByRole('button', { name: 'Other' })
+    expect(cachedModel).toBeDisabled()
+    fireEvent.click(cachedModel)
+    expect(state.switchProviderAndModel).not.toHaveBeenCalled()
   })
 
   it('shows the retry state when the gateway catalog remains loading', async () => {
@@ -103,7 +115,7 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
       displayName: 'Nutstore AI',
       providerKey: 'llm-gateway',
       current: true,
-      models: [{ id: 'glm-5.2', name: 'GLM' }],
+      models: [{ id: 'glm-5.2', name: 'GLM' }, { id: 'other-model', name: 'Other' }],
       authoritativeIds: ['glm-5.2'],
       catalogStatus: 'loading',
     }])
