@@ -107,15 +107,25 @@ afterEach(() => {
 
 describe('registry page toast/state feedback (round 2)', () => {
   it('a successful operation clears a stale error box (thread KeVm)', async () => {
-    // Package A's install hangs, package B's install succeeds. A's failure
-    // lands while B is still in flight (its start already cleared the
-    // error); when B finally SUCCEEDS, the stale red box from A must be
-    // superseded — not sit beside the green toast.
+    // Package A and B are BOTH held in flight; A fails first while B is
+    // still running. B's START cleared the error, A's failure re-drew it;
+    // when B finally SUCCEEDS, the stale red box from A must be superseded
+    // by showSuccess() itself — not sit beside the green toast.
+    //
+    // Ordering matters for the regression value: B starts while A is still
+    // in flight, so nothing about B's click can mask the assertion — the
+    // error box is re-drawn AFTER B started and only B's SUCCESS path runs
+    // afterwards (Sourcery round 3: the previous shape clicked B only after
+    // A's error was already displayed, so B's start-time clearError() would
+    // have hidden a broken showSuccess()).
+    let releaseB: () => void = () => {}
+    const bGate = new Promise<void>(resolve => { releaseB = resolve })
     const h = await setup({
       webmcp_registry_list: { registries: [registry], installed: [], activations: {}, persisted: true },
       webmcp_registry_catalog: { manifest: { manifestUrl: registry.manifestUrl, name: 'Example', packages: [pkgA, pkgB] } },
-      webmcp_registry_install: (message: { package: { id: string } }) => {
+      webmcp_registry_install: async (message: { package: { id: string } }) => {
         if (message.package.id === pkgA.id) return new Error('alpha exploded')
+        await bGate
         return { filesWritten: 1 }
       },
     })
@@ -123,15 +133,22 @@ describe('registry page toast/state feedback (round 2)', () => {
     const installA = buttonByLabel(h.document, 'webmcpPackagesInstall')
     expect(installA).toBeTruthy()
     installA!.click()
+    // A is in flight when B starts.
+    const installB = [...h.document.querySelectorAll('button')]
+      .filter(b => b.textContent === 'webmcpPackagesInstall')
+      .pop() as HTMLButtonElement
+    expect(installB).not.toBe(installA)
+    installB!.click()
+    await settle()
+    expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'webmcp_registry_install' }))
+
+    // A fails while B is still held open: the red box is on screen.
     await settle()
     expect(errorBox(h.document).hidden).toBe(false)
     expect(errorBox(h.document).textContent).toContain('alpha exploded')
 
-    // B succeeds while A's error is on screen.
-    const installB = [...h.document.querySelectorAll('button')]
-      .filter(b => b.textContent === 'webmcpPackagesInstall')
-      .pop() as HTMLButtonElement
-    installB.click()
+    // B succeeds: the success path must clear the stale error.
+    releaseB()
     await settle()
     expect(toastVisible(h.document)).toBe(true)
     // Regression: the stale error used to stay beside the success toast.
@@ -230,11 +247,128 @@ describe('registry page toast/state feedback (round 2)', () => {
 
     // The repair response finally resolves — it must NOT show "installed":
     // the package was removed while the repair was in flight.
+    // Round 3: prove the deferred repair completion was actually PROCESSED
+    // (previously the assertions only checked absence — the test stayed
+    // green even if repair completions never rendered feedback at all).
+    // Processing the response runs the repair handler's finally block: the
+    // Repair button's label is restored from "installing" and re-enabled,
+    // and its trailing render() issues a FRESH webmcp_registry_list call.
+    // Both observables occur only after the awaited response is consumed —
+    // an install-call count would prove only that the request was SENT.
+    const listCallsBeforeRelease = h.send.mock.calls.filter(
+      ([m]) => (m as { type: string }).type === 'webmcp_registry_list',
+    ).length
+    expect(repair!.textContent).toBe('webmcpPackagesInstalling')
+    expect(repair!.disabled).toBe(true)
     releaseRepair()
     await settle()
     await settle()
+    expect(repair!.textContent).toBe('webmcpPackagesRepair')
+    expect(repair!.disabled).toBe(false)
+    const listCallsAfterRelease = h.send.mock.calls.filter(
+      ([m]) => (m as { type: string }).type === 'webmcp_registry_list',
+    ).length
+    expect(listCallsAfterRelease).toBeGreaterThan(listCallsBeforeRelease)
     expect(toastVisible(h.document)).toBe(false)
     // And no stale red error either — the removal legitimately succeeded.
     expect(errorBox(h.document).hidden).toBe(true)
   })
+  it('a failed install of package A still reports while package B is in flight (round 3: per-package feedback)', async () => {
+    // A's install FAILS while B is held in flight. Under the page-global
+    // token, B's start invalidated A's token, so A's failure was never
+    // reported (its showError was suppressed by isFeedbackCurrent). With
+    // per-package generations A's failure always lands.
+    let releaseB: () => void = () => {}
+    const bGate = new Promise<void>(resolve => { releaseB = resolve })
+    const h = await setup({
+      webmcp_registry_list: { registries: [registry], installed: [], activations: {}, persisted: true },
+      webmcp_registry_catalog: { manifest: { manifestUrl: registry.manifestUrl, name: 'Example', packages: [pkgA, pkgB] } },
+      webmcp_registry_install: async (message: { package: { id: string } }) => {
+        if (message.package.id === pkgA.id) return new Error('alpha exploded')
+        await bGate
+        return { filesWritten: 1 }
+      },
+    })
+
+    // Start A, keep it in flight, start B, then let A fail FIRST.
+    const installA = buttonByLabel(h.document, 'webmcpPackagesInstall')
+    installA!.click()
+    const installB = [...h.document.querySelectorAll('button')]
+      .filter(b => b.textContent === 'webmcpPackagesInstall')
+      .pop() as HTMLButtonElement
+    expect(installB).not.toBe(installA)
+    installB!.click()
+    await settle()
+
+    // A's failure landed (superseding B's start-time cleared box) while B
+    // is STILL in flight — this is the exact suppression the global token
+    // produced.
+    expect(errorBox(h.document).hidden).toBe(false)
+    expect(errorBox(h.document).textContent).toContain('alpha exploded')
+
+    // B then succeeds: the toast shows; A's failure box is superseded by
+    // the success (designed stale-error behavior, unchanged).
+    releaseB()
+    await settle()
+    expect(toastVisible(h.document)).toBe(true)
+  })
+
+  it('removing package B keeps the toast announcing package A (round 3: toast-package binding)', async () => {
+    // A installs (toast announces A), then the installed B is uninstalled
+    // while the toast is up. The round-2 shape dismissed the single global
+    // toast on EVERY successful uninstall — A's true confirmation vanished.
+    let installed = ['com.example.beta']
+    const h = await setup({
+      webmcp_registry_list: { registries: [registry], installed, activations: {}, persisted: true },
+      webmcp_registry_catalog: { manifest: { manifestUrl: registry.manifestUrl, name: 'Example', packages: [pkgA, pkgB] } },
+      webmcp_registry_install: async () => {
+        installed = ['com.example.alpha', 'com.example.beta']
+        return { filesWritten: 1 }
+      },
+      webmcp_registry_uninstall: (message: { package: { id: string } }) => {
+        installed = installed.filter(id => id !== message.package.id)
+        return {}
+      },
+    })
+
+    // Install A: its toast is up, announcing com.example.alpha.
+    const installA = [...h.document.querySelectorAll('button')]
+      .find(b => b.textContent === 'webmcpPackagesInstall') as HTMLButtonElement | undefined
+    expect(installA).toBeTruthy()
+    installA!.click()
+    await settle()
+    expect(toastVisible(h.document)).toBe(true)
+
+    // Uninstall B via B's own catalog row while A's toast is showing.
+    const betaRow = [...h.document.querySelectorAll('button')]
+      .find(b => b.textContent === 'webmcpPackagesUninstall' &&
+        b.closest('.card')?.querySelector('.name')?.textContent === 'com.example.beta') as HTMLButtonElement | undefined
+    expect(betaRow).toBeTruthy()
+    betaRow!.click()
+    await settle()
+    // Regression: the toast announcing A must survive B's removal.
+    expect(toastVisible(h.document)).toBe(true)
+  })
+
+  it('the expired toast leaves the accessibility tree (round 3: aria-hidden)', async () => {
+    // happy-dom's window.setTimeout is its own internal implementation —
+    // not vitest-fake-timer-transparent (even `toFake: []` still stubs the
+    // global setTimeout with a never-firing fake) — so run on real timers
+    // and let the actual 3.5s auto-hide elapse, asserting both phases.
+    const h = await setup({
+      webmcp_registry_list: { registries: [registry], installed: [], activations: {}, persisted: true },
+      webmcp_registry_catalog: { manifest: { manifestUrl: registry.manifestUrl, name: 'Example', packages: [pkgA] } },
+      webmcp_registry_install: { filesWritten: 3 },
+    })
+    const install = buttonByLabel(h.document, 'webmcpPackagesInstall')
+    install!.click()
+    await settle()
+    const toast = successToast(h.document)!
+    expect(toast.classList.contains('visible')).toBe(true)
+    expect(toast.getAttribute('aria-hidden')).toBe('false')
+    await new Promise(resolve => setTimeout(resolve, 3600))
+    expect(toast.classList.contains('visible')).toBe(false)
+    // Regression: the region used to stay in the a11y tree after fading out.
+    expect(toast.getAttribute('aria-hidden')).toBe('true')
+  }, 10000)
 })

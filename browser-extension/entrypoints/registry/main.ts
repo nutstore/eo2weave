@@ -45,10 +45,12 @@ function dismissSuccess(): void {
     window.clearTimeout(successToastTimer)
     successToastTimer = undefined
   }
-  document.getElementById('successToast')?.classList.remove('visible')
+  const toast = document.getElementById('successToast')
+  if (!toast) return
+  toast.classList.remove('visible')
+  toast.setAttribute('aria-hidden', 'true')
 }
 function showError(error: unknown): void {
-  dismissSuccess()
   errorText.textContent = error instanceof Error ? error.message : String(error)
   errorBox.hidden = false
 }
@@ -58,8 +60,8 @@ function showError(error: unknown): void {
  * must CLEAR A's red box — leaving the failure message beside the green
  * toast makes the current result unreadable.
  */
-function showSuccess(message: string): void {
-  clearError()
+function showSuccess(message: string, options?: { clearStaleError?: boolean }): void {
+  if (options?.clearStaleError !== false) clearError()
   renderSuccessToast(message)
 }
 function dismissError(): void {
@@ -385,7 +387,7 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
     // Feedback token: a newer package operation (e.g. a Remove started
     // while this repair awaits its background response) invalidates this
     // one — its success must not show "installed" for an absent package.
-    const token = nextFeedbackToken()
+    const token = nextFeedbackToken(pkg.id)
     try {
       clearError()
       const result = await installRegistryPackage(registry, pkg)
@@ -416,13 +418,14 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
       uninstall.disabled = true
       const previous = uninstall.textContent
       uninstall.textContent = t('webmcpPackagesUninstalling')
-      const token = nextFeedbackToken()
+      const token = nextFeedbackToken(pkg.id)
       try {
         clearError()
         await uninstallRegistryPackage(pkg.id)
         // The green toast may still be announcing this package's install
         // (auto-hide 3.5s): after a successful removal it would claim the
-        // package is still installed — dismiss it.
+        // package is still installed — dismiss it. A toast announcing a
+        // DIFFERENT package stays: that confirmation is still true.
         showOperationRemoved(token)
       } catch (error) {
         if (isFeedbackCurrent(token)) showError(error)
@@ -458,10 +461,16 @@ function renderSuccessToast(message: string): void {
     document.body.prepend(toast)
   }
   toast.textContent = message
+  // role="status" regions stay in the accessibility tree even when visually
+  // faded out (opacity is not display:none) — a screen reader could still
+  // announce "installed" after the toast auto-hid or after the package was
+  // removed (Sourcery round 3). Gate the region itself on visibility.
+  toast.setAttribute('aria-hidden', 'false')
   toast.classList.add('visible')
   if (successToastTimer !== undefined) window.clearTimeout(successToastTimer)
   successToastTimer = window.setTimeout(() => {
     toast?.classList.remove('visible')
+    toast?.setAttribute('aria-hidden', 'true')
     successToastTimer = undefined
   }, 3500)
 }
@@ -469,45 +478,64 @@ function renderSuccessToast(message: string): void {
 let generation = 0
 
 /**
- * Package-operation feedback token (Sourcery round 2): the page has ONE
- * global toast/error area but several per-package operations run
- * concurrently. Each operation captures a token at START; only the token
- * matching the LATEST captured one may land success/error feedback. A slow
- * operation resolving after a newer one started (e.g. a repair whose
- * response arrives after the user already removed the package) is
- * suppressed — its result no longer describes the page state.
+ * Package-operation feedback tracking (Sourcery rounds 2+3): the page has
+ * ONE global toast/error area but several per-package operations run
+ * concurrently. Each operation captures a PER-PACKAGE generation counter at
+ * START; only the latest generation of the SAME package may land feedback.
+ *
+ * A single page-global token (round 2's shape) made package A's completion
+ * stale because package B started later — A's real failure went unreported
+ * even though nothing about A's package had changed. Generations are scoped
+ * per package id, so B's operations never invalidate A's feedback (round 3,
+ * "Overlapping package actions hide feedback"). Cross-package interference
+ * that the global token did catch is preserved by the toast's PACKAGE ID
+ * binding (see successToastPackage): a removal of package X dismisses the
+ * toast only when the toast is announcing X.
  */
-let feedbackToken = 0
-function nextFeedbackToken(): number {
-  return ++feedbackToken
+const feedbackGenerations = new Map<string, number>()
+function nextFeedbackToken(packageId: string): string {
+  const generation = (feedbackGenerations.get(packageId) ?? 0) + 1
+  feedbackGenerations.set(packageId, generation)
+  return `${packageId}#${generation}`
+}
+
+function isFeedbackCurrent(token: string): boolean {
+  const sep = token.lastIndexOf('#')
+  const packageId = token.slice(0, sep)
+  const generation = Number(token.slice(sep + 1))
+  return (feedbackGenerations.get(packageId) ?? 0) === generation
 }
 
 /**
- * True when this token is still current — no newer package operation has
- * captured a token since this one started.
+ * The package the visible success toast is announcing — removals dismiss
+ * the toast ONLY when they removed that very package, not an unrelated one
+ * whose install confirmation would still be true (round 3).
  */
-function isFeedbackCurrent(token: number): boolean {
-  return token === feedbackToken
-}
+let successToastPackage: string | undefined
 
 /**
  * Success feedback for a package operation. A stale op (a newer operation
- * started meanwhile) must not show "installed" for a package that a newer
- * operation just removed — suppress the toast entirely.
+ * on the SAME package started meanwhile) must not show "installed" for a
+ * package that a newer operation just removed — suppress the toast.
  */
-function showOperationSuccess(token: number, message: string): void {
+function showOperationSuccess(token: string, message: string): void {
   if (!isFeedbackCurrent(token)) return
+  const sep = token.lastIndexOf('#')
+  successToastPackage = token.slice(0, sep)
   showSuccess(message)
 }
 
 /**
  * Remove completed successfully: the toast announcing the (earlier)
- * install of this very package must GO — it still says the package is
- * installed after the user just removed it (Sourcery round 2).
+ * install of THIS package must GO — it still says the package is installed
+ * after the user just removed it (Sourcery round 2). An unrelated package's
+ * install confirmation stays up (round 3): it is still true.
  */
-function showOperationRemoved(token: number): void {
+function showOperationRemoved(token: string): void {
   if (!isFeedbackCurrent(token)) return
-  dismissSuccess()
+  const removedPackage = token.slice(0, token.lastIndexOf('#'))
+  if (successToastPackage === removedPackage) dismissSuccess()
+  successToastPackage = undefined
 }
 
 async function render(): Promise<void> {
@@ -522,10 +550,12 @@ async function render(): Promise<void> {
   // made a just-added registry disappear without explanation. The user
   // must know the list is session-only.
   //
-  // This is a NON-BLOCKING warning, not an operation failure: it must not
-  // reuse showError() (which dismisses the success toast), or every render
-  // would hide a just-shown install confirmation (Sourcery round 2). The
-  // warning box appears BELOW the fixed toast — both stay visible.
+  // This is a NON-BLOCKING warning, not an operation failure: it draws the
+  // warning box directly instead of an operation's showError(). The warning
+  // box appears BELOW the fixed toast — both stay visible. (Sourcery round 3
+  // went further: catalog-level show callers no longer dismiss the success
+  // toast at all — a catalog fetch failure must not erase a package's
+  // install confirmation.)
   if (!state.persisted) {
     errorText.textContent = t('webmcpPackagesNotPersisted')
     errorBox.hidden = false
@@ -615,12 +645,13 @@ async function render(): Promise<void> {
         uninstall.disabled = true
         const previous = uninstall.textContent
         uninstall.textContent = t('webmcpPackagesUninstalling')
-        const token = nextFeedbackToken()
+        const token = nextFeedbackToken(id)
         try {
           clearError()
           await uninstallRegistryPackage(id)
           // Same as the catalog row: dismiss the success toast still
-          // announcing this package's earlier install.
+          // announcing THIS package's earlier install (an unrelated
+          // package's toast stays).
           showOperationRemoved(token)
         } catch (error) {
           if (isFeedbackCurrent(token)) showError(error)
