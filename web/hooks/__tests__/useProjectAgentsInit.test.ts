@@ -31,6 +31,37 @@ describe('useProjectAgentsInit', () => {
     }))
   })
 
+  it('gates the visible Agent catalog on loadedProjectId matching the active project', async () => {
+    // Mirrors useConversationLogic's selection: candidates are exposed only
+    // when the loaded catalog belongs to the project the user is looking at.
+    const selectMentionAgents = (s: {
+      loadedProjectId: string | null
+      activeProjectId: string
+      agents: { id: string; name: string }[]
+    }) => (s.loadedProjectId !== s.activeProjectId ? [] : s.agents)
+
+    useProjectStore.setState({ activeProjectId: 'project-b' })
+    // Mid-switch: the old project's catalog is still loaded — must be hidden.
+    useAgentsStore.setState({
+      loadedProjectId: 'project-a',
+      agents: [{ id: 'old-agent', name: 'Old' }],
+    } as never)
+    expect(selectMentionAgents({
+      ...useAgentsStore.getState(),
+      activeProjectId: useProjectStore.getState().activeProjectId,
+    })).toEqual([])
+
+    // Initialization finished — the new catalog becomes selectable.
+    useAgentsStore.setState({
+      loadedProjectId: 'project-b',
+      agents: [{ id: 'new-agent', name: 'New' }],
+    } as never)
+    expect(selectMentionAgents({
+      ...useAgentsStore.getState(),
+      activeProjectId: useProjectStore.getState().activeProjectId,
+    }).map((a) => a.id)).toEqual(['new-agent'])
+  })
+
   it('loads, refreshes candidates on a project change, and clears on project exit', async () => {
     const { rerender } = renderHook(() => useProjectAgentsInit())
     await waitFor(() => expect(useAgentsStore.getState().loadedProjectId).toBe('project-a'))

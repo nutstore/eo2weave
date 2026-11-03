@@ -22,6 +22,7 @@ import { useT } from '@/i18n'
 import { createUserMessage } from '@/agent/message-types'
 import type { Message } from '@/agent/message-types'
 import { useAssetStore } from '@/store/asset.store'
+import { useProjectStore } from '@/store/project.store'
 import { removeAssetsFromOPFS, writePendingAssetsToOPFS } from '@/services/asset.service'
 import { performOcr, isOcrCompatibleImage } from '@/services/ocr.service'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
@@ -75,12 +76,20 @@ export function useConversationLogic() {
   //  initialisation moved to useProjectAgentsInit, which subscribes to
   //  it on its own.)
   const allAgents = useAgentsStore((s) => s.agents)
-  const projectActiveAgentId = useAgentsStore((s) => s.activeAgentId)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  // Only expose candidates once the loaded catalog belongs to the project the
+  // user is actually looking at. While a switch is still initializing, the old
+  // project's Agents must not stay selectable — picking one would insert a
+  // mention the target-project routing rejects.
+  const catalogMatchesProject = useAgentsStore((s) => s.loadedProjectId === activeProjectId)
+  const projectActiveAgentId =
+    catalogMatchesProject ? useAgentsStore((s) => s.activeAgentId) : null
   const setProjectActiveAgent = useAgentsStore((s) => s.setActiveAgent)
   const createAgent = useAgentsStore((s) => s.createAgent)
   const deleteAgent = useAgentsStore((s) => s.deleteAgent)
   const mentionAgents = useAgentsStore(
     useShallow((s) => {
+      if (s.loadedProjectId !== activeProjectId) return EMPTY_MENTION_AGENTS
       const filtered = s.agents
         .filter((agent) => agent.id !== 'default')
         .map((agent) => ({ id: agent.id, name: agent.name }))
