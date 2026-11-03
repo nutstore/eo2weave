@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProjectManager } from '@/opfs'
 
 const mocks = vi.hoisted(() => ({ route: { activeProjectId: 'project-a' } }))
-vi.mock('../project.store', () => ({ useProjectStore: { getState: () => mocks.route } }))
+vi.mock('@/store/project.store', () => ({ useProjectStore: { getState: () => mocks.route } }))
 vi.mock('@/opfs', () => ({ ProjectManager: {} }))
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
-import { useAgentsStore } from '../agents.store'
+import { useAgentsStore } from '@/store/agents.store'
 
 function project(id: string) {
   return {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { resolveConversationTarget } from '../conversation-target'
+import { resolveConversationTarget } from '@/services/conversation-target'
 import { resolveConversationAgentId } from '@/agent/conversation-agent-routing'
 
 const mocks = vi.hoisted(() => ({

@@ -24,7 +24,7 @@ vi.mock('@/sqlite/repositories/project.repository', () => ({
   getProjectRepository: () => ({ findActiveProject: mocks.findActiveProject }),
 }))
 vi.mock('@/opfs', () => ({ getWorkspaceManager: mocks.getManager, WorkspaceFiles: class {} }))
-vi.mock('../project.store', () => ({ useProjectStore: { getState: () => mocks.route } }))
+vi.mock('@/store/project.store', () => ({ useProjectStore: { getState: () => mocks.route } }))
 vi.mock('@/opfs/workspace/workspace-runtime', () => ({
   WorkspaceRuntime: class {
     pendingCount = 0
@@ -46,7 +46,7 @@ vi.mock('@/sqlite/repositories/fs-overlay.repository', () => ({ getFSOverlayRepo
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
 import { WorkspaceManager } from '@/opfs/workspace/workspace-manager'
-import { useWorkspaceStore } from '../workspace.store'
+import { useWorkspaceStore } from '@/store/workspace.store'
 
 function record(id: string, projectId = 'open-project'): Workspace {
   return {

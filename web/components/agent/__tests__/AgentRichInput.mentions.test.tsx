@@ -2,8 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { Editor } from '@tiptap/core'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentRichInput } from '../AgentRichInput'
-import { InlineMessageEditor } from '../InlineMessageEditor'
+import { AgentRichInput } from '@/components/agent/AgentRichInput'
+import { InlineMessageEditor } from '@/components/agent/InlineMessageEditor'
 
 vi.mock('@/store/asset.store', () => ({
   useAssetStore: Object.assign(
@@ -20,7 +20,7 @@ vi.mock('@creatorweave/ui', () => ({
   TooltipTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
   TooltipContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }))
-vi.mock('../SlashCommandExtension', () => ({ SlashCommandExtension: { configure: () => ({}) } }))
+vi.mock('@/components/agent/SlashCommandExtension', () => ({ SlashCommandExtension: { configure: () => ({}) } }))
 
 const agents = [{ id: 'resource-loop', name: 'Resource Loop' }]
 function inputProps(candidates = agents) {
