@@ -146,6 +146,9 @@ describe('ModelQuickSwitch unregistered dynamic provider (#87)', () => {
         displayName: 'Codex (Browser OAuth)',
         models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna' }],
         providerKey: 'codex-oauth',
+        // 1a2d900c: the UI gate drops any run whose entries lack `current`
+        // (superseded-run contract) — a fresh run reports current:true.
+        current: true,
       },
     ])
     settingsState.getEffectiveProviderConfig = vi.fn(() => ({
@@ -206,6 +209,7 @@ describe('ModelQuickSwitch unregistered dynamic provider (#87)', () => {
         displayName: 'Codex (Browser OAuth)',
         models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna' }],
         providerKey: 'codex-oauth',
+        current: true,
       },
     ])
     settingsState.getEffectiveProviderConfig = vi.fn(() => null)
