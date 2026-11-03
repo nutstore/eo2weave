@@ -27,6 +27,7 @@ import { performOcr, isOcrCompatibleImage } from '@/services/ocr.service'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
 import { isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { useInputDraftStore } from '@/store/input-draft.store'
+import { VIRTUALIZATION_THRESHOLD } from '@/components/agent/virtualization-constants'
 import { useActiveConversation } from './useActiveConversation'
 import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
 
@@ -135,6 +136,42 @@ export function useConversationLogic() {
     if (convId) mountConversation(convId)
     return () => {
       if (convId) unmountConversation(convId)
+      // PR #142 review (Sourcery, High): a conversation switch now REMOUNTS
+      // ConversationView (key={activeConversationId} in WorkspaceLayout), so
+      // the [convId] draft effect below never runs its save branch — on a
+      // fresh mount prevConvIdRef is null, so prevId === convId and the save
+      // is skipped. Persist any typed-but-unsent draft HERE, on unmount, so
+      // the text survives the remount and is restored (peekDraft) when the
+      // user switches back. saveDraft treats empty content as "clear", which
+      // matches the switch-path semantics for an emptied editor.
+      //
+      // PR #142 review round 2 (Sourcery, Medium): skip the save while the
+      // editor has not yet consumed a pending draft restoration — at that
+      // point inputRef holds the pre-restore EMPTY value, so writing it
+      // would erase the stored draft before the editor's restore effect
+      // ever runs.
+      //
+      // PR #142 review round 5 (Sourcery, Medium): the marker being set does
+      // NOT always mean the editor still holds that pre-restore empty value.
+      // restoreDraftIntoInput (rejected send) sets it while the input holds
+      // live text awaiting editor restoration, and the stored draft is
+      // already cleared at that point. peekDraft discriminates the two
+      // windows: an INTACT stored draft means the pending restoration has
+      // not been consumed yet (keep the round-2 skip); no stored draft
+      // means inputRef holds live unsent content and skipping the save
+      // loses it — persist it.
+      if (convId) {
+        const pendingRestoration = draftConvIdRef.current
+          ? useInputDraftStore.getState().peekDraft(convId)
+          : null
+        if (!pendingRestoration) {
+          useInputDraftStore.getState().saveDraft(convId, {
+            text: inputRef.current,
+            mentionedAgentIds: mentionedAgentIdsRef.current,
+            selectedFiles: [],
+          })
+        }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId])
@@ -215,15 +252,31 @@ export function useConversationLogic() {
   // ── Smart auto-scroll (only scroll when user is already at the bottom) ──
   const activeMessagesLength = activeMessages.length
 
+  // PR #142 review (Sourcery, Medium): under virtual scrolling the message
+  // list is rendered by react-virtuoso, which owns the scroll position via
+  // followOutput. A native scrollTop write on the shared container races
+  // Virtuoso's own tracking and can pull the windowed list off the real
+  // bottom. When virtualization is active, defer auto-scrolling entirely —
+  // followOutput already pins the view while at-bottom, and the Scroll-
+  // to-bottom button covers the not-at-bottom case.
+  const isVirtualizedScroll = activeMessagesLength > VIRTUALIZATION_THRESHOLD
+
   // Scroll-to-bottom state is managed by ScrollToBottomButton component
   // to avoid re-rendering ConversationView (and AgentRichInput) on every scroll event.
 
   useEffect(() => {
-    // Don't auto-scroll if user is browsing history above
-    if (!isUserAtBottomRef.current) return
+    // Compute append-vs-no-append FIRST, then keep the counter fresh even
+    // when the native scroll is skipped (virtualized mode / user scrolled
+    // up), so a later mode switch or scroll-back classifies the next append
+    // correctly.
     const behavior: ScrollBehavior =
       activeMessagesLength > lastRenderedMessageCountRef.current ? 'smooth' : 'auto'
     lastRenderedMessageCountRef.current = activeMessagesLength
+    // Virtualized mode: Virtuoso's followOutput owns the scroll position —
+    // a native scrollTop write here would fight it (see comment above).
+    if (isVirtualizedScroll) return
+    // Don't auto-scroll if user is browsing history above
+    if (!isUserAtBottomRef.current) return
     // Use scrollTo on the scroll container directly instead of scrollIntoView.
     // scrollIntoView bubbles up through all scrollable ancestors and can
     // shift the layout container itself (pushing it out of the viewport),

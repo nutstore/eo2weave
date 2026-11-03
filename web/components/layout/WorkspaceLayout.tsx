@@ -965,7 +965,14 @@ export function WorkspaceLayout({
                 <span className="sr-only">{t('common.loading')}</span>
               </div>
             ) : hasActiveConversation ? (
+              // key={activeConversationId}: a conversation switch must fully
+              // remount ConversationView (issue #141) — isUserAtBottomRef is
+              // re-seeded to true and Virtuoso re-runs initialTopMostItemIndex
+              // (jump to the latest turn). Without the remount, a stale
+              // at-bottom seed from the previous conversation made
+              // followOutput skip the new conversation's latest messages.
               <ConversationView
+                key={activeConversationId}
                 initialMessage={pendingMessage}
                 onInitialMessageConsumed={handleInitialMessageConsumed}
                 onPreviewAsset={handleAssetPreview}

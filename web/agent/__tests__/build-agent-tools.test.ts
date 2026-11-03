@@ -146,4 +146,65 @@ describe('build-agent-tools', () => {
     await tools[0].execute('call_1', { path: 'test.txt' })
     expect(toolRegistry.execute).toHaveBeenCalled()
   })
+
+  it('gives WebMCP call_tool timeouts the browser-extension warning (#139 review)', async () => {
+    const toolRegistry = {
+      getToolDefinitionsForMode: vi.fn(() => [
+        {
+          type: 'function',
+          function: {
+            name: 'call_tool',
+            description: 'call_tool',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+      ]),
+      execute: vi.fn(
+        () => new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error('Tool "call_tool" timed out after 40ms')), 60),
+        ),
+      ),
+    } as any
+
+    const tools = buildAgentTools(createInput({ toolRegistry, toolExecutionTimeout: 40 }))
+
+    await expect(
+      tools[0].execute('call_1', { full_tool_name: 'https_example_com__write_thing' }),
+    ).rejects.toThrow(/WebMCP tool call/)
+    await expect(
+      tools[0].execute('call_2', { full_tool_name: 'https_example_com__write_thing' }),
+    ).rejects.toThrow(/Verify the target tab's state first/)
+  })
+
+  it('gives MCP call_tool timeouts MCP guidance instead of browser-tab advice (#139 review: MCP timeouts get browser guidance)', async () => {
+    const toolRegistry = {
+      getToolDefinitionsForMode: vi.fn(() => [
+        {
+          type: 'function',
+          function: {
+            name: 'call_tool',
+            description: 'call_tool',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+      ]),
+      execute: vi.fn(
+        () => new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error('Tool "call_tool" timed out after 40ms')), 60),
+        ),
+      ),
+    } as any
+
+    const tools = buildAgentTools(createInput({ toolRegistry, toolExecutionTimeout: 40 }))
+
+    let error: Error | undefined
+    await tools[0]
+      .execute('call_1', { full_tool_name: 'my-server:slow_tool' })
+      .catch((e: Error) => { error = e })
+    expect(error).toBeDefined()
+    expect(error!.message).toContain('MCP tool call')
+    expect(error!.message).toContain('my-server')
+    expect(error!.message).not.toContain('WebMCP')
+    expect(error!.message).not.toContain("Verify the target tab's state first")
+  })
 })

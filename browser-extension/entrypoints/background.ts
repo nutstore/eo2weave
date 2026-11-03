@@ -124,7 +124,11 @@ import {
   setHostEnabled as setWebMCPHostEnabled,
   annotateToolsWithHostAuthorization,
 } from './webmcp/authorization'
-import { streamPluginDownload } from './webmcp/plugin-download-transfer'
+import {
+  streamPluginDownload,
+  assertValidMcpEndpointUrl,
+  fetchMcpEndpointNoRedirects,
+} from './webmcp/plugin-download-transfer'
 import type { WebMCPPluginDownloadPlan, WebMCPDiscoveredTool } from './webmcp/types'
 import { registerTab, unregisterTab } from './webmcp/registry'
 import { getRegistryEntries, entriesToDiscoveredTools } from './webmcp/registry'
@@ -2584,13 +2588,27 @@ export default defineBackground(() => {
         }
 
         if (message.type === 'mcp_proxy_fetch') {
+          // SECURITY: same-family SSRF as the plugin-download stream (#148).
+          // This content-script relay runs on <all_urls>, so ANY page can
+          // post the bridge marker — gate on the same trusted-sender check
+          // the other privileged handlers use, and refuse non-MCP-shaped
+          // targets (see assertValidMcpEndpointUrl for why http+loopback is
+          // deliberately allowed here).
+          if (!isTrustedWebMCPSender(_sender)) {
+            sendResponse({ ok: false, status: 0, error: 'mcp_proxy_fetch is only available to trusted WebMCP senders' });
+            return;
+          }
           const { url, method = 'POST', headers = {}, body = null, timeoutMs } = message;
           try {
-            const resp = await fetchWithTimeout(url, {
+            const endpoint = assertValidMcpEndpointUrl(String(url || ''));
+            // SECURITY: redirects are re-validated per hop (fetch's default
+            // redirect-following would bypass the SSRF checks above — the
+            // same class fixed for plugin downloads in review round 7/8).
+            const resp = await fetchMcpEndpointNoRedirects(endpoint.toString(), {
               method,
               headers,
               body,
-              timeout: typeof timeoutMs === 'number' ? timeoutMs : CONFIG.TIMEOUT_MS,
+              signal: AbortSignal.timeout(typeof timeoutMs === 'number' ? timeoutMs : CONFIG.TIMEOUT_MS),
             });
             const text = await resp.text();
             const responseHeaders: Record<string, string> = {};
@@ -3258,63 +3276,122 @@ export default defineBackground(() => {
 
     port.onMessage.addListener((message) => {
       if (message.type === 'webmcp_plugin_download_stream') {
-        (async () => {
-          const plan = message.plan as WebMCPPluginDownloadPlan | undefined
-          if (!plan?.transferId || !plan.downloadUrl || !plan.savePath || !plan.fileName) {
-            port.postMessage({
-              type: 'error',
-              errorCode: 'INVALID_PLUGIN_DOWNLOAD_PLAN',
-              message: 'Missing transferId/downloadUrl/savePath/fileName for plugin download stream',
-            })
-            port.disconnect()
+      (async () => {
+        // SECURITY: the download stream runs a privileged background fetch.
+        // The content-script relay runs on <all_urls>, so ANY page can post
+        // the bridge marker and open this port — the marker is not a secret
+        // (#148 review round 7: any webpage can read cross-origin responses).
+        // Gate the port on the same trusted-sender check the message handlers
+        // use (extension's own pages / CreatorWeave app origins only).
+        if (!isTrustedWebMCPSender(port.sender)) {
+          port.postMessage({
+            type: 'error',
+            errorCode: 'UNAUTHORIZED_PLUGIN_DOWNLOAD_SENDER',
+            message: 'Plugin download stream is only available to trusted WebMCP senders',
+          })
+          try { port.disconnect() } catch {}
+          return
+        }
+        const plan = message.plan as WebMCPPluginDownloadPlan | undefined
+        if (!plan?.transferId || !plan.downloadUrl || !plan.savePath || !plan.fileName) {
+          port.postMessage({
+            type: 'error',
+            errorCode: 'INVALID_PLUGIN_DOWNLOAD_PLAN',
+            message: 'Missing transferId/downloadUrl/savePath/fileName for plugin download stream',
+          })
+          port.disconnect()
+          return
+        }
+
+        let streamEndedWithError = false
+        // Client disconnect or explicit cancel must ABORT the in-flight
+        // fetch, not just stop forwarding frames — otherwise the remote
+        // download keeps running in the background and the transfer
+        // completes with no one listening (#139 review round 5: background
+        // downloads keep running). The abort also removes the transfer
+        // record: a cancelled download never counts as completed.
+        const downloadAbort = new AbortController()
+        const stopTransfer = (reason: string) => {
+          downloadAbort.abort(new Error(reason))
+          completedPluginDownloads.delete(plan.transferId)
+        }
+        const safePost = (payload: Record<string, unknown>) => {
+          try {
+            port.postMessage(payload)
+            return true
+          } catch {
+            return false
+          }
+        }
+        port.onDisconnect.addListener(() => {
+          stopTransfer('plugin download stream client disconnected')
+        })
+        port.onMessage.addListener((controlMessage: { type?: string }) => {
+          if (controlMessage?.type === 'cancel') {
+            stopTransfer('plugin download stream cancelled')
+          }
+        })
+        await streamPluginDownload(plan, (frame) => {
+          if (frame.type === 'end') {
+            completedPluginDownloads.set(plan.transferId, { completedAt: Date.now() })
+          }
+          const sent = safePost({ type: 'chunk', data: frame })
+          if (!sent) {
+            stopTransfer('plugin download stream client disconnected')
             return
           }
-
-          let streamEndedWithError = false
-          const safePost = (payload: Record<string, unknown>) => {
-            try {
-              port.postMessage(payload)
-              return true
-            } catch {
-              return false
-            }
-          }
-          await streamPluginDownload(plan, (frame) => {
-            if (frame.type === 'end') {
-              completedPluginDownloads.set(plan.transferId, { completedAt: Date.now() })
-            }
-            const sent = safePost({ type: 'chunk', data: frame })
-            if (!sent) return
-            if (frame.type === 'error') {
-              streamEndedWithError = true
-              safePost({ type: 'done' })
-              try { port.disconnect() } catch {}
-            }
-          })
-
-          if (!streamEndedWithError) {
+          if (frame.type === 'error') {
+            streamEndedWithError = true
             safePost({ type: 'done' })
             try { port.disconnect() } catch {}
           }
-        })()
-        return
+        }, downloadAbort.signal)
+
+        if (!streamEndedWithError) {
+          safePost({ type: 'done' })
+          try { port.disconnect() } catch {}
+        }
+      })()
+      return
       }
 
       if (message.type === 'mcp_proxy_fetch_stream') {
+        // SECURITY: same-family SSRF as the plugin-download stream (#148).
+        // Port senders are NOT authenticated by chrome.runtime.onConnect
+        // (content.ts relays for any page), so gate on the same
+        // trusted-sender check and URL validation as mcp_proxy_fetch.
+        // http + loopback is deliberately allowed: MCP dev servers legitimately
+        // run on localhost (see assertValidMcpEndpointUrl).
+        if (!isTrustedWebMCPSender(port.sender)) {
+          port.postMessage({
+            type: 'error',
+            errorCode: 'UNAUTHORIZED_MCP_PROXY_SENDER',
+            message: 'MCP proxy stream is only available to trusted WebMCP senders',
+          })
+          try { port.disconnect() } catch {}
+          return
+        }
         (async () => {
           const { url, method = 'POST', headers = {}, body = null, timeoutMs } = message;
           const streamTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : 2 * 60 * 1000;
+          try {
+            assertValidMcpEndpointUrl(String(url || ''))
+          } catch (err: any) {
+            port.postMessage({ type: 'error', errorCode: 'INVALID_MCP_ENDPOINT_URL', message: String(err?.message || err) });
+            try { port.disconnect(); } catch {}
+            return;
+          }
           let timeoutId = setTimeout(() => {
             port.postMessage({ type: 'error', errorCode: 'NETWORK_ERROR', message: `MCP stream request timed out (${Math.round(streamTimeoutMs / 1000)}s)` });
             try { port.disconnect(); } catch {}
           }, streamTimeoutMs);
 
           try {
-            const resp = await fetchWithTimeout(url, {
+            const resp = await fetchMcpEndpointNoRedirects(assertValidMcpEndpointUrl(String(url || '')).href, {
               method,
               headers,
               body,
-              timeout: streamTimeoutMs,
+              signal: AbortSignal.timeout(streamTimeoutMs),
             });
 
             const responseHeaders: Record<string, string> = {};

@@ -5,8 +5,12 @@ import { SkillDiscover } from '../SkillDiscover'
 import { fetchSkillStoreManifest } from '@/skills/skill-store'
 
 // i18n hook: return the key so assertions can match `skills.discover.*` directly.
+// useLocale returns a controllable locale so tests can assert locale-aware
+// description selection (#139 review: store ignores translated descriptions).
+let mockLocale = 'en-US'
 vi.mock('@/i18n', () => ({
   useT: () => (key: string) => key,
+  useLocale: () => [mockLocale, vi.fn()],
 }))
 
 // SkillToolbar: stub the shared toolbar primitives so the test stays focused
@@ -53,7 +57,8 @@ vi.mock('@/store/skills.store', () => ({
     selector({ bumpSkillsScanVersion: vi.fn() }),
 }))
 
-vi.mock('@/skills/skill-store', () => ({
+vi.mock('@/skills/skill-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/skills/skill-store')>()),
   fetchSkillStoreManifest: vi.fn().mockResolvedValue({ skills: [] }),
   annotateInstalled: vi.fn((skills: unknown[]) => skills),
   scanInstalledDirNames: vi.fn().mockResolvedValue(new Set<string>()),
@@ -104,5 +109,56 @@ describe('SkillDiscover', () => {
     render(<SkillDiscover />)
 
     expect(await screen.findByText('Demo skill')).toBeInTheDocument()
+  })
+
+  it('renders the localized description for the active locale (#139 review: store ignores translated descriptions)', async () => {
+    mockLocale = 'ja-JP'
+    vi.mocked(fetchSkillStoreManifest).mockResolvedValue({
+      version: '1',
+      generated: '2026-08-04T00:00:00.000Z',
+      count: 1,
+      skills: [{
+        id: 'demo-skill',
+        dirName: 'demo-skill',
+        name: 'Demo skill',
+        description: 'Base English description',
+        description_i18n: { 'ja-JP': '日本語の説明テキスト' },
+        category: 'general',
+        tags: [],
+        version: '1.0.0',
+        zipUrl: 'https://example.test/demo-skill.zip',
+      }],
+    })
+
+    render(<SkillDiscover />)
+
+    expect(await screen.findByText('日本語の説明テキスト')).toBeInTheDocument()
+    expect(screen.queryByText('Base English description')).not.toBeInTheDocument()
+    mockLocale = 'en-US'
+  })
+
+  it('falls back to the base description when the active locale has no translation', async () => {
+    mockLocale = 'ko-KR'
+    vi.mocked(fetchSkillStoreManifest).mockResolvedValue({
+      version: '1',
+      generated: '2026-08-04T00:00:00.000Z',
+      count: 1,
+      skills: [{
+        id: 'demo-skill',
+        dirName: 'demo-skill',
+        name: 'Demo skill',
+        description: 'Base English description',
+        description_i18n: { 'zh-CN': '中文描述' },
+        category: 'general',
+        tags: [],
+        version: '1.0.0',
+        zipUrl: 'https://example.test/demo-skill.zip',
+      }],
+    })
+
+    render(<SkillDiscover />)
+
+    expect(await screen.findByText('Base English description')).toBeInTheDocument()
+    mockLocale = 'en-US'
   })
 })
