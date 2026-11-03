@@ -559,6 +559,11 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
     cleanup_stale_staging(output_file.parent)
     fd, staging, publish_mode = create_staging_file(output_file.parent)
     published = False
+    # True once the descriptor has been closed on Windows ahead of the
+    # rename; after that point identity checks through `fd` are impossible,
+    # so failure cleanup falls back to the staging name itself (which is
+    # still this render's own O_EXCL-created name).
+    fd_closed = False
     try:
         # The report bytes are written through the descriptor in BINARY
         # mode: a text wrapper would translate newlines on Windows, so the
@@ -602,6 +607,7 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
             # is published with its final permissions either way.
             os.close(fd)
             fd = -1
+            fd_closed = True
         os.replace(staging, output_file)
         published = True
         if fd >= 0:
@@ -621,17 +627,21 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
     except BaseException:
         if not published:
             # Only unlink the staging path if it STILL names the inode this
-            # render wrote through `fd`. If another writer swapped the name
-            # in the meantime, the path now points at THEIR file — deleting
-            # it would destroy data this render never created. The swapped
-            # case leaves one stale file behind, which the next cleanup
-            # sweep (or the user) removes; deleting a stranger's file is
-            # never acceptable.
-            try:
-                if path_names_inode(staging, fd):
+            # render wrote. With the descriptor open (POSIX, and Windows up
+            # to the pre-rename close), identity is checked through `fd` so
+            # a swapped-in foreign file is never deleted. If os.replace
+            # failed AFTER the Windows pre-rename close, there is no
+            # descriptor to check through — the name, however, is still this
+            # render's own O_EXCL-created name that no other writer had a
+            # reason to touch between creation and the failed rename, and
+            # leaving it behind would leak a report file into the output
+            # directory on EVERY failed Windows render.
+            ours = fd_closed or path_names_inode(staging, fd)
+            if ours:
+                try:
                     staging.unlink(missing_ok=True)
-            except OSError:
-                pass
+                except OSError:
+                    pass
         raise
     finally:
         if fd >= 0:
@@ -686,11 +696,20 @@ def main() -> int:
     report = render(data, errors, warnings, strict=args.strict)
     digest, size = atomic_write(report, args.output_file)
     print(f"Rendered {args.output_file} with {len(warnings)} warning(s) ({'strict' if args.strict else 'compatibility-only'} validation)")
-    try:
-        published = published_digest(args.output_file)
-    except OSError:
-        published = None
-    if published is not None and published != digest:
+    # The report is now published; the verification below is a post-condition
+    # check on the delivered artifact. `published_digest` returns None when
+    # the path is missing, unreadable, or not a regular file — in that state
+    # the delivery cannot be verified, and an UNVERIFIED report must never be
+    # presented as a verified success.
+    published = published_digest(args.output_file)
+    if published is None:
+        print("ERROR: the published report could not be verified after publication "
+              "(missing, unreadable, or not a regular file); the checksum below "
+              "describes what this run wrote, but the delivered file was NOT verified")
+        print(f"OUTPUT_SHA256 {digest}")
+        print(f"OUTPUT_PATH {args.output_file.resolve()}")
+        return 1
+    if published != digest:
         print("WARNING: the published report's checksum differs from this run's staged "
               "report; another render likely replaced it after publish — do not deliver "
               "without re-verifying")
