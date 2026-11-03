@@ -627,11 +627,15 @@ function getAssistantTurnStatus(message: Message): string | null {
 function renderAssistantTurnStatusMarkdown(message: Message): string[] {
   const status = getAssistantTurnStatus(message)
   if (!status) return []
-  const lines = ['> Turn status: ' + status]
+  // errorMessage is provider-controlled text; escape HTML-significant
+  // characters so it cannot inject markup when the Markdown export is
+  // rendered by a renderer that permits raw HTML (same policy as the
+  // HTML export path, which escapes every untrusted field).
+  const lines = ['> Turn status: ' + escapeHtml(status)]
   if (message.errorMessage) {
     const [firstLine, ...remainingLines] = message.errorMessage.split(/\r?\n/)
-    lines.push('> Provider error: ' + firstLine)
-    lines.push(...remainingLines.map((line) => '> ' + line))
+    lines.push('> Provider error: ' + escapeHtml(firstLine))
+    lines.push(...remainingLines.map((line) => '> ' + escapeHtml(line)))
   }
   return lines
 }
