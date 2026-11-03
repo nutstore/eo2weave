@@ -45,7 +45,7 @@ import type {
 } from '@/agent/providers/types'
 import { useDynamicModels } from '@/agent/providers/use-dynamic-models'
 import { canFetchModels } from '@/agent/providers/model-fetcher'
-import { getCachedModels, getModelContextWindow, mergeModelLists } from '@/agent/providers/model-store'
+import { getCachedModels, getCachedModelsResult, getModelContextWindow, mergeModelLists } from '@/agent/providers/model-store'
 import { getDefaultPinnedModels } from '@/agent/providers/default-models'
 import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -108,7 +108,7 @@ interface ProviderCardProps {
   onToggle: () => void
 }
 
-function ProviderCard({
+export function ProviderCard({
   providerType,
   displayName,
   website,
@@ -251,13 +251,26 @@ function ProviderCard({
     // the configured list alone (cp.models.length > 0 ? 'ready' : 'empty');
     // this card must match, or the card shows stale badges for pins the
     // reconciliation loop legitimately removed.
+    //
+    // NEVER-OBSERVED refresh (Sourcery round 9, "Unloaded catalog flags pin
+    // stale"): a refresh-capable provider whose /models refresh has never
+    // completed has no recorded result either way. The static fallback list
+    // is then NOT a positive report — the same unobserved catalog is
+    // classified 'failed' (unknown) by getAvailableProviders, so this card
+    // must agree or a dynamic-only pin would be flagged stale here while
+    // the reconciliation sweep correctly skips it. A failed refresh below
+    // is the same unknown; the negative-cache retry re-observes it shortly.
     if (modelsError && !isCustom) return 'failed'
+    if (supportsModelRefresh && !isCustom) {
+      const observed = getCachedModelsResult(providerType, providerKey) !== null
+      if (!observed) return 'failed'
+    }
     if (allModels.length > 0) return 'ready'
     // No models and no error — or a custom provider regardless of refresh
     // errors: the catalog is the user-configured (authoritative) list.
     // An empty configured list is an authoritative 'empty', not unknown.
     return 'empty'
-  }, [allModels.length, modelsError, isCustom])
+  }, [allModels.length, modelsError, isCustom, supportsModelRefresh, providerType, providerKey])
 
   // Pinned models for this provider (resolved to ModelInfo for display)
   const pinnedModels = useMemo(() => {
