@@ -312,6 +312,62 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages.some((m) => m.id === 'assistant-lock')).toBe(true)
   })
 
+  it('runs the FIRST dispatch when a second overlaps mid-setup, instead of stranding it', async () => {
+    const conv = useConversationStore.getState().createNew('claim-owner', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    let releaseEnsure!: () => void
+    const ensureGate = new Promise<void>((resolve) => { releaseEnsure = resolve })
+    ensureWorkspaceMock.mockImplementationOnce(() => ensureGate)
+
+    const loopRuns: string[] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      loopRuns.push('ran')
+      return [
+        { id: 'assistant-owner', role: 'assistant', content: 'first dispatch completed', timestamp: Date.now() },
+      ]
+    }
+
+    const first = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    const second = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+
+    // While the first dispatch awaits workspace setup, the overlapping second
+    // must be rejected WITHOUT taking over the claim. Before the reject-not-
+    // replace fix, the second dispatch stole the slot: the first then failed
+    // its ownership check and bailed without running, and only the second
+    // (or, if it exited early, nobody) ran the loop.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    releaseEnsure()
+    await Promise.all([first, second])
+    await Promise.resolve()
+
+    expect(loopRuns).toEqual(['ran'])
+    expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages.some((m) => m.id === 'assistant-owner')).toBe(true)
+    expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
+  })
+
+  it('allows a new dispatch after the previous claim was released', async () => {
+    const conv = useConversationStore.getState().createNew('claim-reuse', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    const loopRuns: string[] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      loopRuns.push('ran')
+      return [
+        { id: `assistant-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() },
+      ]
+    }
+
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    expect(loopRuns).toEqual(['ran'])
+
+    // The first run released its claim on lock acquisition, so a follow-up
+    // dispatch (e.g. a queued message) must not be rejected.
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('again'))
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    expect(loopRuns).toEqual(['ran', 'ran'])
+  })
+
   it('should finalize non-current tool steps by toolCallId in interleaved calls', async () => {
     const store = useConversationStore.getState()
     const conv = store.createNew('test')

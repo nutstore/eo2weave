@@ -149,6 +149,20 @@ export async function runAgentImpl(
       // The slot holds the claim; ownership is confirmed (and the real
       // activeRunId published) by the claim block further down, and released
       // on every early-return before that block.
+      //
+      // A conversation that already holds a claim is REJECTED, not stolen:
+      // replacing the slot would strand the first dispatch mid-setup (its
+      // claimIsOurs() turns false and it bails without running) while the
+      // second one proceeds — the valid first request would be lost if the
+      // second exits early. The claim is released by its owner, so the
+      // rejected dispatch simply returns and lets the owner finish.
+      if (runClaimSlots.has(conversationId)) {
+        console.warn(
+          '[conversation.store] Dispatch rejected — conversation already has a pending run claim:',
+          conversationId
+        )
+        return
+      }
       const claimToken = `claim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       const claimSlot = { claimed: true, owner: claimToken }
       runClaimSlots.set(conversationId, claimSlot)
