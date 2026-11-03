@@ -54,7 +54,7 @@ describe('setCachedModels — post-write cross-tab verification (Sourcery round 
   })
 
   async function loadStore() {
-    const mod = await import('../model-store')
+    const mod = await import('@/agent/providers/model-store')
     return mod
   }
 
