@@ -45,8 +45,11 @@ function mapInternalToPiMessage(
   model: Model<Api>,
   compressedMemoryPrefix: string
 ): PiMessage[] {
-  if (msg.kind === 'run_changes' || (msg.role === 'assistant' && (msg.kind === 'empty' || msg.kind === 'error'))) {
-    // UI-only cards and failed assistant turns do not belong in model history.
+  if (
+    msg.kind === 'run_changes' ||
+    (msg.role === 'assistant' && (msg.kind === 'empty' || msg.kind === 'error' || msg.kind === 'aborted'))
+  ) {
+    // UI-only cards and incomplete assistant turns do not belong in model history.
     return []
   }
   if (msg.kind === 'context_summary') {
@@ -318,6 +321,9 @@ function mapPiToInternalMessage(message: PiAgentMessage): Message | null {
     )
     assistant.timestamp = message.timestamp || assistant.timestamp || now
     assistant.stopReason = message.stopReason
+    if (message.stopReason === 'error' && typeof message.errorMessage === 'string' && message.errorMessage.trim()) {
+      assistant.errorMessage = message.errorMessage
+    }
     if (message.stopReason === 'error' || message.stopReason === 'aborted') {
       assistant.kind = message.stopReason
     } else if (!text.trim() && toolCalls.length === 0) {

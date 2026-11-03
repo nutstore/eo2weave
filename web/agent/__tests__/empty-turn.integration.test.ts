@@ -11,14 +11,18 @@ vi.mock('@earendil-works/pi-ai', async (importOriginal) => ({
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: { getState: () => ({ enableThinking: false }) },
 }))
-vi.mock('../loop/build-agent-tools', () => ({ buildAgentTools: () => tools.current }))
+vi.mock('@/agent/loop/build-agent-tools', () => ({ buildAgentTools: () => tools.current }))
 
-function response(content: unknown[], stopReason = 'stop') {
+function response(
+  content: unknown[],
+  stopReason = 'stop',
+  errorMessage: string | null = 'provider failed'
+) {
   const message = {
     role: 'assistant',
     content,
     stopReason,
-    ...(stopReason === 'error' ? { errorMessage: 'provider failed' } : {}),
+    ...(stopReason === 'error' && errorMessage ? { errorMessage } : {}),
     api: 'openai-completions',
     provider: 'openai',
     model: 'm',
@@ -100,6 +104,38 @@ describe('empty turn recovery through pi-agent-core', () => {
     expect(stream).toHaveBeenCalledTimes(2)
   })
 
+  it('yields an empty turn without retrying when a user message is queued', async () => {
+    let queueWaiting = false
+    stream.mockImplementationOnce(() => {
+      queueWaiting = true
+      return response([], 'length')
+    })
+
+    const result = await executePiCoreLoop({
+      ...input(new AbortController().signal),
+      shouldYieldForQueue: () => queueWaiting,
+    })
+
+    expect(stream).toHaveBeenCalledOnce()
+    expect(result.allMessages.at(-1)).toMatchObject({ kind: 'empty', stopReason: 'length' })
+  })
+
+  it('returns the failed retry to the queue when a message arrives during recovery', async () => {
+    let queueWaiting = false
+    stream.mockReturnValueOnce(response([], 'length')).mockImplementationOnce(() => {
+      queueWaiting = true
+      return response([], 'length')
+    })
+
+    const result = await executePiCoreLoop({
+      ...input(new AbortController().signal),
+      shouldYieldForQueue: () => queueWaiting,
+    })
+
+    expect(stream).toHaveBeenCalledTimes(2)
+    expect(result.allMessages.at(-1)).toMatchObject({ kind: 'empty', stopReason: 'length' })
+  })
+
   it('does not retry a visible response', async () => {
     stream.mockReturnValue(response([{ type: 'text', text: 'partial' }], 'length'))
     await executePiCoreLoop(input(new AbortController().signal))
@@ -145,6 +181,32 @@ describe('empty turn recovery through pi-agent-core', () => {
     expect(stream).toHaveBeenCalledTimes(1)
   })
 
+  it('omits aborted assistant turns from the next provider history', async () => {
+    let sentMessages: AgentMessage[] = []
+    const baseInput = input(new AbortController().signal)
+    stream.mockImplementationOnce((_model, context) => {
+      sentMessages = [...context.messages]
+      return response([{ type: 'text', text: 'continued' }])
+    })
+
+    await executePiCoreLoop({
+      ...baseInput,
+      initialMessages: [
+        ...baseInput.initialMessages,
+        {
+          id: 'aborted',
+          role: 'assistant',
+          content: null,
+          kind: 'aborted',
+          stopReason: 'aborted',
+          timestamp: 2,
+        },
+      ],
+    })
+
+    expect(sentMessages.some((message) => message.role === 'assistant')).toBe(false)
+  })
+
   it('persists provider error state before propagating the failure', async () => {
     stream.mockReturnValue(response([], 'error'))
     const onMessagesUpdated = vi.fn()
@@ -158,6 +220,20 @@ describe('empty turn recovery through pi-agent-core', () => {
       expect.arrayContaining([expect.objectContaining({ kind: 'error', stopReason: 'error' })])
     )
     expect(stream).toHaveBeenCalledTimes(1)
+  })
+
+  it('propagates a generic error when the provider omits its diagnostic', async () => {
+    stream.mockReturnValue(response([], 'error', null))
+    const onMessagesUpdated = vi.fn()
+    await expect(
+      executePiCoreLoop({
+        ...input(new AbortController().signal),
+        callbacks: { onMessagesUpdated },
+      })
+    ).rejects.toThrow('The model provider returned an error.')
+    expect(onMessagesUpdated).toHaveBeenLastCalledWith(
+      expect.arrayContaining([expect.objectContaining({ kind: 'error', stopReason: 'error' })])
+    )
   })
 
   it('retries a later empty turn after a successful tool call', async () => {
@@ -185,5 +261,27 @@ describe('empty turn recovery through pi-agent-core', () => {
     expect(result.allMessages.at(-1)?.content).toBe('done')
     expect(stream).toHaveBeenCalledTimes(4)
     expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the iteration-limit result when the last stored turn is empty', async () => {
+    stream.mockReturnValue(response([{ type: 'text', text: 'done' }]))
+    const baseInput = input(new AbortController().signal, 0.5)
+    const result = await executePiCoreLoop({
+      ...baseInput,
+      initialMessages: [
+        ...baseInput.initialMessages,
+        {
+          id: 'empty-before-limit',
+          role: 'assistant',
+          content: null,
+          kind: 'empty',
+          stopReason: 'length',
+          timestamp: 2,
+        },
+      ],
+    })
+
+    expect(result.reachedMaxIterations).toBe(true)
+    expect(result.allMessages.at(-1)).toMatchObject({ kind: 'empty', stopReason: 'length' })
   })
 })

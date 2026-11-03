@@ -6,8 +6,8 @@
  */
 
 import { getSQLiteDB, parseJSON } from '../sqlite-database'
-import type { Message, MessageUsage, ToolCall } from '@/agent/message-types'
-import type { AssetMeta } from '@/types/asset'
+import type { Message, MessageUsage } from '@/agent/message-types'
+import { deserializeMessageMetadata, serializeMessageMetadata } from '../message-meta'
 
 //=============================================================================
 // Types
@@ -22,30 +22,6 @@ export interface MessageRow {
   timestamp: number
   seq: number
   created_at: number
-}
-
-/** Fields stored in meta_json */
-interface MessageMeta {
-  displayContent?: string
-  deferredContext?: Message['deferredContext']
-  kind?: Message['kind']
-  stopReason?: Message['stopReason']
-  contextCommit?: Message['contextCommit']
-  compressionBoundary?: Message['compressionBoundary']
-  pageContext?: Message['pageContext']
-  pageContextDelivery?: Message['pageContextDelivery']
-  reasoning?: string | null
-  reasoningDurationMs?: number
-  toolCalls?: ToolCall[]
-  toolCallId?: string
-  name?: string
-  usage?: MessageUsage
-  assets?: AssetMeta[]
-  images?: Array<{ data: string; mimeType: string }>
-  contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
-  runChanges?: { snapshotId: string }
-  readImageHandoff?: Message['readImageHandoff']
-  delegationNote?: Message['delegationNote']
 }
 
 interface AppSessionSerializedMessage {
@@ -251,91 +227,9 @@ export class MessageRepository {
    * Serialize a Message into content_json and meta_json
    */
   private serializeMessage(message: Message): { contentJson: string; metaJson: string | null } {
-    const contentJson = JSON.stringify(message.content)
-    const meta: MessageMeta = {}
-    let hasMeta = false
-
-    if (message.kind) {
-      meta.kind = message.kind
-      hasMeta = true
-    }
-    if (message.stopReason !== undefined) {
-      meta.stopReason = message.stopReason
-      hasMeta = true
-    }
-    if (message.reasoning !== undefined) {
-      meta.reasoning = message.reasoning
-      hasMeta = true
-    }
-    if (message.reasoningDurationMs !== undefined) {
-      meta.reasoningDurationMs = message.reasoningDurationMs
-      hasMeta = true
-    }
-    if (message.toolCalls !== undefined) {
-      meta.toolCalls = message.toolCalls
-      hasMeta = true
-    }
-    if (message.toolCallId !== undefined) {
-      meta.toolCallId = message.toolCallId
-      hasMeta = true
-    }
-    if (message.name !== undefined) {
-      meta.name = message.name
-      hasMeta = true
-    }
-    if (message.usage !== undefined) {
-      meta.usage = message.usage
-      hasMeta = true
-    }
-    if (message.assets !== undefined) {
-      meta.assets = message.assets
-      hasMeta = true
-    }
-    if (message.images !== undefined) {
-      meta.images = message.images
-      hasMeta = true
-    }
-    if (message.displayContent !== undefined) {
-      meta.displayContent = message.displayContent
-      hasMeta = true
-    }
-    if (message.deferredContext !== undefined) {
-      meta.deferredContext = message.deferredContext
-      hasMeta = true
-    }
-    if (message.contentParts !== undefined) {
-      meta.contentParts = message.contentParts
-      hasMeta = true
-    }
-    if (message.compressionBoundary !== undefined) {
-      meta.compressionBoundary = message.compressionBoundary
-      hasMeta = true
-    }
-    if (message.contextCommit !== undefined) {
-      meta.contextCommit = message.contextCommit
-      hasMeta = true
-    }
-    if (message.pageContext !== undefined) {
-      meta.pageContext = message.pageContext
-      meta.pageContextDelivery = message.pageContextDelivery
-      hasMeta = true
-    }
-    if (message.runChanges !== undefined) {
-      meta.runChanges = message.runChanges
-      hasMeta = true
-    }
-    if (message.readImageHandoff !== undefined) {
-      meta.readImageHandoff = message.readImageHandoff
-      hasMeta = true
-    }
-    if (message.delegationNote !== undefined) {
-      meta.delegationNote = message.delegationNote
-      hasMeta = true
-    }
-
     return {
-      contentJson,
-      metaJson: hasMeta ? JSON.stringify(meta) : null,
+      contentJson: JSON.stringify(message.content),
+      metaJson: serializeMessageMetadata(message),
     }
   }
 
@@ -343,7 +237,7 @@ export class MessageRepository {
    * Deserialize a database row into a Message
    */
   private deserializeMessage(row: MessageRow): Message {
-    const meta: MessageMeta = row.meta_json ? JSON.parse(row.meta_json) : {}
+    const meta = deserializeMessageMetadata(row.meta_json)
 
     return {
       id: row.id,
@@ -351,6 +245,7 @@ export class MessageRepository {
       content: parseJSON<string | null>(row.content_json, null),
       kind: meta.kind,
       stopReason: meta.stopReason,
+      errorMessage: meta.errorMessage,
       contextCommit: meta.contextCommit,
       compressionBoundary: meta.compressionBoundary,
       pageContext: meta.pageContext,

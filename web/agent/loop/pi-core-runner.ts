@@ -314,13 +314,23 @@ export async function executePiCoreLoop(
           emptyTurnRetried = false
           return
         }
-        if (message.stopReason === 'error' || message.stopReason === 'aborted' || emptyTurnRetried || input.signal?.aborted) return
+        if (
+          message.stopReason === 'error' ||
+          message.stopReason === 'aborted' ||
+          emptyTurnRetried ||
+          input.signal?.aborted ||
+          input.shouldYieldForQueue?.()
+        ) return
         emptyTurnRetried = true
         emptyTurnRetryPending = true
         return { context: { ...turnContext, messages: turnContext.messages.slice(0, -1) } }
       },
       getFollowUpMessages: async () => {
         if (!emptyTurnRetryPending || input.signal?.aborted) return []
+        if (input.shouldYieldForQueue?.()) {
+          emptyTurnRetryPending = false
+          return []
+        }
         emptyTurnRetryPending = false
         return [{ role: 'user', content: 'Your previous response was empty. Please respond or call a tool.', timestamp: Date.now() }]
       },
@@ -415,7 +425,12 @@ export async function executePiCoreLoop(
   allMessages = processed.allMessages
   reachedMaxIterations = processed.reachedMaxIterations
 
-  if (!input.signal?.aborted && allMessages.at(-1)?.kind === 'empty') {
+  if (
+    !input.signal?.aborted &&
+    !reachedMaxIterations &&
+    !input.shouldYieldForQueue?.() &&
+    allMessages.at(-1)?.kind === 'empty'
+  ) {
     throw new Error('The model returned an empty response after retrying. Please try again.')
   }
 

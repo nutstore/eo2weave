@@ -36,6 +36,32 @@ describe('AssistantTurnBubble timeline ordering', () => {
     )
     expect(getByRole('status').textContent).toBe('conversation.error.emptyTurn')
   })
+  it.each([
+    { kind: 'error' as const, stopReason: 'error' as const, status: 'conversation.error.failed' },
+    { kind: 'aborted' as const, stopReason: 'aborted' as const, status: 'conversation.error.aborted' },
+  ])('shows a persisted $kind turn without content', ({ kind, stopReason, status }) => {
+    const { container, getByRole } = render(
+      <AssistantTurnBubble
+        turn={{
+          type: 'assistant',
+          messages: [{
+            id: kind,
+            role: 'assistant',
+            content: null,
+            kind,
+            stopReason,
+            errorMessage: kind === 'error' ? 'provider diagnostic' : undefined,
+            timestamp: 1,
+          }],
+          timestamp: 1,
+          totalUsage: null,
+        }}
+        toolResults={new Map()}
+      />
+    )
+    expect(getByRole('status').textContent).toBe(status)
+    if (kind === 'error') expect(container.textContent).toContain('provider diagnostic')
+  })
   it('renders summary/runtime events by timestamp order during processing', () => {
     // Runtime steps arrive in LLM emission order: compression (250) completed
     // first, then the tool call (300) started. The timeline renders committed

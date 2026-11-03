@@ -18,6 +18,7 @@ import {
   clearAllSQLiteTables,
   clearLegacySahPoolFromOPFSRoot,
 } from '@/sqlite'
+import { serializeMessageMetadata } from '@/sqlite/message-meta'
 import { clearStorageResetMarker, getStorageResetMarker, setStorageResetMarker } from './reset-marker'
 import { beginReset, endReset } from './reset-coordinator'
 
@@ -624,15 +625,10 @@ export async function importStorage(data: {
                 const msg = messages[i]
                 if (!msg || !msg.id) continue
                 const contentJson = JSON.stringify(msg.content ?? null)
-                const meta: Record<string, unknown> = {}
-                let hasMeta = false
-                const metaFields = ['kind', 'reasoning', 'toolCalls', 'toolCallId', 'name', 'usage', 'assets'] as const
-                for (const field of metaFields) {
-                  if (msg[field] !== undefined) { meta[field] = msg[field]; hasMeta = true }
-                }
+                const metaJson = serializeMessageMetadata(msg)
                 await tx.execute(
                   'INSERT OR IGNORE INTO messages (id, conversation_id, role, content_json, meta_json, timestamp, seq, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
-                  [msg.id, conv.id, msg.role, contentJson, hasMeta ? JSON.stringify(meta) : null, msg.timestamp, i, msg.timestamp || Date.now()]
+                  [msg.id, conv.id, msg.role, contentJson, metaJson, msg.timestamp, i, msg.timestamp || Date.now()]
                 )
               }
             }

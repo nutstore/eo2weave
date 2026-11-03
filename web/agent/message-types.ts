@@ -79,6 +79,8 @@ export interface Message {
   kind?: 'normal' | 'context_summary' | 'run_changes' | 'context_update' | 'empty' | 'error' | 'aborted'
   /** Provider completion reason, retained for transcript and history round trips. */
   stopReason?: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted'
+  /** Provider diagnostic retained for failed turns and restored transcripts. */
+  errorMessage?: string
   /** Immutable context journal record, committed before model dispatch. */
   contextCommit?: ContextCommit
   compressionBoundary?: { throughMessageId: string; cutoffTimestamp: number }

@@ -17,6 +17,7 @@
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm'
 import type { OpfsDatabase } from '@sqlite.org/sqlite-wasm'
 import { initializeSchema } from './migrations/index'
+import { serializeMessageMetadata } from './message-meta'
 
 const DB_NAME = '/bfosa-unified.sqlite'
 const SAHPOOL_NAME = 'bfosa-pool'
@@ -275,19 +276,7 @@ async function migrateMessagesFromJsonBlob(dbHandle: any): Promise<void> {
           if (!msg || !msg.id) continue
 
           const contentJson = JSON.stringify(msg.content ?? null)
-          const meta: Record<string, unknown> = {}
-          let hasMeta = false
-          const metaFields = [
-            'kind', 'reasoning',
-            'toolCalls', 'toolCallId', 'name', 'usage', 'assets',
-          ] as const
-          for (const field of metaFields) {
-            if (msg[field] !== undefined) {
-              meta[field] = msg[field]
-              hasMeta = true
-            }
-          }
-          const metaJson = hasMeta ? JSON.stringify(meta) : null
+          const metaJson = serializeMessageMetadata(msg)
 
           dbHandle.exec({
             sql: `INSERT OR IGNORE INTO messages (id, conversation_id, role, content_json, meta_json, timestamp, seq, created_at)
@@ -454,19 +443,7 @@ async function backfillLegacyMessagesFromSahpoolIfNeeded(currentDb: any): Promis
           if (!msg || !msg.id) continue
 
           const contentJson = JSON.stringify(msg.content ?? null)
-          const meta: Record<string, unknown> = {}
-          let hasMeta = false
-          const metaFields = [
-            'kind', 'reasoning',
-            'toolCalls', 'toolCallId', 'name', 'usage', 'assets',
-          ] as const
-          for (const field of metaFields) {
-            if (msg[field] !== undefined) {
-              meta[field] = msg[field]
-              hasMeta = true
-            }
-          }
-          const metaJson = hasMeta ? JSON.stringify(meta) : null
+          const metaJson = serializeMessageMetadata(msg)
           currentDb.exec({
             sql: `INSERT OR IGNORE INTO messages (id, conversation_id, role, content_json, meta_json, timestamp, seq, created_at)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

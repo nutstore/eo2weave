@@ -137,6 +137,13 @@ export function ConversationView({
     sendMessage, handleSend, handleCancel,
     handleDeleteAgentLoop, handleEditAndResend, handleRegenerate,
   } = logic
+  const lastActiveMessage = activeMessages.at(-1)
+  const hasPersistedRetryError =
+    !isProcessing && (lastActiveMessage?.kind === 'empty' || lastActiveMessage?.kind === 'error')
+  const persistedRetryError =
+    lastActiveMessage?.kind === 'error'
+      ? lastActiveMessage.errorMessage || t('conversation.error.failed')
+      : t('conversation.error.emptyTurn')
 
   // ── Retry handler for error banner: send "继续" to start a new loop ──
   const handleRetry = useCallback(() => {
@@ -438,8 +445,8 @@ export function ConversationView({
 
       </div>
 
-        {(conversationError || (!isProcessing && activeMessages.at(-1)?.kind === 'empty')) && (
-          <ConversationErrorBanner error={conversationError || t('conversation.error.emptyTurn')} onRetry={handleRetry} />
+        {(conversationError || hasPersistedRetryError) && (
+          <ConversationErrorBanner error={conversationError || persistedRetryError} onRetry={handleRetry} />
         )}
 
         {/* Flow canvas panel — overlay, opened from the TopBar workflow button */}

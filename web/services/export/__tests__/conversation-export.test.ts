@@ -103,6 +103,24 @@ describe('conversation-export', () => {
       const data = JSON.parse(await lastSave().blob.text())
       expect(data.messages[0]).toMatchObject({ kind: 'empty', stopReason: 'length' })
     })
+    it.each(['markdown', 'html'] as const)('renders failed turn details in %s', async (format) => {
+      const conv = makeConversation([
+        makeMessage({
+          role: 'assistant',
+          content: null,
+          kind: 'error',
+          stopReason: 'error',
+          errorMessage: 'provider diagnostic',
+        }),
+      ])
+      await exportConversation(conv, { format, includeImages: false })
+      const output = await lastSave().blob.text()
+      const status = format === 'html'
+        ? '<strong>Turn status:</strong> error (stop reason: error)'
+        : 'Turn status: error (stop reason: error)'
+      expect(output).toContain(status)
+      expect(output).toContain('provider diagnostic')
+    })
     it.each(['json', 'markdown', 'html'] as const)('excludes runtime patches and labels synthetic records in %s', async (format) => {
       const conv = makeConversation([
         makeMessage({ role: 'user', content: 'Real question' }),
