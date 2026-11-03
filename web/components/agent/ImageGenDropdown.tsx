@@ -15,7 +15,7 @@ import { ImageIcon, Search, ChevronDown } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
 import { useT } from '@/i18n'
 import { getImageModels } from '@earendil-works/pi-ai'
-import { hasCodexImageBridge } from '@/agent/llm/image-gen'
+import { CODEX_IMAGE_MODEL_ID, hasCodexImageBridge } from '@/agent/llm/image-gen'
 import { useExtensionStore } from '@/store/extension.store'
 import { getCachedModels, onModelsUpdated } from '@/agent/providers/model-store'
 import type { LLMProviderType } from '@/agent/providers/types'
@@ -58,7 +58,7 @@ function useFilteredImageModels() {
   }, [])
 
   return useMemo(() => {
-    if ((providerType as string) === 'codex-oauth') return hasCodexImageBridge() ? [{ id: 'gpt-image-2', name: 'gpt-image-2', provider: 'openai' }] : []
+    if ((providerType as string) === 'codex-oauth') return hasCodexImageBridge() ? [{ id: CODEX_IMAGE_MODEL_ID, name: CODEX_IMAGE_MODEL_ID, provider: 'openai' }] : []
     const registryModels = getImageModels('openrouter' as any)
     const cached =
       getCachedModels(providerType, providerType) ||
@@ -139,7 +139,7 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
     return result
   }, [grouped, search])
 
-  const selectedModel = (providerType as string) === 'codex-oauth' ? 'gpt-image-2' : imageGenModel
+  const selectedModel = (providerType as string) === 'codex-oauth' ? CODEX_IMAGE_MODEL_ID : imageGenModel
   const currentDisplay = useMemo(() => displayModelId(selectedModel), [selectedModel])
 
   /** Accessible name for the icon-only trigger — the model id alone is meaningless. */

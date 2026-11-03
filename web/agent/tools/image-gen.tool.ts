@@ -13,7 +13,7 @@
 import type { ToolDefinition, ToolExecutor, ToolPromptDoc, ToolContext } from './tool-types'
 import { resolveVfsTarget } from './vfs-resolver'
 import { toolOkJson, toolErrorJson } from './tool-envelope'
-import { generateImage, hasCodexImageBridge } from '@/agent/llm/image-gen'
+import { CODEX_IMAGE_MODEL_ID, generateImage, hasCodexImageBridge } from '@/agent/llm/image-gen'
 import { useSettingsStore } from '@/store/settings.store'
 import { normalizeBaseUrl } from '@/agent/llm/pi-ai-url-utils'
 import { getCachedModels } from '@/agent/providers/model-store'
@@ -166,7 +166,7 @@ export const imageGenExecutor: ToolExecutor = async (
     )
   }
 
-  const imageModelId = effectiveConfig.apiKeyProviderKey === 'codex-oauth' ? 'gpt-image-2' : settingsState.imageGenModel
+  const imageModelId = effectiveConfig.apiKeyProviderKey === 'codex-oauth' ? CODEX_IMAGE_MODEL_ID : settingsState.imageGenModel
 
   try {
     const { getApiKeyRepository } = await import('@/sqlite')

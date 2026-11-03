@@ -8,6 +8,8 @@
 
 import { generateImages, getImageModel, type AssistantImages } from '@earendil-works/pi-ai'
 
+export const CODEX_IMAGE_MODEL_ID = 'gpt-image-2'
+
 export interface ImageGenConfig {
   apiKey: string
   baseUrl: string
@@ -83,7 +85,7 @@ export async function generateImage(
 
 async function generateCodexImage(prompt: string, aspectRatio?: string, signal?: AbortSignal): Promise<AssistantImages> {
   const result: AssistantImages = {
-    api: 'codex-images', provider: 'codex-oauth', model: 'gpt-image-2',
+    api: 'codex-images', provider: 'codex-oauth', model: CODEX_IMAGE_MODEL_ID,
     output: [], stopReason: 'stop', timestamp: Date.now(),
   }
   try {
@@ -97,7 +99,7 @@ async function generateCodexImage(prompt: string, aspectRatio?: string, signal?:
     if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
     const response = await bridge.codexGenerateImage({
       prompt: aspectRatio ? `${prompt}\n\nAspect ratio: ${aspectRatio}.` : prompt,
-      model: 'gpt-image-2', background: 'auto', quality: 'auto', size: 'auto',
+      model: CODEX_IMAGE_MODEL_ID, background: 'auto', quality: 'auto', size: 'auto',
     }, signal)
     if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
     if (!response.ok) throw new Error(response.text || response.message || response.error || `Codex image request failed (${response.status ?? 'unknown'}).`)
