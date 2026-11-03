@@ -16,8 +16,8 @@
 
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm'
 import type { OpfsDatabase } from '@sqlite.org/sqlite-wasm'
-import { initializeSchema } from './migrations/index'
-import { serializeMessageMetadata } from './message-meta'
+import { initializeSchema } from '@/sqlite/migrations/index'
+import { serializeMessageMetadata } from '@/sqlite/message-meta'
 
 const DB_NAME = '/bfosa-unified.sqlite'
 const SAHPOOL_NAME = 'bfosa-pool'
