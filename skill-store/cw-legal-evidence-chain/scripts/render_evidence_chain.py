@@ -228,6 +228,13 @@ REPORT_CREATE_MODE = 0o666
 # readable for collaborators.
 PUBLISH_MODE_DENIED = 0o022
 
+# The staging file is narrowed to owner-only before a single report byte is
+# written, so no other user can read a half-written report from it and no
+# peer can retain a descriptor and rewrite the staged bytes after they have
+# been hashed. The publish mode was read from the creation, so narrowing the
+# file costs nothing.
+STAGING_OWNER_MODE = 0o600
+
 # Windows must read and write the staging descriptor in binary mode: in text
 # mode the runtime translates "\n" into "\r\n" and stops reading at a Ctrl-Z
 # byte, so the checksum would describe bytes that are not the published bytes.
@@ -243,11 +250,11 @@ def supports_posix_modes() -> bool:
     return os.name != "nt"
 
 
-def desired_publish_mode(fd: int) -> int | None:
+def desired_publish_mode(created_mode: int) -> int | None:
     """Return the mode the published report must carry.
 
     The staging file was created with 0o666, so the kernel already applied
-    the active umask: the mode read back from the descriptor is exactly the
+    the active umask: the mode read back after the CREATION is exactly the
     mode a normal open(path, "w") would have produced under that umask. The
     group and other WRITE bits are then withheld — their READ bits are kept,
     so the report stays readable for collaborators, but a peer can no longer
@@ -258,23 +265,24 @@ def desired_publish_mode(fd: int) -> int | None:
     """
     if not supports_posix_modes():
         return None
-    return stat.S_IMODE(os.fstat(fd).st_mode) & ~PUBLISH_MODE_DENIED
+    return created_mode & ~PUBLISH_MODE_DENIED
 
 
-def apply_publish_mode(fd: int, mode: int | None, staging_path: Path | None = None) -> bool:
+def apply_publish_mode(fd: int, mode: int | None) -> bool:
     """Apply `mode` to the inode behind `fd`; True when it was applied.
 
     The mode is applied through the already-open descriptor, so it lands on
     the very inode that was hashed and published — never on a file another
-    render may have put at the destination path in the meantime.
+    render may have put at the destination path in the meantime. The mode
+    is NEVER applied through the path: a path can be swapped between the
+    check and the call, and chmod'ing a swapped path would change the
+    permissions of a different file.
 
     Windows carries no POSIX permission bits, so this is a no-op there (the
-    mode is None). A platform without os.fchmod falls back to os.chmod on
-    the descriptor, and — only when that is not supported either — to
-    os.chmod on the staging path, guarded by an inode identity check so a
-    swapped path is not chmod'ed. A failed mode update must never turn a
-    render into an error: the report is published either way and its digest
-    is still returned.
+    mode is None). A platform without descriptor-based chmod leaves the
+    mode the kernel gave the file, which is owner-only and therefore safe.
+    A failed mode update must never turn a published render into an error:
+    the report is published either way and its digest is still returned.
     """
     if mode is None or not supports_posix_modes():
         return True
@@ -289,26 +297,30 @@ def apply_publish_mode(fd: int, mode: int | None, staging_path: Path | None = No
         os.chmod(fd, mode)
         return True
     except (OSError, TypeError, NotImplementedError):
-        pass
-    if staging_path is not None:
-        try:
-            if not path_names_inode(staging_path, fd):
-                return False
-            os.chmod(staging_path, mode)
-            return path_names_inode(staging_path, fd)
-        except (OSError, TypeError, NotImplementedError):
-            return False
-    return False
+        return False
 
 
-def create_staging_file(directory: Path) -> tuple[int, Path]:
+def create_staging_file(directory: Path) -> tuple[int, Path, int | None]:
     """Create a unique staging file in `directory`.
 
-    Returns (fd, path): an open read-write descriptor and the staging path.
+    Returns (fd, path, publish_mode): an open read-write descriptor, the
+    staging path, and the mode the published report must carry (None on
+    platforms without POSIX permission bits).
+
     The file is created with O_EXCL, so a name collision can never reuse an
     existing file, and with 0o666 so that the kernel applies the active
-    umask: the file's mode is exactly the mode a normal open(path, "w")
-    would have produced. The name carries this render's PID and a random
+    umask: the mode the file is born with is exactly the mode a normal
+    open(path, "w") would have produced.
+
+    The file is then IMMEDIATELY narrowed to owner-only, before a single
+    report byte is written. That gives two properties at once:
+
+    - no other user can open the staging file, so no peer can retain a
+      descriptor and rewrite the staged bytes after they were hashed;
+    - no other user can read a half-written report from the staging file.
+
+    The publish mode was already read from the creation, so narrowing the
+    file costs nothing. The name carries this render's PID and a random
     token, so only this renderer's own files can be recognised as its
     staging files.
     """
@@ -318,7 +330,11 @@ def create_staging_file(directory: Path) -> tuple[int, Path]:
             fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_RDWR | BINARY_FLAG, REPORT_CREATE_MODE)
         except FileExistsError:
             continue
-        return fd, candidate
+        publish_mode = desired_publish_mode(stat.S_IMODE(os.fstat(fd).st_mode))
+        if publish_mode is not None:
+            # Narrow to owner-only before anything is written.
+            apply_publish_mode(fd, STAGING_OWNER_MODE)
+        return fd, candidate, publish_mode
     raise RuntimeError(f"cannot create a unique staging file in {directory}")
 
 
@@ -328,6 +344,27 @@ def write_all(fd: int, payload: bytes) -> None:
     while view:
         written = os.write(fd, view)
         view = view[written:]
+
+
+# The report is encoded and written in chunks of this many characters, so a
+# large report never needs a second full-size buffer alongside the live
+# report string.
+WRITE_CHUNK_CHARS = 65536
+
+
+def write_text(fd: int, text: str) -> int:
+    """Encode `text` as UTF-8 and write it through `fd`; return the byte count.
+
+    The text is encoded chunk by chunk: encoding the whole report at once
+    would allocate a second report-sized buffer while the report string is
+    still live, which can exhaust memory on very large reports.
+    """
+    total = 0
+    for start in range(0, len(text), WRITE_CHUNK_CHARS):
+        chunk = text[start:start + WRITE_CHUNK_CHARS].encode("utf-8")
+        write_all(fd, chunk)
+        total += len(chunk)
+    return total
 
 
 def hash_fd(fd: int) -> tuple[str, int]:
@@ -441,7 +478,11 @@ def owner_process_is_alive(name: str) -> bool:
         return True
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, OverflowError):
+        # ProcessLookupError: no such process. OverflowError: the number in
+        # the name is outside the platform's representable PID range, so it
+        # cannot name a live process this sweep could classify — treat it as
+        # unclassifiable and KEEP the file rather than crash the render.
         return False
     except PermissionError:
         return True  # the process exists but belongs to another user
@@ -481,26 +522,15 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
     """
     output_file.parent.mkdir(parents=True, exist_ok=True)
     cleanup_stale_staging(output_file.parent)
-    fd, staging = create_staging_file(output_file.parent)
+    fd, staging, publish_mode = create_staging_file(output_file.parent)
     published = False
     try:
-        # The kernel applied the umask when the staging file was CREATED, so
-        # the mode read back from the descriptor is exactly the mode a normal
-        # open(path, "w") would have produced. The group and other WRITE
-        # bits are withheld: their READ bits are kept (that is what makes
-        # the report readable for collaborators), but a peer must not be able
-        # to rewrite the staged bytes between the checksum pass and the
-        # publish. The mode is set BEFORE anything is written, so the staged
-        # bytes are never group/other-writable.
-        publish_mode = desired_publish_mode(fd)
-        if not apply_publish_mode(fd, publish_mode, staging):
-            print("WARNING: the published report's permissions could not be set to the "
-                  "umask-adjusted mode; it keeps the mode the kernel gave it")
         # The report bytes are written through the descriptor in BINARY
         # mode: a text wrapper would translate newlines on Windows, so the
         # checksum would describe bytes that are not the published bytes.
-        payload = text.encode("utf-8")
-        write_all(fd, payload)
+        # The text is encoded and written INCREMENTALLY, so a large report
+        # never needs a second full-size buffer.
+        size = write_text(fd, text)
         os.fsync(fd)
         digest, size = hash_fd(fd)
         # Re-hash immediately before publishing. A same-user process (or a
@@ -512,6 +542,16 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
             raise RuntimeError(
                 "staged report changed while it was being verified; nothing was published"
             )
+        # The final publish mode is applied to the verified staging inode
+        # THROUGH THE DESCRIPTOR immediately before the file becomes visible
+        # at the destination: the report is never published with broader
+        # permissions than the contract, and no post-publish chmod can fail
+        # after the report has already been published. The staging file is
+        # owner-only while the bytes are being written, so nothing is ever
+        # exposed at this step either.
+        if not apply_publish_mode(fd, publish_mode):
+            print("WARNING: the published report's permissions could not be set to the "
+                  "umask-adjusted mode; it keeps the mode the kernel gave it")
         # The identity check must not follow symlinks: a concurrent writer
         # that replaced the staging name with a symlink to the opened inode
         # would otherwise pass the check, and os.replace would move the
