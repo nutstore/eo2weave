@@ -31,6 +31,7 @@ interface StoredProjectInitError {
 /** Record written by the conversation store's loadFromDB() failure path (issue #147). */
 interface StoredConversationLoadError {
   message: string
+  conversationId?: string
   stack?: string
   at?: string
   /** True when a later loadFromDB() succeeded — report kept for context. */
@@ -104,9 +105,13 @@ function collectConversationLoadErrorSection(): DiagnosticSection {
   if (stored) {
     status = stored.resolved ? 'warn' : 'error'
     summary.conversationStoreLoadErrorAt = stored.at ?? null
+    if (stored.conversationId) {
+      summary.conversationStoreLoadErrorConversationId = stored.conversationId
+    }
     if (stored.resolved) summary.conversationStoreLoadErrorResolved = true
     lines.push('- Last conversation-store load failure:')
     lines.push(`  - Message: ${stored.message}`)
+    if (stored.conversationId) lines.push(`  - Conversation ID: ${stored.conversationId}`)
     if (stored.resolved) lines.push('  - Resolved: yes (a later load succeeded)')
     if (stored.stack) lines.push(`  - Stack: ${stored.stack}`)
     if (stored.at) lines.push(`  - At: ${stored.at}`)

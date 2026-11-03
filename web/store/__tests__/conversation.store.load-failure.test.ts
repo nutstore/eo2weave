@@ -17,9 +17,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { findAllMetaMock, findByConversationMock } = vi.hoisted(() => ({
+const { findAllMetaMock, findByConversationMock, migrateFromJsonBlobMock, restartInitializationMock } = vi.hoisted(() => ({
   findAllMetaMock: vi.fn(),
   findByConversationMock: vi.fn(),
+  migrateFromJsonBlobMock: vi.fn(),
+  restartInitializationMock: vi.fn(),
 }))
 
 vi.mock('sonner', () => ({
@@ -86,13 +88,14 @@ vi.mock('@/sqlite', () => ({
     insert: vi.fn(() => Promise.resolve()),
     replaceAll: vi.fn(() => Promise.resolve()),
     applyDiff: vi.fn(() => Promise.resolve()),
-    migrateFromJsonBlob: vi.fn(() => Promise.resolve({ conversations: 0, messages: 0 })),
+    migrateFromJsonBlob: migrateFromJsonBlobMock,
     recoverFromAppSessions: vi.fn(() =>
       Promise.resolve({ conversations: 0, messages: 0, sessions: 0 })
     ),
   })),
   getSQLiteDB: vi.fn(() => ({
     queryFirst: vi.fn(() => Promise.resolve({ count: 0 })),
+    restartPendingInitialization: restartInitializationMock,
   })),
 }))
 
@@ -159,6 +162,8 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     // leak into the next test.
     findAllMetaMock.mockReset()
     findByConversationMock.mockReset()
+    migrateFromJsonBlobMock.mockReset()
+    migrateFromJsonBlobMock.mockResolvedValue({ conversations: 0, messages: 0 })
     sessionStorage.clear()
     resetStore()
     findAllMetaMock.mockResolvedValue([meta(CONV_A, 'first'), meta(CONV_B, 'second')])
@@ -359,6 +364,7 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     vi.useFakeTimers()
     try {
       const load = useConversationStore.getState().retryLoadFromDB()
+      expect(restartInitializationMock).toHaveBeenCalledWith(15_000)
       // Advance past the 15s initial-load bound but stop BEFORE the 300ms
       // fallback delay elapses: the hung init must already have surfaced as
       // a retryable metadata failure at this point.
@@ -458,6 +464,26 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
       expect(state.loadErrorScope).toBe('transcript')
       expect(state.loadFailedConversationId).toBe(CONV_B)
       expect(readPersistedRecord()?.message).toContain('timed out')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps history unavailable when legacy migration times out', async () => {
+    migrateFromJsonBlobMock.mockReturnValueOnce(new Promise(() => {}))
+
+    vi.useFakeTimers()
+    try {
+      const load = useConversationStore.getState().loadFromDB()
+      await vi.advanceTimersByTimeAsync(15_100)
+      await load
+
+      const state = useConversationStore.getState()
+      expect(state.loaded).toBe(false)
+      expect(state.loadError).toContain('legacy message migration timed out')
+      expect(state.loadErrorScope).toBe('metadata')
+      expect(readPersistedRecord()?.resolved).toBeFalsy()
+      expect(findAllMetaMock).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }

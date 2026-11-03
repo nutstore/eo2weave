@@ -100,6 +100,7 @@ vi.mock('@/sqlite', () => ({
   })),
   getSQLiteDB: vi.fn(() => ({
     queryFirst: vi.fn(() => Promise.resolve({ count: 0 })),
+    restartPendingInitialization: vi.fn(),
   })),
 }))
 
@@ -522,5 +523,24 @@ describe('conversation.store — round-4 in-flight transcript read race (PRRT_kw
     await vi.waitFor(() => {
       expect(readPersistedRecord()?.resolved).toBe(true)
     })
+  })
+
+  it('resolves A after its transcript succeeds even if switching to B cleared the banner', async () => {
+    findByConversationMock.mockRejectedValueOnce(new Error('conv-a failed'))
+    await useConversationStore.getState().loadFromDB()
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
+
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'm-b', role: 'user', content: 'b', timestamp: 2 },
+    ])
+    await useConversationStore.getState().setActive(CONV_B)
+    expect(useConversationStore.getState().loadError).toBeNull()
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
+
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'm-a', role: 'user', content: 'a', timestamp: 3 },
+    ])
+    await useConversationStore.getState().setActive(CONV_A)
+    expect(readPersistedRecord()?.resolved).toBe(true)
   })
 })

@@ -138,4 +138,20 @@ describe('storage diagnostics', () => {
     expect(section?.status).toBe('info')
     expect(report.summary.projectStoreInitFailed).toBe(false)
   })
+
+  it('identifies the conversation whose transcript failed', async () => {
+    sessionStorage.setItem(
+      'creatorweave:conversation-store-load-error',
+      JSON.stringify({ message: 'transcript read failed', conversationId: 'conv-a' })
+    )
+    try {
+      const { runDiagnostics } = await import('@/storage/diagnostics')
+      const report = await runDiagnostics()
+      const section = report.sections.find((s) => s.label === 'Conversation Store Load')
+      expect(section?.lines.join('\n')).toContain('conv-a')
+      expect(report.summary.conversationStoreLoadErrorConversationId).toBe('conv-a')
+    } finally {
+      sessionStorage.removeItem('creatorweave:conversation-store-load-error')
+    }
+  })
 })

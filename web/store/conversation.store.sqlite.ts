@@ -102,6 +102,13 @@ enableMapSet()
  * Reject after `ms` even if the wrapped promise never settles. The losing
  * promise is left running (no cancellation) but its result is discarded.
  */
+class LoadTimeoutError extends Error {
+  constructor(readonly operation: string, ms: number) {
+    super(`${operation} timed out after ${ms}ms`)
+    this.name = 'LoadTimeoutError'
+  }
+}
+
 function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
@@ -109,7 +116,7 @@ function withTimeout<T>(
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(`${what} timed out after ${ms}ms`))
+      reject(new LoadTimeoutError(what, ms))
     }, ms)
     promise.then(
       (value) => {
@@ -659,6 +666,7 @@ async function runLoadFromDB(
             }
           }
         } catch (migrationError) {
+          if (migrationError instanceof LoadTimeoutError) throw migrationError
           console.warn('[conversation.store] Legacy message migration pass failed:', migrationError)
         }
         const tMigrate = performance.now()
@@ -953,6 +961,16 @@ async function runLoadFromDB(
             error instanceof Error ? error.message : 'Failed to load conversations'
           state.loadErrorScope = 'metadata'
         })
+        // A timed-out migration may still be writing messages. A metadata-only
+        // fallback cannot prove history is complete, so keep the load failed.
+        if (
+          error instanceof LoadTimeoutError &&
+          [
+            'legacy message migration',
+            'migration missing-conversation probe',
+            'AppSessions message recovery',
+          ].includes(error.operation)
+        ) return
         // One-shot retry, mirroring workspace.store's initialize retry.
         // A transient failure (e.g. SQLite/OPFS hydration race on cold start)
         // previously fell through to `loaded = true` with `conversations: []`,
@@ -1158,8 +1176,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     // stuck load"). The old run keeps running in the background. Generation
     // checks discard its late results, and withInflightLoad's ownership check
     // leaves the new run's guard slot alone when the old run settles.
-    retryLoadFromDB: async () =>
-      withInflightLoad(() => runLoadFromDB(set, get), { force: true }),
+    retryLoadFromDB: async () => {
+      // A load timeout only rejects this store's await. The SQLite manager
+      // can still hold the same pending initPromise, so restart that worker
+      // once it has exceeded the load deadline before starting a fresh run.
+      getSQLiteDB().restartPendingInitialization(INITIAL_LOAD_TIMEOUT_MS)
+      return withInflightLoad(() => runLoadFromDB(set, get), { force: true })
+    },
 
     createNew: (title?: string, options?: { activate?: boolean }) => {
       const conversation = createConversation(title)
@@ -1288,30 +1311,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           ) {
             // The failure on record is the SAME one this selection observed
             // at start — no newer failure was recorded meanwhile. Clear the
-            // stale banner; resolve the persisted record only when this read
-            // actually re-read the conversation the failure names.
+            // stale banner; resolution of the persisted record is checked
+            // separately against the conversation ID below.
             set((state) => {
               state.loadError = null
               state.loadErrorScope = null
               state.loadFailedConversationId = null
             })
-            if (failureOwnerAtReadStart === id) {
-              markPersistedFailureResolved(id)
-            }
-          } else {
-            // PR #149 round-5 review ("Transcript read resolves metadata
-            // failure"): a metadata-scope or legacy record names a failure of
-            // the METADATA layer, which setActive never re-reads — it only
-            // reads transcripts. A successful transcript read proves nothing
-            // about it, so only a record naming THIS conversation (a
-            // transcript-scope failure whose in-memory state a previous
-            // interleaved selection already cleared) may be resolved here;
-            // metadata records stay unresolved until a full loadFromDB —
-            // where the metadata layer itself re-reads — succeeds.
-            if (failureOwnerAtReadStart === id) {
-              markPersistedFailureResolved(id, { requireNamedConversation: true })
-            }
           }
+          // The persisted failure may outlive the visible banner after the
+          // user switches away. This successful read verifies recovery only
+          // if the record names this same conversation.
+          markPersistedFailureResolved(id, { requireNamedConversation: true })
         }
         // NOTE: workspace switching is handled by syncFromRoute in App.tsx.
         // This store only manages conversation data; it does NOT call switchWorkspace.
