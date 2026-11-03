@@ -1023,6 +1023,28 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
       editor.commands.setContent(initialText)
       emitValue(editor)
       onDraftRestored?.()
+    } else {
+      // PR #142 review (Sourcery, Medium): the editor already holds content
+      // the user typed BEFORE this pending draft restoration was consumed.
+      // Decline the restoration — typed text wins, matching the
+      // restoreDraftIntoInput contract — but consume the pending-restoration
+      // bookkeeping anyway. Leaving draftConvIdRef set would make the
+      // unmount cleanup skip saveDraft, so switching conversations loses the
+      // typed text and restores the stale stored draft on return.
+      //
+      // PR #142 review round 5 (Sourcery, Medium "Declined draft deletes
+      // typed input"): the ORDER here is load-bearing. onDraftRestored
+      // clears this conversation's draft-store entry, and the onChange
+      // consumer may itself write that same entry (WelcomeScreen's
+      // handleInputChange mirrors every emission into the store). Emitting
+      // first would let the consumer save the typed text and then have it
+      // deleted by the consuming callback's clear — unsent text lost if the
+      // user leaves before another edit. So on the decline path the marker
+      // is consumed BEFORE the emission: the clear can only delete the
+      // stale pending draft, and the single emission afterwards (re)persists
+      // the current editor value through the consumer.
+      onDraftRestored?.()
+      emitValue(editor)
     }
   }, [editor, initialText, emitValue, onDraftRestored])
 
