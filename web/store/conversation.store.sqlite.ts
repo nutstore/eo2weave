@@ -772,6 +772,15 @@ const inflightRetries = new Map<string, Promise<void>>()
  * later test retrying the same conversation would silently no-op. Test
  * setups call this between scenarios.
  */
+/**
+ * Test-only: the current watermark version for a conversation.
+ * Returns `undefined` when the conversation has NO entry (as opposed to a
+ * version of 0), so a test can tell "never mutated" from "mutated and reset".
+ */
+export function getTranscriptVersionEntryForTests(conversationId: string): number | undefined {
+  return conversationTranscriptVersions.get(conversationId)
+}
+
 export function resetConversationRetryStateForTests(): void {
   inflightRetries.clear()
   inflightRetryRefs.clear()
@@ -942,9 +951,13 @@ async function runRetryLoadedFailure(
       // (PR #152 review, "Concurrent transcript edits disappear"). Skip the
       // install; the in-memory state (already synced to the DB by the
       // writers) stays authoritative.
+      // The watermark comparison is UNCONDITIONAL here: the guard must fire
+      // even when the conversation row is metadata-only. A concurrent read
+      // that installed newer content moved the watermark, and installing an
+      // older snapshot over it would lose that content
+      // (PR #152 review, "Stale snapshot can still win").
       const changedDuringRead =
         conversationBeforeInstall !== undefined &&
-        conversationBeforeInstall.messagesLoaded !== false &&
         (conversationTranscriptVersions.get(id) ?? 0) !== transcriptVersionAtReadStart
       if (!changedDuringRead) {
         primePersistBaseline(id, messages as Message[])
@@ -956,6 +969,12 @@ async function runRetryLoadedFailure(
             healCompressionBaseline(conversation)
           }
         })
+        // Installing the snapshot IS a transcript mutation: another read that
+        // is pending right now must not accept its older snapshot over these
+        // messages (and must not prime that older snapshot as the persistence
+        // baseline) — the watermark has to move even though no user edit was
+        // involved (PR #152 review, "Stale snapshot can still win").
+        bumpTranscriptVersion(id)
       }
     } else {
       // A 'missing-target' result (the failed conversation was removed from
@@ -1379,9 +1398,13 @@ async function runLoadFromDB(
             const conversationBeforeInstall = get().conversations.find(
               (c) => c.id === activeIdToInstall
             )
+            // Unconditional watermark comparison (see the targeted-retry
+            // guard): the load replaces the conversation list, so the row it
+            // installs into is metadata-only — but a concurrent read may have
+            // installed newer content and moved the watermark
+            // (PR #152 review, "Stale snapshot can still win").
             const transcriptChangedDuringRead =
               conversationBeforeInstall !== undefined &&
-              conversationBeforeInstall.messagesLoaded !== false &&
               (conversationTranscriptVersions.get(activeIdToInstall) ?? 0) !==
                 transcriptVersionAtReadStart
             if (!transcriptChangedDuringRead) {
@@ -1395,6 +1418,11 @@ async function runLoadFromDB(
                   healCompressionBaseline(conv)
                 }
               })
+              // Installing the snapshot IS a transcript mutation — bump the
+              // watermark so a concurrently pending read cannot accept its
+              // older snapshot over these messages
+              // (PR #152 review, "Stale snapshot can still win").
+              bumpTranscriptVersion(activeIdToInstall)
             }
           } catch (error) {
             // A stale run's failure must not clobber the recovered state a
@@ -1632,9 +1660,10 @@ async function runLoadFromDB(
               const retryConversationBeforeInstall = get().conversations.find(
                 (c) => c.id === retryActiveId
               )
+              // Unconditional watermark comparison (see the targeted-retry
+              // guard) (PR #152 review, "Stale snapshot can still win").
               const retryTranscriptChangedDuringRead =
                 retryConversationBeforeInstall !== undefined &&
-                retryConversationBeforeInstall.messagesLoaded !== false &&
                 (conversationTranscriptVersions.get(retryActiveId) ?? 0) !==
                   retryVersionAtReadStart
               if (selectionGenerationAtFallback !== activeSelectionGeneration) {
@@ -1656,6 +1685,11 @@ async function runLoadFromDB(
                     healCompressionBaseline(conv)
                   }
                 })
+                // Installing the snapshot IS a transcript mutation — bump the
+                // watermark so a concurrently pending read cannot accept its
+                // older snapshot over these messages
+                // (PR #152 review, "Stale snapshot can still win").
+                bumpTranscriptVersion(retryActiveId)
               }
             } catch (transcriptErr) {
               // Stale-run gate (PR #149 round-6 review): a superseded run must
@@ -1973,7 +2007,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             const transcriptChangedDuringRead =
               conversationBeforeInstall !== undefined &&
               conversationBeforeInstall.messagesLoaded !== false &&
-              conversationTranscriptVersions.get(id) !== transcriptVersionAtReadStart
+              (conversationTranscriptVersions.get(id) ?? 0) !== transcriptVersionAtReadStart
             const tDeserialize = performance.now()
             if (!transcriptChangedDuringRead) {
               primePersistBaseline(id, messages as Message[])
@@ -2689,6 +2723,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           state.activeConversationId = null
         }
       })
+      // The watermark map is module-level and lives for the page's lifetime:
+      // drop this conversation's entry with the conversation itself, or a
+      // long-lived session that creates/mutates/deletes many conversations
+      // grows the map without bound
+      // (PR #152 review, "Deleted conversations retain watermark entries").
+      conversationTranscriptVersions.delete(id)
+      transcriptReadGenerations.delete(id)
     },
 
     deleteConversations: async (ids) => {

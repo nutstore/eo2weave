@@ -191,7 +191,7 @@ const CONV_B = 'conv-b'
 import { useConversationStore } from '@/store/conversation.store'
 // A deliberately-hung retry in an earlier scenario must not no-op retries in
 // later ones (the in-flight slot map is module-level).
-import { resetConversationRetryStateForTests } from '@/store/conversation.store.sqlite'
+import { resetConversationRetryStateForTests, getTranscriptVersionEntryForTests } from '@/store/conversation.store.sqlite'
 import { CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 
 function meta(id: string, title: string) {
@@ -774,6 +774,129 @@ describe('conversation.store — PR #152 Sourcery fixes (issue #147)', () => {
 
       const conv = useConversationStore.getState().conversations.find((c) => c.id === CONV_A)
       expect(conv?.messages.map((m) => m.id)).toEqual(['m-1', 'm-3'])
+    })
+  })
+
+  it('installs the database transcript when the conversation has no watermark entry', async () => {
+    // Regression: the guard compared `get(id) !== transcriptVersionAtReadStart`
+    // while the start value was normalized with `?? 0`. A conversation with NO
+    // watermark entry therefore compared `undefined !== 0` — always
+    // "changed" — so the read skipped the install AND the baseline priming,
+    // and the persisted history stayed invisible
+    // (PR #152 review, "Persisted history stays invisible").
+    //
+    // The conversation must be LOADED (messagesLoaded: true): the guard only
+    // compares the watermark for a conversation that already has an in-memory
+    // transcript (a still-metadata-only one has nothing to lose, so its
+    // install stays unconditional).
+    useConversationStore.setState((state) => {
+      state.conversations = [
+        {
+          ...meta(CONV_A, 'first'),
+          // Loaded, but WITHOUT any watermark entry (never mutated).
+          messages: [],
+          messagesLoaded: true,
+          mountRefCount: 0,
+          collectedAssets: [],
+        } as never,
+      ]
+      state.activeConversationId = CONV_A
+    })
+
+    // Force the lazy read path: setActive only reads when the conversation has
+    // no messages or is metadata-only. Evict the messages but keep the
+    // conversation loaded — the exact state a re-opened (evicted) conversation
+    // is in.
+    useConversationStore.setState((state) => {
+      const conv = state.conversations.find((c) => c.id === CONV_A)
+      if (conv) conv.messages = []
+    })
+
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'm-persisted', role: 'user', content: 'persisted', timestamp: 1 },
+    ])
+    await useConversationStore.getState().setActive(CONV_A)
+
+    const conv = useConversationStore.getState().conversations.find((c) => c.id === CONV_A)
+    expect(conv?.messages.map((m) => m.id)).toEqual(['m-persisted'])
+    expect(conv?.messagesLoaded).toBe(true)
+  })
+
+  it('rejects a stale snapshot when the transcript changed while the read was pending', async () => {
+    // The targeted retry's read is pending; the transcript changes in memory
+    // while it waits. The pending read must then REJECT its (now stale)
+    // snapshot instead of installing it over the newer content.
+    //
+    // This is the guard the install-bump relies on: whenever anything moves
+    // the watermark, a pending reader must notice and skip its install
+    // (PR #152 review, "Stale snapshot can still win").
+    await withExtendedLoadTimeout(async () => {
+      seedLoadedConversation(CONV_A, [USER_MESSAGE])
+      const pending = await startPendingTranscriptRead([{ id: 'm-old', role: 'user', content: 'old', timestamp: 1 }])
+
+      // The transcript changes in memory while the read is pending.
+      useConversationStore.getState().addMessage(CONV_A, {
+        id: 'm-new',
+        role: 'assistant',
+        content: 'new',
+        timestamp: 2,
+      } as never)
+
+      pending.release()
+      await pending.retry
+
+      const conv = useConversationStore.getState().conversations.find((c) => c.id === CONV_A)
+      // The stale snapshot is rejected; the newer in-memory content survives.
+      expect(conv?.messages.map((m) => m.id)).toEqual(['m-1', 'm-new'])
+    })
+  })
+
+  it('drops the transcript watermark entry when a conversation is deleted', async () => {
+    // The watermark map is module-level and lives for the page's lifetime: a
+    // long-lived session that creates/mutates/deletes many conversations must
+    // not grow it without bound
+    // (PR #152 review, "Deleted conversations retain watermark entries").
+    const created = useConversationStore.getState().createNew('to-delete')
+    // Mutating it creates a watermark entry.
+    useConversationStore.getState().addMessage(created.id, {
+      id: 'm-del',
+      role: 'user',
+      content: 'hi',
+      timestamp: 1,
+    } as never)
+    expect(getTranscriptVersionEntryForTests(created.id)).toBeDefined()
+
+    await useConversationStore.getState().deleteConversation(created.id)
+
+    // The conversation is gone AND so is its watermark entry.
+    expect(
+      useConversationStore.getState().conversations.some((c) => c.id === created.id)
+    ).toBe(false)
+    expect(getTranscriptVersionEntryForTests(created.id)).toBeUndefined()
+  })
+
+  it('moves the transcript watermark when a read installs a snapshot', async () => {
+    // Installing a database snapshot into memory IS a transcript mutation:
+    // a read that is pending at that moment must be able to detect it. If the
+    // install did not move the watermark, the pending read cannot tell that
+    // the transcript changed and installs its own older snapshot over the
+    // newer content
+    // (PR #152 review, "Stale snapshot can still win").
+    await withExtendedLoadTimeout(async () => {
+      seedLoadedConversation(CONV_A, [USER_MESSAGE])
+      const versionBefore = getTranscriptVersionEntryForTests(CONV_A)
+
+      const pending = await startPendingTranscriptRead([{ id: 'm-installed', role: 'user', content: 'installed', timestamp: 1 }])
+      pending.release()
+      await pending.retry
+
+      // The read installed its snapshot into memory -> the watermark moved.
+      const versionAfter = getTranscriptVersionEntryForTests(CONV_A)
+      expect(versionAfter).toBeDefined()
+      expect(versionAfter).not.toBe(versionBefore)
+
+      const conv = useConversationStore.getState().conversations.find((c) => c.id === CONV_A)
+      expect(conv?.messages.map((m) => m.id)).toEqual(['m-installed'])
     })
   })
 
