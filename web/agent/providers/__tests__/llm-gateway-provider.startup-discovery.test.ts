@@ -12,12 +12,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   fetchGatewayModels: vi.fn(),
+  refreshAccessTokenWithStatus: vi.fn(),
   generation: 0,
 }))
 
 vi.mock('@/agent/providers/llm-gateway-auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/agent/providers/llm-gateway-auth')>()
-  return { ...actual, fetchGatewayModels: mocks.fetchGatewayModels, getGatewayAuthSessionGeneration: () => mocks.generation }
+  return { ...actual, fetchGatewayModels: mocks.fetchGatewayModels, refreshAccessTokenWithStatus: mocks.refreshAccessTokenWithStatus, getGatewayAuthSessionGeneration: () => mocks.generation }
 })
 
 // AbortSignal.timeout is backed by a real (unfakeable) timer; substitute a
@@ -32,13 +33,14 @@ const timeoutSpy = vi
 void timeoutSpy
 
 import { updateGatewayModels } from '@/agent/providers/llm-gateway-provider'
-import { getModelsForProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+import { getModelsForProvider, getProviderCatalogStatus, unregisterDynamicProvider } from '@/agent/providers/types'
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
 
 describe('updateGatewayModels startup discovery deadline', () => {
   beforeEach(() => {
     mocks.fetchGatewayModels.mockReset()
+    mocks.refreshAccessTokenWithStatus.mockReset()
     mocks.generation = 0
     unregisterDynamicProvider('llm-gateway')
   })
@@ -98,6 +100,63 @@ describe('updateGatewayModels startup discovery deadline', () => {
     mocks.generation++
     finish({ models: [{ id: 'old-model', name: 'Old' }], status: 'ready' })
     await pending
+
+    expect(getModelsForProvider('llm-gateway')).toEqual([])
+  })
+
+  it('does not let an older success replace a newer catalog in the same session', async () => {
+    let finishOld!: (result: { models: Array<{ id: string; name: string }>; status: 'ready' }) => void
+    mocks.fetchGatewayModels
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve }))
+      .mockResolvedValueOnce({ models: [{ id: 'new-model', name: 'New' }], status: 'ready' })
+
+    const oldRefresh = updateGatewayModels('token')
+    await updateGatewayModels('token')
+    finishOld({ models: [{ id: 'old-model', name: 'Old' }], status: 'ready' })
+    await oldRefresh
+
+    expect(getModelsForProvider('llm-gateway').map((m) => m.id)).toEqual(['new-model'])
+  })
+
+  it('does not let an older timeout downgrade a newer successful catalog', async () => {
+    let failOld!: (error: Error) => void
+    mocks.fetchGatewayModels
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { failOld = reject }))
+      .mockResolvedValueOnce({ models: [{ id: 'new-model', name: 'New' }], status: 'ready' })
+
+    const oldRefresh = updateGatewayModels('token')
+    const oldFailure = expect(oldRefresh).rejects.toThrow('timeout')
+    await updateGatewayModels('token')
+    failOld(new Error('timeout'))
+    await oldFailure
+
+    expect(getModelsForProvider('llm-gateway').map((m) => m.id)).toEqual(['new-model'])
+    expect(getProviderCatalogStatus('llm-gateway')).toBe('ready')
+  })
+
+  it('refreshes an access token rejected by the model endpoint before retrying discovery', async () => {
+    mocks.fetchGatewayModels
+      .mockResolvedValueOnce({ models: [], status: 'failed', authRejected: true })
+      .mockResolvedValueOnce({ models: [{ id: 'recovered-model', name: 'Recovered' }], status: 'ready' })
+    mocks.refreshAccessTokenWithStatus.mockResolvedValue({ status: 'success', accessToken: 'new-token' })
+
+    await updateGatewayModels('old-token')
+
+    expect(mocks.refreshAccessTokenWithStatus).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchGatewayModels.mock.calls[1]?.[1]).toBe('new-token')
+    expect(getModelsForProvider('llm-gateway').map((m) => m.id)).toEqual(['recovered-model'])
+  })
+
+  it('clears cached models when the rejected token cannot be refreshed', async () => {
+    mocks.fetchGatewayModels.mockResolvedValue({ models: [], status: 'failed', authRejected: true })
+    mocks.refreshAccessTokenWithStatus.mockImplementation(async () => {
+      unregisterDynamicProvider('llm-gateway')
+      return { status: 'expired' }
+    })
+    mocks.fetchGatewayModels.mockResolvedValueOnce({ models: [{ id: 'old-model', name: 'Old' }], status: 'ready' })
+    await updateGatewayModels('old-token')
+
+    await updateGatewayModels('old-token')
 
     expect(getModelsForProvider('llm-gateway')).toEqual([])
   })

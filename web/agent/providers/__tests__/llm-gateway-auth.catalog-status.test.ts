@@ -56,6 +56,13 @@ describe('fetchGatewayModels: ready / empty / failed statuses', () => {
     expect(result.status).toBe('failed')
   })
 
+  it('marks HTTP 401 separately so callers can refresh rejected credentials', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 401 } as Response)
+    const result = await fetchGatewayModels('https://gw.example', 'tok')
+    expect(result.status).toBe('failed')
+    expect(result.authRejected).toBe(true)
+  })
+
   it('returns status "failed" for a 200 with an unparseable body (unknown, not empty)', async () => {
     fetchMock.mockResolvedValue(okResponse({ unexpected: true }))
     const result = await fetchGatewayModels('https://gw.example', 'tok')

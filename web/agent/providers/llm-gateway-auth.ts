@@ -1441,6 +1441,13 @@ export async function logoutGateway(): Promise<void> {
   }
 }
 
+/** Expire a token rejected by the gateway only if it still owns the session. */
+export async function invalidateGatewayAccessToken(accessToken: string): Promise<void> {
+  const stored = loadStoredTokens()
+  if (stored?.access_token !== accessToken) return
+  await clearStoredTokens(stored.refresh_token, 'expired')
+}
+
 /**
  * Fetch available models from the gateway.
  *
@@ -1461,7 +1468,7 @@ export async function fetchGatewayModels(
   baseURL: string,
   accessToken: string,
   signal?: AbortSignal,
-): Promise<{ models: Array<{ id: string; name: string }>; status: ProviderCatalogStatus }> {
+): Promise<{ models: Array<{ id: string; name: string }>; status: ProviderCatalogStatus; authRejected?: boolean }> {
   let res: Response
   try {
     res = await fetch(`${baseURL}/v1/models`, {
@@ -1478,7 +1485,7 @@ export async function fetchGatewayModels(
   }
   // A non-2xx response carries NO catalog information — it is a failed
   // refresh, not an authoritative empty list.
-  if (!res.ok) return { models: [], status: 'failed' }
+  if (!res.ok) return { models: [], status: 'failed', authRejected: res.status === 401 }
 
   // A body that cannot be read or parsed (truncated stream, malformed JSON)
   // is an unusable response, not an authoritative "no models": degrade to a

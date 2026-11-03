@@ -64,6 +64,7 @@ import {
   getGatewayCredentialStatus,
   getValidAccessToken,
   logoutGateway,
+  invalidateGatewayAccessToken,
   performDeviceCodeFlow,
   persistDeviceLoginTokens,
 } from '@/agent/providers/llm-gateway-auth'
@@ -702,6 +703,16 @@ describe('llm-gateway-auth token refresh hardening', () => {
       await vi.waitFor(() => {
         expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
       })
+    })
+
+    it('invalidates only the access token rejected by the gateway', async () => {
+      seedStoredTokens()
+      await invalidateGatewayAccessToken('different-token')
+      expect(localStorage.getItem(TOKENS_KEY)).not.toBeNull()
+
+      await invalidateGatewayAccessToken('stale-access-token')
+      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+      expect(getGatewayCredentialStatus()).toBe('expired')
     })
 
     it('clears the prior gateway catalog after logout so another account cannot inherit it', async () => {

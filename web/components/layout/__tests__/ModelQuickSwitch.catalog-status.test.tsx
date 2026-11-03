@@ -17,7 +17,8 @@ const { state, refreshModels, getToken } = vi.hoisted(() => ({
       authoritativeIds: ['glm-5.2'],
       catalogStatus: 'failed',
     }]),
-    getStalePinnedModels: vi.fn(() => [] as string[]),
+    getStalePinnedModels: vi.fn((_provider: string, _ids: string[], status?: string) =>
+      status === 'failed' ? [] : ['glm-5.2']),
     switchProviderAndModel: vi.fn(),
     triggerProviderRefresh: vi.fn(),
   },
@@ -70,6 +71,7 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
 
     expect(await screen.findByText('Model list unavailable')).toBeInTheDocument()
     expect(screen.queryByText('Delisted')).not.toBeInTheDocument()
+    expect(state.getStalePinnedModels).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'], 'failed')
     expect(state.switchProviderAndModel).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry model list' }))

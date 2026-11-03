@@ -52,7 +52,7 @@ import { useI18nStore } from '@/i18n/store'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHeader, BrandDialogBody, BrandDialogFooter, BrandDialogTitle, BrandDialogClose } from '@creatorweave/ui'
 import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
-import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, fetchGatewayModels, hasStoredTokens, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/llm-gateway-auth'
+import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, getGatewayAuthSessionGeneration, hasStoredTokens, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/llm-gateway-auth'
 import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
 import { applyGatewayLoginTokens, MODEL_DISCOVERY_TIMEOUT_MS } from '@/lib/gateway-login'
 import type { AuthState, CreditPackage } from '@/agent/providers/llm-gateway-auth'
@@ -1374,12 +1374,18 @@ export function LLMGatewayCard({
   useEffect(() => {
     if (!isLoggedIn || !isExpanded) return
     let cancelled = false
+    let refreshVersion: number | null = null
+    let authGenerationAtStart: number | null = null
     ;(async () => {
       try {
         const baseURL = getLLMGatewayBaseURL()
         const clientId = getLLMGatewayClientId()
         const token = await getValidAccessToken(baseURL, clientId)
         if (token && !cancelled) {
+          const gateway = await import('@/agent/providers/llm-gateway-provider')
+          if (cancelled) return
+          authGenerationAtStart = getGatewayAuthSessionGeneration()
+          refreshVersion = gateway.beginGatewayCatalogRefresh()
           // Hard deadline mirroring the login discovery path
           // (withDiscoveryDeadline / MODEL_DISCOVERY_TIMEOUT_MS in
           // lib/gateway-login.ts): a gateway that never answers /v1/models
@@ -1390,17 +1396,23 @@ export function LLMGatewayCard({
           // reconciliation and the stale-pin sweep defer instead of serving
           // the outdated model IDs as authoritative during the outage, and
           // commits the same unknown to the card-local status.
-          const { models, status } = await fetchGatewayModels(
-            baseURL,
+          const { models, status, authGeneration, reauthRequired } = await gateway.prepareGatewayModels(
             token,
             AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
+            true,
           )
+          if (reauthRequired) {
+            if (cancelled || !gateway.isGatewayCatalogRefreshCurrent(refreshVersion)) return
+            setAllModels([])
+            setCatalogStatus('failed')
+            return
+          }
           // A logout/relogin that superseded this effect run must not
           // register its stale catalog: re-check cancellation after EVERY
           // await — the token fetch above, the /models fetch here, and the
           // dynamic imports below. A superseded run that returns late would
           // otherwise overwrite the newer session's registration.
-          if (cancelled) return
+          if (cancelled || (authGeneration !== undefined && authGeneration !== getGatewayAuthSessionGeneration()) || !gateway.isGatewayCatalogRefreshCurrent(refreshVersion)) return
           // Register the fetched catalog with the gateway provider, not
           // just this card's local list: a login whose discovery failed
           // committed an EMPTY registration, and without this the provider
@@ -1412,24 +1424,15 @@ export function LLMGatewayCard({
           //
           // Register every result so a failed refresh downgrades the catalog
           // status while the registry retains its last successful model list.
-          const [{ registerGatewayModels }, { getModelContextWindow }] = await Promise.all([
-            import('@/agent/providers/llm-gateway-provider'),
-            import('@/agent/providers/model-store'),
-          ])
-          if (cancelled) return
-          registerGatewayModels(models.map((m) => ({
-            id: m.id,
-            name: m.name,
-            capabilities: ['code', 'writing', 'reasoning'] as const,
-            contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
-          })), status)
+          if (cancelled || (authGeneration !== undefined && authGeneration !== getGatewayAuthSessionGeneration()) || !gateway.isGatewayCatalogRefreshCurrent(refreshVersion)) return
+          gateway.registerGatewayModels(models, status, refreshVersion)
           // Same staleness gate before the card-local state writes: a run
           // whose session was superseded must not touch setAllModels or the
           // pin-seen marks of the newer session either.
-          if (cancelled) return
+          if (cancelled || (authGeneration !== undefined && authGeneration !== getGatewayAuthSessionGeneration()) || !gateway.isGatewayCatalogRefreshCurrent(refreshVersion)) return
           setAllModels(status === 'failed'
             ? getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => ({ id: m.id, name: m.name }))
-            : models)
+            : models.map((m) => ({ id: m.id, name: m.name })))
           setCatalogStatus(status)
           // Gateway /models response is authoritative — record confirmed pins
           // so pins absent from a later fetch get flagged as stale.
@@ -1448,13 +1451,13 @@ export function LLMGatewayCard({
         // next refresh succeeds, and mirror that unknown in the card-local
         // status so the settings UI defers in step. A superseded run
         // (logout/relogin cancelled this effect) must not touch either.
-        if (cancelled) return
+        if (cancelled || refreshVersion === null || authGenerationAtStart !== getGatewayAuthSessionGeneration()) return
         try {
-          const [{ registerGatewayModels }, { getProviderCatalogStatus }] = await Promise.all([
+          const [{ registerGatewayModels, isGatewayCatalogRefreshCurrent }, { getProviderCatalogStatus }] = await Promise.all([
             import('@/agent/providers/llm-gateway-provider'),
             import('@/agent/providers/types'),
           ])
-          if (cancelled) return
+          if (cancelled || authGenerationAtStart !== getGatewayAuthSessionGeneration() || !isGatewayCatalogRefreshCurrent(refreshVersion)) return
           // Downgrade ANY authoritative registration ('ready' AND 'empty' —
           // Sourcery round 9, 🟠 "Gateway outage keeps stale empty status"):
           // a prior successful EMPTY catalog that stays 'empty' through the
@@ -1472,10 +1475,12 @@ export function LLMGatewayCard({
                 contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
               })),
               'failed',
+              refreshVersion,
             )
           }
         } catch { /* registry not initialised — nothing to downgrade */ }
-        if (cancelled) return
+        const { isGatewayCatalogRefreshCurrent } = await import('@/agent/providers/llm-gateway-provider')
+        if (cancelled || authGenerationAtStart !== getGatewayAuthSessionGeneration() || !isGatewayCatalogRefreshCurrent(refreshVersion)) return
         setAllModels(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => ({ id: m.id, name: m.name })))
         setCatalogStatus('failed')
       }

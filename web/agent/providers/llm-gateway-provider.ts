@@ -22,7 +22,7 @@
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from '@/agent/providers/types'
 import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
-import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
+import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, invalidateGatewayAccessToken, refreshAccessTokenWithStatus, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -75,6 +75,17 @@ const GATEWAY_META: ProviderMeta = {
   models: [], // populated dynamically via updateGatewayModels()
 }
 
+// Shared ordering for startup, settings-card, switcher and login registrations.
+let catalogRefreshVersion = 0
+
+export function beginGatewayCatalogRefresh(): number {
+  return ++catalogRefreshVersion
+}
+
+export function isGatewayCatalogRefreshCurrent(version: number): boolean {
+  return version === catalogRefreshVersion
+}
+
 /**
  * Register LLM Gateway as a dynamic provider.
  * Called on app startup if NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID is set.
@@ -107,13 +118,28 @@ export function registerLLMGatewayProvider(): void {
 export async function prepareGatewayModels(
   accessToken: string,
   signal?: AbortSignal,
-): Promise<{ models: ModelInfo[]; status: ProviderCatalogStatus }> {
+  recoverRejectedToken = false,
+): Promise<{ models: ModelInfo[]; status: ProviderCatalogStatus; authGeneration?: number; reauthRequired?: boolean }> {
   const baseURL = getGatewayBaseURL()
-  const { models, status } = await fetchGatewayModels(baseURL, accessToken, signal)
+  let authGeneration = getGatewayAuthSessionGeneration()
+  let result = await fetchGatewayModels(baseURL, accessToken, signal)
+  if (recoverRejectedToken && result.authRejected && authGeneration === getGatewayAuthSessionGeneration()) {
+    const refreshed = await refreshAccessTokenWithStatus(baseURL, getGatewayClientId())
+    if (refreshed.status === 'success') {
+      authGeneration = getGatewayAuthSessionGeneration()
+      result = await fetchGatewayModels(baseURL, refreshed.accessToken, signal)
+      if (result.authRejected) {
+        await invalidateGatewayAccessToken(refreshed.accessToken)
+        return { models: [], status: 'failed', authGeneration, reauthRequired: true }
+      }
+    } else if (refreshed.status === 'expired' || refreshed.status === 'missing') {
+      return { models: [], status: 'failed', authGeneration, reauthRequired: true }
+    }
+  }
   signal?.throwIfAborted()
 
   return {
-    models: models.map((m) => ({
+    models: result.models.map((m) => ({
       id: m.id,
       name: m.name,
       capabilities: ['code', 'writing', 'reasoning'] as const,
@@ -121,7 +147,8 @@ export async function prepareGatewayModels(
       // gpt-4o (128K), etc. each show their real value instead of a flat 200K.
       contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
     })),
-    status,
+    status: result.status,
+    authGeneration,
   }
 }
 
@@ -129,7 +156,10 @@ export async function prepareGatewayModels(
 export function registerGatewayModels(
   modelInfos: ModelInfo[],
   status: ProviderCatalogStatus = modelInfos.length > 0 ? 'ready' : 'failed',
+  refreshVersion?: number,
 ): void {
+  if (refreshVersion !== undefined && !isGatewayCatalogRefreshCurrent(refreshVersion)) return
+  if (refreshVersion === undefined) catalogRefreshVersion++
   // A failed response says nothing about the catalog. Keep the last usable
   // list for display, while the failed status prevents delisting decisions.
   const models = status === 'failed'
@@ -169,17 +199,20 @@ export async function updateGatewayModels(accessToken: string): Promise<ModelInf
   // empty one — so consumers keep deferring until a later refresh succeeds
   // (Sourcery: "Startup discovery can hang").
   const sessionGeneration = getGatewayAuthSessionGeneration()
+  const refreshVersion = beginGatewayCatalogRefresh()
   try {
-    const { models, status } = await prepareGatewayModels(
+    const { models, status, authGeneration, reauthRequired } = await prepareGatewayModels(
       accessToken,
       AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
+      true,
     )
-    if (sessionGeneration === getGatewayAuthSessionGeneration()) {
-      registerGatewayModels(models, status)
+    if (reauthRequired) return getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
+    if ((authGeneration ?? sessionGeneration) === getGatewayAuthSessionGeneration() && isGatewayCatalogRefreshCurrent(refreshVersion)) {
+      registerGatewayModels(models, status, refreshVersion)
     }
   } catch (error) {
-    if (sessionGeneration === getGatewayAuthSessionGeneration()) {
-      registerGatewayModels([], 'failed')
+    if (sessionGeneration === getGatewayAuthSessionGeneration() && isGatewayCatalogRefreshCurrent(refreshVersion)) {
+      registerGatewayModels([], 'failed', refreshVersion)
     }
     throw error
   }
