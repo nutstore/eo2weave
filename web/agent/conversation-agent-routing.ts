@@ -1,7 +1,7 @@
 import { ProjectManager } from '@/opfs'
 import { useAgentsStore } from '@/store/agents.store'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
-import { extractFirstMentionedAgentId } from './agent-mention'
+import { extractFirstMentionedAgentId } from '@/agent/agent-mention'
 
 /** Resolve against the run's project catalog, never another open project's Agents. */
 export async function resolveConversationAgentId(
