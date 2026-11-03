@@ -320,6 +320,10 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     const state = useConversationStore.getState()
     const conversationA = state.conversations.find((c) => c.id === CONV_A)!
     expect(findAllMetaMock).toHaveBeenCalledTimes(1)
+    // The retry must actually re-read the FAILED conversation's transcript,
+    // not just clear the error (PR #152 review, "Transcript retry is never
+    // verified").
+    expect(findByConversationMock).toHaveBeenCalledWith(CONV_B)
     expect(conversationA.messages.map((message) => message.id)).toEqual(['saved-a'])
     expect(conversationA.status).toBe('streaming')
     expect(conversationA.streamingContent).toBe('in progress')
