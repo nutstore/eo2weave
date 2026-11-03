@@ -605,6 +605,33 @@ function markPersistedFailureResolved(
   }
 }
 
+async function ensureActiveWorkspace(
+  conversations: Array<Pick<Conversation, 'id' | 'title'>>,
+  activeId: string | null
+): Promise<boolean> {
+  const target = conversations.find((conversation) => conversation.id === activeId)
+  if (!target) return false
+
+  const { getWorkspaceManager } = await import('@/opfs')
+  const manager = await withTimeout(
+    getWorkspaceManager(),
+    INITIAL_LOAD_TIMEOUT_MS,
+    'workspace manager initialization'
+  )
+  if (manager.isWorkspaceLoaded(target.id)) return false
+
+  await withTimeout(
+    manager.createWorkspace(
+      `workspaces/${target.id}`,
+      target.id,
+      target.title || DEFAULT_CONVERSATION_NAME,
+    ),
+    INITIAL_LOAD_TIMEOUT_MS,
+    'active workspace ensure'
+  )
+  return true
+}
+
 /**
  * The full load implementation, shared by `loadFromDB` (guarded by the
  * in-flight dedupe) and `retryLoadFromDB` (forced, guard bypassed).
@@ -756,31 +783,8 @@ async function runLoadFromDB(
         let workspaceEnsureError: unknown = null
         try {
           const activeWsId = useConversationContextStore.getState().activeWorkspaceId
-          const target = conversations.find((c) => c.id === activeWsId)
-          if (target) {
-            const { getWorkspaceManager } = await import('@/opfs')
-            const manager = await withTimeout(
-              getWorkspaceManager(),
-              INITIAL_LOAD_TIMEOUT_MS,
-              'workspace manager initialization'
-            )
-            if (!manager.isWorkspaceLoaded(target.id)) {
-              await withTimeout(
-                manager.createWorkspace(
-                  `workspaces/${target.id}`,
-                  target.id,
-                  target.title || DEFAULT_CONVERSATION_NAME,
-                ),
-                INITIAL_LOAD_TIMEOUT_MS,
-                'active workspace ensure'
-              )
-              ensuredCount++
-            } else {
-              ensuredSkipped = conversations.length
-            }
-          } else {
-            ensuredSkipped = conversations.length
-          }
+          if (await ensureActiveWorkspace(conversations, activeWsId)) ensuredCount++
+          else ensuredSkipped = conversations.length
         } catch (e) {
           workspaceEnsureError = e
           console.warn('[conversation.store] Active workspace ensure failed:', e)
@@ -1022,16 +1026,30 @@ async function runLoadFromDB(
             state.cancelledRunIds.clear()
           })
           console.log(
-            '[conversation.store] loadFromDB retry succeeded',
+            '[conversation.store] loadFromDB fallback metadata read succeeded',
             { conversationCount: retryConversations.length },
           )
-          // Fallback-retry success also recovers the load — mark the persisted
-          // failure resolved here too, or Diagnostics would keep reporting the
-          // recovered failure as unresolved (issue #147, PR #149 review).
-          // The retry only re-reads the METADATA though: the active
-          // transcript has to load before the failure is really recovered
-          // (issue #147, PR #149 review).
+          // The fallback is recovered only after metadata, the active OPFS
+          // workspace, and its transcript have all loaded successfully.
           const retryActiveId = get().activeConversationId
+          let retryWorkspaceLoaded = true
+          try {
+            await ensureActiveWorkspace(retryConversations, retryActiveId)
+            if (!isCurrentRun()) return
+          } catch (workspaceErr) {
+            if (!isCurrentRun()) return
+            retryWorkspaceLoaded = false
+            const workspaceLoadMessage = workspaceErr instanceof Error
+              ? `Failed to open active workspace: ${workspaceErr.message}`
+              : 'Failed to open active workspace'
+            console.warn('[conversation.store] Fallback active workspace ensure failed:', workspaceErr)
+            set((state) => {
+              state.loadError = workspaceLoadMessage
+              state.loadErrorScope = 'workspace'
+              state.loadFailedConversationId = null
+            })
+            persistLoadErrorRecord(workspaceLoadMessage, workspaceErr)
+          }
           let retryTranscriptLoaded = true
           if (retryActiveId) {
             try {
@@ -1078,7 +1096,7 @@ async function runLoadFromDB(
               persistLoadErrorRecord(retryTranscriptMessage, transcriptErr, retryActiveId)
             }
           }
-          if (retryTranscriptLoaded) {
+          if (retryTranscriptLoaded && retryWorkspaceLoaded) {
             // Same verification as the primary path: only the transcript of
             // the conversation actually re-read by this retry counts as
             // proof (PR #149 round-4 review).

@@ -241,6 +241,28 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     }
   })
 
+  it('does not resolve a fallback load while the active workspace remains unavailable', async () => {
+    vi.mocked(initSQLiteDB).mockRejectedValueOnce(new Error('SQLite startup failed'))
+    createWorkspaceMock.mockRejectedValueOnce(new Error('OPFS workspace unavailable'))
+    findByConversationMock.mockResolvedValue([])
+
+    await useConversationStore.getState().loadFromDB()
+
+    const failed = useConversationStore.getState()
+    expect(failed.loaded).toBe(true)
+    expect(failed.conversations.map((c) => c.id)).toEqual([CONV_A, CONV_B])
+    expect(createWorkspaceMock).toHaveBeenCalledWith('workspaces/conv-a', CONV_A, 'first')
+    expect(failed.loadError).toContain('OPFS workspace unavailable')
+    expect(failed.loadErrorScope).toBe('workspace')
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
+
+    await useConversationStore.getState().retryLoadFromDB()
+
+    expect(createWorkspaceMock).toHaveBeenCalledTimes(2)
+    expect(useConversationStore.getState().loadError).toBeNull()
+    expect(readPersistedRecord()?.resolved).toBe(true)
+  })
+
   it('scopes a metadata failure as "metadata" so the UI can hide the list', async () => {
     findAllMetaMock.mockRejectedValue(new Error('opfs init failed'))
 
