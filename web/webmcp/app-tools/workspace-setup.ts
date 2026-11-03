@@ -84,7 +84,15 @@ export async function ensureConversationWorkspaceWithMeta(
     const sweep = async (id: string | undefined): Promise<void> => {
       if (!id) return
       try {
-        await deps.deleteWorkspace(id)
+        // Best-effort AND bounded: a stalled workspace-manager/OPFS delete
+        // must not hang the cleanup past the timeout this function exists to
+        // guarantee — abandon it and let the caller reach its rollback.
+        await Promise.race([
+          deps.deleteWorkspace(id),
+          new Promise<void>((resolve) => {
+            setTimeout(resolve, timeoutMs)
+          }),
+        ])
       } catch {
         // Best-effort — orphan OPFS dirs are GC-able later, same as the
         // store's own deleteConversation rollback path.

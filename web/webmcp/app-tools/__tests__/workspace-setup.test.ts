@@ -135,6 +135,31 @@ describe('ensureConversationWorkspaceWithMeta', () => {
     expect(deleteWorkspace).toHaveBeenCalledWith('conv-partial')
   })
 
+  it('does not hang past the timeout when a cleanup sweep delete stalls', async () => {
+    const settledWorkspace = { id: 'conv-stalled-sweep' }
+    // Setup completed but reported its workspace AFTER the timeout fired, so
+    // cleanup sweeps it — and THAT delete stalls forever. The sweep is
+    // best-effort and bounded: it must be abandoned so the timeout error still
+    // propagates and the caller reaches its conversation rollback.
+    let resolveSetup!: (workspace: { id: string }) => void
+    const attempt = ensureConversationWorkspaceWithMeta({
+      ensureWorkspace: () =>
+        new Promise<{ id: string }>((resolve) => {
+          resolveSetup = resolve
+        }),
+      deleteWorkspace: () => new Promise<void>(() => {}), // never settles
+      waitForConversationMetaPersist: () => new Promise<void>(() => {}), // never settles
+      timeoutMs: 20,
+    })
+
+    const rejection = expect(attempt).rejects.toThrow('Timed out after 20ms waiting')
+    // Fire the timeout, then let setup settle so the sweep path runs.
+    await new Promise<void>((resolve) => setTimeout(resolve, 40))
+    resolveSetup(settledWorkspace)
+    // If the sweep were unbounded, this await would hang forever.
+    await rejection
+  })
+
   it('keeps the default deadline at 15 seconds', () => {
     expect(META_PERSIST_WAIT_TIMEOUT_MS).toBe(15_000)
   })
