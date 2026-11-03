@@ -1384,11 +1384,12 @@ export function LLMGatewayCard({
           // (withDiscoveryDeadline / MODEL_DISCOVERY_TIMEOUT_MS in
           // lib/gateway-login.ts): a gateway that never answers /v1/models
           // must not leave this refresh hanging. On expiry the fetch's
-          // AbortError propagates into the catch below — the SAME handling
-          // as a login whose discovery failed: no registration, no UI
-          // commit, and the catalog stays untouched (never an authoritative
-          // empty list) until the next refresh
-          // (Sourcery: "Gateway discovery can hang").
+          // AbortError propagates into the catch below — which (Sourcery:
+          // "Timeout leaves stale catalog authoritative") DOWNGRADES the
+          // previously registered catalog to 'failed' (unknown) so
+          // reconciliation and the stale-pin sweep defer instead of serving
+          // the outdated model IDs as authoritative during the outage, and
+          // commits the same unknown to the card-local status.
           const { models, status } = await fetchGatewayModels(
             baseURL,
             token,
@@ -1439,7 +1440,35 @@ export function LLMGatewayCard({
           }
         }
       } catch {
-        // ignore
+        // The refresh timed out or failed outright. A previously SUCCESSFUL
+        // catalog that is still registered while the gateway is unreachable
+        // would stay 'ready' — reconciliation and the stale-pin sweep would
+        // keep treating its outdated model IDs as authoritative for the
+        // whole outage (Sourcery: "Timeout leaves stale catalog
+        // authoritative"). Degrade the registry to 'failed' (unknown —
+        // never an authoritative empty list) so consumers defer until the
+        // next refresh succeeds, and mirror that unknown in the card-local
+        // status so the settings UI defers in step. A superseded run
+        // (logout/relogin cancelled this effect) must not touch either.
+        if (cancelled) return
+        try {
+          const [{ registerGatewayModels }, { getProviderCatalogStatus }] = await Promise.all([
+            import('@/agent/providers/llm-gateway-provider'),
+            import('@/agent/providers/types'),
+          ])
+          if (getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE) === 'ready') {
+            registerGatewayModels(
+              getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => ({
+                id: m.id,
+                name: m.name,
+                capabilities: ['code', 'writing', 'reasoning'] as const,
+                contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
+              })),
+              'failed',
+            )
+          }
+        } catch { /* registry not initialised — nothing to downgrade */ }
+        setCatalogStatus('failed')
       }
     })()
     return () => { cancelled = true }
