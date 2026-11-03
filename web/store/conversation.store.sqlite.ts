@@ -166,7 +166,7 @@ import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 
 //=============================================================================
-import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers, beginConversationLoadGeneration, isCurrentConversationLoadGeneration } from './conversation-persist'
+import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers, beginConversationLoadGeneration, isCurrentConversationLoadGeneration } from '@/store/conversation-persist'
 import { CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 import {
   runAgentImpl,
@@ -182,9 +182,8 @@ interface ConversationState {
   conversations: Conversation[]
   activeConversationId: string | null
   loaded: boolean
-  /** Last loadFromDB error, if any. When set, `loaded` stays false so the
-   * WorkspaceLayout effect (`if (!loaded) loadFromDB()`) can retry. UI can
-   * also surface this instead of silently rendering an empty sidebar. */
+  /** Last loadFromDB error, if any. Metadata failures keep `loaded` false;
+   * workspace and transcript failures keep the loaded conversation list. */
   loadError: string | null
   /** Scope of `loadError`:
    *  - 'metadata' — the conversation LIST itself failed to load. No rows are
@@ -192,8 +191,10 @@ interface ConversationState {
    *  - 'transcript' — the list loaded fine, only the ACTIVE conversation's
    *    transcript read failed. The rows are usable: the user must still be
    *    able to pick a different conversation (issue #147, PR #149 review).
+   *  - 'workspace' — the list loaded, but the active OPFS workspace could
+   *    not be opened. Keep the rows visible and offer Retry.
    *  - null — no error (or an error of unknown scope). */
-  loadErrorScope: 'metadata' | 'transcript' | null
+  loadErrorScope: 'metadata' | 'transcript' | 'workspace' | null
   /** The conversation whose transcript read produced the current
    * `loadError` (when `loadErrorScope === 'transcript'`). The persisted
    * failure record may only be marked resolved after the transcript of THIS
@@ -752,30 +753,36 @@ async function runLoadFromDB(
         const tManager = performance.now()
         let ensuredCount = 0
         let ensuredSkipped = 0
+        let workspaceEnsureError: unknown = null
         try {
-          const { getWorkspaceManager } = await import('@/opfs')
-          const manager = await withTimeout(
-            getWorkspaceManager(),
-            INITIAL_LOAD_TIMEOUT_MS,
-            'workspace manager initialization'
-          )
           const activeWsId = useConversationContextStore.getState().activeWorkspaceId
           const target = conversations.find((c) => c.id === activeWsId)
-          if (target && !manager.isWorkspaceLoaded(target.id)) {
-            await withTimeout(
-              manager.createWorkspace(
-                `workspaces/${target.id}`,
-                target.id,
-                target.title || DEFAULT_CONVERSATION_NAME,
-              ),
+          if (target) {
+            const { getWorkspaceManager } = await import('@/opfs')
+            const manager = await withTimeout(
+              getWorkspaceManager(),
               INITIAL_LOAD_TIMEOUT_MS,
-              'active workspace ensure'
+              'workspace manager initialization'
             )
-            ensuredCount++
+            if (!manager.isWorkspaceLoaded(target.id)) {
+              await withTimeout(
+                manager.createWorkspace(
+                  `workspaces/${target.id}`,
+                  target.id,
+                  target.title || DEFAULT_CONVERSATION_NAME,
+                ),
+                INITIAL_LOAD_TIMEOUT_MS,
+                'active workspace ensure'
+              )
+              ensuredCount++
+            } else {
+              ensuredSkipped = conversations.length
+            }
           } else {
             ensuredSkipped = conversations.length
           }
         } catch (e) {
+          workspaceEnsureError = e
           console.warn('[conversation.store] Active workspace ensure failed:', e)
         }
         const tEnsure = performance.now()
@@ -841,6 +848,18 @@ async function runLoadFromDB(
           state.suggestedFollowUps.clear()
           state.cancelledRunIds.clear()
         })
+
+        if (workspaceEnsureError !== null) {
+          const workspaceLoadMessage = workspaceEnsureError instanceof Error
+            ? `Failed to open active workspace: ${workspaceEnsureError.message}`
+            : 'Failed to open active workspace'
+          set((state) => {
+            state.loadError = workspaceLoadMessage
+            state.loadErrorScope = 'workspace'
+            state.loadFailedConversationId = null
+          })
+          persistLoadErrorRecord(workspaceLoadMessage, workspaceEnsureError)
+        }
 
         // NOTE: the persisted load-failure record is marked resolved only
         // AFTER the active-transcript load below succeeds — a failure there
@@ -909,7 +928,7 @@ async function runLoadFromDB(
           }
         }
 
-        // Success (metadata AND active transcript) MARKS the previous
+        // Success (metadata, workspace, and active transcript) MARKS the previous
         // load-failure record resolved instead of deleting it (mirrors
         // project.store, issue #147) — a user who reloaded into a working
         // app must still be able to attach the ORIGINAL failure to a bug
@@ -917,7 +936,7 @@ async function runLoadFromDB(
         // transcript load succeeded: a failed transcript load is still an
         // unresolved failure (issue #147, PR #149 review) and must not be
         // reported as recovered.
-        if (activeTranscriptLoaded) {
+        if (activeTranscriptLoaded && workspaceEnsureError === null) {
           // Pass the id whose transcript actually re-read this run: a record
           // naming a DIFFERENT conversation stays unresolved — this load
           // proves nothing about that one (PR #149 round-4 review, "Unverified

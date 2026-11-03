@@ -9,6 +9,7 @@ export const sidebar = {
     activeTab: "活跃",
     archivedTab: "已归档",
     historyLoadFailed: "加载对话历史失败",
+    workspaceLoadFailed: "无法打开当前工作区",
     historyLoadUnknownError: "加载对话历史时发生未知错误",
     historyRetrying: "重试中…",
     newWorkspace: "新对话",

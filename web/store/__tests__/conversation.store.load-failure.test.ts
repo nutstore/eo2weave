@@ -17,12 +17,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { findAllMetaMock, findByConversationMock, migrateFromJsonBlobMock, restartInitializationMock } = vi.hoisted(() => ({
+const { findAllMetaMock, findByConversationMock, migrateFromJsonBlobMock, restartInitializationMock, getWorkspaceManagerMock, createWorkspaceMock } = vi.hoisted(() => ({
   findAllMetaMock: vi.fn(),
   findByConversationMock: vi.fn(),
   migrateFromJsonBlobMock: vi.fn(),
   restartInitializationMock: vi.fn(),
+  getWorkspaceManagerMock: vi.fn(),
+  createWorkspaceMock: vi.fn(),
 }))
+
+vi.mock('@/opfs', () => ({ getWorkspaceManager: getWorkspaceManagerMock }))
 
 vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn(), loading: vi.fn(), info: vi.fn() },
@@ -164,6 +168,13 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     findByConversationMock.mockReset()
     migrateFromJsonBlobMock.mockReset()
     migrateFromJsonBlobMock.mockResolvedValue({ conversations: 0, messages: 0 })
+    getWorkspaceManagerMock.mockReset()
+    createWorkspaceMock.mockReset()
+    createWorkspaceMock.mockResolvedValue(undefined)
+    getWorkspaceManagerMock.mockResolvedValue({
+      isWorkspaceLoaded: () => false,
+      createWorkspace: createWorkspaceMock,
+    })
     sessionStorage.clear()
     resetStore()
     findAllMetaMock.mockResolvedValue([meta(CONV_A, 'first'), meta(CONV_B, 'second')])
@@ -182,6 +193,52 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     expect(state.loadError).toContain('sqlite read failed')
     // Scope tells the UI the ROWS are still usable.
     expect(state.loadErrorScope).toBe('transcript')
+  })
+
+  it('keeps metadata available and reports a failed active workspace ensure until retry succeeds', async () => {
+    createWorkspaceMock.mockRejectedValueOnce(new Error('OPFS workspace unavailable'))
+    findByConversationMock.mockResolvedValue([])
+
+    await useConversationStore.getState().loadFromDB()
+
+    const failed = useConversationStore.getState()
+    expect(failed.loaded).toBe(true)
+    expect(failed.conversations.map((c) => c.id)).toEqual([CONV_A, CONV_B])
+    expect(failed.loadError).toContain('OPFS workspace unavailable')
+    expect(failed.loadErrorScope).toBe('workspace')
+    expect(readPersistedRecord()?.message).toContain('OPFS workspace unavailable')
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
+
+    await useConversationStore.getState().retryLoadFromDB()
+
+    expect(createWorkspaceMock).toHaveBeenCalledTimes(2)
+    expect(useConversationStore.getState().loadError).toBeNull()
+    expect(readPersistedRecord()?.resolved).toBe(true)
+  })
+
+  it('turns a hung workspace manager initialization into a retryable workspace error', async () => {
+    getWorkspaceManagerMock.mockReturnValueOnce(new Promise(() => {}))
+    findByConversationMock.mockResolvedValue([])
+
+    vi.useFakeTimers()
+    try {
+      const load = useConversationStore.getState().retryLoadFromDB()
+      await vi.advanceTimersByTimeAsync(15_100)
+      await load
+
+      const failed = useConversationStore.getState()
+      expect(failed.loaded).toBe(true)
+      expect(failed.conversations.map((c) => c.id)).toEqual([CONV_A, CONV_B])
+      expect(failed.loadError).toContain('workspace manager initialization timed out')
+      expect(failed.loadErrorScope).toBe('workspace')
+      expect(readPersistedRecord()?.resolved).toBeFalsy()
+
+      await useConversationStore.getState().retryLoadFromDB()
+      expect(useConversationStore.getState().loadError).toBeNull()
+      expect(readPersistedRecord()?.resolved).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('scopes a metadata failure as "metadata" so the UI can hide the list', async () => {

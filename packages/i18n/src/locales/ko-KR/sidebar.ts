@@ -9,6 +9,7 @@ export const sidebar = {
     clearWorkspace: "현재 프로젝트 채팅 지우기",
     clear: "지우기",
     historyLoadFailed: "대화 기록을 불러오지 못했습니다",
+    workspaceLoadFailed: "현재 작업 공간을 열지 못했습니다",
     historyLoadUnknownError: "대화 기록을 불러오는 중 알 수 없는 오류가 발생했습니다",
     historyRetrying: "재시도 중…",
     newWorkspace: "새 채팅",

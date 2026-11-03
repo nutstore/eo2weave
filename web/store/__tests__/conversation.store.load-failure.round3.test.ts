@@ -21,10 +21,13 @@
 /* eslint-disable */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { findAllMetaMock, findByConversationMock } = vi.hoisted(() => ({
+const { findAllMetaMock, findByConversationMock, getWorkspaceManagerMock } = vi.hoisted(() => ({
   findAllMetaMock: vi.fn(),
   findByConversationMock: vi.fn(),
+  getWorkspaceManagerMock: vi.fn(),
 }))
+
+vi.mock('@/opfs', () => ({ getWorkspaceManager: getWorkspaceManagerMock }))
 
 vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn(), loading: vi.fn(), info: vi.fn() },
@@ -165,6 +168,11 @@ describe('conversation.store — round-3 Sourcery fixes (issue #147, PR #149)', 
     // leak into the next test.
     findAllMetaMock.mockReset()
     findByConversationMock.mockReset()
+    getWorkspaceManagerMock.mockReset()
+    getWorkspaceManagerMock.mockResolvedValue({
+      isWorkspaceLoaded: () => true,
+      createWorkspace: vi.fn(),
+    })
     sessionStorage.clear()
     resetStore()
     mockContext.activeWorkspaceId = CONV_A

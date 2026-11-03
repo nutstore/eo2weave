@@ -780,11 +780,15 @@ export const Sidebar = memo(function Sidebar({
   //    conversation's transcript read failed. The rows are usable: hiding
   //    them would strand the user on the failing conversation with no way
   //    to pick another one.
+  //  - 'workspace' — the list loaded, but the active workspace could not
+  //    be opened. Keep the rows available while Retry remains visible.
   // An unknown scope (null / undefined) is treated like 'metadata' — the
   // conservative choice that never shows an empty list as if it were fine.
   const conversationLoadErrorScope = useConversationStore((s) => s.loadErrorScope)
   const suppressConversationList =
-    conversationLoadError !== null && conversationLoadErrorScope !== 'transcript'
+    conversationLoadError !== null &&
+    conversationLoadErrorScope !== 'transcript' &&
+    conversationLoadErrorScope !== 'workspace'
   // Explicit retry: bypass the in-flight guard so a load wedged past the
   // timeout below starts a FRESH run instead of re-awaiting the stuck
   // promise, which would leave Retry a no-op (PR #149 round-4 review,
@@ -1392,7 +1396,9 @@ export const Sidebar = memo(function Sidebar({
                 className="mx-1 my-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm"
               >
                 <p className="mb-1 font-medium text-foreground">
-                  {t('sidebar.historyLoadFailed')}
+                  {conversationLoadErrorScope === 'workspace'
+                    ? t('sidebar.workspaceLoadFailed')
+                    : t('sidebar.historyLoadFailed')}
                 </p>
                 <p className="mb-2 break-words text-xs text-muted-foreground">
                   {/* An Error with an empty message must not render a blank

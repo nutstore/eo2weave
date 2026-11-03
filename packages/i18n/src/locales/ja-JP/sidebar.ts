@@ -9,6 +9,7 @@ export const sidebar = {
     clearWorkspace: "現在のプロジェクトチャットをクリア",
     clear: "クリア",
     historyLoadFailed: "会話履歴の読み込みに失敗しました",
+    workspaceLoadFailed: "現在のワークスペースを開けませんでした",
     historyLoadUnknownError: "会話履歴の読み込み中に不明なエラーが発生しました",
     historyRetrying: "再試行中…",
     newWorkspace: "新しいチャット",

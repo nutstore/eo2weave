@@ -12,7 +12,7 @@ import { Sidebar } from '@/components/layout/Sidebar'
 let mockConversationState: {
   conversations: Array<{ id: string; title: string }>
   loadError: string | null
-  loadErrorScope: 'metadata' | 'transcript' | null
+  loadErrorScope: 'metadata' | 'transcript' | 'workspace' | null
   loadFromDB: ReturnType<typeof vi.fn>
   retryLoadFromDB: ReturnType<typeof vi.fn>
 }
@@ -209,6 +209,22 @@ describe('Sidebar — conversation loadError banner (issue #147)', () => {
     // …but the loaded rows stay usable so the user can pick another chat.
     expect(screen.getByRole('listitem', { name: 'Chat: Failing chat' })).toBeTruthy()
     expect(screen.getByRole('listitem', { name: 'Chat: Other chat' })).toBeTruthy()
+  })
+
+  it('shows a workspace error with Retry while keeping conversation rows visible', () => {
+    mockConversationState.loadError = 'OPFS workspace unavailable'
+    mockConversationState.loadErrorScope = 'workspace'
+    mockConversationState.conversations = [{ id: 'c1', title: 'My chat' }]
+    mockContextState.activeWorkspaceId = 'c1'
+    seedWorkspaces(['c1'])
+
+    render(<Sidebar onFileSelect={() => {}} onInspect={() => {}} selectedFilePath={null} onSelectWorkspace={() => {}} />)
+
+    expect(screen.getByText('Failed to open active workspace')).toBeTruthy()
+    expect(screen.getByText('OPFS workspace unavailable')).toBeTruthy()
+    expect(screen.getByRole('listitem', { name: 'Chat: My chat' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(mockConversationState.retryLoadFromDB).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the alert visible until a pending retry settles', async () => {
