@@ -16,6 +16,7 @@
  */
 const REMOTE_CANCELLABLE_STREAM_TYPES = new Set([
   'codex_proxy_fetch_stream',
+  'codex_image_generate',
   'webmcp_plugin_download_stream',
 ])
 

@@ -19,8 +19,8 @@ export interface ImageGenConfig {
 
 export function hasCodexImageBridge(): boolean {
   if (typeof window === 'undefined') return false
-  const bridge = (window as unknown as { __agentWeb?: { ready?: boolean; codexGenerateImage?: unknown } }).__agentWeb
-  return !!bridge?.ready && typeof bridge.codexGenerateImage === 'function'
+  const bridge = (window as unknown as { __agentWeb?: { ready?: boolean; codexImageGenerationEnabled?: boolean; codexGenerateImage?: unknown } }).__agentWeb
+  return !!bridge?.ready && bridge.codexImageGenerationEnabled === true && typeof bridge.codexGenerateImage === 'function'
 }
 
 /**
@@ -89,7 +89,7 @@ async function generateCodexImage(prompt: string, aspectRatio?: string, signal?:
   try {
     const bridge = (window as unknown as { __agentWeb?: {
       ready?: boolean
-      codexGenerateImage?: (body: Record<string, unknown>) => Promise<{
+      codexGenerateImage?: (body: Record<string, unknown>, signal?: AbortSignal) => Promise<{
         ok: boolean; status?: number; text?: string; message?: string; error?: string
       }>
     } }).__agentWeb
@@ -98,7 +98,7 @@ async function generateCodexImage(prompt: string, aspectRatio?: string, signal?:
     const response = await bridge.codexGenerateImage({
       prompt: aspectRatio ? `${prompt}\n\nAspect ratio: ${aspectRatio}.` : prompt,
       model: 'gpt-image-2', background: 'auto', quality: 'auto', size: 'auto',
-    })
+    }, signal)
     if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
     if (!response.ok) throw new Error(response.text || response.message || response.error || `Codex image request failed (${response.status ?? 'unknown'}).`)
     const payload = JSON.parse(response.text || '{}') as { data?: Array<{ b64_json?: string }> }

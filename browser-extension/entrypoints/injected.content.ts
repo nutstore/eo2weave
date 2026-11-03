@@ -197,9 +197,10 @@ export default defineContentScript({
       // 30-minute hard limit. Other bridge streams retain the existing
       // two-minute safety window, but it is now correctly treated as idle.
       const isCodexStream = type === 'codex_proxy_fetch_stream';
+      const isCodexImage = type === 'codex_image_generate';
       // Give the background a small grace period to deliver its authoritative
       // 10-minute idle error instead of racing it in the page context.
-      const idleTimeoutMs = isCodexStream ? 10 * 60 * 1000 + 5_000 : 2 * 60 * 1000;
+      const idleTimeoutMs = isCodexImage ? 5 * 60 * 1000 : isCodexStream ? 10 * 60 * 1000 + 5_000 : 2 * 60 * 1000;
       const totalTimeoutMs = isCodexStream ? 31 * 60 * 1000 : null;
       let idleTimeout: ReturnType<typeof setTimeout> | null = null;
       let totalTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -312,10 +313,10 @@ export default defineContentScript({
           return {
             async next(): Promise<IteratorResult<unknown>> {
               if (streamError) throw streamError;
-              if (cancelled || streamFinished) return { value: undefined, done: true };
               if (chunkQueue.length > 0) {
                 return { value: chunkQueue.shift()!, done: false };
               }
+              if (cancelled || streamFinished) return { value: undefined, done: true };
               // Wait for next chunk
               return new Promise<IteratorResult<unknown>>((resolve, reject) => {
                 resolveChunk = resolve;
@@ -490,6 +491,7 @@ export default defineContentScript({
 
     (window as any).__agentWeb = {
       ready: true,
+      codexImageGenerationEnabled: __CW_CODEX_OAUTH__,
 
       /**
        * Get the installed extension version and distribution metadata.
@@ -708,9 +710,19 @@ export default defineContentScript({
         return sendToBridge('codex_proxy_fetch', { body });
       },
 
-      async codexGenerateImage(body: Record<string, any>) {
+      async codexGenerateImage(body: Record<string, any>, signal?: AbortSignal) {
         if (!__CW_CODEX_OAUTH__) return { ok: false, errorCode: 'FEATURE_DISABLED' };
-        return sendToBridge('codex_image_generate', { body }, 5 * 60 * 1000);
+        if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+        const stream = sendToBridgeStream('codex_image_generate', { body });
+        const abort = () => stream.cancel();
+        signal?.addEventListener('abort', abort, { once: true });
+        try {
+          for await (const response of stream) return response;
+          if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+          return { ok: false, error: 'Image generation ended without a response' };
+        } finally {
+          signal?.removeEventListener('abort', abort);
+        }
       },
 
       /**

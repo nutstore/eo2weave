@@ -87,6 +87,7 @@ export default defineContentScript({
     // Streaming request types travel through a dedicated runtime port.
     const STREAMING_MESSAGE_TYPES = new Set([
       'codex_proxy_fetch_stream',
+      'codex_image_generate',
       'webmcp_plugin_download_stream',
       'mcp_proxy_fetch_stream',
     ])

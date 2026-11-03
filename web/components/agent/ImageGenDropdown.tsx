@@ -5,7 +5,8 @@
  *   - Top section: searchable model list (grouped by provider)
  *   - Bottom section: aspect ratio grid
  *
- * Models are filtered against the provider's actual cached model list.
+ * Models are filtered against the provider's cached list, except for Codex
+ * OAuth, which exposes its image model when the extension bridge supports it.
  * Hides entirely when the provider has no image models.
  */
 

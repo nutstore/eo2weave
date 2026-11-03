@@ -3024,7 +3024,7 @@ export default defineBackground(() => {
           return;
         }
 
-        if (CODEX_OAUTH_ENABLED && (message.type === 'codex_proxy_fetch' || message.type === 'codex_image_generate')) {
+        if (CODEX_OAUTH_ENABLED && message.type === 'codex_proxy_fetch') {
           // SECURITY: this handler sends the user's Codex OAuth Bearer token.
           // It must never be reachable from arbitrary web pages, and the
           // destination must be pinned to the Codex backend — a caller cannot
@@ -3046,9 +3046,7 @@ export default defineBackground(() => {
           }
           // Ignore caller-supplied URL overrides — token-bearing requests go
           // to the Codex backend endpoint only.
-          const requestUrl = message.type === 'codex_image_generate'
-            ? 'https://chatgpt.com/backend-api/codex/images/generations'
-            : CODEX!.CODEX_RESPONSES_URL;
+          const requestUrl = CODEX!.CODEX_RESPONSES_URL;
           let tokens = await CODEX!.getCodexTokens();
           if (!tokens?.access_token) {
             sendResponse({ ok: false, errorCode: 'NOT_AUTHORIZED', status: 0, message: 'Not authorized. Please complete device code login first.' });
@@ -3277,6 +3275,47 @@ export default defineBackground(() => {
     if (port.name !== 'agent_bridge_stream') return;
 
     port.onMessage.addListener((message) => {
+      if (CODEX_OAUTH_ENABLED && message.type === 'codex_image_generate') {
+        if (!isTrustedWebMCPSender(port.sender)) {
+          port.postMessage({ type: 'error', errorCode: 'UNAUTHORIZED_SENDER', message: 'Untrusted Codex image request sender' });
+          port.disconnect();
+          return;
+        }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(new Error('Image generation timed out')), 5 * 60 * 1000);
+        port.onDisconnect.addListener(() => controller.abort());
+        port.onMessage.addListener((control: { type?: string }) => {
+          if (control?.type === 'cancel') controller.abort();
+        });
+        void (async () => {
+          try {
+            let tokens = await CODEX!.getCodexTokens();
+            if (controller.signal.aborted) return;
+            if (!tokens?.access_token) throw new Error('Not authorized. Please sign in to Codex.');
+            const request = () => fetch('https://chatgpt.com/backend-api/codex/images/generations', {
+              method: 'POST', body: JSON.stringify(message.body ?? {}),
+              headers: CODEX!.codexHeaders(tokens!.access_token!), signal: controller.signal,
+            });
+            let response = await request();
+            if (response.status === 401 && tokens.refresh_token && !controller.signal.aborted) {
+              tokens = await CODEX!.refreshCodexAccessToken(tokens);
+              if (controller.signal.aborted) return;
+              response = await request();
+            }
+            const text = await response.text();
+            if (!controller.signal.aborted) port.postMessage({ type: 'chunk', data: { ok: response.ok, status: response.status, text } });
+          } catch (error) {
+            if (!controller.signal.aborted) {
+              try { port.postMessage({ type: 'error', errorCode: 'CODEX_IMAGE_ERROR', message: error instanceof Error ? error.message : String(error) }); } catch {}
+            }
+          } finally {
+            clearTimeout(timeout);
+            try { port.postMessage({ type: 'done' }); } catch {}
+            try { port.disconnect(); } catch {}
+          }
+        })();
+        return;
+      }
       if (message.type === 'webmcp_plugin_download_stream') {
       (async () => {
         // SECURITY: the download stream runs a privileged background fetch.
