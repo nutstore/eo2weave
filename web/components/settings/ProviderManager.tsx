@@ -1937,7 +1937,8 @@ export function LLMGatewayCard({
                   {allModels.length > 0 && (
                     <button
                       type="button"
-                      className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--border,#2a2a2a)] px-2 py-[3px] text-[11px] text-tertiary transition-colors hover:border-[var(--brand-border,rgba(13,148,136,0.25))] hover:bg-[var(--brand-bg,rgba(13,148,136,0.06))] hover:text-[var(--brand-light,#14b8a6)]"
+                      className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--border,#2a2a2a)] px-2 py-[3px] text-[11px] text-tertiary transition-colors hover:border-[var(--brand-border,rgba(13,148,136,0.25))] hover:bg-[var(--brand-bg,rgba(13,148,136,0.06))] hover:text-[var(--brand-light,#14b8a6)] disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={catalogStatus !== 'ready'}
                       onClick={() => { setShowModelPicker(true); setModelSearch('') }}
                     >
                       <Plus className="h-3 w-3" />
@@ -1984,7 +1985,7 @@ export function LLMGatewayCard({
               </div>
 
               {/* Model Picker Dialog */}
-              <BrandDialog open={showModelPicker} onOpenChange={setShowModelPicker}>
+              <BrandDialog open={showModelPicker && catalogStatus === 'ready'} onOpenChange={setShowModelPicker}>
                 <BrandDialogContent className="!max-w-[420px] !w-[420px] !max-h-[70vh] !flex !flex-col !p-0">
                   <BrandDialogHeader>
                     <BrandDialogTitle className="!text-[13px]">
@@ -2024,6 +2025,7 @@ export function LLMGatewayCard({
                             type="button"
                             className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left hover:bg-muted transition-colors"
                             onClick={() => {
+                              if (catalogStatus !== 'ready') return
                               pinModel(LLM_GATEWAY_PROVIDER_TYPE, m.id)
                               setModelSearch('')
                             }}

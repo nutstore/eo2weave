@@ -66,7 +66,7 @@ const gatewayMock = vi.hoisted(() => ({
   getValidAccessToken: vi.fn<() => Promise<string | null>>(async () => 'stale-access-token'),
   fetchGatewayModels: vi.fn(async () => ({
     models: [] as Array<{ id: string; name: string }>,
-    status: 'failed' as const,
+    status: 'failed' as 'ready' | 'empty' | 'failed',
   })),
   prepareGatewayModels: vi.fn(),
   getGatewayCredentialStatus: vi.fn(() => 'unknown'),
@@ -513,9 +513,19 @@ describe('LLMGatewayCard credential state', () => {
 
     await waitFor(() => expect(gatewayMock.registerGatewayModels).toHaveBeenCalled())
     expect(getModelsForProvider('llm-gateway').map((model) => model.id)).toEqual(['glm-5.2'])
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Add from model library' }))
-    expect(screen.getByRole('button', { name: /GLM/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Add from model library' })).toBeDisabled()
+    expect(settingsState.pinModel).not.toHaveBeenCalled()
+  })
+
+  it('does not offer cached models for pinning after a successful empty response', async () => {
+    settingsState.modelCredentialStatus = 'valid'
+    gatewayMock.fetchGatewayModels.mockResolvedValueOnce({ models: [], status: 'empty' })
+
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => expect(gatewayMock.registerGatewayModels).toHaveBeenCalledWith([], 'empty', expect.any(Number)))
+    expect(getModelsForProvider('llm-gateway').map((model) => model.id)).toEqual(['glm-5.2'])
+    expect(screen.getByRole('button', { name: 'Add from model library' })).toBeDisabled()
   })
 
   it('downgrades the catalog when token refresh temporarily returns no token', async () => {
