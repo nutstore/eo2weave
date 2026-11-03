@@ -273,6 +273,18 @@ function mapPiToInternalMessage(message: PiAgentMessage): Message | null {
       .filter((item) => item.type === 'text')
       .map((item) => ('text' in item ? item.text || '' : ''))
       .join('')
+    // Image-capable providers can return image blocks without any text or
+    // tool calls. Preserve them on the internal message (the same shape the
+    // /image command uses) so an image-only assistant turn is neither
+    // classified as empty nor dropped from the conversation.
+    const imageBlocks = (message.content as unknown[]).filter(
+      (item): item is { type: 'image'; data: string; mimeType: string } =>
+        !!item &&
+        typeof item === 'object' &&
+        (item as { type?: unknown }).type === 'image' &&
+        typeof (item as { data?: unknown }).data === 'string' &&
+        typeof (item as { mimeType?: unknown }).mimeType === 'string'
+    )
     const reasoning = message.content
       .filter((item) => !!item)
       .filter((item) => item.type === 'thinking')
@@ -321,12 +333,17 @@ function mapPiToInternalMessage(message: PiAgentMessage): Message | null {
     )
     assistant.timestamp = message.timestamp || assistant.timestamp || now
     assistant.stopReason = message.stopReason
+    if (imageBlocks.length > 0) {
+      // GeneratedImage shape — the same inline representation the /image
+      // command uses, rendered by AssistantTurnBubble/MessageBubble.
+      assistant.images = imageBlocks.map((block) => ({ data: block.data, mimeType: block.mimeType }))
+    }
     if (message.stopReason === 'error' && typeof message.errorMessage === 'string' && message.errorMessage.trim()) {
       assistant.errorMessage = message.errorMessage
     }
     if (message.stopReason === 'error' || message.stopReason === 'aborted') {
       assistant.kind = message.stopReason
-    } else if (!text.trim() && toolCalls.length === 0) {
+    } else if (!text.trim() && toolCalls.length === 0 && imageBlocks.length === 0) {
       assistant.kind = 'empty'
     }
     return assistant

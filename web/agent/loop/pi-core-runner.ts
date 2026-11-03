@@ -307,8 +307,14 @@ export async function executePiCoreLoop(
       temperature: settingsState.temperature,
       reasoning,
       prepareNextTurn: ({ message, context: turnContext }) => {
+        // Image-capable providers deliver generated images as image content
+        // blocks on the assistant message (not expressible in AssistantMessage's
+        // static type, hence the cast). An image is visible output: the
+        // empty-turn recovery must neither retry nor flag the turn as empty.
         const hasOutput = message.content.some(item =>
-          item.type === 'toolCall' || (item.type === 'text' && item.text.trim().length > 0)
+          item.type === 'toolCall' ||
+          (item as { type?: string }).type === 'image' ||
+          (item.type === 'text' && item.text.trim().length > 0)
         )
         if (hasOutput) {
           emptyTurnRetried = false
