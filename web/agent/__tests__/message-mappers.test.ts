@@ -8,6 +8,20 @@ import {
 } from '../loop/message-mappers'
 
 describe('message-mappers', () => {
+  it('preserves completion reasons and omits empty turns from model history', () => {
+    const model = { api: 'openai', provider: 'openai', id: 'test' } as never
+    const base = { role: 'assistant', provider: 'openai', model: 'test', timestamp: 1 }
+    const empty = piToInternalMessage({ ...base, content: [{ type: 'thinking', thinking: 'thinking' }], stopReason: 'length' } as never)!
+    expect(empty).toMatchObject({ kind: 'empty', stopReason: 'length', content: null })
+    expect(internalToPiMessages([empty], model, '')).toEqual([])
+
+    const partial = piToInternalMessage({ ...base, content: [{ type: 'text', text: 'partial' }], stopReason: 'length' } as never)!
+    expect(partial.stopReason).toBe('length')
+    expect(internalToPiMessages([partial], model, '')[0]).toMatchObject({ stopReason: 'length' })
+
+    const tool = piToInternalMessage({ ...base, content: [{ type: 'toolCall', id: 't', name: 'read', arguments: {} }], stopReason: 'toolUse' } as never)!
+    expect(tool.kind).not.toBe('empty')
+  })
   it('persists UI traces separately from the model conversation', () => {
     const deferred = [{ sourceCallId: 'child', sequence: 0, content: [{ type: 'text', text: 'observation' }] }]
     const mapped = piToInternalMessage({ role: 'toolResult', toolCallId: 'parent', toolName: 'run_code', content: [{ type: 'text', text: 'final result' }], details: { displayContent: 'PRIVATE_TRACE', deferred }, isError: false, timestamp: 1 } as never)!

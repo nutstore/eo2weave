@@ -76,7 +76,9 @@ export interface Message {
    */
   contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
   /** Application record identity; independent of the provider-facing role. */
-  kind?: 'normal' | 'context_summary' | 'run_changes' | 'context_update'
+  kind?: 'normal' | 'context_summary' | 'run_changes' | 'context_update' | 'empty'
+  /** Provider completion reason, retained for transcript and history round trips. */
+  stopReason?: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted'
   /** Immutable context journal record, committed before model dispatch. */
   contextCommit?: ContextCommit
   compressionBoundary?: { throughMessageId: string; cutoffTimestamp: number }

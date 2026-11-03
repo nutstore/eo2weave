@@ -292,6 +292,9 @@ export async function executePiCoreLoop(
   // onPayload wrapper restores the true max tier via applyMaxThinkingOverride.
   const reasoning = rawThinkingLevel === 'max' ? 'high' : rawThinkingLevel
 
+  let emptyTurnRetryPending = false
+  let emptyTurnRetried = false
+
   const loop = agentLoopContinue(
     context,
     {
@@ -303,6 +306,20 @@ export async function executePiCoreLoop(
       // defined, so leaving it undefined means providers apply their own default.
       temperature: settingsState.temperature,
       reasoning,
+      prepareNextTurn: ({ message, context: turnContext }) => {
+        const hasOutput = message.content.some(item =>
+          item.type === 'toolCall' || (item.type === 'text' && item.text.trim().length > 0)
+        )
+        if (hasOutput || message.stopReason === 'error' || message.stopReason === 'aborted' || emptyTurnRetried || input.signal?.aborted) return
+        emptyTurnRetried = true
+        emptyTurnRetryPending = true
+        return { context: { ...turnContext, messages: turnContext.messages.slice(0, -1) } }
+      },
+      getFollowUpMessages: async () => {
+        if (!emptyTurnRetryPending || input.signal?.aborted) return []
+        emptyTurnRetryPending = false
+        return [{ role: 'user', content: 'Your previous response was empty. Please respond or call a tool.', timestamp: Date.now() }]
+      },
       convertToLlm: async (agentMessages) => {
         await bashCommandRegistry.refresh()
         const contextConfig = input.contextManager.getConfig()
@@ -393,6 +410,10 @@ export async function executePiCoreLoop(
   })
   allMessages = processed.allMessages
   reachedMaxIterations = processed.reachedMaxIterations
+
+  if (!input.signal?.aborted && allMessages.at(-1)?.kind === 'empty') {
+    throw new Error('The model returned an empty response after retrying. Please try again.')
+  }
 
   return {
     allMessages,

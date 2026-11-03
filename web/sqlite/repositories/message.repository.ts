@@ -29,6 +29,7 @@ interface MessageMeta {
   displayContent?: string
   deferredContext?: Message['deferredContext']
   kind?: Message['kind']
+  stopReason?: Message['stopReason']
   contextCommit?: Message['contextCommit']
   compressionBoundary?: Message['compressionBoundary']
   pageContext?: Message['pageContext']
@@ -258,6 +259,10 @@ export class MessageRepository {
       meta.kind = message.kind
       hasMeta = true
     }
+    if (message.stopReason !== undefined) {
+      meta.stopReason = message.stopReason
+      hasMeta = true
+    }
     if (message.reasoning !== undefined) {
       meta.reasoning = message.reasoning
       hasMeta = true
@@ -345,6 +350,7 @@ export class MessageRepository {
       role: row.role as Message['role'],
       content: parseJSON<string | null>(row.content_json, null),
       kind: meta.kind,
+      stopReason: meta.stopReason,
       contextCommit: meta.contextCommit,
       compressionBoundary: meta.compressionBoundary,
       pageContext: meta.pageContext,

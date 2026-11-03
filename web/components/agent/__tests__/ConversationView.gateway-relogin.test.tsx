@@ -241,6 +241,23 @@ describe('ConversationErrorBanner GATEWAY_CREDENTIALS_EXPIRED', () => {
     startReloginMock.mockResolvedValue(true)
   })
 
+  it('offers retry for a restored empty turn without a runtime error', () => {
+    runtimeEntry.status = 'idle'
+    runtimeEntry.error = ''
+    const conversation = conversationState.conversations[0]
+    const previousError = conversation.error
+    const message = conversation.messages[1]
+    Object.assign(message, { kind: 'empty' })
+    conversation.error = ''
+    try {
+      render(<ConversationView />)
+      expect(screen.getByRole('button', { name: /conversation\.error\.retry/ })).toBeInTheDocument()
+    } finally {
+      delete (message as { kind?: string }).kind
+      conversation.error = previousError
+    }
+  })
+
   it('shows the Re-login button and NO generic retry button', () => {
     render(<ConversationView />)
 

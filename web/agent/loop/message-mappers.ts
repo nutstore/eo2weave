@@ -45,7 +45,7 @@ function mapInternalToPiMessage(
   model: Model<Api>,
   compressedMemoryPrefix: string
 ): PiMessage[] {
-  if (msg.kind === 'run_changes') {
+  if (msg.kind === 'run_changes' || msg.kind === 'empty') {
     // A pure UI card ("what this run changed") — no model-facing content.
     // Drop it so it never enters the LLM context budget.
     return []
@@ -199,7 +199,7 @@ function mapInternalToPiMessage(
           totalTokens: msg.usage?.totalTokens ?? 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
-        stopReason: 'stop',
+        stopReason: msg.stopReason ?? 'stop',
         timestamp: msg.timestamp || Date.now(),
       },
     ]
@@ -318,6 +318,10 @@ function mapPiToInternalMessage(message: PiAgentMessage): Message | null {
       reasoning || null
     )
     assistant.timestamp = message.timestamp || assistant.timestamp || now
+    assistant.stopReason = message.stopReason
+    if (!text.trim() && toolCalls.length === 0 && message.stopReason !== 'error' && message.stopReason !== 'aborted') {
+      assistant.kind = 'empty'
+    }
     return assistant
   }
 

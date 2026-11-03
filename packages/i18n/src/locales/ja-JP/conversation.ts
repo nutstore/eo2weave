@@ -137,6 +137,7 @@ export const conversation = {
       gatewayDeviceFlowTimeout: "Nutstore AI の認証セッションが期限切れです — もう一度ログインしてください",
       requestFailed: "リクエスト失敗：",
       retry: "再試行",
+      emptyTurn: "モデルから応答がありませんでした。",
       failed: "モデルリクエストが失敗しました。しばらくしてからもう一度お試しください。",
       http: "モデルプロバイダーがエラーを返しました（HTTP {status}）。",
       network: "ネットワークエラー — モデルプロバイダーに接続できません。接続を確認して再試行してください。",

@@ -886,8 +886,13 @@ const AssistantStep = memo(function AssistantStep({
         <RunChangesCard snapshotId={message.runChanges.snapshotId} />
       )}
 
-      {!isRunChanges && (hasReasoning || hasContent || hasImages || hasToolCalls || hasAssets) && (
+      {!isRunChanges && (hasReasoning || hasContent || hasImages || hasToolCalls || hasAssets || message.kind === 'empty') && (
         <div className="space-y-2">
+          {message.kind === 'empty' && (
+            <div role="status" className="text-sm text-amber-700 dark:text-amber-300">
+              {t('conversation.error.emptyTurn')}
+            </div>
+          )}
           {hasReasoning && (
             <ReasoningSection reasoning={message.reasoning!} durationMs={message.reasoningDurationMs} />
           )}

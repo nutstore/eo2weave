@@ -152,7 +152,7 @@ export async function processPiLoopEvents(
       if (mapped.role === 'assistant') {
         assistantMessageStarted = false
       }
-      if (mapped.role === 'assistant') {
+      if (mapped.role === 'assistant' && mapped.kind !== 'empty') {
         assistantMessageCount++
         const hasIterationLimit = input.maxIterations > 0
         if (hasIterationLimit && assistantMessageCount > input.maxIterations) {

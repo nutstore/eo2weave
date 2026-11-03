@@ -137,6 +137,7 @@ export const conversation = {
       gatewayDeviceFlowTimeout: "Nutstore AI 인증 세션이 만료되었습니다 — 다시 로그인해 주세요",
       requestFailed: "요청 실패:",
       retry: "재시도",
+      emptyTurn: "모델이 응답을 반환하지 않았습니다.",
       failed: "모델 요청이 실패했습니다. 잠시 후 다시 시도해 주세요.",
       http: "모델 공급자가 오류를 반환했습니다 (HTTP {status}).",
       network: "네트워크 오류 — 모델 공급자에 연결할 수 없습니다. 연결 상태를 확인한 후 다시 시도해 주세요.",

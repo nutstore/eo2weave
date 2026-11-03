@@ -438,8 +438,8 @@ export function ConversationView({
 
       </div>
 
-        {conversationError && (
-          <ConversationErrorBanner error={conversationError} onRetry={handleRetry} />
+        {(conversationError || (!isProcessing && activeMessages.at(-1)?.kind === 'empty')) && (
+          <ConversationErrorBanner error={conversationError || t('conversation.error.emptyTurn')} onRetry={handleRetry} />
         )}
 
         {/* Flow canvas panel — overlay, opened from the TopBar workflow button */}

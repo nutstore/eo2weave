@@ -27,6 +27,15 @@ vi.mock('next/navigation', () => ({
 }))
 
 describe('AssistantTurnBubble timeline ordering', () => {
+  it('shows a persisted empty turn even without reasoning or content', () => {
+    const { getByRole } = render(
+      <AssistantTurnBubble
+        turn={{ type: 'assistant', messages: [{ id: 'empty', role: 'assistant', content: null, kind: 'empty', stopReason: 'length', timestamp: 1 }], timestamp: 1, totalUsage: null }}
+        toolResults={new Map()}
+      />
+    )
+    expect(getByRole('status').textContent).toBe('conversation.error.emptyTurn')
+  })
   it('renders summary/runtime events by timestamp order during processing', () => {
     // Runtime steps arrive in LLM emission order: compression (250) completed
     // first, then the tool call (300) started. The timeline renders committed
