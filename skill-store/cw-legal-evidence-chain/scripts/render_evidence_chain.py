@@ -585,7 +585,18 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
                 pass
     except BaseException:
         if not published:
-            staging.unlink(missing_ok=True)
+            # Only unlink the staging path if it STILL names the inode this
+            # render wrote through `fd`. If another writer swapped the name
+            # in the meantime, the path now points at THEIR file — deleting
+            # it would destroy data this render never created. The swapped
+            # case leaves one stale file behind, which the next cleanup
+            # sweep (or the user) removes; deleting a stranger's file is
+            # never acceptable.
+            try:
+                if path_names_inode(staging, fd):
+                    staging.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise
     finally:
         if fd >= 0:
@@ -594,6 +605,31 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
             except OSError:
                 pass
     return digest, size
+
+
+def published_digest(path: Path) -> str | None:
+    """SHA-256 of the file at `path`, read in bounded chunks; None on failure.
+
+    The file is read in fixed-size chunks, so verifying a large report never
+    allocates a second report-sized buffer, and only after confirming the
+    path holds a REGULAR file: a peer who could swap the published path for
+    a FIFO (open blocks forever) or a symlink to an unbounded stream such as
+    /dev/zero (memory exhaustion) is otherwise able to hang or OOM the
+    verification step.
+    """
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return None
+        hasher = hashlib.sha256()
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except OSError:
+        return None
 
 
 def main() -> int:
@@ -616,7 +652,7 @@ def main() -> int:
     digest, size = atomic_write(report, args.output_file)
     print(f"Rendered {args.output_file} with {len(warnings)} warning(s) ({'strict' if args.strict else 'compatibility-only'} validation)")
     try:
-        published = hashlib.sha256(args.output_file.read_bytes()).hexdigest()
+        published = published_digest(args.output_file)
     except OSError:
         published = None
     if published is not None and published != digest:
