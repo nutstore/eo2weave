@@ -78,7 +78,7 @@ const modelStoreMock = vi.hoisted(() => ({
 
 vi.mock('@/agent/providers/model-store', () => modelStoreMock)
 
-import { ProviderCard } from '../ProviderManager'
+import { ProviderCard } from '@/components/settings/ProviderManager'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
