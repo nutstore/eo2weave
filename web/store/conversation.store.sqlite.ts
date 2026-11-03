@@ -739,6 +739,13 @@ async function runLoadFromDB(
   // overwrite recovered state").
   const loadGeneration = beginConversationLoadGeneration()
   const isCurrentRun = () => isCurrentConversationLoadGeneration(loadGeneration)
+  // Snapshot the selection generation BEFORE this run can yield or install
+  // its own active id. Anything that changes the active selection while the
+  // load is pending (setActive, createNew with activate) bumps the counter,
+  // so the post-await checks below can preserve the user's newer choice
+  // instead of overwriting it with this run's context-preferred id
+  // (PR #152 review, "User selection is replaced").
+  const selectionGenerationAtStart = activeSelectionGeneration
       try {
         // Initialize SQLite first. Bounded: a hung OPFS/SQLite handshake must
         // not wedge startup before the fallback timeout is ever reached
@@ -898,6 +905,14 @@ async function runLoadFromDB(
 
         // Determine the active conversation ID from workspace store's current state.
         const activeId = selectActiveConversationId(conversations)
+        // If the user changed the active selection while this load was pending,
+        // keep their choice — this run installs its context-preferred id only
+        // when the selection is unchanged (PR #152 review).
+        const selectionChangedDuringLoad =
+          selectionGenerationAtStart !== activeSelectionGeneration
+        const activeIdToInstall = selectionChangedDuringLoad
+          ? get().activeConversationId
+          : activeId
 
         // Stale-run gate: if a newer load (e.g. a forced retry) has started,
         // this run must not write anything it loaded — skip both the store
@@ -930,7 +945,7 @@ async function runLoadFromDB(
               conv.compressionLastSummaryConvertCall ?? Number.NEGATIVE_INFINITY,
             collectedAssets: [],
           }))
-          state.activeConversationId = activeId
+          state.activeConversationId = activeIdToInstall
           state.loaded = true
           state.suggestedFollowUps.clear()
           state.cancelledRunIds.clear()
@@ -967,18 +982,18 @@ async function runLoadFromDB(
         // metadata pass — but keep `loaded = true` (metadata is present; the
         // lazy path in setActive can still recover the transcript later).
         let activeTranscriptLoaded = true
-        if (activeId) {
+        if (activeIdToInstall) {
           try {
             const msgRepo = getMessageRepository()
             const activeMessages = await withTimeout(
-              msgRepo.findByConversation(activeId),
+              msgRepo.findByConversation(activeIdToInstall),
               INITIAL_LOAD_TIMEOUT_MS,
               'active conversation transcript read'
             )
             if (!isCurrentRun()) return
-            primePersistBaseline(activeId, activeMessages as Message[])
+            primePersistBaseline(activeIdToInstall, activeMessages as Message[])
             set((state) => {
-              const conv = state.conversations.find((c) => c.id === activeId)
+              const conv = state.conversations.find((c) => c.id === activeIdToInstall)
               if (conv) {
                 conv.messages = activeMessages as Message[]
                 conv.messagesLoaded = true
@@ -989,6 +1004,10 @@ async function runLoadFromDB(
           } catch (error) {
             // A stale run's failure must not clobber the recovered state a
             // newer load already installed (PR #149 round-6 review).
+            // Neither may it clobber the CURRENT selection's state: if the
+            // user switched conversations while this read was pending, this
+            // run proves nothing about the conversation now on screen
+            // (PR #152 review, "User selection is replaced").
             if (!isCurrentRun() || selectionGenerationAtLoad !== activeSelectionGeneration) return
             activeTranscriptLoaded = false
             const activeLoadMessage =
@@ -1008,13 +1027,13 @@ async function runLoadFromDB(
               // Remember WHICH conversation failed: the persisted record may
               // only be marked resolved after THIS conversation's transcript
               // re-read successfully (issue #147, PR #149 review).
-              state.loadFailedConversationId = activeId
+              state.loadFailedConversationId = activeIdToInstall
               state.loadFailedWorkspaceId = null
             })
             // Record the failing conversation id in the diagnostics record
             // too — resolution is verified against it later (PR #149
             // round-4 review, "Unverified failures appear recovered").
-            persistLoadErrorRecord(activeLoadMessage, error, activeId)
+            persistLoadErrorRecord(activeLoadMessage, error, activeIdToInstall)
           }
         }
 
@@ -1034,7 +1053,7 @@ async function runLoadFromDB(
           // failures appear recovered"). A run with no active conversation
           // reads no transcript and proves even less, so resolution still
           // requires the record to name no conversation at all.
-          markPersistedFailureResolved(activeId)
+          markPersistedFailureResolved(activeIdToInstall)
           // The error (and the sidebar's Retry affordance) stays visible
           // until the transcript read actually succeeded.
           set((state) => {
@@ -1101,13 +1120,22 @@ async function runLoadFromDB(
             'conversation metadata fallback read'
           )
           if (!isCurrentRun()) return
+          // Same selection-preservation rule as the primary install, but
+          // measured against the RUN-START snapshot: the user may have changed
+          // the selection during the failed primary legs OR during the
+          // fallback metadata read — either way their newer choice wins over
+          // this run's context-preferred id (PR #152 review).
+          const selectionChangedAtFallback =
+            selectionGenerationAtStart !== activeSelectionGeneration
           set((state) => {
             state.conversations = retryConversations.map((conv) => ({
               ...conv,
               mountRefCount: 0,
               collectedAssets: [],
             }))
-            state.activeConversationId = selectActiveConversationId(retryConversations)
+            state.activeConversationId = selectionChangedAtFallback
+              ? get().activeConversationId
+              : selectActiveConversationId(retryConversations)
             state.loaded = true
             state.suggestedFollowUps.clear()
             state.cancelledRunIds.clear()
@@ -1331,7 +1359,14 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const activate = options?.activate !== false
       set((state) => {
         state.conversations.unshift(conversation)
-        if (activate) state.activeConversationId = conversation.id
+        if (activate) {
+          // Activation changes the active conversation just like setActive —
+          // advance the selection generation so an in-flight (fallback) load
+          // cannot later reinstall ITS captured selection over the user's
+          // brand-new conversation (issue #147 PR #152 review).
+          activeSelectionGeneration++
+          state.activeConversationId = conversation.id
+        }
       })
       // Persist metadata (creates the conversation row) + empty messages
       const metaPersist = persistConversationMeta(conversation)
