@@ -33,7 +33,23 @@ import { useActiveConversation } from './useActiveConversation'
 import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
 
 /** Stable empty array so mentionAgents selector returns same ref when unchanged */
-const EMPTY_MENTION_AGENTS: { id: string; name: string }[] = []
+export const EMPTY_MENTION_AGENTS: { id: string; name: string }[] = []
+
+/**
+ * Composer mention candidates, gated on the loaded catalog belonging to the
+ * project the user is looking at. Exported pure so tests exercise the
+ * production selection instead of a hand-copied duplicate that can drift.
+ */
+export function selectMentionAgents(
+  s: { loadedProjectId: string | null; agents: { id: string; name: string }[] },
+  activeProjectId: string | null
+): { id: string; name: string }[] {
+  if (s.loadedProjectId !== activeProjectId) return EMPTY_MENTION_AGENTS
+  const filtered = s.agents
+    .filter((agent) => agent.id !== 'default')
+    .map((agent) => ({ id: agent.id, name: agent.name }))
+  return filtered.length === 0 ? EMPTY_MENTION_AGENTS : filtered
+}
 
 export function useConversationLogic() {
   const t = useT()
@@ -88,13 +104,7 @@ export function useConversationLogic() {
   const createAgent = useAgentsStore((s) => s.createAgent)
   const deleteAgent = useAgentsStore((s) => s.deleteAgent)
   const mentionAgents = useAgentsStore(
-    useShallow((s) => {
-      if (s.loadedProjectId !== activeProjectId) return EMPTY_MENTION_AGENTS
-      const filtered = s.agents
-        .filter((agent) => agent.id !== 'default')
-        .map((agent) => ({ id: agent.id, name: agent.name }))
-      return filtered.length === 0 ? EMPTY_MENTION_AGENTS : filtered
-    })
+    useShallow((s) => selectMentionAgents(s, activeProjectId))
   )
 
   // ── Active conversation — only select NON-streaming data ──

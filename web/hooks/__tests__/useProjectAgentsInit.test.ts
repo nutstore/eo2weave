@@ -13,7 +13,8 @@ vi.mock('@/store/project.store', () => ({
 
 import { useProjectStore } from '@/store/project.store'
 import { useAgentsStore } from '@/store/agents.store'
-import { useProjectAgentsInit } from '../useProjectAgentsInit'
+import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
+import { selectMentionAgents } from '@/components/agent/useConversationLogic'
 
 describe('useProjectAgentsInit', () => {
   beforeEach(async () => {
@@ -32,34 +33,30 @@ describe('useProjectAgentsInit', () => {
   })
 
   it('gates the visible Agent catalog on loadedProjectId matching the active project', async () => {
-    // Mirrors useConversationLogic's selection: candidates are exposed only
-    // when the loaded catalog belongs to the project the user is looking at.
-    const selectMentionAgents = (s: {
-      loadedProjectId: string | null
-      activeProjectId: string
-      agents: { id: string; name: string }[]
-    }) => (s.loadedProjectId !== s.activeProjectId ? [] : s.agents)
-
+    // The production selector is exercised directly (extracted pure from
+    // useConversationLogic) — the composer exposes candidates only when the
+    // loaded catalog belongs to the project the user is looking at.
     useProjectStore.setState({ activeProjectId: 'project-b' })
     // Mid-switch: the old project's catalog is still loaded — must be hidden.
     useAgentsStore.setState({
       loadedProjectId: 'project-a',
       agents: [{ id: 'old-agent', name: 'Old' }],
     } as never)
-    expect(selectMentionAgents({
-      ...useAgentsStore.getState(),
-      activeProjectId: useProjectStore.getState().activeProjectId,
-    })).toEqual([])
+    expect(selectMentionAgents(
+      useAgentsStore.getState(),
+      useProjectStore.getState().activeProjectId
+    )).toEqual([])
 
-    // Initialization finished — the new catalog becomes selectable.
+    // Initialization finished — the new catalog becomes selectable (the
+    // built-in 'default' Agent is excluded from mention candidates).
     useAgentsStore.setState({
       loadedProjectId: 'project-b',
-      agents: [{ id: 'new-agent', name: 'New' }],
+      agents: [{ id: 'default', name: 'New' }, { id: 'new-agent', name: 'New' }],
     } as never)
-    expect(selectMentionAgents({
-      ...useAgentsStore.getState(),
-      activeProjectId: useProjectStore.getState().activeProjectId,
-    }).map((a) => a.id)).toEqual(['new-agent'])
+    expect(selectMentionAgents(
+      useAgentsStore.getState(),
+      useProjectStore.getState().activeProjectId
+    ).map((a) => a.id)).toEqual(['new-agent'])
   })
 
   it('loads, refreshes candidates on a project change, and clears on project exit', async () => {
@@ -77,4 +74,5 @@ describe('useProjectAgentsInit', () => {
     })
     expect(useAgentsStore.getState().agents).toEqual([])
   })
+
 })
