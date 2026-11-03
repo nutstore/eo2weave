@@ -58,6 +58,7 @@ export function ModelQuickSwitch({
   const [providers, setProviders] = useState<AvailableProvider[]>([])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
+  const [retryingGatewayCatalog, setRetryingGatewayCatalog] = useState(false)
   const [query, setQuery] = useState('')
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({})
   const [visionOnly, setVisionOnly] = useState(false)
@@ -149,6 +150,9 @@ export function ModelQuickSwitch({
   const visibleProviders = useMemo(() =>
     providers.filter((p) => p.models.length > 0),
     [providers]
+  )
+  const gatewayCatalogUnavailable = providers.some(
+    (p) => p.providerType === 'llm-gateway' && p.catalogStatus === 'failed',
   )
 
   // Enrich each model with hasVision and stale:
@@ -367,6 +371,22 @@ export function ModelQuickSwitch({
     setOpen(false)
   }
 
+  const retryGatewayCatalog = async () => {
+    setRetryingGatewayCatalog(true)
+    try {
+      const gateway = await import('@/agent/providers/llm-gateway-provider')
+      const token = await gateway.getValidAccessToken(
+        gateway.getLLMGatewayBaseURL(), gateway.getLLMGatewayClientId(),
+      )
+      if (token) await gateway.updateGatewayModels(token)
+    } catch (error) {
+      console.error('[ModelQuickSwitch] Failed to refresh gateway models:', error)
+    } finally {
+      setRetryingGatewayCatalog(false)
+      useSettingsStore.getState().triggerProviderRefresh()
+    }
+  }
+
   const toggleProviderCollapsed = (providerKey: string) => {
     setCollapsedProviders((prev) => ({
       ...prev,
@@ -492,6 +512,20 @@ export function ModelQuickSwitch({
               <span>{t('topbar.modelSwitcher.visionOnly')}</span>
             </button>
             </div>
+          </div>
+        )}
+
+        {!loading && gatewayCatalogUnavailable && (
+          <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-2 text-xs text-tertiary">
+            <span>{t('topbar.modelSwitcher.catalogUnavailable')}</span>
+            <button
+              type="button"
+              onClick={() => void retryGatewayCatalog()}
+              disabled={retryingGatewayCatalog}
+              className="shrink-0 text-primary hover:underline disabled:opacity-50"
+            >
+              {retryingGatewayCatalog ? t('topbar.modelSwitcher.loading') : t('topbar.modelSwitcher.retryCatalog')}
+            </button>
           </div>
         )}
 

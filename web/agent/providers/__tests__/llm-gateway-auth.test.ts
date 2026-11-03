@@ -67,6 +67,7 @@ import {
   performDeviceCodeFlow,
   persistDeviceLoginTokens,
 } from '@/agent/providers/llm-gateway-auth'
+import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
 const BASE_URL = 'https://ai.jianguoyun.com'
 const CLIENT_ID = 'test-client-id'
@@ -701,6 +702,19 @@ describe('llm-gateway-auth token refresh hardening', () => {
       await vi.waitFor(() => {
         expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
       })
+    })
+
+    it('clears the prior gateway catalog after logout so another account cannot inherit it', async () => {
+      registerDynamicProvider('llm-gateway',
+        { baseURL: `${BASE_URL}/v1`, modelName: 'old-model', headers: {} },
+        { category: 'chinese', displayName: 'Nutstore AI', models: [{ id: 'old-model', name: 'Old', capabilities: ['code'] }], catalogStatus: 'ready' },
+      )
+      try {
+        await logoutGateway()
+        expect(getModelsForProvider('llm-gateway')).toEqual([])
+      } finally {
+        unregisterDynamicProvider('llm-gateway')
+      }
     })
 
     it('credential status reports "expired" after invalid_grant and "missing" after logout', async () => {

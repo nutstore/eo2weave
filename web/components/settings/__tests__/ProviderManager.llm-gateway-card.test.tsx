@@ -480,6 +480,16 @@ describe('LLMGatewayCard credential state', () => {
     })
   })
 
+  it('keeps the last known models in the settings card after a failed refresh', async () => {
+    settingsState.modelCredentialStatus = 'valid'
+    gatewayMock.fetchGatewayModels.mockResolvedValueOnce({ models: [], status: 'failed' })
+
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => expect(gatewayMock.registerGatewayModels).toHaveBeenCalled())
+    expect(screen.getByRole('button', { name: 'Add from model library' })).toBeTruthy()
+  })
+
   it('also downgrades a prior authoritative-empty catalog when the /models refresh times out', async () => {
     // Sourcery round 9 (PR #150), 🟠 "Gateway outage keeps stale empty
     // status": a prior successful EMPTY catalog ('empty') is authoritative —

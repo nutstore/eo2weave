@@ -4,19 +4,20 @@
  * isStorageReady, so a gateway that accepts the saved token but never
  * answers /v1/models must not hang startup. The refresh is bound with the
  * same model-discovery deadline as the login and gateway-card paths and
- * degrades by REJECTING (the caller's catch already handles it) — never
- * registering a stale or empty catalog.
+ * degrades by REJECTING (the caller's catch already handles it) while
+ * marking the retained model list as non-authoritative.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   fetchGatewayModels: vi.fn(),
+  generation: 0,
 }))
 
 vi.mock('@/agent/providers/llm-gateway-auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/agent/providers/llm-gateway-auth')>()
-  return { ...actual, fetchGatewayModels: mocks.fetchGatewayModels }
+  return { ...actual, fetchGatewayModels: mocks.fetchGatewayModels, getGatewayAuthSessionGeneration: () => mocks.generation }
 })
 
 // AbortSignal.timeout is backed by a real (unfakeable) timer; substitute a
@@ -31,15 +32,18 @@ const timeoutSpy = vi
 void timeoutSpy
 
 import { updateGatewayModels } from '@/agent/providers/llm-gateway-provider'
+import { getModelsForProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000
 
 describe('updateGatewayModels startup discovery deadline', () => {
   beforeEach(() => {
     mocks.fetchGatewayModels.mockReset()
+    mocks.generation = 0
+    unregisterDynamicProvider('llm-gateway')
   })
 
-  it('rejects with the deadline instead of hanging when /v1/models never answers, and registers nothing', async () => {
+  it('rejects with the deadline instead of hanging when /v1/models never answers', async () => {
     vi.useFakeTimers()
     try {
       // A gateway that accepts the token but never responds: the fetch
@@ -84,5 +88,17 @@ describe('updateGatewayModels startup discovery deadline', () => {
     const args = mocks.fetchGatewayModels.mock.calls[0]
     expect(args[2]).toBeInstanceOf(AbortSignal)
     expect(models.map((m: { id: string }) => m.id)).toEqual(['glm-5.2'])
+  })
+
+  it('discards a catalog response after the gateway session changes', async () => {
+    let finish!: (result: { models: Array<{ id: string; name: string }>; status: 'ready' }) => void
+    mocks.fetchGatewayModels.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+
+    const pending = updateGatewayModels('old-token')
+    mocks.generation++
+    finish({ models: [{ id: 'old-model', name: 'Old' }], status: 'ready' })
+    await pending
+
+    expect(getModelsForProvider('llm-gateway')).toEqual([])
   })
 })

@@ -1410,12 +1410,8 @@ export function LLMGatewayCard({
           // the same way prepareGatewayModels does — re-registering without
           // it would silently drop the configured context limits.
           //
-          // EVERY refresh result is registered, not only non-empty ones:
-          // a catalog that shrank to empty (or whose fetch failed) must
-          // replace the previous registration, or the registry keeps
-          // serving the stale catalog — and `getAvailableProviders` reads
-          // its status — indefinitely (Sourcery: "Gateway registry keeps
-          // stale catalogs").
+          // Register every result so a failed refresh downgrades the catalog
+          // status while the registry retains its last successful model list.
           const [{ registerGatewayModels }, { getModelContextWindow }] = await Promise.all([
             import('@/agent/providers/llm-gateway-provider'),
             import('@/agent/providers/model-store'),
@@ -1431,7 +1427,9 @@ export function LLMGatewayCard({
           // whose session was superseded must not touch setAllModels or the
           // pin-seen marks of the newer session either.
           if (cancelled) return
-          setAllModels(models)
+          setAllModels(status === 'failed'
+            ? getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => ({ id: m.id, name: m.name }))
+            : models)
           setCatalogStatus(status)
           // Gateway /models response is authoritative — record confirmed pins
           // so pins absent from a later fetch get flagged as stale.
@@ -1456,6 +1454,7 @@ export function LLMGatewayCard({
             import('@/agent/providers/llm-gateway-provider'),
             import('@/agent/providers/types'),
           ])
+          if (cancelled) return
           // Downgrade ANY authoritative registration ('ready' AND 'empty' —
           // Sourcery round 9, 🟠 "Gateway outage keeps stale empty status"):
           // a prior successful EMPTY catalog that stays 'empty' through the
@@ -1476,6 +1475,8 @@ export function LLMGatewayCard({
             )
           }
         } catch { /* registry not initialised — nothing to downgrade */ }
+        if (cancelled) return
+        setAllModels(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => ({ id: m.id, name: m.name })))
         setCatalogStatus('failed')
       }
     })()

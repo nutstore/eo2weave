@@ -14,7 +14,8 @@ const fetchMock = vi.fn<typeof fetch>()
 vi.stubGlobal('fetch', fetchMock)
 
 import { fetchGatewayModels } from '@/agent/providers/llm-gateway-auth'
-import { getProviderCatalogStatus, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+import { getModelsForProvider, getProviderCatalogStatus, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+import { registerGatewayModels, unregisterLLMGatewayProvider, updateGatewayModels, LLM_GATEWAY_PROVIDER_TYPE } from '@/agent/providers/llm-gateway-provider'
 import type { ModelInfo } from '@/agent/providers/types'
 
 function okResponse(body: unknown): Response {
@@ -187,5 +188,45 @@ describe('registry catalog status bookkeeping', () => {
 
   it('returns undefined for an unregistered provider', () => {
     expect(getProviderCatalogStatus('never-registered-provider')).toBeUndefined()
+  })
+})
+
+describe('gateway last known catalog', () => {
+  const model: ModelInfo = { id: 'glm-5.2', name: 'GLM', capabilities: ['code'], contextWindow: 128000 }
+
+  afterEach(() => unregisterLLMGatewayProvider())
+
+  it('keeps the last successful models but marks them non-authoritative after a failed refresh', () => {
+    registerGatewayModels([model], 'ready')
+    registerGatewayModels([], 'failed')
+
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)).toEqual(['glm-5.2'])
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+  })
+
+  it('replaces the last successful models after an authoritative empty response', () => {
+    registerGatewayModels([model], 'ready')
+    registerGatewayModels([], 'empty')
+
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('empty')
+  })
+
+  it('does not retain models after the provider is unregistered for logout', () => {
+    registerGatewayModels([model], 'ready')
+    unregisterLLMGatewayProvider()
+    registerGatewayModels([], 'failed')
+
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+  })
+
+  it('marks a timed-out refresh as failed while retaining the previous models', async () => {
+    registerGatewayModels([model], 'ready')
+    fetchMock.mockRejectedValueOnce(new DOMException('Timed out', 'AbortError'))
+
+    await expect(updateGatewayModels('token')).rejects.toThrow('Timed out')
+
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)).toEqual(['glm-5.2'])
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
   })
 })

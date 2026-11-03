@@ -21,8 +21,8 @@
 
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from '@/agent/providers/types'
-import { registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
-import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayCredentialStatus, getValidAccessToken, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
+import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -130,17 +130,22 @@ export function registerGatewayModels(
   modelInfos: ModelInfo[],
   status: ProviderCatalogStatus = modelInfos.length > 0 ? 'ready' : 'failed',
 ): void {
+  // A failed response says nothing about the catalog. Keep the last usable
+  // list for display, while the failed status prevents delisting decisions.
+  const models = status === 'failed'
+    ? getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
+    : modelInfos
   const baseURL_str = getGatewayBaseURL()
   const config: Omit<LLMProviderConfig, 'apiKey'> = {
     baseURL: `${baseURL_str}/v1`,
-    modelName: modelInfos[0]?.id || '',
+    modelName: models[0]?.id || '',
     headers: {},
     apiMode: 'chat-completions',
   }
 
   const meta: ProviderMeta = {
     ...GATEWAY_META,
-    models: modelInfos,
+    models,
     catalogStatus: status,
   }
 
@@ -163,12 +168,22 @@ export async function updateGatewayModels(accessToken: string): Promise<ModelInf
   // on expiry register a FAILED (unknown) catalog — never an authoritative
   // empty one — so consumers keep deferring until a later refresh succeeds
   // (Sourcery: "Startup discovery can hang").
-  const { models, status } = await prepareGatewayModels(
-    accessToken,
-    AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
-  )
-  registerGatewayModels(models, status)
-  return models
+  const sessionGeneration = getGatewayAuthSessionGeneration()
+  try {
+    const { models, status } = await prepareGatewayModels(
+      accessToken,
+      AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
+    )
+    if (sessionGeneration === getGatewayAuthSessionGeneration()) {
+      registerGatewayModels(models, status)
+    }
+  } catch (error) {
+    if (sessionGeneration === getGatewayAuthSessionGeneration()) {
+      registerGatewayModels([], 'failed')
+    }
+    throw error
+  }
+  return getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
 }
 
 /**

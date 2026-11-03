@@ -15,7 +15,7 @@ import {
 } from '@/agent/providers/gateway-credential-lock'
 import { saveApiKey as saveGatewayApiKey } from '@/security/api-key-store'
 import { useI18nStore } from '@/i18n/store'
-import type { ProviderCatalogStatus } from '@/agent/providers/types'
+import { unregisterDynamicProvider, type ProviderCatalogStatus } from '@/agent/providers/types'
 
 // ── Types ──
 
@@ -639,6 +639,10 @@ async function clearStoredTokens(
       }
       throw purgeError
     }
+    // The registry is the in-memory last-known model cache. Clear it before
+    // releasing the credential lock so a later login cannot inherit another
+    // account's catalog after logout or an expired refresh token.
+    unregisterDynamicProvider('llm-gateway')
     // The purge succeeded — clear any earlier stale-state flag so the UI
     // trusts the status written below.
     try {
@@ -1168,6 +1172,10 @@ let refreshInFlight: Promise<RefreshResult> | null = null
  * for a replaced session must not overwrite the new token pair.
  */
 let authSessionGeneration = 0
+
+export function getGatewayAuthSessionGeneration(): number {
+  return authSessionGeneration
+}
 
 /** Invalidate async work belonging to the previous credential set. */
 function bumpAuthSessionGeneration(): void {
