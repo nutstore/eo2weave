@@ -859,6 +859,7 @@ async function runLoadFromDB(
               INITIAL_LOAD_TIMEOUT_MS,
               'active conversation transcript read'
             )
+            if (!isCurrentRun()) return
             primePersistBaseline(activeId, activeMessages as Message[])
             set((state) => {
               const conv = state.conversations.find((c) => c.id === activeId)
@@ -970,6 +971,7 @@ async function runLoadFromDB(
             FALLBACK_META_TIMEOUT_MS,
             'conversation metadata fallback read'
           )
+          if (!isCurrentRun()) return
           set((state) => {
             state.conversations = retryConversations.map((conv) => ({
               ...conv,
@@ -1002,6 +1004,7 @@ async function runLoadFromDB(
                 INITIAL_LOAD_TIMEOUT_MS,
                 'active conversation transcript read'
               )
+              if (!isCurrentRun()) return
               primePersistBaseline(retryActiveId, retryMessages as Message[])
               set((state) => {
                 const conv = state.conversations.find((c) => c.id === retryActiveId)
@@ -1152,10 +1155,9 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     // Explicit user retry: bypass the in-flight guard so a load wedged past
     // the sidebar's 15s retry timeout starts a FRESH run instead of handing
     // back the stuck promise (PR #149 round-4 review, "Retry cannot restart
-    // stuck load"). The wedged run keeps running in the background — harmless
-    // (its late write is the same data a successful fresh run produces) — and
-    // withInflightLoad's ownership check makes it leave the new run's guard
-    // slot alone when it finally settles.
+    // stuck load"). The old run keeps running in the background. Generation
+    // checks discard its late results, and withInflightLoad's ownership check
+    // leaves the new run's guard slot alone when the old run settles.
     retryLoadFromDB: async () =>
       withInflightLoad(() => runLoadFromDB(set, get), { force: true }),
 
@@ -1212,7 +1214,11 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           try {
             const msgRepo = getMessageRepository()
             const tFetch = performance.now()
-            const messages = await msgRepo.findByConversation(id)
+            const messages = await withTimeout(
+              msgRepo.findByConversation(id),
+              INITIAL_LOAD_TIMEOUT_MS,
+              'conversation transcript read'
+            )
             const tDeserialize = performance.now()
             primePersistBaseline(id, messages as Message[])
             set((state) => {

@@ -139,6 +139,7 @@ function resetStore() {
     loaded: false,
     loadError: null,
     loadErrorScope: null,
+    loadFailedConversationId: null,
     suggestedFollowUps: new Map(),
     cancelledRunIds: new Set(),
     mountedConversations: new Map(),
@@ -376,6 +377,87 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
       await load
       expect(useConversationStore.getState().loadError).toBeNull()
       expect(readPersistedRecord()?.resolved).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not let a superseded transcript read overwrite a successful retry', async () => {
+    let resolveOldTranscript!: (messages: unknown[]) => void
+    findByConversationMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOldTranscript = resolve
+    }))
+    const oldLoad = useConversationStore.getState().loadFromDB()
+    await vi.waitFor(() => expect(findByConversationMock).toHaveBeenCalledTimes(1))
+
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'new-message', role: 'user', content: 'new', timestamp: 2 },
+    ])
+    await useConversationStore.getState().retryLoadFromDB()
+    resolveOldTranscript([{ id: 'old-message', role: 'user', content: 'old', timestamp: 1 }])
+    await oldLoad
+
+    expect(useConversationStore.getState().conversations[0].messages.map((m) => m.id))
+      .toEqual(['new-message'])
+    expect(useConversationStore.getState().loadError).toBeNull()
+  })
+
+  it('does not let a superseded fallback metadata read replace a successful retry', async () => {
+    let resolveOldMetadata!: (conversations: unknown[]) => void
+    findAllMetaMock.mockRejectedValueOnce(new Error('first metadata read failed'))
+    findAllMetaMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOldMetadata = resolve
+    }))
+    const oldLoad = useConversationStore.getState().loadFromDB()
+    await vi.waitFor(() => expect(findAllMetaMock).toHaveBeenCalledTimes(2))
+
+    findAllMetaMock.mockResolvedValueOnce([meta(CONV_A, 'new title')])
+    findByConversationMock.mockResolvedValue([])
+    await useConversationStore.getState().retryLoadFromDB()
+    resolveOldMetadata([meta(CONV_A, 'old title')])
+    await oldLoad
+
+    expect(useConversationStore.getState().conversations[0].title).toBe('new title')
+    expect(useConversationStore.getState().loadError).toBeNull()
+  })
+
+  it('does not let a superseded fallback transcript read overwrite a successful retry', async () => {
+    let resolveOldTranscript!: (messages: unknown[]) => void
+    findAllMetaMock.mockRejectedValueOnce(new Error('first metadata read failed'))
+    findByConversationMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOldTranscript = resolve
+    }))
+    const oldLoad = useConversationStore.getState().loadFromDB()
+    await vi.waitFor(() => expect(findByConversationMock).toHaveBeenCalledTimes(1))
+
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'new-message', role: 'user', content: 'new', timestamp: 2 },
+    ])
+    await useConversationStore.getState().retryLoadFromDB()
+    resolveOldTranscript([{ id: 'old-message', role: 'user', content: 'old', timestamp: 1 }])
+    await oldLoad
+
+    expect(useConversationStore.getState().conversations[0].messages.map((m) => m.id))
+      .toEqual(['new-message'])
+    expect(useConversationStore.getState().loadError).toBeNull()
+  })
+
+  it('surfaces a retryable error when a lazy transcript read never settles', async () => {
+    findByConversationMock.mockResolvedValueOnce([])
+    await useConversationStore.getState().loadFromDB()
+    findByConversationMock.mockReturnValueOnce(new Promise(() => {}))
+
+    vi.useFakeTimers()
+    try {
+      const selection = useConversationStore.getState().setActive(CONV_B)
+      await vi.advanceTimersByTimeAsync(15_100)
+      await selection
+
+      const state = useConversationStore.getState()
+      expect(state.loadError).toContain('timed out')
+      expect(state.loadErrorScope).toBe('transcript')
+      expect(state.loadFailedConversationId).toBe(CONV_B)
+      expect(readPersistedRecord()?.message).toContain('timed out')
     } finally {
       vi.useRealTimers()
     }
