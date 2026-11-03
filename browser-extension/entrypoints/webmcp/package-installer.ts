@@ -33,7 +33,7 @@
  */
 
 import { normalizeProviderPath, type FsProvider } from '@creatorweave/fs-provider'
-import { toolSourcePath, validateManifest, validatePackage } from '@creatorweave/shared/webmcp-adapter'
+import { validateManifest, validatePackage } from '@creatorweave/shared/webmcp-adapter'
 import {
   MAX_PACKAGE_FILE_BYTES,
   MAX_PACKAGE_FILES,
@@ -806,52 +806,84 @@ async function pathExists(provider: FsProvider, path: string): Promise<boolean |
  * as "complete", and the retry would delete the backup holding the ONLY
  * complete copy of the package.
  *
- * The completeness reference is the VALID package manifest format —
- * `validateManifest` produces `{ id, version, description, tools }` and a
- * package manifest has NO `files` array (finding: "Recovery restores older
- * package": requiring `files` made every valid manifest read as
- * incomplete, so recovery always rolled the live install back to an older
- * backup). The manifest lists its tools with their file paths, so the tree
- * is complete only when the manifest parses INTO that format AND every
- * tool file exists on the live tree (the installer's own `config.json` is
- * tolerated as extra state). An INDETERMINATE read failure counts as
+ * The completeness reference is the INSTALL-TIME package validators — the
+ * same `validateManifest` + `validatePackage` pair the installer runs over
+ * the staged bytes before writing anything (findings: "Corrupt live tree
+ * discards backup" and "Recovery accepts incomplete packages"). Completeness
+ * is therefore not "a parseable manifest with stat-able tool paths" but "the
+ * live tree reads back as the VALID package the installer would have
+ * written":
+ *
+ *   1. `validateManifest` re-parses the manifest under the full schema (id
+ *      format + directory match, semver, urlRegex rules, tool path rules).
+ *      A manifest that is parseable JSON but invalid — or names a DIFFERENT
+ *      package id — reads as incomplete, so the intact backup is recovered
+ *      instead of discarded over a corrupt live tree.
+ *   2. `validatePackage` re-validates the tool SOURCES' contents (the
+ *      declarative workflow contract), not just their existence — a tool
+ *      file whose content is truncated/garbage no longer passes.
+ *   3. The installer-generated `config.json` is part of the guaranteed
+ *      installed state (the installer ALWAYS writes it, replacing the
+ *      registry's copy), so a restore that stopped before copying it must
+ *      read as incomplete too — otherwise the backup holding the only
+ *      complete copy is cleared and a later failure leaves the package
+ *      without its activation state (its PRESENCE is checked; validity is
+ *      not — activation state is optional everywhere else in the
+ *      extension, absence reads as the disabled default).
+ *
+ * The manifest may keep a RAW `./`-prefixed tool path (the validator
+ * normalizes it; installation writes the normalized file) — the sources are
+ * therefore read from the NORMALIZED paths, exactly the rule
+ * `validateManifest` itself applies. An INDETERMINATE read failure counts as
  * INCOMPLETE (fail closed: keep the backup).
  */
 async function liveTreeIsComplete(provider: FsProvider, id: string): Promise<boolean> {
-  let manifest: { tools?: unknown }
+  let manifestJson: unknown
   try {
     const bytes = await provider.readFile(`${id}/manifest.json`)
-    manifest = JSON.parse(new TextDecoder().decode(bytes))
+    manifestJson = JSON.parse(new TextDecoder().decode(bytes))
   } catch {
     return false
   }
-  if (typeof manifest !== 'object' || manifest === null || !Array.isArray(manifest.tools)) return false
+  let manifest: ReturnType<typeof validateManifest>
+  try {
+    manifest = validateManifest(manifestJson, id)
+  } catch {
+    return false // parseable but INVALID — not the package the installer writes
+  }
+  // The installer-generated config.json is part of the guaranteed installed
+  // state (the installer ALWAYS writes it, replacing the registry's copy),
+  // so a restore that stopped before copying it must read as INCOMPLETE —
+  // otherwise the backup holding the only complete copy is cleared and a
+  // later failure leaves the package without its activation state (finding:
+  // "Recovery accepts incomplete packages"). PRESENCE only: activation state
+  // is optional everywhere else in the extension (absence reads as the
+  // disabled default — see `readInstalledPackageActivation`), so requiring
+  // the file to PARSE here would let a restored backup overwrite a
+  // legitimately enabled package over a config the opt-in flow can rewrite.
+  try {
+    await provider.readFile(`${id}/config.json`)
+  } catch {
+    return false
+  }
+  const sources: Record<string, string> = Object.create(null)
   for (const tool of manifest.tools) {
-    const path = typeof tool === 'object' && tool !== null && typeof (tool as { path?: unknown }).path === 'string'
-      ? (tool as { path: string }).path
-      : undefined
-    // A manifest with a nameless/invalid tool entry is not a valid package
-    // manifest — treat the tree as incomplete.
-    if (!path) return false
-    // Normalize with the SAME rule the manifest validator applies (finding:
-    // "Valid installs appear incomplete"): `validateManifest` accepts a
-    // tool path beginning with `./` and records the NORMALIZED path, and
-    // installation writes the normalized file. Stat-ing the RAW `./`-prefixed
-    // path here hit the provider's path-traversal guard, the read failed,
-    // and a perfectly valid live install was treated as incomplete — the
-    // recovery gate then restored an OLDER preserved backup over it.
-    let normalized: string
+    let bytes: Uint8Array
     try {
-      normalized = toolSourcePath(path)
-    } catch {
-      return false
-    }
-    try {
-      const stat = await provider.stat(`${id}/${normalized}`)
-      if (stat.kind !== 'file') return false
+      bytes = await provider.readFile(`${id}/${tool.path}`)
     } catch {
       return false // missing OR unreadable — treat both as incomplete
     }
+    // `validatePackage` rejects a NON-STRING source, so decode with lossy
+    // replacement rather than crashing: a BINARY file where a tool source
+    // should be produces replacement chars and fails the workflow parser
+    // below anyway.
+    sources[tool.path] = new TextDecoder().decode(bytes)
+  }
+  try {
+    validatePackage(manifest, sources, id)
+  } catch {
+    return false // tool source content invalid — not a usable install
   }
   return true
 }

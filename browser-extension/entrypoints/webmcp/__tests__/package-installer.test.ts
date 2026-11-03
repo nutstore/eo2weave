@@ -114,6 +114,14 @@ async function listFiles(provider: FsProvider, dir: string): Promise<string[]> {
 describe('installPackage (extension side)', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    // The uninstall-INTENT map is module state shared by every test in this
+    // file. Tests exercising the fence (and the fake-timer tests, whose
+    // records are written against a clock that ends up AHEAD of the real
+    // one) leave records behind that read as "uninstalled in the future" —
+    // without the reset they spuriously fence later tests' installs
+    // (production expires records by TTL instead; this export never runs
+    // there).
+    resetUninstallIntentStateForTest()
   })
 
   it('downloads, verifies and writes the whole tree into the mount', async () => {
@@ -593,6 +601,13 @@ describe('installPackage (extension side)', () => {
     // install when the suite runs in file order.
     resetUninstallIntentStateForTest()
     await uninstallPackage('com.example.pkg', provider)
+    // The install's fence anchor (`startedAt`) must be STRICTLY newer than
+    // the uninstall's intent record: the previous test's fake clock can run
+    // the uninstall to completion within the SAME millisecond the install
+    // starts, and `at >= since` then misreads the older intent as
+    // concurrent. One timer step separates the two (real time always does);
+    // under real timers this resolves immediately and stays a no-op.
+    await new Promise(resolve => setTimeout(resolve, 1))
     await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
       .resolves.toBeTruthy()
     expect(await listFiles(provider, '')).toEqual(['com.example.pkg'])
@@ -668,7 +683,98 @@ describe('installPackage (extension side)', () => {
     expect(await listFiles(provider, '')).toEqual([])
   })
 
-  it('does NOT restore the backup over a live install whose tool paths use the ./ prefix', async () => {
+  it('does NOT discard the backup over a live tree whose tool CONTENT is corrupt', async () => {
+    // MEDIUM ("Corrupt live tree discards backup"): `liveTreeIsComplete`
+    // accepted any parseable manifest with a tools array whose paths stat as
+    // files — it never validated the CONTENTS. A live tree with garbage tool
+    // sources (e.g. a failed/partial restore overwriting the tool file)
+    // read as "complete", the recovery gate kept it and the pre-swap
+    // cleanup DELETED the complete backup; a later failure then left the
+    // corrupt live package as the only copy. Completeness now runs the
+    // SAME validators the installer runs at install time
+    // (`validateManifest` + `validatePackage` over the live bytes).
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    // Live tree: intact manifest + config, but the TOOL SOURCE is garbage.
+    await provider.mkdir('com.example.pkg', { recursive: true })
+    for (const [path, content] of Object.entries(files)) {
+      const corrupt = path === 'workflows/read.js' ? 'export default { corrupt: true }' : content
+      await provider.writeFile(`com.example.pkg/${path}`, new TextEncoder().encode(corrupt))
+    }
+    // Backup: the COMPLETE package with distinct content.
+    const BACKUP_WORKFLOW = 'export default { fromBackup: true }'
+    await provider.mkdir('.com.example.pkg.previous', { recursive: true })
+    for (const [path, content] of Object.entries(files)) {
+      await provider.writeFile(
+        `.com.example.pkg.previous/${path}`,
+        new TextEncoder().encode(path === 'workflows/read.js' ? BACKUP_WORKFLOW : content),
+      )
+    }
+    // The swap fails after recovery, so the recovery decision is observable.
+    const failingWrite = provider.writeFile.bind(provider)
+    provider.writeFile = (async (path: string, data: Uint8Array) => {
+      if (path.startsWith('.com.example.pkg.installing/')) throw new Error('EIO: simulated staging write failure')
+      return failingWrite(path, data)
+    }) as typeof provider.writeFile
+    delete (provider as { rename?: unknown }).rename
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toThrow(/Failed to write package/)
+
+    // The backup was RECOVERED over the corrupt live tree: the surviving
+    // workflow content is the backup's, not the corrupt live garbage.
+    const source = new TextDecoder().decode(await provider.readFile('com.example.pkg/workflows/read.js'))
+    expect(source).toBe(BACKUP_WORKFLOW)
+  })
+
+  it('does NOT clear the backup when the live tree is missing its generated config.json', async () => {
+    // MEDIUM ("Recovery accepts incomplete packages"): a restore that
+    // stopped after copying the manifest and every tool source but BEFORE
+    // the installer-generated `config.json` read as "complete" — the
+    // backup (holding the only copy of the activation state) was cleared,
+    // and a later staging failure left the package without config state.
+    // The generated config is guaranteed installed state, so its absence
+    // reads as INCOMPLETE and the backup is recovered instead.
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+    // Live tree: manifest + tool source, but NO config.json.
+    await provider.mkdir('com.example.pkg', { recursive: true })
+    for (const [path, content] of Object.entries(files)) {
+      if (path === 'config.json') continue
+      await provider.writeFile(`com.example.pkg/${path}`, new TextEncoder().encode(content))
+    }
+    // Backup: the COMPLETE package with distinct workflow content.
+    const BACKUP_WORKFLOW = 'export default { fromBackup: true }'
+    await provider.mkdir('.com.example.pkg.previous', { recursive: true })
+    for (const [path, content] of Object.entries(files)) {
+      await provider.writeFile(
+        `.com.example.pkg.previous/${path}`,
+        new TextEncoder().encode(path === 'workflows/read.js' ? BACKUP_WORKFLOW : content),
+      )
+    }
+    const failingWrite = provider.writeFile.bind(provider)
+    provider.writeFile = (async (path: string, data: Uint8Array) => {
+      if (path.startsWith('.com.example.pkg.installing/')) throw new Error('EIO: simulated staging write failure')
+      return failingWrite(path, data)
+    }) as typeof provider.writeFile
+    delete (provider as { rename?: unknown }).rename
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toThrow(/Failed to write package/)
+
+    // The backup was recovered, INCLUDING its config.json (the recovered
+    // live tree must hold the activation-state file again).
+    const liveFiles = await listFiles(provider, 'com.example.pkg')
+    expect(liveFiles).toContain('config.json')
+    const source = new TextDecoder().decode(await provider.readFile('com.example.pkg/workflows/read.js'))
+    expect(source).toBe(BACKUP_WORKFLOW)
+  })
+
+  it('does NOT restore an older backup over a live install whose tool paths use the ./ prefix', async () => {
     // MEDIUM ("Valid installs appear incomplete"): a manifest may declare a
     // tool path beginning with `./` — the validator normalizes it and the
     // install writes the normalized file. The completeness check stat-ed the
@@ -809,6 +915,62 @@ describe('installPackage (extension side)', () => {
       // release the lease — the next owner never raced a stale write.
       resolveWrite!()
       await expect(transaction).rejects.toThrow(/lease was lost|aborted/i)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not grant the lease to a new owner until the losing transaction is quiescent', async () => {
+    // MEDIUM ("Stale writes still overlap"): the previous owner lost the
+    // lease while a storage write was still pending. The released lease
+    // must not be grantable to a replacement owner until that stale write
+    // has SETTLED — otherwise the stale write lands under the new owner's
+    // lease and mixes the package. Proven through the PUBLIC surface: a
+    // second `withPackageLock` whose acquire must stay pending until the
+    // losing transaction's write resolves.
+    vi.useFakeTimers()
+    try {
+      const { withPackageLock } = await import('../package-lock')
+      const key = 'webmcp_package_lock_com.example.quiesce'
+      let resolveWrite: (() => void) | undefined
+      let loserAborted: AbortSignal | undefined
+      let winnerStarted = false
+
+      // Loser: holds the lease; its write stays PENDING past the loss.
+      const loser = withPackageLock('com.example.quiesce', async signal => {
+        loserAborted = signal
+        await new Promise<void>(resolve => { resolveWrite = resolve })
+        if (signal.aborted) throw new Error('aborted: the lease was lost')
+      })
+
+      // Let the loser reach its pending write.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(loserAborted).toBeDefined()
+
+      // Take over the stored lease; the loser's next heartbeat reports the
+      // loss and the wrapper aborts → the finally registers the quiescence
+      // gate and releases. The stale write is STILL pending. (The intruder
+      // lease is SHORT: an unowned lease expires, and this test watches the
+      // winner take over exactly when the lease becomes free.)
+      await chrome.storage.local.set({ [key]: { owner: 'intruder', expiresAt: Date.now() + 2_000 } })
+      await vi.advanceTimersByTimeAsync(5_100)
+
+      // THE FIX UNDER TEST: a replacement owner starting to acquire NOW
+      // (while the stale write is still in flight) must NOT be granted the
+      // lease and must NOT start mutating — its acquire only proceeds after
+      // the gate settles.
+      const winner = withPackageLock('com.example.quiesce', async () => {
+        winnerStarted = true
+      })
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(winnerStarted).toBe(false) // the winner did NOT start...
+
+      // The stale write settles; the gate clears and the winner proceeds.
+      resolveWrite!()
+      await expect(winner).resolves.toBeUndefined()
+      expect(winnerStarted).toBe(true)
+      // The loser aborted on its lost lease (its post-write fence).
+      await expect(loser).rejects.toThrow(/lease was lost|aborted/i)
     } finally {
       vi.useRealTimers()
     }
