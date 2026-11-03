@@ -5,9 +5,9 @@
  * Each message is stored as a separate row, keyed by (conversation_id, seq).
  */
 
-import { getSQLiteDB, parseJSON } from '../sqlite-database'
+import { getSQLiteDB, parseJSON } from '@/sqlite/sqlite-database'
 import type { Message, MessageUsage } from '@/agent/message-types'
-import { deserializeMessageMetadata, serializeMessageMetadata } from '../message-meta'
+import { deserializeMessageMetadata, serializeMessageMetadata } from '@/sqlite/message-meta'
 
 //=============================================================================
 // Types
@@ -28,6 +28,9 @@ interface AppSessionSerializedMessage {
   id: string
   role: 'user' | 'assistant' | 'tool'
   content: string | null
+  kind?: Message['kind']
+  stopReason?: Message['stopReason']
+  errorMessage?: string
   reasoning?: string | null
   toolCalls?: Array<{ id: string; name: string; arguments: string }>
   toolResults?: Array<{ toolCallId: string; name: string; content: string }>
@@ -432,6 +435,12 @@ export class MessageRepository {
       timestamp: data.timestamp || Date.now(),
     }
 
+    // Preserve turn failure state so AppSession-snapshot recovery keeps the
+    // retry affordance (kind/stopReason drive the UI status banner and the
+    // empty-turn filtering in message-mappers).
+    if (data.kind !== undefined) msg.kind = data.kind
+    if (data.stopReason !== undefined) msg.stopReason = data.stopReason
+    if (data.errorMessage !== undefined) msg.errorMessage = data.errorMessage
     if (data.reasoning !== undefined) msg.reasoning = data.reasoning
     if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
       msg.toolCalls = data.toolCalls.map((tc) => ({
