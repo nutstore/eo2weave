@@ -1528,9 +1528,15 @@ async function runLoadFromDB(
           const selectionGenerationAtFallback = activeSelectionGeneration
           let retryWorkspaceLoaded = true
           let retryWorkspaceVerified = false
+          // The workspace id this fallback ensure actually verified — passed
+          // to resolution so a record naming a DIFFERENT workspace (the
+          // selection changed while the ensure was pending) stays unresolved
+          // (PR #152 review, "Wrong workspace failure is resolved").
+          let retryEnsuredWorkspaceId: string | null = null
           try {
             const ensureStatus = await ensureActiveWorkspace(retryConversations, retryActiveId)
             retryWorkspaceVerified = ensureStatus !== 'missing-target'
+            if (retryWorkspaceVerified) retryEnsuredWorkspaceId = retryActiveId
             if (!isCurrentRun()) return
           } catch (workspaceErr) {
             if (!isCurrentRun()) return
@@ -1626,6 +1632,7 @@ async function runLoadFromDB(
             // (PR #152 review, "Wrong workspace failure is resolved").
             markPersistedFailureResolved(retryActiveId, {
               workspaceEnsureVerified: retryWorkspaceVerified,
+              ensuredWorkspaceId: retryEnsuredWorkspaceId,
             })
             // The error stays visible until the transcript read succeeded.
             set((state) => {

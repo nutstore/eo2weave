@@ -228,9 +228,11 @@ describe('conversation.store — PR #152 Sourcery fixes (issue #147)', () => {
   })
 
   it('preserves a selection made during the fallback metadata read', async () => {
-    // Primary metadata fails → fallback path; the user selects conv-b during
-    // the fallback read (the fallback run itself awaits a 300ms backoff plus
-    // the metadata read before installing).
+    // Primary metadata fails → fallback path; the user selects conv-b while
+    // the fallback metadata request itself is pending (not during the
+    // preceding backoff — a regression that snapshots selection only when
+    // fallback starts must still fail) (PR #152 review, "Fallback selection
+    // race goes untested").
     findAllMetaMock.mockRejectedValueOnce(new Error('initial metadata unavailable'))
     let resolveFallbackMeta!: (value: unknown[]) => void
     findAllMetaMock.mockReturnValueOnce(
@@ -245,6 +247,9 @@ describe('conversation.store — PR #152 Sourcery fixes (issue #147)', () => {
       expect(useConversationStore.getState().loaded).toBe(false)
       expect(useConversationStore.getState().loadError).toContain('initial metadata unavailable')
     })
+    // The fallback metadata REQUEST is now pending (awaiting its deferred
+    // result). Change the selection NOW, while the request is in flight —
+    // then release the result.
     await useConversationStore.getState().setActive(CONV_B)
     expect(useConversationStore.getState().activeConversationId).toBe(CONV_B)
 
@@ -421,7 +426,7 @@ describe('conversation.store — PR #152 Sourcery fixes (issue #147)', () => {
     void secondRetry.catch(() => {})
   })
 
-  it.skip('does not surface a workspace-ensure failure for a workspace the user left', async () => {
+  it('does not surface a workspace-ensure failure for a workspace the user left', async () => {
     // The workspace ensure for conv-a fails, but by then the user has already
     // switched to conv-b — the stale failure must not be recorded.
     let resolveMeta!: (value: unknown[]) => void
@@ -460,7 +465,7 @@ describe('conversation.store — PR #152 Sourcery fixes (issue #147)', () => {
     expect(readPersistedRecord()).toBeNull()
   })
 
-  it.skip('keeps the failed workspace error visible when the workspace is still active', async () => {
+  it('keeps the failed workspace error visible when the workspace is still active', async () => {
     // Control for the guard above: same failure, no selection change — the
     // error must still be surfaced.
     getWorkspaceManagerMock.mockResolvedValue({
