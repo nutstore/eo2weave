@@ -253,10 +253,20 @@ export async function runAgentImpl(
         // runtime. Tool routing is unaffected either way: ToolContext carries
         // the conversationId as its workspaceId explicitly.
         const workspaceStore = useConversationContextStore.getState()
-        if (background) {
-          await workspaceStore.ensureWorkspace(conversationId, conv.title)
-        } else if (workspaceStore.activeWorkspaceId !== conversationId) {
-          await workspaceStore.switchWorkspace(conversationId)
+        try {
+          if (background) {
+            await workspaceStore.ensureWorkspace(conversationId, conv.title)
+          } else if (workspaceStore.activeWorkspaceId !== conversationId) {
+            await workspaceStore.switchWorkspace(conversationId)
+          }
+        } catch (setupError) {
+          // FIX: this await window exits through the OUTER error handler when
+          // setup/switch rejects — which never touches runClaimSlots, so the
+          // conversation stayed claimed forever and every later dispatch was
+          // rejected as already-claimed. Release the claim here and rethrow so
+          // the outer handler keeps its normal rollback/failure behavior.
+          releaseClaim()
+          throw setupError
         }
 
         // The await above is the one window where a competing dispatch could
