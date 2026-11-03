@@ -62,6 +62,7 @@ export async function registerAppTools(): Promise<void> {
           './workspace-setup'
         )
         return ensureConversationWorkspaceWithMeta({
+          workspaceId: id,
           ensureWorkspace: () =>
             useConversationContextStore.getState().ensureWorkspace(id, title, projectId),
           deleteWorkspace: (workspaceId) =>
