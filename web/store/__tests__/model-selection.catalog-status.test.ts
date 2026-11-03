@@ -60,6 +60,18 @@ describe('resolveDefaultModelSelection: failed vs authoritative-empty catalogs',
     })
   })
 
+  it('defers a gateway selection after a successful empty response', () => {
+    const providers = [
+      provider({ providerType: 'llm-gateway', catalogStatus: 'empty' }),
+      provider({ providerType: 'p2', models: [{ id: 'a-1', name: 'A' }], authoritativeIds: ['a-1'] }),
+    ]
+    expect(resolveDefaultModelSelection(providers, { providerType: 'llm-gateway', modelName: 'm-gone' })).toMatchObject({
+      action: 'defer',
+      providerType: 'llm-gateway',
+      modelName: 'm-gone',
+    })
+  })
+
   it('reports no-models when every catalog is authoritatively empty', () => {
     const providers = [
       provider({ providerType: 'p1', catalogStatus: 'empty' }),

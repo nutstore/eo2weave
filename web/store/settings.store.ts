@@ -1380,9 +1380,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         //   from a stale snapshot — the newer run owns reconciliation now.
         // - A FAILED catalog ('failed') is missing information, not proof of
         //   delisting — skip it entirely, never wipe pins.
-        // - An authoritative EMPTY catalog DOES sweep: getStalePinnedModels
-        //   reports seen pins as stale only when the catalog status says its
-        //   (empty) contents are authoritative.
+        // - An empty catalog cannot prove that every pin was delisted.
         // - Keep the currently selected model even if stale: the user is on
         //   it, and the topbar already flags it (currentModelDelistedTooltip).
         // A newer discovery run has started while this one was collecting:
@@ -1414,14 +1412,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const current = get()
         for (const r of results) {
           if (r.catalogStatus === 'failed') continue
-          // An authoritative EMPTY catalog also sweeps: the provider
-          // positively reported it serves no models, so previously-seen
-          // pins ARE delisted. The old `authoritativeIds.length === 0`
-          // bail-out skipped exactly this case and left stale pins in
-          // settings forever (Sourcery: "Empty catalogs leave stale pins");
-          // the unknown-vs-confirmed distinction is already carried by
-          // catalogStatus — getStalePinnedModels only reports pins for a
-          // catalog whose status says its contents are authoritative.
+          // getStalePinnedModels guards empty lists as unknown, even when
+          // an upstream provider marked its empty response successful.
           const staleIds = current.getStalePinnedModels(r.providerType, r.authoritativeIds, r.catalogStatus)
           if (staleIds.length === 0) continue
           const keep = r.providerType === current.providerType ? new Set([current.modelName]) : new Set<string>()
@@ -1534,21 +1526,20 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // gone": return no stale pins so the topbar, settings page and
         // auto-removal loop all agree. A 'loading' catalog is unknown too.
         //
-        // An AUTHORITATIVE EMPTY catalog ('empty') is the opposite: the
-        // provider positively reported that it serves no models, so every
-        // previously-seen pin IS stale. The caller must say so explicitly —
-        // an empty list alone is not enough, because the same empty list is
-        // what a failed refresh produces.
-        //
-        // With NO status given, a NON-EMPTY list is self-evidently
-        // authoritative (it has content), while an EMPTY one is unknown.
-        if (catalogStatus === 'failed' || catalogStatus === 'loading') return []
-        if (availableIds.length === 0 && catalogStatus !== 'empty') return []
+        // Even a successful empty response is insufficient evidence that
+        // every previously seen pin was removed. A non-empty list can prove
+        // that a particular previously seen ID is absent.
+        if (catalogStatus === 'failed' || catalogStatus === 'loading' ||
+            (providerType === 'llm-gateway' && catalogStatus === 'empty')) return []
+        if (availableIds.length === 0) return []
         const state = get()
         const pinned = state.pinnedModelsByProvider[providerType] || []
         const seen = new Set(state.pinnedSeenByProvider[providerType] || [])
         const available = new Set(availableIds)
-        return pinned.filter((id) => seen.has(id) && !available.has(id))
+        return pinned.filter((id) =>
+          seen.has(id) && !available.has(id) &&
+          !(providerType === state.providerType && id === state.modelName)
+        )
       },
 
       removePinnedModels: (providerType, modelIds) => {

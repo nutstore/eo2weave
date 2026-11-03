@@ -16,6 +16,7 @@ import {
   getLLMGatewayApiKeyProviderKey,
   prepareGatewayModels,
   registerGatewayModels,
+  unregisterLLMGatewayProvider,
   LLM_GATEWAY_PROVIDER_TYPE,
 } from '@/agent/providers/llm-gateway-provider'
 import { useSettingsStore } from '@/store/settings.store'
@@ -260,6 +261,9 @@ async function applyGatewayLoginTokensInner(
       signal?.throwIfAborted()
       // No awaits after this point: cancellation cannot interleave the token
       // pair, provider registration, and selected-provider settings commit.
+      // A new login may belong to another account. Its failed discovery
+      // must never inherit the previous account's in-memory model list.
+      unregisterLLMGatewayProvider()
       registerGatewayModels(discovery.models, discovery.status)
       onCommit?.()
       committed = true

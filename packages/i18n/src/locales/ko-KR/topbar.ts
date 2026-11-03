@@ -19,6 +19,8 @@ export const topbar = {
       codexUnavailableWarning: "Codex를 사용할 수 없습니다. 다시 로그인하세요",
       providerUnavailableWarning: "공급자를 사용할 수 없습니다. 다시 로그인하세요",
       temporarilyUnavailable: "일시적으로 확인할 수 없음",
+      catalogUnavailable: "모델 목록을 일시적으로 업데이트할 수 없습니다",
+      retryCatalog: "다시 시도",
       noPinnedModels: "아직 고정된 모델이 없습니다. 설정에서 추가하세요.",
       searchPlaceholder: "모델 검색…",
       noResults: "일치하는 모델 없음",

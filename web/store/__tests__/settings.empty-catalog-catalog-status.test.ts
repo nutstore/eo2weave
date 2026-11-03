@@ -224,12 +224,11 @@ describe('getAvailableProviders: failed vs authoritative-empty catalogs (PR #150
     provider = results.find((r) => r.providerType === P)!
     expect(provider.catalogStatus).toBe('ready')
     expect(provider.authoritativeIds).toEqual(['m-other'])
-    // 'm-alive' was seen before and is absent from the authoritative list.
-    // (It is also the active model, so the auto-removal keeps it, but the
-    // stale-pin API itself must report it.)
+    // The active model stays out of the stale set even when absent from a
+    // non-empty catalog; the user can keep using it until they switch.
     expect(
       useSettingsStore.getState().getStalePinnedModels(P, provider.authoritativeIds, provider.catalogStatus)
-    ).toEqual(['m-alive'])
+    ).toEqual([])
   })
 })
 
@@ -249,9 +248,18 @@ describe('getStalePinnedModels: catalogStatus semantics', () => {
     expect(state.getStalePinnedModels(P, [], undefined)).toEqual([])
   })
 
-  it('reports every seen pin stale for an AUTHORITATIVE empty catalog', () => {
+  it('does not mark pins stale when the catalog is empty', () => {
     const state = useSettingsStore.getState()
-    expect(state.getStalePinnedModels(P, [], 'empty')).toEqual(['m-a', 'm-b'])
+    expect(state.getStalePinnedModels(P, [], 'empty')).toEqual([])
+  })
+
+  it('does not mark gateway pins stale against a retained list after an empty response', () => {
+    useSettingsStore.setState({
+      pinnedModelsByProvider: { 'llm-gateway': ['m-a'] },
+      pinnedSeenByProvider: { 'llm-gateway': ['m-a'] },
+    })
+    const state = useSettingsStore.getState()
+    expect(state.getStalePinnedModels('llm-gateway', ['another-model'], 'empty')).toEqual([])
   })
 
   it('keeps legacy behavior for non-empty lists (with or without a status)', () => {

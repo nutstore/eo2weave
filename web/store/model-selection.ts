@@ -109,9 +109,11 @@ export function resolveDefaultModelSelection(
   }
 
   const currentProvider = providers.find((provider) => provider.providerType === current.providerType)
-  // A failed current catalog cannot prove that the persisted selection is
-  // invalid. Preserve it until a later refresh instead of switching providers.
-  if (currentProvider?.catalogStatus === 'failed' && current.providerType && current.modelName) {
+  // A failed or empty gateway catalog cannot prove that the persisted
+  // selection is invalid. Preserve it until a later usable refresh.
+  if ((currentProvider?.catalogStatus === 'failed' ||
+       (currentProvider?.providerType === 'llm-gateway' && currentProvider.catalogStatus === 'empty')) &&
+      current.providerType && current.modelName) {
     return {
       action: 'defer',
       providerType: current.providerType,
@@ -149,7 +151,8 @@ export function resolveDefaultModelSelection(
     }
   }
 
-  if (providers.some((provider) => provider.catalogStatus === 'failed')) {
+  if (providers.some((provider) => provider.catalogStatus === 'failed' ||
+      (provider.providerType === 'llm-gateway' && provider.catalogStatus === 'empty'))) {
     return {
       action: 'defer',
       providerType: current.providerType,

@@ -5,6 +5,7 @@ const { provider, keyStore, settings } = vi.hoisted(() => ({
     update: vi.fn<() => Promise<Array<{ id: string; name: string }>>>(),
     prepare: vi.fn<(accessToken: string, signal?: AbortSignal) => Promise<{ models: Array<{ id: string; name: string }>; status: 'ready' | 'empty' | 'failed' }>>(),
     register: vi.fn(),
+    unregister: vi.fn(),
   },
   keyStore: {
     save: vi.fn<(id: string, key: string) => Promise<void>>(),
@@ -31,6 +32,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   updateGatewayModels: provider.update,
   prepareGatewayModels: provider.prepare,
   registerGatewayModels: provider.register,
+  unregisterLLMGatewayProvider: provider.unregister,
 }))
 vi.mock('@/security/api-key-store', () => ({
   saveApiKey: keyStore.save,
@@ -286,6 +288,7 @@ describe('applyGatewayLoginTokens cancellation', () => {
     await expect(pending).resolves.toMatchObject({ ok: true })
     expect(savedKey).toBe('fresh-key')
     expect(settings.setHasApiKey).toHaveBeenCalledWith(true)
+    expect(provider.unregister.mock.invocationCallOrder[0]).toBeLessThan(provider.register.mock.invocationCallOrder[0])
   })
 
   it('commits with an empty model list when model discovery exceeds its deadline', async () => {

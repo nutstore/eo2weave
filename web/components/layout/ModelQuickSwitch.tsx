@@ -30,6 +30,11 @@ interface FlatModel {
   model: { id: string; name: string; hasVision?: boolean; stale?: boolean }
 }
 
+function isUnverifiedGateway(provider: AvailableProvider): boolean {
+  return provider.providerType === 'llm-gateway' &&
+    (provider.catalogStatus === 'loading' || provider.catalogStatus === 'empty' || provider.catalogStatus === 'failed')
+}
+
 interface ModelQuickSwitchProps {
   /** Show the thinking level beside the model when rendered in the composer toolbar. */
   compact?: boolean
@@ -58,6 +63,7 @@ export function ModelQuickSwitch({
   const [providers, setProviders] = useState<AvailableProvider[]>([])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
+  const [retryingGatewayCatalog, setRetryingGatewayCatalog] = useState(false)
   const [query, setQuery] = useState('')
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({})
   const [visionOnly, setVisionOnly] = useState(false)
@@ -150,6 +156,9 @@ export function ModelQuickSwitch({
     providers.filter((p) => p.models.length > 0),
     [providers]
   )
+  const gatewayCatalogUnavailable = providers.some(
+    isUnverifiedGateway,
+  )
 
   // Enrich each model with hasVision and stale:
   // - hasVision: OpenRouter snapshot first (authoritative modality metadata);
@@ -161,8 +170,7 @@ export function ModelQuickSwitch({
   //   list (registry / static list) — not from `models`, which is pinned-derived
   //   and would always contain every pin (making stale detection impossible).
   //   The catalog status travels with the comparison so an UNKNOWN catalog
-  //   (never loaded / fetch failed) reports nothing stale, while an
-  //   AUTHORITATIVE empty catalog does report the pins as stale (#146).
+  //   (never loaded / fetch failed / empty response) reports nothing stale.
   const enrichedProviders = useMemo<AvailableProvider[]>(() => {
     const { getStalePinnedModels } = useSettingsStore.getState()
     return visibleProviders.map((p) => {
@@ -363,8 +371,25 @@ export function ModelQuickSwitch({
   useEffect(() => () => cancelThinkingClose(), [])
 
   const handleSelect = (provider: AvailableProvider, nextModelName: string) => {
+    if (isUnverifiedGateway(provider)) return
     switchProviderAndModel(provider.providerType, nextModelName)
     setOpen(false)
+  }
+
+  const retryGatewayCatalog = async () => {
+    setRetryingGatewayCatalog(true)
+    try {
+      const gateway = await import('@/agent/providers/llm-gateway-provider')
+      const token = await gateway.getValidAccessToken(
+        gateway.getLLMGatewayBaseURL(), gateway.getLLMGatewayClientId(),
+      )
+      if (token) await gateway.updateGatewayModels(token, gateway.getGatewayAuthSessionGeneration())
+    } catch (error) {
+      console.error('[ModelQuickSwitch] Failed to refresh gateway models:', error)
+    } finally {
+      setRetryingGatewayCatalog(false)
+      useSettingsStore.getState().triggerProviderRefresh()
+    }
   }
 
   const toggleProviderCollapsed = (providerKey: string) => {
@@ -495,6 +520,20 @@ export function ModelQuickSwitch({
           </div>
         )}
 
+        {!loading && gatewayCatalogUnavailable && (
+          <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-2 text-xs text-tertiary">
+            <span>{t('topbar.modelSwitcher.catalogUnavailable')}</span>
+            <button
+              type="button"
+              onClick={() => void retryGatewayCatalog()}
+              disabled={retryingGatewayCatalog}
+              className="shrink-0 text-primary hover:underline disabled:opacity-50"
+            >
+              {retryingGatewayCatalog ? t('topbar.modelSwitcher.loading') : t('topbar.modelSwitcher.retryCatalog')}
+            </button>
+          </div>
+        )}
+
         {loading ? (
                       <div className="space-y-1.5 py-1.5">
             <div className="h-9 animate-pulse rounded-lg border border-border/60 bg-muted/40" />
@@ -516,13 +555,15 @@ export function ModelQuickSwitch({
                 const selected =
                   provider.providerType === providerType && model.id === modelName
                 const isActive = idx === searchResultIdx
+                const unverifiedGateway = isUnverifiedGateway(provider)
                 return (
                   <button
                     key={`${provider.providerKey}:${model.id}`}
                     type="button"
                     onClick={() => handleSelect(provider, model.id)}
+                    disabled={unverifiedGateway}
                     aria-selected={selected}
-                    className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
+                    className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50 ${
                       selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : isActive ? 'bg-primary/10 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'
                     }`}>
                     <span className="flex min-w-0 items-baseline gap-2">
@@ -585,13 +626,15 @@ export function ModelQuickSwitch({
                     <div className="space-y-0.5 border-t border-border/40 px-1.5 py-1.5">
                       {visibleModels.map((model) => {
                         const selected = isCurrentProvider && model.id === modelName
+                        const unverifiedGateway = isUnverifiedGateway(provider)
                         return (
                           <button
                             key={`${provider.providerKey}:${model.id}`}
                             type="button"
                             onClick={() => handleSelect(provider, model.id)}
+                            disabled={unverifiedGateway}
                             aria-selected={selected}
-                            className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'}`}
+                            className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50 ${selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'}`}
                           >
                             <span className="flex min-w-0 items-center gap-2">
                               <span className="truncate" title={model.name}>{model.name}</span>
