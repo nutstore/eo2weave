@@ -202,6 +202,7 @@ interface ConversationState {
    * (different, absent or cached) proves nothing about the failed one
    * (issue #147, PR #149 review). */
   loadFailedConversationId: string | null
+  loadFailedWorkspaceId: string | null
 
   // Live AgentLoop instances live in `@/store/agent-loop-registry` rather
   // than in this state. They are service objects with private fields that
@@ -524,12 +525,14 @@ export function evictConversationMessagesIfSafe(conversationId: string): boolean
  * project store's sessionStorage init-error record). `conversationId` records
  * WHICH conversation's transcript failed so recovery can later be verified
  * against that exact conversation (PR #149 round-4 review) — a transcript read
- * of any other conversation proves nothing about this one.
+ * of any other conversation proves nothing about this one. `workspaceId`
+ * similarly identifies an OPFS workspace ensure failure.
  */
 function persistLoadErrorRecord(
   message: string,
   error: unknown,
-  conversationId?: string | null
+  conversationId?: string | null,
+  workspaceId?: string | null
 ): void {
   try {
     sessionStorage.setItem(
@@ -539,6 +542,7 @@ function persistLoadErrorRecord(
         stack: error instanceof Error ? error.stack : undefined,
         at: new Date().toISOString(),
         ...(conversationId ? { conversationId } : {}),
+        ...(workspaceId ? { workspaceId } : {}),
       })
     )
   } catch {
@@ -552,13 +556,9 @@ function persistLoadErrorRecord(
  * app must still be able to attach the ORIGINAL failure to a bug report via
  * Diagnostics.
  *
- * `resolvedForConversationId` is the id of the conversation whose transcript
- * was just re-read successfully (when any was). A record that NAMES its
- * conversation (transcript-scope failures persist `conversationId`) may only
- * be flagged recovered when THAT conversation re-read successfully — a later
- * successful load of a different conversation (or a load with no active
- * conversation, which reads no transcript at all) proves nothing about the
- * failed one (issue #147, PR #149 round-4 review). Legacy records written
+ * `resolvedForConversationId` identifies the conversation or workspace just
+ * verified. A record naming a different `conversationId` or `workspaceId`
+ * stays unresolved. Legacy records written
  * before the id was persisted (and metadata-scope records, which name no
  * conversation) keep the old behavior: a fully successful load resolves them.
  *
@@ -579,6 +579,7 @@ function markPersistedFailureResolved(
       const record = JSON.parse(raw) as {
         resolved?: boolean
         conversationId?: string
+        workspaceId?: string
       }
       if (
         record.conversationId &&
@@ -589,6 +590,7 @@ function markPersistedFailureResolved(
         // reporting it until its own transcript loads.
         return
       }
+      if (record.workspaceId && record.workspaceId !== resolvedForConversationId) return
       if (options?.requireNamedConversation && !record.conversationId) {
         // A metadata-scope/legacy record: this transcript-only read proves
         // nothing about the metadata layer — leave it unresolved until a
@@ -630,6 +632,94 @@ async function ensureActiveWorkspace(
     'active workspace ensure'
   )
   return true
+}
+
+function selectActiveConversationId(conversations: Array<Pick<Conversation, 'id'>>): string | null {
+  const workspaceStore = useConversationContextStore.getState()
+  const preferredId = workspaceStore.activeWorkspaceId
+  if (preferredId && conversations.some((conversation) => conversation.id === preferredId)) {
+    return preferredId
+  }
+  return workspaceStore.workspaces.find((workspace) =>
+    conversations.some((conversation) => conversation.id === workspace.id)
+  )?.id || null
+}
+
+let activeSelectionGeneration = 0
+const transcriptReadGenerations = new Map<string, number>()
+
+function claimTranscriptRead(id: string): number {
+  const generation = (transcriptReadGenerations.get(id) || 0) + 1
+  transcriptReadGenerations.set(id, generation)
+  return generation
+}
+
+function isCurrentTranscriptRead(id: string, generation: number): boolean {
+  return transcriptReadGenerations.get(id) === generation
+}
+
+async function retryLoadedFailure(
+  set: (recipe: (state: ConversationState) => void) => void,
+  get: () => ConversationState
+): Promise<void> {
+  const scope = get().loadErrorScope
+  const errorAtStart = get().loadError
+  const id = scope === 'transcript' ? get().loadFailedConversationId : get().loadFailedWorkspaceId
+  if (!id || !errorAtStart || (scope !== 'transcript' && scope !== 'workspace')) return
+
+  const generation = beginConversationLoadGeneration()
+  const stillCurrent = () => isCurrentConversationLoadGeneration(generation)
+  try {
+    if (scope === 'transcript') {
+      const transcriptGeneration = claimTranscriptRead(id)
+      const messages = await withTimeout(
+        getMessageRepository().findByConversation(id),
+        INITIAL_LOAD_TIMEOUT_MS,
+        'conversation transcript read'
+      )
+      if (!stillCurrent() || !isCurrentTranscriptRead(id, transcriptGeneration)) return
+      primePersistBaseline(id, messages as Message[])
+      set((state) => {
+        const conversation = state.conversations.find((item) => item.id === id)
+        if (conversation) {
+          conversation.messages = messages as Message[]
+          conversation.messagesLoaded = true
+          healCompressionBaseline(conversation)
+        }
+      })
+    } else {
+      await ensureActiveWorkspace(get().conversations, id)
+      if (!stillCurrent()) return
+    }
+
+    if (get().loadError === errorAtStart && get().loadErrorScope === scope &&
+        (scope === 'transcript' ? get().loadFailedConversationId === id :
+          get().loadFailedWorkspaceId === id)) {
+      markPersistedFailureResolved(id)
+      set((state) => {
+        state.loadError = null
+        state.loadErrorScope = null
+        state.loadFailedConversationId = null
+        state.loadFailedWorkspaceId = null
+      })
+    }
+  } catch (error) {
+    if (!stillCurrent() || get().loadError !== errorAtStart || get().loadErrorScope !== scope) return
+    const message = error instanceof Error ? error.message : String(error)
+    const loadMessage = scope === 'transcript'
+      ? `Failed to load messages for active conversation: ${message}`
+      : `Failed to open active workspace: ${message}`
+    set((state) => {
+      state.loadError = loadMessage
+      state.loadErrorScope = scope
+      state.loadFailedConversationId = scope === 'transcript' ? id : null
+      state.loadFailedWorkspaceId = scope === 'workspace' ? id : null
+    })
+    persistLoadErrorRecord(
+      loadMessage, error, scope === 'transcript' ? id : null,
+      scope === 'workspace' ? id : null
+    )
+  }
 }
 
 /**
@@ -781,8 +871,8 @@ async function runLoadFromDB(
         let ensuredCount = 0
         let ensuredSkipped = 0
         let workspaceEnsureError: unknown = null
+        const activeWsId = useConversationContextStore.getState().activeWorkspaceId
         try {
-          const activeWsId = useConversationContextStore.getState().activeWorkspaceId
           if (await ensureActiveWorkspace(conversations, activeWsId)) ensuredCount++
           else ensuredSkipped = conversations.length
         } catch (e) {
@@ -807,14 +897,7 @@ async function runLoadFromDB(
         // loadFromDB only loads conversation data; it does NOT call refreshWorkspaces or switchWorkspace.
 
         // Determine the active conversation ID from workspace store's current state.
-        const workspaceStore = useConversationContextStore.getState()
-        const preferredWorkspaceId = workspaceStore.activeWorkspaceId
-        const activeId =
-          (preferredWorkspaceId && conversations.some((c) => c.id === preferredWorkspaceId))
-            ? preferredWorkspaceId
-            : (workspaceStore.workspaces.find((w) =>
-              conversations.some((c) => c.id === w.id)
-            )?.id || null)
+        const activeId = selectActiveConversationId(conversations)
 
         // Stale-run gate: if a newer load (e.g. a forced retry) has started,
         // this run must not write anything it loaded — skip both the store
@@ -852,6 +935,7 @@ async function runLoadFromDB(
           state.suggestedFollowUps.clear()
           state.cancelledRunIds.clear()
         })
+        const selectionGenerationAtLoad = activeSelectionGeneration
 
         if (workspaceEnsureError !== null) {
           const workspaceLoadMessage = workspaceEnsureError instanceof Error
@@ -861,8 +945,9 @@ async function runLoadFromDB(
             state.loadError = workspaceLoadMessage
             state.loadErrorScope = 'workspace'
             state.loadFailedConversationId = null
+            state.loadFailedWorkspaceId = activeWsId
           })
-          persistLoadErrorRecord(workspaceLoadMessage, workspaceEnsureError)
+          persistLoadErrorRecord(workspaceLoadMessage, workspaceEnsureError, null, activeWsId)
         }
 
         // NOTE: the persisted load-failure record is marked resolved only
@@ -904,7 +989,7 @@ async function runLoadFromDB(
           } catch (error) {
             // A stale run's failure must not clobber the recovered state a
             // newer load already installed (PR #149 round-6 review).
-            if (!isCurrentRun()) return
+            if (!isCurrentRun() || selectionGenerationAtLoad !== activeSelectionGeneration) return
             activeTranscriptLoaded = false
             const activeLoadMessage =
               error instanceof Error
@@ -924,6 +1009,7 @@ async function runLoadFromDB(
               // only be marked resolved after THIS conversation's transcript
               // re-read successfully (issue #147, PR #149 review).
               state.loadFailedConversationId = activeId
+              state.loadFailedWorkspaceId = null
             })
             // Record the failing conversation id in the diagnostics record
             // too — resolution is verified against it later (PR #149
@@ -940,7 +1026,8 @@ async function runLoadFromDB(
         // transcript load succeeded: a failed transcript load is still an
         // unresolved failure (issue #147, PR #149 review) and must not be
         // reported as recovered.
-        if (activeTranscriptLoaded && workspaceEnsureError === null) {
+        if (activeTranscriptLoaded && workspaceEnsureError === null &&
+            selectionGenerationAtLoad === activeSelectionGeneration) {
           // Pass the id whose transcript actually re-read this run: a record
           // naming a DIFFERENT conversation stays unresolved — this load
           // proves nothing about that one (PR #149 round-4 review, "Unverified
@@ -954,6 +1041,7 @@ async function runLoadFromDB(
             state.loadError = null
             state.loadErrorScope = null
             state.loadFailedConversationId = null
+            state.loadFailedWorkspaceId = null
           })
         }
       } catch (error) {
@@ -1019,8 +1107,7 @@ async function runLoadFromDB(
               mountRefCount: 0,
               collectedAssets: [],
             }))
-            state.activeConversationId =
-              (retryConversations.length > 0 ? retryConversations[0].id : null)
+            state.activeConversationId = selectActiveConversationId(retryConversations)
             state.loaded = true
             state.suggestedFollowUps.clear()
             state.cancelledRunIds.clear()
@@ -1032,12 +1119,15 @@ async function runLoadFromDB(
           // The fallback is recovered only after metadata, the active OPFS
           // workspace, and its transcript have all loaded successfully.
           const retryActiveId = get().activeConversationId
+          const selectionGenerationAtFallback = activeSelectionGeneration
           let retryWorkspaceLoaded = true
           try {
             await ensureActiveWorkspace(retryConversations, retryActiveId)
-            if (!isCurrentRun()) return
+            if (!isCurrentRun() ||
+                selectionGenerationAtFallback !== activeSelectionGeneration) return
           } catch (workspaceErr) {
-            if (!isCurrentRun()) return
+            if (!isCurrentRun() ||
+                selectionGenerationAtFallback !== activeSelectionGeneration) return
             retryWorkspaceLoaded = false
             const workspaceLoadMessage = workspaceErr instanceof Error
               ? `Failed to open active workspace: ${workspaceErr.message}`
@@ -1047,8 +1137,9 @@ async function runLoadFromDB(
               state.loadError = workspaceLoadMessage
               state.loadErrorScope = 'workspace'
               state.loadFailedConversationId = null
+              state.loadFailedWorkspaceId = retryActiveId
             })
-            persistLoadErrorRecord(workspaceLoadMessage, workspaceErr)
+            persistLoadErrorRecord(workspaceLoadMessage, workspaceErr, null, retryActiveId)
           }
           let retryTranscriptLoaded = true
           if (retryActiveId) {
@@ -1059,7 +1150,8 @@ async function runLoadFromDB(
                 INITIAL_LOAD_TIMEOUT_MS,
                 'active conversation transcript read'
               )
-              if (!isCurrentRun()) return
+              if (!isCurrentRun() ||
+                  selectionGenerationAtFallback !== activeSelectionGeneration) return
               primePersistBaseline(retryActiveId, retryMessages as Message[])
               set((state) => {
                 const conv = state.conversations.find((c) => c.id === retryActiveId)
@@ -1072,7 +1164,8 @@ async function runLoadFromDB(
             } catch (transcriptErr) {
               // Stale-run gate (PR #149 round-6 review): a superseded run must
               // not clobber the state a newer load already wrote.
-              if (!isCurrentRun()) return
+              if (!isCurrentRun() ||
+                  selectionGenerationAtFallback !== activeSelectionGeneration) return
               retryTranscriptLoaded = false
               const retryTranscriptMessage =
                 transcriptErr instanceof Error
@@ -1088,6 +1181,7 @@ async function runLoadFromDB(
                 state.loadErrorScope = 'transcript'
                 // Remember WHICH conversation failed (issue #147, PR #149 review).
                 state.loadFailedConversationId = retryActiveId
+                state.loadFailedWorkspaceId = null
               })
               // A transcript failure after the fallback retry is still a real
               // load failure — persist it for Diagnostics like the
@@ -1096,7 +1190,8 @@ async function runLoadFromDB(
               persistLoadErrorRecord(retryTranscriptMessage, transcriptErr, retryActiveId)
             }
           }
-          if (retryTranscriptLoaded && retryWorkspaceLoaded) {
+          if (retryTranscriptLoaded && retryWorkspaceLoaded &&
+              selectionGenerationAtFallback === activeSelectionGeneration) {
             // Same verification as the primary path: only the transcript of
             // the conversation actually re-read by this retry counts as
             // proof (PR #149 round-4 review).
@@ -1106,6 +1201,7 @@ async function runLoadFromDB(
               state.loadError = null
               state.loadErrorScope = null
               state.loadFailedConversationId = null
+              state.loadFailedWorkspaceId = null
             })
           }
         } catch (retryErr) {
@@ -1144,6 +1240,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     loadError: null,
     loadErrorScope: null,
     loadFailedConversationId: null,
+    loadFailedWorkspaceId: null,
     suggestedFollowUps: new Map(),
     cancelledRunIds: new Set(),
     mountedConversations: new Map(),
@@ -1207,13 +1304,19 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     loadFromDB: async () =>
       withInflightLoad(() => runLoadFromDB(set, get)),
 
-    // Explicit user retry: bypass the in-flight guard so a load wedged past
+    // Loaded transcript and workspace failures retry only the failed target,
+    // preserving other conversations' cached messages and running state.
+    // Explicit user retry bypasses the in-flight guard so a load wedged past
     // the sidebar's 15s retry timeout starts a FRESH run instead of handing
     // back the stuck promise (PR #149 round-4 review, "Retry cannot restart
     // stuck load"). The old run keeps running in the background. Generation
     // checks discard its late results, and withInflightLoad's ownership check
     // leaves the new run's guard slot alone when the old run settles.
     retryLoadFromDB: async () => {
+      if (get().loaded &&
+          (get().loadErrorScope === 'transcript' || get().loadErrorScope === 'workspace')) {
+        return withInflightLoad(() => retryLoadedFailure(set, get), { force: true })
+      }
       // A load timeout only rejects this store's await. The SQLite manager
       // can still hold the same pending initPromise, so restart that worker
       // once it has exceeded the load deadline before starting a fresh run.
@@ -1253,6 +1356,10 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 
     setActive: async (id) => {
       const t0 = performance.now()
+      const previousActiveId = get().activeConversationId
+      const errorAtReadStart = get().loadError
+      const errorScopeAtReadStart = get().loadErrorScope
+      const selectionGeneration = ++activeSelectionGeneration
       set((state) => {
         state.activeConversationId = id
       })
@@ -1271,6 +1378,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // conversation A while A's own read is still pending.
         const failureOwnerAtReadStart = get().loadFailedConversationId
         if (conv && (conv.messages.length === 0 || conv.messagesLoaded === false)) {
+          const transcriptGeneration = claimTranscriptRead(id)
           try {
             const msgRepo = getMessageRepository()
             const tFetch = performance.now()
@@ -1279,6 +1387,9 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               INITIAL_LOAD_TIMEOUT_MS,
               'conversation transcript read'
             )
+            if (!isCurrentTranscriptRead(id, transcriptGeneration)) return
+            markPersistedFailureResolved(id, { requireNamedConversation: true })
+            if (selectionGeneration !== activeSelectionGeneration || get().activeConversationId !== id) return
             const tDeserialize = performance.now()
             primePersistBaseline(id, messages as Message[])
             set((state) => {
@@ -1301,6 +1412,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             )
             transcriptReadOk = true
           } catch (error) {
+            if (!isCurrentTranscriptRead(id, transcriptGeneration) ||
+                selectionGeneration !== activeSelectionGeneration || get().activeConversationId !== id) return
             console.error('[conversation.store] Failed to load messages for conversation:', error)
             // The lazy path failed for the newly selected conversation — surface
             // it like any other transcript failure so the sidebar can offer a
@@ -1315,6 +1428,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               state.loadErrorScope = 'transcript'
               // Remember WHICH conversation failed (issue #147, PR #149 review).
               state.loadFailedConversationId = id
+              state.loadFailedWorkspaceId = null
             })
             // A lazy transcript failure is a real load failure — persist it
             // for Diagnostics like the initial-load catch does, or a bug
@@ -1334,17 +1448,16 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         // left (issue #147, PR #149 review). A cached selection never reads,
         // so it neither clears the banner nor counts as recovery.
         //
-        // Overlapping reads (PR #149 round-4 review): the clearing below
-        // compares against the id captured when THIS selection started, not
-        // the (possibly newer) current failure owner. If conversation A's
-        // read failed and B was selected while A's retry read was still in
-        // flight, B's success does not touch A's failure — A's own read then
-        // resolves it when it settles, because at that point the failure on
-        // record is still the one A observed at start.
+        // A successful read clears the visible error only if it is still
+        // current. Another conversation's successful read can dismiss a stale
+        // banner, while the persisted failure stays unresolved until its own
+        // transcript is read successfully.
         if (transcriptReadOk) {
           if (
             get().loadErrorScope === 'transcript' &&
-            get().loadFailedConversationId === failureOwnerAtReadStart
+            (get().loadFailedConversationId === id ||
+              (errorScopeAtReadStart === 'transcript' && get().loadError === errorAtReadStart &&
+                get().loadFailedConversationId === failureOwnerAtReadStart))
           ) {
             // The failure on record is the SAME one this selection observed
             // at start — no newer failure was recorded meanwhile. Clear the
@@ -1354,12 +1467,24 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               state.loadError = null
               state.loadErrorScope = null
               state.loadFailedConversationId = null
+              state.loadFailedWorkspaceId = null
+            })
+          } else if (
+            get().loadErrorScope === 'workspace' &&
+            errorScopeAtReadStart === 'workspace' &&
+            get().loadError === errorAtReadStart &&
+            previousActiveId !== id
+          ) {
+            set((state) => {
+              state.loadError = null
+              state.loadErrorScope = null
+              state.loadFailedConversationId = null
+              state.loadFailedWorkspaceId = null
             })
           }
           // The persisted failure may outlive the visible banner after the
           // user switches away. This successful read verifies recovery only
           // if the record names this same conversation.
-          markPersistedFailureResolved(id, { requireNamedConversation: true })
         }
         // NOTE: workspace switching is handled by syncFromRoute in App.tsx.
         // This store only manages conversation data; it does NOT call switchWorkspace.

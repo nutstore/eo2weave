@@ -32,6 +32,7 @@ interface StoredProjectInitError {
 interface StoredConversationLoadError {
   message: string
   conversationId?: string
+  workspaceId?: string
   stack?: string
   at?: string
   /** True when a later loadFromDB() succeeded — report kept for context. */
@@ -101,17 +102,21 @@ function collectConversationLoadErrorSection(): DiagnosticSection {
     // sessionStorage unavailable / malformed record — treat as absent.
   }
 
-  summary.conversationStoreLoadFailed = stored !== null
+  summary.conversationStoreLoadFailed = stored !== null && !stored.resolved
   if (stored) {
     status = stored.resolved ? 'warn' : 'error'
     summary.conversationStoreLoadErrorAt = stored.at ?? null
     if (stored.conversationId) {
       summary.conversationStoreLoadErrorConversationId = stored.conversationId
     }
+    if (stored.workspaceId) {
+      summary.conversationStoreLoadErrorWorkspaceId = stored.workspaceId
+    }
     if (stored.resolved) summary.conversationStoreLoadErrorResolved = true
     lines.push('- Last conversation-store load failure:')
     lines.push(`  - Message: ${stored.message}`)
     if (stored.conversationId) lines.push(`  - Conversation ID: ${stored.conversationId}`)
+    if (stored.workspaceId) lines.push(`  - Workspace ID: ${stored.workspaceId}`)
     if (stored.resolved) lines.push('  - Resolved: yes (a later load succeeded)')
     if (stored.stack) lines.push(`  - Stack: ${stored.stack}`)
     if (stored.at) lines.push(`  - At: ${stored.at}`)

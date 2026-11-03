@@ -147,6 +147,7 @@ function resetStore() {
     loadError: null,
     loadErrorScope: null,
     loadFailedConversationId: null,
+    loadFailedWorkspaceId: null,
     suggestedFollowUps: new Map(),
     cancelledRunIds: new Set(),
     mountedConversations: new Map(),
@@ -261,6 +262,122 @@ describe('conversation.store loadFromDB failure semantics (issue #147, PR #149)'
     expect(createWorkspaceMock).toHaveBeenCalledTimes(2)
     expect(useConversationStore.getState().loadError).toBeNull()
     expect(readPersistedRecord()?.resolved).toBe(true)
+  })
+
+  it('keeps a newer selected conversation failure visible when an older load finishes', async () => {
+    let resolveInitialRead!: (messages: unknown[]) => void
+    findByConversationMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveInitialRead = resolve
+    }))
+    const load = useConversationStore.getState().loadFromDB()
+    await vi.waitFor(() => expect(findByConversationMock).toHaveBeenCalledTimes(1))
+
+    findByConversationMock.mockRejectedValueOnce(new Error('selected conversation failed'))
+    await useConversationStore.getState().setActive(CONV_B)
+    resolveInitialRead([])
+    await load
+
+    expect(useConversationStore.getState().activeConversationId).toBe(CONV_B)
+    expect(useConversationStore.getState().loadError).toContain('selected conversation failed')
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
+  })
+
+  it('keeps a newer selected failure visible when a fallback transcript finishes', async () => {
+    findAllMetaMock.mockRejectedValueOnce(new Error('initial metadata failed'))
+    let resolveFallbackRead!: (messages: unknown[]) => void
+    findByConversationMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveFallbackRead = resolve
+    }))
+    const load = useConversationStore.getState().loadFromDB()
+    await vi.waitFor(() => expect(findByConversationMock).toHaveBeenCalledTimes(1))
+
+    findByConversationMock.mockRejectedValueOnce(new Error('selected conversation failed'))
+    await useConversationStore.getState().setActive(CONV_B)
+    resolveFallbackRead([])
+    await load
+
+    expect(useConversationStore.getState().activeConversationId).toBe(CONV_B)
+    expect(useConversationStore.getState().loadError).toContain('selected conversation failed')
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
+  })
+
+  it('retries a transcript failure without rebuilding other conversations', async () => {
+    findByConversationMock.mockResolvedValueOnce([
+      { id: 'saved-a', role: 'user', content: 'saved', timestamp: 1 },
+    ])
+    await useConversationStore.getState().loadFromDB()
+    useConversationStore.setState((state) => {
+      const conversation = state.conversations.find((c) => c.id === CONV_A)!
+      conversation.status = 'streaming'
+      conversation.streamingContent = 'in progress'
+    })
+
+    findByConversationMock.mockRejectedValueOnce(new Error('B transcript unavailable'))
+    await useConversationStore.getState().setActive(CONV_B)
+    findByConversationMock.mockResolvedValueOnce([])
+    await useConversationStore.getState().retryLoadFromDB()
+
+    const state = useConversationStore.getState()
+    const conversationA = state.conversations.find((c) => c.id === CONV_A)!
+    expect(findAllMetaMock).toHaveBeenCalledTimes(1)
+    expect(conversationA.messages.map((message) => message.id)).toEqual(['saved-a'])
+    expect(conversationA.status).toBe('streaming')
+    expect(conversationA.streamingContent).toBe('in progress')
+    expect(state.loadError).toBeNull()
+  })
+
+  it('retries a workspace failure without rebuilding other conversations', async () => {
+    createWorkspaceMock.mockRejectedValueOnce(new Error('workspace unavailable'))
+    findByConversationMock.mockResolvedValue([])
+    await useConversationStore.getState().loadFromDB()
+    useConversationStore.setState((state) => {
+      const conversation = state.conversations.find((c) => c.id === CONV_B)!
+      conversation.status = 'streaming'
+      conversation.streamingContent = 'in progress'
+    })
+
+    await useConversationStore.getState().retryLoadFromDB()
+
+    const state = useConversationStore.getState()
+    const conversationB = state.conversations.find((c) => c.id === CONV_B)!
+    expect(findAllMetaMock).toHaveBeenCalledTimes(1)
+    expect(createWorkspaceMock).toHaveBeenCalledTimes(2)
+    expect(conversationB.status).toBe('streaming')
+    expect(conversationB.streamingContent).toBe('in progress')
+    expect(state.loadError).toBeNull()
+  })
+
+  it('retries the failed workspace after switching to a cached conversation', async () => {
+    createWorkspaceMock.mockRejectedValueOnce(new Error('workspace A unavailable'))
+    findByConversationMock.mockResolvedValue([])
+    await useConversationStore.getState().loadFromDB()
+    useConversationStore.setState((state) => {
+      const conversation = state.conversations.find((c) => c.id === CONV_B)!
+      conversation.messages = [{ id: 'cached-b', role: 'user', content: 'cached', timestamp: 2 }]
+      conversation.messagesLoaded = true
+    })
+    await useConversationStore.getState().setActive(CONV_B)
+    expect(useConversationStore.getState().loadErrorScope).toBe('workspace')
+
+    await useConversationStore.getState().retryLoadFromDB()
+
+    expect(createWorkspaceMock).toHaveBeenLastCalledWith('workspaces/conv-a', CONV_A, 'first')
+    expect(useConversationStore.getState().activeConversationId).toBe(CONV_B)
+    expect(useConversationStore.getState().loadError).toBeNull()
+    expect(readPersistedRecord()?.resolved).toBe(true)
+  })
+
+  it('clears an inactive workspace error after another conversation loads', async () => {
+    createWorkspaceMock.mockRejectedValueOnce(new Error('workspace A unavailable'))
+    findByConversationMock.mockResolvedValue([])
+    await useConversationStore.getState().loadFromDB()
+    expect(useConversationStore.getState().loadErrorScope).toBe('workspace')
+
+    await useConversationStore.getState().setActive(CONV_B)
+
+    expect(useConversationStore.getState().activeConversationId).toBe(CONV_B)
+    expect(useConversationStore.getState().loadError).toBeNull()
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
   })
 
   it('scopes a metadata failure as "metadata" so the UI can hide the list', async () => {
