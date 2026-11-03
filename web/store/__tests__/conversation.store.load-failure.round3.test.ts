@@ -149,6 +149,7 @@ function resetStore() {
     loaded: false,
     loadError: null,
     loadErrorScope: null,
+    loadFailedWorkspaceId: null,
     suggestedFollowUps: new Map(),
     cancelledRunIds: new Set(),
     mountedConversations: new Map(),
@@ -193,6 +194,55 @@ describe('conversation.store — round-3 Sourcery fixes (issue #147, PR #149)', 
     expect(state.loadError).toContain('sqlite read failed')
     // Scope tells the UI the ROWS are still usable.
     expect(state.loadErrorScope).toBe('transcript')
+  })
+
+  it('keeps the preferred active conversation when fallback metadata succeeds', async () => {
+    mockContext.activeWorkspaceId = CONV_B
+    findAllMetaMock.mockRejectedValueOnce(new Error('initial metadata unavailable'))
+    findByConversationMock.mockResolvedValue([])
+
+    await useConversationStore.getState().loadFromDB()
+
+    expect(useConversationStore.getState().activeConversationId).toBe(CONV_B)
+    expect(findByConversationMock).toHaveBeenCalledWith(CONV_B)
+    expect(useConversationStore.getState().loadError).toBeNull()
+  })
+
+  it('ignores a selected transcript failure after the user switches away', async () => {
+    findByConversationMock.mockResolvedValueOnce([])
+    await useConversationStore.getState().loadFromDB()
+
+    let rejectOldRead!: (error: Error) => void
+    findByConversationMock.mockReturnValueOnce(new Promise((_resolve, reject) => {
+      rejectOldRead = reject
+    }))
+    const oldSelection = useConversationStore.getState().setActive(CONV_B)
+    findByConversationMock.mockResolvedValueOnce([])
+    await useConversationStore.getState().setActive(CONV_A)
+    rejectOldRead(new Error('old conversation failed'))
+    await oldSelection
+
+    expect(useConversationStore.getState().activeConversationId).toBe(CONV_A)
+    expect(useConversationStore.getState().loadError).toBeNull()
+    expect(readPersistedRecord()).toBeNull()
+  })
+
+  it('does not resolve a newer failed transcript read with an older successful read', async () => {
+    findByConversationMock.mockResolvedValueOnce([])
+    await useConversationStore.getState().loadFromDB()
+
+    let resolveOldRead!: (messages: unknown[]) => void
+    findByConversationMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOldRead = resolve
+    }))
+    const oldSelection = useConversationStore.getState().setActive(CONV_B)
+    findByConversationMock.mockRejectedValueOnce(new Error('new read failed'))
+    await useConversationStore.getState().setActive(CONV_B)
+    resolveOldRead([])
+    await oldSelection
+
+    expect(useConversationStore.getState().loadError).toContain('new read failed')
+    expect(readPersistedRecord()?.resolved).toBeFalsy()
   })
 
   it('scopes a metadata failure as "metadata" so the UI can hide the list', async () => {

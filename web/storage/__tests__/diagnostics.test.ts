@@ -154,4 +154,37 @@ describe('storage diagnostics', () => {
       sessionStorage.removeItem('creatorweave:conversation-store-load-error')
     }
   })
+
+  it('does not report a recovered conversation load as currently failed', async () => {
+    sessionStorage.setItem(
+      'creatorweave:conversation-store-load-error',
+      JSON.stringify({ message: 'temporary OPFS failure', resolved: true }),
+    )
+    try {
+      const { runDiagnostics } = await import('@/storage/diagnostics')
+      const report = await runDiagnostics()
+      expect(report.summary.conversationStoreLoadFailed).toBe(false)
+      expect(report.summary.conversationStoreLoadErrorResolved).toBe(true)
+      expect(report.sections.find((section) => section.label === 'Conversation Store Load')?.status)
+        .toBe('warn')
+    } finally {
+      sessionStorage.removeItem('creatorweave:conversation-store-load-error')
+    }
+  })
+
+  it('identifies the workspace whose ensure failed', async () => {
+    sessionStorage.setItem(
+      'creatorweave:conversation-store-load-error',
+      JSON.stringify({ message: 'workspace unavailable', workspaceId: 'conv-a' }),
+    )
+    try {
+      const { runDiagnostics } = await import('@/storage/diagnostics')
+      const report = await runDiagnostics()
+      expect(report.summary.conversationStoreLoadErrorWorkspaceId).toBe('conv-a')
+      expect(report.sections.find((section) => section.label === 'Conversation Store Load')?.lines.join('\n'))
+        .toContain('Workspace ID: conv-a')
+    } finally {
+      sessionStorage.removeItem('creatorweave:conversation-store-load-error')
+    }
+  })
 })

@@ -360,13 +360,8 @@ export function WorkspaceLayout({
   }, [])
 
   // Phase 4: Load conversations on mount (independent of Sidebar rendering).
-  // Also re-run when `loadError` flips (null→error or error→null): a failed
-  // load keeps `loaded=false`, which would otherwise never wake this effect
-  // back up. Tying it to loadError lets a later store change (e.g. project
-  // switch completing) reattempt the load instead of locking in an empty
-  // sidebar. The `inflightLoadFromDB` guard inside loadFromDB prevents
-  // overlapping calls.
-  const loadError = useConversationStore((s) => s.loadError)
+  // A failed load stays visible until the user retries. A changed error
+  // message must not start another automatic load after the fallback fails.
   useEffect(() => {
     // Don't load conversations while the workspace store is still settling.
     // syncFromRoute's project switch transiently clears workspaceStore
@@ -377,7 +372,7 @@ export function WorkspaceLayout({
     // loadFromDB ran with an empty workspace list — when the store later
     // settles, this effect re-fires and retries.
     if (!loaded && workspaceReady) loadFromDB()
-  }, [loaded, loadError, loadFromDB, workspaceReady])
+  }, [loaded, loadFromDB, workspaceReady])
 
   // Pre-initialize Pyodide runtime in the background so first Python execution is fast
   useEffect(() => {
