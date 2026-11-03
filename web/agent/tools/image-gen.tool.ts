@@ -13,7 +13,7 @@
 import type { ToolDefinition, ToolExecutor, ToolPromptDoc, ToolContext } from './tool-types'
 import { resolveVfsTarget } from './vfs-resolver'
 import { toolOkJson, toolErrorJson } from './tool-envelope'
-import { generateImage } from '@/agent/llm/image-gen'
+import { generateImage, hasCodexImageBridge } from '@/agent/llm/image-gen'
 import { useSettingsStore } from '@/store/settings.store'
 import { normalizeBaseUrl } from '@/agent/llm/pi-ai-url-utils'
 import { getCachedModels } from '@/agent/providers/model-store'
@@ -32,10 +32,10 @@ import type { LLMProviderType } from '@/agent/providers/types'
  */
 export function isImageGenAvailable(): boolean {
   const { imageGenModel } = useSettingsStore.getState()
-  if (!imageGenModel) return false
-
   const effectiveConfig = useSettingsStore.getState().getEffectiveProviderConfig()
   if (!effectiveConfig) return false
+  if (effectiveConfig.apiKeyProviderKey === 'codex-oauth') return hasCodexImageBridge()
+  if (!imageGenModel) return false
 
   // Check the provider's model cache — only exact match against the full
   // imageGenModel ID (e.g. "openai/gpt-image-2"). We do NOT match by short ID
@@ -166,7 +166,7 @@ export const imageGenExecutor: ToolExecutor = async (
     )
   }
 
-  const imageModelId = settingsState.imageGenModel
+  const imageModelId = effectiveConfig.apiKeyProviderKey === 'codex-oauth' ? 'gpt-image-2' : settingsState.imageGenModel
 
   try {
     const { getApiKeyRepository } = await import('@/sqlite')

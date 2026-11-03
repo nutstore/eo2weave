@@ -14,6 +14,8 @@ import { ImageIcon, Search, ChevronDown } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
 import { useT } from '@/i18n'
 import { getImageModels } from '@earendil-works/pi-ai'
+import { hasCodexImageBridge } from '@/agent/llm/image-gen'
+import { useExtensionStore } from '@/store/extension.store'
 import { getCachedModels, onModelsUpdated } from '@/agent/providers/model-store'
 import type { LLMProviderType } from '@/agent/providers/types'
 import { Popover, PopoverContent, PopoverTrigger, BrandButton } from '@creatorweave/ui'
@@ -47,6 +49,7 @@ interface ModelEntry {
 
 function useFilteredImageModels() {
   const providerType = useSettingsStore((s) => s.providerType) as LLMProviderType
+  const extensionStatus = useExtensionStore((s) => s.status)
   const [cacheVersion, setCacheVersion] = useState(0)
 
   useEffect(() => {
@@ -54,6 +57,7 @@ function useFilteredImageModels() {
   }, [])
 
   return useMemo(() => {
+    if ((providerType as string) === 'codex-oauth') return hasCodexImageBridge() ? [{ id: 'gpt-image-2', name: 'gpt-image-2', provider: 'openai' }] : []
     const registryModels = getImageModels('openrouter' as any)
     const cached =
       getCachedModels(providerType, providerType) ||
@@ -86,7 +90,7 @@ function useFilteredImageModels() {
         provider: m.id.includes('/') ? m.id.split('/')[0]! : 'other',
       })) as ModelEntry[]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providerType, cacheVersion])
+  }, [providerType, cacheVersion, extensionStatus])
 }
 
 /** Whether the current provider has any image generation models available. */
@@ -99,6 +103,7 @@ export function useHasImageModels(): boolean {
 export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
   const t = useT()
   const imageGenModel = useSettingsStore((s) => s.imageGenModel)
+  const providerType = useSettingsStore((s) => s.providerType)
   const setImageGenModel = useSettingsStore((s) => s.setImageGenModel)
   const imageGenAspectRatio = useSettingsStore((s) => s.imageGenAspectRatio)
   const setImageGenAspectRatio = useSettingsStore((s) => s.setImageGenAspectRatio)
@@ -133,7 +138,8 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
     return result
   }, [grouped, search])
 
-  const currentDisplay = useMemo(() => displayModelId(imageGenModel), [imageGenModel])
+  const selectedModel = (providerType as string) === 'codex-oauth' ? 'gpt-image-2' : imageGenModel
+  const currentDisplay = useMemo(() => displayModelId(selectedModel), [selectedModel])
 
   /** Accessible name for the icon-only trigger — the model id alone is meaningless. */
   const triggerLabel = `${t('conversation.imageGen.selectModel')}: ${currentDisplay} · ${imageGenAspectRatio || '1:1'}`
@@ -147,10 +153,10 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
 
   const handleSelectModel = useCallback(
     (id: string) => {
-      setImageGenModel(id)
+      if ((providerType as string) !== 'codex-oauth') setImageGenModel(id)
       setSearch('')
     },
-    [setImageGenModel],
+    [setImageGenModel, providerType],
   )
 
   const handleSelectRatio = useCallback(
@@ -221,7 +227,7 @@ export function ImageGenDropdown({ compact = false }: { compact?: boolean }) {
                   type="button"
                   onClick={() => handleSelectModel(m.id)}
                   className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-[11px] transition-colors ${
-                    imageGenModel === m.id
+                    selectedModel === m.id
                       ? 'bg-primary-50 font-medium text-primary-700 dark:bg-primary-100/30 dark:text-primary-700'
                       : 'text-secondary hover:bg-muted'
                   }`}

@@ -708,6 +708,11 @@ export default defineContentScript({
         return sendToBridge('codex_proxy_fetch', { body });
       },
 
+      async codexGenerateImage(body: Record<string, any>) {
+        if (!__CW_CODEX_OAUTH__) return { ok: false, errorCode: 'FEATURE_DISABLED' };
+        return sendToBridge('codex_image_generate', { body }, 5 * 60 * 1000);
+      },
+
       /**
        * Proxy an MCP HTTP request through the extension.
        */

@@ -57,6 +57,7 @@ export default defineContentScript({
       // Codex OAuth bridge (chatgpt.com backend relay)
       'codex_get_status',
       'codex_proxy_fetch',
+      'codex_image_generate',
       'codex_proxy_fetch_stream',
       // External MCP proxy bridge
       'mcp_proxy_fetch',

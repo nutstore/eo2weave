@@ -3024,7 +3024,7 @@ export default defineBackground(() => {
           return;
         }
 
-        if (CODEX_OAUTH_ENABLED && message.type === 'codex_proxy_fetch') {
+        if (CODEX_OAUTH_ENABLED && (message.type === 'codex_proxy_fetch' || message.type === 'codex_image_generate')) {
           // SECURITY: this handler sends the user's Codex OAuth Bearer token.
           // It must never be reachable from arbitrary web pages, and the
           // destination must be pinned to the Codex backend — a caller cannot
@@ -3046,7 +3046,9 @@ export default defineBackground(() => {
           }
           // Ignore caller-supplied URL overrides — token-bearing requests go
           // to the Codex backend endpoint only.
-          const requestUrl = CODEX!.CODEX_RESPONSES_URL;
+          const requestUrl = message.type === 'codex_image_generate'
+            ? 'https://chatgpt.com/backend-api/codex/images/generations'
+            : CODEX!.CODEX_RESPONSES_URL;
           let tokens = await CODEX!.getCodexTokens();
           if (!tokens?.access_token) {
             sendResponse({ ok: false, errorCode: 'NOT_AUTHORIZED', status: 0, message: 'Not authorized. Please complete device code login first.' });
