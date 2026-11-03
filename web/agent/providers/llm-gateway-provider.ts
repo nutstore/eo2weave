@@ -117,6 +117,7 @@ export async function prepareGatewayModels(
   accessToken: string,
   signal?: AbortSignal,
   recoverRejectedToken = false,
+  onAuthGenerationChange?: (generation: number) => void,
 ): Promise<{ models: ModelInfo[]; status: ProviderCatalogStatus; authGeneration?: number; reauthRequired?: boolean }> {
   const baseURL = getGatewayBaseURL()
   let authGeneration = getGatewayAuthSessionGeneration()
@@ -125,6 +126,7 @@ export async function prepareGatewayModels(
     const refreshed = await refreshAccessTokenWithStatus(baseURL, getGatewayClientId(), signal)
     if (refreshed.status === 'success') {
       authGeneration = getGatewayAuthSessionGeneration()
+      onAuthGenerationChange?.(authGeneration)
       result = await fetchGatewayModels(baseURL, refreshed.accessToken, signal)
       if (result.authRejected) {
         await invalidateGatewayAccessToken(refreshed.accessToken)
@@ -200,24 +202,36 @@ export async function updateGatewayModels(accessToken: string): Promise<ModelInf
   // empty one — so consumers keep deferring until a later refresh succeeds
   // (Sourcery: "Startup discovery can hang").
   const sessionGeneration = getGatewayAuthSessionGeneration()
+  let activeGeneration = sessionGeneration
   const refreshVersion = beginGatewayCatalogRefresh()
   try {
     const { models, status, authGeneration, reauthRequired } = await prepareGatewayModels(
       accessToken,
       AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
       true,
+      (generation) => { activeGeneration = generation },
     )
-    if (reauthRequired) return getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
+    if (reauthRequired) {
+      clearGatewayCatalogForReauth(refreshVersion)
+      return []
+    }
     if ((authGeneration ?? sessionGeneration) === getGatewayAuthSessionGeneration() && isGatewayCatalogRefreshCurrent(refreshVersion)) {
       registerGatewayModels(models, status, refreshVersion)
     }
   } catch (error) {
-    if (sessionGeneration === getGatewayAuthSessionGeneration() && isGatewayCatalogRefreshCurrent(refreshVersion)) {
+    if (activeGeneration === getGatewayAuthSessionGeneration() && isGatewayCatalogRefreshCurrent(refreshVersion)) {
       registerGatewayModels([], 'failed', refreshVersion)
     }
     throw error
   }
   return getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
+}
+
+/** Clear cached models only when this refresh still owns a dead session. */
+export function clearGatewayCatalogForReauth(refreshVersion: number): void {
+  if (isGatewayCatalogRefreshCurrent(refreshVersion) && getGatewayCredentialStatus() !== 'valid') {
+    unregisterLLMGatewayProvider()
+  }
 }
 
 /**

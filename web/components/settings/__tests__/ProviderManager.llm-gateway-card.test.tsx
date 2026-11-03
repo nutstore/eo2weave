@@ -72,8 +72,8 @@ const gatewayMock = vi.hoisted(() => ({
   getGatewayCredentialStatus: vi.fn(() => 'unknown'),
   hasStoredTokens: vi.fn(() => true),
   registerGatewayModels: vi.fn(),
-  registeredModels: [{ id: 'glm-5.2', name: 'GLM', capabilities: ['code'] as const, contextWindow: 200_000 }] as Array<{ id: string; name: string; capabilities: readonly ['code']; contextWindow: number }>,
   catalogVersion: 0,
+  authGeneration: 0,
   updateGatewayModels: vi.fn(async () => []),
   getProviderCatalogStatus: vi.fn(
     () => 'ready' as 'ready' | 'empty' | 'failed' | undefined,
@@ -84,12 +84,16 @@ const gatewayMock = vi.hoisted(() => ({
   }),
 }))
 
+const realGatewayRegistration = vi.hoisted(() => ({
+  register: null as null | typeof import('@/agent/providers/llm-gateway-provider').registerGatewayModels,
+}))
+
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   performDeviceCodeFlow: gatewayMock.performDeviceCodeFlow,
   persistDeviceLoginTokens: gatewayMock.persistDeviceLoginTokens,
   logoutGateway: gatewayMock.logoutGateway,
   getValidAccessToken: gatewayMock.getValidAccessToken,
-  getGatewayAuthSessionGeneration: () => 0,
+  getGatewayAuthSessionGeneration: () => gatewayMock.authGeneration,
   fetchGatewayModels: gatewayMock.fetchGatewayModels,
   getGatewayCredentialStatus: gatewayMock.getGatewayCredentialStatus,
   hasStoredTokens: gatewayMock.hasStoredTokens,
@@ -106,7 +110,10 @@ vi.mock('@/lib/gateway-login', () => ({
   MODEL_DISCOVERY_TIMEOUT_MS: 15_000,
 }))
 
-vi.mock('@/agent/providers/llm-gateway-provider', () => ({
+vi.mock('@/agent/providers/llm-gateway-provider', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/agent/providers/llm-gateway-provider')>()
+  realGatewayRegistration.register = actual.registerGatewayModels
+  return {
   LLM_GATEWAY_PROVIDER_TYPE: 'llm-gateway',
   getLLMGatewayApiKeyProviderKey: () => '__llm_gateway_token__',
   getLLMGatewayBaseURL: () => 'https://ai.jianguoyun.com',
@@ -120,16 +127,14 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   prepareGatewayModels: gatewayMock.prepareGatewayModels,
   beginGatewayCatalogRefresh: () => ++gatewayMock.catalogVersion,
   isGatewayCatalogRefreshCurrent: (version: number) => version === gatewayMock.catalogVersion,
-}))
+  clearGatewayCatalogForReauth: vi.fn(),
+  }
+})
 
 vi.mock('@/agent/providers/types', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/agent/providers/types')>()
   return {
     ...actual,
-    // The registered catalog under test: a 'ready' registration from the
-    // startup restore carries these models, and the timeout must keep the
-    // LIST while downgrading only the STATUS to 'failed'.
-    getModelsForProvider: (type: string) => type === 'llm-gateway' ? gatewayMock.registeredModels : [],
     getProviderCatalogStatus: gatewayMock.getProviderCatalogStatus,
   }
 })
@@ -155,6 +160,7 @@ vi.mock('@creatorweave/ui', () => ({
 
 import { LLMGatewayCard } from '../ProviderManager'
 import { useI18nStore } from '@/i18n/store'
+import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
 /**
  * Wait for the logged-in panel — it owns the pinned-models section, which the
@@ -168,11 +174,13 @@ describe('LLMGatewayCard credential state', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     gatewayMock.catalogVersion = 0
-    gatewayMock.registeredModels = [{ id: 'glm-5.2', name: 'GLM', capabilities: ['code'], contextWindow: 200_000 }]
-    gatewayMock.registerGatewayModels.mockImplementation((models, status) => {
-      if (status === 'ready') gatewayMock.registeredModels = models
-      if (status === 'empty') gatewayMock.registeredModels = []
-    })
+    gatewayMock.authGeneration = 0
+    unregisterDynamicProvider('llm-gateway')
+    registerDynamicProvider('llm-gateway',
+      { baseURL: 'https://ai.jianguoyun.com/v1', modelName: 'glm-5.2', headers: {} },
+      { category: 'chinese', displayName: 'Nutstore AI', models: [{ id: 'glm-5.2', name: 'GLM', capabilities: ['code'], contextWindow: 200_000 }], catalogStatus: 'ready' },
+    )
+    gatewayMock.registerGatewayModels.mockImplementation((...args: Parameters<typeof import('@/agent/providers/llm-gateway-provider').registerGatewayModels>) => realGatewayRegistration.register!(...args))
     gatewayMock.prepareGatewayModels.mockReset()
     gatewayMock.prepareGatewayModels.mockImplementation(async () => {
       const { models, status } = await gatewayMock.fetchGatewayModels()
@@ -504,7 +512,7 @@ describe('LLMGatewayCard credential state', () => {
     render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
 
     await waitFor(() => expect(gatewayMock.registerGatewayModels).toHaveBeenCalled())
-    expect(gatewayMock.registeredModels.map((model) => model.id)).toEqual(['glm-5.2'])
+    expect(getModelsForProvider('llm-gateway').map((model) => model.id)).toEqual(['glm-5.2'])
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Add from model library' }))
     expect(screen.getByRole('button', { name: /GLM/ })).toBeTruthy()
@@ -546,5 +554,21 @@ describe('LLMGatewayCard credential state', () => {
     await act(async () => { rejectOld(new Error('timeout')) })
 
     expect(gatewayMock.registerGatewayModels).not.toHaveBeenCalled()
+  })
+
+  it('downgrades the catalog when a retried discovery fails after token refresh', async () => {
+    settingsState.modelCredentialStatus = 'valid'
+    gatewayMock.getProviderCatalogStatus.mockReturnValue('ready')
+    gatewayMock.prepareGatewayModels.mockImplementationOnce(async (_token, _signal, _recover, onAuthGenerationChange) => {
+      gatewayMock.authGeneration++
+      onAuthGenerationChange(gatewayMock.authGeneration)
+      throw new Error('retry failed')
+    })
+
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => expect(gatewayMock.registerGatewayModels).toHaveBeenCalledWith(
+      expect.anything(), 'failed', expect.any(Number),
+    ))
   })
 })

@@ -14,11 +14,12 @@ const mocks = vi.hoisted(() => ({
   fetchGatewayModels: vi.fn(),
   refreshAccessTokenWithStatus: vi.fn(),
   generation: 0,
+  credentialStatus: 'expired' as 'valid' | 'expired',
 }))
 
 vi.mock('@/agent/providers/llm-gateway-auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/agent/providers/llm-gateway-auth')>()
-  return { ...actual, fetchGatewayModels: mocks.fetchGatewayModels, refreshAccessTokenWithStatus: mocks.refreshAccessTokenWithStatus, getGatewayAuthSessionGeneration: () => mocks.generation }
+  return { ...actual, fetchGatewayModels: mocks.fetchGatewayModels, refreshAccessTokenWithStatus: mocks.refreshAccessTokenWithStatus, getGatewayAuthSessionGeneration: () => mocks.generation, getGatewayCredentialStatus: () => mocks.credentialStatus }
 })
 
 // AbortSignal.timeout is backed by a real (unfakeable) timer; substitute a
@@ -42,6 +43,7 @@ describe('updateGatewayModels startup discovery deadline', () => {
     mocks.fetchGatewayModels.mockReset()
     mocks.refreshAccessTokenWithStatus.mockReset()
     mocks.generation = 0
+    mocks.credentialStatus = 'expired'
     unregisterDynamicProvider('llm-gateway')
   })
 
@@ -160,15 +162,28 @@ describe('updateGatewayModels startup discovery deadline', () => {
 
   it('clears cached models when the rejected token cannot be refreshed', async () => {
     mocks.fetchGatewayModels.mockResolvedValue({ models: [], status: 'failed', authRejected: true })
-    mocks.refreshAccessTokenWithStatus.mockImplementation(async () => {
-      unregisterDynamicProvider('llm-gateway')
-      return { status: 'expired' }
-    })
+    mocks.refreshAccessTokenWithStatus.mockResolvedValue({ status: 'expired' })
     mocks.fetchGatewayModels.mockResolvedValueOnce({ models: [{ id: 'old-model', name: 'Old' }], status: 'ready' })
     await updateGatewayModels('old-token')
 
     await updateGatewayModels('old-token')
 
     expect(getModelsForProvider('llm-gateway')).toEqual([])
+  })
+
+  it('downgrades the catalog when a retried discovery fails after token refresh', async () => {
+    mocks.fetchGatewayModels
+      .mockResolvedValueOnce({ models: [{ id: 'old-model', name: 'Old' }], status: 'ready' })
+      .mockResolvedValueOnce({ models: [], status: 'failed', authRejected: true })
+      .mockImplementationOnce(() => Promise.reject(new Error('retry failed')))
+    mocks.refreshAccessTokenWithStatus.mockImplementation(async () => {
+      mocks.generation++
+      return { status: 'success', accessToken: 'new-token' }
+    })
+    await updateGatewayModels('old-token')
+
+    await expect(updateGatewayModels('old-token')).rejects.toThrow('retry failed')
+    expect(getModelsForProvider('llm-gateway').map((model) => model.id)).toEqual(['old-model'])
+    expect(getProviderCatalogStatus('llm-gateway')).toBe('failed')
   })
 })

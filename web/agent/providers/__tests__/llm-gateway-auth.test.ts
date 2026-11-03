@@ -744,6 +744,20 @@ describe('llm-gateway-auth token refresh hardening', () => {
       }
     })
 
+    it('clears the prior gateway catalog when the refresh token expires', async () => {
+      seedStoredTokens({ refresh_expires_at: Date.now() - 1000 })
+      registerDynamicProvider('llm-gateway',
+        { baseURL: `${BASE_URL}/v1`, modelName: 'old-model', headers: {} },
+        { category: 'chinese', displayName: 'Nutstore AI', models: [{ id: 'old-model', name: 'Old', capabilities: ['code'] }], catalogStatus: 'ready' },
+      )
+      try {
+        await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'expired' })
+        expect(getModelsForProvider('llm-gateway')).toEqual([])
+      } finally {
+        unregisterDynamicProvider('llm-gateway')
+      }
+    })
+
     it('credential status reports "expired" after invalid_grant and "missing" after logout', async () => {
       seedStoredTokens()
 

@@ -1400,9 +1400,11 @@ export function LLMGatewayCard({
             token,
             AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
             true,
+            (generation) => { authGenerationAtStart = generation },
           )
           if (reauthRequired) {
             if (cancelled || !gateway.isGatewayCatalogRefreshCurrent(refreshVersion)) return
+            gateway.clearGatewayCatalogForReauth(refreshVersion)
             setAllModels([])
             setCatalogStatus('failed')
             return
