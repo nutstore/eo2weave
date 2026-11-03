@@ -390,7 +390,14 @@ describe('conversation.store — PR #152 Sourcery fixes (issue #147)', () => {
     findByConversationMock.mockResolvedValueOnce([])
     await useConversationStore.getState().retryLoadFromDB()
 
-    expect(useConversationStore.getState().loadError).toBeNull()
+    // The transcript recovered, but the workspace is STILL unavailable and
+    // the record correctly stays unresolved — the visible failure must be
+    // PROMOTED to the workspace scope (not cleared), so the sidebar keeps a
+    // workspace Retry affordance (PR #152 review, "Workspace retry
+    // disappears after transcript recovery").
+    expect(useConversationStore.getState().loadError).toContain('workspace')
+    expect(useConversationStore.getState().loadErrorScope).toBe('workspace')
+    expect(useConversationStore.getState().loadFailedWorkspaceId).toBe(CONV_A)
     expect(readPersistedRecord()?.resolved).toBeFalsy()
     expect(createWorkspaceMock).toHaveBeenCalledTimes(1)
   })

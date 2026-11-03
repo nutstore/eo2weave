@@ -35,7 +35,17 @@ interface StoredConversationLoadError {
   workspaceId?: string
   stack?: string
   at?: string
-  /** True when a later loadFromDB() succeeded — report kept for context. */
+  /**
+   * True when a recovery path verified this record's scope and marked it
+   * resolved (report kept for context). Verification is scope-specific
+   * (issue #147, PR #149/#152 reviews): a metadata-scope record resolves on
+   * a full loadFromDB where the metadata layer re-read successfully; a
+   * conversation-scoped record resolves on a successful transcript re-read
+   * of THAT conversation — via a full load, a targeted retry, or the lazy
+   * setActive read; a workspace-scoped record resolves only via a path where
+   * ensureActiveWorkspace verified the named workspace (never a
+   * transcript-only read).
+   */
   resolved?: boolean
 }
 
