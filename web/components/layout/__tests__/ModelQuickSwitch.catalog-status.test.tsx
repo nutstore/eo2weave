@@ -18,7 +18,7 @@ const { state, refreshModels, getToken } = vi.hoisted(() => ({
       catalogStatus: 'failed',
     }]),
     getStalePinnedModels: vi.fn((_provider: string, _ids: string[], status?: string) =>
-      status === 'failed' || status === 'empty' ? [] : ['glm-5.2']),
+      status === 'failed' || status === 'empty' || status === 'loading' ? [] : ['glm-5.2']),
     switchProviderAndModel: vi.fn(),
     triggerProviderRefresh: vi.fn(),
   },
@@ -95,5 +95,23 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
     expect(await screen.findByText('Model list unavailable')).toBeInTheDocument()
     expect(screen.queryByText('Delisted')).not.toBeInTheDocument()
     expect(state.getStalePinnedModels).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'], 'empty')
+  })
+
+  it('shows the retry state when the gateway catalog remains loading', async () => {
+    state.getAvailableProviders.mockResolvedValueOnce([{
+      providerType: 'llm-gateway',
+      displayName: 'Nutstore AI',
+      providerKey: 'llm-gateway',
+      current: true,
+      models: [{ id: 'glm-5.2', name: 'GLM' }],
+      authoritativeIds: ['glm-5.2'],
+      catalogStatus: 'loading',
+    }])
+    render(<ModelQuickSwitch />)
+
+    expect(await screen.findByText('Model list unavailable')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry model list' })).toBeInTheDocument()
+    expect(screen.queryByText('Delisted')).not.toBeInTheDocument()
+    expect(state.getStalePinnedModels).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'], 'loading')
   })
 })

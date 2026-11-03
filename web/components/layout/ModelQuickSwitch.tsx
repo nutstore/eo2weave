@@ -152,7 +152,8 @@ export function ModelQuickSwitch({
     [providers]
   )
   const gatewayCatalogUnavailable = providers.some(
-    (p) => p.providerType === 'llm-gateway' && (p.catalogStatus === 'failed' || p.catalogStatus === 'empty'),
+    (p) => p.providerType === 'llm-gateway' &&
+      (p.catalogStatus === 'failed' || p.catalogStatus === 'empty' || p.catalogStatus === 'loading'),
   )
 
   // Enrich each model with hasVision and stale:
