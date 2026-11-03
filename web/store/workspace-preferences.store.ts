@@ -118,6 +118,8 @@ const DEFAULT_PREFERENCES: WorkspacePreferences = {
  */
 interface WorkspacePreferencesState extends WorkspacePreferences {
   setWorkspaceAgentId: (workspaceId: string, agentId: string) => void
+  /** Forget the conversation-scoped Agent selection (conversation deleted). */
+  clearWorkspaceAgentId: (workspaceId: string) => void
   // Panel sizes actions
   setSidebarWidth: (width: number) => void
   setConversationRatio: (ratio: number) => void
@@ -169,6 +171,13 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
       ...DEFAULT_PREFERENCES,
       setWorkspaceAgentId: (workspaceId, agentId) =>
         set((state) => { state.agentIdByWorkspace[workspaceId] = agentId }),
+
+      // Deleted conversations have no reopening path — their persisted Agent
+      // selection would otherwise stay in local storage forever and re-apply
+      // if a new conversation ever reuses the id (same lifecycle rule as the
+      // session-allow/yolo grants cleared in deleteConversation).
+      clearWorkspaceAgentId: (workspaceId) =>
+        set((state) => { delete state.agentIdByWorkspace[workspaceId] }),
 
       // Panel sizes actions (rounded to integers — drag gestures produce floats)
       setSidebarWidth: (width) =>
