@@ -400,11 +400,22 @@ export const handlers: Record<string, Handler> = {
     })
     // A successful create must already be usable and visible in its project,
     // even before the first send_message starts the background agent loop.
-    const workspace = await d().ensureConversationWorkspace(conv.id, conv.title, target.projectId)
-    if (agentId) d().setConversationAgent(conv.id, agentId)
-    return ok({ conversation: {
-      id: conv.id, title: conv.title, workspaceId: conv.id, projectId: workspace.projectId, agentId,
-    } })
+    // If setup fails, roll the just-created conversation back so a failed
+    // call never leaves an unusable orphan that retries would duplicate.
+    try {
+      const workspace = await d().ensureConversationWorkspace(conv.id, conv.title, target.projectId)
+      if (agentId) d().setConversationAgent(conv.id, agentId)
+      return ok({ conversation: {
+        id: conv.id, title: conv.title, workspaceId: conv.id, projectId: workspace.projectId, agentId,
+      } })
+    } catch (error) {
+      try {
+        await store.deleteConversation(conv.id)
+      } catch (rollbackError) {
+        console.error('[app-tools] Failed to roll back conversation after failed creation:', rollbackError)
+      }
+      throw error
+    }
   },
 
   rename_conversation: async (args) => {

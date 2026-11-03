@@ -64,6 +64,7 @@ function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
     runAgent: vi.fn(async () => {}),
     cancelAgent: vi.fn(),
     createNew: vi.fn(() => ({ id: 'c_new', title: 't' })),
+    deleteConversation: vi.fn(async () => {}),
     setActive: vi.fn(),
   }
   return {
@@ -153,6 +154,26 @@ describe('app-tools handlers', () => {
       ensureConversationWorkspace: vi.fn(async () => { throw new Error('No open project') }),
     })
     await expect(handlers.create_conversation({})).rejects.toThrow('No open project')
+  })
+
+  it('create_conversation rolls back the orphan conversation when setup fails', async () => {
+    initAppToolDeps({
+      ...deps,
+      ensureConversationWorkspace: vi.fn(async () => { throw new Error('workspace setup exploded') }),
+    })
+    await expect(handlers.create_conversation({ title: 'Doomed' })).rejects.toThrow('workspace setup exploded')
+    expect(deps.getConversationStore().createNew).toHaveBeenCalledTimes(1)
+    expect(deps.getConversationStore().deleteConversation).toHaveBeenCalledWith('c_new')
+  })
+
+  it('create_conversation still surfaces the original error when the rollback itself fails', async () => {
+    initAppToolDeps({
+      ...deps,
+      ensureConversationWorkspace: vi.fn(async () => { throw new Error('setup failed first') }),
+    })
+    deps.getConversationStore().deleteConversation = vi.fn(async () => { throw new Error('rollback failed too') })
+    await expect(handlers.create_conversation({})).rejects.toThrow('setup failed first')
+    expect(deps.getConversationStore().deleteConversation).toHaveBeenCalledWith('c_new')
   })
 
   it('get_workspace_context queries the source without creating or activating a conversation', async () => {
