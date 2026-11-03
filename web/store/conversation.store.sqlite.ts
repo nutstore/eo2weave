@@ -20,7 +20,7 @@ import { createConversation, createToolMessage, generateId } from '@/agent/messa
 // redesign): grants die with the conversation — leaf stores, safe to import.
 import { useSessionAllowStore } from '@/store/session-allow.store'
 import { useYoloModeStore } from '@/store/yolo-mode.store'
-import { useWorkspacePreferencesStore } from './workspace-preferences.store'
+import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 import { emitCompressionEvent } from '@/streaming-bus'
 import { useConversationContextStore } from './conversation-context.store'
 import { useConversationRuntimeStore, createEmptyRuntime } from './conversation-runtime.store'
@@ -311,7 +311,7 @@ interface ConversationState {
     maxTokens: number,
     directoryHandle: FileSystemDirectoryHandle | null,
     agentOverrideId?: string | null,
-    options?: { background?: boolean }
+    options?: { background?: boolean; transient?: boolean }
   ) => Promise<void>
   cancelAgent: (conversationId: string) => void
 
@@ -2570,10 +2570,6 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       try {
         useSessionAllowStore.getState().clearFor(id)
         useYoloModeStore.getState().setYolo(id, false)
-        // The per-conversation Agent selection dies with the conversation —
-        // otherwise it lingers in local storage forever and a new conversation
-        // reusing the id would inherit it.
-        useWorkspacePreferencesStore.getState().clearWorkspaceAgentId(id)
       } catch (error) {
         console.warn('[conversation.store] Failed to clear conversation-scoped auth state:', error)
       }
@@ -2651,6 +2647,17 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           state.activeConversationId = null
         }
       })
+
+      // The per-conversation Agent selection dies with the conversation —
+      // otherwise it lingers in local storage forever and a new conversation
+      // reusing the id would inherit it. Only AFTER the DB delete is confirmed:
+      // clearing it earlier would erase the saved Agent for a conversation that
+      // survived a failed deletion.
+      try {
+        useWorkspacePreferencesStore.getState().clearWorkspaceAgentId(id)
+      } catch (error) {
+        console.warn('[conversation.store] Failed to clear conversation-scoped auth state:', error)
+      }
     },
 
     deleteConversations: async (ids) => {
@@ -2778,7 +2785,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       maxTokens: number,
       directoryHandle: FileSystemDirectoryHandle | null,
       agentOverrideId?: string | null,
-      options?: { background?: boolean }
+      options?: { background?: boolean; transient?: boolean }
     ) =>
       runAgentImpl(
         { handleSubagentStepNotification, scheduleConversationEviction } as unknown as ConversationAgentRunInternals,

@@ -59,7 +59,7 @@ export async function registerAppTools(): Promise<void> {
       setConversationAgent: (id, agentId) => useWorkspacePreferencesStore.getState().setWorkspaceAgentId(id, agentId),
       ensureConversationWorkspace: async (id, title, projectId) => {
         const { ensureConversationWorkspaceWithMeta } = await import(
-          './workspace-setup'
+          '@/webmcp/app-tools/workspace-setup'
         )
         return ensureConversationWorkspaceWithMeta({
           workspaceId: id,
