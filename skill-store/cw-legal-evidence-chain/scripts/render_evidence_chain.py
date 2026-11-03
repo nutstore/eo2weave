@@ -561,9 +561,10 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
     published = False
     # True once the descriptor has been closed on Windows ahead of the
     # rename; after that point identity checks through `fd` are impossible,
-    # so failure cleanup falls back to the staging name itself (which is
-    # still this render's own O_EXCL-created name).
+    # so failure cleanup falls back to comparing against the identity that
+    # was captured before the close.
     fd_closed = False
+    staging_identity: tuple[int, int] | None = None
     try:
         # The report bytes are written through the descriptor in BINARY
         # mode: a text wrapper would translate newlines on Windows, so the
@@ -604,7 +605,14 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
             # Windows can refuse to rename a file that still has an open
             # descriptor, so the descriptor MUST be closed before the
             # rename. The mode was already set on the inode, so the report
-            # is published with its final permissions either way.
+            # is published with its final permissions either way. The
+            # inode's identity is captured BEFORE the close, so failure
+            # cleanup after a failed rename can still verify that the
+            # staging name still names this render's file.
+            staging_identity = (
+                os.fstat(fd).st_dev,
+                os.fstat(fd).st_ino,
+            )
             os.close(fd)
             fd = -1
             fd_closed = True
@@ -631,17 +639,21 @@ def atomic_write(text: str, output_file: Path) -> tuple[str, int]:
             # to the pre-rename close), identity is checked through `fd` so
             # a swapped-in foreign file is never deleted. If os.replace
             # failed AFTER the Windows pre-rename close, there is no
-            # descriptor to check through — the name, however, is still this
-            # render's own O_EXCL-created name that no other writer had a
-            # reason to touch between creation and the failed rename, and
-            # leaving it behind would leak a report file into the output
-            # directory on EVERY failed Windows render.
-            ours = fd_closed or path_names_inode(staging, fd)
-            if ours:
-                try:
+            # descriptor to check through, but the inode's (dev, ino) was
+            # captured before the close: the name is unlinked only when it
+            # still names THAT inode, so a swap-in replacement survives.
+            # Leaving one stale file behind in that (already hostile) case
+            # is the harmless direction to fail in.
+            try:
+                if fd_closed and staging_identity is not None:
+                    named = os.lstat(staging)
+                    ours = (named.st_dev, named.st_ino) == staging_identity
+                else:
+                    ours = path_names_inode(staging, fd)
+                if ours:
                     staging.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            except OSError:
+                pass
         raise
     finally:
         if fd >= 0:
