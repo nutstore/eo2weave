@@ -259,6 +259,27 @@ describe('getStalePinnedModels: catalogStatus semantics', () => {
     expect(state.getStalePinnedModels(P, ['m-a'], 'ready')).toEqual(['m-b'])
     expect(state.getStalePinnedModels(P, ['m-a'])).toEqual(['m-b'])
   })
+
+  it('reports the ACTIVE model stale when a non-empty authoritative catalog omits it (Sourcery: Selected delisted models lose warnings)', () => {
+    // The exclusion used to live HERE (the comparison), so a non-empty
+    // authoritative catalog omitting the selected model produced no stale
+    // result anywhere — the switcher and the settings card both went
+    // unwarned for exactly the model the user is on. Exclusion belongs at
+    // the auto-removal site (the sweep's keep-set); the comparison must
+    // report the active pin like any other seen-but-absent pin.
+    useSettingsStore.setState({
+      providerType: P,
+      modelName: 'm-b',
+      pinnedModelsByProvider: { [P]: ['m-a', 'm-b'] },
+      pinnedSeenByProvider: { [P]: ['m-a', 'm-b'] },
+    })
+    const state = useSettingsStore.getState()
+    expect(state.getStalePinnedModels(P, ['m-a'], 'ready')).toEqual(['m-b'])
+    expect(state.getStalePinnedModels(P, ['m-a'])).toEqual(['m-b'])
+    // Empty/unknown catalogs still report nothing (issue #146 core rule).
+    expect(state.getStalePinnedModels(P, [], 'failed')).toEqual([])
+    expect(state.getStalePinnedModels(P, [], 'empty')).toEqual(['m-a', 'm-b'])
+  })
 })
 
 // ─── Sourcery round 6 (PRRT_kwDORoHsZ86yz16w / yz17D / yz17N / yz17R) ────────

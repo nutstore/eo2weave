@@ -1383,8 +1383,12 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // - An authoritative EMPTY catalog DOES sweep: getStalePinnedModels
         //   reports seen pins as stale only when the catalog status says its
         //   (empty) contents are authoritative.
-        // - Keep the currently selected model even if stale: the user is on
-        //   it, and the topbar already flags it (currentModelDelistedTooltip).
+        // - Keep the currently selected model even if stale: the sweep's
+        //   `keep` set below preserves the active pin from auto-removal, while
+        //   getStalePinnedModels still REPORTS it so the switcher's delisted
+        //   warning stays visible (Sourcery: "Selected delisted models lose
+        //   warnings" — exclusion belongs at the removal site, not in the
+        //   comparison).
         // A newer discovery run has started while this one was collecting:
         // this run's snapshot is stale — skip BOTH the destructive pin sweep
         // and reconciliation, and return the (still valid, read-only) results
@@ -1548,6 +1552,12 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const pinned = state.pinnedModelsByProvider[providerType] || []
         const seen = new Set(state.pinnedSeenByProvider[providerType] || [])
         const available = new Set(availableIds)
+        // The active selection is EXCLUDED from auto-removal (its `keep` set
+        // in the sweep) but must still be REPORTED stale when a non-empty
+        // authoritative catalog omits it: the switcher and the settings card
+        // render the delisted warning from this result, and hiding the
+        // active pin here silenced the warning for exactly the model the
+        // user is on (Sourcery: "Selected delisted models lose warnings").
         return pinned.filter((id) => seen.has(id) && !available.has(id))
       },
 
