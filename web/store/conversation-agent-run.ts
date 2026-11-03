@@ -97,6 +97,15 @@ export interface ConversationAgentRunInternals {
     conversationId: string,
     event: SubagentStepNotification
   ): void
+  /**
+   * Bump the conversation's in-memory transcript mutation watermark
+   * (facade-module fn). Every path that REPLACES the in-memory message list
+   * must call it, otherwise a transcript read that is pending at that moment
+   * would install its older DB snapshot over the newer in-memory messages and
+   * prime that snapshot as the persist baseline — the recent changes would
+   * disappear (PR #152 review, "Recent transcript changes disappear").
+   */
+  bumpTranscriptVersion(conversationId: string): void
   /** Schedule a delayed memory-eviction check (facade-module fn; avoids a
    *  module cycle with conversation.store.sqlite.ts). */
   scheduleConversationEviction(conversationId: string): void
@@ -119,7 +128,7 @@ export async function runAgentImpl(
       agentOverrideId?: string | null,
       options?: { background?: boolean }
 ): Promise<void> {
-  const { handleSubagentStepNotification } = store
+  const { handleSubagentStepNotification, bumpTranscriptVersion } = store
   // Background runs (external agents driving EO2Weave) must NOT steal the
   // user's active workspace — they only ensure the workspace exists.
   const background = options?.background === true
@@ -993,6 +1002,11 @@ export async function runAgentImpl(
             if (!c) return
             if (status === 'idle') {
               c.messages = finalizedMessages
+              // The run's final messages REPLACE the in-memory transcript:
+              // bump the watermark so a transcript read that is pending right
+              // now cannot install its older DB snapshot over these messages
+              // (PR #152 review, "Recent transcript changes disappear").
+              bumpTranscriptVersion(conversationId)
               if (usageAtFinalize) {
                 c.contextWindowUsage = usageAtFinalize
                 c.lastContextWindowUsage = usageAtFinalize
@@ -1716,6 +1730,10 @@ export async function runAgentImpl(
               const c = state.conversations.find((x) => x.id === conversationId)
               if (!c || (c.runEpoch || 0) !== runEpoch) return
               c.messages = reconciled
+              // Mid-run transcript update: same watermark rule as the
+              // finalize install (PR #152 review, "Recent transcript changes
+              // disappear").
+              bumpTranscriptVersion(conversationId)
               c.compressedContextSummary =
                 [...reconciled].reverse().find((msg) => msg.kind === 'context_summary')?.content || c.compressedContextSummary || null
               c.compressedContextCutoffTimestamp =
@@ -2025,6 +2043,11 @@ export async function runAgentImpl(
               abortCommittedPartial = commitDraftToMessages(c)
               if (abortCommittedPartial) {
                 c.updatedAt = Date.now()
+                // The partial draft was committed INTO the transcript: bump
+                // the watermark so a pending transcript read cannot install
+                // its older snapshot over it
+                // (PR #152 review, "Recent transcript changes disappear").
+                bumpTranscriptVersion(conversationId)
               }
               c.status = 'idle'
               c.activeRunId = null

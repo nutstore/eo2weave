@@ -469,14 +469,22 @@ function writeWithMessagesLoaded(conversationId: string, apply: () => void): voi
         return
       }
       primePersistBaseline(conversationId, loaded)
+      let installedSnapshot = false
       useConversationStoreSQLite.setState((state) => {
         const c = state.conversations.find((x) => x.id === conversationId)
         if (c && c.messagesLoaded === false) {
           c.messages = loaded
           c.messagesLoaded = true
           healCompressionBaseline(c)
+          installedSnapshot = true
         }
       })
+      // Installing the reloaded snapshot into memory is a transcript
+      // mutation: a transcript read that is pending right now must not
+      // install its own (older) snapshot over it nor prime that snapshot as
+      // the persistence baseline (PR #152 review, "Recent transcript changes
+      // disappear").
+      if (installedSnapshot) bumpTranscriptVersion(conversationId)
       apply()
       // The write target was metadata-only, i.e. not open in any view. If no
       // run keeps it alive it becomes an eviction candidate right away.
@@ -836,9 +844,24 @@ const inflightRetries = new Map<string, Promise<void>>()
  * later test retrying the same conversation would silently no-op. Test
  * setups call this between scenarios.
  */
+/**
+ * Test-only: the current watermark version for a conversation.
+ * Returns `undefined` when the conversation has NO entry (as opposed to a
+ * version of 0), so a test can tell "never mutated" from "mutated and reset".
+ */
+export function getTranscriptVersionEntryForTests(conversationId: string): number | undefined {
+  return conversationTranscriptVersions.get(conversationId)
+}
+
 export function resetConversationRetryStateForTests(): void {
   inflightRetries.clear()
   inflightRetryRefs.clear()
+  // Reset the transcript watermark too: scenario A that mutated a seeded
+  // conversation's transcript must not leave a higher version behind that
+  // would change scenario B's install-guard arithmetic
+  // (PR #152 review, "Recent transcript changes disappear").
+  conversationTranscriptVersions.clear()
+  transcriptReadGenerations.clear()
   // Also release the withInflightLoad slot: a prior scenario's deliberately
   // hung leg (e.g. a never-settling workspace ensure) keeps the slot forever,
   // and the next test's loadFromDB would silently no-op behind it
@@ -1000,9 +1023,13 @@ async function runRetryLoadedFailure(
       // (PR #152 review, "Concurrent transcript edits disappear"). Skip the
       // install; the in-memory state (already synced to the DB by the
       // writers) stays authoritative.
+      // The watermark comparison is UNCONDITIONAL here: the guard must fire
+      // even when the conversation row is metadata-only. A concurrent read
+      // that installed newer content moved the watermark, and installing an
+      // older snapshot over it would lose that content
+      // (PR #152 review, "Stale snapshot can still win").
       const changedDuringRead =
         conversationBeforeInstall !== undefined &&
-        conversationBeforeInstall.messagesLoaded !== false &&
         (conversationTranscriptVersions.get(id) ?? 0) !== transcriptVersionAtReadStart
       if (!changedDuringRead) {
         primePersistBaseline(id, messages as Message[])
@@ -1014,6 +1041,12 @@ async function runRetryLoadedFailure(
             healCompressionBaseline(conversation)
           }
         })
+        // Installing the snapshot IS a transcript mutation: another read that
+        // is pending right now must not accept its older snapshot over these
+        // messages (and must not prime that older snapshot as the persistence
+        // baseline) — the watermark has to move even though no user edit was
+        // involved (PR #152 review, "Stale snapshot can still win").
+        bumpTranscriptVersion(id)
       }
     } else {
       // A 'missing-target' result (the failed conversation was removed from
@@ -1244,6 +1277,11 @@ async function runLoadFromDB(
             }
             if (mutated) {
               conv.messages = newMessages
+              // A pre-install in-memory mutation: bump the watermark so the
+              // pending active-transcript read of THIS conversation does not
+              // later overwrite the repaired list with its older snapshot
+              // (PR #152 review, "Recent transcript changes disappear").
+              bumpTranscriptVersion(conv.id)
               // Persist the recovered messages so the next load doesn't re-run the same work.
               await persistMessageReplace(conv.id, newMessages).catch((err) => {
                 console.warn(
@@ -1432,9 +1470,13 @@ async function runLoadFromDB(
             const conversationBeforeInstall = get().conversations.find(
               (c) => c.id === activeIdToInstall
             )
+            // Unconditional watermark comparison (see the targeted-retry
+            // guard): the load replaces the conversation list, so the row it
+            // installs into is metadata-only — but a concurrent read may have
+            // installed newer content and moved the watermark
+            // (PR #152 review, "Stale snapshot can still win").
             const transcriptChangedDuringRead =
               conversationBeforeInstall !== undefined &&
-              conversationBeforeInstall.messagesLoaded !== false &&
               (conversationTranscriptVersions.get(activeIdToInstall) ?? 0) !==
                 transcriptVersionAtReadStart
             if (!transcriptChangedDuringRead) {
@@ -1448,6 +1490,11 @@ async function runLoadFromDB(
                   healCompressionBaseline(conv)
                 }
               })
+              // Installing the snapshot IS a transcript mutation — bump the
+              // watermark so a concurrently pending read cannot accept its
+              // older snapshot over these messages
+              // (PR #152 review, "Stale snapshot can still win").
+              bumpTranscriptVersion(activeIdToInstall)
             }
           } catch (error) {
             // A stale run's failure must not clobber the recovered state a
@@ -1685,9 +1732,10 @@ async function runLoadFromDB(
               const retryConversationBeforeInstall = get().conversations.find(
                 (c) => c.id === retryActiveId
               )
+              // Unconditional watermark comparison (see the targeted-retry
+              // guard) (PR #152 review, "Stale snapshot can still win").
               const retryTranscriptChangedDuringRead =
                 retryConversationBeforeInstall !== undefined &&
-                retryConversationBeforeInstall.messagesLoaded !== false &&
                 (conversationTranscriptVersions.get(retryActiveId) ?? 0) !==
                   retryVersionAtReadStart
               if (selectionGenerationAtFallback !== activeSelectionGeneration) {
@@ -1709,6 +1757,11 @@ async function runLoadFromDB(
                     healCompressionBaseline(conv)
                   }
                 })
+                // Installing the snapshot IS a transcript mutation — bump the
+                // watermark so a concurrently pending read cannot accept its
+                // older snapshot over these messages
+                // (PR #152 review, "Stale snapshot can still win").
+                bumpTranscriptVersion(retryActiveId)
               }
             } catch (transcriptErr) {
               // Stale-run gate (PR #149 round-6 review): a superseded run must
@@ -1988,6 +2041,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         const failureOwnerAtReadStart = get().loadFailedConversationId
         if (conv && (conv.messages.length === 0 || conv.messagesLoaded === false)) {
           const transcriptGeneration = claimTranscriptRead(id)
+          // Mutation watermark captured BEFORE the read (same rule as the
+          // targeted retry and the primary/fallback installs): a transcript
+          // mutated in memory while this read was pending must not be
+          // replaced by the older DB snapshot
+          // (PR #152 review, "Recent transcript changes disappear").
+          const transcriptVersionAtReadStart = conversationTranscriptVersions.get(id) ?? 0
           try {
             const msgRepo = getMessageRepository()
             const tFetch = performance.now()
@@ -2007,18 +2066,34 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               requireWorkspaceEnsure: true,
             })
             if (selectionGeneration !== activeSelectionGeneration || get().activeConversationId !== id) return
+            // Stale-snapshot guard: the transcript may have been mutated in
+            // memory while the read was pending (e.g. a queued message landed
+            // through writeWithMessagesLoaded). Installing the older snapshot
+            // would make those changes disappear, and priming it as the
+            // persist baseline could lose them from storage
+            // (PR #152 review, "Recent transcript changes disappear").
+            // Same shape as the targeted-retry / primary / fallback guards:
+            // a still-metadata-only conversation has no in-memory transcript
+            // to lose, so its install stays unconditional.
+            const conversationBeforeInstall = get().conversations.find((c) => c.id === id)
+            const transcriptChangedDuringRead =
+              conversationBeforeInstall !== undefined &&
+              conversationBeforeInstall.messagesLoaded !== false &&
+              (conversationTranscriptVersions.get(id) ?? 0) !== transcriptVersionAtReadStart
             const tDeserialize = performance.now()
-            primePersistBaseline(id, messages as Message[])
-            set((state) => {
-              const c = state.conversations.find((c) => c.id === id)
-              if (c && (c.messages.length === 0 || c.messagesLoaded === false)) {
-                c.messages = messages as Message[]
-                c.messagesLoaded = true
-                // Auto-heal: restore compression baseline from context_summary messages
-                // for conversations created before the persistence fix.
-                healCompressionBaseline(c)
-              }
-            })
+            if (!transcriptChangedDuringRead) {
+              primePersistBaseline(id, messages as Message[])
+              set((state) => {
+                const c = state.conversations.find((c) => c.id === id)
+                if (c && (c.messages.length === 0 || c.messagesLoaded === false)) {
+                  c.messages = messages as Message[]
+                  c.messagesLoaded = true
+                  // Auto-heal: restore compression baseline from context_summary messages
+                  // for conversations created before the persistence fix.
+                  healCompressionBaseline(c)
+                }
+              })
+            }
             console.log(
               `[conversation.store] setActive(${id?.slice(0, 8)}) message load (${Math.round(performance.now() - t0)}ms)`,
               {
@@ -2391,6 +2466,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         conv.status = 'idle'
         conv.error = null
         conv.updatedAt = Date.now()
+        bumpTranscriptVersion(conversationId)
       })
 
       // Persist the cleanup
@@ -2497,6 +2573,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         conv.activeToolCalls = []
         conv.error = null
         conv.updatedAt = Date.now()
+        bumpTranscriptVersion(conversationId)
       })
 
       // Persist
@@ -2718,6 +2795,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           state.activeConversationId = null
         }
       })
+      // The watermark map is module-level and lives for the page's lifetime:
+      // drop this conversation's entry with the conversation itself, or a
+      // long-lived session that creates/mutates/deletes many conversations
+      // grows the map without bound
+      // (PR #152 review, "Deleted conversations retain watermark entries").
+      conversationTranscriptVersions.delete(id)
+      transcriptReadGenerations.delete(id)
     },
 
     deleteConversations: async (ids) => {
@@ -2925,7 +3009,11 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       options?: { background?: boolean }
     ) =>
       runAgentImpl(
-        { handleSubagentStepNotification, scheduleConversationEviction } as unknown as ConversationAgentRunInternals,
+        {
+          handleSubagentStepNotification,
+          scheduleConversationEviction,
+          bumpTranscriptVersion,
+        } as unknown as ConversationAgentRunInternals,
         set,
         get,
         conversationId,
@@ -3658,6 +3746,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           const committed = commitDraftToMessages(c)
           if (committed) {
             c.updatedAt = Date.now()
+            bumpTranscriptVersion(c.id)
             // Clean up streaming/draft UI state
             c.draftAssistant = null
             c.currentToolCall = null
