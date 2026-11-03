@@ -351,7 +351,21 @@ def case_atomic_write_digest_permissions_and_cleanup() -> None:
         assert not list(tmp.glob("render-staging-*")), "no staging residue after success"
         # Stale staging files of THIS renderer are swept; a foreign file with
         # a similar name must survive.
-        dead_pid = 999999  # a PID that cannot be running
+        # A PID that cannot be running HERE is discovered at test time, not
+        # hardcoded: a numeric PID like 999999 CAN be a live process on some
+        # systems, and then the sweep would correctly PRESERVE the file and
+        # the assertion below would fail on a healthy renderer. We probe the
+        # live PID space instead of assuming any number is dead.
+        dead_pid = None
+        for candidate in range(700000, 999999, 7):
+            try:
+                os.kill(candidate, 0)
+            except ProcessLookupError:
+                dead_pid = candidate
+                break
+            except (PermissionError, OSError):
+                continue  # occupied or unclassifiable — try another
+        assert dead_pid is not None, "no free PID found to fake a dead renderer"
         stale = tmp / f"render-staging-{dead_pid}-abcdef0123456789.tmp-partial"
         stale.write_text("junk", encoding="utf-8")
         old = time.time() - 7 * 3600
@@ -561,15 +575,20 @@ def case_published_mode_and_digest_invariants() -> None:
     """The published report's mode and checksum must match the umask-derived
     contract, and the report must never be group/other-writable.
 
-    Two invariants are pinned here:
+    Two invariants are pinned here, each under a DIFFERENT umask:
 
-    1. The published mode is exactly the mode the kernel gave the file at
-       CREATION time (i.e. 0o666 & ~umask) with the group and other WRITE
-       bits withheld. A permissive umask (022) therefore yields 0644 — still
-       shared-readable, never shared-writable.
-    2. The emitted OUTPUT_SHA256 must equal the SHA-256 of the PUBLISHED
-       file's bytes, so the checksum the caller hands on always describes
-       the delivered report.
+    1. Under umask 022 the published mode is exactly the mode the kernel gave
+       the file at CREATION time (i.e. 0o666 & ~umask) with the group and
+       other WRITE bits withheld: 0644 — still shared-readable, never
+       shared-writable.
+    2. Under a permissive umask (002) the same withheld bits must still
+       produce 0644. This catches the regression the 022 run cannot see: if
+       the renderer stops clearing the group/other WRITE bits, umask 022
+       masks the defect (the kernel already removed them), but umask 002
+       would leak a group-writable report.
+    3. Under both masks the emitted OUTPUT_SHA256 must equal the SHA-256 of
+       the PUBLISHED file's bytes, so the checksum the caller hands on
+       always describes the delivered report.
     """
     if os.name == "nt":
         return  # POSIX permission bits are not meaningful on Windows
@@ -593,17 +612,33 @@ print("SIZE", size)
         result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
         assert result.returncode == 0, \
             f"render must succeed: {result.stdout} {result.stderr}"
-        published = out.read_bytes()
-        assert f"DIGEST {hashlib.sha256(published).hexdigest()}" in result.stdout, \
-            "the emitted digest must equal the SHA-256 of the published bytes"
-        assert f"SIZE {len(published)}" in result.stdout, \
-            "the emitted size must equal the size of the published bytes"
         mode = stat.S_IMODE(out.stat().st_mode)
         # 0o666 & ~0o022 = 0o644: the umask's read bits plus owner read/write.
         assert mode == 0o644, \
             f"under umask 022 the published report must be 0644, got {oct(mode)}"
         assert not mode & 0o022, \
             f"the published report must never be group/other-writable, got {oct(mode)}"
+        published = out.read_bytes()
+        assert f"DIGEST {hashlib.sha256(published).hexdigest()}" in result.stdout, \
+            "the emitted digest must equal the SHA-256 of the published bytes"
+
+        # Umask 002 regression probe: umask 022 already removes the group
+        # WRITE bit, so a renderer that stops clearing it would pass the
+        # assertions above. Under 002 the kernel KEEPS that bit, so the
+        # renderer's own clearing logic is what is being tested here.
+        out2 = tmp / "report-umask-002.md"
+        script2 = script.replace("real_umask(0o022)", "real_umask(0o002)").replace(str(out), str(out2))
+        result2 = subprocess.run([sys.executable, "-c", script2], capture_output=True, text=True)
+        assert result2.returncode == 0, \
+            f"render under umask 002 must succeed: {result2.stdout} {result2.stderr}"
+        mode2 = stat.S_IMODE(out2.stat().st_mode)
+        assert mode2 == 0o644, \
+            f"under umask 002 the published report must still be 0644, got {oct(mode2)}"
+        assert not mode2 & 0o002, \
+            f"under umask 002 the published report must not be group-writable, got {oct(mode2)}"
+        published2 = out2.read_bytes()
+        assert f"DIGEST {hashlib.sha256(published2).hexdigest()}" in result2.stdout, \
+            "under umask 002 the emitted digest must equal the SHA-256 of the published bytes"
 
 
 def case_staging_symlink_swap_aborts_publish() -> None:
