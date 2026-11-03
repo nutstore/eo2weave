@@ -353,7 +353,23 @@ describe('credential-session change clears the cached catalog (issue #146)', () 
 
   it('still retains models for a failed refresh within the SAME session', async () => {
     // No credential change between the two registrations: retention-on-
-    // failed-refresh for the same account stays intact.
+    // failed-refresh for the same account stays intact. A refresh-token
+    // RENEWAL via persistDeviceLoginTokens is the same credential set for
+    // this purpose when the catalog was (re)built after it — the realistic
+    // within-session sequence is: login commits → successful discovery →
+    // later failed refresh → retention keeps the list.
+    localStorage.setItem(TOKENS_KEY, JSON.stringify({
+      access_token: 'access-1', refresh_token: 'refresh-1',
+      access_expires_at: Date.now() + 3600_000,
+      refresh_expires_at: Date.now() + 7 * 24 * 3600_000,
+      client_id: CLIENT_ID, base_url: BASE_URL,
+    }))
+    const { persistDeviceLoginTokens } = await import('@/agent/providers/llm-gateway-auth')
+    persistDeviceLoginTokens({
+      access_token: 'access-b', token_type: 'Bearer', expires_in: 3600,
+      refresh_token: 'refresh-b', refresh_expires_in: 7 * 24 * 3600,
+    }, CLIENT_ID, BASE_URL)
+
     registerGatewayModels([model], 'ready')
     registerGatewayModels([], 'failed')
 

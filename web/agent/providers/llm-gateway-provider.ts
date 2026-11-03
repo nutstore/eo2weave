@@ -180,6 +180,17 @@ export function registerGatewayModels(
     status !== 'failed' && modelInfos.length === 0 ? 'failed' : status
   // A failed response says nothing about the catalog. Keep the last usable
   // list for display, while the failed status prevents delisting decisions.
+  //
+  // Retention is CREDENTIAL-SET-scoped, not unbounded (Sourcery: "Previously
+  // usable models disappear"): the registry list is the in-memory cache of
+  // the credential that fetched it. bumpAuthSessionGeneration already
+  // unregisters the provider on every credential change (login / logout /
+  // expiry), so when the registry is EMPTY here the last-known list belonged
+  // to a previous credential set and must NOT resurface — a same-account
+  // refresh (refresh tokens never rotate) never bumps the generation, so
+  // within-session retention is untouched. Without the empty check, any
+  // failed refresh AFTER a session change resurrected the previous
+  // account's models.
   const models = effectiveStatus === 'failed'
     ? getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
     : modelInfos
