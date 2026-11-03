@@ -52,6 +52,16 @@ function showError(error: unknown): void {
   errorText.textContent = error instanceof Error ? error.message : String(error)
   errorBox.hidden = false
 }
+/**
+ * Success feedback supersedes a stale global error (Sourcery round 2): op A
+ * may fail while op B is still in flight; when B succeeds its completion
+ * must CLEAR A's red box — leaving the failure message beside the green
+ * toast makes the current result unreadable.
+ */
+function showSuccess(message: string): void {
+  clearError()
+  renderSuccessToast(message)
+}
 function dismissError(): void {
   clearError()
 }
@@ -372,14 +382,18 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
     btn.disabled = true
     const previous = btn.textContent
     btn.textContent = t('webmcpPackagesInstalling')
+    // Feedback token: a newer package operation (e.g. a Remove started
+    // while this repair awaits its background response) invalidates this
+    // one — its success must not show "installed" for an absent package.
+    const token = nextFeedbackToken()
     try {
       clearError()
       const result = await installRegistryPackage(registry, pkg)
       installed.add(pkg.id)
       activations[pkg.id] = 'disabled'
-      showSuccess(t('webmcpPackagesInstallSuccess', [pkg.id, String(result.filesWritten)]))
+      showOperationSuccess(token, t('webmcpPackagesInstallSuccess', [pkg.id, String(result.filesWritten)]))
     } catch (error) {
-      showError(error)
+      if (isFeedbackCurrent(token)) showError(error)
     } finally {
       btn.textContent = previous
       btn.disabled = false
@@ -402,11 +416,16 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
       uninstall.disabled = true
       const previous = uninstall.textContent
       uninstall.textContent = t('webmcpPackagesUninstalling')
+      const token = nextFeedbackToken()
       try {
         clearError()
         await uninstallRegistryPackage(pkg.id)
+        // The green toast may still be announcing this package's install
+        // (auto-hide 3.5s): after a successful removal it would claim the
+        // package is still installed — dismiss it.
+        showOperationRemoved(token)
       } catch (error) {
-        showError(error)
+        if (isFeedbackCurrent(token)) showError(error)
       } finally {
         uninstall.textContent = previous
         uninstall.disabled = false
@@ -429,7 +448,7 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
  * Repeated installs restart the timer and replace the text.
  */
 let successToastTimer: number | undefined
-function showSuccess(message: string): void {
+function renderSuccessToast(message: string): void {
   let toast = document.getElementById('successToast')
   if (!toast) {
     toast = document.createElement('div')
@@ -449,6 +468,48 @@ function showSuccess(message: string): void {
 
 let generation = 0
 
+/**
+ * Package-operation feedback token (Sourcery round 2): the page has ONE
+ * global toast/error area but several per-package operations run
+ * concurrently. Each operation captures a token at START; only the token
+ * matching the LATEST captured one may land success/error feedback. A slow
+ * operation resolving after a newer one started (e.g. a repair whose
+ * response arrives after the user already removed the package) is
+ * suppressed — its result no longer describes the page state.
+ */
+let feedbackToken = 0
+function nextFeedbackToken(): number {
+  return ++feedbackToken
+}
+
+/**
+ * True when this token is still current — no newer package operation has
+ * captured a token since this one started.
+ */
+function isFeedbackCurrent(token: number): boolean {
+  return token === feedbackToken
+}
+
+/**
+ * Success feedback for a package operation. A stale op (a newer operation
+ * started meanwhile) must not show "installed" for a package that a newer
+ * operation just removed — suppress the toast entirely.
+ */
+function showOperationSuccess(token: number, message: string): void {
+  if (!isFeedbackCurrent(token)) return
+  showSuccess(message)
+}
+
+/**
+ * Remove completed successfully: the toast announcing the (earlier)
+ * install of this very package must GO — it still says the package is
+ * installed after the user just removed it (Sourcery round 2).
+ */
+function showOperationRemoved(token: number): void {
+  if (!isFeedbackCurrent(token)) return
+  dismissSuccess()
+}
+
 async function render(): Promise<void> {
   const current = ++generation
   const state = await listRegistries()
@@ -460,8 +521,14 @@ async function render(): Promise<void> {
   // unavailable) reads back empty on the next load — silently redrawing it
   // made a just-added registry disappear without explanation. The user
   // must know the list is session-only.
+  //
+  // This is a NON-BLOCKING warning, not an operation failure: it must not
+  // reuse showError() (which dismisses the success toast), or every render
+  // would hide a just-shown install confirmation (Sourcery round 2). The
+  // warning box appears BELOW the fixed toast — both stay visible.
   if (!state.persisted) {
-    showError(new Error(t('webmcpPackagesNotPersisted')))
+    errorText.textContent = t('webmcpPackagesNotPersisted')
+    errorBox.hidden = false
   }
 
   const registryList = document.getElementById('registryList')!
@@ -548,11 +615,15 @@ async function render(): Promise<void> {
         uninstall.disabled = true
         const previous = uninstall.textContent
         uninstall.textContent = t('webmcpPackagesUninstalling')
+        const token = nextFeedbackToken()
         try {
           clearError()
           await uninstallRegistryPackage(id)
+          // Same as the catalog row: dismiss the success toast still
+          // announcing this package's earlier install.
+          showOperationRemoved(token)
         } catch (error) {
-          showError(error)
+          if (isFeedbackCurrent(token)) showError(error)
         } finally {
           uninstall.textContent = previous
           uninstall.disabled = false
