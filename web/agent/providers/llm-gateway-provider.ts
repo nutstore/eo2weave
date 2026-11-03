@@ -194,7 +194,7 @@ function commitGatewayCatalog(models: ModelInfo[], status: ProviderCatalogStatus
 }
 
 /** Seed the cache from an older success only while no newer usable list exists. */
-function retainSupersededGatewayModels(models: ModelInfo[], authGeneration: number): void {
+export function retainSupersededGatewayModels(models: ModelInfo[], authGeneration: number): void {
   if (authGeneration !== getGatewayAuthSessionGeneration() || models.length === 0) return
   if (getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).length > 0) return
   if (getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE) === 'ready') return

@@ -125,6 +125,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', async (importOriginal) => {
   // DYNAMIC import of this module (finding: "unusable model catalog").
   registerGatewayModels: gatewayMock.registerGatewayModels,
   prepareGatewayModels: gatewayMock.prepareGatewayModels,
+  retainSupersededGatewayModels: actual.retainSupersededGatewayModels,
   beginGatewayCatalogRefresh: () => ++gatewayMock.catalogVersion,
   isGatewayCatalogRefreshCurrent: (version: number) => version === gatewayMock.catalogVersion,
   clearGatewayCatalogForReauth: vi.fn(),
@@ -576,6 +577,22 @@ describe('LLMGatewayCard credential state', () => {
     gatewayMock.catalogVersion = 2
     await act(async () => { rejectOld(new Error('timeout')) })
 
+    expect(gatewayMock.registerGatewayModels).not.toHaveBeenCalled()
+  })
+
+  it('keeps a superseded successful card result when a newer refresh has no models', async () => {
+    settingsState.modelCredentialStatus = 'valid'
+    unregisterDynamicProvider('llm-gateway')
+    gatewayMock.getProviderCatalogStatus.mockReturnValue('failed')
+    let resolveOld!: (result: { models: Array<{ id: string; name: string; capabilities: readonly ['code'] }>; status: 'ready'; authGeneration: number }) => void
+    gatewayMock.prepareGatewayModels.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+    await waitFor(() => expect(gatewayMock.catalogVersion).toBe(1))
+    gatewayMock.catalogVersion = 2
+    await act(async () => resolveOld({ models: [{ id: 'older-model', name: 'Older', capabilities: ['code'] }], status: 'ready', authGeneration: 0 }))
+
+    await waitFor(() => expect(getModelsForProvider('llm-gateway').map((model) => model.id)).toEqual(['older-model']))
     expect(gatewayMock.registerGatewayModels).not.toHaveBeenCalled()
   })
 

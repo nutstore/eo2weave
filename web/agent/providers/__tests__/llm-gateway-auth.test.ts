@@ -162,6 +162,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
 
   afterEach(() => {
     localStorage.clear()
+    unregisterDynamicProvider('llm-gateway')
     vi.unstubAllGlobals()
   })
 
@@ -617,6 +618,10 @@ describe('llm-gateway-auth token refresh hardening', () => {
 
     it('logout rejects instead of reporting success when the purge fails', async () => {
       seedStoredTokens()
+      registerDynamicProvider('llm-gateway',
+        { baseURL: BASE_URL, modelName: 'old-model', headers: {} },
+        { category: 'chinese', displayName: 'Nutstore AI', models: [{ id: 'old-model', name: 'Old', capabilities: ['code'] }], catalogStatus: 'ready' },
+      )
       // The refresh-token backup deletion fails: a surviving backup could be
       // resurrected by the SQLite fallback, so logout must NOT report
       // complete — the caller gets a retryable error.
@@ -630,6 +635,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       // The local pair is still wiped (that part succeeded) and the purge
       // failure must be visible to the UI through the settings store flag.
       expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+      expect(getModelsForProvider('llm-gateway')).toEqual([])
     })
 
     it('purge failure marks the credential status write as failed for the UI', async () => {

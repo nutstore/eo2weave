@@ -595,6 +595,9 @@ async function clearStoredTokens(
     const current = loadStoredTokens()
     if (expectedRefreshToken && current?.refresh_token !== expectedRefreshToken) return false
     bumpAuthSessionGeneration()
+    // The session is no longer trusted from this point onward. Drop its
+    // model catalog before key-store purging, which can fail or time out.
+    unregisterDynamicProvider('llm-gateway')
     localStorage.removeItem(TOKEN_STORAGE_KEY)
     // Record the logout timestamp so a login attempt that was pending
     // (device-code approval / model preparation) in another tab cannot
@@ -654,10 +657,6 @@ async function clearStoredTokens(
       }
       throw purgeError
     }
-    // The registry is the in-memory last-known model cache. Clear it before
-    // releasing the credential lock so a later login cannot inherit another
-    // account's catalog after logout or an expired refresh token.
-    unregisterDynamicProvider('llm-gateway')
     // The purge succeeded — clear any earlier stale-state flag so the UI
     // trusts the status written below.
     try {

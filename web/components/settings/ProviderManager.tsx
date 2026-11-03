@@ -1425,7 +1425,11 @@ export function LLMGatewayCard({
           // await — the token fetch above, the /models fetch here, and the
           // dynamic imports below. A superseded run that returns late would
           // otherwise overwrite the newer session's registration.
-          if (cancelled || (authGeneration !== undefined && authGeneration !== getGatewayAuthSessionGeneration()) || !gateway.isGatewayCatalogRefreshCurrent(refreshVersion)) return
+          if (cancelled || (authGeneration !== undefined && authGeneration !== getGatewayAuthSessionGeneration())) return
+          if (!gateway.isGatewayCatalogRefreshCurrent(refreshVersion)) {
+            if (status === 'ready') gateway.retainSupersededGatewayModels(models, authGeneration ?? authGenerationAtStart!)
+            return
+          }
           // Register the fetched catalog with the gateway provider, not
           // just this card's local list: a login whose discovery failed
           // committed an EMPTY registration, and without this the provider
