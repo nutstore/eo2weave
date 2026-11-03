@@ -53,6 +53,9 @@
       border-radius: 5px; padding: 2px 7px;
     }
     .actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex: 0 0 auto; }
+    /* Installed rows hold TWO side-by-side buttons (Repair + Remove);
+       only single-button rows (Install) keep the column layout. */
+    .actions.row { flex-direction: row; align-items: center; }
     .btn {
       border: 1px solid #d4d4d4; background: #fafaf8; color: #171717;
       border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer;
