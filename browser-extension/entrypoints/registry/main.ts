@@ -30,13 +30,27 @@ const errorBox = document.getElementById('pageError') as HTMLParagraphElement
 const errorText = document.getElementById('pageErrorText') as HTMLSpanElement
 const errorDismiss = document.getElementById('pageErrorDismiss') as HTMLSpanElement
 
-function showError(error: unknown): void {
-  errorText.textContent = error instanceof Error ? error.message : String(error)
-  errorBox.hidden = false
-}
 function clearError(): void {
   errorBox.hidden = true
   errorText.textContent = ''
+}
+/**
+ * Hide the success toast immediately (and stop its auto-hide timer).
+ * A stale success toast from an earlier install must not stay on screen
+ * while a NEW operation fails — success and error side by side makes the
+ * user mistake the old result for the current one.
+ */
+function dismissSuccess(): void {
+  if (successToastTimer !== undefined) {
+    window.clearTimeout(successToastTimer)
+    successToastTimer = undefined
+  }
+  document.getElementById('successToast')?.classList.remove('visible')
+}
+function showError(error: unknown): void {
+  dismissSuccess()
+  errorText.textContent = error instanceof Error ? error.message : String(error)
+  errorBox.hidden = false
 }
 function dismissError(): void {
   clearError()
@@ -376,6 +390,10 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
     await reinstall(install)
   })
   if (isInstalled) {
+    // Repair + Remove must sit BESIDE each other (Sourcery round 1: the
+    // inherited column layout kept them stacked, reading as two competing
+    // primary actions).
+    actions.classList.add('row')
     const repair = button(t('webmcpPackagesRepair'), 'ghost', async () => {
       await reinstall(repair)
     })
