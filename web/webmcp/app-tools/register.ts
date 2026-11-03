@@ -58,11 +58,16 @@ export async function registerAppTools(): Promise<void> {
       resolveConversationTarget,
       setConversationAgent: (id, agentId) => useWorkspacePreferencesStore.getState().setWorkspaceAgentId(id, agentId),
       ensureConversationWorkspace: async (id, title, projectId) => {
-        const [workspace] = await Promise.all([
-          useConversationContextStore.getState().ensureWorkspace(id, title, projectId),
-          waitForConversationMetaPersist(id),
-        ])
-        return workspace
+        const { ensureConversationWorkspaceWithMeta } = await import(
+          './workspace-setup'
+        )
+        return ensureConversationWorkspaceWithMeta({
+          ensureWorkspace: () =>
+            useConversationContextStore.getState().ensureWorkspace(id, title, projectId),
+          deleteWorkspace: (workspaceId) =>
+            useConversationContextStore.getState().deleteWorkspace(workspaceId),
+          waitForConversationMetaPersist: () => waitForConversationMetaPersist(id),
+        })
       },
       getFSOverlayRepository: () => getFSOverlayRepository(),
       validatePath: (path: string) => {
