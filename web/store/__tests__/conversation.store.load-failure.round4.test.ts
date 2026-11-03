@@ -14,6 +14,13 @@
  *    the brand-new conversation.
  *  - "Workspace failure reported as recovered": a transcript read must not
  *    resolve a workspace-scoped diagnostics record.
+ *  - "Recent transcript changes disappear": every in-memory transcript
+ *    mutation (edit / regenerate / append / agent-run update / branch /
+ *    beforeunload draft commit) must bump the per-conversation transcript
+ *    version watermark. A transcript read that is pending while such a
+ *    mutation lands would otherwise install its OLDER database snapshot over
+ *    the newer in-memory messages and prime that snapshot as the persist
+ *    baseline — the recent changes vanish from the UI and from storage.
  *
  * Like the earlier rounds, these drive the store through its PUBLIC API only
  * (loadFromDB / setActive / createNew) plus useStore.setState seeding.
@@ -106,6 +113,54 @@ vi.mock('@/sqlite', () => ({
   getSQLiteDB: vi.fn(() => ({
     queryFirst: vi.fn(() => Promise.resolve({ count: 0 })),
     restartPendingInitialization: vi.fn(),
+  })),
+}))
+
+// The agent-run scenario drives the REAL runAgent path (the agent loop's
+// mid-run message update is one of the mutation paths the watermark must
+// cover). The loop and its heavy dependencies are stubbed so the scenario
+// stays fast and never touches the network.
+vi.mock('@/agent/agent-loop', () => {
+  class MockAgentLoop {
+    constructor(_config: any) {
+      // The real loop's config is irrelevant here: the stub only has to
+      // produce the mid-run message update the scenario exercises.
+    }
+    cancel() {}
+    async run(messages: any[], callbacks: any) {
+      const assistant = {
+        id: 'assistant-run',
+        role: 'assistant',
+        content: 'run output',
+        timestamp: Date.now(),
+      }
+      // The mid-run transcript update (the mutation path under test).
+      callbacks.onMessagesUpdated?.([...messages, assistant])
+      return [...messages, assistant]
+    }
+  }
+  return { AgentLoop: MockAgentLoop }
+})
+
+vi.mock('@/agent/llm/provider-factory', () => ({
+  createLLMProvider: vi.fn(() => ({ maxContextTokens: 128000 })),
+}))
+
+vi.mock('@/agent/context-manager', () => ({
+  ContextManager: vi.fn().mockImplementation(() => ({})),
+}))
+
+vi.mock('@/agent/tool-registry', () => ({
+  getToolRegistry: vi.fn(() => ({})),
+}))
+
+vi.mock('@/agent/follow-up-generator', () => ({
+  generateFollowUp: vi.fn(() => Promise.resolve('')),
+}))
+
+vi.mock('@mcp/elicitation-handler.tsx', () => ({
+  getElicitationHandler: vi.fn(() => ({
+    handleBinaryElicitation: vi.fn(() => Promise.resolve({})),
   })),
 }))
 
@@ -583,5 +638,162 @@ describe('conversation.store — PR #152 Sourcery fixes (issue #147)', () => {
     await useConversationStore.getState().setActive(CONV_A)
 
     expect(readPersistedRecord()?.resolved).toBe(true)
+  })
+
+  // ── thread PRRT_kwDORoHsZ86zCfUV — "Recent transcript changes disappear" ───
+
+  /**
+   * Seed a conversation whose transcript is ALREADY LOADED (messagesLoaded:
+   * true) — the state a pending transcript read's install guard reasons
+   * about — and arm a transcript-scoped failure so a targeted retry (the
+   * pending read) can be started.
+   */
+  function seedLoadedConversation(id: string, messages: unknown[]): void {
+    useConversationStore.setState((state) => {
+      state.conversations = [
+        {
+          ...meta(id, 'first'),
+          messages,
+          messagesLoaded: true,
+          status: 'idle',
+          mountRefCount: 0,
+          collectedAssets: [],
+        } as never,
+      ]
+      state.activeConversationId = id
+      state.loaded = true
+      state.loadError = 'Failed to load messages for active conversation: sqlite read failed'
+      state.loadErrorScope = 'transcript'
+      state.loadFailedConversationId = id
+      state.loadFailedWorkspaceId = null
+    })
+  }
+
+  /**
+   * Start a targeted TRANSCRIPT retry whose database read stays pending
+   * until the returned `release` is called with the (stale) snapshot.
+   */
+  async function startPendingTranscriptRead(staleSnapshot: unknown[]) {
+    let release!: (value: unknown[]) => void
+    findByConversationMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve as (v: unknown[]) => void
+      })
+    )
+    const retry = useConversationStore.getState().retryLoadFromDB()
+    await vi.waitFor(() => {
+      expect(findByConversationMock).toHaveBeenCalled()
+    })
+    return {
+      release: () => release(staleSnapshot),
+      retry,
+    }
+  }
+
+  /** The pending read must not time out while the scenario holds it open. */
+  function withExtendedLoadTimeout<T>(run: () => Promise<T>): Promise<T> {
+    const globalRef = globalThis as Record<string, unknown>
+    const previous = globalRef.__CONVERSATION_LOAD_TIMEOUT_MS__
+    globalRef.__CONVERSATION_LOAD_TIMEOUT_MS__ = 5000
+    return run().finally(() => {
+      globalRef.__CONVERSATION_LOAD_TIMEOUT_MS__ = previous
+    })
+  }
+
+  const USER_MESSAGE = { id: 'm-1', role: 'user', content: 'original', timestamp: 1 }
+  const ASSISTANT_MESSAGE = { id: 'm-2', role: 'assistant', content: 'old answer', timestamp: 2 }
+
+  it('keeps an edited transcript when the edit lands during a pending transcript read', async () => {
+    // EDIT-AND-RESEND rewrites the user message in place — a SAME-LENGTH
+    // edit, which a message-count comparison cannot detect. The pending
+    // read's older snapshot must be rejected, and must not be primed as the
+    // persistence baseline (PR #152 review, "Recent transcript changes
+    // disappear").
+    await withExtendedLoadTimeout(async () => {
+      seedLoadedConversation(CONV_A, [USER_MESSAGE])
+      const pending = await startPendingTranscriptRead([USER_MESSAGE])
+
+      // The agent dispatch that follows an edit is irrelevant here.
+      const originalRunAgent = useConversationStore.getState().runAgent
+      useConversationStore.setState({ runAgent: vi.fn() } as never)
+      try {
+        useConversationStore
+          .getState()
+          .editAndResendUserMessage(CONV_A, 'm-1', 'edited')
+      } finally {
+        useConversationStore.setState({ runAgent: originalRunAgent } as never)
+      }
+
+      pending.release()
+      await pending.retry
+
+      const conv = useConversationStore.getState().conversations.find((c) => c.id === CONV_A)
+      expect(conv?.messages.map((m) => m.content)).toEqual(['edited'])
+    })
+  })
+
+  it('keeps a regenerated transcript when the regeneration lands during a pending read', async () => {
+    // REGENERATE deletes the assistant turn of the regenerated message. The
+    // pending read's snapshot still contains that turn and must be rejected.
+    await withExtendedLoadTimeout(async () => {
+      seedLoadedConversation(CONV_A, [USER_MESSAGE, ASSISTANT_MESSAGE])
+      const pending = await startPendingTranscriptRead([USER_MESSAGE, ASSISTANT_MESSAGE])
+
+      const originalRunAgent = useConversationStore.getState().runAgent
+      useConversationStore.setState({ runAgent: vi.fn() } as never)
+      try {
+        useConversationStore.getState().regenerateUserMessage(CONV_A, 'm-1')
+      } finally {
+        useConversationStore.setState({ runAgent: originalRunAgent } as never)
+      }
+
+      pending.release()
+      await pending.retry
+
+      const conv = useConversationStore.getState().conversations.find((c) => c.id === CONV_A)
+      expect(conv?.messages.map((m) => m.id)).toEqual(['m-1'])
+    })
+  })
+
+  it('keeps an appended transcript when the append lands during a pending transcript read', async () => {
+    // Control for the two scenarios above: an append (the path that already
+    // bumped the watermark) must survive the pending read as well.
+    await withExtendedLoadTimeout(async () => {
+      seedLoadedConversation(CONV_A, [USER_MESSAGE])
+      const pending = await startPendingTranscriptRead([USER_MESSAGE])
+
+      useConversationStore.getState().addMessage(CONV_A, {
+        id: 'm-3',
+        role: 'assistant',
+        content: 'fresh answer',
+        timestamp: 3,
+      } as never)
+
+      pending.release()
+      await pending.retry
+
+      const conv = useConversationStore.getState().conversations.find((c) => c.id === CONV_A)
+      expect(conv?.messages.map((m) => m.id)).toEqual(['m-1', 'm-3'])
+    })
+  })
+
+  it('keeps an agent-run transcript update that lands during a pending transcript read', async () => {
+    // The agent run's mid-run message update replaces the in-memory
+    // transcript — it must bump the watermark too, so a pending read cannot
+    // reinstall its older snapshot over the run's newer messages.
+    await withExtendedLoadTimeout(async () => {
+      seedLoadedConversation(CONV_A, [USER_MESSAGE])
+      const pending = await startPendingTranscriptRead([USER_MESSAGE])
+
+      await useConversationStore
+        .getState()
+        .runAgent(CONV_A, 'openai' as never, 'mock-model', 1024, null)
+
+      pending.release()
+      await pending.retry
+
+      const conv = useConversationStore.getState().conversations.find((c) => c.id === CONV_A)
+      expect(conv?.messages.map((m) => m.id)).toContain('assistant-run')
+    })
   })
 })

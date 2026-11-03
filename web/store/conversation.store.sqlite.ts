@@ -397,14 +397,22 @@ function writeWithMessagesLoaded(conversationId: string, apply: () => void): voi
         return
       }
       primePersistBaseline(conversationId, loaded)
+      let installedSnapshot = false
       useConversationStoreSQLite.setState((state) => {
         const c = state.conversations.find((x) => x.id === conversationId)
         if (c && c.messagesLoaded === false) {
           c.messages = loaded
           c.messagesLoaded = true
           healCompressionBaseline(c)
+          installedSnapshot = true
         }
       })
+      // Installing the reloaded snapshot into memory is a transcript
+      // mutation: a transcript read that is pending right now must not
+      // install its own (older) snapshot over it nor prime that snapshot as
+      // the persistence baseline (PR #152 review, "Recent transcript changes
+      // disappear").
+      if (installedSnapshot) bumpTranscriptVersion(conversationId)
       apply()
       // The write target was metadata-only, i.e. not open in any view. If no
       // run keeps it alive it becomes an eviction candidate right away.
@@ -767,6 +775,12 @@ const inflightRetries = new Map<string, Promise<void>>()
 export function resetConversationRetryStateForTests(): void {
   inflightRetries.clear()
   inflightRetryRefs.clear()
+  // Reset the transcript watermark too: scenario A that mutated a seeded
+  // conversation's transcript must not leave a higher version behind that
+  // would change scenario B's install-guard arithmetic
+  // (PR #152 review, "Recent transcript changes disappear").
+  conversationTranscriptVersions.clear()
+  transcriptReadGenerations.clear()
   // Also release the withInflightLoad slot: a prior scenario's deliberately
   // hung leg (e.g. a never-settling workspace ensure) keeps the slot forever,
   // and the next test's loadFromDB would silently no-op behind it
@@ -1172,6 +1186,11 @@ async function runLoadFromDB(
             }
             if (mutated) {
               conv.messages = newMessages
+              // A pre-install in-memory mutation: bump the watermark so the
+              // pending active-transcript read of THIS conversation does not
+              // later overwrite the repaired list with its older snapshot
+              // (PR #152 review, "Recent transcript changes disappear").
+              bumpTranscriptVersion(conv.id)
               // Persist the recovered messages so the next load doesn't re-run the same work.
               await persistMessageReplace(conv.id, newMessages).catch((err) => {
                 console.warn(
@@ -1916,6 +1935,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         const failureOwnerAtReadStart = get().loadFailedConversationId
         if (conv && (conv.messages.length === 0 || conv.messagesLoaded === false)) {
           const transcriptGeneration = claimTranscriptRead(id)
+          // Mutation watermark captured BEFORE the read (same rule as the
+          // targeted retry and the primary/fallback installs): a transcript
+          // mutated in memory while this read was pending must not be
+          // replaced by the older DB snapshot
+          // (PR #152 review, "Recent transcript changes disappear").
+          const transcriptVersionAtReadStart = conversationTranscriptVersions.get(id) ?? 0
           try {
             const msgRepo = getMessageRepository()
             const tFetch = performance.now()
@@ -1935,18 +1960,34 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               requireWorkspaceEnsure: true,
             })
             if (selectionGeneration !== activeSelectionGeneration || get().activeConversationId !== id) return
+            // Stale-snapshot guard: the transcript may have been mutated in
+            // memory while the read was pending (e.g. a queued message landed
+            // through writeWithMessagesLoaded). Installing the older snapshot
+            // would make those changes disappear, and priming it as the
+            // persist baseline could lose them from storage
+            // (PR #152 review, "Recent transcript changes disappear").
+            // Same shape as the targeted-retry / primary / fallback guards:
+            // a still-metadata-only conversation has no in-memory transcript
+            // to lose, so its install stays unconditional.
+            const conversationBeforeInstall = get().conversations.find((c) => c.id === id)
+            const transcriptChangedDuringRead =
+              conversationBeforeInstall !== undefined &&
+              conversationBeforeInstall.messagesLoaded !== false &&
+              conversationTranscriptVersions.get(id) !== transcriptVersionAtReadStart
             const tDeserialize = performance.now()
-            primePersistBaseline(id, messages as Message[])
-            set((state) => {
-              const c = state.conversations.find((c) => c.id === id)
-              if (c && (c.messages.length === 0 || c.messagesLoaded === false)) {
-                c.messages = messages as Message[]
-                c.messagesLoaded = true
-                // Auto-heal: restore compression baseline from context_summary messages
-                // for conversations created before the persistence fix.
-                healCompressionBaseline(c)
-              }
-            })
+            if (!transcriptChangedDuringRead) {
+              primePersistBaseline(id, messages as Message[])
+              set((state) => {
+                const c = state.conversations.find((c) => c.id === id)
+                if (c && (c.messages.length === 0 || c.messagesLoaded === false)) {
+                  c.messages = messages as Message[]
+                  c.messagesLoaded = true
+                  // Auto-heal: restore compression baseline from context_summary messages
+                  // for conversations created before the persistence fix.
+                  healCompressionBaseline(c)
+                }
+              })
+            }
             console.log(
               `[conversation.store] setActive(${id?.slice(0, 8)}) message load (${Math.round(performance.now() - t0)}ms)`,
               {
@@ -2319,6 +2360,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         conv.status = 'idle'
         conv.error = null
         conv.updatedAt = Date.now()
+        bumpTranscriptVersion(conversationId)
       })
 
       // Persist the cleanup
@@ -2425,6 +2467,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         conv.activeToolCalls = []
         conv.error = null
         conv.updatedAt = Date.now()
+        bumpTranscriptVersion(conversationId)
       })
 
       // Persist
@@ -2776,7 +2819,11 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       options?: { background?: boolean }
     ) =>
       runAgentImpl(
-        { handleSubagentStepNotification, scheduleConversationEviction } as unknown as ConversationAgentRunInternals,
+        {
+          handleSubagentStepNotification,
+          scheduleConversationEviction,
+          bumpTranscriptVersion,
+        } as unknown as ConversationAgentRunInternals,
         set,
         get,
         conversationId,
@@ -3502,6 +3549,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           const committed = commitDraftToMessages(c)
           if (committed) {
             c.updatedAt = Date.now()
+            bumpTranscriptVersion(c.id)
             // Clean up streaming/draft UI state
             c.draftAssistant = null
             c.currentToolCall = null
