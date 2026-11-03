@@ -39,6 +39,28 @@ def run_cli(script: Path, *args: str) -> int:
     ).returncode
 
 
+def expected_publish_mode() -> int:
+    """The mode the published report must carry under the CURRENT umask.
+
+    Measured by letting the kernel create a throwaway file, so the test never
+    has to read the umask through os.umask() (which mutates the process-wide
+    mask) and never assumes a permissive default. The group and other WRITE
+    bits are withheld: the report stays readable for collaborators, but a peer
+    must not be able to rewrite the published bytes. Returns 0 on platforms
+    without POSIX permission bits, where the mode is not meaningful.
+    """
+    if os.name == "nt":
+        return 0
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = Path(tmp) / "probe"
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        try:
+            umask_mode = stat.S_IMODE(os.fstat(fd).st_mode)
+        finally:
+            os.close(fd)
+        return umask_mode & ~0o022
+
+
 def valid_chain() -> dict:
     """A minimal but fully legal schema-1.1 chain (backward-compat fixture)."""
     return {
@@ -302,13 +324,14 @@ def case_renderer_labels() -> None:
 # ---------------- round recorder ----------------
 
 def case_atomic_write_digest_permissions_and_cleanup() -> None:
-    """OUTPUT_SHA256 must describe the staged bytes actually published; staging
-    files must be shared-readable per umask and cleaned up on failure."""
+    """OUTPUT_SHA256 must describe the staged bytes actually published; the
+    published report must carry the mode a normal open() would have produced
+    under the active umask; staging files must be cleaned up on failure."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         src = tmp / "chain.json"
         src.write_text(json.dumps(valid_chain(), ensure_ascii=False), encoding="utf-8")
-        out = tmp / ("报告" + "x" * 200 + ".md")  # long basename must not break mkstemp
+        out = tmp / ("报告" + "x" * 200 + ".md")  # long basename must not break the staging file
         result = subprocess.run([sys.executable, str(RENDER_PATH), "--strict", str(src), str(out)],
                                 capture_output=True, text=True)
         assert result.returncode == 0, f"render with long output basename must succeed: {result.stdout} {result.stderr}"
@@ -316,19 +339,35 @@ def case_atomic_write_digest_permissions_and_cleanup() -> None:
         actual = hashlib.sha256(out.read_bytes()).hexdigest()
         assert digest_line.split()[1] == actual, "emitted checksum must match the published bytes"
         mode = stat.S_IMODE(out.stat().st_mode)
-        assert mode & 0o044, f"published report must stay group/other-readable per umask, got {oct(mode)}"
+        expected = expected_publish_mode()
+        if expected:
+            # POSIX platforms: the published report must carry exactly the
+            # mode a normal open() would have produced under the current
+            # umask.
+            assert mode == expected, \
+                f"published report must carry the umask-adjusted mode {oct(expected)}, got {oct(mode)}"
+            if expected & 0o400:
+                assert mode & 0o400, f"published report must stay owner-readable, got {oct(mode)}"
         assert not list(tmp.glob("render-staging-*")), "no staging residue after success"
-        # stale staging files are swept; fresh foreign staging files survive
-        stale = tmp / "render-staging-stale123.tmp-partial"
+        # Stale staging files of THIS renderer are swept; a foreign file with
+        # a similar name must survive.
+        dead_pid = 999999  # a PID that cannot be running
+        stale = tmp / f"render-staging-{dead_pid}-abcdef0123456789.tmp-partial"
         stale.write_text("junk", encoding="utf-8")
         old = time.time() - 7 * 3600
         os.utime(stale, (old, old))
-        fresh = tmp / "render-staging-fresh456.tmp-partial"
-        fresh.write_text("junk", encoding="utf-8")
+        foreign = tmp / "render-staging-user-notes.tmp-partial"
+        foreign.write_text("user data", encoding="utf-8")
+        os.utime(foreign, (old, old))
+        live = tmp / f"render-staging-{os.getpid()}-feedfacefeedface.tmp-partial"
+        live.write_text("junk", encoding="utf-8")
+        os.utime(live, (old, old))
         assert run_cli(RENDER_PATH, "--strict", str(src), str(out)) == 0
-        assert not stale.exists(), "stale staging file must be swept"
-        assert fresh.exists(), "recent staging file may belong to a concurrent render and must survive"
-        fresh.unlink()
+        assert not stale.exists(), "stale staging file of a dead render must be swept"
+        assert foreign.exists(), "a foreign file with a similar name must survive"
+        assert live.exists(), "a live render's staging file must survive"
+        foreign.unlink()
+        live.unlink()
 
 
 def case_atomic_write_failure_cleans_staging() -> None:
@@ -360,6 +399,262 @@ sys.exit(0)
         assert result.returncode == 7, f"injected failure must propagate: {result.stdout} {result.stderr}"
         assert out.read_bytes() == before_bytes, "failed publish must not touch the existing report"
         assert not list(tmp.glob("render-staging-*")), "staging must be cleaned on failure"
+
+
+def case_render_never_mutates_process_umask() -> None:
+    """The renderer must never change the process-wide umask, and the staged
+    report must never be group/other-writable.
+
+    os.umask() is the only way to change the process-wide mask, and every
+    change is visible to every other thread in the process: while the mask is
+    widened, a file another thread creates gets broader permissions than the
+    user's mask allows, and an interruption between the read and the restore
+    leaves the mask widened for the rest of the process.
+
+    The staged report must never be writable by group or other. If the
+    staging file were group/other-writable while the report bytes are
+    staged, another user could open it, keep the descriptor and rewrite the
+    staged bytes after the checksum pass; the emitted OUTPUT_SHA256 would
+    then no longer describe the published bytes. The published report keeps
+    the umask's READ bits, so collaborators can still read it.
+    """
+    if os.name == "nt" or not hasattr(os, "umask"):
+        return  # no POSIX umask to protect on this platform
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        src = tmp / "chain.json"
+        src.write_text(json.dumps(valid_chain(), ensure_ascii=False), encoding="utf-8")
+        out = tmp / "report.md"
+        script = f"""
+import os, stat, sys
+from pathlib import Path
+sys.path.insert(0, {str(SCRIPTS)!r})
+import render_evidence_chain as ren
+
+real_umask = os.umask
+calls = []
+def spy(mask):
+    calls.append(mask)
+    return real_umask(mask)
+os.umask = spy  # any umask change from here on is recorded
+
+real_replace = os.replace
+staged_modes = []
+def spy_replace(src, dst):
+    # The staging file's mode at the moment it is moved into place.
+    staged_modes.append(stat.S_IMODE(os.stat(src).st_mode))
+    return real_replace(src, dst)
+ren.os.replace = spy_replace
+
+real_umask(0o022)  # permissive mask: the published report stays shared-readable
+ren.atomic_write("report body", Path({str(out)!r}))
+during = real_umask(0o077)  # read back the mask the renderer left behind
+print("CALLS", calls)
+print("DURING", oct(during))
+print("STAGED", [oct(m) for m in staged_modes])
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.returncode == 0, \
+            f"renderer must leave the process umask untouched: {result.stdout} {result.stderr}"
+        assert "CALLS []" in result.stdout, \
+            f"renderer must never change the process-wide umask: {result.stdout}"
+        assert "DURING 0o22" in result.stdout, \
+            f"renderer must leave the umask as it found it: {result.stdout}"
+        # The mode is set on the staging inode BEFORE the publish, so the
+        # file is never visible at the destination with the wrong mode.
+        assert "STAGED ['0o644']" in result.stdout, \
+            f"the staged report must carry the publish mode at the moment of the rename: {result.stdout}"
+        mode = stat.S_IMODE(out.stat().st_mode)
+        assert mode == 0o644, \
+            f"under umask 022 the published report must stay shared-readable, got {oct(mode)}"
+        assert not mode & 0o022, \
+            f"the published report must not be group/other-writable, got {oct(mode)}"
+
+        # A restrictive mask must publish an owner-only report, and the
+        # renderer must still leave the process-wide mask untouched.
+        out2 = tmp / "report-restricted.md"
+        script2 = f"""
+import os, stat, sys
+from pathlib import Path
+sys.path.insert(0, {str(SCRIPTS)!r})
+import render_evidence_chain as ren
+
+real_umask = os.umask
+calls = []
+def spy(mask):
+    calls.append(mask)
+    return real_umask(mask)
+os.umask = spy
+
+real_umask(0o077)
+ren.atomic_write("report body", Path({str(out2)!r}))
+during = real_umask(0o022)
+print("CALLS", calls)
+print("DURING", oct(during))
+"""
+        result2 = subprocess.run([sys.executable, "-c", script2], capture_output=True, text=True)
+        assert result2.returncode == 0, \
+            f"renderer must leave the process umask untouched: {result2.stdout} {result2.stderr}"
+        assert "CALLS []" in result2.stdout, \
+            f"renderer must never change the process-wide umask: {result2.stdout}"
+        assert "DURING 0o77" in result2.stdout, \
+            f"renderer must leave the umask as it found it: {result2.stdout}"
+        mode2 = stat.S_IMODE(out2.stat().st_mode)
+        assert mode2 == 0o600, \
+            f"under umask 077 the published report must be owner-only, got {oct(mode2)}"
+
+
+def case_render_survives_missing_fchmod() -> None:
+    """The renderer must publish a report on platforms without os.fchmod.
+
+    Windows has no os.fchmod and carries no POSIX permission bits; calling it
+    unconditionally raised AttributeError before the publish, so no report was
+    ever written. A missing fchmod must not stop the publish, and neither must
+    a platform without POSIX permission bits at all.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        src = tmp / "chain.json"
+        src.write_text(json.dumps(valid_chain(), ensure_ascii=False), encoding="utf-8")
+        out = tmp / "report.md"
+        script = f"""
+import os, sys
+from pathlib import Path
+sys.path.insert(0, {str(SCRIPTS)!r})
+import render_evidence_chain as ren
+
+if hasattr(os, "fchmod"):
+    del os.fchmod  # emulate a platform without fchmod
+digest, size = ren.atomic_write("report body", Path({str(out)!r}))
+print("DIGEST", digest)
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.returncode == 0, \
+            f"render must succeed without os.fchmod: {result.stdout} {result.stderr}"
+        assert out.exists(), "a report must be published even without os.fchmod"
+        assert out.read_text(encoding="utf-8") == "report body"
+        assert hashlib.sha256(out.read_bytes()).hexdigest() in result.stdout, \
+            "the emitted digest must describe the published bytes"
+
+        # A platform without POSIX permission bits (Windows) must publish too.
+        out2 = tmp / "report-no-posix-modes.md"
+        script2 = f"""
+import os, sys
+from pathlib import Path
+sys.path.insert(0, {str(SCRIPTS)!r})
+import render_evidence_chain as ren
+
+ren.supports_posix_modes = lambda: False  # emulate Windows
+digest, size = ren.atomic_write("report body", Path({str(out2)!r}))
+print("DIGEST", digest)
+"""
+        result2 = subprocess.run([sys.executable, "-c", script2], capture_output=True, text=True)
+        assert result2.returncode == 0, \
+            f"render must succeed without POSIX permission bits: {result2.stdout} {result2.stderr}"
+        assert out2.exists(), "a report must be published without POSIX permission bits"
+        assert out2.read_text(encoding="utf-8") == "report body"
+        assert hashlib.sha256(out2.read_bytes()).hexdigest() in result2.stdout, \
+            "the emitted digest must describe the published bytes"
+
+
+def case_published_mode_and_digest_invariants() -> None:
+    """The published report's mode and checksum must match the umask-derived
+    contract, and the report must never be group/other-writable.
+
+    Two invariants are pinned here:
+
+    1. The published mode is exactly the mode the kernel gave the file at
+       CREATION time (i.e. 0o666 & ~umask) with the group and other WRITE
+       bits withheld. A permissive umask (022) therefore yields 0644 — still
+       shared-readable, never shared-writable.
+    2. The emitted OUTPUT_SHA256 must equal the SHA-256 of the PUBLISHED
+       file's bytes, so the checksum the caller hands on always describes
+       the delivered report.
+    """
+    if os.name == "nt":
+        return  # POSIX permission bits are not meaningful on Windows
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        src = tmp / "chain.json"
+        src.write_text(json.dumps(valid_chain(), ensure_ascii=False), encoding="utf-8")
+        out = tmp / "report.md"
+        script = f"""
+import os, stat, sys
+from pathlib import Path
+sys.path.insert(0, {str(SCRIPTS)!r})
+import render_evidence_chain as ren
+
+real_umask = os.umask
+real_umask(0o022)
+digest, size = ren.atomic_write("report body", Path({str(out)!r}))
+print("DIGEST", digest)
+print("SIZE", size)
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.returncode == 0, \
+            f"render must succeed: {result.stdout} {result.stderr}"
+        published = out.read_bytes()
+        assert f"DIGEST {hashlib.sha256(published).hexdigest()}" in result.stdout, \
+            "the emitted digest must equal the SHA-256 of the published bytes"
+        assert f"SIZE {len(published)}" in result.stdout, \
+            "the emitted size must equal the size of the published bytes"
+        mode = stat.S_IMODE(out.stat().st_mode)
+        # 0o666 & ~0o022 = 0o644: the umask's read bits plus owner read/write.
+        assert mode == 0o644, \
+            f"under umask 022 the published report must be 0644, got {oct(mode)}"
+        assert not mode & 0o022, \
+            f"the published report must never be group/other-writable, got {oct(mode)}"
+
+
+def case_staging_symlink_swap_aborts_publish() -> None:
+    """A staging name swapped for a symlink must abort the publish.
+
+    The identity check must not follow symlinks: a concurrent writer that
+    replaced the staging name with a symlink to the opened inode would
+    otherwise pass an os.stat-based check, and os.replace would move the
+    symlink itself — publishing a replaceable symlink instead of the
+    verified report.
+    """
+    if os.name == "nt":
+        return  # symlink creation needs privileges on Windows
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        out = tmp / "report.md"
+        script = f"""
+import os, sys
+from pathlib import Path
+sys.path.insert(0, {str(SCRIPTS)!r})
+import render_evidence_chain as ren
+
+TMP = Path({str(tmp)!r})
+real_lstat = os.lstat
+state = {{'done': False}}
+def spy_lstat(path, *args, **kwargs):
+    # Swap the staging name for a symlink that points AT the opened inode,
+    # exactly as a concurrent writer to the output directory would.
+    text = str(path)
+    if not state['done'] and os.path.basename(text).startswith(ren.STAGING_PREFIX):
+        state['done'] = True
+        alias = TMP / 'alias.bin'
+        os.link(text, str(alias))   # a hard link to the very inode that is open
+        os.unlink(text)             # the staging name now points nowhere
+        os.symlink(str(alias), text)  # ... and is a symlink to that inode
+    return real_lstat(path, *args, **kwargs)
+os.lstat = spy_lstat
+
+try:
+    ren.atomic_write("report body", Path({str(out)!r}))
+except RuntimeError as exc:
+    print("ABORTED", exc)
+    sys.exit(9)
+sys.exit(0)
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.returncode == 9, \
+            f"a swapped staging name must abort the publish: {result.stdout} {result.stderr}"
+        assert "ABORTED" in result.stdout, \
+            f"the abort must be reported as such: {result.stdout}"
+        assert not out.exists(), "nothing may be published when the staging name was swapped"
 
 
 # ---------------- round recorder ----------------
@@ -607,6 +902,10 @@ CASES = [
     case_renderer_labels,
     case_atomic_write_digest_permissions_and_cleanup,
     case_atomic_write_failure_cleans_staging,
+    case_render_never_mutates_process_umask,
+    case_render_survives_missing_fchmod,
+    case_published_mode_and_digest_invariants,
+    case_staging_symlink_swap_aborts_publish,
     case_record_happy_path,
     case_answered_request_needs_response,
     case_open_request_targeting_met_criterion,
