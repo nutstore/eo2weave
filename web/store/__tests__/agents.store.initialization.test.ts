@@ -78,4 +78,32 @@ describe('project Agent catalog initialization', () => {
       agents: [],
     })
   })
+
+  it('times out a never-settling initialization and releases the in-flight slot for retry', async () => {
+    vi.useFakeTimers()
+    try {
+      const never = new Promise<ReturnType<typeof project>>(() => {})
+      const getProject = vi.fn(async () => never)
+      useAgentsStore.getState().setProjectManager({ getProject } as unknown as ProjectManager)
+
+      const stuck = useAgentsStore.getState().initialize('project-a')
+      expect(useAgentsStore.getState().isLoading).toBe(true)
+
+      await vi.advanceTimersByTimeAsync(16_000)
+      // The timeout surfaces as an error state (initialize resolves; the
+      // catch writes the failure into the store) and releases the in-flight
+      // slot so a subsequent call starts a NEW attempt.
+      await stuck
+      expect(useAgentsStore.getState().isLoading).toBe(false)
+      expect(useAgentsStore.getState().isInitialized).toBe(false)
+      expect(useAgentsStore.getState().error).toMatch(/timed out/)
+
+      getProject.mockImplementation(async () => project('project-a'))
+      await useAgentsStore.getState().initialize('project-a')
+      expect(getProject).toHaveBeenCalledTimes(2)
+      expect(useAgentsStore.getState().loadedProjectId).toBe('project-a')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

@@ -85,6 +85,45 @@ let initializationRevision = 0
 let selectionRevision = 0
 let agentInitialization: { projectId: string; promise: Promise<void> } | null = null
 
+/**
+ * Bound on a single initialization attempt. Every step inside awaits the
+ * project manager or an agent-manager read; if any of them never settles
+ * (a wedged OPFS bridge, an extension that swallowed a message), the
+ * promise must fail and release the in-flight slot so a rerun can retry,
+ * instead of keeping the catalog stuck loading forever.
+ */
+const INITIALIZATION_TIMEOUT_MS = 15_000
+
+function initializeWithTimeout(
+  projectManager: NonNullable<ReturnType<typeof useAgentsStore.getState>['projectManager']>,
+  projectId: string
+): Promise<{ agents: AgentInfo[]; activeAgent: AgentInfo | null }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Agent catalog initialization timed out for project ${projectId}`)),
+      INITIALIZATION_TIMEOUT_MS
+    )
+    const finish = <T,>(settle: (value: T) => void, value: T) => {
+      clearTimeout(timer)
+      settle(value)
+    }
+    void (async () => {
+      try {
+        const project = await projectManager.getProject(projectId)
+        if (!project) throw new Error('Project not found')
+        const agents = (await project.agentManager.listAgents()) as unknown as AgentInfo[]
+        const defaultAgent = agents.find((a) => a.id === 'default') || agents[0]
+        const activeAgent = defaultAgent
+          ? ((await project.agentManager.getAgent(defaultAgent.id)) as unknown as AgentInfo | null)
+          : null
+        finish(resolve, { agents, activeAgent })
+      } catch (e) {
+        finish(reject, e)
+      }
+    })()
+  })
+}
+
 export const useAgentsStore = create<AgentsState>()((set, get) => ({
     loadedProjectId: null,
     activeAgentId: null,
@@ -128,15 +167,11 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
       })
       const promise = (async () => {
         try {
-          const project = await projectManager.getProject(projectId)
-          if (!project) throw new Error('Project not found')
-          const agents = await project.agentManager.listAgents()
-          const defaultAgent = agents.find((a) => a.id === 'default') || agents[0]
-          const activeAgent = defaultAgent ? await project.agentManager.getAgent(defaultAgent.id) : null
+          const { agents, activeAgent } = await initializeWithTimeout(projectManager, projectId)
           // A slow old project must never replace the new project's catalog.
           if (revision !== initializationRevision || useProjectStore.getState().activeProjectId !== projectId) return
           set({
-            agents, activeAgent, activeAgentId: activeAgent?.id ?? null,
+            agents: agents as unknown as AgentMeta[], activeAgent, activeAgentId: activeAgent?.id ?? null,
             loadedProjectId: projectId, isLoading: false, isInitialized: true,
           })
         } catch (e) {
