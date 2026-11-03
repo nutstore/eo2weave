@@ -1480,7 +1480,14 @@ export async function fetchGatewayModels(
   let data: { data?: unknown }
   try {
     data = (await res.json()) as { data?: unknown }
-  } catch {
+  } catch (e) {
+    // An abort landing while the body read is still pending (the discovery
+    // deadline firing after the headers arrived) is NOT a failed catalog —
+    // it carries no catalog information at all. Re-throw it so the caller's
+    // timeout/cancellation handling runs instead of committing an empty
+    // result that would drop previously registered models (Sourcery:
+    // "Timed-out body read erases gateway models").
+    if (signal?.aborted || (e instanceof Error && e.name === 'AbortError')) throw e
     return { models: [], status: 'failed' }
   }
   // A body that is not a model array is an unusable response, not an

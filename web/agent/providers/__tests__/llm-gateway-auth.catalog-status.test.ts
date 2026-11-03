@@ -90,6 +90,27 @@ describe('fetchGatewayModels: ready / empty / failed statuses', () => {
     await expect(fetchGatewayModels('https://gw.example', 'tok', signal)).rejects.toBeInstanceOf(DOMException)
   })
 
+  // Sourcery: "Timed-out body read erases gateway models" — an abort that
+  // lands while res.json() is still pending (the discovery deadline firing
+  // after the headers arrived) must REJECT, not degrade to a failed catalog;
+  // the caller's timeout handler then runs instead of an empty list being
+  // committed over previously registered models.
+  it('re-throws an abort that fires while the body read is pending', async () => {
+    const abortError = new DOMException('The operation was aborted.', 'AbortError')
+    const controller = new AbortController()
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        controller.abort()
+        throw abortError
+      },
+    } as unknown as Response)
+    await expect(
+      fetchGatewayModels('https://gw.example', 'tok', controller.signal),
+    ).rejects.toBe(abortError)
+  })
+
   // Sourcery round 6, "Malformed gateway models are accepted": a 200 whose
   // data array contains unusable entries is NOT a usable catalog. The old
   // mapping dereferenced null entries (throwing past the failed-catalog
