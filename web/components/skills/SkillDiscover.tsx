@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, Download, Check, AlertCircle, Trash2 } from 'lucide-react'
 import { BrandButton } from '@creatorweave/ui'
-import { useT } from '@/i18n'
+import { useT, useLocale } from '@/i18n'
 import { useSkillsStore } from '@/store/skills.store'
 import {
   fetchSkillStoreManifest,
@@ -17,6 +17,7 @@ import {
   scanInstalledDirNames,
   installSkillFromUrl,
   invalidateSkillStoreCache,
+  selectLocalizedDescription,
   type SkillStoreEntry,
   type InstallProgress,
 } from '@/skills/skill-store'
@@ -49,6 +50,7 @@ const REDUCED_MOTION_CSS = `
 
 export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
   const t = useT()
+  const [locale] = useLocale()
   const bumpScanVersion = useSkillsStore((s) => s.bumpSkillsScanVersion)
 
   const [manifest, setManifest] = useState<SkillStoreEntry[] | null>(null)
@@ -147,13 +149,22 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
   }
 
   // Filter by query (case-insensitive across name/description/tags), then by install state.
+  // Search runs against the LOCALIZED description for the active locale, plus
+  // the base description so English keywords keep matching in every locale
+  // (#139 review: store ignores translated descriptions).
   const filteredSkills = useMemo(() => {
     if (!manifest) return null
     const q = query.trim().toLowerCase()
     let result = manifest
     if (q) {
       result = result.filter((entry) => {
-        const haystack = [entry.name, entry.description, ...entry.tags, entry.category]
+        const haystack = [
+          entry.name,
+          selectLocalizedDescription(entry, locale),
+          entry.description,
+          ...entry.tags,
+          entry.category,
+        ]
           .join(' ')
           .toLowerCase()
         return haystack.includes(q)
@@ -162,7 +173,7 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
     if (filter === 'installed') result = result.filter((e) => e.installed)
     else if (filter === 'uninstalled') result = result.filter((e) => !e.installed)
     return result
-  }, [manifest, query, filter])
+  }, [manifest, query, filter, locale])
 
   // Reset display count when search/filter changes (avoid stale pagination state).
   useEffect(() => {
@@ -363,6 +374,11 @@ function StatusBanner({ tone, icon, busy, children }: StatusBannerProps) {
 
 function DiscoverCard({ entry, installing, onInstall, onUninstall }: DiscoverCardProps) {
   const t = useT()
+  const [locale] = useLocale()
+  // Render the translation for the active locale when one is packaged
+  // (#139 review: store ignores translated descriptions); the base
+  // description remains the fallback.
+  const localizedDescription = selectLocalizedDescription(entry, locale)
   const catClass = CATEGORY_COLORS[entry.category] ?? CATEGORY_COLORS.general
   const buttonLabel = entry.installed
     ? t('skills.discover.uninstall')
@@ -378,7 +394,7 @@ function DiscoverCard({ entry, installing, onInstall, onUninstall }: DiscoverCar
   const [expanded, setExpanded] = useState(false)
   // Heuristic: long descriptions get an expand toggle. 90 chars roughly maps
   // to ~3 lines at 11px; we add a buffer for safety.
-  const needsExpand = (entry.description?.length ?? 0) > 110
+  const needsExpand = (localizedDescription?.length ?? 0) > 110
 
   const handleClick = () => {
     if (entry.installed) onUninstall?.()
@@ -411,14 +427,14 @@ function DiscoverCard({ entry, installing, onInstall, onUninstall }: DiscoverCar
             <span className="text-neutral-400 dark:text-neutral-500">v{entry.version}</span>
           )}
         </div>
-        {entry.description && (
+        {localizedDescription && (
           <div className="space-y-0.5">
             <p
               className={`text-[11px] leading-relaxed text-neutral-600 dark:text-neutral-400 ${
                 needsExpand && !expanded ? 'line-clamp-3' : ''
               }`}
             >
-              {entry.description}
+              {localizedDescription}
             </p>
             {needsExpand && (
               <button

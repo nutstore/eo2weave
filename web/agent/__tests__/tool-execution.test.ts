@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest'
-import { coerceToolArgs, normalizeToolResult, truncateLargeToolResult } from '../loop/tool-execution'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  coerceToolArgs,
+  executeToolWithTimeout,
+  normalizeToolResult,
+  truncateLargeToolResult,
+} from '../loop/tool-execution'
 
 describe('tool-execution helpers', () => {
   it('coerceToolArgs returns empty object for null and throws on non-object', () => {
@@ -42,6 +47,138 @@ describe('tool-execution helpers', () => {
     const parsed = JSON.parse(result)
     expect(parsed.truncated).toBe(true)
     expect(parsed.results).toEqual([])
+  })
+
+  it('executeToolWithTimeout prefers the CALL_CANCELLED envelope when the abort race wins (#139 review: cancellation warning gets lost)', async () => {
+    const controller = new AbortController()
+    const cancelledEnvelope = JSON.stringify({
+      ok: false,
+      version: 2,
+      tool: 'call_tool',
+      error: {
+        code: 'CALL_CANCELLED',
+        message: 'WebMCP tool call was cancelled. The extension call may still be running…',
+        retryable: false,
+      },
+    })
+
+    const raw = await executeToolWithTimeout({
+      toolName: 'call_tool',
+      args: {},
+      timeoutMs: null,
+      runAbortSignal: controller.signal,
+      preferEnvelopeOnRaceLoss: (envelope) =>
+        envelope.includes('CALL_CANCELLED') ? envelope : null,
+      // The tool promise settles with the envelope shortly AFTER the abort —
+      // the outer race fires first, exactly the production race.
+      execute: async () => {
+        controller.abort()
+        await new Promise((r) => setTimeout(r, 10))
+        return cancelledEnvelope
+      },
+    })
+
+    const parsed = JSON.parse(raw)
+    expect(parsed.error.code).toBe('CALL_CANCELLED')
+    expect(parsed.error.retryable).toBe(false)
+  })
+
+  it('executeToolWithTimeout keeps the abort rejection when no CALL_CANCELLED envelope arrives', async () => {
+    const controller = new AbortController()
+    let rejectExecute!: (e: Error) => void
+    const pending = executeToolWithTimeout({
+      toolName: 'read',
+      args: {},
+      timeoutMs: null,
+      runAbortSignal: controller.signal,
+      preferEnvelopeOnRaceLoss: (envelope) =>
+        envelope.includes('CALL_CANCELLED') ? envelope : null,
+      execute: () =>
+        new Promise<string>((_, reject) => {
+          rejectExecute = reject
+        }),
+    })
+
+    controller.abort()
+    // The tool promise rejects without any cancellation envelope — the
+    // original abort rejection must survive.
+    rejectExecute(new Error('bridge blew up'))
+    await expect(pending).rejects.toThrow('was aborted')
+  })
+
+  it('fires onTimeout when a WebMCP timeout is followed by a CALL_CANCELLED envelope (#148 round 8: timeout notification was skipped)', async () => {
+    const cancelledEnvelope = JSON.stringify({
+      ok: false,
+      version: 2,
+      tool: 'call_tool',
+      error: {
+        code: 'CALL_CANCELLED',
+        message: 'WebMCP tool call was cancelled.',
+        retryable: false,
+      },
+    })
+    const onTimeout = vi.fn()
+
+    // The timeout fires first; the tool settles with the envelope inside the
+    // grace window, REPLACING the timeout rejection. onTimeout must still run.
+    const raw = await executeToolWithTimeout({
+      toolName: 'call_tool',
+      args: {},
+      timeoutMs: 30,
+      preferEnvelopeOnRaceLoss: (envelope) =>
+        envelope.includes('CALL_CANCELLED') ? envelope : null,
+      onTimeout,
+      execute: async () => {
+        await new Promise((r) => setTimeout(r, 40))
+        return cancelledEnvelope
+      },
+    })
+
+    expect(JSON.parse(raw).error.code).toBe('CALL_CANCELLED')
+    expect(onTimeout).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT fire the onTimeout hook on the ordinary timeout-rejection path (no duplicate notification)', async () => {
+    const onTimeout = vi.fn()
+    const pending = executeToolWithTimeout({
+      toolName: 'call_tool',
+      args: {},
+      timeoutMs: 30,
+      preferEnvelopeOnRaceLoss: () => null,
+      onTimeout,
+      // Never settles with an envelope — the plain timeout rejection wins.
+      execute: () => new Promise<string>(() => {}),
+    })
+
+    await expect(pending).rejects.toThrow('timed out')
+    expect(onTimeout).not.toHaveBeenCalled()
+  })
+
+  it('does NOT fire the onTimeout hook when a CALL_CANCELLED envelope follows a plain user abort (not a timeout)', async () => {
+    const controller = new AbortController()
+    const onTimeout = vi.fn()
+    const pending = executeToolWithTimeout({
+      toolName: 'call_tool',
+      args: {},
+      timeoutMs: null,
+      runAbortSignal: controller.signal,
+      preferEnvelopeOnRaceLoss: (envelope) =>
+        envelope.includes('CALL_CANCELLED') ? envelope : null,
+      onTimeout,
+      execute: async () => {
+        controller.abort()
+        await new Promise((r) => setTimeout(r, 10))
+        return JSON.stringify({
+          ok: false,
+          version: 2,
+          tool: 'call_tool',
+          error: { code: 'CALL_CANCELLED', message: 'cancelled', retryable: false },
+        })
+      },
+    })
+
+    await pending
+    expect(onTimeout).not.toHaveBeenCalled()
   })
 
   it('truncateLargeToolResult reduces oversized search payload to summary-only result', async () => {

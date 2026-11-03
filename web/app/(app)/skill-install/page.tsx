@@ -14,10 +14,11 @@ import {
   Wallet,
   XCircle,
 } from 'lucide-react'
-import { useT } from '@/i18n'
+import { useLocale, useT } from '@/i18n'
 import {
   fetchSkillStoreManifest,
   installSkillFromUrl,
+  selectLocalizedDescription,
   scanInstalledDirNames,
   type InstallProgress,
   type SkillStoreEntry,
@@ -90,6 +91,7 @@ interface InstallOutcome {
 
 function SkillInstallView() {
   const t = useT()
+  const [locale] = useLocale()
   const router = useRouter()
   const searchParams = useSearchParams()
   const skillParam = searchParams.get('skill')
@@ -698,7 +700,7 @@ function SkillInstallView() {
             )}
           </div>
           {entry.description && (
-            <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">{entry.description}</p>
+            <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">{selectLocalizedDescription(entry, locale)}</p>
           )}
           <p className="mt-2 text-xs text-muted-foreground">
             {t('skillInstall.versionLabel')} {entry.version || '—'}

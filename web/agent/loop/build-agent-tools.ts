@@ -189,6 +189,31 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
       } catch (toolError) {
         if (toolError instanceof Error && toolError.message.includes('timed out')) {
           input.callbacks?.onToolTimeout?.(toolCall)
+          // A WebMCP write that outlives the tool timeout is AMBIGUOUS: the
+          // extension-side call keeps running with no cancellation path, so
+          // the page may still change after this result (#139 review). The
+          // timeout rejection would otherwise look like a clean retryable
+          // failure and invite a duplicate write.
+          if (toolDef.function.name === 'call_tool') {
+            // WebMCP full names are origin-derived (`https_host_com__tool`);
+            // MCP-backed calls are `serverId:toolName` — only the former is
+            // still running inside a browser extension and needs the
+            // tab-verification warning (#139 review: MCP timeouts get
+            // browser guidance).
+            const fullToolName = typeof args.full_tool_name === 'string' ? args.full_tool_name : ''
+            if (fullToolName.includes('__')) {
+              throw new Error(
+                `${toolError.message}. This was a WebMCP tool call — it may STILL be running in the ` +
+                  `browser extension and the target page can change; do not retry it blindly. ` +
+                  `Verify the target tab's state first.`,
+              )
+            }
+            throw new Error(
+              `${toolError.message}. This was an MCP tool call (server "${fullToolName.split(':')[0] || 'unknown'}") ` +
+                `that may STILL be running server-side; check the MCP server's result before retrying ` +
+                `to avoid duplicating the operation.`,
+            )
+          }
         }
         throw toolError
       }
