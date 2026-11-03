@@ -164,9 +164,23 @@ export function registerGatewayModels(
 ): void {
   if (refreshVersion !== undefined && !isGatewayCatalogRefreshCurrent(refreshVersion)) return
   if (refreshVersion === undefined) catalogRefreshVersion++
+  // Issue #146: an EMPTY but successful response must read as UNKNOWN, not
+  // as "everything delisted". The stale-pin comparison is a LOCAL one
+  // (`seen pin && !available`), so an empty authoritative set would mark
+  // every pinned model delisted. Normalized HERE — at the single source the
+  // registry's catalog status is written from — so every consumer
+  // (getStalePinnedModels, reconciliation, the topbar badge) agrees by
+  // construction: an empty catalog is always registered 'failed' (unknown,
+  // keeping any last-known list). A genuinely empty account is rare and
+  // reads as unknown too — the badge stays stale/offline-honest and nothing
+  // is delisted without a non-empty catalog proving absence. Callers that
+  // explicitly intend an authoritative empty registration (none today) must
+  // go through registerDynamicProvider directly.
+  const effectiveStatus: ProviderCatalogStatus =
+    status !== 'failed' && modelInfos.length === 0 ? 'failed' : status
   // A failed response says nothing about the catalog. Keep the last usable
   // list for display, while the failed status prevents delisting decisions.
-  const models = status === 'failed'
+  const models = effectiveStatus === 'failed'
     ? getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
     : modelInfos
   const baseURL_str = getGatewayBaseURL()
@@ -180,7 +194,7 @@ export function registerGatewayModels(
   const meta: ProviderMeta = {
     ...GATEWAY_META,
     models,
-    catalogStatus: status,
+    catalogStatus: effectiveStatus,
   }
 
   registerDynamicProvider(LLM_GATEWAY_PROVIDER_TYPE, config, meta)

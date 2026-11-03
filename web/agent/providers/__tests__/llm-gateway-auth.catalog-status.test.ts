@@ -212,11 +212,15 @@ describe('gateway last known catalog', () => {
   })
 
   it('replaces the last successful models after an authoritative empty response', () => {
+    // Issue #146: an EMPTY successful catalog reads as UNKNOWN, not as
+    // all-pins-delisted — the local stale comparison would otherwise flag
+    // every seen pin. The registration downgrades to 'failed' and RETAINS
+    // the last-known list instead of wiping it.
     registerGatewayModels([model], 'ready')
     registerGatewayModels([], 'empty')
 
-    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
-    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('empty')
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)).toEqual(['glm-5.2'])
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
   })
 
   it('does not retain models after the provider is unregistered for logout', () => {
@@ -235,5 +239,30 @@ describe('gateway last known catalog', () => {
 
     expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)).toEqual(['glm-5.2'])
     expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+  })
+})
+
+describe('empty catalog reads as unknown (issue #146)', () => {
+  const model: ModelInfo = { id: 'glm-5.2', name: 'GLM', capabilities: ['code'], contextWindow: 128000 }
+
+  afterEach(() => unregisterLLMGatewayProvider())
+
+  it('treats an empty-but-successful (empty) catalog as unknown, not all-pins-delisted', () => {
+    // Issue #146: the stale/offline badge is a LOCAL comparison — an empty
+    // authoritative set would mark every previously seen pin as delisted. A
+    // successful fetch that reports nothing carries no usable catalog and
+    // must register as unknown ('failed'), retaining the last-known list.
+    registerGatewayModels([model], 'ready')
+    registerGatewayModels([], 'empty')
+
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)).toEqual(['glm-5.2'])
+  })
+
+  it('registers an empty catalog with no explicit status as unknown too', () => {
+    registerGatewayModels([])
+
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
   })
 })
