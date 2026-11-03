@@ -350,11 +350,14 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
 
   const actions = document.createElement('div')
   actions.className = 'actions'
-  const installLabel = isInstalled ? 'webmcpPackagesRepair' : 'webmcpPackagesInstall'
-  const install = button(t(installLabel), isInstalled ? '' : 'primary', async () => {
-    install.disabled = true
-    const previous = install.textContent
-    install.textContent = t('webmcpPackagesInstalling')
+  // Repair (re-install over an existing package) is a recovery action, not a
+  // primary one: an installed package shows ONLY Remove by default, with a
+  // compact "Repair" text button beside it — a full-width second button
+  // stacked above Remove read as two competing primary actions.
+  const reinstall = async (btn: HTMLButtonElement): Promise<void> => {
+    btn.disabled = true
+    const previous = btn.textContent
+    btn.textContent = t('webmcpPackagesInstalling')
     try {
       clearError()
       const result = await installRegistryPackage(registry, pkg)
@@ -364,13 +367,19 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
     } catch (error) {
       showError(error)
     } finally {
-      install.textContent = previous
-      install.disabled = false
+      btn.textContent = previous
+      btn.disabled = false
       await render()
     }
+  }
+  const install = button(t('webmcpPackagesInstall'), 'primary', async () => {
+    await reinstall(install)
   })
   if (isInstalled) {
-    actions.append(install)
+    const repair = button(t('webmcpPackagesRepair'), 'ghost', async () => {
+      await reinstall(repair)
+    })
+    actions.append(repair)
     const uninstall = button(t('webmcpPackagesUninstall'), 'danger', async () => {
       uninstall.disabled = true
       const previous = uninstall.textContent
@@ -394,18 +403,30 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
   return row
 }
 
-/** A success message rendered in the same box as errors (it is dismissed too). */
+/**
+ * Success feedback: a dedicated green toast pinned to the top of the page.
+ * It must NOT reuse the error alert (a success is not something the user is
+ * asked to dismiss — it auto-hides), and it must not shift the page layout:
+ * the toast is position:fixed and slides in without pushing content down.
+ * Repeated installs restart the timer and replace the text.
+ */
+let successToastTimer: number | undefined
 function showSuccess(message: string): void {
-  errorText.textContent = message
-  errorBox.hidden = false
-  errorBox.style.color = '#2d8a4e'
-  errorBox.style.background = '#f0fdf4'
-  errorBox.style.borderColor = '#bbf7d0'
-  window.setTimeout(() => {
-    errorBox.style.color = ''
-    errorBox.style.background = ''
-    errorBox.style.borderColor = ''
-  }, 0)
+  let toast = document.getElementById('successToast')
+  if (!toast) {
+    toast = document.createElement('div')
+    toast.id = 'successToast'
+    toast.className = 'success-toast'
+    toast.setAttribute('role', 'status')
+    document.body.prepend(toast)
+  }
+  toast.textContent = message
+  toast.classList.add('visible')
+  if (successToastTimer !== undefined) window.clearTimeout(successToastTimer)
+  successToastTimer = window.setTimeout(() => {
+    toast?.classList.remove('visible')
+    successToastTimer = undefined
+  }, 3500)
 }
 
 let generation = 0
