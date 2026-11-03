@@ -586,10 +586,23 @@ function persistLoadErrorRecord(
  * WORKSPACE-scope record names an OPFS ensure failure, which no transcript
  * read exercises, so it may only be resolved by a path where the workspace
  * ensure itself succeeded (which passes false or omits the option).
+ *
+ * `workspaceEnsureVerified` (PR #152 review, "Skipped workspace ensure is
+ * reported recovered" / "Wrong workspace failure is resolved"): full-load
+ * callers pass whether THIS run's ensureActiveWorkspace verified the active
+ * workspace (opened or already loaded). A WORKSPACE-scope record is only
+ * resolved when that proof is true — an ensure that skipped its target
+ * (null/absent active id) proves nothing about the OPFS layer, and a record
+ * naming workspace B must not be resolved by an ensure of workspace A.
  */
 function markPersistedFailureResolved(
   resolvedForConversationId?: string | null,
-  options?: { requireNamedConversation?: boolean; requireWorkspaceEnsure?: boolean }
+  options?: {
+    requireNamedConversation?: boolean
+    requireWorkspaceEnsure?: boolean
+    workspaceEnsureVerified?: boolean
+    ensuredWorkspaceId?: string | null
+  }
 ): void {
   try {
     const raw = sessionStorage.getItem(CONVERSATION_STORE_LOAD_ERROR_KEY)
@@ -622,6 +635,27 @@ function markPersistedFailureResolved(
         // successfully resolves it (PR #152 review).
         return
       }
+      if (
+        record.workspaceId &&
+        options?.workspaceEnsureVerified === false
+      ) {
+        // A workspace-scoped record and THIS run's ensure skipped its target
+        // (null/absent active id): the run never verified any workspace, so
+        // it cannot prove this record's workspace recovered
+        // (PR #152 review, "Skipped workspace ensure is reported recovered").
+        return
+      }
+      if (
+        record.workspaceId &&
+        options?.ensuredWorkspaceId != null &&
+        record.workspaceId !== options.ensuredWorkspaceId
+      ) {
+        // Selection changed while the ensure was in flight: this run verified
+        // a DIFFERENT workspace than the one the record names, so the record's
+        // OPFS layer is still unproven — leave it unresolved
+        // (PR #152 review, "Wrong workspace failure is resolved").
+        return
+      }
       sessionStorage.setItem(
         CONVERSATION_STORE_LOAD_ERROR_KEY,
         JSON.stringify({ ...record, resolved: true })
@@ -632,12 +666,25 @@ function markPersistedFailureResolved(
   }
 }
 
+type WorkspaceEnsureStatus =
+  | 'ensured'
+  | 'already-loaded'
+  | 'missing-target'
+
+/**
+ * Ensure the OPFS workspace for `activeId` exists. The return value tells the
+ * caller WHICH proof it obtained: a workspace-scoped failure record may only
+ * be marked resolved after the workspace it names was genuinely ensured (or
+ * was already loaded) by this call — a missing target proves nothing
+ * (PR #152 review, "Skipped workspace ensure is reported recovered" and
+ * "Missing workspace treated as recovered").
+ */
 async function ensureActiveWorkspace(
   conversations: Array<Pick<Conversation, 'id' | 'title'>>,
   activeId: string | null
-): Promise<boolean> {
+): Promise<WorkspaceEnsureStatus> {
   const target = conversations.find((conversation) => conversation.id === activeId)
-  if (!target) return false
+  if (!target) return 'missing-target'
 
   const { getWorkspaceManager } = await import('@/opfs')
   const manager = await withTimeout(
@@ -645,7 +692,7 @@ async function ensureActiveWorkspace(
     INITIAL_LOAD_TIMEOUT_MS,
     'workspace manager initialization'
   )
-  if (manager.isWorkspaceLoaded(target.id)) return false
+  if (manager.isWorkspaceLoaded(target.id)) return 'already-loaded'
 
   await withTimeout(
     manager.createWorkspace(
@@ -656,7 +703,7 @@ async function ensureActiveWorkspace(
     INITIAL_LOAD_TIMEOUT_MS,
     'active workspace ensure'
   )
-  return true
+  return 'ensured'
 }
 
 function selectActiveConversationId(conversations: Array<Pick<Conversation, 'id'>>): string | null {
@@ -701,12 +748,13 @@ function isCurrentTranscriptRead(id: string, generation: number): boolean {
 
 /**
  * One targeted retry at a time per conversation: `withTimeout` rejects this
- * store's await but leaves the underlying `findByConversation` request
- * running in the worker, so an immediate re-retry would queue a second
- * outstanding read behind a still-stalled first one. While a retry for a
- * conversation is in flight, further targeted retries return immediately
+ * store's await but leaves the underlying `findByConversation` request /
+ * workspace ensure running, so an immediate re-retry must not queue a second
+ * outstanding operation behind a still-stalled first one. While a retry for
+ * a conversation is in flight, further targeted retries return immediately
  * (the visible error stays, so the sidebar's Retry remains available once
- * the in-flight read settles) (PR #152 review, "Timed-out reads accumulate").
+ * the in-flight operation settles) (PR #152 review, "Timed-out reads
+ * accumulate").
  */
 const inflightRetries = new Map<string, Promise<void>>()
 
@@ -728,11 +776,14 @@ export function resetConversationRetryStateForTests(): void {
 
 /**
  * Owner of an in-flight targeted retry's slot. `withTimeout` rejects the
- * retry's await while the underlying read/ensure keeps running in the worker,
- * so `inflightRetries.delete` alone would let the next Retry start a second
- * operation behind the still-pending first one (PR #152 review, "Timed-out
- * retries queue more work"). Holding this ref keeps the slot occupied — the
- * next retry awaits the SAME run — until the underlying operation settles.
+ * retry's await while the underlying read/ensure keeps running, so releasing
+ * the slot when the RETRY promise settles (at timeout) would let the next
+ * Retry start a second operation behind the still-pending first one —
+ * exactly the unbounded queueing "Timed-out retries queue more work"
+ * describes. The run promise therefore resolves only when the UNDERLYING
+ * operation settles (via settleUnderlying below); the slot's release in its
+ * `finally` keeps the entry occupied across timeouts, and a later retry
+ * awaits the SAME run instead of queueing new work.
  */
 const inflightRetryRefs = new Map<string, { released: boolean }>()
 
@@ -769,17 +820,65 @@ async function retryLoadedFailure(
   if (inflight) return inflight.catch(() => {})
 
   const slot = holdInflightRetrySlot(id)
+  // Resolved when the UNDERLYING read/ensure settles — even if withTimeout
+  // already rejected the retry's await at its bound. The run promise (and
+  // with it the in-flight entry) waits for this gate, so a stalled operation
+  // keeps the slot occupied and re-retries dedupe onto the SAME run instead
+  // of queueing more work against the stalled worker
+  // (PR #152 review, "Timed-out retries queue more work").
+  let settleUnderlying: () => void = () => {}
+  const underlyingSettled = new Promise<void>((resolve) => {
+    settleUnderlying = resolve
+  })
+  // Hard cap: an operation that has not settled within twice its own timeout
+  // bound will never settle (stalled worker). Release the slot anyway so the
+  // sidebar's Retry becomes available again — a fresh retry is then the only
+  // recovery path left, and the alternative (holding the entry forever)
+  // would make recovery permanently unavailable.
+  const slotCapTimer = setTimeout(
+    settleUnderlying,
+    2 * TEST_INITIAL_LOAD_TIMEOUT_MS()
+  )
+  const retryLeg = runRetryLoadedFailure(
+    set, get, scope, errorAtStart, id, settleUnderlying
+  )
   const run: Promise<void> = (async () => {
     try {
-      await runRetryLoadedFailure(set, get, scope, errorAtStart, id)
+      await Promise.all([retryLeg.catch(() => {}), underlyingSettled])
     } finally {
+      clearTimeout(slotCapTimer)
       slot.release()
       if (inflightRetries.get(id) === slot.run) inflightRetries.delete(id)
     }
   })()
   slot.run = run
   inflightRetries.set(id, run)
-  await run.catch(() => {})
+  // The CALLER returns as soon as the retry itself settles (success, failure,
+  // or timeout rejection — already recorded in the store by the retry's own
+  // catch). Only later re-retries (and slot release) wait for the underlying
+  // operation via `run`.
+  try {
+    await retryLeg
+  } catch {
+    // Failure already recorded; nothing to add.
+  }
+}
+
+/**
+ * Wraps an optional callback so it fires at most once, and never throws.
+ */
+function once(fn?: () => void): () => void {
+  if (!fn) return () => {}
+  let called = false
+  return () => {
+    if (called) return
+    called = true
+    try {
+      fn()
+    } catch {
+      // A gate callback must never break the retry path.
+    }
+  }
 }
 
 async function runRetryLoadedFailure(
@@ -787,10 +886,15 @@ async function runRetryLoadedFailure(
   get: () => ConversationState,
   scope: 'transcript' | 'workspace',
   errorAtStart: string,
-  id: string
+  id: string,
+  onUnderlyingSettled?: () => void
 ): Promise<void> {
   const generation = beginConversationLoadGeneration()
   const stillCurrent = () => isCurrentConversationLoadGeneration(generation)
+  // Guarantees the run-level gate resolves even if the underlying operation
+  // never does — otherwise a timed-out-but-still-pending read would hold the
+  // in-flight slot forever.
+  const settleOnce = once(onUnderlyingSettled)
   try {
     if (scope === 'transcript') {
       const transcriptGeneration = claimTranscriptRead(id)
@@ -804,8 +908,14 @@ async function runRetryLoadedFailure(
       // 15s: tests exercising the timeout→retryable-failure path compress it,
       // and a deliberately-hung retry must settle quickly so its in-flight
       // slot (and the load-level dedupe slot) is released for later tests.
+      // The RAW promise (not withTimeout's wrapper) signals the gate: the
+      // wrapper rejects at the bound while the underlying request keeps
+      // running, and the slot must stay occupied until the request itself
+      // settles (PR #152 review, "Timed-out retries queue more work").
+      const underlyingRead = getMessageRepository().findByConversation(id)
+      underlyingRead.then(settleOnce, settleOnce)
       const messages = await withTimeout(
-        getMessageRepository().findByConversation(id),
+        underlyingRead,
         TEST_INITIAL_LOAD_TIMEOUT_MS(),
         'conversation transcript read'
       )
@@ -834,7 +944,45 @@ async function runRetryLoadedFailure(
         })
       }
     } else {
-      await ensureActiveWorkspace(get().conversations, id)
+      // A 'missing-target' result (the failed conversation was removed from
+      // the store before the retry) proves nothing about the workspace the
+      // record names — keep the failure visible and unresolved instead of
+      // reporting recovery (PR #152 review, "Missing workspace treated as
+      // recovered"). The ensure is therefore inlined here instead of going
+      // through ensureActiveWorkspace: it must (a) treat an absent target as
+      // NO proof, and (b) signal the settle gate from the RAW promises so a
+      // timed-out-but-still-running manager init or workspace open keeps the
+      // in-flight slot occupied (see the transcript branch above).
+      const target = get().conversations.find((c) => c.id === id)
+      if (!target) {
+        settleOnce()
+        return
+      }
+      const { getWorkspaceManager } = await import('@/opfs')
+      const managerInit = getWorkspaceManager()
+      managerInit.then(settleOnce, settleOnce)
+      const manager = await withTimeout(
+        managerInit,
+        TEST_INITIAL_LOAD_TIMEOUT_MS(),
+        'workspace manager initialization'
+      )
+      if (manager.isWorkspaceLoaded(id)) {
+        // Already loaded IS the recovery proof — the underlying "operation"
+        // is trivially done, so the gate releases with it.
+        settleOnce()
+      } else {
+        const ensureOp = manager.createWorkspace(
+          `workspaces/${id}`,
+          id,
+          target.title || DEFAULT_CONVERSATION_NAME,
+        )
+        ensureOp.then(settleOnce, settleOnce)
+        await withTimeout(
+          ensureOp,
+          TEST_INITIAL_LOAD_TIMEOUT_MS(),
+          'active workspace ensure'
+        )
+      }
       if (!stillCurrent()) return
     }
 
@@ -1035,10 +1183,29 @@ async function runLoadFromDB(
         let ensuredCount = 0
         let ensuredSkipped = 0
         let workspaceEnsureError: unknown = null
+        // Which proof this run's ensure obtained for the captured active
+        // workspace. Resolution of a workspace-scoped record below requires
+        // the recorded workspace to be VERIFIED by this run — a skipped or
+        // missing-target ensure proves nothing about the OPFS layer
+        // (PR #152 review, "Skipped workspace ensure is reported recovered").
+        let workspaceEnsureVerified = false
+        // The workspace id THIS run's ensure actually targeted and verified.
+        // Selection can change while the ensure is in flight, so the id used
+        // at resolution time (activeIdToInstall) may differ from the id whose
+        // OPFS layer this run proved — a workspace-scoped failure record is
+        // only resolved when it names THE verified workspace
+        // (PR #152 review, "Wrong workspace failure is resolved").
+        let ensuredWorkspaceId: string | null = null
         const activeWsId = useConversationContextStore.getState().activeWorkspaceId
         try {
-          if (await ensureActiveWorkspace(conversations, activeWsId)) ensuredCount++
-          else ensuredSkipped = conversations.length
+          const ensureStatus = await ensureActiveWorkspace(conversations, activeWsId)
+          if (ensureStatus !== 'missing-target') {
+            workspaceEnsureVerified = true
+            ensuredWorkspaceId = activeWsId
+            ensuredCount++
+          } else {
+            ensuredSkipped = conversations.length
+          }
         } catch (e) {
           workspaceEnsureError = e
           console.warn('[conversation.store] Active workspace ensure failed:', e)
@@ -1235,8 +1402,17 @@ async function runLoadFromDB(
           // proves nothing about that one (PR #149 round-4 review, "Unverified
           // failures appear recovered"). A run with no active conversation
           // reads no transcript and proves even less, so resolution still
-          // requires the record to name no conversation at all.
-          markPersistedFailureResolved(activeIdToInstall)
+          // requires the record to name no conversation at all. The
+          // workspaceEnsureVerified proof below additionally keeps a
+          // WORKSPACE-scoped record unresolved unless THIS run verified the
+          // active workspace (opened or already loaded) — a skipped ensure
+          // proves nothing about the OPFS layer (PR #152 review, "Skipped
+          // workspace ensure is reported recovered" / "Wrong workspace
+          // failure is resolved").
+          markPersistedFailureResolved(activeIdToInstall, {
+            workspaceEnsureVerified,
+            ensuredWorkspaceId,
+          })
           // The error (and the sidebar's Retry affordance) stays visible
           // until the transcript read actually succeeded.
           set((state) => {
@@ -1342,12 +1518,19 @@ async function runLoadFromDB(
             { conversationCount: retryConversations.length },
           )
           // The fallback is recovered only after metadata, the active OPFS
-          // workspace, and its transcript have all loaded successfully.
+          // workspace, and its transcript have all loaded successfully — and
+          // the ensure must have VERIFIED its target: a skipped/missing-target
+          // ensure proves nothing about a workspace-scoped record, which would
+          // otherwise be resolved against the WRONG workspace (the one the
+          // selection changed to) while the recorded one was never ensured
+          // (PR #152 review, "Wrong workspace failure is resolved").
           const retryActiveId = get().activeConversationId
           const selectionGenerationAtFallback = activeSelectionGeneration
           let retryWorkspaceLoaded = true
+          let retryWorkspaceVerified = false
           try {
-            await ensureActiveWorkspace(retryConversations, retryActiveId)
+            const ensureStatus = await ensureActiveWorkspace(retryConversations, retryActiveId)
+            retryWorkspaceVerified = ensureStatus !== 'missing-target'
             if (!isCurrentRun()) return
           } catch (workspaceErr) {
             if (!isCurrentRun()) return
@@ -1435,8 +1618,15 @@ async function runLoadFromDB(
               selectionGenerationAtFallback === activeSelectionGeneration) {
             // Same verification as the primary path: only the transcript of
             // the conversation actually re-read by this retry counts as
-            // proof (PR #149 round-4 review).
-            markPersistedFailureResolved(retryActiveId)
+            // proof (PR #149 round-4 review). retryWorkspaceVerified keeps a
+            // WORKSPACE-scoped record unresolved unless THIS run verified the
+            // active workspace — a skipped/missing-target ensure proves
+            // nothing about the OPFS layer, so a record naming workspace B
+            // must not be resolved by an ensure of (or a skip of) workspace A
+            // (PR #152 review, "Wrong workspace failure is resolved").
+            markPersistedFailureResolved(retryActiveId, {
+              workspaceEnsureVerified: retryWorkspaceVerified,
+            })
             // The error stays visible until the transcript read succeeded.
             set((state) => {
               state.loadError = null
@@ -1452,7 +1642,10 @@ async function runLoadFromDB(
             // above. The stale metadata loadError must NOT stay displayed: the
             // user's newer selection loaded through the same healthy layers,
             // so the banner describes a failure that no longer exists
-            // (PR #152 review, "Stale retry error remains visible").
+            // (PR #152 review, "Stale retry error remains visible"). Only a
+            // VERIFIED ensure participates: an unverified one must not clear a
+            // workspace-scoped failure either (see "Wrong workspace failure is
+            // resolved" above).
             set((state) => {
               if (state.loadErrorScope === 'metadata') {
                 state.loadError = null
