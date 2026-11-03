@@ -249,9 +249,9 @@ describe('getStalePinnedModels: catalogStatus semantics', () => {
     expect(state.getStalePinnedModels(P, [], undefined)).toEqual([])
   })
 
-  it('reports every seen pin stale for an AUTHORITATIVE empty catalog', () => {
+  it('does not mark pins stale when the catalog is empty', () => {
     const state = useSettingsStore.getState()
-    expect(state.getStalePinnedModels(P, [], 'empty')).toEqual(['m-a', 'm-b'])
+    expect(state.getStalePinnedModels(P, [], 'empty')).toEqual([])
   })
 
   it('keeps legacy behavior for non-empty lists (with or without a status)', () => {

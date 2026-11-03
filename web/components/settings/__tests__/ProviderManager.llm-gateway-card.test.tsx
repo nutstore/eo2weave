@@ -72,6 +72,7 @@ const gatewayMock = vi.hoisted(() => ({
   getGatewayCredentialStatus: vi.fn(() => 'unknown'),
   hasStoredTokens: vi.fn(() => true),
   registerGatewayModels: vi.fn(),
+  registeredModels: [{ id: 'glm-5.2', name: 'GLM', capabilities: ['code'] as const, contextWindow: 200_000 }] as Array<{ id: string; name: string; capabilities: readonly ['code']; contextWindow: number }>,
   catalogVersion: 0,
   updateGatewayModels: vi.fn(async () => []),
   getProviderCatalogStatus: vi.fn(
@@ -128,10 +129,7 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
     // The registered catalog under test: a 'ready' registration from the
     // startup restore carries these models, and the timeout must keep the
     // LIST while downgrading only the STATUS to 'failed'.
-    getModelsForProvider: (type: string) =>
-      type === 'llm-gateway'
-        ? [{ id: 'glm-5.2', name: 'GLM', capabilities: ['code'] as const, contextWindow: 200_000 }]
-        : [],
+    getModelsForProvider: (type: string) => type === 'llm-gateway' ? gatewayMock.registeredModels : [],
     getProviderCatalogStatus: gatewayMock.getProviderCatalogStatus,
   }
 })
@@ -170,6 +168,11 @@ describe('LLMGatewayCard credential state', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     gatewayMock.catalogVersion = 0
+    gatewayMock.registeredModels = [{ id: 'glm-5.2', name: 'GLM', capabilities: ['code'], contextWindow: 200_000 }]
+    gatewayMock.registerGatewayModels.mockImplementation((models, status) => {
+      if (status === 'ready') gatewayMock.registeredModels = models
+      if (status === 'empty') gatewayMock.registeredModels = []
+    })
     gatewayMock.prepareGatewayModels.mockReset()
     gatewayMock.prepareGatewayModels.mockImplementation(async () => {
       const { models, status } = await gatewayMock.fetchGatewayModels()
@@ -501,6 +504,7 @@ describe('LLMGatewayCard credential state', () => {
     render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
 
     await waitFor(() => expect(gatewayMock.registerGatewayModels).toHaveBeenCalled())
+    expect(gatewayMock.registeredModels.map((model) => model.id)).toEqual(['glm-5.2'])
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Add from model library' }))
     expect(screen.getByRole('button', { name: /GLM/ })).toBeTruthy()

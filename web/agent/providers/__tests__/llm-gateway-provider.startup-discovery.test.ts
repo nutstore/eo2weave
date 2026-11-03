@@ -92,6 +92,17 @@ describe('updateGatewayModels startup discovery deadline', () => {
     expect(models.map((m: { id: string }) => m.id)).toEqual(['glm-5.2'])
   })
 
+  it('passes the discovery deadline into a rejected-token refresh', async () => {
+    mocks.fetchGatewayModels.mockResolvedValue({ models: [], status: 'failed', authRejected: true })
+    mocks.refreshAccessTokenWithStatus.mockResolvedValue({ status: 'temporary_error' })
+
+    await updateGatewayModels('rejected-token')
+
+    expect(mocks.refreshAccessTokenWithStatus).toHaveBeenCalledWith(
+      expect.any(String), expect.any(String), expect.any(AbortSignal),
+    )
+  })
+
   it('discards a catalog response after the gateway session changes', async () => {
     let finish!: (result: { models: Array<{ id: string; name: string }>; status: 'ready' }) => void
     mocks.fetchGatewayModels.mockImplementation(() => new Promise((resolve) => { finish = resolve }))

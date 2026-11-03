@@ -53,7 +53,7 @@ vi.mock('@creatorweave/ui', () => ({
   BrandSwitch: () => <button>switch</button>,
 }))
 
-import { ModelQuickSwitch } from '../ModelQuickSwitch'
+import { ModelQuickSwitch } from '@/components/layout/ModelQuickSwitch'
 import { registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
 describe('ModelQuickSwitch gateway catalog failure', () => {

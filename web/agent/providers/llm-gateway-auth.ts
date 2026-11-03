@@ -105,6 +105,21 @@ export interface RateLimitsResponse {
 
 const TOKEN_STORAGE_KEY = 'llm-gateway-tokens'
 
+// Another tab can replace or clear the session without touching this tab's
+// registry. Drop its cached models before the next discovery can retain them.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== TOKEN_STORAGE_KEY) return
+    const refreshToken = (value: string | null): string | null => {
+      try { return value ? (JSON.parse(value) as StoredTokens).refresh_token : null } catch { return null }
+    }
+    if (refreshToken(event.oldValue) !== refreshToken(event.newValue)) {
+      bumpAuthSessionGeneration()
+      unregisterDynamicProvider('llm-gateway')
+    }
+  })
+}
+
 /**
  * Single source of truth for the api-key-store key holding the gateway
  * access_token (llm-gateway-provider.ts re-exports this). Lives HERE because
@@ -1134,13 +1149,14 @@ export async function performDeviceCodeFlow(
  */
 export function refreshAccessTokenWithStatus(
   baseURL: string,
-  clientId: string
+  clientId: string,
+  signal?: AbortSignal,
 ): Promise<RefreshResult> {
   const generation = authSessionGeneration
   // Reuse the in-flight refresh only within the same credential session — a
   // logout or new login invalidates the result the promise will resolve with.
   if (refreshInFlight && generation === (refreshInFlight as InFlightRefresh).generation) {
-    return refreshInFlight
+    return abortableRefreshResult(refreshInFlight, signal)
   }
   const request = refreshAccessTokenWithStatusImpl(baseURL, clientId)
   const tracked: InFlightRefresh = Object.assign(request, { generation })
@@ -1155,7 +1171,25 @@ export function refreshAccessTokenWithStatus(
       if (refreshInFlight === tracked) refreshInFlight = null
     },
   )
-  return tracked
+  return abortableRefreshResult(tracked, signal)
+}
+
+function abortableRefreshResult(
+  refresh: Promise<RefreshResult>,
+  signal?: AbortSignal,
+): Promise<RefreshResult> {
+  if (!signal) return refresh
+  if (signal.aborted) return Promise.reject(signal.reason)
+  // A refresh can be shared by model discovery and another caller. Bound the
+  // discovery caller without cancelling the shared credential operation.
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void refresh.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+  })
 }
 
 interface InFlightRefresh extends Promise<RefreshResult> {

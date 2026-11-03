@@ -166,6 +166,22 @@ describe('llm-gateway-auth token refresh hardening', () => {
   })
 
   describe('refresh preserves the stored refresh token (real backend contract)', () => {
+    it('stops a discovery caller at its deadline while a shared refresh continues', async () => {
+      seedStoredTokens()
+      let complete!: (response: Response) => void
+      vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { complete = resolve })))
+      const controller = new AbortController()
+      const discovery = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID, controller.signal)
+
+      await vi.waitFor(() => expect(complete).toBeDefined())
+      controller.abort(new Error('discovery timed out'))
+      await expect(discovery).rejects.toThrow('discovery timed out')
+
+      const shared = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      complete(refreshResponse())
+      await expect(shared).resolves.toMatchObject({ status: 'success' })
+    })
+
     it('keeps the stored refresh_token and refresh_expires_at when the response has neither', async () => {
       const seeded = seedStoredTokens()
 

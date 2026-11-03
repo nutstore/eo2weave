@@ -211,12 +211,26 @@ describe('gateway last known catalog', () => {
     expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
   })
 
-  it('replaces the last successful models after an authoritative empty response', () => {
+  it('keeps the last successful models after an empty gateway response', () => {
     registerGatewayModels([model], 'ready')
     registerGatewayModels([], 'empty')
 
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([model])
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+  })
+
+  it('clears cached models when another tab changes the credential pair', () => {
+    registerGatewayModels([model], 'ready')
+    const tokens = (refresh_token: string) => JSON.stringify({ refresh_token })
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'llm-gateway-tokens',
+      oldValue: tokens('old-account'),
+      newValue: tokens('new-account'),
+    }))
+
     expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
-    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('empty')
+    registerGatewayModels([], 'failed')
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
   })
 
   it('does not retain models after the provider is unregistered for logout', () => {

@@ -110,10 +110,8 @@ export function registerLLMGatewayProvider(): void {
  * Fetch models from gateway /v1/models and re-register the provider
  * with the updated model list. Call after obtaining a valid access token.
  *
- * The catalog status is carried through so the registry can distinguish an
- * AUTHORITATIVE empty catalog (the gateway answered and serves no models)
- * from a FAILED refresh (the fetch produced no usable catalog). Only the
- * former lets consumers conclude that the provider's models are gone.
+ * Empty and failed gateway catalogs cannot prove that previously seen
+ * models were delisted, so both retain the last usable list.
  */
 export async function prepareGatewayModels(
   accessToken: string,
@@ -124,7 +122,7 @@ export async function prepareGatewayModels(
   let authGeneration = getGatewayAuthSessionGeneration()
   let result = await fetchGatewayModels(baseURL, accessToken, signal)
   if (recoverRejectedToken && result.authRejected && authGeneration === getGatewayAuthSessionGeneration()) {
-    const refreshed = await refreshAccessTokenWithStatus(baseURL, getGatewayClientId())
+    const refreshed = await refreshAccessTokenWithStatus(baseURL, getGatewayClientId(), signal)
     if (refreshed.status === 'success') {
       authGeneration = getGatewayAuthSessionGeneration()
       result = await fetchGatewayModels(baseURL, refreshed.accessToken, signal)
@@ -147,7 +145,9 @@ export async function prepareGatewayModels(
       // gpt-4o (128K), etc. each show their real value instead of a flat 200K.
       contextWindow: getModelContextWindow(LLM_GATEWAY_PROVIDER_TYPE, m.id),
     })),
-    status: result.status,
+    // An empty gateway response cannot prove that every previously seen
+    // model disappeared. Keep the last known list and defer delisting.
+    status: result.status === 'empty' ? 'failed' : result.status,
     authGeneration,
   }
 }
@@ -162,7 +162,8 @@ export function registerGatewayModels(
   if (refreshVersion === undefined) catalogRefreshVersion++
   // A failed response says nothing about the catalog. Keep the last usable
   // list for display, while the failed status prevents delisting decisions.
-  const models = status === 'failed'
+  const catalogStatus = status === 'empty' ? 'failed' : status
+  const models = catalogStatus === 'failed'
     ? getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)
     : modelInfos
   const baseURL_str = getGatewayBaseURL()
@@ -176,7 +177,7 @@ export function registerGatewayModels(
   const meta: ProviderMeta = {
     ...GATEWAY_META,
     models,
-    catalogStatus: status,
+    catalogStatus,
   }
 
   registerDynamicProvider(LLM_GATEWAY_PROVIDER_TYPE, config, meta)
