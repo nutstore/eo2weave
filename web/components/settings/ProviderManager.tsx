@@ -1456,7 +1456,15 @@ export function LLMGatewayCard({
             import('@/agent/providers/llm-gateway-provider'),
             import('@/agent/providers/types'),
           ])
-          if (getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE) === 'ready') {
+          // Downgrade ANY authoritative registration ('ready' AND 'empty' —
+          // Sourcery round 9, 🟠 "Gateway outage keeps stale empty status"):
+          // a prior successful EMPTY catalog that stays 'empty' through the
+          // outage is still treated as authoritative by discovery, so the
+          // sweep would remove its seen pins and reconciliation would still
+          // act on it while the gateway cannot confirm anything. Only a
+          // 'failed' (unknown) registration needs no downgrade.
+          const currentStatus = getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)
+          if (currentStatus === 'ready' || currentStatus === 'empty') {
             registerGatewayModels(
               getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => ({
                 id: m.id,

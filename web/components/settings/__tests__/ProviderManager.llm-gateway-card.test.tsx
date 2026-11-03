@@ -72,7 +72,9 @@ const gatewayMock = vi.hoisted(() => ({
   hasStoredTokens: vi.fn(() => true),
   registerGatewayModels: vi.fn(),
   updateGatewayModels: vi.fn(async () => []),
-  getProviderCatalogStatus: vi.fn(() => 'ready' as const),
+  getProviderCatalogStatus: vi.fn(
+    () => 'ready' as 'ready' | 'empty' | 'failed' | undefined,
+  ),
   persistDeviceLoginTokens: vi.fn(),
   fetchGatewayRateLimits: vi.fn(async () => {
     throw new Error('Nutstore AI login has expired. Please log in again.')
@@ -473,6 +475,27 @@ describe('LLMGatewayCard credential state', () => {
     await waitFor(() => {
       expect(gatewayMock.registerGatewayModels).toHaveBeenCalledWith(
         expect.arrayContaining([expect.objectContaining({ id: 'glm-5.2' })]),
+        'failed',
+      )
+    })
+  })
+
+  it('also downgrades a prior authoritative-empty catalog when the /models refresh times out', async () => {
+    // Sourcery round 9 (PR #150), 🟠 "Gateway outage keeps stale empty
+    // status": a prior successful EMPTY catalog ('empty') is authoritative —
+    // discovery sweeps its seen pins and reconciles off it. The timeout must
+    // strip that authority too, not only a 'ready' one.
+    settingsState.modelCredentialStatus = 'valid'
+    gatewayMock.getProviderCatalogStatus.mockReturnValue('empty')
+    gatewayMock.fetchGatewayModels.mockRejectedValueOnce(
+      new DOMException('The operation was aborted due to timeout.', 'TimeoutError'),
+    )
+
+    render(<LLMGatewayCard isExpanded onToggle={() => {}} />)
+
+    await waitFor(() => {
+      expect(gatewayMock.registerGatewayModels).toHaveBeenCalledWith(
+        expect.anything(),
         'failed',
       )
     })
