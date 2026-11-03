@@ -13,10 +13,31 @@ const fetchMock = vi.fn<typeof fetch>()
 
 vi.stubGlobal('fetch', fetchMock)
 
-import { fetchGatewayModels } from '@/agent/providers/llm-gateway-auth'
+// The session-change tests drive the real refresh/logout paths, which
+// dynamic-import the SQLite-backed api-key-store and the settings store.
+// Stub both with in-memory fakes so the tests never touch real storage.
+vi.mock('@/security/api-key-store', () => ({
+  loadApiKey: vi.fn(async () => null),
+  saveApiKey: vi.fn(async () => {}),
+  deleteApiKey: vi.fn(async () => {}),
+}))
+vi.mock('@/store/settings.store', () => ({
+  useSettingsStore: {
+    getState: () => ({
+      setModelCredentialStatus: vi.fn(),
+      setModelCredentialStatusError: vi.fn(),
+    }),
+  },
+}))
+
+import { fetchGatewayModels, getGatewayAuthSessionGeneration } from '@/agent/providers/llm-gateway-auth'
 import { getModelsForProvider, getProviderCatalogStatus, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 import { registerGatewayModels, unregisterLLMGatewayProvider, updateGatewayModels, LLM_GATEWAY_PROVIDER_TYPE } from '@/agent/providers/llm-gateway-provider'
 import type { ModelInfo } from '@/agent/providers/types'
+
+const TOKENS_KEY = 'llm-gateway-tokens'
+const BASE_URL = 'https://ai.jianguoyun.com'
+const CLIENT_ID = 'test-client-id'
 
 function okResponse(body: unknown): Response {
   return {
@@ -264,5 +285,79 @@ describe('empty catalog reads as unknown (issue #146)', () => {
 
     expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
     expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+  })
+})
+
+describe('credential-session change clears the cached catalog (issue #146)', () => {
+  const model: ModelInfo = { id: 'glm-5.2', name: 'GLM', capabilities: ['code'], contextWindow: 128000 }
+
+  beforeEach(() => {
+    localStorage.setItem(TOKENS_KEY, JSON.stringify({
+      access_token: 'access-1', refresh_token: 'refresh-1',
+      access_expires_at: Date.now() + 3600_000,
+      refresh_expires_at: Date.now() + 7 * 24 * 3600_000,
+      client_id: CLIENT_ID, base_url: BASE_URL,
+    }))
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+    unregisterLLMGatewayProvider()
+  })
+
+  it('does not let a failed discovery after logout resurrect the previous catalog', async () => {
+    // Account A: a successful discovery registers its models.
+    registerGatewayModels([model], 'ready')
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)).toEqual(['glm-5.2'])
+
+    // Credentials disappear (another tab logs out via logoutGateway): the
+    // session generation bumps and the cached catalog must NOT survive into
+    // the next session.
+    localStorage.removeItem(TOKENS_KEY)
+    const { logoutGateway } = await import('@/agent/providers/llm-gateway-auth')
+    await logoutGateway()
+    const before = getGatewayAuthSessionGeneration()
+    expect(before).toBeGreaterThan(0)
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+
+    // A failed discovery in the new (logged-out) state retains nothing —
+    // account A's models must not appear after the session change.
+    registerGatewayModels([], 'failed')
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+  })
+
+  it('does not let a failed discovery after a NEW login inherit the previous account models', async () => {
+    // Account A's catalog is registered...
+    registerGatewayModels([model], 'ready')
+    // ...then account B logs in (saveStoredTokens bumps the generation and
+    // clears the cached catalog)...
+    localStorage.setItem(TOKENS_KEY, JSON.stringify({
+      access_token: 'access-2', refresh_token: 'refresh-2',
+      access_expires_at: Date.now() + 3600_000,
+      refresh_expires_at: Date.now() + 7 * 24 * 3600_000,
+      client_id: CLIENT_ID, base_url: BASE_URL,
+    }))
+    const { persistDeviceLoginTokens } = await import('@/agent/providers/llm-gateway-auth')
+    persistDeviceLoginTokens({
+      access_token: 'access-b', token_type: 'Bearer', expires_in: 3600,
+      refresh_token: 'refresh-b', refresh_expires_in: 7 * 24 * 3600,
+    }, CLIENT_ID, BASE_URL)
+
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+
+    // ...and B's discovery FAILS: retention keeps nothing — there is no
+    // last-known list of B's to keep, so A's models must not resurface.
+    registerGatewayModels([], 'failed')
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+  })
+
+  it('still retains models for a failed refresh within the SAME session', async () => {
+    // No credential change between the two registrations: retention-on-
+    // failed-refresh for the same account stays intact.
+    registerGatewayModels([model], 'ready')
+    registerGatewayModels([], 'failed')
+
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)).toEqual(['glm-5.2'])
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
   })
 })

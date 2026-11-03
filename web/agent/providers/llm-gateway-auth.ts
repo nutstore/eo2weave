@@ -1208,6 +1208,17 @@ export function getGatewayAuthSessionGeneration(): number {
 /** Invalidate async work belonging to the previous credential set. */
 function bumpAuthSessionGeneration(): void {
   authSessionGeneration++
+  // Issue #146 (Sourcery): the registry's model list is the in-memory
+  // last-known catalog cache of the credential that fetched it. Clear it on
+  // every credential-set change (saveStoredTokens on a new login,
+  // clearStoredTokens on logout/expiry, ownership-loss on a replaced
+  // session) so a NEW session cannot inherit the previous account's models:
+  // without this, stored credentials disappearing (or another tab logging
+  // out) followed by a FAILED discovery would leave registerGatewayModels
+  // retaining the stale catalog for an account that never served it.
+  // Retention-on-failed-refresh still applies WITHIN one account's session —
+  // the bump simply never fires there.
+  unregisterDynamicProvider('llm-gateway')
 }
 
 async function refreshAccessTokenWithStatusImpl(
