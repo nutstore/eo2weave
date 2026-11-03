@@ -182,7 +182,7 @@ describe('updateGatewayModels: 401 refresh is bounded by the discovery deadline'
       let refreshSignal: AbortSignal | null = null
       mocks.refreshAccessTokenWithStatus.mockImplementation(
         (_baseURL: string, _clientId: string, signal?: AbortSignal) => {
-          refreshSignal = signal
+          refreshSignal = signal ?? null
           return new Promise((_resolve, reject) => {
             signal?.addEventListener('abort', () => reject(signal.reason))
           })
