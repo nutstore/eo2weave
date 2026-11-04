@@ -219,7 +219,7 @@ async function isImportRunUnfinished(runId: string): Promise<boolean> {
 }
 
 /** True when the error is an OPFS "not found" (absence — not a failure). */
-function isNotFoundError(e: unknown): boolean {
+export function isNotFoundError(e: unknown): boolean {
   if (e instanceof DOMException && e.name === 'NotFoundError') return true
   // Test doubles and polyfills may not produce real DOMExceptions.
   return e instanceof Error && e.message.includes('NotFoundError')

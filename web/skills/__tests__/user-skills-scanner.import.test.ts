@@ -109,6 +109,13 @@ function makeOpfsRoot(
               file.data.byteOffset + file.data.byteLength,
             ) as ArrayBuffer,
           text: async () => new TextDecoder().decode(file.data),
+          // Blob.slice semantics — the version lookup reads only the head of
+          // the file so an oversized local SKILL.md is never buffered whole.
+          slice: (start = 0, end = file.data.byteLength) => ({
+            size: Math.max(0, end - start),
+            text: async () =>
+              new TextDecoder().decode(file.data.subarray(start, end)),
+          }),
         }
       },
       createWritable: async () => {
@@ -867,6 +874,89 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
       const done = progress.find((p) => p.phase === 'done')
       expect(done?.message).toContain('Skipped update')
       expect(done?.message).toContain('1.2.0')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('reports the outcome so callers can branch without parsing the message (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.3"\n---\n\n# Store'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // Not installed → fresh install.
+      const fresh = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      expect(fresh.outcome).toBe('installed')
+
+      // Older installed copy → update.
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Old',
+      )
+      const updated = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      expect(updated.outcome).toBe('updated')
+
+      // Matching copy → keep.
+      const current = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      expect(current.outcome).toBe('current')
+
+      // Newer installed copy → keep, never downgrade.
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "2.0.0"\n---\n\n# Newer',
+      )
+      const newer = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      expect(newer.outcome).toBe('installed-newer')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('surfaces an OPFS read failure instead of silently keeping the stale copy (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.3"\n---\n\n# Store'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Old',
+      )
+      // The installed SKILL.md cannot be read (OPFS access error). The flow
+      // must NOT degrade to "unknown version" and silently keep the stale
+      // copy — the read failure is surfaced.
+      ;(navigator as unknown as { storage: unknown }).storage = {
+        getDirectory: async () => makeOpfsRoot(undefined, 'versioned-skill/SKILL.md'),
+      }
+      await expect(
+        installSkillFromUrl('https://store.example/versioned-skill.zip'),
+      ).rejects.toThrow(/PermissionDeniedError|read failed/i)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('reads only the head of an oversized installed SKILL.md (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.3"\n---\n\n# Store'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // A locally grown SKILL.md: the version sits in the frontmatter, the
+      // rest is bulk. The lookup must not buffer the whole file.
+      writeInstalled(
+        'versioned-skill',
+        `---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n${'x'.repeat(2 * 1024 * 1024)}`,
+      )
+      const result = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      // The version was still found → the update happened.
+      expect(result.outcome).toBe('updated')
+      expect(contentOf('versioned-skill', 'SKILL.md')).toContain('# Store')
+      expect(contentOf('versioned-skill', 'SKILL.md')).not.toContain('x'.repeat(100))
     } finally {
       globalThis.fetch = realFetch
     }

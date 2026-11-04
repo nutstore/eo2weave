@@ -18,7 +18,6 @@ import { toolOkJson, toolErrorJson } from './tool-envelope'
 import {
   fetchSkillStoreManifest,
   installSkillFromUrl,
-  scanInstalledDirNames,
 } from '@/skills/skill-store'
 import { getSkillManager } from '@/skills/skill-manager'
 import { useSkillsStore } from '@/store/skills.store'
@@ -70,16 +69,6 @@ export async function installSkillExecutor(
   }
 
   try {
-    // Check if already installed
-    const installed = await scanInstalledDirNames()
-    if (installed.has(dirName)) {
-      return toolOkJson('install_skill', {
-        dirName,
-        alreadyInstalled: true,
-        message: `Skill "${dirName}" is already installed. You can use it via read_skill now.`,
-      })
-    }
-
     // Find the zipUrl from manifest
     const manifest = await fetchSkillStoreManifest()
     const entry = manifest.skills.find((s) => s.dirName === dirName)
@@ -91,7 +80,10 @@ export async function installSkillExecutor(
       )
     }
 
-    // Install
+    // Install — the version-aware install flow decides whether this is a
+    // fresh install, an update of an older installed copy, or a no-op
+    // (#154). An already-installed skill is NOT short-circuited here: the
+    // store may ship a newer version, and only the install flow can tell.
     const result = await installSkillFromUrl(entry.zipUrl)
 
     // Refresh skill caches so the new skill is immediately available
@@ -109,6 +101,36 @@ export async function installSkillExecutor(
     // on the next turn (or even the same turn if read_skill follows).
     useSkillsStore.getState().bumpSkillsScanVersion()
 
+    if (result.outcome === 'updated') {
+      return toolOkJson('install_skill', {
+        dirName,
+        name: entry.name,
+        version: entry.version,
+        filesInstalled: result.count,
+        updated: true,
+        message: `Skill "${entry.name}" updated to v${entry.version} (${result.count} files). You can now use it via read_skill("${entry.name}").`,
+      })
+    }
+    if (result.outcome === 'current') {
+      return toolOkJson('install_skill', {
+        dirName,
+        name: entry.name,
+        version: entry.version,
+        filesInstalled: result.count,
+        alreadyInstalled: true,
+        message: `Skill "${entry.name}" is already installed (v${entry.version}). You can use it via read_skill now.`,
+      })
+    }
+    if (result.outcome === 'installed-newer') {
+      return toolOkJson('install_skill', {
+        dirName,
+        name: entry.name,
+        version: entry.version,
+        filesInstalled: result.count,
+        alreadyInstalled: true,
+        message: `Skill "${entry.name}" is already installed and is newer than the store version — the installed copy was kept. You can use it via read_skill now.`,
+      })
+    }
     return toolOkJson('install_skill', {
       dirName,
       name: entry.name,

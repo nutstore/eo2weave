@@ -10,15 +10,19 @@
 import {
   previewUserSkillZip,
   importUserSkillZip,
+  isNotFoundError,
   ZIP_IMPORT_LIMITS,
   type ZipSkillPreview,
 } from './user-skills-scanner'
 import { useSkillsStore } from '@/store/skills.store'
 import { formatBytes } from '@/lib/utils'
+import { t as translateStatic } from '@creatorweave/i18n'
+import { useI18nStore } from '@/i18n/store'
 import {
   decideSkillUpdateAction,
   parseSkillMdVersion,
-} from './skill-version'
+  type SkillUpdateAction,
+} from '@/skills/skill-version'
 
 // ---------- Types ----------
 
@@ -83,6 +87,21 @@ export interface InstallProgress {
   bytesLoaded?: number
   bytesTotal?: number
 }
+
+/**
+ * What an install actually did with the skill on disk (#154). Callers use
+ * this to branch (e.g. offer an update) instead of parsing the human-readable
+ * progress message.
+ */
+export type InstallOutcome =
+  /** The skill was not installed before — a fresh install. */
+  | 'installed'
+  /** An older installed copy was overwritten with the store's newer one. */
+  | 'updated'
+  /** The installed copy already matches the store — kept as is. */
+  | 'current'
+  /** The installed copy is newer than the store — kept, never downgraded. */
+  | 'installed-newer'
 
 // ---------- Config ----------
 
@@ -201,26 +220,63 @@ export function getInstalledDirNames(): Set<string> {
  *     directory is removed so the skill never looks "installed" while
  *     being unusable.
  *
- * Progress messages are intentionally in English by default (this helper is
- * i18n-agnostic — it has no access to useT). Callers that care about UX
- * should pass their own `onProgress` to translate messages before display.
+ * Progress messages are localized through the i18n package (the current UI
+ * locale is read from the i18n store), so every caller shows translated
+ * text without passing a translator in.
  */
 export const DOWNLOAD_TIMEOUT_MS = 60_000
 
 /**
- * Read the installed SKILL.md's `version:` for a user skill directory.
- * Returns null when the skill is not installed or has no parseable version.
+ * Max bytes read from an installed SKILL.md when looking for its version.
+ * The frontmatter lives in the first few hundred bytes, so a small cap is
+ * enough — and it keeps a locally grown SKILL.md from being buffered whole
+ * just to read one line.
  */
-async function readInstalledSkillVersion(dirName: string): Promise<string | null> {
+const INSTALLED_VERSION_READ_LIMIT = 64 * 1024
+
+/**
+ * Result of looking up the installed copy of a skill's version.
+ *
+ * `null` means "not installed or no parseable version" (unknown version).
+ * `error` means the read itself failed — an operational OPFS problem the
+ * caller must surface instead of silently degrading to the conservative
+ * install path.
+ */
+type InstalledVersionResult =
+  | { version: string | null; error?: undefined }
+  | { version?: undefined; error: Error }
+
+/**
+ * Read the installed SKILL.md's `version:` for a user skill directory.
+ *
+ * Only an ABSENT skill (or a SKILL.md without a parseable version) yields an
+ * unknown version. An OPFS read failure is surfaced to the caller: silently
+ * returning null would make the update flow fall back to `ifAbsent` and
+ * report "Already installed" while the copy on disk stays stale.
+ */
+async function readInstalledSkillVersion(
+  dirName: string,
+): Promise<InstalledVersionResult> {
   try {
     const root = await navigator.storage.getDirectory()
     const skillsDir = await root.getDirectoryHandle('.skills', { create: false })
     const userDir = await skillsDir.getDirectoryHandle('user', { create: false })
     const skillDir = await userDir.getDirectoryHandle(dirName, { create: false })
     const file = await (await skillDir.getFileHandle('SKILL.md')).getFile()
-    return parseSkillMdVersion(await file.text())
-  } catch {
-    return null
+    // Read only the head of the file: the frontmatter is at the top, and an
+    // oversized local file must not be buffered whole just to find a version.
+    const head = await file.slice(0, INSTALLED_VERSION_READ_LIMIT).text()
+    return { version: parseSkillMdVersion(head) }
+  } catch (e) {
+    // "Not installed" (or no SKILL.md) is an expected unknown-version case;
+    // anything else is a read failure the caller must see.
+    if (isNotFoundError(e)) return { version: null }
+    return {
+      error:
+        e instanceof Error
+          ? e
+          : new Error(`Failed to read the installed skill "${dirName}": ${String(e)}`),
+    }
   }
 }
 
@@ -236,14 +292,51 @@ function extractStoreSkillMd(
   return data ? new TextDecoder().decode(data) : null
 }
 
+/** Localized progress/outcome message for the current UI locale. */
+function tr(key: string, params?: Record<string, string | number>): string {
+  return translateStatic(useI18nStore.getState().locale, key, params)
+}
+
+/**
+ * What an install surface should do with a store skill that may already be
+ * installed (#154).
+ *
+ * - `install` — the skill is not installed (or has no parseable version).
+ * - `update` / `current` / `installed-newer` — the version-aware decisions
+ *   of `decideSkillUpdateAction`.
+ */
+export type SkillUpdatePlan = SkillUpdateAction | 'install'
+
+/**
+ * Decide what to do with a store skill BEFORE downloading it: compare the
+ * store's version with the installed copy's version, exactly like
+ * `installSkillFromUrl` does, but without the download.
+ *
+ * Install surfaces use this to offer the version-aware update path for an
+ * already-installed skill instead of skipping the install outright (#154).
+ *
+ * @param dirName      Directory name of the skill in the store.
+ * @param storeVersion Version declared by the store manifest entry.
+ */
+export async function planSkillUpdate(
+  dirName: string,
+  storeVersion: string | undefined,
+): Promise<SkillUpdatePlan> {
+  const installed = await readInstalledSkillVersion(dirName)
+  if (installed.error) throw installed.error
+  if (installed.version === null) return 'install'
+  if (!storeVersion) return 'current'
+  return decideSkillUpdateAction(storeVersion, installed.version)
+}
+
 export async function installSkillFromUrl(
   zipUrl: string,
   onProgress?: (p: InstallProgress) => void,
-): Promise<{ count: number; manifest: SkillStoreEntry }> {
+): Promise<{ count: number; manifest: SkillStoreEntry; outcome: InstallOutcome }> {
   const report = (p: Omit<InstallProgress, 'bytesLoaded' | 'bytesTotal'>) =>
     onProgress?.(p)
 
-  report({ phase: 'fetching', message: 'Downloading…' })
+  report({ phase: 'fetching', message: tr('skills.discover.progressPreparing') })
 
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS)
@@ -278,8 +371,13 @@ export async function installSkillFromUrl(
         onProgress?.({
           phase: 'fetching',
           message: displayTotal
-            ? `Downloading… (${formatBytes(loaded)} / ${formatBytes(displayTotal)})`
-            : `Downloading… (${formatBytes(loaded)})`,
+            ? tr('skills.discover.progressDownloading', {
+                loaded: formatBytes(loaded),
+                total: formatBytes(displayTotal),
+              })
+            : tr('skills.discover.progressDownloadingBytes', {
+                loaded: formatBytes(loaded),
+              }),
           bytesLoaded: loaded,
           bytesTotal: displayTotal || undefined,
         })
@@ -291,7 +389,7 @@ export async function installSkillFromUrl(
     const filename = zipUrl.split('/').pop() ?? 'skill.zip'
     const file = new File([blob], filename, { type: 'application/zip' })
 
-    report({ phase: 'previewing', message: 'Validating…' })
+    report({ phase: 'previewing', message: tr('skills.discover.progressValidating') })
     const preview = await previewUserSkillZip(file)
 
     // Version-update flow (#154): compare the store ZIP's version against
@@ -300,36 +398,57 @@ export async function installSkillFromUrl(
     // An unparseable/missing version on either side falls back to the old
     // ifAbsent behavior (never clobber an install of unknown provenance).
     const dirName = preview.skill?.dirName ?? ''
-    const installedVersion = dirName ? await readInstalledSkillVersion(dirName) : null
+    const installed = dirName
+      ? await readInstalledSkillVersion(dirName)
+      : { version: null }
+    // A failed read is NOT "unknown version": the update decision cannot be
+    // made, so the failure is surfaced instead of silently keeping the stale
+    // copy (the old fallback would report "Already installed").
+    if (installed.error) throw installed.error
+    const installedVersion = installed.version
     const storeVersion = dirName
       ? parseSkillMdVersion(extractStoreSkillMd(preview, dirName) ?? '')
       : null
     const alreadyInstalled = installedVersion !== null
 
-    report({ phase: 'importing', message: 'Installing…' })
+    report({ phase: 'importing', message: tr('skills.discover.progressInstalling') })
     // Cleanup on failure is handled inside importUserSkillZip: it removes
     // only directories this import actually wrote and restores overwritten
     // skills from a staged backup — previously installed skills that merely
     // appear in the preview are never deleted.
     let count: number
     let doneMessage: string
+    let outcome: InstallOutcome
     if (!alreadyInstalled || storeVersion === null) {
       count = await importUserSkillZip(preview, { ifAbsent: true })
-      doneMessage = count === 0 ? 'Already installed' : `Installed ${count} files`
+      outcome = count === 0 ? 'current' : 'installed'
+      doneMessage =
+        count === 0
+          ? tr('skills.discover.alreadyInstalled')
+          : tr('skills.discover.installedFiles', { count })
     } else {
       const action = decideSkillUpdateAction(storeVersion, installedVersion)
+      outcome = action === 'update' ? 'updated' : action
       if (action === 'current') {
         count = 0
-        doneMessage = `Already installed (v${installedVersion})`
+        doneMessage = tr('skills.discover.alreadyInstalledVersion', { version: installedVersion })
       } else if (action === 'installed-newer') {
         count = 0
-        doneMessage = `Skipped update: installed v${installedVersion} is newer than store v${storeVersion}`
+        doneMessage = tr('skills.discover.skippedUpdate', {
+          installed: installedVersion,
+          store: storeVersion,
+        })
       } else {
         count = await importUserSkillZip(preview)
+        outcome = count === 0 ? 'current' : 'updated'
         doneMessage =
           count === 0
-            ? 'Already installed'
-            : `Updated v${installedVersion} → v${storeVersion} (${count} files)`
+            ? tr('skills.discover.alreadyInstalled')
+            : tr('skills.discover.updatedVersion', {
+                from: installedVersion,
+                to: storeVersion,
+                count,
+              })
       }
     }
 
@@ -346,7 +465,7 @@ export async function installSkillFromUrl(
     }
 
     report({ phase: 'done', message: doneMessage })
-    return { count, manifest }
+    return { count, manifest, outcome }
   } catch (e) {
     clearTimeout(timeoutId)
     if (e instanceof DOMException && e.name === 'AbortError') {

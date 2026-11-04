@@ -161,4 +161,30 @@ describe('SkillDiscover', () => {
     expect(await screen.findByText('Base English description')).toBeInTheDocument()
     mockLocale = 'en-US'
   })
+
+  it('offers an update button for an installed skill (#154)', async () => {
+    // The store may ship a newer version than the installed copy — the card
+    // must offer the update path instead of only "Uninstall".
+    vi.mocked(fetchSkillStoreManifest).mockResolvedValue({
+      version: '1',
+      generated: '2026-08-04T00:00:00.000Z',
+      count: 1,
+      skills: [{
+        id: 'demo-skill',
+        dirName: 'demo-skill',
+        name: 'Demo skill',
+        description: 'A skill used to verify the discovery card.',
+        category: 'general',
+        tags: [],
+        version: '2.0.0',
+        zipUrl: 'https://example.test/demo-skill.zip',
+        installed: true,
+      }],
+    })
+
+    render(<SkillDiscover />)
+
+    expect(await screen.findByText('skills.discover.update')).toBeInTheDocument()
+    expect(screen.getByText('skills.discover.uninstall')).toBeInTheDocument()
+  })
 })

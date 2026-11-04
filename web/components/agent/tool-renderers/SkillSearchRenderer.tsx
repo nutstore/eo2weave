@@ -149,10 +149,12 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
   const [progress, setProgress] = useState<InstallProgress | null>(null)
 
   const handleInstall = useCallback(async () => {
-    if (installState === 'installing' || installState === 'installed') return
+    if (installState === 'installing') return
     setInstallState('installing')
-    setProgress({ phase: 'fetching', message: 'Downloading…' })
+    setProgress({ phase: 'fetching', message: t('skills.discover.progressPreparing') })
     try {
+      // The version-aware install flow decides install vs. update vs. keep
+      // (#154) — an already-installed skill may still be outdated.
       await installSkillFromUrl(skill.zipUrl, setProgress)
       // Refresh skill store so the new skill appears everywhere
       await loadSkills()
@@ -164,15 +166,17 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
     } finally {
       setProgress(null)
     }
-  }, [installState, skill.zipUrl, loadSkills, bumpScanVersion])
+  }, [installState, skill.zipUrl, loadSkills, bumpScanVersion, t])
 
   const buttonLabel =
     installState === 'installing'
-      ? progress?.message ?? 'Installing…'
+      ? progress?.message ?? t('skills.discover.installing')
       : installState === 'installed'
       ? t('skills.discover.installedBadge') || 'Installed'
       : installState === 'error'
-      ? 'Retry'
+      ? t('skills.discover.progressInstallFailed')
+      : skill.installed
+      ? t('skills.discover.update') || 'Update'
       : t('skills.discover.install') || 'Install'
 
   return (
@@ -223,7 +227,7 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
       <button
         type="button"
         onClick={handleInstall}
-        disabled={installState === 'installing' || installState === 'installed'}
+        disabled={installState === 'installing'}
         className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 px-2.5 py-1 text-[11px] font-medium text-neutral-600 transition-colors hover:bg-neutral-50 disabled:cursor-default disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800/40"
       >
         {installState === 'installing' && (

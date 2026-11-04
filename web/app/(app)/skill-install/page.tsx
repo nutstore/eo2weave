@@ -11,6 +11,7 @@ import {
   KeyRound,
   Loader2,
   Package,
+  RefreshCw,
   Wallet,
   XCircle,
 } from 'lucide-react'
@@ -18,10 +19,12 @@ import { useLocale, useT } from '@/i18n'
 import {
   fetchSkillStoreManifest,
   installSkillFromUrl,
+  planSkillUpdate,
   selectLocalizedDescription,
   scanInstalledDirNames,
   type InstallProgress,
   type SkillStoreEntry,
+  type SkillUpdatePlan,
 } from '@/skills/skill-store'
 import { mergePrefillText } from '@/lib/skill-install-flow'
 import { getSkillManager } from '@/skills/skill-manager'
@@ -85,10 +88,6 @@ const MANIFEST_TIMEOUT_MS = 15_000
  */
 const LOGIN_REQUEST_TIMEOUT_MS = 15_000
 
-interface InstallOutcome {
-  alreadyInstalled: boolean
-}
-
 function SkillInstallView() {
   const t = useT()
   const [locale] = useLocale()
@@ -102,6 +101,10 @@ function SkillInstallView() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [entry, setEntry] = useState<SkillStoreEntry | null>(null)
   const [alreadyInstalled, setAlreadyInstalled] = useState(false)
+  // The store ships a newer version than the installed copy — the page
+  // offers the update path instead of silently keeping the stale copy
+  // (#154).
+  const [updateAvailable, setUpdateAvailable] = useState(false)
   const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null)
   const [creditExhausted, setCreditExhausted] = useState(false)
   const installStartedRef = useRef(false)
@@ -226,6 +229,19 @@ function SkillInstallView() {
         ),
       )
       setAlreadyInstalled(installedDirNames.has(found.dirName))
+      // Version-aware check: the store may ship a newer version than the
+      // installed copy (#154). The plan decides whether the page offers the
+      // update path — the install flow itself re-checks before writing.
+      let plan: SkillUpdatePlan = 'install'
+      try {
+        plan = await planSkillUpdate(found.dirName, found.version)
+      } catch (planErr) {
+        // A failed version read must not break the page: the install flow
+        // surfaces the error when the visitor actually installs.
+        console.warn('[SkillInstall] version check failed:', planErr)
+      }
+      if (isStale()) return
+      setUpdateAvailable(plan === 'update')
       setPhase('details')
     } catch (e) {
       if (isStale()) return
@@ -410,7 +426,9 @@ function SkillInstallView() {
   // install begins so a query change mid-install aborts the stale flow.
   const installGenerationRef = useRef(0)
 
-  // Step 2: install (user-clicked; idempotent).
+  // Step 2: install (user-clicked). The version-aware install flow decides
+  // fresh install vs. update vs. keep — the page never decides on its own
+  // (#154).
   const runInstall = useCallback(async () => {
     if (!entry || installStartedRef.current) return
     installStartedRef.current = true
@@ -419,57 +437,54 @@ function SkillInstallView() {
     const isStale = () => currentGeneration() !== installGeneration
     setPhase('installing')
     try {
-      let outcome: InstallOutcome = { alreadyInstalled }
-      if (!alreadyInstalled) {
-        await installSkillFromUrl(entry.zipUrl, setInstallProgress)
-        // The archive IS on disk from this point on — a retry after a
-        // failure in the steps below must refresh/verify registration
-        // instead of downloading and importing again (a re-import would
-        // replace any local changes the visitor made to the skill).
-        setAlreadyInstalled(true)
-        // A query change during the download abandons the old skill's flow:
-        // never verify or navigate for it. The skill IS on disk though, so
-        // the manager cache must still be refreshed — otherwise the
-        // installed skill stays absent from the slash-command registry
-        // until some unrelated refresh happens to rescan OPFS.
-        if (isStale()) {
-          try {
-            await getSkillManager().refreshUserSkills()
-          } catch (refreshErr) {
-            console.warn('[SkillInstall] post-install refresh failed:', refreshErr)
-          }
-          return
-        }
-        // Register the slash command immediately — refreshUserSkills()
-        // rescans OPFS and re-syncs the slash-command registry.
-        await getSkillManager().refreshUserSkills()
-        if (isStale()) return
-        // The skill must be REGISTERED and ENABLED after the refresh — a
-        // directory alone is not enough: refreshUserSkills() swallows scan
-        // failures, and a dir-only check would let the page navigate with
-        // a slash command that has nothing behind it. A registered-but-
-        // disabled skill (installed, then disabled before this install)
-        // must be re-enabled for the promoted flow to work.
-        const freshInstallManager = getSkillManager()
-        const registeredSkill = freshInstallManager
-          .getSkills()
-          .find((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
-        if (!registeredSkill) {
-          // Throwing here previously left `alreadyInstalled` false, so a
-          // retry re-downloaded and re-imported the archive. Now the flag
-          // is already set (above), so handleStart's installed-path retry
-          // just refreshes/verifies registration instead.
-          throw new Error(t('skillInstall.registerFailed'))
-        }
-        if (!registeredSkill.enabled) {
-          freshInstallManager.setUserSkillEnabled(`user:${entry.dirName}`, true)
-        }
-        outcome = { alreadyInstalled: false }
-      }
+      // Fresh install, update of an older copy, or a no-op — the flow
+      // compares the store's version with the installed one.
+      const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress)
+      if (result.outcome === 'updated') setUpdateAvailable(false)
+      // The archive IS on disk from this point on — a retry after a
+      // failure in the steps below must refresh/verify registration
+      // instead of downloading and importing again (a re-import would
+      // replace any local changes the visitor made to the skill).
       setAlreadyInstalled(true)
+      // A query change during the download abandons the old skill's flow:
+      // never verify or navigate for it. The skill IS on disk though, so
+      // the manager cache must still be refreshed — otherwise the
+      // installed skill stays absent from the slash-command registry
+      // until some unrelated refresh happens to rescan OPFS.
+      if (isStale()) {
+        try {
+          await getSkillManager().refreshUserSkills()
+        } catch (refreshErr) {
+          console.warn('[SkillInstall] post-install refresh failed:', refreshErr)
+        }
+        return
+      }
+      // Register the slash command immediately — refreshUserSkills()
+      // rescans OPFS and re-syncs the slash-command registry.
+      await getSkillManager().refreshUserSkills()
+      if (isStale()) return
+      // The skill must be REGISTERED and ENABLED after the refresh — a
+      // directory alone is not enough: refreshUserSkills() swallows scan
+      // failures, and a dir-only check would let the page navigate with
+      // a slash command that has nothing behind it. A registered-but-
+      // disabled skill (installed, then disabled before this install)
+      // must be re-enabled for the promoted flow to work.
+      const freshInstallManager = getSkillManager()
+      const registeredSkill = freshInstallManager
+        .getSkills()
+        .find((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
+      if (!registeredSkill) {
+        // Throwing here previously left `alreadyInstalled` false, so a
+        // retry re-downloaded and re-imported the archive. Now the flag
+        // is already set (above), so handleStart's installed-path retry
+        // just refreshes/verifies registration instead.
+        throw new Error(t('skillInstall.registerFailed'))
+      }
+      if (!registeredSkill.enabled) {
+        freshInstallManager.setUserSkillEnabled(`user:${entry.dirName}`, true)
+      }
       setInstallProgress(null)
       await runAiReadiness()
-      void outcome
     } catch (e) {
       if (isStale()) return
       console.error('[SkillInstall] install failed:', e)
@@ -478,7 +493,7 @@ function SkillInstallView() {
     } finally {
       installStartedRef.current = false
     }
-  }, [alreadyInstalled, entry, runAiReadiness, t])
+  }, [entry, runAiReadiness, t])
 
   // Guard against overlapping Start attempts: while a readiness check /
   // navigation is in flight, a second click (or double-click) must be a
@@ -519,6 +534,8 @@ function SkillInstallView() {
   // "Already installed" path skips straight past install + login checks
   // (the acceptance criteria: returning users are done in 2 clicks) — but
   // still runs readiness so a since-logged-out visitor gets the login step.
+  // An update available in the store is handled by the UPDATE button, not
+  // by this path (#154).
   const handleStart = useCallback(async () => {
     if (!entry || startingRef.current) return
     startingRef.current = true
@@ -558,6 +575,39 @@ function SkillInstallView() {
       startingRef.current = false
     }
   }, [alreadyInstalled, ensureRegistered, entry, runAiReadiness, runInstall, t])
+
+  /**
+   * Update an installed skill to the store's newer version (#154). The
+   * version-aware install flow re-checks the versions and decides whether an
+   * overwrite happens — the page never writes by itself.
+   */
+  const handleUpdate = useCallback(async () => {
+    if (!entry || installStartedRef.current) return
+    installStartedRef.current = true
+    installGenerationRef.current = currentGeneration()
+    const installGeneration = installGenerationRef.current
+    const isStale = () => currentGeneration() !== installGeneration
+    setPhase('installing')
+    try {
+      const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress)
+      if (result.outcome === 'updated') {
+        setUpdateAvailable(false)
+        // The copy on disk was replaced — re-register so the refreshed
+        // content is what the slash command runs.
+        await getSkillManager().refreshUserSkills()
+        if (isStale()) return
+      }
+      setInstallProgress(null)
+      setPhase('details')
+    } catch (e) {
+      if (isStale()) return
+      console.error('[SkillInstall] update failed:', e)
+      setErrorMessage((e as Error).message || t('skillInstall.installFailed'))
+      setPhase('details')
+    } finally {
+      installStartedRef.current = false
+    }
+  }, [entry, t])
 
   const handleLoginSuccess = useCallback(async () => {
     setCreditExhausted(false)
@@ -739,14 +789,28 @@ function SkillInstallView() {
             </div>
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={() => void handleStart()}
-            className="flex h-10 items-center gap-2 rounded-md bg-primary-600 px-6 text-sm font-medium text-white transition-colors hover:bg-primary-700"
-          >
-            <Package className="h-4 w-4" />
-            {alreadyInstalled ? t('skillInstall.startUsing') : t('skillInstall.installButton')}
-          </button>
+          <div className="flex flex-col items-center gap-3">
+            {updateAvailable && (
+              // The store ships a newer version than the installed copy
+              // (#154) — offer the update explicitly.
+              <button
+                type="button"
+                onClick={() => void handleUpdate()}
+                className="flex h-10 items-center gap-2 rounded-md border border-primary-600 bg-white px-6 text-sm font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:bg-card dark:text-primary-400 dark:hover:bg-primary-950/30"
+              >
+                <RefreshCw className="h-4 w-4" />
+                {t('skillInstall.updateButton', { version: entry.version || '—' })}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleStart()}
+              className="flex h-10 items-center gap-2 rounded-md bg-primary-600 px-6 text-sm font-medium text-white transition-colors hover:bg-primary-700"
+            >
+              <Package className="h-4 w-4" />
+              {alreadyInstalled ? t('skillInstall.startUsing') : t('skillInstall.installButton')}
+            </button>
+          </div>
         )}
       </Centered>
     )
