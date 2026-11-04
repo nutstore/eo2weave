@@ -118,21 +118,16 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
     setInstalling(entry.dirName)
     const phasePreparing =
       op === 'uninstall' ? 'progressUninstalling' : 'progressPreparing'
-    const phaseDone =
-      op === 'uninstall'
-        ? 'progressUninstallDone'
-        : op === 'update'
-          ? 'updateDone'
-          : 'progressInstallDone'
     const phaseFailed =
       op === 'uninstall' ? 'progressUninstallFailed' : 'progressInstallFailed'
     setProgress({ phase: 'fetching', message: t(`skills.discover.${phasePreparing}`) })
     try {
+      let result: Awaited<ReturnType<typeof installSkillFromUrl>> | null = null
       if (op === 'install' || op === 'update') {
         // The version-aware install flow decides whether this is a fresh
         // install, an update of an older copy, or a no-op (#154) — the card
         // must not overwrite a newer local copy itself.
-        await installSkillFromUrl(entry.zipUrl, setProgress)
+        result = await installSkillFromUrl(entry.zipUrl, setProgress)
       } else {
         // Store keys user skills by `user:<dirName>`. deleteSkill handles the
         // OPFS removal and bumps the scan version automatically.
@@ -150,7 +145,29 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
       )
       bumpScanVersion()
       onInstalled?.()
-      setProgress({ phase: 'done', message: t(`skills.discover.${phaseDone}`) })
+      // The install outcome decides the done message (#154 round 8): a
+      // store-driven op can land as a no-op ("Already installed") even when
+      // the button said Install/Update — reporting "Updated" for a no-op
+      // misrepresents what happened on disk. The rich per-version messages
+      // already ride the progress callback from installSkillFromUrl; this
+      // toast only restates the outcome class.
+      let doneMessage: string
+      if (result === null) {
+        doneMessage = t(
+          `skills.discover.${op === 'uninstall' ? 'progressUninstallDone' : 'progressInstallDone'}`,
+        )
+      } else if (result.outcome === 'updated') {
+        doneMessage = t('skills.discover.updateDone')
+      } else if (result.outcome === 'installed') {
+        doneMessage =
+          result.count > 0
+            ? t('skills.discover.installedFiles', { count: result.count })
+            : t('skills.discover.progressInstallDone')
+      } else {
+        // 'current' and 'installed-newer': the installed copy was kept as is.
+        doneMessage = t('skills.discover.alreadyInstalled')
+      }
+      setProgress({ phase: 'done', message: doneMessage })
     } catch (err) {
       setProgress({
         phase: 'error',

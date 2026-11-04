@@ -83,8 +83,12 @@ describe('install_skill tool (#154)', () => {
   })
 
   it('routes an already-installed skill through the version-aware install flow', async () => {
-    // The store ships a newer version — the tool must NOT short-circuit on
-    // "already installed"; the install flow decides update vs. keep.
+    // The skill IS installed locally (the scan mock reports it) — the tool
+    // must NOT short-circuit on "already installed"; the install flow
+    // decides update vs. keep. Without this, an executor that restored the
+    // unconditional short-circuit would pass these assertions while never
+    // reaching the flow (#154 round 8).
+    scanInstalledDirNamesMock.mockResolvedValue(new Set(['demo-skill']))
     installSkillFromUrlMock.mockResolvedValue({
       count: 4,
       manifest: ENTRY,
@@ -157,6 +161,19 @@ describe('install_skill tool (#154)', () => {
   it('still fails offline when the skill is not installed locally', async () => {
     fetchSkillStoreManifestMock.mockRejectedValue(new Error('network unreachable'))
     scanInstalledDirNamesMock.mockResolvedValue(new Set<string>())
+
+    const result = parse(await installSkillExecutor({ dirName: 'demo-skill' }))
+
+    expect(result.ok).toBe(false)
+    expect(result.error.message).toContain('network unreachable')
+  })
+
+  it('does not take the offline fast path for a skill the scan does not report', async () => {
+    // The offline fallback is gated on the SCANNED dirName membership — a
+    // store id not present in the scan result must still surface the fetch
+    // error instead of reporting a usable local copy (#154 round 8).
+    fetchSkillStoreManifestMock.mockRejectedValue(new Error('network unreachable'))
+    scanInstalledDirNamesMock.mockResolvedValue(new Set(['other-skill']))
 
     const result = parse(await installSkillExecutor({ dirName: 'demo-skill' }))
 
