@@ -15,8 +15,8 @@ vi.mock('@creatorweave/ui', () => ({
   BrandDialogTitle: ({ children }: { children?: ReactNode }) => <h2>{children}</h2>,
 }))
 const { extension } = vi.hoisted(() => ({ extension: { configure: () => ({}) } }))
-vi.mock('../FileMentionExtension', () => ({ FileMention: extension }))
-vi.mock('../SlashCommandExtension', () => ({ SlashCommandExtension: extension }))
+vi.mock('@/components/agent/FileMentionExtension', () => ({ FileMention: extension }))
+vi.mock('@/components/agent/SlashCommandExtension', () => ({ SlashCommandExtension: extension }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), dismiss: vi.fn() }) }))
 vi.mock('@monaco-editor/react', () => ({
   loader: { config: vi.fn() },
