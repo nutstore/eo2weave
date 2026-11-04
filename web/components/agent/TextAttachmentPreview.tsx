@@ -27,12 +27,21 @@ function normalizeEol(text: string): string {
   return text.replace(/\r\n?/g, '\n')
 }
 
-/** Absolute file character offset of the line at the top of the viewport. */
-function topVisibleCharOffset(editor: monaco.editor.IStandaloneCodeEditor, win: LoadedWindow): number {
+/**
+ * Position of the character at the top of the viewport, as an absolute file
+ * character offset plus the model column it sits at.
+ *
+ * The visible range is reported in model coordinates, so the column of a
+ * wrapped line is the real column of the character the user is looking at —
+ * anchoring the swap to that character keeps the reading position instead of
+ * snapping back to the start of the line.
+ */
+function topVisiblePosition(editor: monaco.editor.IStandaloneCodeEditor, win: LoadedWindow): { offset: number; column: number } {
   const model = editor.getModel()
   const range = editor.getVisibleRanges()[0]
-  if (!model || !range) return win.startChar
-  return win.startChar + model.getOffsetAt({ lineNumber: range.startLineNumber, column: 1 })
+  if (!model || !range) return { offset: win.startChar, column: 1 }
+  const column = Math.min(range.startColumn, model.getLineMaxColumn(range.startLineNumber))
+  return { offset: win.startChar + model.getOffsetAt({ lineNumber: range.startLineNumber, column }), column }
 }
 
 /**
@@ -50,15 +59,17 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
   const t = useT()
   const [win, setWin] = useState<LoadedWindow | null>(null)
   const [error, setError] = useState(false)
+  const [swapError, setSwapError] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const winRef = useRef<LoadedWindow | null>(null)
   const busyRef = useRef(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Absolute character offset of the line the user was reading when a swap
-  // was requested; re-applied once the new window is in the model.
-  const pendingRef = useRef<number | null>(null)
+  // Absolute character offset of the character the user was reading when a
+  // swap was requested, plus the model column it sits at; re-applied once the
+  // new window is in the model.
+  const pendingRef = useRef<{ offset: number; column: number } | null>(null)
   // Scroll position set by the anchor after a swap — the scroll event it
   // triggers must not start another swap.
   const anchorScrollRef = useRef<number | null>(null)
@@ -96,7 +107,7 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
     const editor = editorRef.current
     const current = winRef.current
     const pending = pendingRef.current
-    if (!editor || !current || pending === null) return
+    if (!editor || !current || !pending) return
     const model = editor.getModel()
     if (!model) return
     // The model still holds the old window: wait for the content change.
@@ -105,9 +116,12 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
     // keeps the file's own line endings.
     const modelValue = model.getValue()
     if (modelValue !== current.text && normalizeEol(modelValue) !== normalizeEol(current.text)) return
-    const offset = Math.max(0, pending - current.startChar)
+    const offset = Math.max(0, pending.offset - current.startChar)
     const position = model.getPositionAt(Math.min(offset, model.getValueLength()))
-    const target = editor.getTopForLineNumber(position.lineNumber)
+    // Anchor the exact character, not the start of its line: on a wrapped
+    // line the visible character can be far to the right of column 1.
+    const column = Math.min(pending.column, model.getLineMaxColumn(position.lineNumber))
+    const target = editor.getTopForPosition(position.lineNumber, column)
     // Record the target before scrolling: the resulting scroll event must not
     // be mistaken for the user reaching the edge again.
     anchorScrollRef.current = target
@@ -123,12 +137,15 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
     busyRef.current = true
     try {
       // Remember where the user is reading before the model changes.
-      pendingRef.current = topVisibleCharOffset(editor, current)
+      pendingRef.current = topVisiblePosition(editor, current)
       const next = await readAdjacentWindow(file, current, direction)
       winRef.current = next
       setWin(next)
     } catch {
-      setError(true) // reuse the pane-level error/retry path
+      // A failed adjacent read must not tear down the pane: the window the
+      // user is reading stays on screen, and the error is reported next to
+      // it so the failed read can be retried without losing the position.
+      setSwapError(true)
       pendingRef.current = null
     } finally {
       busyRef.current = false
@@ -148,11 +165,21 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
         return
       }
       const current = winRef.current
-      if (!current || busyRef.current || timerRef.current) return
+      if (!current || busyRef.current) return
       const atBottom = event.scrollTop + editor.getLayoutInfo().height >= event.scrollHeight - EDGE_TRIGGER_PX
       const atTop = event.scrollTop <= EDGE_TRIGGER_PX
       const wanted = atBottom && !current.atEof ? 'next' : atTop && !current.atStart ? 'prev' : null
-      if (!wanted) return
+      if (!wanted) {
+        // The user left the edge (or reversed direction) before the debounce
+        // fired: drop the pending swap, or it would replace the window after
+        // the user has moved away from the edge.
+        if (timerRef.current) {
+          clearTimeout(timerRef.current)
+          timerRef.current = null
+        }
+        return
+      }
+      if (timerRef.current) return
       timerRef.current = setTimeout(() => { timerRef.current = null; void swapTo(wanted) }, SWAP_DEBOUNCE_MS)
     })
   }, [swapTo, applyPendingScroll])
@@ -183,7 +210,8 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
         <div className="flex min-h-0 flex-1 flex-col">
           {error ? <div role="alert" className="p-4 text-sm">{t('conversation.input.textPreviewFailed')} <button type="button" onClick={() => setAttempt((n) => n + 1)} className="underline">{t('conversation.input.retryPreview')}</button></div> : win === null ? <div role="status" className="p-4 text-sm">{t('conversation.input.loadingPreview')}</div> : (
             <div className="flex min-h-0 flex-1 flex-col">
-              {multiWindow && <div role="note" className="border-b border-neutral-200 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">{t('conversation.input.textPreviewWindow', { start: formatChars(win.startChar + 1), end: formatChars(win.endChar) })}</div>}
+              {swapError && <div role="alert" className="border-b border-neutral-200 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">{t('conversation.input.textPreviewFailed')} <button type="button" onClick={() => { setSwapError(false); setAttempt((n) => n + 1) }} className="underline">{t('conversation.input.retryPreview')}</button></div>}
+              {multiWindow && <div role="note" className="border-b border-neutral-200 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">{t('conversation.input.textPreviewWindow', { start: formatChars(win.startPoint + 1), end: formatChars(win.endPoint) })}</div>}
               <div className="min-h-0 flex-1">
                 {/* Ctrl+F only searches the loaded ~200k-char window, not the
                     whole file — see the component header comment. */}
