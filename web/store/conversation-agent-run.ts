@@ -155,14 +155,32 @@ export async function runAgentImpl(
       // queued by another dispatch for a live owner. Real queued user
       // messages are kept — they still carry undelivered content the user
       // can resend/retry through the normal send path.
+      //
+      // Accepted triggers are preserved (#170 review round 2): when THIS
+      // dispatch is rejected on a full queue, at least one slot is held by
+      // an ACCEPTED trigger whose dispatch already succeeded and whose owner
+      // run will consume it. Only triggers whose owning dispatch is gone
+      // (untagged legacy residue, or one stamped with a dead token) are
+      // genuinely stale and reclaimable — draining accepted triggers and
+      // then rejecting the caller would strand its persisted message with
+      // no responder at all.
+      const claimToken = `claim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       const drainStaleRerunTriggers = () => {
         const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conversationId)
-        if (queue) {
-          for (let i = queue.length - 1; i >= 0; i--) {
-            if (queue[i].rerunOnly) {
-              useConversationRuntimeStore.getState().removeQueuedMessage(conversationId, i)
-            }
-          }
+        if (!queue) return
+        // An owner is live while it holds the start claim OR while it is the
+        // conversation's active run (the claim is released once the run lock
+        // is acquired, but the run keeps consuming its queue until it ends).
+        const liveOwner =
+          runClaimSlots.get(conversationId)?.owner ??
+          get().conversations.find((c) => c.id === conversationId)?.activeRunId ??
+          null
+        for (let i = queue.length - 1; i >= 0; i--) {
+          const entry = queue[i]
+          if (!entry.rerunOnly) continue
+          const owner = entry.ownerToken ?? null
+          if (owner !== null && owner === liveOwner) continue
+          useConversationRuntimeStore.getState().removeQueuedMessage(conversationId, i)
         }
       }
       const failDispatchEarly = (message: string) => {
@@ -215,16 +233,38 @@ export async function runAgentImpl(
       // conversation is running, so every overlap in flight goes through
       // this same guard or the claim-overlap branch below.
       if (state.isConversationRunning(conversationId)) {
+        // Stamp the trigger with the identity of the run that will consume it
+        // (#170 review round 2): the pending claim's owner while setup is
+        // still in flight, otherwise the active run itself. A later queue-full
+        // rejection uses this to spare ACCEPTED triggers from the drain.
         const enqueued = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
           text: '',
           enqueuedAt: Date.now(),
           rerunOnly: true,
+          ownerToken:
+            runClaimSlots.get(conversationId)?.owner ??
+            get().conversations.find((c) => c.id === conversationId)?.activeRunId ??
+            null,
         })
         if (!enqueued.enqueued) {
+          // Queue full: drain only genuinely stale triggers (untagged residue
+          // or triggers whose owning dispatch died) — accepted triggers are
+          // preserved — then retry once on any reclaimed slot.
           drainStaleRerunTriggers()
-          throw new Error(
-            `Conversation is running and its message queue is full (${conversationId})`
-          )
+          const retried = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+            text: '',
+            enqueuedAt: Date.now(),
+            rerunOnly: true,
+            ownerToken:
+              runClaimSlots.get(conversationId)?.owner ??
+              get().conversations.find((c) => c.id === conversationId)?.activeRunId ??
+              null,
+          })
+          if (!retried.enqueued) {
+            throw new Error(
+              `Conversation is running and its message queue is full (${conversationId})`
+            )
+          }
         }
         console.info(
           '[conversation.store] Conversation is already running — queued a re-run trigger:',
@@ -261,10 +301,16 @@ export async function runAgentImpl(
         // one leftover trigger from an earlier failed dispatch is what filled
         // the queue, and freeing it lets this trigger — which carries a real
         // user message — take its place.
+        // Stamp the trigger with the pending claim's owner — that run is
+        // live and will consume this trigger at its end-of-run consumer
+        // (#170 review round 2), so a later queue-full drain must NOT
+        // reclaim its slot.
+        const overlapOwnerToken = runClaimSlots.get(conversationId)?.owner ?? null
         const enqueued = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
           text: '',
           enqueuedAt: Date.now(),
           rerunOnly: true,
+          ownerToken: overlapOwnerToken,
         })
         if (!enqueued.enqueued) {
           drainStaleRerunTriggers()
@@ -272,6 +318,7 @@ export async function runAgentImpl(
             text: '',
             enqueuedAt: Date.now(),
             rerunOnly: true,
+            ownerToken: overlapOwnerToken,
           })
           if (!retried.enqueued) {
             throw new Error(
@@ -281,7 +328,6 @@ export async function runAgentImpl(
         }
         return
       }
-      const claimToken = `claim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       const claimSlot = { claimed: true, owner: claimToken }
       runClaimSlots.set(conversationId, claimSlot)
       const releaseClaim = () => {
@@ -452,6 +498,26 @@ export async function runAgentImpl(
           return
         }
         releaseClaim()
+        // Re-stamp queued rerun triggers from the claim phase to THIS run's
+        // id (#170 review round 2): they were parked with the claim token as
+        // ownerToken, but the drain's liveness check reads the live
+        // claim-owner-or-activeRunId — without the re-stamp they would look
+        // stale (claim released, runId not yet visible to the stamp) even
+        // though this very run is about to consume them.
+        const restampQueuedTriggers = () => {
+          const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conversationId)
+          if (!queue) return
+          useConversationRuntimeStore.setState((state) => {
+            const q = state.pendingMessageQueues.get(conversationId)
+            if (!q) return
+            for (const entry of q) {
+              if (entry.rerunOnly && entry.ownerToken === claimToken) {
+                entry.ownerToken = runId
+              }
+            }
+          })
+        }
+        restampQueuedTriggers()
         // Ownership is deliberately in-memory and run scoped. The overlay has
         // one pending row per path, so paths already pending when this run
         // begins are never eligible for automatic application.
