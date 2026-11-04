@@ -690,7 +690,7 @@ export async function runAgentImpl(
             .then(({ setFaviconState }) => setFaviconState('idle'))
             .catch(() => {})
           const errorConv = get().conversations.find((c) => c.id === conversationId)
-          if (errorConv) {
+          if (errorConv && errorConv.messagesLoaded !== false) {
             persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
               console.error('[conversation.store] Failed to persist on failRunEarly:', err)
             })
