@@ -56,4 +56,11 @@ describe('writePendingAssetsToOPFS', () => {
     expect(new Set(results.map((r) => r[0].name)).size).toBe(2)
   })
 
+  it('retries a transient cleanup failure', async () => {
+    const dir = { removeEntry: vi.fn().mockRejectedValueOnce(new Error('busy')).mockResolvedValueOnce(undefined) }
+    getWorkspace.mockResolvedValue({ getAssetsDir: async () => dir })
+    await removeAssetsFromOPFS([{ id: '1', name: 'temporary.txt', size: 1, mimeType: 'text/plain', direction: 'upload', createdAt: 0 }], 'source')
+    expect(dir.removeEntry).toHaveBeenCalledTimes(2)
+  })
+
 })

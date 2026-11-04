@@ -87,9 +87,7 @@ export async function writePendingAssetsToOPFS(
       return results
     } catch (error) {
       await Promise.all(createdNames.map(async (name) => {
-        try { await assetsDir.removeEntry(name) } catch (cleanupError) {
-          console.warn('[asset.service] Failed to remove incomplete upload:', name, cleanupError)
-        }
+        await removeEntryWithRetry(assetsDir, name)
       }))
       throw error
     }
@@ -109,14 +107,24 @@ export async function removeAssetsFromOPFS(assets: AssetMeta[], conversationId?:
   await withUploadLock(id, async () => {
     await Promise.all(
       assets.map(async (asset) => {
-        try {
-          await assetsDir.removeEntry(asset.name)
-        } catch {
-          // Best effort: the asset may already have been removed externally.
-        }
+        await removeEntryWithRetry(assetsDir, asset.name)
       })
     )
   })
+}
+
+async function removeEntryWithRetry(dir: FileSystemDirectoryHandle, name: string): Promise<void> {
+  try {
+    await dir.removeEntry(name)
+  } catch (error) {
+    if (error instanceof Error && error.name === 'NotFoundError') return
+    try {
+      await dir.removeEntry(name)
+    } catch (retryError) {
+      if (retryError instanceof Error && retryError.name === 'NotFoundError') return
+      console.warn('[asset.service] Failed to remove incomplete upload after retry:', name, retryError)
+    }
+  }
 }
 
 function addUniqueSuffix(name: string): string {

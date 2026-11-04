@@ -173,6 +173,7 @@ function resetDraftStore() {
 describe('pending attachment sending', () => {
   beforeEach(() => {
     seedActiveConversation()
+    vi.mocked(conversationStoreModule.getState().updateMessages).mockClear()
     resetDraftStore()
     useAssetStore.getState().clearAll()
     useAssetStore.setState({ deferredAssets: {} })
