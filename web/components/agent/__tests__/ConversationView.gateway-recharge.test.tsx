@@ -264,3 +264,4 @@ describe('ConversationErrorBanner GATEWAY_INSUFFICIENT_CREDIT', () => {
     )
   })
 })
+vi.mock('@/hooks/useProjectAgentsInit', () => ({ useProjectAgentsInit: vi.fn() }))

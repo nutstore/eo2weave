@@ -15,6 +15,8 @@
 import { render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ConversationView } from '../ConversationView'
+
+vi.mock('@/hooks/useProjectAgentsInit', () => ({ useProjectAgentsInit: vi.fn() }))
 import type { Message } from '@/agent/message-types'
 
 const { conversationState, useConversationStoreMock } = vi.hoisted(() => {

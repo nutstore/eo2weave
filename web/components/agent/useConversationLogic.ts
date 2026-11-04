@@ -22,6 +22,7 @@ import { useT } from '@/i18n'
 import { createUserMessage } from '@/agent/message-types'
 import type { Message } from '@/agent/message-types'
 import { useAssetStore } from '@/store/asset.store'
+import { useProjectStore } from '@/store/project.store'
 import { removeAssetsFromOPFS, writePendingAssetsToOPFS } from '@/services/asset.service'
 import { performOcr, isOcrCompatibleImage, fileToBase64 } from '@/services/ocr.service'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
@@ -32,7 +33,23 @@ import { useActiveConversation } from './useActiveConversation'
 import { useProjectAgentsInit } from '@/hooks/useProjectAgentsInit'
 
 /** Stable empty array so mentionAgents selector returns same ref when unchanged */
-const EMPTY_MENTION_AGENTS: { id: string; name: string }[] = []
+export const EMPTY_MENTION_AGENTS: { id: string; name: string }[] = []
+
+/**
+ * Composer mention candidates, gated on the loaded catalog belonging to the
+ * project the user is looking at. Exported pure so tests exercise the
+ * production selection instead of a hand-copied duplicate that can drift.
+ */
+export function selectMentionAgents(
+  s: { loadedProjectId: string | null; agents: { id: string; name: string }[] },
+  activeProjectId: string | null
+): { id: string; name: string }[] {
+  if (s.loadedProjectId !== activeProjectId) return EMPTY_MENTION_AGENTS
+  const filtered = s.agents
+    .filter((agent) => agent.id !== 'default')
+    .map((agent) => ({ id: agent.id, name: agent.name }))
+  return filtered.length === 0 ? EMPTY_MENTION_AGENTS : filtered
+}
 
 export function useConversationLogic() {
   const t = useT()
@@ -75,23 +92,35 @@ export function useConversationLogic() {
   //  initialisation moved to useProjectAgentsInit, which subscribes to
   //  it on its own.)
   const allAgents = useAgentsStore((s) => s.agents)
-  const activeAgentId = useAgentsStore((s) => s.activeAgentId)
-  const setActiveAgent = useAgentsStore((s) => s.setActiveAgent)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  // Only expose candidates once the loaded catalog belongs to the project the
+  // user is actually looking at. While a switch is still initializing, the old
+  // project's Agents must not stay selectable — picking one would insert a
+  // mention the target-project routing rejects.
+  const catalogMatchesProject = useAgentsStore((s) => s.loadedProjectId === activeProjectId)
+  const projectActiveAgentId =
+    catalogMatchesProject ? useAgentsStore((s) => s.activeAgentId) : null
+  const setProjectActiveAgent = useAgentsStore((s) => s.setActiveAgent)
   const createAgent = useAgentsStore((s) => s.createAgent)
   const deleteAgent = useAgentsStore((s) => s.deleteAgent)
   const mentionAgents = useAgentsStore(
-    useShallow((s) => {
-      const filtered = s.agents
-        .filter((agent) => agent.id !== 'default')
-        .map((agent) => ({ id: agent.id, name: agent.name }))
-      return filtered.length === 0 ? EMPTY_MENTION_AGENTS : filtered
-    })
+    useShallow((s) => selectMentionAgents(s, activeProjectId))
   )
 
   // ── Active conversation — only select NON-streaming data ──
   // Streaming data is subscribed inside ConversationMessages directly.
   const active = useActiveConversation()
   const convId = active.convId
+  const conversationAgentId = useWorkspacePreferencesStore((s) => convId ? s.agentIdByWorkspace?.[convId] : undefined)
+  const activeAgentId = conversationAgentId || projectActiveAgentId
+  const setActiveAgent = useCallback(async (id: string) => {
+    const projectId = useAgentsStore.getState().loadedProjectId
+    await setProjectActiveAgent(id)
+    const state = useAgentsStore.getState()
+    if (convId && state.loadedProjectId === projectId && state.activeAgentId === id) {
+      useWorkspacePreferencesStore.getState().setWorkspaceAgentId(convId, id)
+    }
+  }, [convId, setProjectActiveAgent])
   const activeMessages = active.messages
   const status = active.status
   // NOTE: active.draftAssistant and active.streamingState are intentionally

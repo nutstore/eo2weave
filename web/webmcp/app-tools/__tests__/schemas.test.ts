@@ -11,8 +11,8 @@ import { buildToolExecutors } from '../handlers'
 const VALID_NAME = /^[A-Za-z0-9_\-.]{1,128}$/
 
 describe('app-tools schemas', () => {
-  it('has 20 tools', () => {
-    expect(APP_TOOLS).toHaveLength(20)
+  it('has 21 tools', () => {
+    expect(APP_TOOLS).toHaveLength(21)
   })
 
   it('every tool has a valid WebMCP name', () => {

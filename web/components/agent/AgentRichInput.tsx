@@ -6,6 +6,7 @@ import Text from '@tiptap/extension-text'
 import HardBreak from '@tiptap/extension-hard-break'
 import History from '@tiptap/extension-history'
 import Mention from '@tiptap/extension-mention'
+import { findAgentMentionCandidates } from '@/agent/agent-mention'
 import { FileMention, type FileMentionItem } from './FileMentionExtension'
 import { SlashCommandExtension, type SlashCommandItem } from './SlashCommandExtension'
 import { FileIcon, FolderIcon, Paperclip, X, Loader2, FileText, AtSign, Hash, SlashSquare, ArrowUp, Square } from 'lucide-react'
@@ -417,6 +418,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   const [suggestionItems, setSuggestionItems] = useState<AgentMentionCandidate[]>([])
   const [suggestionCommand, setSuggestionCommand] = useState<((item: { id: string }) => void) | null>(null)
   const suggestionDropdownRef = useRef<SuggestionDropdownHandle>(null)
+  const agentSuggestionQueryRef = useRef<string | null>(null)
   // Refs for accessing latest suggestion state inside editorProps.handleKeyDown (avoids stale closures)
   const suggestionItemsRef = useRef<AgentMentionCandidate[]>([])
   const suggestionCommandRef = useRef<((item: { id: string }) => void) | null>(null)
@@ -483,7 +485,17 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   useEffect(() => { disabledRef.current = disabled }, [disabled])
   useEffect(() => { onSubmitRef.current = onSubmit }, [onSubmit])
   useEffect(() => { onChangeRef.current = onChange }, [onChange])
-  useEffect(() => { agentsRef.current = agents }, [agents])
+  useEffect(() => {
+    agentsRef.current = agents
+    // Suggestion only recomputes on text/selection changes. Refresh an open
+    // @ query when the asynchronous project Agent catalog arrives as well.
+    const query = agentSuggestionQueryRef.current
+    if (query !== null) {
+      const items = findAgentMentionCandidates(agents, query)
+      suggestionItemsRef.current = items
+      setSuggestionItems(items)
+    }
+  }, [agents])
   useEffect(() => { isProcessingRef.current = isProcessing }, [isProcessing])
   useEffect(() => { onCancelRef.current = onCancel }, [onCancel])
   useEffect(() => { onSlashCommandRef.current = onSlashCommand }, [onSlashCommand])
@@ -505,29 +517,23 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
         },
         suggestion: {
           char: '@',
-          items: ({ query }) => {
-            const q = query.toLowerCase().trim()
-            return agentsRef.current
-              .filter((a) => a.id !== 'default')
-              .filter((a) => {
-                if (!q) return true
-                const haystack = `${a.id} ${a.name || ''}`.toLowerCase()
-                return haystack.includes(q)
-              })
-              .slice(0, 8)
-          },
+          decorationClass: 'rounded bg-primary-100 text-primary-800 dark:bg-primary-100/60 dark:text-primary-700',
+          items: ({ query }) => findAgentMentionCandidates(agentsRef.current, query),
           render: () => {
             return {
               onStart: (props) => {
+                agentSuggestionQueryRef.current = props.query
                 setSuggestionItems(props.items as AgentMentionCandidate[])
                 setSuggestionCommand(() => props.command)
               },
               onUpdate: (props) => {
+                agentSuggestionQueryRef.current = props.query
                 setSuggestionItems(props.items as AgentMentionCandidate[])
                 setSuggestionCommand(() => props.command)
               },
               onKeyDown: (props) => {
                 if (props.event.key === 'Escape') {
+                  agentSuggestionQueryRef.current = null
                   setSuggestionItems([])
                   setSuggestionCommand(null)
                   return true
@@ -535,6 +541,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
                 return suggestionDropdownRef.current?.onKeyDown(props.event) ?? false
               },
               onExit: () => {
+                agentSuggestionQueryRef.current = null
                 setSuggestionItems([])
                 setSuggestionCommand(null)
               },

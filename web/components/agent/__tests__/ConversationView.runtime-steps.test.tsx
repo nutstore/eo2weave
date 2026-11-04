@@ -2,6 +2,8 @@ import { render } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationView } from '../ConversationView'
 
+vi.mock('@/hooks/useProjectAgentsInit', () => ({ useProjectAgentsInit: vi.fn() }))
+
 type AssistantTurnBubbleProps = {
   turn?: { type: string; messages: Array<{ id: string }> }
   isProcessing?: boolean

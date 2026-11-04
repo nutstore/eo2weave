@@ -1,5 +1,5 @@
 /**
- * App-tools schemas — the 20 WebMCP tools EO2Weave's own page registers so
+ * App-tools schemas — the WebMCP tools EO2Weave's own page registers so
  * agents (in-app or external via the extension bridge) can operate the app:
  * projects, folders (mounted roots), conversations, runs, files, providers.
  *
@@ -63,6 +63,21 @@ export const APP_TOOLS: AppToolDefinition[] = [
 
   // ── Conversations ─────────────────────────────────────────────────────────
   {
+    name: 'get_workspace_context',
+    description:
+      'Query the open project/workspace and its available Agents (IDs and names, no persona contents). ' +
+      'Optionally specify an existing workspaceId or projectId to query another context. ' +
+      'workspaceId is also the existing conversation ID. Pass these IDs to create_conversation. Does not change the current view.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workspaceId: str('Existing workspace/conversation ID; defaults to the open workspace when neither ID is provided'),
+        projectId: str('Project ID; if both IDs are supplied, they must refer to the same project'),
+      },
+    },
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  },
+  {
     name: 'list_conversations',
     description:
       'List conversations (metadata only, no message bodies), newest first. ' +
@@ -99,14 +114,20 @@ export const APP_TOOLS: AppToolDefinition[] = [
   {
     name: 'create_conversation',
     description:
-      'Create a new conversation. NOTE: a new conversation has NO mounted ' +
-      'folder — it cannot operate on files until the user mounts a folder in ' +
-      'the UI. For file tasks prefer an existing conversation bound to the ' +
-      'target folder (list_mounted_folders + list_conversations).',
+      'Create a new background conversation in the open conversation\u2019s project ' +
+      '(or the open project when no conversation is selected). Returns only ' +
+      'after its workspace is ready. Does not change the current view. Uses ' +
+      'the project\u2019s already authorized folders; does not grant new file access. ' +
+      'Use get_workspace_context to query IDs and available Agents. Explicit workspaceId ' +
+      'inherits that workspace\u2019s project, with a NEW independent workspace/conversation ID. ' +
+      'agentId selects the new conversation\u2019s Agent; defaults to the source context\u2019s selection.',
     inputSchema: {
       type: 'object',
       properties: {
         title: str('Conversation title (auto-generated later if omitted)'),
+        workspaceId: str('Existing source workspace/conversation whose project to use; no messages or pending changes are copied'),
+        projectId: str('Explicit target project; must match workspaceId if both are supplied'),
+        agentId: str('Agent ID from the target project; remembered for subsequent messages in the new conversation'),
       },
     },
   },

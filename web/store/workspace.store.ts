@@ -52,6 +52,7 @@ function updateCheckpointToolRegistration(shouldRegister: boolean): void {
 // resolved immediately — zero CPU overhead compared to 100ms polling.
 // ---------------------------------------------------------------------------
 const switchWaiters = new Map<string, Array<() => void>>()
+const workspaceEnsures = new Map<string, Promise<Workspace>>()
 
 function notifySwitchComplete(workspaceId: string): void {
   const waiters = switchWaiters.get(workspaceId)
@@ -322,6 +323,9 @@ interface WorkspaceState {
 
   /** Create a new workspace (writes to both SQLite and OPFS) */
   createWorkspace: (id: string, rootDirectory: string, name?: string) => Promise<WorkspaceMetadata>
+
+  /** Ensure a conversation's workspace without changing the current view. */
+  ensureWorkspace: (id: string, name?: string, projectId?: string) => Promise<Workspace>
 
   /** Switch to a different workspace */
   switchWorkspace: (id: string) => Promise<void>
@@ -632,6 +636,61 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               isLoading: false,
               initialized: true,
             })
+          }
+        },
+
+        ensureWorkspace: async (id, name, targetProjectId) => {
+          const pending = workspaceEnsures.get(id)
+          if (pending) {
+            const record = await pending
+            if (targetProjectId && record.projectId !== targetProjectId) {
+              throw new Error(`Workspace ${id} already belongs to project ${record.projectId}`)
+            }
+            return record
+          }
+
+          // Capture the open conversation before asynchronous work. An existing
+          // target keeps its own project; a new one inherits the open context.
+          const contextId = get().activeWorkspaceId
+          const ensure = (async () => {
+            const routeProjectId = await resolveActiveProjectId()
+            const repo = getWorkspaceRepository()
+            const existing = await repo.findWorkspaceById(id)
+            if (existing?.projectId && targetProjectId && existing.projectId !== targetProjectId) {
+              throw new Error(`Workspace ${id} already belongs to project ${existing.projectId}`)
+            }
+            const context = !existing?.projectId && contextId
+              ? await repo.findWorkspaceById(contextId)
+              : null
+            const projectId = existing?.projectId || targetProjectId || context?.projectId || routeProjectId
+            if (!projectId) throw new Error('No open project selected for workspace creation')
+
+            const manager = await getWorkspaceManager()
+            const runtime = (existing?.projectId ? await manager.getWorkspace(id) : undefined)
+              ?? await manager.createWorkspace(`workspaces/${id}`, id, name, projectId)
+            const record = await repo.findWorkspaceById(id)
+            if (!record || record.projectId !== projectId) {
+              throw new Error(`Workspace binding was not persisted for conversation ${id}`)
+            }
+
+            // Only the currently displayed project's rows belong in this list.
+            // Never call initialize()/refreshWorkspaces(): they reset active UI.
+            if (await resolveActiveProjectId() === projectId) {
+              set((state) => {
+                const entry = { ...sqliteWorkspaceToWorkspaceStats(record), pendingCount: runtime.pendingCount }
+                state.workspaces = sortWorkspacesForDisplay(
+                  [...state.workspaces.filter((w) => w.id !== id), entry],
+                  state.pinnedWorkspaceIds,
+                )
+              })
+            }
+            return record
+          })()
+          workspaceEnsures.set(id, ensure)
+          try {
+            return await ensure
+          } finally {
+            workspaceEnsures.delete(id)
           }
         },
 

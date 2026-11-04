@@ -305,3 +305,4 @@ describe('ConversationErrorBanner GATEWAY_CREDENTIALS_EXPIRED', () => {
     expect(screen.getByRole('button', { name: /conversation\.error\.retry/ })).toBeInTheDocument()
   })
 })
+vi.mock('@/hooks/useProjectAgentsInit', () => ({ useProjectAgentsInit: vi.fn() }))
