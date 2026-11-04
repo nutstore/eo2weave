@@ -156,8 +156,31 @@ export async function runAgentImpl(
       const conv = state.conversations.find((c) => c.id === conversationId)
       if (!conv) return
 
+      // A dispatch arriving while a run is already pending/running (e.g. from
+      // QuickActionsPanel, which — unlike useConversationLogic / FilePreview /
+      // SyncPreviewPanel — has no running-state precheck) used to be silently
+      // dropped here (#166 item 1). The caller has already persisted its user
+      // message, so route it through the same rerun-queue path the claim
+      // window below uses: the owner's end-of-run "Consume queued messages"
+      // block dequeues the trigger and starts a follow-up turn, and
+      // `rerunOnly: true` tells the consumer NOT to create a duplicate user
+      // message. The result is checked so a queue-full overlap surfaces a
+      // rejection to the caller (#166 item 3) instead of resolving silently.
       if (state.isConversationRunning(conversationId)) {
-        console.warn('[conversation.store] Conversation is already running:', conversationId)
+        const enqueued = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+          text: '',
+          enqueuedAt: Date.now(),
+          rerunOnly: true,
+        })
+        if (!enqueued.enqueued) {
+          throw new Error(
+            `Conversation is running and its message queue is full (${conversationId})`
+          )
+        }
+        console.info(
+          '[conversation.store] Conversation is already running — queued a re-run trigger:',
+          conversationId
+        )
         return
       }
 
@@ -279,6 +302,7 @@ export async function runAgentImpl(
         // records exist, then drive the loop against the per-conversation
         // runtime. Tool routing is unaffected either way: ToolContext carries
         // the conversationId as its workspaceId explicitly.
+        //
         const workspaceStore = useConversationContextStore.getState()
         try {
           // Bound the setup await: a workspace ensure that never settles (e.g.
