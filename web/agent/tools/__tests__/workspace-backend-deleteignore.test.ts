@@ -8,9 +8,9 @@ const resolveNativeDirectoryHandleMock = vi.hoisted(() => vi.fn())
 vi.mock('@/store/opfs.store', () => ({ useOPFSStore: useOPFSStoreMock }))
 vi.mock('@/store/workspace.store', () => ({ useWorkspaceStore: useWorkspaceStoreMock }))
 vi.mock('@/opfs', () => ({ getWorkspaceManager: getWorkspaceManagerMock }))
-vi.mock('../tool-utils', () => ({ resolveNativeDirectoryHandle: resolveNativeDirectoryHandleMock }))
+vi.mock('@/agent/tools/tool-utils', () => ({ resolveNativeDirectoryHandle: resolveNativeDirectoryHandleMock }))
 
-import { WorkspaceBackend } from '../backends/workspace-backend'
+import { WorkspaceBackend } from '@/agent/tools/backends/workspace-backend'
 
 describe('WorkspaceBackend.deleteDir — gitignore protection', () => {
   beforeEach(() => {
@@ -102,5 +102,48 @@ describe('WorkspaceBackend.deleteDir — gitignore protection', () => {
 
     expect(result.deletedFiles).toEqual(['creatorweave/pkg/keep.ts', 'creatorweave/pkg/debug.log'])
     expect(deleteFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips ignored OPFS-only cached and pending files', async () => {
+    useOPFSStoreMock.getState.mockReturnValue({
+      getCachedPaths: () => ['creatorweave/pkg/unsynced.log'],
+      getPendingChanges: () => [{ type: 'create', path: 'creatorweave/pkg/pending.log' }],
+    })
+    const workspace = {
+      resolvePath: vi.fn(async () => ({
+        rootName: 'creatorweave',
+        rootId: 'scope-777',
+        backend: 'native-host' as const,
+        relativePath: 'pkg',
+        readOnly: false,
+      })),
+      getNativeDirectoryHandleForPath: vi.fn(async () => null),
+      readFromDiskRoot: vi.fn(async (_root: string, p: string) => {
+        if (p === '.gitignore' || p === 'pkg/.gitignore') return { content: '*.log\n' }
+        throw new Error('not found')
+      }),
+      diskExec: {
+        listDir: vi.fn(async (_root: string, relativePath: string) => {
+          if (relativePath === 'pkg') return [
+            { name: '.gitignore', kind: 'file' as const },
+            { name: 'keep.ts', kind: 'file' as const },
+            { name: 'debug.log', kind: 'file' as const },
+          ]
+          return []
+        }),
+      },
+    }
+    getWorkspaceManagerMock.mockResolvedValue({ getWorkspace: vi.fn(async () => workspace) })
+
+    const deleteFile = vi.fn<(path: string) => Promise<void>>(async () => {})
+    const backend = new WorkspaceBackend('ws-test', null, 'project-test')
+    backend.deleteFile = deleteFile
+    ;(backend as unknown as { getWorkspaceForBackend: () => Promise<unknown> }).getWorkspaceForBackend =
+      async () => ({ workspace, workspaceId: 'ws-test' })
+
+    const result = await backend.deleteDir('creatorweave/pkg')
+
+    expect(result.deletedFiles).toEqual(['creatorweave/pkg/.gitignore', 'creatorweave/pkg/keep.ts'])
+    expect(deleteFile.mock.calls.map((call) => call[0])).toEqual(['creatorweave/pkg/.gitignore', 'creatorweave/pkg/keep.ts'])
   })
 })

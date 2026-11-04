@@ -226,12 +226,16 @@ export class WorkspaceBackend implements VfsBackend {
 
     let discoveredFiles = new Set<string>()
     let nativeDirs: VfsDirEntry[] = []
+    let loadedRules: GitIgnoreRule[] = []
+    let opfsIsIgnored: ((path: string, kind: 'file' | 'directory') => Promise<boolean>) | null = null
 
     try {
       const nativeEntries = await this.listDir(path, { recursive: true, maxDepth: 100 })
       const rules = await this.readDeleteIgnoreRules()
       const isIgnored = createDeleteIgnoreChecker(this.readWorkspaceForDeletion, path)
       const prefix = path ? `${path}/` : ''
+      loadedRules = rules
+      opfsIsIgnored = isIgnored
       const allowed = async (p: string, kind: 'file' | 'directory'): Promise<boolean> => {
         if (isGitIgnored(p, rules, kind)) return false
         if (!isIgnored) return true
@@ -281,11 +285,24 @@ export class WorkspaceBackend implements VfsBackend {
     const prefix = path ? path + '/' : ''
     const opfsOnlyFiles = new Set<string>()
 
+    // Reuse the ignore checker when rules loaded successfully above; ignored
+    // OPFS-only files (cached paths, pending creates/modifies) stay on disk
+    // exactly like ignored native files. A null checker (no ignore state)
+    // keeps the fail-open behavior.
+    const opfsAllowed = discoveredFiles.size > 0 || nativeDirs.length > 0
+      ? async (p: string): Promise<boolean> => {
+          if (isGitIgnored(p, loadedRules, 'file')) return false
+          if (!opfsIsIgnored) return true
+          return !(await opfsIsIgnored(p, 'file'))
+        }
+      : null
+
     // From cached paths (files written to OPFS but not on native disk)
     const { getCachedPaths } = useOPFSStore.getState()
     const cachedPaths = getCachedPaths()
     for (const cachedPath of cachedPaths) {
       if (cachedPath.startsWith(prefix) && !discoveredFiles.has(cachedPath)) {
+        if (opfsAllowed && !(await opfsAllowed(cachedPath))) continue
         opfsOnlyFiles.add(cachedPath)
       }
     }
@@ -302,6 +319,7 @@ export class WorkspaceBackend implements VfsBackend {
         !discoveredFiles.has(change.path) &&
         !opfsOnlyFiles.has(change.path)
       ) {
+        if (opfsAllowed && !(await opfsAllowed(change.path))) continue
         opfsOnlyFiles.add(change.path)
       }
     }
