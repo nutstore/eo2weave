@@ -2215,6 +2215,20 @@ export async function runAgentImpl(
               r.draftAssistant = null
             }
           })
+          // #166 item 5: the consume block below only runs on 'idle', so a
+          // rerunOnly trigger queued while this run was active would survive
+          // the failure and burn the NEXT successful run's turn on a trigger
+          // whose moment has passed. Drain the rerun triggers here; real
+          // queued user messages are kept — they still carry undelivered
+          // content the user can resend/retry through the normal send path.
+          const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conversationId)
+          if (queue) {
+            for (let i = queue.length - 1; i >= 0; i--) {
+              if (queue[i].rerunOnly) {
+                useConversationRuntimeStore.getState().removeQueuedMessage(conversationId, i)
+              }
+            }
+          }
           // Persist messages on generic error to prevent data loss on page refresh
           const catchConv = get().conversations.find((c) => c.id === conversationId)
           if (catchConv) {

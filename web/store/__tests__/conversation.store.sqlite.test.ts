@@ -479,6 +479,28 @@ describe('conversation.store.sqlite tool-call routing', () => {
     await first
   })
 
+  it('drains queued rerun triggers when a run fails instead of burning the next turn (#166 item 5)', async () => {
+    const conv = useConversationStore.getState().createNew('error-drain', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    // A trigger queued mid-run (as if a second dispatch overlapped), then the
+    // run FAILS — the stale trigger must be drained, a real queued message kept.
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, { text: '', enqueuedAt: Date.now(), rerunOnly: true })
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, { text: 'real queued question', enqueuedAt: Date.now() })
+
+    ;(globalThis as any).__conversationStoreCustomRun = async (_messages: any[], callbacks: any) => {
+      callbacks.onError?.({ message: 'LLM exploded' })
+      return null
+    }
+
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+
+    expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('error')
+    const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conv.id) ?? []
+    expect(queue.some((m) => m.rerunOnly)).toBe(false)
+    expect(queue.map((m) => m.text)).toEqual(['real queued question'])
+  })
+
   it('should finalize non-current tool steps by toolCallId in interleaved calls', async () => {
     const store = useConversationStore.getState()
     const conv = store.createNew('test')
