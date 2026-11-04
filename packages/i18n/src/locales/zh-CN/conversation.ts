@@ -170,7 +170,7 @@ export const conversation = {
       requestFailed: "请求失败：",
       retry: "继续",
       emptyTurn: "模型未返回内容。",
-emptyTtruncated: "回复因达到长度上限被截断。",
+truncated: "回复因达到长度上限被截断。",
       failed: "模型请求失败，请稍后重试",
       http: "模型服务商返回错误（HTTP {status}）",
       network: "网络连接失败，无法访问模型服务商，请检查网络后重试",

@@ -166,7 +166,7 @@ export const conversation = {
       requestFailed: "Request failed:",
       retry: "Retry",
       emptyTurn: "The model returned no response.",
-emptyTtruncated: "Turn truncated — the response hit the length limit.",
+truncated: "Turn truncated — the response hit the length limit.",
       failed: "The model request failed. Please try again later.",
       http: "The model provider returned an error (HTTP {status}).",
       network: "Network error — could not reach the model provider. Check your connection and try again.",
