@@ -858,8 +858,17 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // Custom providers can run keyless (Ollama / LM Studio / llama.cpp at
         // localhost). A configured baseUrl is enough to be "usable" — don't
         // gate the UI on a missing API key for them.
+        //
+        // EXCEPTION (#172 finding 4): the dynamically-registered llm-gateway
+        // is NOT keyless — a configured baseUrl alone must not mark it
+        // usable, or the send gate lets an empty credential reach the request
+        // layer which then sends without Authorization. The gateway's
+        // availability is governed by its own credential status (resolved
+        // authoritatively at dispatch), so fall through to the normal
+        // api-key lookup here.
         if (
           isCustomProviderType(state.providerType) &&
+          state.providerType !== 'llm-gateway' &&
           effective.baseUrl
         ) {
           apiKeyCache.set(effective.apiKeyProviderKey, true)

@@ -529,6 +529,45 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     })
   }, [])
 
+  // ── Gateway session reconciler (issues #171 + #172) ──
+  // A tab that only OBSERVES another tab's Nutstore AI login/logout/access-
+  // refresh gets invalidation from the auth layer's storage listener but no
+  // re-adoption: the provider stays unregistered and the tab can't send
+  // despite a valid shared session. The reconciler subscribes to the auth
+  // layer's session events (no static auth→provider import cycle — it lives
+  // in its own module) and re-adopts/reconciles. Dynamic import + dispose on
+  // unmount, same lifecycle pattern as the offline queue above.
+  useEffect(() => {
+    let dispose: (() => void) | null = null
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    // #175 review: a transient chunk-load failure used to leave the
+    // reconciler permanently uninstalled (no re-adoption until reload).
+    // Retry a bounded number of times with backoff; a still-failing import
+    // degrades to the pre-reconciler behavior (event-driven invalidation
+    // without re-adoption) instead of throwing during bootstrap.
+    const attempt = (remaining: number): void => {
+      if (cancelled) return
+      void import('@/agent/providers/gateway-session-reconciler').then(
+        ({ setupGatewaySessionReconciler }) => {
+          if (cancelled) return
+          dispose = setupGatewaySessionReconciler()
+        },
+        (error) => {
+          console.warn('[App] gateway-session-reconciler import failed:', error)
+          if (cancelled || remaining <= 0) return
+          retryTimer = setTimeout(() => attempt(remaining - 1), 2000 * (4 - remaining))
+        },
+      )
+    }
+    attempt(3)
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+      dispose?.()
+    }
+  }, [])
+
   // ── OpenRouter model reference auto-refresh ──
   // The bundled openrouter-models.json is a bootstrap fallback that lags
   // upstream (new DeepSeek/Qwen releases missing → wrong context window,
