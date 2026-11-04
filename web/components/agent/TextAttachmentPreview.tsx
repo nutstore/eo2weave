@@ -5,12 +5,9 @@ import { X } from 'lucide-react'
 import { useT } from '@/i18n'
 import '@/lib/monaco-setup'
 import { BrandDialog, BrandDialogContent, BrandDialogTitle } from '@creatorweave/ui'
+import { MAX_PREVIEW_CHARS, readBoundedPreview } from '@/lib/text-preview-cap'
 
 loader.config({ monaco })
-
-/** Cap on characters read into state and handed to Monaco. */
-const MAX_PREVIEW_CHARS = 1_000_000
-const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
 
 function formatLimit(): string {
   return `${Math.round(MAX_PREVIEW_CHARS / 1000)}k characters`
@@ -29,20 +26,13 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
     setContent(null)
     setTruncated(false)
     setError(false)
-    const read =
-      file.size > MAX_PREVIEW_BYTES
-        ? file.slice(0, MAX_PREVIEW_BYTES).text()
-        : file.text()
+    const read = readBoundedPreview(file)
     Promise.resolve()
       .then(() => read)
-      .then((text) => {
+      .then(({ text, truncated }) => {
         if (!active) return
-        if (text.length > MAX_PREVIEW_CHARS) {
-          setContent(text.slice(0, MAX_PREVIEW_CHARS))
-          setTruncated(true)
-        } else {
-          setContent(text)
-        }
+        setContent(text)
+        setTruncated(truncated)
       })
       .catch(() => { if (active) setError(true) })
     return () => { active = false }
@@ -63,11 +53,11 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
           <BrandDialogTitle className="min-w-0 break-all text-sm font-medium text-neutral-700 dark:text-neutral-200">{file.name}</BrandDialogTitle>
           <button type="button" onClick={onClose} aria-label={t('conversation.input.closePreview')} className="rounded p-1 text-neutral-500 hover:bg-neutral-100 focus-visible:outline focus-visible:outline-2 dark:hover:bg-neutral-800"><X className="h-4 w-4" /></button>
         </div>
-        <div className="min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1 flex-col">
           {error ? <div role="alert" className="p-4 text-sm">{t('conversation.input.textPreviewFailed')} <button type="button" onClick={() => setAttempt((n) => n + 1)} className="underline">{t('conversation.input.retryPreview')}</button></div> : content === null ? <div role="status" className="p-4 text-sm">{t('conversation.input.loadingPreview')}</div> : (
             <>
-              {truncated && <div role="note" className="border-b border-neutral-200 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">{t('conversation.input.textPreviewTruncated', { limit: formatLimit() })}</div>}
-              <Editor height="100%" language="plaintext" value={content} theme={dark ? 'vs-dark' : 'vs'} options={{ readOnly: true, minimap: { enabled: false }, scrollBeyondLastLine: false, automaticLayout: true, wordWrap: 'on' }} />
+              {truncated && <div role="note" className="shrink-0 border-b border-neutral-200 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">{t('conversation.input.textPreviewTruncated', { limit: formatLimit() })}</div>}
+              <div className="min-h-0 flex-1"><Editor height="100%" language="plaintext" value={content} theme={dark ? 'vs-dark' : 'vs'} options={{ readOnly: true, minimap: { enabled: false }, scrollBeyondLastLine: false, automaticLayout: true, wordWrap: 'on' }} /></div>
             </>
           )}
         </div>
