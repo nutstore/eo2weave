@@ -268,7 +268,12 @@ async function applyGatewayLoginTokensInner(
       onCommit?.()
       committed = true
       settings.invalidateApiKeyCache(keyId)
-      // Selected model: the gateway's first served model. When discovery
+      // Selected model: the curated value default when it is served
+      // (deepseek-v4.1-flash per DEFAULT_PINNED_MODELS), falling back to the
+      // gateway's first served model. Picking discovery.models[0] outright
+      // made the default ride on the gateway's catalog ordering — the
+      // provider lists deepseek-v4-pro first, so every fresh login landed on
+      // the pro tier instead of the curated value pick. When discovery
       // failed (empty list) do NOT fall back to `settings.modelName` — that
       // id belongs to the PREVIOUSLY selected provider and would leave the
       // gateway login pointing at an unsupported model. The model registry
@@ -276,7 +281,9 @@ async function applyGatewayLoginTokensInner(
       // the settings card re-registers the fetched catalog on its next
       // /models fetch; an empty modelName here marks the selection for
       // that re-resolution instead of pinning a wrong provider's model.
-      settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, discovery.models[0]?.id ?? '')
+      const servedIds = new Set(discovery.models.map((m) => m.id))
+      const selectedModel = defaults.find((id) => servedIds.has(id)) ?? discovery.models[0]?.id ?? ''
+      settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, selectedModel)
       if (defaults.length > 0) {
         settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
         settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)

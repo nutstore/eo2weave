@@ -86,6 +86,32 @@ describe('applyGatewayLoginTokens cancellation', () => {
     expect(commit).not.toHaveBeenCalled()
   })
 
+  it('selects the curated value default over catalog order', async () => {
+    // The gateway lists deepseek-v4-pro FIRST; the curated default is
+    // deepseek-v4.1-flash. The selected model must be the curated one, not
+    // whichever model happens to be served first. (Fresh login: no existing
+    // pins, so the curated default is seeded AND selected.)
+    ;(settings as any).pinnedModelsByProvider = {}
+    ;(settings as any).setPinnedModels = vi.fn()
+    ;(settings as any).markPinnedModelsSeen = vi.fn()
+    provider.update.mockResolvedValue([
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+      { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
+    ])
+    provider.prepare.mockResolvedValue({
+      models: [
+        { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+        { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
+      ],
+      status: 'ready',
+    })
+    await applyGatewayLoginTokens('new-key')
+    expect(settings.switchProviderAndModel).toHaveBeenCalledWith(
+      'llm-gateway',
+      'deepseek-v4.1-flash',
+    )
+  })
+
   it('restores the previous credential if cancellation happens during its save', async () => {
     let release!: () => void
     keyStore.save.mockImplementationOnce(async (_id, key) => {
