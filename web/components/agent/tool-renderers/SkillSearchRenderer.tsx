@@ -171,12 +171,18 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
   const buttonLabel =
     installState === 'installing'
       ? progress?.message ?? t('skills.discover.installing')
+      // An installed-and-updateable result must say "Update", not "Installed" —
+      // the click runs the version-aware install flow (#154), so the action is
+      // a potential update even though a copy is already on disk. Checking
+      // skill.installed FIRST keeps that label visible; a result that was
+      // installed during this session (no longer updateable-marked) still
+      // reports "Installed".
+      : skill.installed && installState !== 'error'
+      ? t('skills.discover.update') || 'Update'
       : installState === 'installed'
       ? t('skills.discover.installedBadge') || 'Installed'
       : installState === 'error'
       ? t('skills.discover.progressInstallFailed')
-      : skill.installed
-      ? t('skills.discover.update') || 'Update'
       : t('skills.discover.install') || 'Install'
 
   return (

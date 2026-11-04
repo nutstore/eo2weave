@@ -209,10 +209,14 @@ export function getInstalledDirNames(): Set<string> {
 
 /**
  * Install a skill from a URL. Flow:
- *   fetch(url) → blob → File → previewUserSkillZip → importUserSkillZip
+ *   fetch(url) → blob → File → previewUserSkillZip → version-aware import
  * Reports progress via optional callback.
  *
- * Returns the number of files written. Throws on error.
+ * Returns `{ count, manifest, outcome }` (#154): `count` is the number of
+ * files written and `outcome` is what the flow actually did to the installed
+ * copy — 'installed' (fresh), 'updated' (older copy overwritten), 'current'
+ * (matching copy kept) or 'installed-newer' (newer local copy kept, never
+ * downgraded). Throws on error.
  *
  * Robustness:
  *   - The download (headers + body stream) is bounded by DOWNLOAD_TIMEOUT_MS
@@ -514,6 +518,7 @@ export async function installSkillFromUrl(
           let updatedFrom = ''
           let updatedTo = ''
           let skippedInstalled = ''
+          let skippedStoreVersion = ''
           let keptVersion = ''
 
           for (const s of memberSkills) {
@@ -552,6 +557,7 @@ export async function installSkillFromUrl(
               keptVersion = installed.version
             } else if (action === 'installed-newer' && !skippedInstalled) {
               skippedInstalled = installed.version
+              skippedStoreVersion = storeVersion
             }
           }
 
@@ -584,7 +590,7 @@ export async function installSkillFromUrl(
               outcome: 'installed-newer' as InstallOutcome,
               doneMessage: tr('skills.discover.skippedUpdate', {
                 installed: skippedInstalled,
-                store: '',
+                store: skippedStoreVersion,
               }),
             }
           }

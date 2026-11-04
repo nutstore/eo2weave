@@ -10,13 +10,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const fetchSkillStoreManifestMock = vi.fn()
+const planSkillUpdateMock = vi.fn()
 const installSkillFromUrlMock = vi.fn()
 const refreshUserSkillsMock = vi.fn()
 const bumpSkillsScanVersionMock = vi.fn()
 
 vi.mock('@/skills/skill-store', () => ({
   fetchSkillStoreManifest: (...args: unknown[]) => fetchSkillStoreManifestMock(...(args as [])),
+  planSkillUpdate: (...args: unknown[]) => planSkillUpdateMock(...(args as [])),
   installSkillFromUrl: (...args: unknown[]) => installSkillFromUrlMock(...(args as [])),
+}))
+
+vi.mock('@/skills/skill-version', () => ({
+  skillUpdateNeedsConsent: (action: string) => action === 'update',
 }))
 
 vi.mock('@/skills/skill-manager', () => ({
@@ -51,6 +57,9 @@ describe('install_skill tool (#154)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     fetchSkillStoreManifestMock.mockResolvedValue({ skills: [ENTRY] })
+    // Default: the preflight reports a fresh install — no consent gate. The
+    // executor still calls it before every installSkillFromUrl.
+    planSkillUpdateMock.mockResolvedValue('install')
     refreshUserSkillsMock.mockResolvedValue(undefined)
   })
 

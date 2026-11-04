@@ -114,8 +114,13 @@ export async function installSkillExecutor(
         signal: context.abortSignal,
         toolCallId: context.currentToolCallId,
       })
+      // `confirmed` is true for ANY submitted answer (ToolCallDisplay resolves
+      // every click — Yes AND No — with confirmed:true), so consent must be
+      // the answer text itself: only an explicit "yes" agrees to the
+      // overwrite. Everything else (a "no" click, free text, an abort
+      // resolving confirmed:false with the default answer) declines.
       const said = answer.answer.trim().toLowerCase()
-      if (said !== 'yes' && !answer.confirmed) {
+      if (said !== 'yes' || !answer.confirmed) {
         return toolOkJson('install_skill', {
           dirName,
           name: entry.name,
@@ -175,7 +180,10 @@ export async function installSkillExecutor(
         version: entry.version,
         filesInstalled: result.count,
         alreadyInstalled: true,
-        message: `Skill "${entry.name}" is already installed and is newer than the store version — the installed copy was kept. You can use it via read_skill now.`,
+        // The unknown-version fallback also lands here (decideSkillUpdateAction
+        // keeps an unparseable installed version as "installed-newer"), so the
+        // message must not claim a verified newer version.
+        message: `Skill "${entry.name}" is already installed — the installed copy was kept (it is newer than the store version, or its version could not be compared with the store's). You can use it via read_skill now.`,
       })
     }
     return toolOkJson('install_skill', {
