@@ -3,6 +3,7 @@ import { type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentRichInput } from '@/components/agent/AgentRichInput'
 import { useAssetStore } from '@/store/asset.store'
+import { MAX_PREVIEW_BYTES, MAX_PREVIEW_CHARS } from '@/lib/text-preview-cap'
 
 vi.mock('@/i18n', () => ({ useT: () => (key: string) => key }))
 vi.mock('@creatorweave/ui', () => ({
@@ -156,6 +157,96 @@ describe('long text paste', () => {
     useAssetStore.getState().restoreAssets(snapshot)
     expect(useAssetStore.getState().pendingAssets.map((a) => a.name)).toEqual(['pasted-text-2026-01-01.txt'])
     expect(useAssetStore.getState().pendingAssets[0].file.size).toBe(new Blob([content]).size)
+  })
+
+  it('sends an attachment-only staged file after previewing the capped content', async () => {
+    // Regression: previewing a truncated attachment must not consume or alter
+    // the staged file — the attachment-only send (Enter with empty editor but
+    // staged assets) still submits the full-size payload.
+    const { container } = mountInput()
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).toBeTruthy())
+    const editor = container.querySelector('.ProseMirror')!
+    const kept = 'a'.repeat(1_000_000)
+    const file = new File(['x'], 'huge-send.txt', { type: 'text/plain' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(kept + 'b'.repeat(10)) })
+    act(() => useAssetStore.getState().addFiles([file]))
+    fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: huge-send.txt' }))
+    const preview = await screen.findByTestId('text-preview')
+    expect(preview.textContent).toBe(kept)
+    expect((await screen.findByRole('note')).textContent).toContain('conversation.input.textPreviewTruncated')
+    fireEvent.click(screen.getByRole('button', { name: 'conversation.input.closePreview' }))
+    // Attachment-only send: editor still shows the untouched initial text.
+    expect(editor.textContent).toBe('existing')
+    expect(useAssetStore.getState().pendingAssets).toHaveLength(1)
+    const staged = useAssetStore.getState().pendingAssets[0]
+    expect(staged.file).toBe(file)
+    expect(staged.file.size).toBe(1)
+    // Retry path: a failed send restores the same payload.
+    useAssetStore.getState().removeAsset(staged.id)
+    useAssetStore.getState().restoreAssets([staged])
+    expect(useAssetStore.getState().pendingAssets[0].file).toBe(file)
+    expect(useAssetStore.getState().pendingAssets[0].file.size).toBe(1)
+  })
+
+  it('caps the byte read at MAX_PREVIEW_BYTES from the real File, not a mocked text()', async () => {
+    // Regression: exercise the real File.slice byte path — a 6MB file must
+    // read only MAX_PREVIEW_BYTES, and the decoded slice is below the char
+    // cap so no character truncation applies on top.
+    mountInput()
+    const file = new File(['x'.repeat(MAX_PREVIEW_BYTES + 1024)], 'huge-bytes.txt', { type: 'text/plain' })
+    expect(file.size).toBe(MAX_PREVIEW_BYTES + 1024)
+    // Do NOT mock file.text() — the component must slice the real File.
+    act(() => useAssetStore.getState().addFiles([file]))
+    fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: huge-bytes.txt' }))
+    const preview = await screen.findByTestId('text-preview')
+    // Both caps apply: byte cap slices the real File, then the char cap trims
+    // the decoded slice before rendering.
+    expect(preview.textContent).toBe('x'.repeat(MAX_PREVIEW_CHARS))
+    expect((await screen.findByRole('note')).textContent).toContain('conversation.input.textPreviewTruncated')
+  })
+
+  it('truncation never splits a UTF-16 surrogate pair', async () => {
+    // Cut point lands mid-pair: 1_000_000 chars of 'a' followed by a single
+    // astral emoji (surrogate pair). The slice must back off one code unit
+    // rather than emit a lone surrogate.
+    mountInput()
+    const kept = 'a'.repeat(1_000_000)
+    const file = new File(['x'], 'emoji.txt', { type: 'text/plain' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(kept + '😀') })
+    act(() => useAssetStore.getState().addFiles([file]))
+    fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: emoji.txt' }))
+    const preview = await screen.findByTestId('text-preview')
+    expect(preview.textContent).toBe(kept)
+    const lastCodeUnit = preview.textContent!.charCodeAt(preview.textContent!.length - 1)
+    const isSurrogate = lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdfff
+    expect(isSurrogate).toBe(false)
+    expect(lastCodeUnit).toBe(97) // 'a' — pair backed off cleanly
+    expect((await screen.findByRole('note')).textContent).toContain('conversation.input.textPreviewTruncated')
+  })
+
+  it('previews a markdown attachment through the same bounded read', async () => {
+    // Regression: .md previews previously called file.text() unbounded.
+    // They must go through the same cap helpers as the text preview path.
+    mountInput()
+    const mdContent = '# Hello\n\nsome body text'
+    const file = new File(['x'], 'doc.md', { type: 'text/markdown' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(mdContent) })
+    act(() => useAssetStore.getState().addFiles([file]))
+    const mdButton = await screen.findByRole('button', { name: 'conversation.input.previewMarkdown' })
+    await act(async () => { fireEvent.click(mdButton) })
+    await waitFor(() => expect(document.body.textContent).toContain('some body text'))
+  })
+
+  it('caps an oversized markdown attachment preview', async () => {
+    mountInput()
+    const mdKept = '# '.padEnd(10, 'x') + 'b'.repeat(MAX_PREVIEW_CHARS - 10)
+    const file = new File(['x'], 'huge.md', { type: 'text/markdown' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(mdKept + 'TAIL') })
+    act(() => useAssetStore.getState().addFiles([file]))
+    const mdButton = await screen.findByRole('button', { name: 'conversation.input.previewMarkdown' })
+    await act(async () => { fireEvent.click(mdButton) })
+    await waitFor(() => expect(document.body.textContent).toContain(mdKept.slice(-20)))
+    expect(document.body.textContent).not.toContain('TAIL')
   })
 
 })
