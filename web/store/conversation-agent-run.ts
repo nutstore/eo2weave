@@ -198,11 +198,19 @@ export async function runAgentImpl(
           '[conversation.store] Dispatch overlaps a pending run claim — queued a re-run trigger:',
           conversationId
         )
-        useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+        // #166 item 3: a queue-full overlap must NOT silently drop the rerun
+        // trigger — surface the failure so the caller (e.g. the WebMCP
+        // send_message handler) gets an error instead of a false success.
+        const enqueued = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
           text: '',
           enqueuedAt: Date.now(),
           rerunOnly: true,
         })
+        if (!enqueued.enqueued) {
+          throw new Error(
+            `Conversation is starting and its message queue is full (${conversationId})`
+          )
+        }
         return
       }
       const claimToken = `claim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`

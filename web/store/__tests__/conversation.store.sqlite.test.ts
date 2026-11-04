@@ -408,6 +408,77 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
   })
 
+  it('queues a dispatch arriving while a run is active and answers it after completion (#166 item 1)', async () => {
+    const conv = useConversationStore.getState().createNew('running-overlap', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    let releaseRun!: () => void
+    const runGate = new Promise<void>((resolve) => { releaseRun = resolve })
+    const loopRuns: number[] = []
+    const userMsgCounts: number[] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      loopRuns.push(Date.now())
+      userMsgCounts.push(
+        useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages.filter((m) => m.role === 'user').length ?? -1
+      )
+      // First run blocks mid-loop: this recreates the window where the
+      // conversation is pending/running (no claim slot — it was released on
+      // lock acquisition), the exact state QuickActionsPanel dispatches hit.
+      if (loopRuns.length === 1) await runGate
+      return [
+        { id: `assistant-run-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() },
+      ]
+    }
+
+    const first = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    await vi.waitFor(() => {
+      expect(loopRuns).toHaveLength(1)
+    })
+    // The store-level guard must QUEUE this dispatch instead of dropping it.
+    const second = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(1)
+
+    releaseRun()
+    await Promise.all([first, second])
+    // The queued trigger must be consumed as a follow-up turn, NOT lost.
+    await vi.waitFor(() => {
+      expect(loopRuns).toHaveLength(2)
+    })
+    expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(0)
+    expect(userMsgCounts).toEqual([1, 0])
+  })
+
+  it('rejects an active-run dispatch when the rerun queue is full instead of dropping it (#166 item 3)', async () => {
+    const conv = useConversationStore.getState().createNew('running-queue-full', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    let releaseRun!: () => void
+    const runGate = new Promise<void>((resolve) => { releaseRun = resolve })
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      await runGate
+      return [{ id: 'assistant-x', role: 'assistant', content: 'done', timestamp: Date.now() }]
+    }
+
+    const first = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    await vi.waitFor(() => {
+      expect(useConversationStore.getState().getConversationStatus(conv.id)).not.toBe('idle')
+    })
+    // Fill the rerun queue to MAX_QUEUE_SIZE (20) with rerun triggers.
+    const runtime = useConversationRuntimeStore.getState()
+    for (let i = 0; i < 20; i++) {
+      expect(runtime.enqueueMessage(conv.id, { text: '', enqueuedAt: Date.now(), rerunOnly: true }).enqueued).toBe(true)
+    }
+
+    // Queue full: the dispatch must surface a rejection, not resolve silently.
+    await expect(
+      useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    ).rejects.toThrow(/queue is full/)
+
+    releaseRun()
+    await first
+  })
+
   it('should finalize non-current tool steps by toolCallId in interleaved calls', async () => {
     const store = useConversationStore.getState()
     const conv = store.createNew('test')
