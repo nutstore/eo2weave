@@ -884,7 +884,12 @@ const AssistantStep = memo(function AssistantStep({
         ? t('conversation.error.failed')
         : message.kind === 'aborted'
           ? t('conversation.error.aborted')
-          : null
+          : // A turn with visible text can still be INCOMPLETE (stop reason
+            // 'length') — chat must say so, aligning with the export path
+            // which already surfaces the same status (issue #165, item 5).
+            message.stopReason === 'length'
+            ? t('conversation.error.truncated')
+            : null
   const failureStatusClass =
     message.kind === 'error'
       ? 'text-sm text-red-700 dark:text-red-300'

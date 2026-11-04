@@ -226,7 +226,16 @@ describe('empty turn recovery through pi-agent-core', () => {
           JSON.stringify(message.content).includes('earlier answer')
       )
     ).toBe(true)
-    expect(sentMessages.some((message) => message.role === 'assistant' && (message as { id?: string }).id === 'aborted')).toBe(false)
+    // The vacuous `id === 'aborted'` check (never copied onto provider
+    // messages) is replaced by a REAL assertion: the provider message carrying
+    // the aborted stop reason must be absent. Internal ids never reach the
+    // provider payload, so absence must be asserted on a field that IS
+    // preserved (issue #165, item 6).
+    expect(
+      sentMessages.some(
+        (message) => message.role === 'assistant' && message.stopReason === 'aborted'
+      )
+    ).toBe(false)
   })
 
   it('persists provider error state before propagating the failure', async () => {

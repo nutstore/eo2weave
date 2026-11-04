@@ -35,12 +35,19 @@ describe('message-mappers', () => {
     // on the message so the UI can render them.
     expect(imageOnly.kind).not.toBe('empty')
     expect(imageOnly.images).toEqual([{ data: 'aW1hZ2U=', mimeType: 'image/png' }])
-    // The wire form is a normal assistant message with a text block; the
-    // base64 payload stays on the internal record (same as text messages).
+    // The wire form round-trips the image block back into provider history
+    // (issue #165, item 4): without it the turn after an image-only reply
+    // would send an empty assistant message and the model would lose the
+    // context of what it just produced. The image block must survive the
+    // mapping — dropping the base64 here was the old bug.
     const wire = internalToPiMessages([imageOnly], model, '')
     expect(wire).toHaveLength(1)
     expect(wire[0]).toMatchObject({ role: 'assistant' })
-    expect(JSON.stringify(wire)).not.toContain('aW1hZ2U=')
+    expect((wire[0] as { content: Array<{ type: string }> }).content).toContainEqual({
+      type: 'image',
+      data: 'aW1hZ2U=',
+      mimeType: 'image/png',
+    })
   })
   it('persists UI traces separately from the model conversation', () => {
     const deferred = [{ sourceCallId: 'child', sequence: 0, content: [{ type: 'text', text: 'observation' }] }]

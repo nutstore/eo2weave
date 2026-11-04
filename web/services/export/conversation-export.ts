@@ -598,7 +598,15 @@ function renderArtifactsHtml(artifacts: ExportArtifact[] | undefined): string {
         return `<div class="attachment attachment-missing">⚠️ ${escapeHtml(a.displayName)} (file not available)</div>`
       }
       if (a.isImage) {
-        return `<img class="export-image" src="data:${a.mimeType};base64,${a.base64}" alt="${escapeHtml(a.displayName)}" />`
+        // The MIME type is provider-controlled (assistant.images rides in from
+        // the model response) — an unescaped value could break out of the src
+        // attribute and inject markup into the exported HTML. Allowlist safe
+        // image MIME types and escape what little survives the filter.
+        const mime = sanitizeImageMime(a.mimeType)
+        if (!mime) {
+          return `<div class="attachment attachment-missing">⚠️ ${escapeHtml(a.displayName)} (unsupported image type — skipped)</div>`
+        }
+        return `<img class="export-image" src="data:${escapeHtml(mime)};base64,${a.base64}" alt="${escapeHtml(a.displayName)}" />`
       }
       const size = a.bytes ? formatByteSize(a.bytes.length) : ''
       return `<div class="attachment">📎 ${escapeHtml(a.displayName)}${size ? ` (${size})` : ''}</div>`
@@ -1045,6 +1053,23 @@ function buildFilename(base: string, extension: string, addTimestamp: boolean): 
   const safeName = base.replace(/[^a-zA-Z0-9\u4e00-\u9fff._-]/g, '_')
   const timestamp = addTimestamp ? `_${Date.now()}` : ''
   return `${safeName}${timestamp}.${extension}`
+}
+
+/**
+ * Image MIME allowlist for the HTML export. The value is provider-controlled
+ * (assistant.images), so anything outside the safe image set is rejected —
+ * the caller renders a "skipped" placeholder instead of the image.
+ */
+const SAFE_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
+
+function sanitizeImageMime(raw: string | undefined): string | null {
+  const value = (raw ?? '').trim().toLowerCase()
+  return SAFE_IMAGE_MIME_TYPES.has(value) ? value : null
 }
 
 function escapeHtml(text: string): string {

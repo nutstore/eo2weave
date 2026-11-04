@@ -138,6 +138,7 @@ export const conversation = {
       requestFailed: "요청 실패:",
       retry: "재시도",
       emptyTurn: "모델이 응답을 반환하지 않았습니다.",
+emptyTtruncated: "응답이 길이 제한에 도달하여 잘렸습니다.",
       failed: "모델 요청이 실패했습니다. 잠시 후 다시 시도해 주세요.",
       http: "모델 공급자가 오류를 반환했습니다 (HTTP {status}).",
       network: "네트워크 오류 — 모델 공급자에 연결할 수 없습니다. 연결 상태를 확인한 후 다시 시도해 주세요.",
