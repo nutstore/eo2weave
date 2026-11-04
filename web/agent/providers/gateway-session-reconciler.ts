@@ -92,39 +92,65 @@ export function __resetGatewaySessionReconcilerForTests(): void {
   installed = false
   newestJobId = 0
   lastOutcome = null
+  currentDispose = () => {}
+  lastSetupWork = Promise.resolve()
 }
 
 function fence(job: ReconcileJob): boolean {
   return job.generation === getGatewayAuthSessionGeneration()
 }
 
-/** Mark the settings store's credential status with stale-write cleanup. */
+/**
+ * True when a reconcile job's own credential refresh bumped the auth
+ * generation: `resolveGatewayDispatchCredential` saves the refreshed pair
+ * and bumps the generation, so a naive fence would retire the job's own
+ * remaining reconciliation (#175 review). Generation moves not caused by
+ * this job's refresh still supersede.
+ */
+function fenceAllowingOwnRefresh(job: ReconcileJob, generationBeforeRefresh: number): boolean {
+  const current = getGatewayAuthSessionGeneration()
+  return current === job.generation || current === generationBeforeRefresh + 1
+}
+
+/**
+ * Mark the settings store's credential status with stale-write cleanup.
+ * `stillCurrent` lets a caller relax the fence for its OWN credential
+ * refresh's generation bump (#175 review).
+ */
 async function reconcileCredentialStatus(
   status: 'valid' | 'expired' | 'missing',
   options: { clearError: boolean },
   job: ReconcileJob,
+  stillCurrent: () => boolean = () => fence(job),
 ): Promise<boolean> {
   // Dynamic import (same pattern the auth layer uses): keeps this module
   // loadable in tests that stub the settings store, and avoids a static
   // store dependency at module-eval time.
   const { useSettingsStore } = await import('@/store/settings.store')
   // Fence: a newer session change supersedes this status write.
-  if (!fence(job)) return false
+  if (!stillCurrent()) return false
   const settings = useSettingsStore.getState()
   settings.setModelCredentialStatus(status)
   if (options.clearError) settings.setModelCredentialStatusError(null)
   return true
 }
 
-async function reconcileLoggedIn(job: ReconcileJob): Promise<GatewayReconcileOutcome> {
+async function reconcileLoggedIn(job: ReconcileJob, event: GatewaySessionEvent): Promise<GatewayReconcileOutcome> {
   const baseURL = getLLMGatewayBaseURL()
   const clientId = getLLMGatewayClientId()
+
+  // The resolver's own refresh bumps the auth generation (saveStoredTokens);
+  // remember the pre-refresh value so the fences below tolerate THAT bump
+  // while still retiring jobs superseded by a genuinely newer session (#175
+  // review: "refresh retires its own reconciliation").
+  const generationBeforeResolve = getGatewayAuthSessionGeneration()
+  const fenceAfterResolve = (): boolean => fenceAllowingOwnRefresh(job, generationBeforeResolve)
 
   // Re-read the LATEST shared session (never the event payload) and obtain
   // a usable token. Confirmed absence and transient failures are
   // distinguished by the resolver's status-bearing result.
   const resolved = await resolveGatewayDispatchCredential(baseURL, clientId)
-  if (!fence(job)) return 'superseded'
+  if (!fenceAfterResolve()) return 'superseded'
 
   if (!resolved.ok) {
     if (resolved.kind === 'temporary') {
@@ -135,6 +161,24 @@ async function reconcileLoggedIn(job: ReconcileJob): Promise<GatewayReconcileOut
       // be labeled expired/missing, and a stale error is not cleared either
       // (the outcome is unknown, not healthy).
       registerLLMGatewayProvider()
+      if (event.type === 'identity-change') {
+        // The identity changed (login / account replacement): any catalog
+        // still registered belongs to the PREVIOUS account and must not be
+        // presented as the new session's verified models (#175 review).
+        // Demote it to a FAILED (non-authoritative) catalog — the same
+        // semantics as a failed post-login discovery — so the retrying
+        // reconcile re-discovers instead of re-serving old models.
+        try {
+          const { registerGatewayModels, LLM_GATEWAY_PROVIDER_TYPE } =
+            await import('@/agent/providers/llm-gateway-provider')
+          const { getModelsForProvider } = await import('@/agent/providers/types')
+          if (getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).length > 0) {
+            registerGatewayModels([], 'failed')
+          }
+        } catch {
+          // Best-effort: registration above already re-established retry.
+        }
+      }
       return 'transient'
     }
     // Confirmed absent ('missing' = never logged in / fully purged) or
@@ -150,7 +194,7 @@ async function reconcileLoggedIn(job: ReconcileJob): Promise<GatewayReconcileOut
   // Usable session: register the provider, load the CURRENT account's
   // catalog, then reconcile both status representations.
   registerLLMGatewayProvider()
-  if (!fence(job)) return 'superseded'
+  if (!fenceAfterResolve()) return 'superseded'
 
   const tokenGeneration = getGatewayAuthSessionGeneration()
   try {
@@ -165,15 +209,15 @@ async function reconcileLoggedIn(job: ReconcileJob): Promise<GatewayReconcileOut
     // authoritative display data, and a NEW account must not inherit them).
     // A generation change during discovery means the failure belongs to a
     // dead session: drop its catalog entirely.
-    if (!fence(job) || tokenGeneration !== getGatewayAuthSessionGeneration()) {
+    if (!fenceAfterResolve() || tokenGeneration !== getGatewayAuthSessionGeneration()) {
       unregisterLLMGatewayProvider()
       return 'superseded'
     }
     console.warn('[gateway-session-reconciler] catalog discovery failed after login; keeping failed catalog:', e)
   }
-  if (!fence(job)) return 'superseded'
+  if (!fenceAfterResolve()) return 'superseded'
 
-  const statusOk = await reconcileCredentialStatus('valid', { clearError: true }, job)
+  const statusOk = await reconcileCredentialStatus('valid', { clearError: true }, job, fenceAfterResolve)
   if (!statusOk) return 'superseded'
 
   // Invalidate the API-key availability cache for the gateway's storage key
@@ -181,7 +225,7 @@ async function reconcileLoggedIn(job: ReconcileJob): Promise<GatewayReconcileOut
   // stale cached verdict, and refresh provider-driven UI collections.
   try {
     const { useSettingsStore } = await import('@/store/settings.store')
-    if (fence(job)) {
+    if (fenceAfterResolve()) {
       const settings = useSettingsStore.getState()
       settings.invalidateApiKeyCache(getLLMGatewayApiKeyProviderKey())
       settings.checkHasApiKey()
@@ -234,7 +278,7 @@ async function runReconcile(event: GatewaySessionEvent): Promise<void> {
   try {
     const outcome = event.type === 'access-refresh'
       ? await reconcileAccessRefresh(job)
-      : await reconcileLoggedIn(job)
+      : await reconcileLoggedIn(job, event)
     // Only the newest job may record its outcome; an older job that kept
     // running to a fence-stop must not clobber the newer job's verdict.
     if (jobId === newestJobId) lastOutcome = outcome
@@ -247,14 +291,20 @@ async function runReconcile(event: GatewaySessionEvent): Promise<void> {
 /**
  * Install the observer-side reconciler. Returns a dispose function that
  * unsubscribes (used by the wiring lifecycle and tests). Idempotent: a
- * second call returns the existing dispose without double-subscribing.
+ * second call returns the SAME disposer without double-subscribing, so one
+ * caller's dispose always tears the subscription down coherently (#175
+ * review) — after it, a fresh setup call re-subscribes cleanly.
  */
 export function setupGatewaySessionReconciler(): () => void {
-  if (installed && unsubscribe) return unsubscribe
+  // Every caller receives the SAME idempotent disposer (#175 review): a raw
+  // `unsubscribe` would leave `installed`/`unsubscribe` set when one of
+  // several callers disposed, so later setups would believe a listener is
+  // still installed while cross-tab events go unreconciled.
+  if (installed && unsubscribe) return currentDispose
   installed = true
 
   let queued: Promise<void> = Promise.resolve()
-  unsubscribe = subscribeToGatewaySessionEvents((event) => {
+  const enqueue = (event: GatewaySessionEvent): void => {
     // Serialize jobs: each reconcile runs to completion (or its fences)
     // before the next starts, and `newestJobId` fencing retires the losers
     // of rapid login → logout → login sequences at their await boundaries.
@@ -265,11 +315,34 @@ export function setupGatewaySessionReconciler(): () => void {
         // alive against unexpected rejections.
         console.warn('[gateway-session-reconciler] queue continuation failed:', e)
       })
-  })
+  }
+  unsubscribe = subscribeToGatewaySessionEvents(enqueue)
 
-  return () => {
+  // #175 review: the subscription only sees FUTURE events. A cross-tab
+  // session change that landed between the auth storage listener's
+  // activation and this subscription install would be missed forever —
+  // inspect the CURRENT session once so late installers still converge.
+  const initialReconcile = queued.then(() => runReconcile({ type: 'identity-change', oldRefreshToken: null, newRefreshToken: null, generation: getGatewayAuthSessionGeneration() }))
+    .catch((e) => {
+      console.warn('[gateway-session-reconciler] initial reconcile failed:', e)
+    })
+  // Exposed to tests so they can drain the initial reconcile deterministically.
+  lastSetupWork = initialReconcile
+
+  currentDispose = () => {
     unsubscribe?.()
     unsubscribe = null
     installed = false
   }
+  return currentDispose
+}
+
+/** The shared idempotent disposer handed to every setup caller. */
+let currentDispose: () => void = () => {}
+/** Promise resolving when the most recent setup's initial reconcile settled. */
+let lastSetupWork: Promise<void> = Promise.resolve()
+
+/** Test hook: resolve after the setup-time initial reconcile has settled. */
+export function whenGatewayReconcilerSettledForTests(): Promise<void> {
+  return lastSetupWork
 }

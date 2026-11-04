@@ -540,14 +540,30 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   useEffect(() => {
     let dispose: (() => void) | null = null
     let cancelled = false
-    void import('@/agent/providers/gateway-session-reconciler').then(
-      ({ setupGatewaySessionReconciler }) => {
-        if (cancelled) return
-        dispose = setupGatewaySessionReconciler()
-      },
-    )
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    // #175 review: a transient chunk-load failure used to leave the
+    // reconciler permanently uninstalled (no re-adoption until reload).
+    // Retry a bounded number of times with backoff; a still-failing import
+    // degrades to the pre-reconciler behavior (event-driven invalidation
+    // without re-adoption) instead of throwing during bootstrap.
+    const attempt = (remaining: number): void => {
+      if (cancelled) return
+      void import('@/agent/providers/gateway-session-reconciler').then(
+        ({ setupGatewaySessionReconciler }) => {
+          if (cancelled) return
+          dispose = setupGatewaySessionReconciler()
+        },
+        (error) => {
+          console.warn('[App] gateway-session-reconciler import failed:', error)
+          if (cancelled || remaining <= 0) return
+          retryTimer = setTimeout(() => attempt(remaining - 1), 2000 * (4 - remaining))
+        },
+      )
+    }
+    attempt(3)
     return () => {
       cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
       dispose?.()
     }
   }, [])
