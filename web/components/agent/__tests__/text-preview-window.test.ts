@@ -6,6 +6,16 @@ function makeFile(content: string): File {
   return new File([content], 'test.txt', { type: 'text/plain' })
 }
 
+/** Build a File-like from raw bytes (for malformed-UTF-8 cases). */
+function makeByteFile(bytes: number[]): File {
+  return new File([new Uint8Array(bytes)], 'test.bin', { type: 'application/octet-stream' })
+}
+
+/** Whether the text contains an unpaired UTF-16 surrogate. */
+function hasLoneSurrogate(text: string): boolean {
+  return /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text)
+}
+
 /** Load the whole file as exact consecutive windows, starting from (0, 0). */
 async function tileForward(file: File, windowChars = WINDOW_CHARS): Promise<LoadedWindow[]> {
   const windows: LoadedWindow[] = []
@@ -255,5 +265,137 @@ describe('text-preview-window', () => {
     expect(back.startChar).toBe(0)
     expect(back.text).toBe(content.slice(0, back.endChar))
     expect(back.startChar + back.text.length).toBe(back.endChar)
+  })
+
+  // --- Malformed / truncated UTF-8: byte offsets must stay exact. ---
+
+  it('keeps byte offsets exact when the file contains a stray continuation byte', async () => {
+    // 0x80 is not a valid UTF-8 lead byte: TextDecoder turns it into U+FFFD,
+    // which re-encodes to 3 bytes, so a decoder-derived offset would drift.
+    const bytes = [...new TextEncoder().encode('a'.repeat(10)), 0x80, ...new TextEncoder().encode('b'.repeat(10))]
+    const file = makeByteFile(bytes)
+    const win = await readForwardWindow(file, 0, 0)
+    expect(win.endByte).toBe(file.size)
+    expect(win.atEof).toBe(true)
+    // The replacement character is still shown, but the offset is exact.
+    expect(win.text).toBe('aaaaaaaaaa\uFFFDbbbbbbbbbb')
+  })
+
+  it('keeps byte offsets exact when the file ends with a truncated sequence', async () => {
+    // A trailing 2-byte sequence missing its second byte: it must not be
+    // dropped silently, and it must not shift the offsets.
+    const file = makeByteFile([...new TextEncoder().encode('hello world'), 0xe4, 0xb8])
+    const win = await readForwardWindow(file, 0, 0)
+    expect(win.endByte).toBe(file.size)
+    expect(win.atEof).toBe(true)
+    expect(win.text).toBe('hello world\uFFFD')
+  })
+
+  it('does not lose the file tail when a window ends on a truncated sequence', async () => {
+    // The truncated sequence must not make the window look as if it reached
+    // EOF early, and the next window must still be readable.
+    const file = makeByteFile([...new TextEncoder().encode('a'.repeat(50)), 0xe4, 0xb8])
+    const first = await readForwardWindow(file, 0, 0)
+    expect(first.atEof).toBe(true)
+    expect(first.endByte).toBe(file.size)
+  })
+
+  it('keeps byte offsets exact across a window boundary that precedes a malformed byte', async () => {
+    const file = makeByteFile([...new TextEncoder().encode('abc'), 0x80, ...new TextEncoder().encode('de')])
+    const first = await readForwardWindow(file, 0, 0, 3)
+    expect(first.text).toBe('abc')
+    expect(first.endByte).toBe(3)
+    const second = await readForwardWindow(file, first.endChar, first.endByte)
+    expect(second.startByte).toBe(3)
+    expect(second.endByte).toBe(file.size)
+    expect(second.atEof).toBe(true)
+  })
+
+  it('never emits a lone surrogate from a backward window that starts inside a sequence', async () => {
+    // The backward read starts at an arbitrary byte offset, which can land
+    // inside an emoji's 4-byte sequence: the sequence must be skipped whole
+    // instead of being decoded as a replacement character.
+    const file = makeFile('🚀'.repeat(50))
+    const back = await readBackwardWindow(file, 25, 100, 1)
+    expect(hasLoneSurrogate(back.text)).toBe(false)
+    expect(back.text).not.toContain('\uFFFD')
+    expect(back.text).toBe('🚀')
+    expect(back.startByte).toBe(96)
+  })
+
+  it('never emits a lone surrogate from a backward window in a CJK file', async () => {
+    const content = '中'.repeat(50)
+    const file = makeFile(content)
+    const back = await readBackwardWindow(file, 25, 75, 1)
+    expect(hasLoneSurrogate(back.text)).toBe(false)
+    expect(back.text).not.toContain('\uFFFD')
+    expect(back.text).toBe('中')
+  })
+
+  it('keeps a backward window’s character and byte offsets consistent', async () => {
+    const content = '中'.repeat(50)
+    const file = makeFile(content)
+    const back = await readBackwardWindow(file, 25, 75, 10)
+    expect(back.startChar + back.text.length).toBe(back.endChar)
+    expect(back.startByte + utf8ByteLength(back.text)).toBe(back.endByte)
+    expect(back.text).toBe(content.slice(back.startChar, back.endChar))
+  })
+
+  it('never drops a real character from a backward window that starts on a boundary', async () => {
+    // An ASCII file: every byte is a sequence boundary, so the backward read
+    // must keep every character it read.
+    const content = 'a'.repeat(500)
+    const file = makeFile(content)
+    const back = await readBackwardWindow(file, 500, 500, 120)
+    expect(back.text).toBe('a'.repeat(120))
+    expect(back.startChar).toBe(380)
+    expect(back.startByte).toBe(380)
+  })
+
+  it('keeps the seam text identical across a forward swap in a CJK file', async () => {
+    // The overlap region must contain the same characters in both windows —
+    // a surrogate split or a byte drift would corrupt it.
+    const content = '中'.repeat(300_000)
+    const file = makeFile(content)
+    const first = await readForwardWindow(file, 0, 0)
+    const next = await readAdjacentWindow(file, first, 'next')
+    expect(next.text.slice(0, 8)).toBe(content.slice(next.startChar, next.startChar + 8))
+    expect(hasLoneSurrogate(next.text)).toBe(false)
+    expect(next.text).not.toContain('\uFFFD')
+  })
+
+  it('keeps the seam text identical across a backward swap in a CJK file', async () => {
+    const content = '中'.repeat(400_000)
+    const file = makeFile(content)
+    const first = await readForwardWindow(file, 0, 0)
+    const second = await readAdjacentWindow(file, first, 'next')
+    const back = await readAdjacentWindow(file, second, 'prev')
+    expect(hasLoneSurrogate(back.text)).toBe(false)
+    expect(back.text).not.toContain('\uFFFD')
+    expect(back.text.slice(0, 8)).toBe(content.slice(back.startChar, back.startChar + 8))
+    expect(back.startChar + back.text.length).toBe(back.endChar)
+    expect(back.startByte + utf8ByteLength(back.text)).toBe(back.endByte)
+  })
+
+  it('keeps the seam text identical across a backward swap in an emoji file', async () => {
+    const content = '🚀'.repeat(300_000)
+    const file = makeFile(content)
+    const first = await readForwardWindow(file, 0, 0)
+    const second = await readAdjacentWindow(file, first, 'next')
+    const back = await readAdjacentWindow(file, second, 'prev')
+    expect(hasLoneSurrogate(back.text)).toBe(false)
+    expect(back.text).not.toContain('\uFFFD')
+    expect(back.text.slice(0, 4)).toBe(content.slice(back.startChar, back.startChar + 4))
+  })
+
+  it('keeps a CRLF file readable across a seam', async () => {
+    const content = 'line\r\n'.repeat(50_000)
+    const file = makeFile(content)
+    const first = await readForwardWindow(file, 0, 0, 1000)
+    const next = await readForwardWindow(file, first.endChar, first.endByte, 1000)
+    // No seam splits a CRLF pair, so joining the windows reproduces the file.
+    expect(first.text + next.text).toBe(content.slice(0, first.text.length + next.text.length))
+    expect(first.text.endsWith('\r')).toBe(false)
+    expect(next.text.startsWith('\n')).toBe(false)
   })
 })
