@@ -7,88 +7,145 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     ::-webkit-scrollbar { width: 8px; }
-    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+    ::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 999px; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #fafaf8;
-      color: #171717;
+      background: #fafaf9;
+      color: #1c1917;
       max-width: 720px;
       margin: 0 auto;
-      padding: 32px 24px 48px;
+      padding: 36px 24px 56px;
     }
-    .header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
     .header .logo {
-      width: 34px; height: 34px; border-radius: 8px;
-      background: linear-gradient(135deg, #14B8A6, #0d7377);
+      width: 32px; height: 32px; border-radius: 8px;
+      background: linear-gradient(135deg, #14b8a6, #0f766e);
       display: flex; align-items: center; justify-content: center;
-      color: #fff; font-weight: 700; font-size: 16px;
+      color: #fff; font-weight: 700; font-size: 15px;
     }
-    h1 { font-size: 20px; font-weight: 700; }
-    .subtitle { color: #585858; font-size: 13px; margin-bottom: 24px; line-height: 1.5; }
+    h1 { font-size: 19px; font-weight: 700; letter-spacing: -0.2px; }
+    .subtitle { color: #78716c; font-size: 13px; margin-bottom: 28px; line-height: 1.5; }
+    /* Section headers carry a live count badge — the number is the hierarchy
+       cue, so the all-caps label itself stays quiet. Counts are filled by
+       main.ts (see the data-count wiring at the bottom of this file). */
     .section-title {
-      font-size: 12px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: 0.6px; color: #737373; margin: 22px 0 10px;
-      display: flex; align-items: center; gap: 10px;
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.7px; color: #78716c; margin: 24px 0 10px;
+      display: flex; align-items: center; gap: 8px;
     }
-    .section-title .refresh {
-      margin-left: auto; text-transform: none; letter-spacing: 0;
-      font-size: 11px; color: #0f766e; cursor: pointer; background: none;
-      border: none; padding: 2px 4px;
+    .section-title .count {
+      background: #f0efed; color: #78716c; border-radius: 999px;
+      padding: 1px 8px; font-size: 10.5px; letter-spacing: 0;
     }
-    .section-title .refresh:hover { text-decoration: underline; }
-    .section-title .refresh:disabled { color: #a3a3a3; cursor: default; text-decoration: none; }
+    .section-title .spacer { flex: 1; }
+    /* The registry card is a HEADER (connection row) + package rows; the
+       package rows live INSIDE the registry card as a divided list instead of
+       separate same-weight nested cards — three stacked equal borders was the
+       main hierarchy failure of the old layout. */
     .card {
-      background: #fff; border: 1px solid #e5e5e5; border-radius: 10px;
-      padding: 14px 16px; margin-bottom: 10px;
-      display: flex; align-items: flex-start; gap: 12px;
+      background: #fff; border: 1px solid #e7e5e4; border-radius: 10px;
+      margin-bottom: 12px; overflow: hidden;
     }
+    /* A body that holds pkg-rows must NOT add its own padding — the rows pad
+       themselves and their dividers should span the full card width (finding:
+       "Package rows are overly inset"). Plain messages keep the padding. */
+    .card > .body { padding: 14px 16px; }
+    .card > .body:has(.pkg-row) { padding: 0; }
+    /* Registry connection header */
+    .reg-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 16px; background: #fcfcfb; border-bottom: 1px solid #f0efed;
+    }
+    .reg-head .dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; flex: 0 0 auto; }
+    /* The dot reflects real connection state (finding: "Failed registries
+       still look connected"): loading pulses amber, failed is red. */
+    .reg-head .dot-loading { background: #f59e0b; animation: dot-pulse 1.2s ease-in-out infinite; }
+    .reg-head .dot-failed { background: #ef4444; }
+    @keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    @media (prefers-reduced-motion: reduce) { .reg-head .dot-loading { animation: none; } }
+    .reg-head .name { font-size: 13px; font-weight: 600; }
+    .reg-head .host {
+      font-size: 11px; color: #78716c; font-family: ui-monospace, monospace;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .reg-head .spacer { flex: 1; min-width: 8px; }
     .card .body { flex: 1; min-width: 0; }
-    .card .name { font-size: 14px; font-weight: 600; }
-    .card .host { font-size: 11px; color: #737373; font-family: ui-monospace, monospace; margin-top: 1px; }
-    .card .desc { font-size: 12px; color: #585858; margin-top: 4px; line-height: 1.45; }
+    .card .name { font-size: 13px; font-weight: 600; }
+    .card .title-line { display: flex; align-items: center; gap: 8px; }
+    .card .host { font-size: 11px; color: #78716c; font-family: ui-monospace, monospace; margin-top: 1px; }
+    .card .desc { font-size: 12px; color: #57534e; margin-top: 4px; line-height: 1.45; }
     .card .tools { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
     .card .tool-chip {
       font-size: 10.5px; font-family: ui-monospace, monospace;
-      background: #f4f8f7; border: 1px solid #d5e8e5; color: #0d9488;
+      background: #f5f5f4; border: 1px solid #e7e5e4; color: #44403c;
       border-radius: 5px; padding: 2px 7px;
     }
-    .actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex: 0 0 auto; }
-    /* Installed rows hold TWO side-by-side buttons (Repair + Remove);
-       only single-button rows (Install) keep the column layout. */
-    .actions.row { flex-direction: row; align-items: center; }
+    .pkg-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px; border-top: 1px solid #f5f5f4;
+    }
+    .pkg-row .body { flex: 1; min-width: 0; }
+    .pkg-row:first-of-type { border-top: none; }
+    /* Installed-packages list rows: .card + sibling .body/.actions must stay a
+       padded flex row after the base .card rule dropped its flex/padding
+       (finding: "Installed actions drop below details"). */
+    #installedList .card { flex-direction: row; align-items: center; gap: 12px; padding: 12px 16px; }
+    #installedList .card .body { flex: 1; min-width: 0; }
+    /* Status is a compact pill anchored after the package id line — NOT a
+       block element that stretches to its container width (the old layout's
+       stretched-line defect came from exactly that). */
+    .state {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10.5px; font-weight: 600; border-radius: 999px; padding: 2px 9px;
+      background: #f5f5f4; color: #8a8a86; white-space: nowrap;
+    }
+    .state.active { background: #ecfdf5; color: #15803d; }
+    .state.inactive { background: #f5f5f4; color: #78716c; }
+    .state .dot {
+      width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+      display: inline-block;
+    }
     .btn {
-      border: 1px solid #d4d4d4; background: #fafaf8; color: #171717;
+      border: 1px solid #d6d3d1; background: #fff; color: #1c1917;
       border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer;
       white-space: nowrap;
     }
-    .btn:hover:not(:disabled) { background: #efefec; }
+    .btn:hover:not(:disabled) { background: #f5f5f4; }
     .btn:disabled { opacity: 0.55; cursor: not-allowed; }
-    .btn.primary { background: #0d9488; border-color: #0d9488; color: #fff; font-weight: 600; }
-    .btn.primary:hover:not(:disabled) { background: #0b7a7a; }
+    .btn.primary { background: #0f766e; border-color: #0f766e; color: #fff; font-weight: 600; }
+    .btn.primary:hover:not(:disabled) { background: #0b5e58; }
     .btn.danger { background: #fff; color: #b91c1c; border-color: #fecaca; }
     .btn.danger:hover:not(:disabled) { background: #fef2f2; }
     /* Recovery action (Repair): visually quieter than a normal button — it is
        a rare recovery path and must not compete with Remove. */
-    .btn.ghost { background: none; border-color: transparent; color: #737373; padding: 5px 8px; }
-    .btn.ghost:hover:not(:disabled) { background: #efefec; color: #171717; }
-    .btn:focus-visible { outline: 2px solid #0d9488; outline-offset: 2px; }
-    .state {
-      font-size: 10.5px; font-weight: 600; border-radius: 999px; padding: 1px 8px;
-      border: 1px solid #d5e8e5; background: #f4f8f7; color: #0d9488;
+    .btn.ghost { background: none; border-color: transparent; color: #78716c; padding: 5px 8px; }
+    .btn.ghost:hover:not(:disabled) { background: #f5f5f4; color: #1c1917; }
+    .btn:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+    /* Compact text controls for the registry header (Refresh / Remove) —
+       full-label buttons made the narrow-window header overflow (finding:
+       "Registry actions remain bulky"). */
+    .iconbtn {
+      border: none; background: none; color: #78716c; cursor: pointer;
+      padding: 3px 7px; border-radius: 5px; font-size: 11.5px; white-space: nowrap;
     }
-    .state.inactive { border-color: #e5e5e5; background: #f8f7f5; color: #737373; }
+    .iconbtn:hover:not(:disabled) { background: #f0efed; color: #1c1917; }
+    .iconbtn:disabled { opacity: 0.55; cursor: not-allowed; }
+    /* Action rows sit side by side; the column layout was the old "two
+       stacked primary buttons" defect. main.ts toggles the `row` class. */
+    .actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: 0 0 auto; }
+    .actions.row { flex-direction: row; align-items: center; }
     .add-box {
-      background: #fff; border: 1px solid #e5e5e5; border-radius: 10px;
-      padding: 14px 16px; margin-bottom: 10px;
+      background: #fff; border: 1px solid #e7e5e4; border-radius: 10px;
+      padding: 13px 16px; margin-top: 12px;
     }
     .add-row { display: flex; gap: 8px; }
     .add-row input {
-      flex: 1; min-width: 0; border: 1px solid #d4d4d4; border-radius: 6px;
-      padding: 8px 10px; font-size: 13px; font-family: inherit;
+      flex: 1; min-width: 0; border: 1px solid #d6d3d1; border-radius: 6px;
+      padding: 8px 10px; font-size: 13px; font-family: inherit; background: #fafaf9;
     }
-    .add-row input:focus-visible { outline: 2px solid #0d9488; outline-offset: 1px; }
-    .hint { font-size: 11px; color: #737373; margin-top: 8px; line-height: 1.55; }
-    .empty { color: #737373; font-size: 13px; padding: 12px 0; }
+    .add-row input:focus-visible { outline: 2px solid #0f766e; outline-offset: 1px; }
+    .hint { font-size: 11px; color: #78716c; margin-top: 8px; line-height: 1.55; }
+    .empty { color: #78716c; font-size: 13px; padding: 12px 0; }
     .error {
       color: #b91c1c; font-size: 12px; margin: 10px 0; overflow-wrap: anywhere;
       background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 8px 10px;
@@ -114,8 +171,8 @@
     }
     .success-toast.visible { opacity: 1; transform: translate(-50%, 0); }
     .note {
-      font-size: 11px; color: #737373; margin-top: 20px; line-height: 1.6;
-      border-top: 1px solid #e5e5e5; padding-top: 14px;
+      font-size: 11px; color: #78716c; margin-top: 24px; line-height: 1.6;
+      border-top: 1px solid #e7e5e4; padding-top: 14px;
     }
   </style>
 </head>
@@ -131,7 +188,7 @@
     <span class="dismiss" id="pageErrorDismiss" role="button" tabindex="0">✕</span>
   </p>
 
-  <div class="section-title" id="registryTitle">Package registry</div>
+  <div class="section-title"><span id="registryTitle">Package registry</span><span class="count" id="registryCount"></span></div>
   <div id="registryList"></div>
 
   <div class="add-box">
@@ -142,7 +199,7 @@
     <div class="hint" id="registryHint"></div>
   </div>
 
-  <div class="section-title" id="installedTitle">Installed packages</div>
+  <div class="section-title"><span id="installedTitle">Installed packages</span><span class="count" id="installedCount"></span></div>
   <div id="installedList"></div>
 
   <p class="note" id="pageNote"></p>

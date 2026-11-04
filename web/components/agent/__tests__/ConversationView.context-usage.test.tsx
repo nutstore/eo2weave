@@ -2,6 +2,8 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ConversationView } from '../ConversationView'
 
+vi.mock('@/hooks/useProjectAgentsInit', () => ({ useProjectAgentsInit: vi.fn() }))
+
 const {
   useConversationStoreMock,
   useConversationRuntimeStoreMock,

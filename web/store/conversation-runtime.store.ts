@@ -38,6 +38,12 @@ export interface QueuedMessage {
   contentParts?: Message['contentParts']
   /** Provenance for a user-role message created by an agent tool handoff. */
   readImageHandoff?: Message['readImageHandoff']
+  /**
+   * Re-run trigger from an overlapping dispatch: the caller already appended
+   * its user message to the conversation, so the end-of-run consumer must
+   * start a follow-up turn WITHOUT creating another user message.
+   */
+  rerunOnly?: boolean
 }
 
 /** Maximum queued messages per conversation */

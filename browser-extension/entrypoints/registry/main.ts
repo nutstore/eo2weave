@@ -214,17 +214,38 @@ function button(label: string, className: string, onClick: () => void): HTMLButt
 function buildRegistryCard(registry: PackageRegistry): HTMLElement {
   const card = document.createElement('div')
   card.className = 'card'
-  const body = document.createElement('div')
-  body.className = 'body'
+  // Connection header: registry identity + its own actions. Packages render
+  // as divided rows INSIDE this card (one bordered container instead of the
+  // old nested-card stack that flattened the hierarchy).
+  const head = document.createElement('div')
+  head.className = 'reg-head'
+  // The dot reflects REAL connection state, not a decorative always-green
+  // (finding: "Failed registries still look connected"): loading = pulsing
+  // amber, failed = red, connected = green.
+  const catalog = catalogs.get(registry.manifestUrl)
+  const dotState = catalog
+    ? 'ok'
+    : catalogLoads.has(registry.manifestUrl)
+      ? 'loading'
+      : catalogLoadFailures.has(registry.manifestUrl)
+        ? 'failed'
+        : 'ok'
+  const dot = document.createElement('span')
+  dot.className = `dot dot-${dotState}`
+  if (dotState === 'loading') dot.title = t('webmcpPackagesRefreshing')
   const name = document.createElement('div')
   name.className = 'name'
   name.textContent = registry.label
   const host = document.createElement('div')
   host.className = 'host'
   host.textContent = registry.manifestUrl
-  body.append(name, host)
+  const headSpacer = document.createElement('span')
+  headSpacer.className = 'spacer'
+  head.append(dot, name, host, headSpacer)
 
-  const catalog = catalogs.get(registry.manifestUrl)
+  const body = document.createElement('div')
+  body.className = 'body'
+
   if (!catalog) {
     const hint = document.createElement('div')
     hint.className = 'desc'
@@ -249,7 +270,7 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
 
   const actions = document.createElement('div')
   actions.className = 'actions'
-  const refresh = button(t('webmcpPackagesRefresh'), '', async () => {
+  const refresh = button(t('webmcpPackagesRefresh'), 'iconbtn', async () => {
     refresh.disabled = true
     refresh.textContent = t('webmcpPackagesRefreshing')
     // Invalidate in-flight catalog/preview work FIRST (finding: "Refreshes
@@ -287,8 +308,9 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
       await render()
     }
   })
+  head.append(actions)
   actions.append(refresh)
-  const remove = button(t('webmcpPackagesRemoveRegistry'), 'danger', async () => {
+  const remove = button(t('webmcpPackagesRemoveRegistry'), 'iconbtn', async () => {
     remove.disabled = true
     // Invalidate in-flight catalog/preview work for this registry BEFORE
     // the removal lands (finding: "Refreshes accept stale registry data") —
@@ -312,13 +334,13 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
     }
   })
   actions.append(remove)
-  card.append(body, actions)
+  card.append(head, body)
   return card
 }
 
 function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage): HTMLElement {
   const row = document.createElement('div')
-  row.className = 'card'
+  row.className = 'pkg-row'
   const body = document.createElement('div')
   body.className = 'body'
   const name = document.createElement('div')
@@ -330,7 +352,10 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
   const desc = document.createElement('div')
   desc.className = 'desc'
   desc.textContent = pkg.description
-  body.append(name, host, desc)
+  const titleLine = document.createElement('div')
+  titleLine.className = 'title-line'
+  titleLine.append(name)
+  body.append(titleLine, host, desc)
 
   // The tool count: the VERIFIED count from the package's own manifest when
   // the preview succeeded, otherwise the publisher's CLAIM (marked
@@ -358,12 +383,16 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
 
   const isInstalled = installed.has(pkg.id)
   const isEnabled = isInstalled && activations[pkg.id] === 'enabled'
-  const state = document.createElement('div')
-  state.className = 'state' + (isEnabled ? '' : ' inactive')
-  state.textContent = isInstalled
+  // Status is a COMPACT inline pill on the id line — never a block element
+  // that stretches to its container (the old stretched-line defect).
+  const state = document.createElement('span')
+  state.className = 'state' + (isEnabled ? ' active' : '')
+  const stateDot = document.createElement('span')
+  stateDot.className = 'dot'
+  state.append(stateDot, isInstalled
     ? (isEnabled ? t('webmcpPackagesInstalledActive') : t('webmcpPackagesInstalledInactive'))
-    : ''
-  body.append(state)
+    : t('webmcpPackagesNotInstalled'))
+  titleLine.append(state)
   // The enable hint is only meaningful for a package that is NOT enabled —
   // an enabled package showing "open the side panel to enable" contradicted
   // the card's own active badge.
@@ -375,7 +404,7 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
   }
 
   const actions = document.createElement('div')
-  actions.className = 'actions'
+  actions.className = 'actions row'
   // Repair (re-install over an existing package) is a recovery action, not a
   // primary one: an installed package shows ONLY Remove by default, with a
   // compact "Repair" text button beside it — a full-width second button
@@ -402,7 +431,9 @@ function buildPackageRow(registry: PackageRegistry, pkg: RegistryManifestPackage
       await render()
     }
   }
-  const install = button(t('webmcpPackagesInstall'), 'primary', async () => {
+  // Repair is the recovery path: as a ghost button it stays reachable but
+  // never competes with Remove visually.
+  const install = button(isInstalled ? t('webmcpPackagesRepair') : t('webmcpPackagesInstall'), isInstalled ? 'ghost' : 'primary', async () => {
     await reinstall(install)
   })
   if (isInstalled) {
@@ -563,6 +594,10 @@ async function render(): Promise<void> {
 
   const registryList = document.getElementById('registryList')!
   registryList.replaceChildren()
+  const registryCountEl = document.getElementById('registryCount')
+  if (registryCountEl) registryCountEl.textContent = String(state.registries.length)
+  const installedCountEl = document.getElementById('installedCount')
+  if (installedCountEl) installedCountEl.textContent = String(installed.size)
   if (!state.registries.length) {
     const placeholder = document.createElement('div')
     placeholder.className = 'empty'

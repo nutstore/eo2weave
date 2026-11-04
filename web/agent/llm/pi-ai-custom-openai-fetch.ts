@@ -912,6 +912,29 @@ function convertContextMessages(context: Context, model: Model<Api>): unknown[] 
         assistantMessage.reasoning_content = thinkingContent
       }
 
+      // OpenAI chat-completions assistant messages cannot carry image parts
+      // (image_url blocks are only defined for user/tool messages), so an
+      // image-only assistant turn — pi-ai surfaces generated images as
+      // {type:'image'} blocks on assistant turns — would serialize to
+      // `content: null` with no tool_calls and be dropped entirely, erasing
+      // the turn and breaking tool-call ordering for subsequent turns.
+      // Keep the message alive with a short text placeholder instead
+      // (issue #165).
+      if (assistantMessage.content === null && toolCalls.length === 0) {
+        // pi-ai's AssistantMessage type does not declare image blocks on
+        // assistant turns (same limitation message-mappers.ts documents);
+        // detect them through a structural cast.
+        const imageBlocks = message.content.filter(
+          (part) => (part as { type: string }).type === 'image'
+        )
+        if (imageBlocks.length > 0) {
+          assistantMessage.content =
+            imageBlocks.length === 1
+              ? '[generated an image]'
+              : `[generated ${imageBlocks.length} images]`
+        }
+      }
+
       if (assistantMessage.content !== null || toolCalls.length > 0) {
         messages.push(assistantMessage)
       }

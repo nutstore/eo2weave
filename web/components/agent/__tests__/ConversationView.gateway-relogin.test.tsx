@@ -332,3 +332,4 @@ describe('ConversationErrorBanner GATEWAY_CREDENTIALS_MISSING', () => {
     expect(startReloginMock).toHaveBeenCalledTimes(1)
   })
 })
+vi.mock('@/hooks/useProjectAgentsInit', () => ({ useProjectAgentsInit: vi.fn() }))

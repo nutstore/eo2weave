@@ -7,6 +7,7 @@ const conversationRepoDeleteMock = vi.fn(() => Promise.resolve())
 const conversationRepoSaveMetaMock = vi.fn(() => Promise.resolve())
 const messageRepoInsertMock = vi.fn(() => Promise.resolve())
 const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
+const ensureWorkspaceMock = vi.fn(() => Promise.resolve())
 
 vi.mock('sonner', () => ({
   toast: {
@@ -30,6 +31,7 @@ vi.mock('../conversation-context.store', () => ({
       activeWorkspaceId: null,
       workspaces: [],
       createWorkspace: vi.fn(() => Promise.resolve()),
+      ensureWorkspace: ensureWorkspaceMock,
       switchWorkspace: vi.fn(() => Promise.resolve()),
       refreshWorkspaces: vi.fn(() => Promise.resolve()),
       refreshPendingChanges: vi.fn(() => Promise.resolve()),
@@ -267,6 +269,146 @@ describe('conversation.store.sqlite tool-call routing', () => {
     await vi.waitFor(() => {
       expect(messageRepoInsertMock).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it('ensures the same-ID workspace before a background run without activating it', async () => {
+    const conv = useConversationStore.getState().createNew('background-task', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('@resource-loop hello'))
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    expect(ensureWorkspaceMock).toHaveBeenCalledWith(conv.id, '@resource-loop hello')
+    expect(useConversationStore.getState().activeConversationId).not.toBe(conv.id)
+  })
+
+  it('queues the overlapping second dispatch and answers it after the first run completes', async () => {
+    const conv = useConversationStore.getState().createNew('lock-race', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    let releaseEnsure!: () => void
+    const ensureGate = new Promise<void>((resolve) => { releaseEnsure = resolve })
+    ensureWorkspaceMock.mockImplementationOnce(() => ensureGate)
+
+    const loopRuns: number[] = []
+    const userMsgCounts: number[] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      loopRuns.push(Date.now())
+      userMsgCounts.push(
+        useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages.filter((m) => m.role === 'user').length ?? -1
+      )
+      return [
+        { id: `assistant-lock-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() },
+      ]
+    }
+
+    const first = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    const second = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+
+    // Let the pending-claim microtasks settle, then unblock the first run's
+    // workspace ensure. The overlapping second dispatch must NOT steal the
+    // claim — it enqueues a re-run trigger instead.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(1)
+    releaseEnsure()
+    await Promise.all([first, second])
+    // The first run's end-of-run consumer picks up the trigger and runs a
+    // follow-up turn, so BOTH messages get answered.
+    await vi.waitFor(() => {
+      expect(loopRuns).toHaveLength(2)
+    })
+    // The re-run trigger must not create a duplicate user message: the mock
+    // loop replaces conv.messages with its result, so run 2 starts with 0
+    // user messages — if the consumer had synthesized one, run 2 would see 1.
+    expect(userMsgCounts).toEqual([1, 0])
+    expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(0)
+  })
+
+  it('runs the FIRST dispatch when a second overlaps mid-setup, instead of stranding it', async () => {
+    const conv = useConversationStore.getState().createNew('claim-owner', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    let releaseEnsure!: () => void
+    const ensureGate = new Promise<void>((resolve) => { releaseEnsure = resolve })
+    ensureWorkspaceMock.mockImplementationOnce(() => ensureGate)
+
+    const loopRuns: string[] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      loopRuns.push('ran')
+      return [
+        { id: 'assistant-owner', role: 'assistant', content: 'first dispatch completed', timestamp: Date.now() },
+      ]
+    }
+
+    const first = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    const second = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+
+    // While the first dispatch awaits workspace setup, the overlapping second
+    // must queue a re-run trigger WITHOUT taking over the claim — the first
+    // dispatch keeps its slot and runs. (Before the reject-not-replace fix,
+    // the second dispatch stole the slot: the first then failed its ownership
+    // check and bailed without running.)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(1)
+    releaseEnsure()
+    await Promise.all([first, second])
+    await vi.waitFor(() => {
+      expect(loopRuns).toEqual(['ran', 'ran'])
+    })
+    expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages.some((m) => m.id === 'assistant-owner')).toBe(true)
+    expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
+  })
+
+  it('allows a new dispatch after the previous claim was released', async () => {
+    const conv = useConversationStore.getState().createNew('claim-reuse', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    const loopRuns: string[] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      loopRuns.push('ran')
+      return [
+        { id: `assistant-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() },
+      ]
+    }
+
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    expect(loopRuns).toEqual(['ran'])
+
+    // The first run released its claim on lock acquisition, so a follow-up
+    // dispatch (e.g. a queued message) must not be rejected.
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('again'))
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    expect(loopRuns).toEqual(['ran', 'ran'])
+  })
+
+  it('releases the claim and surfaces an error when workspace setup never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const conv = useConversationStore.getState().createNew('setup-stall', { activate: false })
+      useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+      // Setup that NEVER settles — the exact stall the timeout guards.
+      ensureWorkspaceMock.mockImplementationOnce(() => new Promise<void>(() => {}))
+      ;(globalThis as any).__conversationStoreCustomRun = async () => {
+        return [{ id: 'assistant-never', role: 'assistant', content: 'done', timestamp: Date.now() }]
+      }
+
+      const run = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+      // Advance past WORKSPACE_SETUP_TIMEOUT_MS (15s) — the stalled ensure
+      // must not hold the claim forever.
+      await vi.advanceTimersByTimeAsync(15_000 + 100)
+      await expect(run).resolves.toBeUndefined()
+
+      // The timeout must have surfaced a recoverable error state...
+      expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('error')
+      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.error).toBeTruthy()
+
+      // ...and released the claim, so a later dispatch is accepted and runs.
+      const later = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+      ensureWorkspaceMock.mockResolvedValueOnce(undefined)
+      await expect(later).resolves.toBeUndefined()
+      expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('should finalize non-current tool steps by toolCallId in interleaved calls', async () => {
@@ -713,6 +855,18 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(conversationRepoDeleteMock).toHaveBeenCalledWith('missing-id')
   })
 
+  it('drops deferred attachments when a conversation is deleted', async () => {
+    const { useAssetStore } = await import('@/store/asset.store')
+    const conv = useConversationStore.getState().createNew('with-attachment')
+    const file = new File(['content'], 'pending.txt', { type: 'text/plain' })
+    useAssetStore.getState().addFiles([file])
+    const asset = useAssetStore.getState().pendingAssets[0]
+    useAssetStore.getState().removeAsset(asset.id)
+    useAssetStore.getState().restoreAssets([asset], conv.id)
+    await useConversationStore.getState().deleteConversation(conv.id)
+    expect(useAssetStore.getState().deferredAssets[conv.id]).toBeUndefined()
+  })
+
   it('should remove conversation even when workspace deletion fails', async () => {
     const store = useConversationStore.getState()
     const conv = store.createNew('delete-fail')
@@ -745,6 +899,28 @@ describe('conversation.store.sqlite tool-call routing', () => {
 
     const state = useConversationStore.getState()
     expect(state.conversations.some((c) => c.id === conv.id)).toBe(true)
+  })
+
+  it('keeps the saved Agent selection when the DB delete fails', async () => {
+    const { useWorkspacePreferencesStore } = await import('@/store/workspace-preferences.store')
+    const store = useConversationStore.getState()
+    const conv = store.createNew('db-delete-fail-agent')
+    useWorkspacePreferencesStore.getState().setWorkspaceAgentId(conv.id, 'resource-loop')
+
+    conversationRepoDeleteMock.mockRejectedValueOnce(new Error('db delete failed'))
+    await expect(useConversationStore.getState().deleteConversation(conv.id)).rejects.toThrow(
+      /delete conversation failed/i
+    )
+
+    // The conversation survived the failed deletion, so its saved Agent
+    // selection must survive too — clearing it before the delete is confirmed
+    // would lose the user's choice for a conversation that is still there.
+    expect(useWorkspacePreferencesStore.getState().agentIdByWorkspace[conv.id]).toBe('resource-loop')
+
+    // A successful delete still clears it.
+    useWorkspacePreferencesStore.getState().setWorkspaceAgentId(conv.id, 'resource-loop')
+    await useConversationStore.getState().deleteConversation(conv.id)
+    expect(useWorkspacePreferencesStore.getState().agentIdByWorkspace[conv.id]).toBeUndefined()
   })
 
   it('should retitle to next user message when deleting the first auto-titled loop', () => {

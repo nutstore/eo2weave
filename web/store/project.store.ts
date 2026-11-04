@@ -300,9 +300,9 @@ async function syncAgentsForProject(projectId: string): Promise<void> {
       import('./agents.store'),
       ProjectManager.create(),
     ])
+    if (useProjectStore.getState().activeProjectId !== projectId) return
     const agentsStore = agentsModule.useAgentsStore
-    // Reset so initialize() will re-run (needed for project switch)
-    agentsStore.setState({ isInitialized: false, agents: [] })
+    // The Agent store now scopes initialization by project and coalesces callers.
     const state = agentsStore.getState()
     state.setProjectManager(pm)
     await state.initialize(projectId)

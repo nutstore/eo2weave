@@ -24,7 +24,6 @@ describe('message-mappers', () => {
     expect(tool.kind).not.toBe('empty')
   })
   it('keeps an image-only assistant turn as real output', () => {
-    const model = { api: 'openai', provider: 'openai', id: 'test' } as never
     const base = { role: 'assistant', provider: 'openai', model: 'test', timestamp: 1 }
     const imageOnly = piToInternalMessage({
       ...base,
@@ -35,12 +34,81 @@ describe('message-mappers', () => {
     // on the message so the UI can render them.
     expect(imageOnly.kind).not.toBe('empty')
     expect(imageOnly.images).toEqual([{ data: 'aW1hZ2U=', mimeType: 'image/png' }])
-    // The wire form is a normal assistant message with a text block; the
-    // base64 payload stays on the internal record (same as text messages).
-    const wire = internalToPiMessages([imageOnly], model, '')
+    // The wire form round-trips the image block back into provider history
+    // (issue #165, item 4): without it the turn after an image-only reply
+    // would send an empty assistant message and the model would lose the
+    // context of what it just produced. The image block must survive the
+    // mapping — dropping the base64 here was the old bug. The model declares
+    // image input: vision-capable models keep the real image block.
+    const wire = internalToPiMessages(
+      [imageOnly],
+      { api: 'openai', provider: 'openai', id: 'test', input: ['text', 'image'] } as never,
+      ''
+    )
     expect(wire).toHaveLength(1)
     expect(wire[0]).toMatchObject({ role: 'assistant' })
+    expect((wire[0] as { content: Array<{ type: string }> }).content).toContainEqual({
+      type: 'image',
+      data: 'aW1hZ2U=',
+      mimeType: 'image/png',
+    })
+  })
+  it('drops assistant image blocks for text-only models but keeps the turn non-empty', () => {
+    const model = { api: 'openai', provider: 'openai', id: 'test' } as never
+    const base = { role: 'assistant', provider: 'openai', model: 'test', timestamp: 1 }
+    const imageOnly = piToInternalMessage({
+      ...base,
+      content: [{ type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' }],
+      stopReason: 'stop',
+    } as never)!
+    // Mirrors the user branch's `model.input.includes('image')` guard: a
+    // text-only model must not receive image blocks on assistant turns.
+    const wire = internalToPiMessages([imageOnly], model, '')
+    expect(wire).toHaveLength(1)
+    const content = (wire[0] as { content: Array<{ type: string; text?: string }> }).content
+    expect(content.some((part) => part.type === 'image')).toBe(false)
+    // Dropping the images must not leave a fully-empty assistant message.
+    expect(content.some((part) => part.type === 'text' && part.text)).toBe(true)
     expect(JSON.stringify(wire)).not.toContain('aW1hZ2U=')
+  })
+  it('strips orphaned tool results even when no assistant turn is dropped', () => {
+    // A history repaired by an earlier version of the filter kept the tool
+    // result of a removed failed assistant turn. No incomplete turn remains,
+    // but the result still has no owning call in the array — strict providers
+    // reject the whole request over it.
+    const messages: Message[] = [
+      { id: 'u', role: 'user', content: 'hi', timestamp: 1 },
+      {
+        id: 'orphan-result',
+        role: 'tool',
+        toolCallId: 'ghost-call',
+        name: 'read',
+        content: 'result of a long-gone call',
+        timestamp: 2,
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'done',
+        toolCalls: [
+          { id: 'tc-live', type: 'function', function: { name: 'read', arguments: '{}' } },
+        ],
+        timestamp: 3,
+      },
+      {
+        id: 'r1',
+        role: 'tool',
+        toolCallId: 'tc-live',
+        name: 'read',
+        content: 'live result',
+        timestamp: 4,
+      },
+    ]
+    const model = { api: 'openai', provider: 'openai', id: 'test' } as never
+    const wire = internalToPiMessages(messages, model, '')
+    expect(wire).toHaveLength(3)
+    expect(JSON.stringify(wire)).not.toContain('ghost-call')
+    expect(JSON.stringify(wire)).toContain('live result')
   })
   it('persists UI traces separately from the model conversation', () => {
     const deferred = [{ sourceCallId: 'child', sequence: 0, content: [{ type: 'text', text: 'observation' }] }]

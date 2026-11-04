@@ -340,9 +340,11 @@ describe('registry page toast/state feedback (round 2)', () => {
     expect(toastVisible(h.document)).toBe(true)
 
     // Uninstall B via B's own catalog row while A's toast is showing.
+    // The redesign nests package rows (.pkg-row) INSIDE the registry card,
+    // whose header .name is the registry label — match the row's own name.
     const betaRow = [...h.document.querySelectorAll('button')]
       .find(b => b.textContent === 'webmcpPackagesUninstall' &&
-        b.closest('.card')?.querySelector('.name')?.textContent === 'com.example.beta') as HTMLButtonElement | undefined
+        b.closest('.pkg-row')?.querySelector('.name')?.textContent === 'com.example.beta') as HTMLButtonElement | undefined
     expect(betaRow).toBeTruthy()
     betaRow!.click()
     await settle()

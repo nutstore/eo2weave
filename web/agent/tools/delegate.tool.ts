@@ -123,8 +123,32 @@ export const delegateToExecutor: ToolExecutor = async (
   }
 
   // --- Validate target agent exists ---
-  const { agents } = useAgentsStore.getState()
-  const targetMeta = agents.find((a) => a.id === target_agent_id)
+  // Validate against THIS run's project catalog, not the globally loaded
+  // Agent store: the prompt's Available Agents block is built from the run's
+  // project (ToolContext.projectId), and a background conversation may run
+  // in a different project than the one open in the UI — the global store
+  // would then reject targets the prompt itself advertised. Runs without a
+  // bound project (legacy/subagent contexts) keep the store fallback.
+  let availableAgents: { id: string; name: string }[]
+  if (context.projectId) {
+    const { ProjectManager } = await import('@/opfs')
+    const project = await (await ProjectManager.create()).getProject(context.projectId)
+    if (!project) {
+      return toolErrorJson(
+        'delegate_to',
+        'AGENT_NOT_FOUND',
+        `Project "${context.projectId}" is not available, so the target agent cannot be resolved.`,
+        { retryable: false }
+      )
+    }
+    availableAgents = (await project.agentManager.listAgents()) as {
+      id: string
+      name: string
+    }[]
+  } else {
+    availableAgents = useAgentsStore.getState().agents
+  }
+  const targetMeta = availableAgents.find((a) => a.id === target_agent_id)
   if (!targetMeta) {
     return toolErrorJson(
       'delegate_to',
@@ -132,8 +156,8 @@ export const delegateToExecutor: ToolExecutor = async (
       `Agent "${target_agent_id}" not found in the current project.`,
       {
         retryable: false,
-        hint: 'Available agents: ' + agents.map((a) => a.id).join(', '),
-        details: { available_agent_ids: agents.map((a) => a.id) },
+        hint: 'Available agents: ' + availableAgents.map((a) => a.id).join(', '),
+        details: { available_agent_ids: availableAgents.map((a) => a.id) },
       }
     )
   }

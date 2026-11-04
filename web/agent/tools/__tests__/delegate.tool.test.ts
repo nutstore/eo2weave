@@ -11,6 +11,26 @@ vi.mock('@/store/agents.store', () => ({
   },
 }))
 
+// Mock the OPFS ProjectManager — runs bound to a project resolve their Agent
+// catalog through it instead of the globally loaded store.
+vi.mock('@/opfs', () => ({
+  ProjectManager: {
+    create: async () => ({
+      getProject: async (projectId: string) =>
+        projectId === 'run-project'
+          ? {
+              agentManager: {
+                listAgents: async () => [
+                  { id: 'default', name: 'Default' },
+                  { id: 'run-only-agent', name: 'Run Only' },
+                ],
+              },
+            }
+          : null,
+    }),
+  },
+}))
+
 const BASE_CONTEXT: ToolContext = {
   directoryHandle: null,
   currentAgentId: 'pm',
@@ -133,6 +153,64 @@ describe('delegate_to tool', () => {
     expect(parsed.ok).toBe(false)
     expect(parsed.error.code).toBe('INVALID_INPUT')
     expect(onDelegation).not.toHaveBeenCalled()
+  })
+
+  it('validates the target against the RUN project catalog when projectId is bound', async () => {
+    // Background conversations run in their own project: the globally loaded
+    // store holds the UI-open project's Agents, so validation must consult
+    // the run project instead — otherwise targets the prompt advertised are
+    // rejected.
+    const onDelegation = vi.fn()
+    const ctx: ToolContext = {
+      ...BASE_CONTEXT,
+      projectId: 'run-project',
+      onDelegation,
+    }
+
+    const raw = await delegateToExecutor(
+      { target_agent_id: 'run-only-agent', task: 'take over' },
+      ctx
+    )
+    const parsed = parseResult(raw)
+
+    expect(parsed.ok).toBe(true)
+    expect(parsed.data.delegated_to).toBe('run-only-agent')
+    expect(parsed.data.delegated_to_name).toBe('Run Only')
+    expect(onDelegation).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a target that exists in the open project but not the run project', async () => {
+    const onDelegation = vi.fn()
+    const ctx: ToolContext = {
+      ...BASE_CONTEXT,
+      projectId: 'run-project',
+      onDelegation,
+    }
+
+    const raw = await delegateToExecutor(
+      { target_agent_id: 'backend-engineer', task: 'take over' },
+      ctx
+    )
+    const parsed = parseResult(raw)
+
+    expect(parsed.ok).toBe(false)
+    expect(parsed.error.code).toBe('AGENT_NOT_FOUND')
+    expect(parsed.error.details.available_agent_ids).toEqual(['default', 'run-only-agent'])
+    expect(onDelegation).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the globally loaded store when the run has no projectId', async () => {
+    const onDelegation = vi.fn()
+    const ctx: ToolContext = { ...BASE_CONTEXT, onDelegation }
+
+    const raw = await delegateToExecutor(
+      { target_agent_id: 'backend-engineer', task: 'take over' },
+      ctx
+    )
+    const parsed = parseResult(raw)
+
+    expect(parsed.ok).toBe(true)
+    expect(parsed.data.delegated_to).toBe('backend-engineer')
   })
 
   it('trims task and reason, and omits reason when empty', async () => {
