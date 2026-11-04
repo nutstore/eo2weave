@@ -8,17 +8,21 @@
  *   3. install_skill("cw-code-review-expert") → installs → returns success
  *   4. read_skill("cw-code-review-expert") → loads and uses the skill
  *
- * This tool does NOT ask the user — that's the agent's job via ask_user_question.
- * The agent must get explicit user consent before calling this tool.
+ * This tool does NOT ask the user before a FRESH install — that's the
+ * agent's job via ask_user_question. UPDATING an already-installed skill,
+ * however, is consent-gated IN CODE below: the executor asks via the same
+ * question channel before any overwrite happens (#154 round 2).
  */
 
-import type { ToolDefinition } from './tool-types'
+import type { ToolDefinition, ToolContext } from './tool-types'
 import type { ToolPromptDoc } from './tool-types'
 import { toolOkJson, toolErrorJson } from './tool-envelope'
 import {
   fetchSkillStoreManifest,
   installSkillFromUrl,
+  planSkillUpdate,
 } from '@/skills/skill-store'
+import { skillUpdateNeedsConsent } from '@/skills/skill-version'
 import { getSkillManager } from '@/skills/skill-manager'
 import { useSkillsStore } from '@/store/skills.store'
 
@@ -35,6 +39,7 @@ export const installSkillDefinition: ToolDefinition = {
       '',
       'IMPORTANT: You MUST get explicit user consent via ask_user_question BEFORE calling this tool.',
       'Do not install skills without asking the user first.',
+      'If the skill is already installed at an OLDER version, this tool asks the user to confirm the update itself (in code) — if the user declines, the installed copy is kept and no update happens.',
       '',
       'After installation, the skill becomes available via read_skill on the next turn.',
     ].join('\n'),
@@ -57,6 +62,7 @@ export const installSkillDefinition: ToolDefinition = {
 
 export async function installSkillExecutor(
   args: Record<string, unknown>,
+  context?: Pick<ToolContext, 'askUserQuestion' | 'abortSignal' | 'currentToolCallId'>,
 ): Promise<string> {
   const dirName = typeof args.dirName === 'string' ? args.dirName : ''
 
@@ -78,6 +84,47 @@ export async function installSkillExecutor(
         'not_found',
         `Skill "${dirName}" not found in the Skill Store. Use search_skills to find available skills.`,
       )
+    }
+
+    // Update-consent gate (#154 round 2): when the store would OVERWRITE an
+    // already-installed skill, the call must not proceed on prompt
+    // instructions alone — `install_skill` is policy-level `auto`, so the
+    // gate is enforced here in code. `planSkillUpdate` compares versions
+    // exactly like the install flow (a fresh install, a no-op, or a
+    // newer-installed keep stays consent-free). The question rides the SAME
+    // ask_user_question UI channel the install opt-in already uses.
+    const plan = await planSkillUpdate(entry.dirName, entry.version)
+    if (plan !== 'install' && skillUpdateNeedsConsent(plan)) {
+      if (!context?.askUserQuestion) {
+        // No UI channel (e.g. a subagent context) — the overwrite cannot be
+        // consented to, so it must not happen.
+        return toolErrorJson(
+          'install_skill',
+          'update_consent_required',
+          `"${entry.name}" is already installed at an older version (v${entry.version} would overwrite it). Updating an installed skill requires explicit user confirmation, but no user-interaction channel is available in this context. Ask the main agent to have the user confirm, or skip the update.`,
+        )
+      }
+      const answer = await context.askUserQuestion({
+        question: `The skill "${entry.name}" is already installed and the Skill Store ships a newer version (would overwrite your installed copy). Install the update?`,
+        type: 'yes_no',
+        defaultAnswer: 'no',
+        context: {
+          preview: `Updating "${entry.name}" to store v${entry.version}`,
+        },
+        signal: context.abortSignal,
+        toolCallId: context.currentToolCallId,
+      })
+      const said = answer.answer.trim().toLowerCase()
+      if (said !== 'yes' && !answer.confirmed) {
+        return toolOkJson('install_skill', {
+          dirName,
+          name: entry.name,
+          version: entry.version,
+          updated: false,
+          declined: true,
+          message: `Update declined — the installed copy of "${entry.name}" was kept unchanged.`,
+        })
+      }
     }
 
     // Install — the version-aware install flow decides whether this is a
@@ -155,6 +202,6 @@ export const installSkillPromptDoc: ToolPromptDoc = {
   category: 'skills',
   section: '### Skill Tools',
   lines: [
-    '- `install_skill(dirName)` — Install a skill from the Skill Store. MUST get user consent via ask_user_question FIRST. After install, call read_skill immediately to use it.',
+    '- `install_skill(dirName)` — Install a skill from the Skill Store. MUST get user consent via ask_user_question FIRST. Updating an ALREADY-INSTALLED older skill triggers an in-tool user confirmation; a declined update keeps the installed copy. After install, call read_skill immediately to use it.',
   ],
 }
