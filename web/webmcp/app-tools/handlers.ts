@@ -259,12 +259,66 @@ function finalizeFromStore(store: any, rec: AppRunRecord): AppRunRecord {
   return rec
 }
 
-/** Wait until the runAgent promise resolution flips rec into a terminal state. */
-async function waitForRun(rec: AppRunRecord, timeoutMs: number): Promise<AppRunRecord> {
+/**
+ * Advance a queued/running record from live store state (#170 review round 2).
+ * Shared by get_run_status AND waitForRun so a wait=true caller observes the
+ * claim-overlap handoff transitions (queued → running → terminal) too — the
+ * handoff record's terminal transition no longer comes from the runAgent
+ * promise, so something must drive the state machine between polls.
+ */
+function advanceFromStore(store: any, rec: AppRunRecord): void {
+  if (rec.status !== 'queued' && rec.status !== 'running') return
+  const running = store.isConversationRunning(rec.conversationId)
+  if (rec.status === 'queued' && running) {
+    // Ambiguous: the loop may be running THIS message (after dequeue) or a
+    // PREVIOUS one. Disambiguate by checking whether our message is still in
+    // the queue: still present → still queued; gone → it was dequeued and is
+    // the run now executing. A parked rerunOnly trigger (claim-overlap
+    // handoff) counts as still queued regardless of position bookkeeping.
+    const runtimeStore = d().getRuntimeStore()
+    const pos = (rec as any).queuePosition
+    const queue = runtimeStore?.pendingMessageQueues?.get?.(rec.conversationId)
+    const stillQueued =
+      (typeof pos === 'number' && runtimeStore?.getQueuedMessage?.(rec.conversationId, pos - 1)) ||
+      !!queue?.some?.((m: { rerunOnly?: boolean }) => m.rerunOnly)
+    if (!stillQueued) rec.status = 'running'
+    return
+  }
+  if (rec.status === 'queued' && !running) {
+    // Claim-overlap handoff (#170 review round 2): the trigger is parked and
+    // its follow-up has not run yet — stay queued instead of C-1-finalizing,
+    // which would report completed before the message is ever answered.
+    // Any other queued-and-idle state keeps the C-1 behavior (finalize with
+    // the scoped summary instead of sticking at "queued" forever).
+    const queue = d().getRuntimeStore()?.pendingMessageQueues?.get?.(rec.conversationId)
+    const handoffParked = !!queue?.some?.((m: { rerunOnly?: boolean }) => m.rerunOnly)
+    if (!handoffParked || conversationError(store, rec)) {
+      finalizeFromStore(store, rec)
+    }
+    return
+  }
+  // rec.status === 'running' && !running → the follow-up loop finished.
+  finalizeFromStore(store, rec)
+}
+
+/**
+ * Wait until rec reaches a terminal state, advancing the queued/running state
+ * machine from live store state between polls. Returns early with 'queued'
+ * when the record is parked behind an active run (claim-overlap handoff) —
+ * the caller should poll get_run_status instead of blocking to the timeout.
+ */
+async function waitForRun(store: any, rec: AppRunRecord, timeoutMs: number): Promise<AppRunRecord> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await d().wait(POLL_INTERVAL_MS)
+    advanceFromStore(store, rec)
     if (['completed', 'failed', 'cancelled', 'timeout'].includes(rec.status)) {
+      return rec
+    }
+    if (rec.status === 'queued') {
+      // Parked behind the owning run's follow-up — not terminal, but the
+      // caller has nothing to wait on here (same contract as the busy→queue
+      // path, which returns 'queued' immediately).
       return rec
     }
   }
@@ -533,12 +587,40 @@ export const handlers: Record<string, Handler> = {
     const userMsg = createUserMessage(content)
     store.updateMessages(conversationId, [...(conv.messages ?? []), userMsg])
     // Fire-and-forget: the promise resolution is THE terminal signal for this
-    // run (C1). runAgentImpl resolves even on early failure (it sets
-    // status='error' instead of throwing), so `.then` inspects the terminal
-    // conversation status to map failure correctly.
+    // run (C1) — with ONE exception (below). runAgentImpl resolves even on
+    // early failure (it sets status='error' instead of throwing), so `.then`
+    // inspects the terminal conversation status to map failure correctly.
+    //
+    // Claim-overlap handoff (#170 review round 2): when a second dispatch
+    // overlaps a pending claim, runAgentImpl enqueues a rerun trigger and
+    // resolves immediately — that resolution is NOT terminal for THIS run's
+    // record. Finalizing here would mark the run completed before its queued
+    // follow-up ever answered the message. Instead flip the record to
+    // 'queued' and let get_run_status drive the queued→running→terminal
+    // transitions off the live queue/conversation state.
+    const handoffToQueue = (): boolean => {
+      const queued = d()
+        .getRuntimeStore()
+        ?.pendingMessageQueues?.get?.(conversationId)
+      return !!queued?.some?.((m: { rerunOnly?: boolean }) => m.rerunOnly)
+    }
     void store
       .runAgent(conversationId, settings.providerType, settings.modelName, settings.maxTokens, directoryHandle, null, { background: true })
       .then(() => {
+        if (handoffToQueue()) {
+          // Trigger still in the queue (follow-up not started): defer
+          // finalization to get_run_status.
+          rec.status = 'queued'
+          ;(rec as any).queuePosition = 1
+          return
+        }
+        if (store.isConversationRunning(conversationId)) {
+          // Trigger already dequeued and its follow-up loop is live: this
+          // record keeps reporting 'running' until get_run_status observes
+          // the conversation idle and finalizes from the store.
+          rec.status = 'running'
+          return
+        }
         finalizeFromStore(store, rec)
       })
       .catch((e: unknown) => {
@@ -550,7 +632,7 @@ export const handlers: Record<string, Handler> = {
 
     if (!wait) return ok({ runId, status: 'started' })
 
-    const final = await withChangedFiles(await waitForRun(rec, timeoutMs))
+    const final = await withChangedFiles(await waitForRun(store, rec, timeoutMs))
     return ok({
       runId: final.runId,
       status: final.status,
@@ -563,36 +645,7 @@ export const handlers: Record<string, Handler> = {
     const rec = getRunRecord(String(args.runId ?? ''))
     if (!rec) return err(`Unknown runId: ${args.runId}`)
     const store = d().getConversationStore()
-    const running = store.isConversationRunning(rec.conversationId)
-    // Terminal transitions only come from the runAgent promise (.then/.catch).
-    // 'started' means the loop has not registered itself yet (startup race) —
-    // NEVER treat it as finished (C1). 'queued' → 'running' when the loop starts
-    // consuming the queue.
-    if (rec.status === 'queued' && running) {
-      // Ambiguous: the loop may be running THIS message (after dequeue) or a
-      // PREVIOUS one. Disambiguate by checking whether our message is still in
-      // the queue: still present → still queued; gone → it was dequeued and is
-      // the run now executing.
-      const runtimeStore = d().getRuntimeStore()
-      const pos = (rec as any).queuePosition
-      const stillQueued =
-        typeof pos === 'number' && runtimeStore?.getQueuedMessage?.(rec.conversationId, pos - 1)
-      if (!stillQueued) rec.status = 'running'
-    }
-    if (rec.status === 'queued' && !running) {
-      // Conversation went idle while queued: the in-memory queue is gone but the
-      // message was durably persisted (queued path writes to SQLite), so it is
-      // NOT lost — it is part of the history. Finalize with the scoped summary
-      // instead of leaving the run stuck at "queued" forever (C-1).
-      finalizeFromStore(store, rec)
-    }
-    if (
-      !running &&
-      rec.status !== 'started' &&
-      !['completed', 'failed', 'cancelled', 'timeout'].includes(rec.status)
-    ) {
-      finalizeFromStore(store, rec)
-    }
+    advanceFromStore(store, rec)
     return ok({
       runId: rec.runId,
       status: rec.status,
