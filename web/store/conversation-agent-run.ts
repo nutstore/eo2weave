@@ -95,14 +95,6 @@ type StoreSet = (updater: (state: AgentRunStoreDraft) => void) => void
 const runClaimSlots = new Map<string, { claimed: boolean; owner: string }>()
 
 /**
- * Upper bound for the pre-run workspace setup await. A workspace ensure that
- * never settles would hold the run claim forever and reject every later
- * dispatch for the conversation; on expiry the claim is released and the
- * failure is surfaced so the conversation stays recoverable.
- */
-const WORKSPACE_SETUP_TIMEOUT_MS = 15_000
-
-/**
  * Bridge onto the facade-module symbols runAgent touches. The delegate casts
  * the facade side into this interface; members are enumerated by what the
  * moved body actually references.
@@ -303,26 +295,20 @@ export async function runAgentImpl(
         // runtime. Tool routing is unaffected either way: ToolContext carries
         // the conversationId as its workspaceId explicitly.
         //
+        // The dispatch claim is held across this await; the ensureWorkspace /
+        // switchWorkspace in-flight promises themselves are timeout-guarded at
+        // the source (WORKSPACE_ENSURE_TIMEOUT_MS in workspace.store.ts,
+        // #166 item 2), so a stalled setup can no longer hold the claim
+        // forever — the awaited promise rejects on expiry, this try/catch
+        // releases the claim, and the outer handler keeps its normal
+        // rollback/failure behavior.
         const workspaceStore = useConversationContextStore.getState()
         try {
-          // Bound the setup await: a workspace ensure that never settles (e.g.
-          // a stalled OPFS/SQLite bridge) would otherwise hold the claim
-          // forever and every later dispatch would be rejected. Same shape as
-          // META_PERSIST_WAIT_TIMEOUT_MS in webmcp/app-tools/workspace-setup.
-          const setupPromise = background
-            ? workspaceStore.ensureWorkspace(conversationId, conv.title)
-            : workspaceStore.activeWorkspaceId !== conversationId
-              ? workspaceStore.switchWorkspace(conversationId)
-              : Promise.resolve()
-          await Promise.race([
-            setupPromise,
-            new Promise<never>((_, reject) => {
-              setTimeout(
-                () => reject(new Error('WORKSPACE_SETUP_TIMEOUT')),
-                WORKSPACE_SETUP_TIMEOUT_MS
-              )
-            }),
-          ])
+          if (background) {
+            await workspaceStore.ensureWorkspace(conversationId, conv.title)
+          } else if (workspaceStore.activeWorkspaceId !== conversationId) {
+            await workspaceStore.switchWorkspace(conversationId)
+          }
         } catch (setupError) {
           // FIX: this await window exits through the OUTER error handler when
           // setup/switch rejects — which never touches runClaimSlots, so the
@@ -330,7 +316,7 @@ export async function runAgentImpl(
           // rejected as already-claimed. Release the claim here and rethrow so
           // the outer handler keeps its normal rollback/failure behavior.
           releaseClaim()
-          if (setupError instanceof Error && setupError.message === 'WORKSPACE_SETUP_TIMEOUT') {
+          if (setupError instanceof Error && setupError.message === 'WORKSPACE_ENSURE_TIMEOUT') {
             // Timeout: the conversation must be recoverable, so surface the
             // failure instead of relying on the generic catch (which would
             // leave no error banner while the claim is already gone). Mirror

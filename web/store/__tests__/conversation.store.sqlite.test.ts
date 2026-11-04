@@ -379,36 +379,33 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(loopRuns).toEqual(['ran', 'ran'])
   })
 
-  it('releases the claim and surfaces an error when workspace setup never settles', async () => {
-    vi.useFakeTimers()
-    try {
-      const conv = useConversationStore.getState().createNew('setup-stall', { activate: false })
-      useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+  it('releases the claim and surfaces an error when workspace setup times out', async () => {
+    const conv = useConversationStore.getState().createNew('setup-stall', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
 
-      // Setup that NEVER settles — the exact stall the timeout guards.
-      ensureWorkspaceMock.mockImplementationOnce(() => new Promise<void>(() => {}))
-      ;(globalThis as any).__conversationStoreCustomRun = async () => {
-        return [{ id: 'assistant-never', role: 'assistant', content: 'done', timestamp: Date.now() }]
-      }
-
-      const run = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
-      // Advance past WORKSPACE_SETUP_TIMEOUT_MS (15s) — the stalled ensure
-      // must not hold the claim forever.
-      await vi.advanceTimersByTimeAsync(15_000 + 100)
-      await expect(run).resolves.toBeUndefined()
-
-      // The timeout must have surfaced a recoverable error state...
-      expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('error')
-      expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.error).toBeTruthy()
-
-      // ...and released the claim, so a later dispatch is accepted and runs.
-      const later = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
-      ensureWorkspaceMock.mockResolvedValueOnce(undefined)
-      await expect(later).resolves.toBeUndefined()
-      expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
-    } finally {
-      vi.useRealTimers()
+    // #166 item 2 moved the never-settling-ensure backstop into workspace
+    // store's in-flight map (WORKSPACE_ENSURE_TIMEOUT_MS); from the dispatch's
+    // perspective a timed-out setup surfaces as this rejection. The dispatch
+    // must still release its claim and leave a recoverable error state.
+    ensureWorkspaceMock.mockImplementationOnce(
+      () => Promise.reject(new Error('WORKSPACE_ENSURE_TIMEOUT'))
+    )
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      return [{ id: 'assistant-never', role: 'assistant', content: 'done', timestamp: Date.now() }]
     }
+
+    await expect(
+      useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    ).resolves.toBeUndefined()
+
+    // The timeout must have surfaced a recoverable error state...
+    expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('error')
+    expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.error).toBeTruthy()
+
+    // ...and released the claim, so a later dispatch is accepted and runs.
+    ensureWorkspaceMock.mockResolvedValueOnce(undefined)
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
   })
 
   it('should finalize non-current tool steps by toolCallId in interleaved calls', async () => {
