@@ -5,14 +5,18 @@
  * Blob.slice) and materializes only a ~200k-character window into the Monaco
  * model. Windows are cut in *byte* space: the reader walks the UTF-8
  * sequences of the bytes it read and stops on a sequence boundary, so every
- * window boundary (startChar/startByte) is exact and expressed in source-file
- * bytes. A BOM, malformed UTF-8 or a truncated trailing sequence therefore
- * cannot shift the offsets, a cut can never split a surrogate pair, and a
- * CRLF pair is never split across a seam.
+ * window boundary is exact and expressed in source-file bytes. A BOM,
+ * malformed UTF-8 or a truncated trailing sequence therefore cannot shift the
+ * offsets, a cut can never split a surrogate pair, and a CRLF pair is never
+ * split across a seam.
  *
- * Character offsets count UTF-16 code units (the same unit the Monaco model
- * and the `value` prop use); byte offsets count source bytes. Both are exact
- * at every boundary.
+ * Three offsets are tracked at every boundary, because three different
+ * consumers need three different units:
+ * - `byte`:  source bytes, used to slice the file.
+ * - `char`:  UTF-16 code units, the unit the Monaco model and the `value`
+ *            prop use.
+ * - `point`: Unicode code points, the unit the character range shown to the
+ *            user counts in (an emoji is one character, not two).
  */
 
 /** Target size of one preview window, in UTF-16 code units. */
@@ -41,10 +45,14 @@ export type FileLike = Pick<File, 'size' | 'slice'>
 
 /** A loaded window plus the exact offsets of both of its boundaries. */
 export interface LoadedWindow {
-  /** Character offset of the window's first character in the whole file. */
+  /** Character offset of the window's first character (UTF-16 code units). */
   startChar: number
-  /** Character offset just past the window's last character. */
+  /** Code point offset of the window's first character (emoji count as one). */
+  startPoint: number
+  /** Character offset just past the window's last character (UTF-16 units). */
   endChar: number
+  /** Code point offset just past the window's last character. */
+  endPoint: number
   /** Byte offset of the window's first byte (source bytes; a BOM is skipped). */
   startByte: number
   /** Byte offset just past the window's last byte. */
@@ -81,7 +89,8 @@ interface Utf8Step {
  * the read consumes the valid prefix it has and is marked `truncated`.
  *
  * Because every step is all-or-nothing, cutting between steps never splits a
- * sequence and a valid range never yields a lone surrogate.
+ * sequence and a valid range never yields a lone surrogate. Every step is
+ * also exactly one code point, so the code point count follows from it.
  */
 function utf8Step(bytes: Uint8Array, i: number, end: number): Utf8Step {
   const b0 = bytes[i]!
@@ -128,9 +137,9 @@ function hasUtf8Bom(bytes: Uint8Array): boolean {
 }
 
 /**
- * Load the window of at most `windowChars` code units that starts at the
- * character offset `startChar` / byte offset `startByte` (which must be an
- * exact character boundary — e.g. a previous window's end boundary, or 0/0).
+ * Load the window of at most `windowChars` code units that starts at
+ * `start` (which must be an exact character boundary — e.g. a previous
+ * window's end boundary, or the start of the file).
  *
  * The cut is placed between whole UTF-8 sequences, so it never splits a
  * surrogate pair and the byte length of the kept text is exact even when the
@@ -141,6 +150,7 @@ export async function readForwardWindow(
   startChar: number,
   startByte: number,
   windowChars: number = WINDOW_CHARS,
+  startPoint: number = 0,
 ): Promise<LoadedWindow> {
   if (file.size > 0 && startByte >= file.size) throw new Error('readForwardWindow: startByte past end of file')
   const readBytes = Math.min(windowChars * MAX_UTF8_BYTES_PER_CHAR + READ_SLACK_BYTES, file.size - startByte)
@@ -153,6 +163,7 @@ export async function readForwardWindow(
   const from = bom ? 3 : 0
   // Walk the sequences of the read range and stop on a sequence boundary.
   let units = 0
+  let points = 0
   let cut = from
   let lastStart = from
   let i = from
@@ -163,22 +174,26 @@ export async function readForwardWindow(
     if (step.truncated && !rangeEndsAtEof) break
     if (units > 0 && units + step.units > windowChars) break
     units += step.units
+    points += 1
     lastStart = i
     i += step.bytes
     cut = i
   }
   // Never cut between '\r' and '\n': move the cut in front of the CR so the
   // pair stays whole and decodes as a single line break in the next window.
-  if (units > 1 && cut < raw.length && raw[cut] === 0x0a && raw[cut - 1] === 0x0d) {
+  if (points > 1 && cut < raw.length && raw[cut] === 0x0a && raw[cut - 1] === 0x0d) {
     cut = lastStart
     units -= 1
+    points -= 1
   }
   const text = new TextDecoder('utf-8').decode(raw.subarray(from, cut))
   const endByte = startByte + cut
   return {
     startChar,
-    startByte: startByte + from,
+    startPoint,
     endChar: startChar + units,
+    endPoint: startPoint + points,
+    startByte: startByte + from,
     endByte,
     text,
     atStart: startByte <= (bom ? 3 : 0),
@@ -187,9 +202,9 @@ export async function readForwardWindow(
 }
 
 /**
- * Load the window of at most `windowChars` code units that ends just before
- * the character offset `endChar` / byte offset `endByte` (the start boundary
- * of the window currently above, used when the user scrolls to the top edge).
+ * Load the window of at most `windowChars` code units that ends at `end` (the
+ * start boundary of the window currently above, used when the user scrolls
+ * to the top edge).
  *
  * The byte read starts up to `windowChars * 4` bytes back, which is
  * guaranteed to cover the full window: any `windowChars` consecutive
@@ -203,6 +218,7 @@ export async function readBackwardWindow(
   endChar: number,
   endByte: number,
   windowChars: number = WINDOW_CHARS,
+  endPoint: number = 0,
 ): Promise<LoadedWindow> {
   if (endByte <= 0) throw new Error('readBackwardWindow: endByte before start of file')
   const budgetStart = Math.max(0, endByte - (windowChars * MAX_UTF8_BYTES_PER_CHAR + READ_SLACK_BYTES))
@@ -223,14 +239,18 @@ export async function readBackwardWindow(
   // boundary that still leaves at most `windowChars` code units in the window.
   const bounds: number[] = [aligned]
   const unitsAt: number[] = [0]
+  const pointsAt: number[] = [0]
   let j = aligned
   let units = 0
+  let points = 0
   while (j < raw.length) {
     const step = utf8Step(raw, j, raw.length)
     j += step.bytes
     units += step.units
+    points += 1
     bounds.push(j)
     unitsAt.push(units)
+    pointsAt.push(points)
   }
   // Advance to the latest boundary whose remaining text still fits the
   // budget (the window shrinks as k grows).
@@ -244,14 +264,15 @@ export async function readBackwardWindow(
   if (k > 0 && bounds[k]! < raw.length && raw[bounds[k]!] === 0x0a && raw[bounds[k]! - 1] === 0x0d) k--
   const head = bounds[k]!
   const text = new TextDecoder('utf-8', { ignoreBOM: true }).decode(raw.subarray(head, raw.length))
-  const startByte = from + head
   return {
     startChar: endChar - (units - unitsAt[k]!),
-    startByte,
+    startPoint: endPoint - (points - pointsAt[k]!),
+    startByte: from + head,
     endChar,
+    endPoint,
     endByte,
     text,
-    atStart: startByte <= (bom ? 3 : 0),
+    atStart: (from + head) <= (bom ? 3 : 0),
     atEof: endByte >= file.size,
   }
 }
@@ -275,11 +296,17 @@ export async function readAdjacentWindow(
   if (direction === 'next') {
     // Start the new window `OVERLAP_CHARS` before the current one ends, so
     // the seam text is in both windows.
-    const tail = await readBackwardWindow(file, current.endChar, current.endByte, OVERLAP_CHARS)
-    return readForwardWindow(file, tail.startChar, tail.startByte, windowChars)
+    const tail = await readBackwardWindow(file, current.endChar, current.endByte, OVERLAP_CHARS, current.endPoint)
+    return readForwardWindow(file, tail.startChar, tail.startByte, windowChars, tail.startPoint)
   }
   // The previous window ends where the current one starts; extend it
   // `OVERLAP_CHARS` past that boundary into the current window's head.
-  const prev = await readBackwardWindow(file, current.startChar, current.startByte, windowChars)
-  return readForwardWindow(file, prev.startChar, prev.startByte, windowChars + OVERLAP_CHARS)
+  const prev = await readBackwardWindow(file, current.startChar, current.startByte, windowChars, current.startPoint)
+  const back = await readForwardWindow(file, prev.startChar, prev.startByte, windowChars + OVERLAP_CHARS, prev.startPoint)
+  // A backward window that reached the start of the file knows it, even when
+  // a BOM sits between byte 0 and the first content byte: without this the
+  // window reports atStart: false and the top-edge handler keeps reloading
+  // the first window forever.
+  if (prev.atStart) return { ...back, atStart: true }
+  return back
 }

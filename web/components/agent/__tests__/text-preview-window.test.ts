@@ -398,4 +398,50 @@ describe('text-preview-window', () => {
     expect(first.text.endsWith('\r')).toBe(false)
     expect(next.text.startsWith('\n')).toBe(false)
   })
+
+  // --- Round 2: code-point ranges and the BOM start-of-file flag. ---
+
+  it('counts the character range in code points, not UTF-16 code units', async () => {
+    // An emoji is one character but two UTF-16 code units: the range shown to
+    // the user must count it once.
+    const file = makeFile('🚀'.repeat(1000))
+    const win = await readForwardWindow(file, 0, 0)
+    expect(win.endChar).toBe(2000) // UTF-16 code units
+    expect(win.endPoint).toBe(1000) // characters
+    expect(win.startPoint).toBe(0)
+  })
+
+  it('keeps the code point range consistent across a seam', async () => {
+    const content = '🚀'.repeat(300_000)
+    const file = makeFile(content)
+    const first = await readForwardWindow(file, 0, 0)
+    const next = await readAdjacentWindow(file, first, 'next')
+    expect(next.startPoint).toBeLessThan(first.endPoint)
+    expect(next.endPoint - next.startPoint).toBe(next.text.length / 2)
+    expect(next.endPoint).toBeGreaterThan(first.endPoint)
+  })
+
+  it('reports atStart for a BOM file navigated back to the beginning', async () => {
+    // The BOM sits between byte 0 and the first content byte: a backward
+    // window that reached the start of the file must still say so, or the
+    // top-edge handler keeps reloading the first window forever.
+    const file = makeFile('\uFEFF' + 'a'.repeat(300_000))
+    const first = await readForwardWindow(file, 0, 0)
+    expect(first.atStart).toBe(true)
+    const second = await readAdjacentWindow(file, first, 'next')
+    expect(second.atStart).toBe(false)
+    const back = await readAdjacentWindow(file, second, 'prev')
+    expect(back.atStart).toBe(true)
+    expect(back.startChar).toBe(0)
+    expect(back.text).not.toContain('\uFEFF')
+  })
+
+  it('reports atStart for a BOM-less file navigated back to the beginning', async () => {
+    const file = makeFile('a'.repeat(300_000))
+    const first = await readForwardWindow(file, 0, 0)
+    const second = await readAdjacentWindow(file, first, 'next')
+    const back = await readAdjacentWindow(file, second, 'prev')
+    expect(back.atStart).toBe(true)
+    expect(back.startChar).toBe(0)
+  })
 })
