@@ -72,6 +72,13 @@ describe('ensureConversationWorkspaceWithMeta', () => {
     // Let the timeout fire BEFORE resolving the persist — otherwise the race
     // would simply succeed and no cleanup would run at all.
     await new Promise<void>((resolve) => setTimeout(resolve, 40))
+    // The helper must still be pending here: it rejected at the timeout only
+    // AFTER awaiting the late persist. If it had already settled before the
+    // persist resolved, this assertion would catch the missing grace wait
+    // (deleting the grace period entirely would otherwise still pass).
+    let settled = false
+    void attempt.then(() => { settled = true }, () => { settled = true })
+    expect(settled).toBe(false)
     // The persist lands AFTER the timeout fired — cleanup must wait for it
     // (bounded) before rejecting, so the caller's rollback that follows can
     // never race a late INSERT into the conversations table.
