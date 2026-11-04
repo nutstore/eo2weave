@@ -36,9 +36,24 @@ export function parseGitIgnore(content: string, baseDir = ''): GitIgnoreRule[] {
 /**
  * Apply Git ignore rules in declaration order. Later rules (including `!`
  * negations) override earlier rules, matching Git's last-rule-wins behavior.
+ *
+ * Like Git, a path beneath an excluded directory cannot be re-included: each
+ * ancestor directory is evaluated on its own, and once an ancestor ends up
+ * excluded no negation may rescue the path (Git: "It is not possible to
+ * re-include a file if a parent directory of that file is excluded"). A
+ * negation can still re-include paths inside a non-excluded tree, and a
+ * negated directory rule can re-include a directory before exclusion is
+ * reached.
  */
 export function isGitIgnored(path: string, rules: readonly GitIgnoreRule[], kind?: 'file' | 'directory'): boolean {
   const normalizedPath = normalizePath(path)
+
+  const segments = normalizedPath.split('/')
+  for (let i = 1; i < segments.length; i++) {
+    const ancestor = segments.slice(0, i).join('/')
+    if (isDirectoryExcluded(ancestor, rules)) return true
+  }
+
   let ignored = false
 
   for (const rule of rules) {
@@ -50,7 +65,29 @@ export function isGitIgnored(path: string, rules: readonly GitIgnoreRule[], kind
   return ignored
 }
 
-function matchesRule(path: string, rule: GitIgnoreRule, kind?: 'file' | 'directory'): boolean {
+/**
+ * Last-rule-wins evaluation of one ancestor directory. A `dir/**` pattern
+ * covers the directory's contents but not the directory itself (Git
+ * semantics), so it must not mark the directory excluded here.
+ */
+function isDirectoryExcluded(dirPath: string, rules: readonly GitIgnoreRule[]): boolean {
+  let excluded = false
+
+  for (const rule of rules) {
+    if (matchesRule(dirPath, rule, 'directory', true)) {
+      excluded = !rule.negated
+    }
+  }
+
+  return excluded
+}
+
+function matchesRule(
+  path: string,
+  rule: GitIgnoreRule,
+  kind?: 'file' | 'directory',
+  forDirectoryExclusion = false,
+): boolean {
   const basePrefix = rule.baseDir ? `${rule.baseDir}/` : ''
   if (rule.baseDir && path !== rule.baseDir && !path.startsWith(basePrefix)) return false
 
@@ -78,6 +115,16 @@ function matchesRule(path: string, rule: GitIgnoreRule, kind?: 'file' | 'directo
   }
   const candidates = prefixes.flatMap((prefix) => {
     const target = `${prefix}${pattern}`
+    if (forDirectoryExclusion) {
+      // Git semantics: a `dir/**` pattern covers the directory's contents but
+      // not the directory itself, while micromatch's `a/**` also matches `a`.
+      // Reject that self match here or every `dir/**` rule would mark its own
+      // base directory excluded and prune the whole tree.
+      if (target.endsWith('/**')) {
+        return relativePath.startsWith(`${target.slice(0, -3)}/`) ? [target] : []
+      }
+      return [target]
+    }
     return [target, `${target}/**`]
   })
 
