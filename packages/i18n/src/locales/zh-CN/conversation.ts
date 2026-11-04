@@ -124,6 +124,7 @@ export const conversation = {
       loadingPreview: "正在加载预览…",
       textPreviewFailed: "无法读取文本文件。",
       retryPreview: "重试",
+      textPreviewTruncated: "文件较大，仅显示前 {limit}。",
       pasteAttachmentFailed: "无法添加文本附件，将文本粘贴到消息中。",
       previewMarkdown: "预览 Markdown",
       agentIdPlaceholder: "agent-id",
