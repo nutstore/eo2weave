@@ -9,10 +9,12 @@
 
 import {
   previewUserSkillZip,
-  importUserSkillZip,
+  importUserSkillZipPrelocked,
+  withSkillImportSerialization,
   isNotFoundError,
   ZIP_IMPORT_LIMITS,
   type ZipSkillPreview,
+  type ZipSkillEntry,
 } from './user-skills-scanner'
 import { useSkillsStore } from '@/store/skills.store'
 import { formatBytes } from '@/lib/utils'
@@ -254,6 +256,37 @@ type InstalledVersionResult =
  * returning null would make the update flow fall back to `ifAbsent` and
  * report "Already installed" while the copy on disk stays stale.
  */
+/**
+ * Find the SKILL.md file handle in an installed skill directory,
+ * case-insensitively: the import pipeline accepts archives shipping
+ * `skill.md` (the ZIP preview matches SKILL.md case-insensitively), so an
+ * exact-case lookup would miss it and make the version read as unknown —
+ * silently degrading the update decision to `ifAbsent` (#154).
+ */
+async function findInstalledSkillMdHandle(
+  skillDir: FileSystemDirectoryHandle,
+): Promise<FileSystemFileHandle> {
+  try {
+    return await skillDir.getFileHandle('SKILL.md')
+  } catch (e) {
+    if (!isNotFoundError(e)) throw e
+  }
+  for await (const [name, entry] of skillDir.entries()) {
+    if (entry.kind === 'file' && /^skill\.md$/i.test(name)) {
+      return entry as FileSystemFileHandle
+    }
+  }
+  throw new Error(`NotFoundError: no SKILL.md in "${skillDir.name}"`)
+}
+
+/**
+ * Read the installed SKILL.md's `version:` for a user skill directory.
+ *
+ * Only an ABSENT skill (or a SKILL.md without a parseable version) yields an
+ * unknown version. An OPFS read failure is surfaced to the caller: silently
+ * returning null would make the update flow fall back to `ifAbsent` and
+ * report "Already installed" while the copy on disk stays stale.
+ */
 async function readInstalledSkillVersion(
   dirName: string,
 ): Promise<InstalledVersionResult> {
@@ -262,7 +295,7 @@ async function readInstalledSkillVersion(
     const skillsDir = await root.getDirectoryHandle('.skills', { create: false })
     const userDir = await skillsDir.getDirectoryHandle('user', { create: false })
     const skillDir = await userDir.getDirectoryHandle(dirName, { create: false })
-    const file = await (await skillDir.getFileHandle('SKILL.md')).getFile()
+    const file = await (await findInstalledSkillMdHandle(skillDir)).getFile()
     // Read only the head of the file: the frontmatter is at the top, and an
     // oversized local file must not be buffered whole just to find a version.
     const head = await file.slice(0, INSTALLED_VERSION_READ_LIMIT).text()
@@ -280,15 +313,34 @@ async function readInstalledSkillVersion(
   }
 }
 
+/**
+ * Look up a ZIP entry path case-insensitively. `exact` first (the common
+ * case), then a scan for a key differing only in case — the preview accepts
+ * case-variant SKILL.md names (`skill.md`), so an exact-case-only lookup
+ * would miss the version and silently degrade to `ifAbsent` (#154).
+ */
+function lookupRawEntry(
+  raw: Record<string, Uint8Array>,
+  exact: string,
+): Uint8Array | undefined {
+  const hit = raw[exact]
+  if (hit) return hit
+  const lower = exact.toLowerCase()
+  for (const key of Object.keys(raw)) {
+    if (key.toLowerCase() === lower) return raw[key]
+  }
+  return undefined
+}
+
 /** Find this skill's SKILL.md text inside the previewed store ZIP. */
 function extractStoreSkillMd(
   preview: ZipSkillPreview,
-  dirName: string,
+  skill: ZipSkillEntry,
 ): string | null {
-  const skill = preview.isBundle ? preview.skills?.[0] : preview.skill
-  if (!skill || skill.dirName !== dirName) return null
   const mdPath = `${skill._commonRoot}SKILL.md`
-  const data = preview._raw[mdPath] ?? preview._raw[`${dirName}/SKILL.md`]
+  const data =
+    lookupRawEntry(preview._raw, mdPath) ??
+    lookupRawEntry(preview._raw, `${skill.dirName}/SKILL.md`)
   return data ? new TextDecoder().decode(data) : null
 }
 
@@ -392,64 +444,134 @@ export async function installSkillFromUrl(
     report({ phase: 'previewing', message: tr('skills.discover.progressValidating') })
     const preview = await previewUserSkillZip(file)
 
+    report({ phase: 'importing', message: tr('skills.discover.progressInstalling') })
+
     // Version-update flow (#154): compare the store ZIP's version against
-    // the installed copy. Store-newer → overwrite in place; equal → keep
-    // the installed copy; installed-newer → skip (no silent downgrade).
+    // the installed copy INSIDE the per-directory import serialization.
+    // Deciding before acquiring the lock let a concurrent install (this tab
+    // or another) overwrite the skill between the version read and the
+    // import — an older ZIP could win and silently downgrade the skill, and
+    // an uninstall could land in the same window (making the update
+    // re-create a skill the user just deleted). The decision (version reads
+    // included) and the write therefore share the SAME critical section via
+    // importUserSkillZipPrelocked (calling the locking importUserSkillZip
+    // here would deadlock on its own per-directory lock).
+    // Bundle ZIPs decide PER MEMBER: preview.skill is unset for bundles, so
+    // the old single-skill check made every bundle fall back to ifAbsent and
+    // its members never updated.
     // An unparseable/missing version on either side falls back to the old
     // ifAbsent behavior (never clobber an install of unknown provenance).
-    const dirName = preview.skill?.dirName ?? ''
-    const installed = dirName
-      ? await readInstalledSkillVersion(dirName)
-      : { version: null }
-    // A failed read is NOT "unknown version": the update decision cannot be
-    // made, so the failure is surfaced instead of silently keeping the stale
-    // copy (the old fallback would report "Already installed").
-    if (installed.error) throw installed.error
-    const installedVersion = installed.version
-    const storeVersion = dirName
-      ? parseSkillMdVersion(extractStoreSkillMd(preview, dirName) ?? '')
-      : null
-    const alreadyInstalled = installedVersion !== null
+    const memberSkills = preview.isBundle
+      ? (preview.skills ?? [])
+      : preview.skill
+        ? [preview.skill]
+        : []
 
-    report({ phase: 'importing', message: tr('skills.discover.progressInstalling') })
-    // Cleanup on failure is handled inside importUserSkillZip: it removes
-    // only directories this import actually wrote and restores overwritten
-    // skills from a staged backup — previously installed skills that merely
-    // appear in the preview are never deleted.
     let count: number
     let doneMessage: string
     let outcome: InstallOutcome
-    if (!alreadyInstalled || storeVersion === null) {
-      count = await importUserSkillZip(preview, { ifAbsent: true })
-      outcome = count === 0 ? 'current' : 'installed'
-      doneMessage =
-        count === 0
-          ? tr('skills.discover.alreadyInstalled')
-          : tr('skills.discover.installedFiles', { count })
+    // The first member's store version (best-effort, for the manifest echo).
+    let manifestVersion: string | null = null
+
+    if (memberSkills.length === 0) {
+      count = 0
+      outcome = 'current'
+      doneMessage = tr('skills.discover.alreadyInstalled')
     } else {
-      const action = decideSkillUpdateAction(storeVersion, installedVersion)
-      outcome = action === 'update' ? 'updated' : action
-      if (action === 'current') {
-        count = 0
-        doneMessage = tr('skills.discover.alreadyInstalledVersion', { version: installedVersion })
-      } else if (action === 'installed-newer') {
-        count = 0
-        doneMessage = tr('skills.discover.skippedUpdate', {
-          installed: installedVersion,
-          store: storeVersion,
-        })
-      } else {
-        count = await importUserSkillZip(preview)
-        outcome = count === 0 ? 'current' : 'updated'
-        doneMessage =
-          count === 0
-            ? tr('skills.discover.alreadyInstalled')
-            : tr('skills.discover.updatedVersion', {
-                from: installedVersion,
-                to: storeVersion,
-                count,
-              })
-      }
+      const result = await withSkillImportSerialization(
+        memberSkills.map((s) => s.dirName),
+        async () => {
+          // A failed read is NOT "unknown version": the update decision
+          // cannot be made, so the failure is surfaced instead of silently
+          // keeping the stale copy (the old fallback would report
+          // "Already installed").
+          let anyUpdate = false
+          let anyInstalledNewer = false
+          let anyUnknown = false
+          const storeVersions = new Map<string, string>()
+          const installedVersions = new Map<string, string>()
+          for (const s of memberSkills) {
+            const installed = await readInstalledSkillVersion(s.dirName)
+            if (installed.error) throw installed.error
+            const storeVersion = parseSkillMdVersion(
+              extractStoreSkillMd(preview, s) ?? '',
+            )
+            if (installed.version === null || storeVersion === null) {
+              // Unknown version on either side — conservative fallback.
+              anyUnknown = true
+              continue
+            }
+            storeVersions.set(s.dirName, storeVersion)
+            installedVersions.set(s.dirName, installed.version)
+            const action = decideSkillUpdateAction(storeVersion, installed.version)
+            if (action === 'update') anyUpdate = true
+            if (action === 'installed-newer') anyInstalledNewer = true
+          }
+
+          // Per-member decision over the WHOLE preview (the import pipeline
+          // backs up / removes / writes each member directory independently,
+          // so a bundle with one updatable member overwrites exactly those
+          // members while the import's own staging/rollback protects the
+          // rest). `ifAbsent` is only right when NO member can be updated.
+          if (anyUpdate) {
+            const first = memberSkills.find((s) => storeVersions.has(s.dirName))!
+            const n = await importUserSkillZipPrelocked(preview)
+            const store = storeVersions.get(first.dirName)!
+            const installedBefore = installedVersions.get(first.dirName)!
+            return {
+              count: n,
+              storeVersion: store,
+              outcome: (n === 0 ? 'current' : 'updated') as InstallOutcome,
+              doneMessage:
+                n === 0
+                  ? tr('skills.discover.alreadyInstalled')
+                  : tr('skills.discover.updatedVersion', {
+                      from: installedBefore,
+                      to: store,
+                      count: n,
+                    }),
+            }
+          }
+          if (anyUnknown) {
+            const n = await importUserSkillZipPrelocked(preview, { ifAbsent: true })
+            return {
+              count: n,
+              storeVersion: null,
+              outcome: (n === 0 ? 'current' : 'installed') as InstallOutcome,
+              doneMessage:
+                n === 0
+                  ? tr('skills.discover.alreadyInstalled')
+                  : tr('skills.discover.installedFiles', { count: n }),
+            }
+          }
+          // Every member with parseable versions is installed-newer or
+          // current — never downgrade. Report against the first member.
+          const first = memberSkills[0]!
+          if (anyInstalledNewer) {
+            return {
+              count: 0,
+              storeVersion: storeVersions.get(first.dirName) ?? null,
+              outcome: 'installed-newer' as InstallOutcome,
+              doneMessage: tr('skills.discover.skippedUpdate', {
+                installed: installedVersions.get(first.dirName) ?? '',
+                store: storeVersions.get(first.dirName) ?? '',
+              }),
+            }
+          }
+          return {
+            count: 0,
+            storeVersion: storeVersions.get(first.dirName) ?? null,
+            outcome: 'current' as InstallOutcome,
+            doneMessage: tr('skills.discover.alreadyInstalledVersion', {
+              version: installedVersions.get(first.dirName) ?? '',
+            }),
+          }
+        },
+      )
+      count = result.count
+      outcome = result.outcome
+      doneMessage = result.doneMessage
+      manifestVersion = result.storeVersion
     }
 
     // Find manifest entry (best effort — caller may not have it)
@@ -460,7 +582,7 @@ export async function installSkillFromUrl(
       description: '',
       category: '',
       tags: [],
-      version: storeVersion ?? '',
+      version: manifestVersion ?? '',
       zipUrl,
     }
 

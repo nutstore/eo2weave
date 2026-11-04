@@ -962,6 +962,62 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
     }
   })
 
+  it('updates a skill installed with a case-variant skill.md file (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.2.0"\n---\n\n# Store v1.2.0'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // Installed via an archive that shipped the lowercase name: the exact
+      // SKILL.md handle lookup misses it, the version reads as unknown, and
+      // the update silently degrades to ifAbsent (keeping the stale copy).
+      const dir = dirOf(userRoot, '.skills/user', true)!
+      const sub = makeDir()
+      sub.files.set('skill.md', {
+        data: new TextEncoder().encode(
+          '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Old',
+        ),
+      })
+      dir.dirs.set('versioned-skill', sub)
+
+      const result = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      // The lowercase installed SKILL.md's version WAS found → not a fresh
+      // ifAbsent install but a version-aware update.
+      expect(result.outcome).toBe('updated')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('updates a bundle member when the store bundle is newer (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "2.0.0"\n---\n\n# A2'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "2.0.0"\n---\n\n# B2'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'bundle-a',
+        '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A1',
+      )
+      writeInstalled(
+        'bundle-b',
+        '---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1',
+      )
+      const result = await installSkillFromUrl('https://store.example/bundle.zip')
+      // Bundles have no preview.skill — the old code read no version at all
+      // and fell back to ifAbsent, leaving members stale.
+      expect(result.outcome).toBe('updated')
+      expect(contentOf('bundle-a', 'SKILL.md')).toContain('# A2')
+      expect(contentOf('bundle-b', 'SKILL.md')).toContain('# B2')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('rejects the download up front when Content-Length exceeds the cap', async () => {
     const realFetch = globalThis.fetch
     try {
