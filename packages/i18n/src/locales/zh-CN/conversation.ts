@@ -139,6 +139,7 @@ export const conversation = {
       noModel: "暂无可用模型",
       gatewayReauthRequired: "坚果云 AI 授权已过期，请重新登录",
       providerReauthRequired: "所选服务商当前不可用，请重新登录后使用",
+      workspaceSetupTimeout: "工作区准备超时，本次运行已停止，请重试",
       deletedTurn: "已删除完整对话轮次",
       stopBeforeSend: "当前对话正在运行，请先停止后再发送",
       stopBeforeRegenerate: "请先停止当前运行，再重新生成",
