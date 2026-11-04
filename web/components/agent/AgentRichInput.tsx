@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, forwardRef, useImperativeHandle, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, forwardRef, useImperativeHandle, lazy, Suspense, type ReactNode } from 'react'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import Document from '@tiptap/extension-document'
 import Paragraph from '@tiptap/extension-paragraph'
@@ -8,7 +8,7 @@ import History from '@tiptap/extension-history'
 import Mention from '@tiptap/extension-mention'
 import { FileMention, type FileMentionItem } from './FileMentionExtension'
 import { SlashCommandExtension, type SlashCommandItem } from './SlashCommandExtension'
-import { FileIcon, FolderIcon, Paperclip, X, ImageIcon, Loader2, FileText, AtSign, Hash, SlashSquare, ArrowUp, Square } from 'lucide-react'
+import { FileIcon, FolderIcon, Paperclip, X, Loader2, FileText, AtSign, Hash, SlashSquare, ArrowUp, Square } from 'lucide-react'
 import { useT } from '@/i18n'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
 import { useAssetStore } from '@/store/asset.store'
@@ -16,6 +16,11 @@ import { extractDroppedFiles } from '@/lib/dragdrop'
 import { Lightbox } from './Lightbox'
 import { MarkdownContent } from './MarkdownContent'
 import { formatBytes as formatFileSize } from '@/lib/utils'
+import { toast } from 'sonner'
+import { FileIcon as WorkspaceFileIcon } from '@/lib/file-icons'
+import { ErrorBoundary } from '@/components/error/ErrorBoundary'
+
+const TextAttachmentPreview = lazy(() => import('@/components/agent/TextAttachmentPreview'))
 
 // ---------------------------------------------------------------------------
 // Types
@@ -356,6 +361,8 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
 }: AgentRichInputProps, ref) {
   const t = useT()
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [textPreviewFile, setTextPreviewFile] = useState<File | null>(null)
+  const textPreviewTriggerRef = useRef<HTMLButtonElement | null>(null)
   // Markdown preview: rendered in a Lightbox (children mode) when the user
   // clicks a .md attachment chip before sending.
   const [mdPreviewContent, setMdPreviewContent] = useState<{ name: string; text: string } | null>(null)
@@ -742,22 +749,18 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
         const PASTE_TEXT_THRESHOLD = 10_000 // characters
         const pastedText = event.clipboardData?.getData('text/plain') ?? ''
         if (pastedText.length > PASTE_TEXT_THRESHOLD) {
-          event.preventDefault()
-          const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-          const fileName = `pasted-text-${timestamp}.txt`
-          const textFile = new File([pastedText], fileName, { type: 'text/plain' })
-          addFiles([textFile])
-          // Insert a brief note so the user and AI know text was auto-attached
-          const ed = editor // editor is in closure from useEditor
-          if (ed) {
-            const lineCount = pastedText.split('\n').length
-            const charCount = pastedText.length
-            ed.commands.insertContent(
-              `[Pasted text (${lineCount} lines, ${charCount.toLocaleString()} chars) attached as ${fileName}]`,
-            )
-            emitValue(ed)
+          try {
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+            const fileName = `pasted-text-${timestamp}.txt`
+            const textFile = new File([pastedText], fileName, { type: 'text/plain' })
+            addFiles([textFile])
+            event.preventDefault()
+            return true
+          } catch {
+            // Let the editor paste the original text if staging fails.
+            toast.error(t('conversation.input.pasteAttachmentFailed'))
+            return false
           }
-          return true
         }
 
         // Let TipTap handle normal text/HTML paste
@@ -971,21 +974,9 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
     },
   }), [editor, emitValue])
 
-  // ── Clear editor on resetToken change (message sent) ──
-  // IMPORTANT: this must NOT run when the editor instance is first created.
-  // With `immediatelyRender: false` the editor arrives after mount, so the
-  // effect's first run sees the initial token — that is editor readiness, NOT
-  // a send-reset. Gating on an actual token change (vs. initial token) fixes
-  // two silent asset-loss bugs:
-  //   1. WelcomeScreen → conversation transition (first send): the input
-  //      remounts under key={convId}; the old code's first run would
-  //      clearAll() the GLOBAL pending-asset store before sendMessage read
-  //      it, dropping the staged attachments from the welcome input.
-  //   2. Plain conversation switches: key={convId} remount → editor rebuild
-  //      → same first-run clearAll(), wiping staged-but-unsent attachments.
-  // StrictMode note: comparing against the token the editor was created with
-  // (not a "first run" flag) keeps the guard immune to double-invoked
-  // effects — a double run sees an unchanged token on the second pass.
+  // Clear only the editor when the send token changes. Attachment ownership
+  // is handled by the send pipeline so later attachments are not discarded.
+  // The first editor-ready effect is not a send, including under StrictMode.
   const editorInitialTokenRef = useRef<number | null>(null)
   useEffect(() => {
     if (!editor) return
@@ -1006,8 +997,6 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
     // Reset history navigation state for the next (empty) input.
     navIndexRef.current = null
     editor.commands.clearContent()
-    // Clear pending asset uploads when input resets (message sent)
-    useAssetStore.getState().clearAll()
     emitValue(editor)
   }, [editor, emitValue, resetToken])
 
@@ -1185,11 +1174,18 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
               <div className="mt-2 flex flex-wrap gap-2">
                 {pendingAssets.map((asset) => {
                   const isMarkdown = /\.(md|markdown)$/i.test(asset.name) || asset.mimeType === 'text/markdown'
+                  const isText = !isMarkdown && (/\.(txt|log|csv|tsv|json|jsonl|yaml|yml|py|js|jsx|ts|tsx|css|html|xml|sh|toml|ini|conf|config|env|properties|patch|diff|sql|rs|go|java|c|h|cpp|hpp)$/i.test(asset.name) || asset.mimeType.startsWith('text/') || ['application/json', 'application/xml', 'application/x-yaml'].includes(asset.mimeType))
                   return (
                   <div
                     key={asset.id}
                     className="group relative flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
                   >
+                    {isText ? (
+                      <button type="button" aria-label={`${t('conversation.input.previewText')}: ${asset.name}`} title={t('conversation.input.previewText')} onClick={(event) => { textPreviewTriggerRef.current = event.currentTarget; setTextPreviewFile(asset.file) }} className="flex min-w-0 items-center gap-2 rounded text-left focus-visible:outline focus-visible:outline-2">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary-50 text-primary-600 dark:bg-primary-900/30 dark:text-primary-400"><WorkspaceFileIcon filename={asset.name} className="h-4 w-4" /></span>
+                        <span className="min-w-0"><span className="block max-w-[140px] truncate text-xs font-medium text-neutral-600 dark:text-neutral-300">{asset.name}</span><span className="block text-[10px] text-neutral-500 dark:text-neutral-400">{formatFileSize(asset.size)}</span></span>
+                      </button>
+                    ) : <>
                     {asset.previewUrl ? (
                       <img
                         src={asset.previewUrl}
@@ -1227,7 +1223,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
                       </div>
                     ) : (
                       <div className="flex h-8 w-8 items-center justify-center rounded bg-neutral-200 dark:bg-neutral-700">
-                        <ImageIcon className="h-4 w-4" />
+                        <WorkspaceFileIcon filename={asset.name} className="h-4 w-4" />
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
@@ -1247,6 +1243,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
                         {asset.ocrStatus === 'timeout' && ` · ${t('conversation.input.ocrTimeout')}`}
                       </div>
                     </div>
+                    </>}
                     <button
                       type="button"
                       className="shrink-0 rounded p-1 opacity-60 transition-opacity hover:bg-neutral-200 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1 dark:hover:bg-neutral-600"
@@ -1518,6 +1515,14 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
       {/* Lightbox overlay for click-to-enlarge images */}
       {lightboxSrc && (
         <Lightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+      )}
+
+      {textPreviewFile && (
+        <ErrorBoundary fallback={<Lightbox onClose={() => setTextPreviewFile(null)}><div role="alert" className="rounded bg-white p-4 text-sm dark:bg-neutral-900">{t('conversation.input.textPreviewUnavailable')} <button type="button" onClick={() => setTextPreviewFile(null)} className="underline">{t('conversation.input.closePreview')}</button></div></Lightbox>}>
+        <Suspense fallback={<Lightbox onClose={() => setTextPreviewFile(null)}><div role="status" className="rounded bg-white p-4 text-sm dark:bg-neutral-900">{t('conversation.input.loadingPreview')}</div></Lightbox>}>
+          <TextAttachmentPreview file={textPreviewFile} onClose={() => setTextPreviewFile(null)} onRestoreFocus={() => textPreviewTriggerRef.current?.focus()} />
+        </Suspense>
+        </ErrorBoundary>
       )}
 
       {/* Markdown preview overlay for .md attachments (before send) */}

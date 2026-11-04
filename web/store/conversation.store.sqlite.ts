@@ -2730,6 +2730,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       // (PR #152 review, "Deleted conversations retain watermark entries").
       conversationTranscriptVersions.delete(id)
       transcriptReadGenerations.delete(id)
+      const { useAssetStore } = await import('@/store/asset.store')
+      useAssetStore.getState().discardDeferredAssets(id)
     },
 
     deleteConversations: async (ids) => {
