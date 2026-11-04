@@ -185,8 +185,10 @@ function streamCwOpenAIChatCompletions(
             gatewayCredentialsMissing = true
             console.warn('[llm-gateway] refresh reported missing credentials')
           } else {
-            // 'temporary_error' (network/5xx) keeps the original gateway
-            // error — only a definitively dead/absent credential gets the
+            // 'temporary_error' — including a FAILED access-shadow inspection
+            // (#175 review: the refresh path reports a transient storage
+            // failure as temporary_error, never 'missing') — keeps the raw
+            // 401 below: only a definitively dead/absent credential gets the
             // re-login card.
             console.warn('[llm-gateway] refresh failed temporarily; preserving original gateway error')
           }
