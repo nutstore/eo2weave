@@ -590,10 +590,11 @@ function SkillInstallView() {
     setPhase('installing')
     try {
       const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress)
-      if (result.outcome === 'updated') {
+      if (result.outcome !== 'current' && result.outcome !== 'installed-newer') {
         setUpdateAvailable(false)
-        // The copy on disk was replaced — re-register so the refreshed
-        // content is what the slash command runs.
+        // The copy on disk changed — an update request can also land as a
+        // FRESH install (another actor uninstalled the skill mid-flight), so
+        // re-register for every write outcome, not just `updated`.
         await getSkillManager().refreshUserSkills()
         if (isStale()) return
       }
