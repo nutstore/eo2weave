@@ -351,7 +351,7 @@ export async function runAgentImpl(
       // conversation with no result to roll back.
       const providerMissing = (type: LLMProviderType | string): boolean =>
         !!type && isPotentiallyDynamicProviderType(type) && !getProviderConfig(type as LLMProviderType)
-      if (providerMissing(providerType)) {
+      if (providerMissing(providerType) && providerType !== 'llm-gateway') {
         const unavailableMessage = i18nText(
           'conversation.toast.providerReauthRequired',
           'The selected provider is unavailable — sign in again to use it.'
@@ -654,6 +654,47 @@ export async function runAgentImpl(
         const isCurrentRunEpoch = () => {
           const rt = useConversationRuntimeStore.getState().runtimes.get(conversationId)
           return !!rt && (rt.runEpoch || 0) === runEpoch
+        }
+
+        const failRunEarly = (message: string) => {
+          if (!isCurrentRun()) return
+          set((state) => {
+            const c = state.conversations.find((c) => c.id === conversationId)
+            if (!c || c.activeRunId !== runId) return
+            c.status = 'error'
+            c.error = message
+            c.activeRunId = null
+            c.draftAssistant = null
+            c.currentToolCall = null
+            c.activeToolCalls = []
+            c.streamingToolArgs = ''
+            c.streamingToolArgsByCallId = {}
+            c.streamingContent = ''
+            c.streamingReasoning = ''
+          })
+          useConversationRuntimeStore.setState((state) => {
+            const r = ensureRuntime(state, conversationId)
+            if (r.activeRunId !== runId) return
+            r.status = 'error'
+            r.error = message
+            r.activeRunId = null
+            r.draftAssistant = null
+            r.currentToolCall = null
+            r.activeToolCalls = []
+            r.streamingToolArgs = ''
+            r.streamingToolArgsByCallId = {}
+            r.streamingContent = ''
+            r.streamingReasoning = ''
+          })
+          void import('@/services/favicon-indicator')
+            .then(({ setFaviconState }) => setFaviconState('idle'))
+            .catch(() => {})
+          const errorConv = get().conversations.find((c) => c.id === conversationId)
+          if (errorConv && errorConv.messagesLoaded !== false) {
+            persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
+              console.error('[conversation.store] Failed to persist on failRunEarly:', err)
+            })
+          }
         }
 
         // Persist conversation to SQLite when a block completes (debounced).
