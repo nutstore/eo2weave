@@ -365,16 +365,28 @@ function slicePreview(preview: ZipSkillPreview, skill: ZipSkillEntry): ZipSkillP
   // A root-level member (empty `_commonRoot`) would otherwise match EVERY
   // archive path via `startsWith('')` and absorb its siblings' files —
   // including nested skills' SKILL.md — into the root member's import.
-  // Exclude paths claimed by another member's prefix (its `_commonRoot` or
-  // `dirName/`) so each member keeps only its own files (#154 round 5).
-  const emptyRoot = root === ''
-  const otherPrefixes = emptyRoot
-    ? (preview.isBundle ? preview.skills ?? [] : [])
-        .filter((m) => m !== skill && m._commonRoot)
-        .map((m) => m._commonRoot)
-    : []
+  // A member whose directory CONTAINS another member (e.g. `pkg/` with a
+  // `pkg/nested-skill/SKILL.md` inside) must likewise not copy the nested
+  // member's files — EXCEPT that the nested member's own files also live
+  // under the containing parent's root, so the exclusion skips any member
+  // that contains THIS one (its root is a prefix of ours) (#154 round 8).
+  const members = preview.isBundle ? preview.skills ?? [] : []
+  const claimedByContainer = (otherPrefix: string): boolean =>
+    skill._commonRoot.startsWith(otherPrefix)
+  const otherPrefixes = members
+    .filter((m) => m !== skill && m._commonRoot && !claimedByContainer(m._commonRoot))
+    .map((m) => m._commonRoot)
+  const otherDirPrefixes = members
+    .filter(
+      (m) =>
+        m !== skill &&
+        m._commonRoot === '' &&
+        !claimedByContainer(`${m.dirName}/`),
+    )
+    .map((m) => `${m.dirName}/`)
   const claimedByOther = (path: string): boolean =>
-    otherPrefixes.some((p) => path.startsWith(p))
+    otherPrefixes.some((p) => path.startsWith(p)) ||
+    otherDirPrefixes.some((p) => path.startsWith(p))
   const raw: Record<string, Uint8Array> = {}
   for (const [path, data] of Object.entries(preview._raw)) {
     if (claimedByOther(path)) continue

@@ -1765,4 +1765,33 @@ describe('installSkillFromUrl per-member path guards (round 5)', () => {
       globalThis.fetch = realFetch
     }
   })
+
+  it('excludes a nested bundle member from its CONTAINING parent member (#154 round 8)', async () => {
+    const realFetch = globalThis.fetch
+    // One skill directory nested INSIDE another: `pkg/` is the parent member
+    // and `pkg/nested-skill/` is its own member. The parent's slice starts
+    // with `pkg/` and used to include every path beneath it — the nested
+    // member's files got copied into the parent's directory even though the
+    // nested member is imported on its own. Only the store bundle's own
+    // files land in `pkg/`.
+    const archive = zipSync({
+      'pkg/SKILL.md': strToU8('---\nname: pkg\nversion: "2.0.0"\n---\n\n# Pkg v2'),
+      'pkg/README.md': strToU8('# Pkg readme'),
+      'pkg/nested-skill/SKILL.md': strToU8('---\nname: nested-skill\nversion: "1.0.0"\n---\n\n# Nested'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled('pkg', '---\nname: pkg\nversion: "1.0.0"\n---\n\n# Pkg v1')
+      const result = await installSkillFromUrl('https://store.example/pkg.zip')
+      expect(result.outcome).toBe('updated')
+      expect(contentOf('pkg', 'SKILL.md')).toContain('# Pkg v2')
+      // The parent absorbed the nested member's files…
+      const pkgDir = dirOf(userRoot, '.skills/user/pkg', false)!
+      expect(pkgDir.dirs.has('nested-skill')).toBe(false)
+      expect(contentOf('nested-skill', 'SKILL.md')).toContain('# Nested')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
 })
