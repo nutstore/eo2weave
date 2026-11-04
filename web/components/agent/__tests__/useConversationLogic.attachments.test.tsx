@@ -272,4 +272,18 @@ describe('pending attachment sending', () => {
     await waitFor(() => expect(conversationStoreModule.getState().updateMessages).toHaveBeenCalledWith(CONV_ID, expect.arrayContaining([expect.objectContaining({ assets: [expect.objectContaining({ name: 'image.png' })] })])))
   })
 
+  it('defers failed files when the asset scope has not caught up with the active conversation', async () => {
+    let fail!: (reason: Error) => void
+    writeAssets.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject }))
+    useAssetStore.getState().addFiles([new File(['original'], 'first.txt', { type: 'text/plain' })])
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => { await result.current.handleSend() })
+    await waitFor(() => expect(writeAssets).toHaveBeenCalled())
+    useAssetStore.getState().switchConversation('other')
+    conversationStoreModule.getState().activeConversationId = CONV_ID
+    await act(async () => fail(new Error('write failed')))
+    expect(useAssetStore.getState().pendingAssets).toHaveLength(0)
+    expect(useAssetStore.getState().deferredAssets[CONV_ID].map((a) => a.name)).toEqual(['first.txt'])
+  })
+
 })

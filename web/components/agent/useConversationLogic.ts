@@ -432,8 +432,9 @@ export function useConversationLogic() {
         if (!pendingSnapshot.length) return
         const conversationState = useConversationStore.getState()
         if (targetConvId && !conversationState.conversations.some((conversation) => conversation.id === targetConvId)) return
-        const activeId = conversationState.activeConversationId
-        useAssetStore.getState().restoreAssets(pendingSnapshot, activeId === targetConvId ? undefined : targetConvId ?? undefined)
+        const assets = useAssetStore.getState()
+        const scopeMatches = conversationState.activeConversationId === targetConvId && assets.activeConversationId === targetConvId
+        assets.restoreAssets(pendingSnapshot, scopeMatches ? undefined : targetConvId ?? undefined)
       }
       const rejectSend = () => {
         options?.onInputRejected?.(text)
