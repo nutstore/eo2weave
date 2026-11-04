@@ -278,6 +278,71 @@ describe('buildChatCompletionsPayload', () => {
   })
 })
 
+describe('convertContextMessages assistant image turns', () => {
+  const buildModel = () =>
+    ({
+      id: 'MiniMax-M2.7',
+      api: CW_OPENAI_FETCH_API,
+      provider: 'minimax',
+      baseUrl: 'https://api.minimax.io/v1',
+      name: 'MiniMax M2.7',
+      reasoning: true,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 8192,
+    }) as never
+
+  it('keeps an image-only assistant turn in the serialized request', () => {
+    // OpenAI chat-completions assistant messages cannot carry image parts, so
+    // the image block serializes to nothing: content:null + no tool_calls.
+    // The message must still be emitted with a text placeholder — dropping it
+    // entirely erases the turn from provider history and breaks tool-call
+    // ordering for later turns.
+    const context = {
+      systemPrompt: undefined,
+      messages: [
+        { role: 'user', content: 'draw a cat' },
+        {
+          role: 'assistant',
+          content: [{ type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' }],
+        },
+        { role: 'user', content: 'now draw a dog' },
+      ],
+      tools: [],
+    } as never
+
+    const payload = buildChatCompletionsPayload(buildModel(), context) as Record<string, unknown>
+    const messages = payload.messages as Array<{ role: string; content: unknown }>
+    expect(messages).toHaveLength(3) // user, assistant, user (no system prompt)
+    const assistant = messages.find((m) => m.role === 'assistant')
+    expect(assistant).toBeDefined()
+    expect(assistant!.content).toBe('[generated an image]')
+    expect(JSON.stringify(payload)).not.toContain('aW1hZ2U=')
+  })
+
+  it('preserves assistant turns that carry text alongside images', () => {
+    const context = {
+      systemPrompt: undefined,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'here is your cat' },
+            { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+          ],
+        },
+      ],
+      tools: [],
+    } as never
+
+    const payload = buildChatCompletionsPayload(buildModel(), context) as Record<string, unknown>
+    const messages = payload.messages as Array<{ role: string; content: string | null }>
+    expect(messages).toHaveLength(1)
+    expect(messages[0].content).toBe('here is your cat')
+  })
+})
+
 describe('applyMaxThinkingOverride', () => {
   it('should set reasoning.effort=max for openrouter baseUrl', () => {
     const payload: Record<string, unknown> = {
