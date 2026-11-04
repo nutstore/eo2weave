@@ -348,6 +348,14 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
 
         await project.agentManager.deleteAgent(id)
 
+        // Staleness check FIRST: a delete that settles after a project
+        // switch must neither reset the new project's active Agent selection
+        // (the fallback below) nor overwrite its catalog (the refresh below).
+        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
+          set({ isLoading: false })
+          return true
+        }
+
         // 如果删除的是当前活跃的，切换到 default
         if (activeAgentId === id) {
           const defaultAgent = await project.agentManager.getAgent('default')
@@ -358,13 +366,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
         }
 
         // 刷新列表 — but only while the user is still on the project the
-        // deletion belongs to. A delete that settles after a project switch
-        // must not overwrite the new project's catalog or reset its active
-        // Agent selection (same staleness rule as createAgent).
-        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
-          set({ isLoading: false })
-          return true
-        }
+        // deletion belongs to (same staleness rule as createAgent).
         const agents = await project.agentManager.listAgents()
         if (useProjectStore.getState().activeProjectId !== currentProjectId) {
           set({ isLoading: false })

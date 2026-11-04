@@ -2752,6 +2752,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         try {
           await get().deleteConversation(id)
           successIds.push(id)
+          // The per-conversation Agent selection must die with the
+          // conversation on EVERY successful deletion path. The single
+          // deleteConversation action already clears it; this redundant
+          // clearing documents the bulk contract — a bulk delete is not
+          // guaranteed to route through the single action (it may call the
+          // repository directly), and a stale `agentIdByWorkspace` entry
+          // would be inherited by a new conversation reusing the id.
+          try {
+            useWorkspacePreferencesStore.getState().clearWorkspaceAgentId(id)
+          } catch (error) {
+            console.warn('[conversation.store] Failed to clear conversation-scoped auth state:', error)
+          }
         } catch (error) {
           failed.push({
             id,
