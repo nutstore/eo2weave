@@ -92,6 +92,8 @@ export interface ConversationExportData {
     role: string
     recordType: MessageRecordType
     kind?: Message['kind']
+    stopReason?: Message['stopReason']
+    errorMessage?: Message['errorMessage']
     delegationNote?: Message['delegationNote']
     readImageHandoff?: Message['readImageHandoff']
     content: string | null
@@ -610,6 +612,34 @@ function formatByteSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function getAssistantTurnStatus(message: Message): string | null {
+  if (message.role !== 'assistant') return null
+  const status =
+    message.kind === 'empty' || message.kind === 'error' || message.kind === 'aborted'
+      ? message.kind
+      : message.stopReason === 'length'
+        ? 'incomplete'
+        : null
+  if (!status) return null
+  return message.stopReason ? status + ' (stop reason: ' + message.stopReason + ')' : status
+}
+
+function renderAssistantTurnStatusMarkdown(message: Message): string[] {
+  const status = getAssistantTurnStatus(message)
+  if (!status) return []
+  // errorMessage is provider-controlled text; escape HTML-significant
+  // characters so it cannot inject markup when the Markdown export is
+  // rendered by a renderer that permits raw HTML (same policy as the
+  // HTML export path, which escapes every untrusted field).
+  const lines = ['> Turn status: ' + escapeHtml(status)]
+  if (message.errorMessage) {
+    const [firstLine, ...remainingLines] = message.errorMessage.split(/\r?\n/)
+    lines.push('> Provider error: ' + escapeHtml(firstLine))
+    lines.push(...remainingLines.map((line) => '> ' + escapeHtml(line)))
+  }
+  return lines
+}
+
 // ============================================================================
 // JSON Export
 // ============================================================================
@@ -641,6 +671,8 @@ function buildJSONString(
       role: msg.role,
       recordType: getMessageRecordType(msg),
       kind: msg.kind,
+      stopReason: msg.stopReason,
+      errorMessage: msg.errorMessage,
       delegationNote: msg.delegationNote,
       readImageHandoff: msg.readImageHandoff ? {
         ...msg.readImageHandoff,
@@ -703,6 +735,12 @@ function buildMarkdown(
       case 'assistant': {
         lines.push(`### 🤖 ${messageLabel(msg)} — ${time}`)
         lines.push('')
+
+        const statusLines = renderAssistantTurnStatusMarkdown(msg)
+        if (statusLines.length > 0) {
+          lines.push(...statusLines)
+          lines.push('')
+        }
 
         // Reasoning
         if (options.includeReasoning && msg.reasoning) {
@@ -802,6 +840,16 @@ function buildHTML(
 
     let body = ''
 
+    if (msg.role === 'assistant') {
+      const status = getAssistantTurnStatus(msg)
+      if (status) {
+        body += '<div class="message-status"><strong>Turn status:</strong> ' + escapeHtml(status) + '</div>'
+      }
+      if (msg.errorMessage) {
+        body += '<div class="message-error-detail">' + escapeHtml(msg.errorMessage) + '</div>'
+      }
+    }
+
     // Reasoning section
     if (options.includeReasoning && msg.role === 'assistant' && msg.reasoning) {
       body += `
@@ -899,6 +947,19 @@ function buildHTML(
       white-space: pre-wrap;
       word-break: break-word;
       font-size: 0.9rem;
+    }
+    .message-status {
+      margin-bottom: 0.5rem;
+      color: #b45309;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .message-error-detail {
+      margin-bottom: 0.5rem;
+      color: #b91c1c;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     .message-user { border-left: 3px solid #3b82f6; }
     .message-assistant { border-left: 3px solid #8b5cf6; }

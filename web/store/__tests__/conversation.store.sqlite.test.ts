@@ -855,6 +855,18 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(conversationRepoDeleteMock).toHaveBeenCalledWith('missing-id')
   })
 
+  it('drops deferred attachments when a conversation is deleted', async () => {
+    const { useAssetStore } = await import('@/store/asset.store')
+    const conv = useConversationStore.getState().createNew('with-attachment')
+    const file = new File(['content'], 'pending.txt', { type: 'text/plain' })
+    useAssetStore.getState().addFiles([file])
+    const asset = useAssetStore.getState().pendingAssets[0]
+    useAssetStore.getState().removeAsset(asset.id)
+    useAssetStore.getState().restoreAssets([asset], conv.id)
+    await useConversationStore.getState().deleteConversation(conv.id)
+    expect(useAssetStore.getState().deferredAssets[conv.id]).toBeUndefined()
+  })
+
   it('should remove conversation even when workspace deletion fails', async () => {
     const store = useConversationStore.getState()
     const conv = store.createNew('delete-fail')

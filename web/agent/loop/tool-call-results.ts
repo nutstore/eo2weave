@@ -8,6 +8,26 @@ import { generateId } from '../message-types'
  * saved, and older histories can contain results after a later user message.
  */
 export function ensureToolCallResults(messages: Message[]): Message[] {
+  // Assistant turns that never reach the provider (aborted/failed/empty) are
+  // filtered FIRST, before placeholder results are synthesized. If placeholders
+  // were added for their tool calls and the turn was filtered afterwards, the
+  // provider history would contain orphaned tool results with no matching
+  // assistant call — which strict providers reject.
+  const droppedAssistantIds = new Set(
+    messages
+      .filter(
+        (message) =>
+          message.role === 'assistant' &&
+          (message.kind === 'empty' || message.kind === 'error' || message.kind === 'aborted')
+      )
+      .map((message) => message.id)
+  )
+  if (droppedAssistantIds.size > 0) {
+    messages = messages.filter(
+      (message) => !(message.role === 'assistant' && droppedAssistantIds.has(message.id))
+    )
+  }
+
   const declaredToolCallIds = new Set<string>()
   const toolResultsByCallId = new Map<string, Message>()
   let changed = false

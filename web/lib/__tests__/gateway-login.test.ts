@@ -55,6 +55,11 @@ describe('applyGatewayLoginTokens cancellation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     __resetGatewayCredentialFencingForTests()
+    // Reset the shared settings mock: mutations from an earlier test
+    // (cleared pins, ad-hoc vi.fn()s) must not leak into later ones.
+    ;(settings as any).pinnedModelsByProvider = { 'llm-gateway': ['old-model'] }
+    ;(settings as any).setPinnedModels = vi.fn()
+    ;(settings as any).markPinnedModelsSeen = vi.fn()
     savedKey = 'previous-key'
     keyStore.load.mockImplementation(async () => savedKey)
     keyStore.save.mockImplementation(async (_id, key) => { savedKey = key })
@@ -84,6 +89,63 @@ describe('applyGatewayLoginTokens cancellation', () => {
     expect(keyStore.save).not.toHaveBeenCalled()
     expect(settings.switchProviderAndModel).not.toHaveBeenCalled()
     expect(commit).not.toHaveBeenCalled()
+  })
+
+  it('selects the curated value default over catalog order', async () => {
+    // The gateway lists deepseek-v4-pro FIRST; the curated default is
+    // deepseek-v4.1-flash. The selected model must be the curated one, not
+    // whichever model happens to be served first. (Fresh login: no existing
+    // pins, so the curated default is seeded AND selected.)
+    ;(settings as any).pinnedModelsByProvider = {}
+    ;(settings as any).setPinnedModels = vi.fn()
+    ;(settings as any).markPinnedModelsSeen = vi.fn()
+    provider.update.mockResolvedValue([
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+      { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
+    ])
+    provider.prepare.mockResolvedValue({
+      models: [
+        { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+        { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
+      ],
+      status: 'ready',
+    })
+    await applyGatewayLoginTokens('new-key')
+    expect(settings.switchProviderAndModel).toHaveBeenCalledWith(
+      'llm-gateway',
+      'deepseek-v4.1-flash',
+    )
+    // Fresh login: the curated default is seeded as favorites.
+    expect((settings as any).setPinnedModels).toHaveBeenCalledWith('llm-gateway', [
+      'deepseek-v4.1-flash',
+    ])
+  })
+
+  it('selects the curated value default for a returning user without clobbering their pins', async () => {
+    // Returning user: pins already exist ('old-model'). The SELECTION must
+    // still use the curated default (deepseek-v4.1-flash) when it is served,
+    // NOT discovery.models[0] (deepseek-v4-pro) — catalog order must not
+    // decide again. The pin-SEEDING writes must be skipped so the user's own
+    // favorites are preserved.
+    provider.update.mockResolvedValue([
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+      { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
+    ])
+    provider.prepare.mockResolvedValue({
+      models: [
+        { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+        { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
+      ],
+      status: 'ready',
+    })
+    await applyGatewayLoginTokens('new-key')
+    expect(settings.switchProviderAndModel).toHaveBeenCalledWith(
+      'llm-gateway',
+      'deepseek-v4.1-flash',
+    )
+    // Favorites preserved: seeding never fires for a returning user.
+    expect((settings as any).setPinnedModels).not.toHaveBeenCalled()
+    expect((settings as any).markPinnedModelsSeen).not.toHaveBeenCalled()
   })
 
   it('restores the previous credential if cancellation happens during its save', async () => {

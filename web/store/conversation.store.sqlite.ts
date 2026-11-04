@@ -2742,6 +2742,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       } catch (error) {
         console.warn('[conversation.store] Failed to clear conversation-scoped auth state:', error)
       }
+      const { useAssetStore } = await import('@/store/asset.store')
+      useAssetStore.getState().discardDeferredAssets(id)
     },
 
     deleteConversations: async (ids) => {

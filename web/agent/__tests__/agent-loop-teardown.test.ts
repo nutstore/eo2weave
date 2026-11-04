@@ -62,11 +62,11 @@ mockAgentLoopContinue.mockImplementation(() => {
     await gate
     yield {
       type: 'message_start',
-      message: { role: 'assistant', content: [], usage: { input: 1, output: 1, totalTokens: 2 }, timestamp: Date.now() },
+      message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], usage: { input: 1, output: 1, totalTokens: 2 }, timestamp: Date.now() },
     }
     yield {
       type: 'message_end',
-      message: { role: 'assistant', content: [], usage: { input: 1, output: 1, totalTokens: 2 }, timestamp: Date.now() },
+      message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], usage: { input: 1, output: 1, totalTokens: 2 }, timestamp: Date.now() },
     }
   })()
 })
