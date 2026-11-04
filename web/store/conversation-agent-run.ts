@@ -148,6 +148,54 @@ export async function runAgentImpl(
       const conv = state.conversations.find((c) => c.id === conversationId)
       if (!conv) return
 
+      // Stale rerun triggers must die with THIS dispatch's failure — not
+      // linger for the next successful run to burn a turn on (#166 item 5,
+      // extended). The `isConversationRunning` guard below runs before the
+      // claim is created, so a queue drain here can never remove a trigger
+      // queued by another dispatch for a live owner. Real queued user
+      // messages are kept — they still carry undelivered content the user
+      // can resend/retry through the normal send path.
+      const drainStaleRerunTriggers = () => {
+        const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conversationId)
+        if (queue) {
+          for (let i = queue.length - 1; i >= 0; i--) {
+            if (queue[i].rerunOnly) {
+              useConversationRuntimeStore.getState().removeQueuedMessage(conversationId, i)
+            }
+          }
+        }
+      }
+      const failDispatchEarly = (message: string) => {
+        drainStaleRerunTriggers()
+        set((state) => {
+          const c = state.conversations.find((c) => c.id === conversationId)
+          if (c) {
+            c.status = 'error'
+            c.error = message
+            c.activeRunId = null
+          }
+        })
+        useConversationRuntimeStore.setState((state) => {
+          const r = ensureRuntime(state, conversationId)
+          r.status = 'error'
+          r.error = message
+          r.activeRunId = null
+          r.draftAssistant = null
+          r.currentToolCall = null
+          r.activeToolCalls = []
+          r.streamingToolArgs = ''
+          r.streamingToolArgsByCallId = {}
+          r.streamingContent = ''
+          r.streamingReasoning = ''
+        })
+        const errorConv = get().conversations.find((c) => c.id === conversationId)
+        if (errorConv) {
+          persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
+            console.error('[conversation.store] Failed to persist pre-run dispatch failure:', err)
+          })
+        }
+      }
+
       // A dispatch arriving while a run is already pending/running (e.g. from
       // QuickActionsPanel, which — unlike useConversationLogic / FilePreview /
       // SyncPreviewPanel — has no running-state precheck) used to be silently
@@ -158,6 +206,14 @@ export async function runAgentImpl(
       // `rerunOnly: true` tells the consumer NOT to create a duplicate user
       // message. The result is checked so a queue-full overlap surfaces a
       // rejection to the caller (#166 item 3) instead of resolving silently.
+      //
+      // A queue-full rejection here must also drain stale rerun triggers
+      // (#166 item 5, extended): the queue was almost certainly filled by
+      // leftover triggers from an earlier failed dispatch of THIS run path,
+      // and leaving them would burn the active owner's next follow-up turn.
+      // No trigger queued at this moment can belong to a live dispatch — the
+      // conversation is running, so every overlap in flight goes through
+      // this same guard or the claim-overlap branch below.
       if (state.isConversationRunning(conversationId)) {
         const enqueued = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
           text: '',
@@ -165,6 +221,7 @@ export async function runAgentImpl(
           rerunOnly: true,
         })
         if (!enqueued.enqueued) {
+          drainStaleRerunTriggers()
           throw new Error(
             `Conversation is running and its message queue is full (${conversationId})`
           )
@@ -175,7 +232,6 @@ export async function runAgentImpl(
         )
         return
       }
-
       // Claim the per-conversation run slot SYNCHRONOUSLY, before any await.
       // The status-based guard above only observes state this call set later;
       // two concurrent dispatches for the same conversation could otherwise
@@ -201,15 +257,27 @@ export async function runAgentImpl(
         // #166 item 3: a queue-full overlap must NOT silently drop the rerun
         // trigger — surface the failure so the caller (e.g. the WebMCP
         // send_message handler) gets an error instead of a false success.
+        // Drain stale rerun triggers first (#166 item 5, extended): at least
+        // one leftover trigger from an earlier failed dispatch is what filled
+        // the queue, and freeing it lets this trigger — which carries a real
+        // user message — take its place.
         const enqueued = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
           text: '',
           enqueuedAt: Date.now(),
           rerunOnly: true,
         })
         if (!enqueued.enqueued) {
-          throw new Error(
-            `Conversation is starting and its message queue is full (${conversationId})`
-          )
+          drainStaleRerunTriggers()
+          const retried = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+            text: '',
+            enqueuedAt: Date.now(),
+            rerunOnly: true,
+          })
+          if (!retried.enqueued) {
+            throw new Error(
+              `Conversation is starting and its message queue is full (${conversationId})`
+            )
+          }
         }
         return
       }
@@ -329,38 +397,18 @@ export async function runAgentImpl(
             // failure instead of relying on the generic catch (which would
             // leave no error banner while the claim is already gone). Mirror
             // the providerMissing failure shape below.
-            const timeoutMessage = i18nText(
-              'conversation.toast.workspaceSetupTimeout',
-              'Preparing the workspace timed out — the run was stopped. Try again.'
+            failDispatchEarly(
+              i18nText(
+                'conversation.toast.workspaceSetupTimeout',
+                'Preparing the workspace timed out — the run was stopped. Try again.'
+              )
             )
-            toast.error(timeoutMessage)
-            set((state) => {
-              const c = state.conversations.find((c) => c.id === conversationId)
-              if (c) {
-                c.status = 'error'
-                c.error = timeoutMessage
-                c.activeRunId = null
-              }
-            })
-            useConversationRuntimeStore.setState((state) => {
-              const r = ensureRuntime(state, conversationId)
-              r.status = 'error'
-              r.error = timeoutMessage
-              r.activeRunId = null
-              r.draftAssistant = null
-              r.currentToolCall = null
-              r.activeToolCalls = []
-              r.streamingToolArgs = ''
-              r.streamingToolArgsByCallId = {}
-              r.streamingContent = ''
-              r.streamingReasoning = ''
-            })
-            const errorConv = get().conversations.find((c) => c.id === conversationId)
-            if (errorConv) {
-              persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
-                console.error('[conversation.store] Failed to persist workspace-setup timeout failure:', err)
-              })
-            }
+            toast.error(
+              i18nText(
+                'conversation.toast.workspaceSetupTimeout',
+                'Preparing the workspace timed out — the run was stopped. Try again.'
+              )
+            )
             return
           }
           throw setupError
@@ -542,49 +590,6 @@ export async function runAgentImpl(
           return !!rt && (rt.runEpoch || 0) === runEpoch
         }
 
-        const failRunEarly = (message: string) => {
-          if (!isCurrentRun()) return
-          set((state) => {
-            const c = state.conversations.find((c) => c.id === conversationId)
-            if (c && c.activeRunId === runId) {
-              c.status = 'error'
-              c.error = message
-              c.activeRunId = null
-              c.draftAssistant = null
-              c.currentToolCall = null
-              c.activeToolCalls = []
-              c.streamingToolArgs = ''
-              c.streamingToolArgsByCallId = {}
-              c.streamingContent = ''
-              c.streamingReasoning = ''
-            }
-          })
-          useConversationRuntimeStore.setState((state) => {
-            const r = ensureRuntime(state, conversationId)
-            if (r.activeRunId !== runId) return
-            r.status = 'error'
-            r.error = message
-            r.activeRunId = null
-            r.draftAssistant = null
-            r.currentToolCall = null
-            r.activeToolCalls = []
-            r.streamingToolArgs = ''
-            r.streamingToolArgsByCallId = {}
-            r.streamingContent = ''
-            r.streamingReasoning = ''
-          })
-
-          // Persist messages on early failure so that historical messages
-          // (including the user message that triggered this run) are not lost
-          // if the user refreshes the page.
-          const errorConv = get().conversations.find((c) => c.id === conversationId)
-          if (errorConv) {
-            persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
-              console.error('[conversation.store] Failed to persist on failRunEarly:', err)
-            })
-          }
-        }
-
         // Persist conversation to SQLite when a block completes (debounced).
         // Rapid block boundaries are coalesced; the final complete handler
         // will flush immediately, so at most one debounced write runs mid-stream.
@@ -605,7 +610,7 @@ export async function runAgentImpl(
         // selection would start the agent on a dead route instead of
         // showing the reauthentication guidance.
         if (providerMissing(providerType)) {
-          failRunEarly(
+          failDispatchEarly(
             i18nText(
               'conversation.toast.providerReauthRequired',
               'The selected provider is unavailable — sign in again to use it.'
@@ -628,7 +633,7 @@ export async function runAgentImpl(
               }
 
         if (!providerConfig?.baseUrl || !providerConfig.modelName) {
-          failRunEarly('请先配置自定义服务商和模型')
+          failDispatchEarly('请先配置自定义服务商和模型')
           releaseClaim()
           return
         }
@@ -638,7 +643,7 @@ export async function runAgentImpl(
         // a missing key is not a hard error for them.
         const apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
         if (!apiKey && !isCustomProviderType(providerType)) {
-          failRunEarly('API Key 未设置，请先在设置中配置')
+          failDispatchEarly('API Key 未设置，请先在设置中配置')
           releaseClaim()
           return
         }
@@ -668,9 +673,9 @@ export async function runAgentImpl(
         // provider config captured before the awaits would still dispatch
         // the run onto a dead route. Recheck once more after all awaits
         // settle; a provider that vanished mid-setup routes through
-        // failRunEarly like every other pre-dispatch failure.
+        // failDispatchEarly like every other pre-dispatch failure.
         if (providerMissing(providerType)) {
-          failRunEarly(
+          failDispatchEarly(
             i18nText(
               'conversation.toast.providerReauthRequired',
               'The selected provider is unavailable — sign in again to use it.'
@@ -2215,20 +2220,13 @@ export async function runAgentImpl(
               r.draftAssistant = null
             }
           })
-          // #166 item 5: the consume block below only runs on 'idle', so a
-          // rerunOnly trigger queued while this run was active would survive
-          // the failure and burn the NEXT successful run's turn on a trigger
-          // whose moment has passed. Drain the rerun triggers here; real
-          // queued user messages are kept — they still carry undelivered
+          // #166 item 5 (extended): every pre-run failure exit and this run
+          // error path share `drainStaleRerunTriggers` (defined next to the
+          // dispatch guards), so a rerunOnly trigger queued while this run
+          // was active never survives to burn the NEXT successful run's turn.
+          // Real queued user messages are kept — they still carry undelivered
           // content the user can resend/retry through the normal send path.
-          const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conversationId)
-          if (queue) {
-            for (let i = queue.length - 1; i >= 0; i--) {
-              if (queue[i].rerunOnly) {
-                useConversationRuntimeStore.getState().removeQueuedMessage(conversationId, i)
-              }
-            }
-          }
+          drainStaleRerunTriggers()
           // Persist messages on generic error to prevent data loss on page refresh
           const catchConv = get().conversations.find((c) => c.id === conversationId)
           if (catchConv) {
