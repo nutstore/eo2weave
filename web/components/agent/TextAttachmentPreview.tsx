@@ -8,9 +8,18 @@ import { BrandDialog, BrandDialogContent, BrandDialogTitle } from '@creatorweave
 
 loader.config({ monaco })
 
+/** Cap on characters read into state and handed to Monaco. */
+const MAX_PREVIEW_CHARS = 1_000_000
+const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
+
+function formatLimit(): string {
+  return `${Math.round(MAX_PREVIEW_CHARS / 1000)}k characters`
+}
+
 export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }: { file: File; onClose: () => void; onRestoreFocus: () => void }) {
   const t = useT()
   const [content, setContent] = useState<string | null>(null)
+  const [truncated, setTruncated] = useState(false)
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
@@ -18,8 +27,24 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
   useEffect(() => {
     let active = true
     setContent(null)
+    setTruncated(false)
     setError(false)
-    Promise.resolve().then(() => file.text()).then((text) => { if (active) setContent(text) }).catch(() => { if (active) setError(true) })
+    const read =
+      file.size > MAX_PREVIEW_BYTES
+        ? file.slice(0, MAX_PREVIEW_BYTES).text()
+        : file.text()
+    Promise.resolve()
+      .then(() => read)
+      .then((text) => {
+        if (!active) return
+        if (text.length > MAX_PREVIEW_CHARS) {
+          setContent(text.slice(0, MAX_PREVIEW_CHARS))
+          setTruncated(true)
+        } else {
+          setContent(text)
+        }
+      })
+      .catch(() => { if (active) setError(true) })
     return () => { active = false }
   }, [file, attempt])
 
@@ -40,7 +65,10 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
         </div>
         <div className="min-h-0 flex-1">
           {error ? <div role="alert" className="p-4 text-sm">{t('conversation.input.textPreviewFailed')} <button type="button" onClick={() => setAttempt((n) => n + 1)} className="underline">{t('conversation.input.retryPreview')}</button></div> : content === null ? <div role="status" className="p-4 text-sm">{t('conversation.input.loadingPreview')}</div> : (
-            <Editor height="100%" language="plaintext" value={content} theme={dark ? 'vs-dark' : 'vs'} options={{ readOnly: true, minimap: { enabled: false }, scrollBeyondLastLine: false, automaticLayout: true, wordWrap: 'on' }} />
+            <>
+              {truncated && <div role="note" className="border-b border-neutral-200 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">{t('conversation.input.textPreviewTruncated', { limit: formatLimit() })}</div>}
+              <Editor height="100%" language="plaintext" value={content} theme={dark ? 'vs-dark' : 'vs'} options={{ readOnly: true, minimap: { enabled: false }, scrollBeyondLastLine: false, automaticLayout: true, wordWrap: 'on' }} />
+            </>
           )}
         </div>
       </BrandDialogContent>

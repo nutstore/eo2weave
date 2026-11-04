@@ -94,6 +94,7 @@ export const conversation = {
       loadingPreview: "미리보기 불러오는 중…",
       textPreviewFailed: "텍스트 파일을 읽을 수 없습니다.",
       retryPreview: "다시 시도",
+      textPreviewTruncated: "파일이 커서 앞 {limit}만 표시합니다.",
       pasteAttachmentFailed: "텍스트를 첨부하지 못해 메시지에 붙여넣습니다.",
       previewMarkdown: "Markdown 미리보기",
       agentIdPlaceholder: "agent-id",
