@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentRichInput } from '../AgentRichInput'
+import { AgentRichInput } from '@/components/agent/AgentRichInput'
 import { useAssetStore } from '@/store/asset.store'
 
 vi.mock('@/i18n', () => ({ useT: () => (key: string) => key }))
@@ -91,6 +91,15 @@ describe('long text paste', () => {
     act(() => useAssetStore.getState().addFiles([file]))
     fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: data.csv' }))
     expect((await screen.findByTestId('text-preview')).textContent).toBe('a,b')
+  })
+
+  it('previews JSON attachments as text', async () => {
+    mountInput()
+    const file = new File(['{"ok":true}'], 'data.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve('{"ok":true}') })
+    act(() => useAssetStore.getState().addFiles([file]))
+    fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: data.json' }))
+    expect((await screen.findByTestId('text-preview')).textContent).toBe('{"ok":true}')
   })
 
 })

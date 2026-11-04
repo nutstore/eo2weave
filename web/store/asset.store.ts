@@ -40,6 +40,9 @@ export interface PendingAsset {
 interface AssetStore {
   /** Files staged for upload with the next message */
   pendingAssets: PendingAsset[]
+  deferredAssets: Record<string, PendingAsset[]>
+  restoreAssets: (assets: PendingAsset[], conversationId?: string) => void
+  restoreDeferredAssets: (conversationId: string) => void
 
   /** Add files from a FileList or File array (triggers OCR for images) */
   addFiles: (files: File[]) => void
@@ -72,6 +75,30 @@ function isImageMime(mime: string): boolean {
 
 export const useAssetStore = create<AssetStore>((set, get) => ({
   pendingAssets: [],
+  deferredAssets: {},
+
+  restoreAssets: (assets, conversationId) => {
+    if (conversationId) {
+      set((state) => ({ deferredAssets: { ...state.deferredAssets, [conversationId]: [...(state.deferredAssets[conversationId] ?? []), ...assets] } }))
+      return
+    }
+    const restored = assets.map((asset) => ({
+      ...asset,
+      previewUrl: isImageMime(asset.mimeType) ? URL.createObjectURL(asset.file) : undefined,
+    }))
+    set((state) => ({ pendingAssets: [...state.pendingAssets, ...restored] }))
+  },
+
+  restoreDeferredAssets: (conversationId) => {
+    const assets = get().deferredAssets[conversationId]
+    if (!assets?.length) return
+    set((state) => {
+      const deferredAssets = { ...state.deferredAssets }
+      delete deferredAssets[conversationId]
+      return { deferredAssets }
+    })
+    get().restoreAssets(assets)
+  },
 
   addFiles: (files: File[]) => {
     const newAssets: PendingAsset[] = files.map((file) => {

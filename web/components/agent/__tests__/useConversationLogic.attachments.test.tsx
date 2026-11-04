@@ -43,7 +43,7 @@ vi.mock('@/skills/builtin-slash-exec', () => ({
   matchesBuiltinCommand: vi.fn(() => false),
 }))
 
-const { writeAssets } = vi.hoisted(() => ({ writeAssets: vi.fn() }))
+const { writeAssets, encodeImage } = vi.hoisted(() => ({ writeAssets: vi.fn(), encodeImage: vi.fn(async () => 'image-data') }))
 vi.mock('@/services/asset.service', () => ({
   removeAssetsFromOPFS: vi.fn(async () => undefined),
   writePendingAssetsToOPFS: writeAssets,
@@ -53,7 +53,7 @@ vi.mock('@/store/workspace.store', () => ({ useWorkspaceStore: { getState: () =>
 vi.mock('@/services/ocr.service', () => ({
   performOcr: vi.fn(async () => ''),
   isOcrCompatibleImage: vi.fn(() => false),
-  fileToBase64: vi.fn(async () => ''),
+  fileToBase64: encodeImage,
 }))
 
 vi.mock('@/agent/llm/pi-ai-model-resolver', () => ({
@@ -175,7 +175,10 @@ describe('pending attachment sending', () => {
     seedActiveConversation()
     resetDraftStore()
     useAssetStore.getState().clearAll()
+    useAssetStore.setState({ deferredAssets: {} })
     writeAssets.mockReset()
+    encodeImage.mockReset()
+    encodeImage.mockResolvedValue('image-data')
   })
 
   it.each(['', 'Please inspect'])('sends the snapshot for message %j while keeping a later attachment', async (message) => {
@@ -206,4 +209,54 @@ describe('pending attachment sending', () => {
     await act(async () => fail(new Error('write failed')))
     await waitFor(() => expect(useAssetStore.getState().pendingAssets.map((a) => a.name)).toEqual(['later.txt', 'first.txt']))
   })
+  it('includes image data even when conversion is still pending at send time', async () => {
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:image'), revokeObjectURL: vi.fn() }))
+    let encode!: (data: string) => void
+    encodeImage.mockImplementation(() => new Promise((resolve) => { encode = resolve }))
+    writeAssets.mockResolvedValue([{ name: 'image.png', mimeType: 'image/png', size: 1 }])
+    useAssetStore.getState().addFiles([new File(['x'], 'image.png', { type: 'image/png' })])
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => { await result.current.handleSend() })
+    await waitFor(() => expect(encodeImage).toHaveBeenCalled())
+    await act(async () => encode('image-data'))
+    await waitFor(() => expect(conversationStoreModule.getState().updateMessages).toHaveBeenCalledWith(CONV_ID, expect.arrayContaining([expect.objectContaining({ assets: [expect.objectContaining({ ocrBase64: 'image-data' })] })])))
+  })
+
+  it('does not return a failed attachment to a different active conversation', async () => {
+    let fail!: (reason: Error) => void
+    writeAssets.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject }))
+    useAssetStore.getState().addFiles([new File(['original'], 'first.txt', { type: 'text/plain' })])
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => { await result.current.handleSend() })
+    await waitFor(() => expect(writeAssets).toHaveBeenCalled())
+    conversationStoreModule.getState().activeConversationId = 'other-conversation'
+    await act(async () => fail(new Error('write failed')))
+    expect(useAssetStore.getState().pendingAssets).toHaveLength(0)
+    expect(useAssetStore.getState().deferredAssets[CONV_ID].map((a) => a.name)).toEqual(['first.txt'])
+    act(() => useAssetStore.getState().restoreDeferredAssets(CONV_ID))
+    expect(useAssetStore.getState().pendingAssets.map((a) => a.name)).toEqual(['first.txt'])
+  })
+
+  it('uses the attachment filename for a new attachment-only conversation', async () => {
+    const state = conversationStoreModule.getState()
+    state.activeConversationId = null
+    vi.mocked(state.createNew).mockReturnValue({ id: CONV_ID } as ReturnType<typeof state.createNew>)
+    writeAssets.mockResolvedValue([{ name: 'first.txt', mimeType: 'text/plain', size: 1 }])
+    useAssetStore.getState().addFiles([new File(['x'], 'first.txt', { type: 'text/plain' })])
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => { await result.current.handleSend() })
+    expect(state.createNew).toHaveBeenCalledWith('first.txt')
+  })
+
+  it('retains cached image data when restoring a failed send', async () => {
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:image'), revokeObjectURL: vi.fn() }))
+    writeAssets.mockRejectedValue(new Error('write failed'))
+    useAssetStore.getState().addFiles([new File(['x'], 'cached.png', { type: 'image/png' })])
+    const id = useAssetStore.getState().pendingAssets[0].id
+    useAssetStore.getState()._updateOcrResult(id, { status: 'done', text: 'recognized', base64: 'cached-data' })
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => { await result.current.handleSend() })
+    await waitFor(() => expect(useAssetStore.getState().pendingAssets[0]).toEqual(expect.objectContaining({ name: 'cached.png', ocrText: 'recognized', ocrBase64: 'cached-data' })))
+  })
+
 })

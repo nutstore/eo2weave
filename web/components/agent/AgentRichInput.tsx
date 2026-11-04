@@ -20,7 +20,7 @@ import { toast } from 'sonner'
 import { FileIcon as WorkspaceFileIcon } from '@/lib/file-icons'
 import { ErrorBoundary } from '@/components/error/ErrorBoundary'
 
-const TextAttachmentPreview = lazy(() => import('./TextAttachmentPreview'))
+const TextAttachmentPreview = lazy(() => import('@/components/agent/TextAttachmentPreview'))
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1174,7 +1174,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
               <div className="mt-2 flex flex-wrap gap-2">
                 {pendingAssets.map((asset) => {
                   const isMarkdown = /\.(md|markdown)$/i.test(asset.name) || asset.mimeType === 'text/markdown'
-                  const isText = !isMarkdown && (/\.(txt|log|csv|tsv)$/i.test(asset.name) || asset.mimeType.startsWith('text/'))
+                  const isText = !isMarkdown && (/\.(txt|log|csv|tsv|json)$/i.test(asset.name) || asset.mimeType.startsWith('text/') || asset.mimeType === 'application/json')
                   return (
                   <div
                     key={asset.id}
