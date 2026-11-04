@@ -470,13 +470,29 @@ function inlineArtifact(
   mimeType: string,
   base64: string,
 ): ExportArtifact {
+  // The payload is provider-controlled and may be malformed; a decode failure
+  // here must not abort the whole export — mark the artifact missing instead
+  // (the HTML renderer already renders a "skipped" placeholder for those).
+  let bytes: Uint8Array | undefined
+  try {
+    bytes = base64ToBytes(base64)
+  } catch {
+    return {
+      bundlePath,
+      displayName,
+      mimeType: mimeType || 'image/png',
+      isImage: true,
+      base64: '',
+      missing: true,
+    }
+  }
   return {
     bundlePath,
     displayName,
     mimeType: mimeType || 'image/png',
     isImage: true,
     base64,
-    bytes: base64ToBytes(base64),
+    bytes,
     missing: false,
   }
 }
@@ -606,7 +622,16 @@ function renderArtifactsHtml(artifacts: ExportArtifact[] | undefined): string {
         if (!mime) {
           return `<div class="attachment attachment-missing">⚠️ ${escapeHtml(a.displayName)} (unsupported image type — skipped)</div>`
         }
-        return `<img class="export-image" src="data:${escapeHtml(mime)};base64,${a.base64}" alt="${escapeHtml(a.displayName)}" />`
+        // The base64 payload is also provider-controlled — a double quote in
+        // it could break out of the src attribute and inject markup into the
+        // exported HTML. Require the standard base64 alphabet; anything else
+        // falls back to the "skipped" placeholder (same policy as the MIME
+        // filter above). escapeHtml is defense in depth.
+        const payload = sanitizeBase64Payload(a.base64)
+        if (!payload) {
+          return `<div class="attachment attachment-missing">⚠️ ${escapeHtml(a.displayName)} (unsupported image type — skipped)</div>`
+        }
+        return `<img class="export-image" src="data:${escapeHtml(mime)};base64,${escapeHtml(payload)}" alt="${escapeHtml(a.displayName)}" />`
       }
       const size = a.bytes ? formatByteSize(a.bytes.length) : ''
       return `<div class="attachment">📎 ${escapeHtml(a.displayName)}${size ? ` (${size})` : ''}</div>`
@@ -1070,6 +1095,16 @@ const SAFE_IMAGE_MIME_TYPES = new Set([
 function sanitizeImageMime(raw: string | undefined): string | null {
   const value = (raw ?? '').trim().toLowerCase()
   return SAFE_IMAGE_MIME_TYPES.has(value) ? value : null
+}
+
+/**
+ * Base64 allowlist for the HTML export. The payload is provider-controlled
+ * (assistant.images), so anything outside the standard base64 alphabet is
+ * rejected — the caller renders a "skipped" placeholder instead of the image.
+ */
+function sanitizeBase64Payload(raw: string): string | null {
+  const value = raw.replace(/\s+/g, '')
+  return /^[A-Za-z0-9+/]*={0,2}$/.test(value) && value.length > 0 ? value : null
 }
 
 function escapeHtml(text: string): string {
