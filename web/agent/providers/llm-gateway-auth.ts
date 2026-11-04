@@ -358,9 +358,22 @@ function loadStoredTokens(): StoredTokens | null {
   }
 }
 
+/** Thrown by loadStoredTokensWithFallback when storage reads FAIL — distinct from confirmed absence (#175 review). */
+export class GatewayTokenStoreUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super('gateway token store unavailable')
+    this.name = 'GatewayTokenStoreUnavailableError'
+    this.cause = cause
+  }
+}
+
 /**
  * Async variant: tries localStorage first, then recovers from SQLite.
  * Used by the token-refresh path where we need maximum durability.
+ *
+ * Throws GatewayTokenStoreUnavailableError when a STORAGE READ FAILS — that
+ * is not evidence the user never logged in, so callers must not collapse it
+ * into the 'missing' branch (#175 review).
  */
 async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
   // Fast path: localStorage hit
@@ -368,10 +381,17 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
   if (cached) return cached
 
   // Slow path: recover from SQLite api-key-store
+  let raw: string | null
   try {
     const { loadApiKey } = await import('@/security/api-key-store')
-    const raw = await loadApiKey(REFRESH_TOKEN_DB_KEY)
-    if (!raw) return null
+    raw = await loadApiKey(REFRESH_TOKEN_DB_KEY)
+  } catch (e) {
+    // SQLite read failure ≠ absence (#175 review): surface as a retryable
+    // storage error instead of the confirmed-absent null.
+    throw new GatewayTokenStoreUnavailableError(e)
+  }
+  if (!raw) return null
+  try {
     const recovered = JSON.parse(raw) as Partial<StoredTokens>
     if (!recovered.refresh_token || !recovered.refresh_expires_at) return null
     // Freshness check: SQLite is written fire-and-forget AFTER localStorage,
@@ -404,7 +424,12 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
       const { result: freshResult, settled: freshSettled } = withKeyStoreDeadline(
         loadApiKey(REFRESH_TOKEN_DB_KEY),
       )
-      const fresh = await freshResult
+      let fresh: string | null
+      try {
+        fresh = await freshResult
+      } catch (e) {
+        throw new GatewayTokenStoreUnavailableError(e)
+      }
       // Hold the lock until the read settles (a deadline-expired read that
       // lands late must not race the restore write below).
       await freshSettled
@@ -439,7 +464,8 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
       }
       return freshRestored
     })
-  } catch {
+  } catch (e) {
+    if (e instanceof GatewayTokenStoreUnavailableError) throw e
     return null
   }
 }
@@ -1385,7 +1411,19 @@ async function refreshAccessTokenWithStatusImpl(
   const generation = authSessionGeneration
   // Use the async fallback loader — recovers refresh_token from SQLite
   // when localStorage has been cleared (browser eviction, user clear, etc.)
-  const stored = await loadStoredTokensWithFallback()
+  let stored: StoredTokens | null
+  try {
+    stored = await loadStoredTokensWithFallback()
+  } catch (e) {
+    if (e instanceof GatewayTokenStoreUnavailableError) {
+      // A failed storage read is retryable, not a dead session (#175 review):
+      // report temporary_error instead of the missing/expired verdicts the
+      // absence path produces.
+      console.warn('[llm-gateway] forceRefresh: token store read failed', e)
+      return { status: 'temporary_error', error: e }
+    }
+    throw e
+  }
   if (!stored) {
     console.warn('[llm-gateway] forceRefresh: no stored tokens (localStorage + SQLite both empty)')
     // The token pair is gone, but the api-key-store may still hold the
@@ -1393,9 +1431,14 @@ async function refreshAccessTokenWithStatusImpl(
     // (the user had logged in), not that they never logged in — report
     // 'expired' and purge the shadow so the settings card offers a re-login
     // instead of a logout.
-    const hadSession = await purgeStaleAccessTokenShadow()
-    setCredentialStatus(hadSession ? 'expired' : 'missing')
-    return hadSession ? { status: 'expired' } : { status: 'missing' }
+    // Distinguish "shadow purged" (session died) from a failed shadow
+    // inspection (storage unreachable — retryable, NOT absence; #175 review).
+    const inspection = await inspectAccessTokenShadow()
+    if (inspection === 'error') {
+      return { status: 'temporary_error', error: new Error('gateway credential storage unavailable') }
+    }
+    setCredentialStatus(inspection === 'had-session' ? 'expired' : 'missing')
+    return inspection === 'had-session' ? { status: 'expired' } : { status: 'missing' }
   }
 
   // Remember which refresh token this request used: ownership of the stored
@@ -1577,7 +1620,18 @@ export async function resolveGatewayDispatchCredential(
   baseURL: string,
   clientId: string
 ): Promise<GatewayDispatchCredential> {
-  const stored = await loadStoredTokensWithFallback()
+  let stored: StoredTokens | null
+  try {
+    stored = await loadStoredTokensWithFallback()
+  } catch (e) {
+    // A storage READ FAILURE is not absence (#172 finding 3, #175 review):
+    // report temporary so the caller keeps the session retryable instead of
+    // falsely declaring the user logged out.
+    if (e instanceof GatewayTokenStoreUnavailableError) {
+      return { ok: false, kind: 'temporary', error: e }
+    }
+    throw e
+  }
   if (!stored) {
     // The token pair is gone. Distinguish a session that DIED (the access
     // shadow of an earlier session survives — 'expired') from never having
@@ -1597,8 +1651,14 @@ export async function resolveGatewayDispatchCredential(
   }
 
   const now = Date.now()
+  // A malformed persisted record (future expiry, empty/whitespace token)
+  // must not pass as a usable credential: the request would go out without
+  // an Authorization header (#175 review). Treat it as not-fresh and fall
+  // through to the refresh/clear paths below.
+  const accessTokenUsable =
+    typeof stored.access_token === 'string' && stored.access_token.trim().length > 0
   // Fresh access token (60s buffer, same as getValidAccessToken).
-  if (stored.access_expires_at > now + 60_000) {
+  if (accessTokenUsable && stored.access_expires_at > now + 60_000) {
     setCredentialStatus('valid')
     return { ok: true, accessToken: stored.access_token }
   }
