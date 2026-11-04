@@ -425,7 +425,9 @@ export function useConversationLogic() {
       let targetConvId = convIdRef.current
       const restoreSentAssets = () => {
         if (!pendingSnapshot.length) return
-        const activeId = useConversationStore.getState().activeConversationId
+        const conversationState = useConversationStore.getState()
+        if (targetConvId && !conversationState.conversations.some((conversation) => conversation.id === targetConvId)) return
+        const activeId = conversationState.activeConversationId
         useAssetStore.getState().restoreAssets(pendingSnapshot, activeId === targetConvId ? undefined : targetConvId ?? undefined)
       }
       const rejectSend = () => {
@@ -530,7 +532,7 @@ export function useConversationLogic() {
             // Detached image records no longer receive background store updates.
             // Resolve missing image payloads before the message is committed.
             await Promise.all(pendingSnapshot.map(async (asset) => {
-              if (asset.mimeType.startsWith('image/') && !asset.ocrBase64) {
+              if (hasVision && asset.mimeType.startsWith('image/') && !asset.ocrBase64) {
                 asset.ocrBase64 = await fileToBase64(asset.file)
               }
             }))

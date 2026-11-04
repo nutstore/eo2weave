@@ -43,6 +43,7 @@ interface AssetStore {
   deferredAssets: Record<string, PendingAsset[]>
   restoreAssets: (assets: PendingAsset[], conversationId?: string) => void
   restoreDeferredAssets: (conversationId: string) => void
+  discardDeferredAssets: (conversationId: string) => void
 
   /** Add files from a FileList or File array (triggers OCR for images) */
   addFiles: (files: File[]) => void
@@ -88,6 +89,12 @@ export const useAssetStore = create<AssetStore>((set, get) => ({
     }))
     set((state) => ({ pendingAssets: [...state.pendingAssets, ...restored] }))
   },
+
+  discardDeferredAssets: (conversationId) => set((state) => {
+    const deferredAssets = { ...state.deferredAssets }
+    delete deferredAssets[conversationId]
+    return { deferredAssets }
+  }),
 
   restoreDeferredAssets: (conversationId) => {
     const assets = get().deferredAssets[conversationId]

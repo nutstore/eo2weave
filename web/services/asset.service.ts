@@ -27,30 +27,41 @@ export async function writePendingAssetsToOPFS(
   const assetsDir = await active.conversation.getAssetsDir()
   const results: AssetMeta[] = []
 
-  for (const { name, file } of files) {
-    // Resolve name collision: append -1, -2, etc.
-    const finalName = await resolveUniqueName(assetsDir, name)
+  const createdNames: string[] = []
+  try {
+    for (const { name, file } of files) {
+      // Resolve name collision: append -1, -2, etc.
+      const finalName = await resolveUniqueName(assetsDir, name)
 
-    // Write file to OPFS
-    const fileHandle = await assetsDir.getFileHandle(finalName, { create: true })
-    const writable = await fileHandle.createWritable()
-    try {
-      await writable.write(file)
-    } finally {
-      await writable.close()
+      // Write file to OPFS
+      const fileHandle = await assetsDir.getFileHandle(finalName, { create: true })
+      createdNames.push(finalName)
+      const writable = await fileHandle.createWritable()
+      try {
+        await writable.write(file)
+      } finally {
+        await writable.close()
+      }
+
+      results.push({
+        id: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: finalName,
+        size: file.size,
+        mimeType: file.type || inferMimeType(finalName),
+        direction: 'upload',
+        createdAt: Date.now(),
+      })
     }
 
-    results.push({
-      id: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: finalName,
-      size: file.size,
-      mimeType: file.type || inferMimeType(finalName),
-      direction: 'upload',
-      createdAt: Date.now(),
-    })
+    return results
+  } catch (error) {
+    await Promise.all(createdNames.map(async (name) => {
+      try { await assetsDir.removeEntry(name) } catch (cleanupError) {
+        console.warn('[asset.service] Failed to remove incomplete upload:', name, cleanupError)
+      }
+    }))
+    throw error
   }
-
-  return results
 }
 
 /** Remove assets that were written for an operation which did not complete. */

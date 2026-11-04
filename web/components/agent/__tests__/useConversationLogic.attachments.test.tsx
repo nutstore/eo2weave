@@ -43,7 +43,7 @@ vi.mock('@/skills/builtin-slash-exec', () => ({
   matchesBuiltinCommand: vi.fn(() => false),
 }))
 
-const { writeAssets, encodeImage } = vi.hoisted(() => ({ writeAssets: vi.fn(), encodeImage: vi.fn(async () => 'image-data') }))
+const { writeAssets, encodeImage, hasVision } = vi.hoisted(() => ({ writeAssets: vi.fn(), encodeImage: vi.fn(async () => 'image-data'), hasVision: vi.fn(() => false) }))
 vi.mock('@/services/asset.service', () => ({
   removeAssetsFromOPFS: vi.fn(async () => undefined),
   writePendingAssetsToOPFS: writeAssets,
@@ -57,7 +57,7 @@ vi.mock('@/services/ocr.service', () => ({
 }))
 
 vi.mock('@/agent/llm/pi-ai-model-resolver', () => ({
-  supportsImageInput: vi.fn(() => false),
+  supportsImageInput: hasVision,
 }))
 
 vi.mock('@/agent/message-types', () => ({
@@ -177,6 +177,7 @@ describe('pending attachment sending', () => {
     useAssetStore.getState().clearAll()
     useAssetStore.setState({ deferredAssets: {} })
     writeAssets.mockReset()
+    hasVision.mockReturnValue(false)
     encodeImage.mockReset()
     encodeImage.mockResolvedValue('image-data')
   })
@@ -211,6 +212,7 @@ describe('pending attachment sending', () => {
   })
   it('includes image data even when conversion is still pending at send time', async () => {
     vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:image'), revokeObjectURL: vi.fn() }))
+    hasVision.mockReturnValue(true)
     let encode!: (data: string) => void
     encodeImage.mockImplementation(() => new Promise((resolve) => { encode = resolve }))
     writeAssets.mockResolvedValue([{ name: 'image.png', mimeType: 'image/png', size: 1 }])
@@ -257,6 +259,16 @@ describe('pending attachment sending', () => {
     const { result } = renderHook(() => useConversationLogic())
     await act(async () => { await result.current.handleSend() })
     await waitFor(() => expect(useAssetStore.getState().pendingAssets[0]).toEqual(expect.objectContaining({ name: 'cached.png', ocrText: 'recognized', ocrBase64: 'cached-data' })))
+  })
+
+  it('does not block non-vision sends when image base64 conversion fails', async () => {
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:image'), revokeObjectURL: vi.fn() }))
+    encodeImage.mockRejectedValue(new Error('read failed'))
+    writeAssets.mockResolvedValue([{ name: 'image.png', mimeType: 'image/png', size: 1 }])
+    useAssetStore.getState().addFiles([new File(['x'], 'image.png', { type: 'image/png' })])
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => { await result.current.handleSend() })
+    await waitFor(() => expect(conversationStoreModule.getState().updateMessages).toHaveBeenCalledWith(CONV_ID, expect.arrayContaining([expect.objectContaining({ assets: [expect.objectContaining({ name: 'image.png' })] })])))
   })
 
 })

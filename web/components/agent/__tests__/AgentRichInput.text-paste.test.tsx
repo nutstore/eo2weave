@@ -102,4 +102,13 @@ describe('long text paste', () => {
     expect((await screen.findByTestId('text-preview')).textContent).toBe('{"ok":true}')
   })
 
+  it('previews a YAML attachment reported as generic binary', async () => {
+    mountInput()
+    const file = new File(['key: value'], 'config.yaml', { type: 'application/octet-stream' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve('key: value') })
+    act(() => useAssetStore.getState().addFiles([file]))
+    fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: config.yaml' }))
+    expect((await screen.findByTestId('text-preview')).textContent).toBe('key: value')
+  })
+
 })
