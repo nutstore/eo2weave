@@ -18,6 +18,15 @@ function formatChars(value: number): string {
   return value.toLocaleString('en-US')
 }
 
+/**
+ * Normalize line endings so a window's text can be compared with the Monaco
+ * model's value: Monaco stores the model with a single EOL sequence (LF or
+ * CRLF), while a window's text keeps the file's own line endings.
+ */
+function normalizeEol(text: string): string {
+  return text.replace(/\r\n?/g, '\n')
+}
+
 /** Absolute file character offset of the line at the top of the viewport. */
 function topVisibleCharOffset(editor: monaco.editor.IStandaloneCodeEditor, win: LoadedWindow): number {
   const model = editor.getModel()
@@ -63,6 +72,9 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
     readForwardWindow(file, 0, 0)
       .then((first) => {
         if (!active) return
+        // Keep the ref in step with the state: the scroll handler and swapTo
+        // both read winRef, so leaving it null would disable all navigation
+        // past the first window.
         winRef.current = first
         setWin(first)
       })
@@ -88,11 +100,18 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
     const model = editor.getModel()
     if (!model) return
     // The model still holds the old window: wait for the content change.
-    if (model.getValue() !== current.text) return
+    // The comparison is done on normalized line endings, because Monaco
+    // stores the model with a single EOL sequence while the window text
+    // keeps the file's own line endings.
+    const modelValue = model.getValue()
+    if (modelValue !== current.text && normalizeEol(modelValue) !== normalizeEol(current.text)) return
     const offset = Math.max(0, pending - current.startChar)
     const position = model.getPositionAt(Math.min(offset, model.getValueLength()))
-    editor.setScrollTop(editor.getTopForLineNumber(position.lineNumber))
-    anchorScrollRef.current = editor.getScrollTop()
+    const target = editor.getTopForLineNumber(position.lineNumber)
+    // Record the target before scrolling: the resulting scroll event must not
+    // be mistaken for the user reaching the edge again.
+    anchorScrollRef.current = target
+    editor.setScrollTop(target)
     pendingRef.current = null
   }, [])
 
@@ -161,7 +180,7 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
           <BrandDialogTitle className="min-w-0 break-all text-sm font-medium text-neutral-700 dark:text-neutral-200">{file.name}</BrandDialogTitle>
           <button type="button" onClick={onClose} aria-label={t('conversation.input.closePreview')} className="rounded p-1 text-neutral-500 hover:bg-neutral-100 focus-visible:outline focus-visible:outline-2 dark:hover:bg-neutral-800"><X className="h-4 w-4" /></button>
         </div>
-        <div className="min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1 flex-col">
           {error ? <div role="alert" className="p-4 text-sm">{t('conversation.input.textPreviewFailed')} <button type="button" onClick={() => setAttempt((n) => n + 1)} className="underline">{t('conversation.input.retryPreview')}</button></div> : win === null ? <div role="status" className="p-4 text-sm">{t('conversation.input.loadingPreview')}</div> : (
             <div className="flex min-h-0 flex-1 flex-col">
               {multiWindow && <div role="note" className="border-b border-neutral-200 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">{t('conversation.input.textPreviewWindow', { start: formatChars(win.startChar + 1), end: formatChars(win.endChar) })}</div>}
