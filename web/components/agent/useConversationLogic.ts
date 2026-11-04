@@ -193,7 +193,7 @@ export function useConversationLogic() {
     // Restore draft for the new workspace (if one exists)
     // Uses peekDraft (non-destructive) to survive React StrictMode double-mount
     if (convId) {
-      useAssetStore.getState?.()?.restoreDeferredAssets?.(convId)
+      useAssetStore.getState?.()?.switchConversation?.(convId)
       const draft = useInputDraftStore.getState().peekDraft(convId)
       if (draft) {
         setMentionedAgentIds(draft.mentionedAgentIds)
@@ -209,6 +209,11 @@ export function useConversationLogic() {
     }
     // setMentionedAgentIds / setSelectedFiles are useState setters (stable refs).
     // Values are read via refs to avoid stale closures without re-triggering.
+  }, [convId])
+
+  useEffect(() => () => {
+    const store = useAssetStore.getState?.()
+    if (store?.activeConversationId === convId) store.switchConversation?.(null)
   }, [convId])
 
   // Stable callback to clear draft after the editor has consumed it
@@ -496,7 +501,7 @@ export function useConversationLogic() {
             }
 
             assets = await writePendingAssetsToOPFS(
-              pendingSnapshot.map((a) => ({ name: a.name, file: a.file }))
+              pendingSnapshot.map((a) => ({ name: a.name, file: a.file })), targetConvId,
             )
             wrotePendingAssets = true
             // Lazy OCR: only run OCR for non-vision models.
@@ -549,7 +554,7 @@ export function useConversationLogic() {
               return Object.keys(carry).length > 0 ? { ...assetMeta, ...carry } : assetMeta
             })
           } catch (err) {
-            if (wrotePendingAssets && assets) void removeAssetsFromOPFS(assets)
+            if (wrotePendingAssets && assets) void removeAssetsFromOPFS(assets, targetConvId)
             toast.error(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
             // Don't send — user can retry. Hand the typed text and the staged
             // files back to the input (the optimistic clear already removed them).
@@ -572,7 +577,7 @@ export function useConversationLogic() {
         // Remove the OPFS copies that were only written in preparation for
         // this send; rejectSend hands the staged files and typed text back.
         if (wrotePendingAssets && assets) {
-          void removeAssetsFromOPFS(assets)
+          void removeAssetsFromOPFS(assets, targetConvId)
         }
         rejectSend()
         return
@@ -595,7 +600,7 @@ export function useConversationLogic() {
           // Keep staged files available for retry and remove the OPFS copies
           // that were only written in preparation for this failed enqueue.
           if (wrotePendingAssets && assets) {
-            void removeAssetsFromOPFS(assets)
+            void removeAssetsFromOPFS(assets, targetConvId)
           }
           toast.error(t('conversation.toast.queueFull'))
           rejectSend()

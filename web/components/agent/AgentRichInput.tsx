@@ -1174,7 +1174,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
               <div className="mt-2 flex flex-wrap gap-2">
                 {pendingAssets.map((asset) => {
                   const isMarkdown = /\.(md|markdown)$/i.test(asset.name) || asset.mimeType === 'text/markdown'
-                  const isText = !isMarkdown && (/\.(txt|log|csv|tsv|json|jsonl|yaml|yml|py|js|jsx|ts|tsx|css|html|xml|sh|toml|ini|sql|rs|go|java|c|h|cpp|hpp)$/i.test(asset.name) || asset.mimeType.startsWith('text/') || ['application/json', 'application/xml', 'application/x-yaml'].includes(asset.mimeType))
+                  const isText = !isMarkdown && (/\.(txt|log|csv|tsv|json|jsonl|yaml|yml|py|js|jsx|ts|tsx|css|html|xml|sh|toml|ini|conf|config|env|properties|patch|diff|sql|rs|go|java|c|h|cpp|hpp)$/i.test(asset.name) || asset.mimeType.startsWith('text/') || ['application/json', 'application/xml', 'application/x-yaml'].includes(asset.mimeType))
                   return (
                   <div
                     key={asset.id}

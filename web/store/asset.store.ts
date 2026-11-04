@@ -40,6 +40,8 @@ export interface PendingAsset {
 interface AssetStore {
   /** Files staged for upload with the next message */
   pendingAssets: PendingAsset[]
+  activeConversationId: string | null
+  switchConversation: (conversationId: string | null) => void
   deferredAssets: Record<string, PendingAsset[]>
   restoreAssets: (assets: PendingAsset[], conversationId?: string) => void
   restoreDeferredAssets: (conversationId: string) => void
@@ -76,7 +78,31 @@ function isImageMime(mime: string): boolean {
 
 export const useAssetStore = create<AssetStore>((set, get) => ({
   pendingAssets: [],
+  activeConversationId: null,
   deferredAssets: {},
+
+  switchConversation: (conversationId) => {
+    const state = get()
+    const previousId = state.activeConversationId
+    if (previousId === conversationId) return
+    const deferred = { ...state.deferredAssets }
+    // Unassigned assets originate in the welcome composer and follow its first send.
+    const adoptUnassigned = previousId === null && conversationId !== null
+    if (previousId && state.pendingAssets.length) {
+      const stashed = state.pendingAssets.map((asset) => {
+        if (asset.previewUrl) URL.revokeObjectURL(asset.previewUrl)
+        return { ...asset, previewUrl: undefined }
+      })
+      deferred[previousId] = [...(deferred[previousId] ?? []), ...stashed]
+    }
+    const incoming = conversationId ? deferred[conversationId] ?? [] : []
+    if (conversationId) delete deferred[conversationId]
+    const restored = incoming.map((asset) => ({
+      ...asset,
+      previewUrl: isImageMime(asset.mimeType) ? URL.createObjectURL(asset.file) : undefined,
+    }))
+    set({ activeConversationId: conversationId, deferredAssets: deferred, pendingAssets: [...(adoptUnassigned ? state.pendingAssets : []), ...restored] })
+  },
 
   restoreAssets: (assets, conversationId) => {
     if (conversationId) {
@@ -93,6 +119,12 @@ export const useAssetStore = create<AssetStore>((set, get) => ({
   discardDeferredAssets: (conversationId) => set((state) => {
     const deferredAssets = { ...state.deferredAssets }
     delete deferredAssets[conversationId]
+    if (state.activeConversationId === conversationId) {
+      for (const asset of state.pendingAssets) {
+        if (asset.previewUrl) URL.revokeObjectURL(asset.previewUrl)
+      }
+      return { deferredAssets, pendingAssets: [], activeConversationId: null }
+    }
     return { deferredAssets }
   }),
 
