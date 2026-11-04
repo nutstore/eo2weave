@@ -16,6 +16,7 @@ import { useAssetStore } from '@/store/asset.store'
 import { extractDroppedFiles } from '@/lib/dragdrop'
 import { Lightbox } from './Lightbox'
 import { MarkdownContent } from './MarkdownContent'
+import { readBoundedPreview } from '@/lib/text-preview-cap'
 import { formatBytes as formatFileSize } from '@/lib/utils'
 import { toast } from 'sonner'
 import { FileIcon as WorkspaceFileIcon } from '@/lib/file-icons'
@@ -405,7 +406,9 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   const handlePreviewMarkdown = useCallback(async (asset: { file: File; name: string }) => {
     setMdPreviewLoading(true)
     try {
-      const text = await asset.file.text()
+      // Same bounded read as the text attachment preview: cap bytes read from
+      // disk and characters rendered, so a multi-GB .md can't freeze the UI.
+      const { text } = await readBoundedPreview(asset.file)
       setMdPreviewContent({ name: asset.name, text })
     } catch {
       // best-effort — ignore read errors
