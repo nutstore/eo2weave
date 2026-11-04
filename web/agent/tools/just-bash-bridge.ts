@@ -21,6 +21,8 @@
 
 import type { VfsBackend, VfsDirEntry } from './vfs-backend'
 import { isProtectedAgentCoreFile } from './agent-file-protection'
+import { isGitIgnored } from '@/opfs/native-disk/gitignore-policy'
+import { readBackendIgnoreRules } from '@/vfs/gitignore-discovery'
 
 // ---------------------------------------------------------------------------
 // Types from just-bash's IFileSystem interface (inlined to avoid import cost)
@@ -693,7 +695,8 @@ export class VfsBridgeFs {
     // Workspace subdirectory — delegate to backend
     try {
       const entries: VfsDirEntry[] = await this.backend.listDir(relPath)
-      return entries.map(e => ({
+      const rules = await readBackendIgnoreRules(this.backend, relPath)
+      return entries.filter((entry) => !isGitIgnored(entry.path, rules)).map(e => ({
         name: e.name,
         isFile: e.kind === 'file',
         isDirectory: e.kind === 'directory',

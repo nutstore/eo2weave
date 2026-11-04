@@ -5,6 +5,9 @@
  * FileSystemDirectoryHandle is transferred to the worker where all traversal happens.
  */
 
+import { isGitIgnored, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
+import { readHandleIgnoreRules } from '@/vfs/gitignore-discovery'
+
 //=============================================================================
 // Type Definitions
 //=============================================================================
@@ -103,16 +106,21 @@ async function handleTraverse(payload: {
     // Recursive traversal function
     async function* traverseDir(
       dirHandle: FileSystemDirectoryHandle,
-      path: string
+      path: string,
+      inherited: GitIgnoreRule[] = [],
     ): AsyncGenerator<FileMetadata> {
       if (signal.aborted) return
 
       try {
-        for await (const entry of dirHandle.entries()) {
+        const entries: Array<[string, FileSystemHandle]> = []
+        for await (const entry of dirHandle.entries()) entries.push(entry)
+        const rules = await readHandleIgnoreRules(entries.map(([, handle]) => handle), path, inherited, false)
+        for (const entry of entries) {
           if (signal.aborted) return
 
           const [, handle] = entry
           const entryPath = path ? `${path}/${handle.name}` : handle.name
+          if (isGitIgnored(entryPath, rules)) continue
 
           if (handle.kind === 'file') {
             try {
@@ -141,7 +149,7 @@ async function handleTraverse(payload: {
               path: entryPath,
             }
             // Then recursively traverse subdirectory
-            yield* traverseDir(handle as FileSystemDirectoryHandle, entryPath)
+            yield* traverseDir(handle as FileSystemDirectoryHandle, entryPath, rules)
           }
         }
       } catch (error) {

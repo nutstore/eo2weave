@@ -10,6 +10,7 @@ export async function listBackend(backend: VfsBackend, path: string, args: Recor
   const maxDepth = parseBoundedInt(args.max_depth ?? args.maxDepth, pattern ? 20 : 2, 1, pattern ? 64 : 10)
   const rawLimit = pattern ? args.max_results ?? args.maxResults ?? args.max_entries ?? args.maxEntries : args.max_entries ?? args.maxEntries
   const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? parseBoundedInt(rawLimit, 1, 1, 100000) : Infinity
+  const includeIgnored = args.include_ignored === true || args.includeIgnored === true
   const effectiveRoot = pattern && !path ? getStaticGlobPrefix(pattern) : path
   if (pattern && effectiveRoot && backend.stat) {
     try { await backend.stat(effectiveRoot) }
@@ -24,7 +25,7 @@ export async function listBackend(backend: VfsBackend, path: string, args: Recor
   for await (const entry of walkBackend(backend, effectiveRoot, {
     maxDepth, deadlineAt: Date.now() + parseBoundedInt(args.deadline_ms ?? args.deadlineMs, 25000, 1000, 28000),
     signal: context.abortSignal, includeSizes,
-    includeIgnored: args.include_ignored === true || args.includeIgnored === true,
+    includeIgnored,
     excludeDirs: parseStringList(args.exclude_dirs ?? args.excludeDirs),
   })) {
     const fullPath = effectiveRoot ? `${effectiveRoot}/${entry.relativePath}` : entry.relativePath

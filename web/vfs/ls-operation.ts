@@ -1,5 +1,7 @@
 import type { VfsBackend } from '@/agent/tools/vfs-backend'
 import { listBackend } from './generic-discovery'
+import { readHandleAncestorRules, readHandleIgnoreRules } from './gitignore-discovery'
+import { isGitIgnored, parseGitIgnore, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
 /**
  * ls tool - Unified directory reading tool.
  *
@@ -76,7 +78,7 @@ const DIRECTORY_TOOL_PARAMETERS: ToolDefinition['function']['parameters'] = {
     },
     include_ignored: {
       type: 'boolean',
-      description: 'Include large ignored directories like node_modules/.git (default: false)',
+      description: 'Include paths ignored by .gitignore and directories like node_modules/.git (default: false)',
     },
     includeIgnored: {
       type: 'boolean',
@@ -470,13 +472,14 @@ async function executeListMode(args: Record<string, unknown>, context: unknown):
     const deadlineAt = startedAt + deadlineMs
     const entries: Array<{ path: string; type: 'file' | 'directory'; size: number; depth: number }> = []
     const seenPaths = new Set<string>()
+    const diskRules = new Map<string, GitIgnoreRule[]>()
     let isTruncated = false
     let timedOut = false
 
     // Helper to scan a directory tree and collect entries
-    const scanTree = async (rootHandle: FileSystemDirectoryHandle) => {
-      const queue: Array<{ handle: FileSystemDirectoryHandle; path: string; depth: number }> = [
-        { handle: rootHandle, path: '', depth: 0 },
+    const scanTree = async (rootHandle: FileSystemDirectoryHandle, inherited: GitIgnoreRule[] = [], overlay = false) => {
+      const queue: Array<{ handle: FileSystemDirectoryHandle; path: string; depth: number; rules: GitIgnoreRule[] }> = [
+        { handle: rootHandle, path: '', depth: 0, rules: inherited },
       ]
 
       while (queue.length > 0) {
@@ -485,6 +488,9 @@ async function executeListMode(args: Record<string, unknown>, context: unknown):
         if (Date.now() > deadlineAt) { timedOut = true; break }
 
         const handles = await readDirectoryEntriesSorted(current.handle)
+        const directoryPath = [scope.subPath, current.path].filter(Boolean).join('/')
+        const rules = await readHandleIgnoreRules(handles, directoryPath, overlay ? (diskRules.get(directoryPath) ?? current.rules) : current.rules, includeIgnored)
+        if (!overlay) diskRules.set(directoryPath, rules)
         for (const handle of handles) {
           if (abortSignal?.aborted) return
           if (Date.now() > deadlineAt) { timedOut = true; break }
@@ -493,6 +499,7 @@ async function executeListMode(args: Record<string, unknown>, context: unknown):
           if (childDepth > maxDepth) continue
 
           const relPath = current.path ? `${current.path}/${handle.name}` : handle.name
+          if (!includeIgnored && isGitIgnored([scope.subPath, relPath].filter(Boolean).join('/'), rules)) continue
 
           // Skip if already seen (native takes precedence)
           if (seenPaths.has(relPath)) continue
@@ -501,7 +508,7 @@ async function executeListMode(args: Record<string, unknown>, context: unknown):
           if (handle.kind === 'directory') {
             if (shouldSkipDirectory(handle.name, includeIgnored, extraExcludes)) continue
             entries.push({ path: relPath, type: 'directory', size: 0, depth: childDepth })
-            queue.push({ handle: handle as FileSystemDirectoryHandle, path: relPath, depth: childDepth })
+            queue.push({ handle: handle as FileSystemDirectoryHandle, path: relPath, depth: childDepth, rules })
           } else {
             let size = 0
             if (includeSizes) {
@@ -525,7 +532,8 @@ async function executeListMode(args: Record<string, unknown>, context: unknown):
     // 1. Scan native FS (disk files — base). Skipped when the directory only
     //    exists in OPFS (nativeHandle is null in that case).
     if (nativeHandle) {
-      await scanTree(nativeHandle)
+      const root = !includeIgnored && scope.subPath ? await scope.resolveHandle('', { allowMissing: true }) : null
+      await scanTree(nativeHandle, root?.exists ? await readHandleAncestorRules(root.handle, scope.subPath) : [])
     }
 
     // 2. Merge OPFS-only files (pending changes, .skills/, etc.)
@@ -539,7 +547,10 @@ async function executeListMode(args: Record<string, unknown>, context: unknown):
           : scope.subPath
         const resolved = await resolveDirectoryHandle(opfsHandle, opfsSubPath, { allowMissing: true })
         if (resolved.exists) {
-          await scanTree(resolved.handle)
+          const root = !includeIgnored && scope.subPath
+            ? await resolveDirectoryHandle(opfsHandle, scope.rootName || '', { allowMissing: true })
+            : null
+          await scanTree(resolved.handle, root?.exists ? await readHandleAncestorRules(root.handle, scope.subPath) : [], true)
         }
       }
     }
@@ -669,9 +680,13 @@ async function executeGlobMode(
         if (!exists) {
           continue
         }
+        const root = !includeIgnored && staticPrefix
+          ? await scope.resolveAgentHandle(agent.id, '', { allowMissing: true })
+          : null
+        const inherited = root?.exists ? await readHandleAncestorRules(root.handle, staticPrefix) : []
 
-        const stack: Array<{ handle: FileSystemDirectoryHandle; fullPath: string; localPath: string; depth: number }> =
-          [{ handle: searchHandle, fullPath: staticPrefix, localPath: '', depth: 0 }]
+        const stack: Array<{ handle: FileSystemDirectoryHandle; fullPath: string; localPath: string; depth: number; rules: GitIgnoreRule[] }> =
+          [{ handle: searchHandle, fullPath: staticPrefix, localPath: '', depth: 0, rules: inherited }]
 
         while (stack.length > 0) {
           if (abortSignal?.aborted) {
@@ -684,6 +699,7 @@ async function executeGlobMode(
           }
 
           const handles = await readDirectoryEntriesSorted(current.handle)
+          const rules = await readHandleIgnoreRules(handles, current.fullPath, current.rules, includeIgnored)
           for (const handle of handles) {
             if (abortSignal?.aborted) {
               return toolErrorJson('ls', 'aborted', 'Glob search failed: operation aborted')
@@ -698,6 +714,7 @@ async function executeGlobMode(
 
             const fullPath = current.fullPath ? `${current.fullPath}/${handle.name}` : handle.name
             const localPath = current.localPath ? `${current.localPath}/${handle.name}` : handle.name
+            if (!includeIgnored && isGitIgnored(fullPath, rules)) continue
             const namespacedPath = `${agent.id}/${fullPath}`
 
             if (handle.kind === 'directory') {
@@ -707,6 +724,7 @@ async function executeGlobMode(
                 fullPath,
                 localPath,
                 depth: nextDepth,
+                rules,
               })
               continue
             }
@@ -748,13 +766,15 @@ async function executeGlobMode(
 
     // For workspace scope, collect handles from both native FS and OPFS
     // so glob can find files regardless of which filesystem they live in.
-    const searchHandles: Array<{ handle: FileSystemDirectoryHandle; source: 'native' | 'opfs' }> = []
+    const searchHandles: Array<{ handle: FileSystemDirectoryHandle; source: 'native' | 'opfs'; rules: GitIgnoreRule[] }> = []
 
     if (scope.kind === 'workspace') {
       // 1. Native FS (disk files — always attempt)
       const nativeResult = await scope.resolveHandle(effectiveRoot, { allowMissing: true })
       if (nativeResult.exists) {
-        searchHandles.push({ handle: nativeResult.handle, source: 'native' })
+        const root = !includeIgnored && effectiveRoot ? await scope.resolveHandle('', { allowMissing: true }) : null
+        const rules = root?.exists ? await readHandleAncestorRules(root.handle, effectiveRoot) : []
+        searchHandles.push({ handle: nativeResult.handle, source: 'native', rules })
       }
 
       // 2. OPFS (pending changes, .skills/, etc.)
@@ -767,13 +787,19 @@ async function executeGlobMode(
           : effectiveRoot
         const opfsResult = await resolveDirectoryHandle(opfsFilesHandle, opfsEffectiveRoot, { allowMissing: true })
         if (opfsResult.exists) {
-          searchHandles.push({ handle: opfsResult.handle, source: 'opfs' })
+          const root = !includeIgnored && effectiveRoot
+            ? await resolveDirectoryHandle(opfsFilesHandle, scope.rootName || '', { allowMissing: true })
+            : null
+          const rules = root?.exists ? await readHandleAncestorRules(root.handle, effectiveRoot) : []
+          searchHandles.push({ handle: opfsResult.handle, source: 'opfs', rules })
         }
       }
     } else {
       const r = await scope.resolveHandle(effectiveRoot, { allowMissing: true })
       if (r.exists) {
-        searchHandles.push({ handle: r.handle, source: 'native' })
+        const root = !includeIgnored && effectiveRoot ? await scope.resolveHandle('', { allowMissing: true }) : null
+        const rules = root?.exists ? await readHandleAncestorRules(root.handle, effectiveRoot) : []
+        searchHandles.push({ handle: r.handle, source: 'native', rules })
       }
     }
 
@@ -791,14 +817,15 @@ async function executeGlobMode(
     const deadlineAt = startedAt + deadlineMs
     const matches: string[] = []
     const seenPaths = new Set<string>()
+    const diskRules = new Map<string, GitIgnoreRule[]>()
     let isTruncated = false
     let timedOut = false
 
-    for (const { handle: searchHandle } of searchHandles) {
+    for (const { handle: searchHandle, rules: inherited, source } of searchHandles) {
       if (isTruncated || timedOut) break
 
-      const stack: Array<{ handle: FileSystemDirectoryHandle; fullPath: string; localPath: string; depth: number }> =
-        [{ handle: searchHandle, fullPath: effectiveRoot, localPath: '', depth: 0 }]
+      const stack: Array<{ handle: FileSystemDirectoryHandle; fullPath: string; localPath: string; depth: number; rules: GitIgnoreRule[] }> =
+        [{ handle: searchHandle, fullPath: effectiveRoot, localPath: '', depth: 0, rules: inherited }]
 
       while (stack.length > 0) {
         if (abortSignal?.aborted) {
@@ -811,6 +838,8 @@ async function executeGlobMode(
         }
 
         const handles = await readDirectoryEntriesSorted(current.handle)
+        const rules = await readHandleIgnoreRules(handles, current.fullPath, source === 'opfs' ? (diskRules.get(current.fullPath) ?? current.rules) : current.rules, includeIgnored)
+        if (source === 'native') diskRules.set(current.fullPath, rules)
         for (const handle of handles) {
           if (abortSignal?.aborted) {
             return toolErrorJson('ls', 'aborted', 'Glob search failed: operation aborted')
@@ -825,6 +854,7 @@ async function executeGlobMode(
 
           const fullPath = current.fullPath ? `${current.fullPath}/${handle.name}` : handle.name
           const localPath = current.localPath ? `${current.localPath}/${handle.name}` : handle.name
+          if (!includeIgnored && isGitIgnored(fullPath, rules)) continue
 
           if (handle.kind === 'directory') {
             if (shouldSkipDirectory(handle.name, includeIgnored, extraExcludes)) continue
@@ -833,6 +863,7 @@ async function executeGlobMode(
               fullPath,
               localPath,
               depth: nextDepth,
+              rules,
             })
             continue
           }
@@ -930,7 +961,7 @@ async function tryNativeHostDiskScan(
       rawPath,
       maxDepth,
       toolContext.projectId,
-      { includeSizes, excludeDirs: extraExcludes, maxEntries, deadlineMs }
+      { includeSizes, excludeDirs: extraExcludes, maxEntries, deadlineMs, respectGitignore: !(args.include_ignored === true || args.includeIgnored === true), includeIgnored: args.include_ignored === true || args.includeIgnored === true }
     )
 
     if (entries === null) return null // not a native-host root
@@ -973,12 +1004,37 @@ async function listNativeHostRootNames(toolContext: ToolContext): Promise<string
 
 /** WorkspaceRuntime shape needed for disk scans (duck-typed for tests). */
 type NativeHostWorkspace = {
+  resolvePath?: (path: string, projectId?: string | null) => Promise<{ rootId: string | null; relativePath: string }>
+  readFromDiskRoot?: (rootId: string, path: string) => Promise<{ content: string | ArrayBuffer | Blob }>
   scanDiskTree: (
     path: string,
     maxDepth: number,
     projectId?: string | null,
-    options?: { includeSizes?: boolean; excludeDirs?: string[]; maxEntries?: number; deadlineMs?: number }
+    options?: { includeSizes?: boolean; excludeDirs?: string[]; maxEntries?: number; deadlineMs?: number; respectGitignore?: boolean; includeIgnored?: boolean }
   ) => Promise<Array<{ path: string; type: 'file' | 'directory'; size: number; depth: number }> | null>
+}
+
+function createNativeIgnoreChecker(workspace: NativeHostWorkspace, rootId: string) {
+  const cache = new Map<string, Promise<GitIgnoreRule[]>>()
+  const readRules = (directory: string): Promise<GitIgnoreRule[]> => {
+    const existing = cache.get(directory)
+    if (existing) return existing
+    const pending = (async () => {
+      const slash = directory.lastIndexOf('/')
+      const parent = slash < 0 ? '' : directory.slice(0, slash)
+      const inherited = directory ? await readRules(parent) : []
+      try {
+        const file = await workspace.readFromDiskRoot!(rootId, directory ? `${directory}/.gitignore` : '.gitignore')
+        return typeof file.content === 'string' ? [...inherited, ...parseGitIgnore(file.content, directory)] : inherited
+      } catch { return inherited }
+    })()
+    cache.set(directory, pending)
+    return pending
+  }
+  return async (path: string): Promise<boolean> => {
+    const slash = path.lastIndexOf('/')
+    return isGitIgnored(path, await readRules(slash < 0 ? '' : path.slice(0, slash)))
+  }
 }
 
 /** Resolve the workspace runtime for native-host disk scans, or null. */
@@ -1030,6 +1086,8 @@ async function collectNativeHostGlobMatches(
         excludeDirs,
         maxEntries: 20_000,
         deadlineMs,
+        respectGitignore: !(args.include_ignored === true || args.includeIgnored === true),
+        includeIgnored: args.include_ignored === true || args.includeIgnored === true,
       })
     } catch {
       entries = null
@@ -1121,11 +1179,17 @@ async function listNativeHostWithOpfsMerge(
       excludeDirs: extraExcludes,
       maxEntries,
       deadlineMs,
+      respectGitignore: !includeIgnored,
+      includeIgnored,
     })
   } catch {
     diskEntries = null
   }
   if (diskEntries === null) return null // not a native-host path
+  const diskRoot = !includeIgnored && workspace.resolvePath && workspace.readFromDiskRoot
+    ? await workspace.resolvePath(rawPath, toolContext.projectId).catch(() => null)
+    : null
+  const isIgnoredOnDisk = diskRoot?.rootId ? createNativeIgnoreChecker(workspace, diskRoot.rootId) : null
 
   const seenPaths = new Set<string>()
   const entries: Array<{ path: string; type: 'file' | 'directory'; size: number; depth: number }> = []
@@ -1143,25 +1207,31 @@ async function listNativeHostWithOpfsMerge(
       const trimmed = rawPath.replace(/\/+$/, '')
       const opfsResolved = await resolveDirectoryHandle(opfsFilesHandle, trimmed, { allowMissing: true })
       if (opfsResolved.exists) {
-        const queue: Array<{ handle: FileSystemDirectoryHandle; path: string; depth: number }> = [
-          { handle: opfsResolved.handle, path: '', depth: 0 },
+        const queue: Array<{ handle: FileSystemDirectoryHandle; path: string; depth: number; rules: GitIgnoreRule[] }> = [
+          { handle: opfsResolved.handle, path: '', depth: 0, rules: [] },
         ]
         while (queue.length > 0) {
           if (Date.now() > deadlineAt) break
           const current = queue.shift()!
           const handles = await readDirectoryEntriesSorted(current.handle)
+          const rules = await readHandleIgnoreRules(handles, current.path, current.rules, includeIgnored)
           for (const handle of handles) {
             if (Date.now() > deadlineAt) break
             const childDepth = current.depth + 1
             if (childDepth > maxDepth) continue
             const relPath = current.path ? `${current.path}/${handle.name}` : handle.name
+            if (!includeIgnored && isGitIgnored(relPath, rules)) continue
+            if (diskRoot && isIgnoredOnDisk) {
+              const nativePath = [diskRoot.relativePath, relPath].filter(Boolean).join('/')
+              if (await isIgnoredOnDisk(nativePath)) continue
+            }
             // Disk takes precedence — OPFS copies of disk files are stale until synced
             if (seenPaths.has(relPath)) continue
             if (handle.kind === 'directory') {
               if (shouldSkipDirectory(handle.name, includeIgnored, extraExcludes)) continue
               seenPaths.add(relPath)
               entries.push({ path: relPath, type: 'directory', size: 0, depth: childDepth })
-              queue.push({ handle: handle as FileSystemDirectoryHandle, path: relPath, depth: childDepth })
+              queue.push({ handle: handle as FileSystemDirectoryHandle, path: relPath, depth: childDepth, rules })
             } else {
               seenPaths.add(relPath)
               let size = 0
@@ -1226,26 +1296,37 @@ async function collectOpfsGlobMatches(
         ? parseBoundedInt(maxResultsRaw, 1, 1, 100000)
         : undefined
     const includeIgnored = args.include_ignored === true || args.includeIgnored === true
+    const workspace = !includeIgnored ? await getNativeHostWorkspace(toolContext) : null
+    const diskRoot = workspace?.resolvePath && workspace.readFromDiskRoot
+      ? await workspace.resolvePath(scanPath, toolContext.projectId).catch(() => null)
+      : null
+    const isIgnoredOnDisk = workspace && diskRoot?.rootId ? createNativeIgnoreChecker(workspace, diskRoot.rootId) : null
     const extraExcludes = parseStringList(args.exclude_dirs ?? args.excludeDirs)
     const deadlineMs = parseBoundedInt(args.deadline_ms ?? args.deadlineMs, 25000, 1000, 28000)
     const deadlineAt = Date.now() + deadlineMs
     const micromatchOpts: micromatch.Options = { dot: true }
 
-    const stack: Array<{ handle: FileSystemDirectoryHandle; relPath: string; depth: number }> = [
-      { handle: resolved.handle, relPath: '', depth: 0 },
+    const stack: Array<{ handle: FileSystemDirectoryHandle; relPath: string; depth: number; rules: GitIgnoreRule[] }> = [
+      { handle: resolved.handle, relPath: '', depth: 0, rules: [] },
     ]
     while (stack.length > 0) {
       if (Date.now() > deadlineAt) break
       const current = stack.pop()!
       const handles = await readDirectoryEntriesSorted(current.handle)
+      const rules = await readHandleIgnoreRules(handles, current.relPath, current.rules, includeIgnored)
       for (const handle of handles) {
         if (Date.now() > deadlineAt) return matches
         const nextDepth = current.depth + 1
         if (nextDepth > maxDepth) continue
         const relPath = current.relPath ? `${current.relPath}/${handle.name}` : handle.name
+        if (!includeIgnored && isGitIgnored(relPath, rules)) continue
+        if (diskRoot && isIgnoredOnDisk) {
+          const nativePath = [diskRoot.relativePath, relPath].filter(Boolean).join('/')
+          if (await isIgnoredOnDisk(nativePath)) continue
+        }
         if (handle.kind === 'directory') {
           if (shouldSkipDirectory(handle.name, includeIgnored, extraExcludes)) continue
-          stack.push({ handle: handle as FileSystemDirectoryHandle, relPath, depth: nextDepth })
+          stack.push({ handle: handle as FileSystemDirectoryHandle, relPath, depth: nextDepth, rules })
           continue
         }
         const fullPath = `${trimmed}/${relPath}`

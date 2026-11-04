@@ -1,3 +1,6 @@
+import { isGitIgnored, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
+import { readHandleIgnoreRules } from '@/vfs/gitignore-discovery'
+
 /**
  * Default excluded directory names (keep in sync with search.worker.ts)
  */
@@ -42,6 +45,7 @@ export interface TraverseOptions {
 interface InternalTraverseOptions extends TraverseOptions {
   /** Current path for recursion */
   _path?: string
+  _rules?: GitIgnoreRule[]
 }
 
 /**
@@ -100,13 +104,17 @@ export async function* traverseDirectory(
   // Original main thread traversal (fallback)
   try {
     let count = 0
-    for await (const entry of dirHandle.entries()) {
+    const entries: Array<[string, FileSystemHandle]> = []
+    for await (const entry of dirHandle.entries()) entries.push(entry)
+    const rules = await readHandleIgnoreRules(entries.map(([, handle]) => handle), basePath, opts._rules ?? [], false)
+    for (const entry of entries) {
       if (opts.maxFiles && opts.maxFiles > 0 && count >= opts.maxFiles) {
         break
       }
 
       const [, handle] = entry
       const entryPath = basePath ? `${basePath}/${handle.name}` : handle.name
+      if (isGitIgnored(entryPath, rules)) continue
 
       if (handle.kind === 'file') {
         try {
@@ -138,7 +146,7 @@ export async function* traverseDirectory(
           path: entryPath,
         }
         // Recursively traverse subdirectories
-        yield* traverseDirectory(handle as FileSystemDirectoryHandle, { ...opts, _path: entryPath })
+        yield* traverseDirectory(handle as FileSystemDirectoryHandle, { ...opts, _path: entryPath, _rules: rules, useWorker: false })
       }
     }
   } catch (error) {
