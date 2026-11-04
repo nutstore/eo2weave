@@ -191,12 +191,20 @@ async function applyGatewayLoginTokensInner(
       throw new Error('session changed during login: logout superseded this attempt')
     }
     const settings = useSettingsStore.getState()
+    // The curated default is resolved UNCONDITIONALLY: it drives the model
+    // SELECTION for every login, fresh or returning. The guarded `defaults`
+    // below drives only the pin-SEEDING writes — seeding must never clobber
+    // a returning user's own favorites.
+    const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
+    const curatedCandidates = getDefaultPinnedModels(
+      LLM_GATEWAY_PROVIDER_TYPE,
+      discovery.models.map((m) => m.id),
+    )
     // Re-check pins under the lock: a pin added between the pre-lock
     // snapshot and this commit must win over the computed defaults.
     let defaults: string[] = []
     if ((settings.pinnedModelsByProvider[LLM_GATEWAY_PROVIDER_TYPE]?.length ?? 0) === 0) {
-      const { getDefaultPinnedModels } = await import('@/agent/providers/default-models')
-      defaults = getDefaultPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, discovery.models.map((m) => m.id))
+      defaults = curatedCandidates
     }
     signal?.throwIfAborted()
     // Bound the key-store reads/writes: a stalled api-key-store op must not
@@ -282,7 +290,8 @@ async function applyGatewayLoginTokensInner(
       // /models fetch; an empty modelName here marks the selection for
       // that re-resolution instead of pinning a wrong provider's model.
       const servedIds = new Set(discovery.models.map((m) => m.id))
-      const selectedModel = defaults.find((id) => servedIds.has(id)) ?? discovery.models[0]?.id ?? ''
+      const selectedModel =
+        curatedCandidates.find((id) => servedIds.has(id)) ?? discovery.models[0]?.id ?? ''
       settings.switchProviderAndModel(LLM_GATEWAY_PROVIDER_TYPE, selectedModel)
       if (defaults.length > 0) {
         settings.setPinnedModels(LLM_GATEWAY_PROVIDER_TYPE, defaults)
