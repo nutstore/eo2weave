@@ -71,6 +71,45 @@ describe('message-mappers', () => {
     expect(content.some((part) => part.type === 'text' && part.text)).toBe(true)
     expect(JSON.stringify(wire)).not.toContain('aW1hZ2U=')
   })
+  it('strips orphaned tool results even when no assistant turn is dropped', () => {
+    // A history repaired by an earlier version of the filter kept the tool
+    // result of a removed failed assistant turn. No incomplete turn remains,
+    // but the result still has no owning call in the array — strict providers
+    // reject the whole request over it.
+    const messages: Message[] = [
+      { id: 'u', role: 'user', content: 'hi', timestamp: 1 },
+      {
+        id: 'orphan-result',
+        role: 'tool',
+        toolCallId: 'ghost-call',
+        name: 'read',
+        content: 'result of a long-gone call',
+        timestamp: 2,
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'done',
+        toolCalls: [
+          { id: 'tc-live', type: 'function', function: { name: 'read', arguments: '{}' } },
+        ],
+        timestamp: 3,
+      },
+      {
+        id: 'r1',
+        role: 'tool',
+        toolCallId: 'tc-live',
+        name: 'read',
+        content: 'live result',
+        timestamp: 4,
+      },
+    ]
+    const model = { api: 'openai', provider: 'openai', id: 'test' } as never
+    const wire = internalToPiMessages(messages, model, '')
+    expect(wire).toHaveLength(3)
+    expect(JSON.stringify(wire)).not.toContain('ghost-call')
+    expect(JSON.stringify(wire)).toContain('live result')
+  })
   it('persists UI traces separately from the model conversation', () => {
     const deferred = [{ sourceCallId: 'child', sequence: 0, content: [{ type: 'text', text: 'observation' }] }]
     const mapped = piToInternalMessage({ role: 'toolResult', toolCallId: 'parent', toolName: 'run_code', content: [{ type: 'text', text: 'final result' }], details: { displayContent: 'PRIVATE_TRACE', deferred }, isError: false, timestamp: 1 } as never)!

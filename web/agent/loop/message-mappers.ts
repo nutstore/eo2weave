@@ -275,7 +275,11 @@ function toProviderHistory(messages: Message[]): Message[] {
       )
       .map((message) => message.id)
   )
-  if (droppedAssistantIds.size === 0) return messages
+  // No early return when there are no incomplete turns: a history repaired by
+  // an earlier version of this filter (which removed the failed assistant turn
+  // but left its tool result) still carries a truly orphaned tool result, and
+  // strict providers reject the whole request even with zero incomplete turns
+  // remaining.
   const keptCallIds = new Set<string>()
   for (const message of messages) {
     if (message.role === 'assistant' && !droppedAssistantIds.has(message.id)) {
