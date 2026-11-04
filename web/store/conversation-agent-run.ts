@@ -686,6 +686,9 @@ export async function runAgentImpl(
             r.streamingContent = ''
             r.streamingReasoning = ''
           })
+          void import('@/services/favicon-indicator')
+            .then(({ setFaviconState }) => setFaviconState('idle'))
+            .catch(() => {})
           const errorConv = get().conversations.find((c) => c.id === conversationId)
           if (errorConv) {
             persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
