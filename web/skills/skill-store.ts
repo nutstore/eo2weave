@@ -344,6 +344,23 @@ function extractStoreSkillMd(
   return data ? new TextDecoder().decode(data) : null
 }
 
+/**
+ * Restrict a preview to ONE member skill so a per-member import writes only
+ * that member's files: bundle-wide writes would overwrite members the
+ * per-member decision decided to keep (#154 round 2). The raw archive is
+ * filtered to the member's files (entries under `root` or `dirName/`);
+ * everything else drops out.
+ */
+function slicePreview(preview: ZipSkillPreview, skill: ZipSkillEntry): ZipSkillPreview {
+  const root = skill._commonRoot
+  const prefix = `${skill.dirName}/`
+  const raw: Record<string, Uint8Array> = {}
+  for (const [path, data] of Object.entries(preview._raw)) {
+    if (path.startsWith(root) || path.startsWith(prefix)) raw[path] = data
+  }
+  return { isBundle: false, skill, _raw: raw }
+}
+
 /** Localized progress/outcome message for the current UI locale. */
 function tr(key: string, params?: Record<string, string | number>): string {
   return translateStatic(useI18nStore.getState().locale, key, params)
@@ -485,86 +502,99 @@ export async function installSkillFromUrl(
           // cannot be made, so the failure is surfaced instead of silently
           // keeping the stale copy (the old fallback would report
           // "Already installed").
-          let anyUpdate = false
-          let anyInstalledNewer = false
-          let anyUnknown = false
-          const storeVersions = new Map<string, string>()
-          const installedVersions = new Map<string, string>()
+          // The decision is PER MEMBER: each member of a bundle gets its own
+          // update / keep / skip / ifAbsent action, so one updatable member
+          // no longer overwrites members that should be kept, and unknown
+          // members no longer drag missing siblings into a bundle-wide
+          // ifAbsent (#154 round 2).
+          let updatedAny = false
+          let installedAny = false
+          let filesWritten = 0
+          // First decision per category, for the human-readable summary.
+          let updatedFrom = ''
+          let updatedTo = ''
+          let skippedInstalled = ''
+          let keptVersion = ''
+
           for (const s of memberSkills) {
             const installed = await readInstalledSkillVersion(s.dirName)
             if (installed.error) throw installed.error
             const storeVersion = parseSkillMdVersion(
               extractStoreSkillMd(preview, s) ?? '',
             )
+
+            // Unknown version on either side — conservative per-member
+            // ifAbsent: install only when the member is not on disk.
             if (installed.version === null || storeVersion === null) {
-              // Unknown version on either side — conservative fallback.
-              anyUnknown = true
+              const n = await importUserSkillZipPrelocked(
+                slicePreview(preview, s),
+                { ifAbsent: true },
+              )
+              if (n > 0) {
+                installedAny = true
+                filesWritten += n
+              }
               continue
             }
-            storeVersions.set(s.dirName, storeVersion)
-            installedVersions.set(s.dirName, installed.version)
+
             const action = decideSkillUpdateAction(storeVersion, installed.version)
-            if (action === 'update') anyUpdate = true
-            if (action === 'installed-newer') anyInstalledNewer = true
+            if (action === 'update') {
+              const n = await importUserSkillZipPrelocked(slicePreview(preview, s))
+              if (n > 0) {
+                updatedAny = true
+                filesWritten += n
+                if (!updatedFrom) {
+                  updatedFrom = installed.version
+                  updatedTo = storeVersion
+                }
+              }
+            } else if (action === 'current' && !keptVersion) {
+              keptVersion = installed.version
+            } else if (action === 'installed-newer' && !skippedInstalled) {
+              skippedInstalled = installed.version
+            }
           }
 
-          // Per-member decision over the WHOLE preview (the import pipeline
-          // backs up / removes / writes each member directory independently,
-          // so a bundle with one updatable member overwrites exactly those
-          // members while the import's own staging/rollback protects the
-          // rest). `ifAbsent` is only right when NO member can be updated.
-          if (anyUpdate) {
-            const first = memberSkills.find((s) => storeVersions.has(s.dirName))!
-            const n = await importUserSkillZipPrelocked(preview)
-            const store = storeVersions.get(first.dirName)!
-            const installedBefore = installedVersions.get(first.dirName)!
+          // Summary against the strongest action any member took: the
+          // per-member counts stay exact, the message names one example.
+          if (updatedAny) {
             return {
-              count: n,
-              storeVersion: store,
-              outcome: (n === 0 ? 'current' : 'updated') as InstallOutcome,
-              doneMessage:
-                n === 0
-                  ? tr('skills.discover.alreadyInstalled')
-                  : tr('skills.discover.updatedVersion', {
-                      from: installedBefore,
-                      to: store,
-                      count: n,
-                    }),
+              count: filesWritten,
+              storeVersion: updatedTo,
+              outcome: 'updated' as InstallOutcome,
+              doneMessage: tr('skills.discover.updatedVersion', {
+                from: updatedFrom,
+                to: updatedTo,
+                count: filesWritten,
+              }),
             }
           }
-          if (anyUnknown) {
-            const n = await importUserSkillZipPrelocked(preview, { ifAbsent: true })
+          if (installedAny) {
             return {
-              count: n,
+              count: filesWritten,
               storeVersion: null,
-              outcome: (n === 0 ? 'current' : 'installed') as InstallOutcome,
-              doneMessage:
-                n === 0
-                  ? tr('skills.discover.alreadyInstalled')
-                  : tr('skills.discover.installedFiles', { count: n }),
+              outcome: 'installed' as InstallOutcome,
+              doneMessage: tr('skills.discover.installedFiles', { count: filesWritten }),
             }
           }
-          // Every member with parseable versions is installed-newer or
-          // current — never downgrade. Report against the first member.
-          const first = memberSkills[0]!
-          if (anyInstalledNewer) {
+          if (skippedInstalled) {
             return {
               count: 0,
-              storeVersion: storeVersions.get(first.dirName) ?? null,
+              storeVersion: null,
               outcome: 'installed-newer' as InstallOutcome,
               doneMessage: tr('skills.discover.skippedUpdate', {
-                installed: installedVersions.get(first.dirName) ?? '',
-                store: storeVersions.get(first.dirName) ?? '',
+                installed: skippedInstalled,
+                store: '',
               }),
             }
           }
           return {
             count: 0,
-            storeVersion: storeVersions.get(first.dirName) ?? null,
+            storeVersion: null,
             outcome: 'current' as InstallOutcome,
-            doneMessage: tr('skills.discover.alreadyInstalledVersion', {
-              version: installedVersions.get(first.dirName) ?? '',
-            }),
+            doneMessage: keptVersion
+              ? tr('skills.discover.alreadyInstalledVersion', { version: keptVersion })
+              : tr('skills.discover.alreadyInstalled'),
           }
         },
       )

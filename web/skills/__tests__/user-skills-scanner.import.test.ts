@@ -1018,6 +1018,81 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
     }
   })
 
+  it('decides PER MEMBER: one updated bundle member does not overwrite a newer sibling (#154 round 2)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      // a is updatable (store newer); b's installed copy is NEWER than the
+      // store — a bundle-wide import would downgrade b.
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "2.0.0"\n---\n\n# A2'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B-store'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'bundle-a',
+        '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A1',
+      )
+      writeInstalled(
+        'bundle-b',
+        '---\nname: bundle-b\nversion: "3.0.0"\n---\n\n# B-local-newer',
+      )
+      const result = await installSkillFromUrl('https://store.example/bundle.zip')
+      expect(result.outcome).toBe('updated')
+      // a took the update…
+      expect(contentOf('bundle-a', 'SKILL.md')).toContain('# A2')
+      // …while b was NOT downgraded.
+      expect(contentOf('bundle-b', 'SKILL.md')).toContain('# B-local-newer')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('decides PER MEMBER: unknown members use ifAbsent without dragging siblings (#154 round 2)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      // a has no version (unknown → per-member ifAbsent: installed, kept);
+      // b is missing locally and must still get installed.
+      'bundle-a/SKILL.md': strToU8('# A no version'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B fresh'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // a is installed with local edits and no version frontmatter.
+      writeInstalled('bundle-a', '# A local edits')
+      const result = await installSkillFromUrl('https://store.example/bundle.zip')
+      expect(result.outcome).toBe('installed')
+      // a's unknown-provenance copy was preserved (ifAbsent)…
+      expect(contentOf('bundle-a', 'SKILL.md')).toBe('# A local edits')
+      // …while the missing b was still installed (a bundle-wide ifAbsent
+      // would have skipped it).
+      expect(contentOf('bundle-b', 'SKILL.md')).toContain('# B fresh')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('does not overwrite an installed skill whose version is unparseable junk (#154 round 2)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: junky-skill\nversion: "2.0.0"\n---\n\n# Store v2'
+    const archive = zipSync({ 'junky-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // Installed copy carries a NONEMPTY but unparseable version — junk
+      // used to rank below any parseable version, so the store release
+      // overwrote these local edits. Unknown provenance must be kept.
+      const local = '---\nname: junky-skill\nversion: latest-draft\n---\n\n# Local edits'
+      writeInstalled('junky-skill', local)
+      const result = await installSkillFromUrl('https://store.example/junky.zip')
+      expect(result.count).toBe(0)
+      expect(contentOf('junky-skill', 'SKILL.md')).toBe(local)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('rejects the download up front when Content-Length exceeds the cap', async () => {
     const realFetch = globalThis.fetch
     try {
