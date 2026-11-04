@@ -771,8 +771,10 @@ describe('previewUserSkillZip size caps (issue #128)', () => {
 // ── installSkillFromUrl download cap ─────────────────────────────────
 
 describe('installSkillFromUrl download cap (issue #128)', () => {
-  it('preserves local edits when a store install is repeated', async () => {
+  it('preserves local edits when a store install is repeated (no version frontmatter)', async () => {
     const realFetch = globalThis.fetch
+    // Store ZIP without a `version:` frontmatter — unknown provenance falls
+    // back to the conservative ifAbsent behavior (#154).
     const archive = zipSync({ 'store-skill/SKILL.md': strToU8('# Store version') })
     try {
       ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
@@ -783,6 +785,88 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
       const second = await installSkillFromUrl('https://store.example/store-skill.zip')
       expect(second.count).toBe(0)
       expect(contentOf('store-skill', 'SKILL.md')).toBe('# Local edit')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('updates an installed skill in place when the store version is newer (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.3"\n---\n\n# Store guidance v1.1.3'
+    const archive = zipSync({
+      'versioned-skill/SKILL.md': strToU8(storeMd),
+      'versioned-skill/references/new.md': strToU8('new file'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Old guidance',
+      )
+      const progress: Array<{ phase: string; message: string }> = []
+      const result = await installSkillFromUrl(
+        'https://store.example/versioned-skill.zip',
+        (p) => progress.push(p),
+      )
+      expect(result.count).toBe(2)
+      expect(contentOf('versioned-skill', 'SKILL.md')).toContain('v1.1.3')
+      expect(contentOf('versioned-skill/references', 'new.md')).toBe('new file')
+      const done = progress.find((p) => p.phase === 'done')
+      expect(done?.message).toContain('Updated v1.1.2 → v1.1.3')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('reports "Already installed" when the installed version matches the store (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Store guidance'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Local customization',
+      )
+      const progress: Array<{ phase: string; message: string }> = []
+      const result = await installSkillFromUrl(
+        'https://store.example/versioned-skill.zip',
+        (p) => progress.push(p),
+      )
+      expect(result.count).toBe(0)
+      expect(contentOf('versioned-skill', 'SKILL.md')).toBe(
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Local customization',
+      )
+      const done = progress.find((p) => p.phase === 'done')
+      expect(done?.message).toContain('Already installed')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('skips without downgrading when the installed version is newer than the store (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Older store copy'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.2.0"\n---\n\n# Newer local copy',
+      )
+      const progress: Array<{ phase: string; message: string }> = []
+      const result = await installSkillFromUrl(
+        'https://store.example/versioned-skill.zip',
+        (p) => progress.push(p),
+      )
+      expect(result.count).toBe(0)
+      expect(contentOf('versioned-skill', 'SKILL.md')).toContain('# Newer local copy')
+      const done = progress.find((p) => p.phase === 'done')
+      expect(done?.message).toContain('Skipped update')
+      expect(done?.message).toContain('1.2.0')
     } finally {
       globalThis.fetch = realFetch
     }

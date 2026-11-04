@@ -15,6 +15,10 @@ import {
 } from './user-skills-scanner'
 import { useSkillsStore } from '@/store/skills.store'
 import { formatBytes } from '@/lib/utils'
+import {
+  decideSkillUpdateAction,
+  parseSkillMdVersion,
+} from './skill-version'
 
 // ---------- Types ----------
 
@@ -203,6 +207,35 @@ export function getInstalledDirNames(): Set<string> {
  */
 export const DOWNLOAD_TIMEOUT_MS = 60_000
 
+/**
+ * Read the installed SKILL.md's `version:` for a user skill directory.
+ * Returns null when the skill is not installed or has no parseable version.
+ */
+async function readInstalledSkillVersion(dirName: string): Promise<string | null> {
+  try {
+    const root = await navigator.storage.getDirectory()
+    const skillsDir = await root.getDirectoryHandle('.skills', { create: false })
+    const userDir = await skillsDir.getDirectoryHandle('user', { create: false })
+    const skillDir = await userDir.getDirectoryHandle(dirName, { create: false })
+    const file = await (await skillDir.getFileHandle('SKILL.md')).getFile()
+    return parseSkillMdVersion(await file.text())
+  } catch {
+    return null
+  }
+}
+
+/** Find this skill's SKILL.md text inside the previewed store ZIP. */
+function extractStoreSkillMd(
+  preview: ZipSkillPreview,
+  dirName: string,
+): string | null {
+  const skill = preview.isBundle ? preview.skills?.[0] : preview.skill
+  if (!skill || skill.dirName !== dirName) return null
+  const mdPath = `${skill._commonRoot}SKILL.md`
+  const data = preview._raw[mdPath] ?? preview._raw[`${dirName}/SKILL.md`]
+  return data ? new TextDecoder().decode(data) : null
+}
+
 export async function installSkillFromUrl(
   zipUrl: string,
   onProgress?: (p: InstallProgress) => void,
@@ -261,12 +294,44 @@ export async function installSkillFromUrl(
     report({ phase: 'previewing', message: 'Validating…' })
     const preview = await previewUserSkillZip(file)
 
+    // Version-update flow (#154): compare the store ZIP's version against
+    // the installed copy. Store-newer → overwrite in place; equal → keep
+    // the installed copy; installed-newer → skip (no silent downgrade).
+    // An unparseable/missing version on either side falls back to the old
+    // ifAbsent behavior (never clobber an install of unknown provenance).
+    const dirName = preview.skill?.dirName ?? ''
+    const installedVersion = dirName ? await readInstalledSkillVersion(dirName) : null
+    const storeVersion = dirName
+      ? parseSkillMdVersion(extractStoreSkillMd(preview, dirName) ?? '')
+      : null
+    const alreadyInstalled = installedVersion !== null
+
     report({ phase: 'importing', message: 'Installing…' })
     // Cleanup on failure is handled inside importUserSkillZip: it removes
     // only directories this import actually wrote and restores overwritten
     // skills from a staged backup — previously installed skills that merely
     // appear in the preview are never deleted.
-    const count = await importUserSkillZip(preview, { ifAbsent: true })
+    let count: number
+    let doneMessage: string
+    if (!alreadyInstalled || storeVersion === null) {
+      count = await importUserSkillZip(preview, { ifAbsent: true })
+      doneMessage = count === 0 ? 'Already installed' : `Installed ${count} files`
+    } else {
+      const action = decideSkillUpdateAction(storeVersion, installedVersion)
+      if (action === 'current') {
+        count = 0
+        doneMessage = `Already installed (v${installedVersion})`
+      } else if (action === 'installed-newer') {
+        count = 0
+        doneMessage = `Skipped update: installed v${installedVersion} is newer than store v${storeVersion}`
+      } else {
+        count = await importUserSkillZip(preview)
+        doneMessage =
+          count === 0
+            ? 'Already installed'
+            : `Updated v${installedVersion} → v${storeVersion} (${count} files)`
+      }
+    }
 
     // Find manifest entry (best effort — caller may not have it)
     const manifest: SkillStoreEntry = {
@@ -276,11 +341,11 @@ export async function installSkillFromUrl(
       description: '',
       category: '',
       tags: [],
-      version: '',
+      version: storeVersion ?? '',
       zipUrl,
     }
 
-    report({ phase: 'done', message: count === 0 ? 'Already installed' : `Installed ${count} files` })
+    report({ phase: 'done', message: doneMessage })
     return { count, manifest }
   } catch (e) {
     clearTimeout(timeoutId)
