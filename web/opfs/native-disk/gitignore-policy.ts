@@ -37,12 +37,12 @@ export function parseGitIgnore(content: string, baseDir = ''): GitIgnoreRule[] {
  * Apply Git ignore rules in declaration order. Later rules (including `!`
  * negations) override earlier rules, matching Git's last-rule-wins behavior.
  */
-export function isGitIgnored(path: string, rules: readonly GitIgnoreRule[]): boolean {
+export function isGitIgnored(path: string, rules: readonly GitIgnoreRule[], kind?: 'file' | 'directory'): boolean {
   const normalizedPath = normalizePath(path)
   let ignored = false
 
   for (const rule of rules) {
-    if (matchesRule(normalizedPath, rule)) {
+    if (matchesRule(normalizedPath, rule, kind)) {
       ignored = !rule.negated
     }
   }
@@ -50,7 +50,7 @@ export function isGitIgnored(path: string, rules: readonly GitIgnoreRule[]): boo
   return ignored
 }
 
-function matchesRule(path: string, rule: GitIgnoreRule): boolean {
+function matchesRule(path: string, rule: GitIgnoreRule, kind?: 'file' | 'directory'): boolean {
   const basePrefix = rule.baseDir ? `${rule.baseDir}/` : ''
   if (rule.baseDir && path !== rule.baseDir && !path.startsWith(basePrefix)) return false
 
@@ -68,11 +68,17 @@ function matchesRule(path: string, rule: GitIgnoreRule): boolean {
 
   const hasSlash = pattern.includes('/')
   const prefixes = anchored || hasSlash ? [''] : ['', '**/']
+  if (directoryPattern && kind === 'file') {
+    const slash = relativePath.lastIndexOf('/')
+    if (slash < 0) return false
+    const parent = relativePath.slice(0, slash)
+    return micromatch.isMatch(parent, prefixes.flatMap((prefix) => [`${prefix}${pattern}`, `${prefix}${pattern}/**`]), {
+      dot: true, nonegate: true, nocase: false,
+    })
+  }
   const candidates = prefixes.flatMap((prefix) => {
     const target = `${prefix}${pattern}`
-    return directoryPattern
-      ? [target, `${target}/**`]
-      : [target, `${target}/**`]
+    return [target, `${target}/**`]
   })
 
   return micromatch.isMatch(relativePath, candidates, {

@@ -6,7 +6,7 @@
  */
 
 import { isGitIgnored, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
-import { readHandleIgnoreRules } from '@/vfs/gitignore-discovery'
+import { readDirectoryIgnoreRules } from '@/vfs/gitignore-discovery'
 
 //=============================================================================
 // Type Definitions
@@ -112,15 +112,13 @@ async function handleTraverse(payload: {
       if (signal.aborted) return
 
       try {
-        const entries: Array<[string, FileSystemHandle]> = []
-        for await (const entry of dirHandle.entries()) entries.push(entry)
-        const rules = await readHandleIgnoreRules(entries.map(([, handle]) => handle), path, inherited, false)
-        for (const entry of entries) {
+        const rules = await readDirectoryIgnoreRules(dirHandle, path, inherited)
+        for await (const entry of dirHandle.entries()) {
           if (signal.aborted) return
 
           const [, handle] = entry
           const entryPath = path ? `${path}/${handle.name}` : handle.name
-          if (isGitIgnored(entryPath, rules)) continue
+          if (isGitIgnored(entryPath, rules, handle.kind)) continue
 
           if (handle.kind === 'file') {
             try {

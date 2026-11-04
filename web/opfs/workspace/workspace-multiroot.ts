@@ -14,7 +14,7 @@
 import type { FileContent, FileMetadata } from '../types/opfs-types'
 import { getRuntimeDirectoryHandle, getRuntimeHandlesForProject, buildHandleKey } from '@/native-fs'
 import type { DiskExecutor } from '../native-disk/executor'
-import { isGitIgnored, parseGitIgnore, type GitIgnoreRule } from '../native-disk/gitignore-policy'
+import { isGitIgnored, parseGitIgnore, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
 
 /**
  * Result of resolving a workspace-relative path to a specific root.
@@ -414,7 +414,7 @@ export async function scanDiskTreeImpl(
 
         const relPath = current.displayPath ? `${current.displayPath}/${entry.name}` : entry.name
         const rootPath = current.dirPath ? `${current.dirPath}/${entry.name}` : entry.name
-        if (options?.respectGitignore && isGitIgnored(rootPath, rules)) continue
+        if (options?.respectGitignore && isGitIgnored(rootPath, rules, entry.kind)) continue
 
         if (entry.kind === 'directory') {
           // Skip excluded dirs (from caller's excludeDirs parameter)

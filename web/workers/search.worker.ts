@@ -5,7 +5,7 @@
  */
 
 import micromatch from 'micromatch'
-import { isGitIgnored, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
+import { isGitIgnored, parseGitIgnore, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
 import { readHandleAncestorRules, readHandleIgnoreRules } from '@/vfs/gitignore-discovery'
 
 interface PendingFileOverlay {
@@ -289,6 +289,7 @@ async function handleSearch(payload: SearchMessage['payload']): Promise<void> {
     const inheritedRules = !includeIgnored && normalizedPath
       ? await readHandleAncestorRules(directoryHandle, normalizedPath)
       : []
+    if (normalizedPath) rulesByDirectory.set(normalizedPath, inheritedRules)
     const dirStack: Array<{ dir: FileSystemDirectoryHandle; relPath: string; rules: GitIgnoreRule[] }> = [{ dir: root, relPath: '', rules: inheritedRules }]
 
     if (pendingOverlays && Object.keys(pendingOverlays).length > 0) {
@@ -324,7 +325,13 @@ async function handleSearch(payload: SearchMessage['payload']): Promise<void> {
         throw error
       }
       const directoryPath = [normalizedPath, current.relPath].filter(Boolean).join('/')
-      const rules = await readHandleIgnoreRules(entries, directoryPath, current.rules, includeIgnored)
+      const ignorePath = directoryPath ? `${directoryPath}/.gitignore` : '.gitignore'
+      const pendingIgnore = pendingOverlays?.[ignorePath]
+      const rules = !includeIgnored && pendingIgnore
+        ? pendingIgnore.deleted || pendingIgnore.content === undefined
+          ? current.rules
+          : [...current.rules, ...parseGitIgnore(pendingIgnore.content, directoryPath)]
+        : await readHandleIgnoreRules(entries, directoryPath, current.rules, includeIgnored)
       rulesByDirectory.set(directoryPath, rules)
       for (const entry of entries) {
         if (signal.aborted) break
@@ -335,7 +342,7 @@ async function handleSearch(payload: SearchMessage['payload']): Promise<void> {
 
         const rel = current.relPath ? `${current.relPath}/${entry.name}` : entry.name
         const rootRelativePath = normalizedPath ? `${normalizedPath}/${rel}` : rel
-        if (!includeIgnored && isGitIgnored(rootRelativePath, rules)) {
+        if (!includeIgnored && isGitIgnored(rootRelativePath, rules, entry.kind)) {
           if (entry.kind === 'directory') ignoredDirectories.push(rootRelativePath)
           else diskSeenPaths.add(rootRelativePath)
           continue
@@ -432,7 +439,7 @@ async function handleSearch(payload: SearchMessage['payload']): Promise<void> {
             const found = rulesByDirectory.get(parents.slice(0, depth).join('/'))
             if (found) { rules = found; break }
           }
-          if (isGitIgnored(overlayPath, rules)) continue
+          if (isGitIgnored(overlayPath, rules, 'file')) continue
         }
 
         const overlay = pendingOverlays![overlayPath]

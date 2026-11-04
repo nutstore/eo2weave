@@ -51,3 +51,13 @@ export async function readHandleAncestorRules(root: FileSystemDirectoryHandle, p
   }
   return rules
 }
+
+/** Read this directory's rules without buffering its entries. */
+export async function readDirectoryIgnoreRules(directory: FileSystemDirectoryHandle, path: string, inherited: GitIgnoreRule[]): Promise<GitIgnoreRule[]> {
+  try {
+    const file = await directory.getFileHandle('.gitignore')
+    return [...inherited, ...parseGitIgnore(await (await file.getFile()).text(), path)]
+  } catch {
+    return inherited
+  }
+}

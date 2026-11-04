@@ -696,7 +696,7 @@ export class VfsBridgeFs {
     try {
       const entries: VfsDirEntry[] = await this.backend.listDir(relPath)
       const rules = await readBackendIgnoreRules(this.backend, relPath)
-      return entries.filter((entry) => !isGitIgnored(entry.path, rules)).map(e => ({
+      return entries.filter((entry) => !isGitIgnored(entry.path, rules, entry.kind)).map(e => ({
         name: e.name,
         isFile: e.kind === 'file',
         isDirectory: e.kind === 'directory',

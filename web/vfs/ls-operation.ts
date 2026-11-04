@@ -499,7 +499,7 @@ async function executeListMode(args: Record<string, unknown>, context: unknown):
           if (childDepth > maxDepth) continue
 
           const relPath = current.path ? `${current.path}/${handle.name}` : handle.name
-          if (!includeIgnored && isGitIgnored([scope.subPath, relPath].filter(Boolean).join('/'), rules)) continue
+          if (!includeIgnored && isGitIgnored([scope.subPath, relPath].filter(Boolean).join('/'), rules, handle.kind)) continue
 
           // Skip if already seen (native takes precedence)
           if (seenPaths.has(relPath)) continue
@@ -714,7 +714,7 @@ async function executeGlobMode(
 
             const fullPath = current.fullPath ? `${current.fullPath}/${handle.name}` : handle.name
             const localPath = current.localPath ? `${current.localPath}/${handle.name}` : handle.name
-            if (!includeIgnored && isGitIgnored(fullPath, rules)) continue
+            if (!includeIgnored && isGitIgnored(fullPath, rules, handle.kind)) continue
             const namespacedPath = `${agent.id}/${fullPath}`
 
             if (handle.kind === 'directory') {
@@ -854,7 +854,7 @@ async function executeGlobMode(
 
           const fullPath = current.fullPath ? `${current.fullPath}/${handle.name}` : handle.name
           const localPath = current.localPath ? `${current.localPath}/${handle.name}` : handle.name
-          if (!includeIgnored && isGitIgnored(fullPath, rules)) continue
+          if (!includeIgnored && isGitIgnored(fullPath, rules, handle.kind)) continue
 
           if (handle.kind === 'directory') {
             if (shouldSkipDirectory(handle.name, includeIgnored, extraExcludes)) continue
@@ -1031,9 +1031,9 @@ function createNativeIgnoreChecker(workspace: NativeHostWorkspace, rootId: strin
     cache.set(directory, pending)
     return pending
   }
-  return async (path: string): Promise<boolean> => {
+  return async (path: string, kind: 'file' | 'directory'): Promise<boolean> => {
     const slash = path.lastIndexOf('/')
-    return isGitIgnored(path, await readRules(slash < 0 ? '' : path.slice(0, slash)))
+    return isGitIgnored(path, await readRules(slash < 0 ? '' : path.slice(0, slash)), kind)
   }
 }
 
@@ -1220,10 +1220,10 @@ async function listNativeHostWithOpfsMerge(
             const childDepth = current.depth + 1
             if (childDepth > maxDepth) continue
             const relPath = current.path ? `${current.path}/${handle.name}` : handle.name
-            if (!includeIgnored && isGitIgnored(relPath, rules)) continue
+            if (!includeIgnored && isGitIgnored(relPath, rules, handle.kind)) continue
             if (diskRoot && isIgnoredOnDisk) {
               const nativePath = [diskRoot.relativePath, relPath].filter(Boolean).join('/')
-              if (await isIgnoredOnDisk(nativePath)) continue
+              if (await isIgnoredOnDisk(nativePath, handle.kind)) continue
             }
             // Disk takes precedence — OPFS copies of disk files are stale until synced
             if (seenPaths.has(relPath)) continue
@@ -1319,10 +1319,10 @@ async function collectOpfsGlobMatches(
         const nextDepth = current.depth + 1
         if (nextDepth > maxDepth) continue
         const relPath = current.relPath ? `${current.relPath}/${handle.name}` : handle.name
-        if (!includeIgnored && isGitIgnored(relPath, rules)) continue
+        if (!includeIgnored && isGitIgnored(relPath, rules, handle.kind)) continue
         if (diskRoot && isIgnoredOnDisk) {
           const nativePath = [diskRoot.relativePath, relPath].filter(Boolean).join('/')
-          if (await isIgnoredOnDisk(nativePath)) continue
+          if (await isIgnoredOnDisk(nativePath, handle.kind)) continue
         }
         if (handle.kind === 'directory') {
           if (shouldSkipDirectory(handle.name, includeIgnored, extraExcludes)) continue

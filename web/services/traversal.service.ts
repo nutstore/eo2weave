@@ -1,5 +1,5 @@
 import { isGitIgnored, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
-import { readHandleIgnoreRules } from '@/vfs/gitignore-discovery'
+import { readDirectoryIgnoreRules } from '@/vfs/gitignore-discovery'
 
 /**
  * Default excluded directory names (keep in sync with search.worker.ts)
@@ -104,17 +104,15 @@ export async function* traverseDirectory(
   // Original main thread traversal (fallback)
   try {
     let count = 0
-    const entries: Array<[string, FileSystemHandle]> = []
-    for await (const entry of dirHandle.entries()) entries.push(entry)
-    const rules = await readHandleIgnoreRules(entries.map(([, handle]) => handle), basePath, opts._rules ?? [], false)
-    for (const entry of entries) {
+    const rules = await readDirectoryIgnoreRules(dirHandle, basePath, opts._rules ?? [])
+    for await (const entry of dirHandle.entries()) {
       if (opts.maxFiles && opts.maxFiles > 0 && count >= opts.maxFiles) {
         break
       }
 
       const [, handle] = entry
       const entryPath = basePath ? `${basePath}/${handle.name}` : handle.name
-      if (isGitIgnored(entryPath, rules)) continue
+      if (isGitIgnored(entryPath, rules, handle.kind)) continue
 
       if (handle.kind === 'file') {
         try {

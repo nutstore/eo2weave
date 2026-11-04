@@ -43,7 +43,7 @@ export async function* walkBackend(backend: VfsBackend, path: string, options: W
       checkWalkBudget(options)
       if (entry.kind === 'directory' && shouldSkipDirectory(entry.name, options.includeIgnored ?? false, options.excludeDirs ?? [])) continue
       const relativePath = current.relativePath ? `${current.relativePath}/${entry.name}` : entry.name
-      if (!options.includeIgnored && isGitIgnored(entry.path, rules)) continue
+      if (!options.includeIgnored && isGitIgnored(entry.path, rules, entry.kind)) continue
       let size = entry.size
       if (options.includeSizes && entry.kind === 'file' && size === undefined && backend.stat) size = (await backend.stat(entry.path)).size
       yield { ...entry, size, relativePath }
