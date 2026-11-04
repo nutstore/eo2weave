@@ -1683,6 +1683,28 @@ describe('importUserSkillFolder uses the serialized import pipeline', () => {
 // ── Round 5 (Sourcery) regression tests ──────────────────────────────
 
 describe('installSkillFromUrl per-member path guards (round 5)', () => {
+  it('rejects a bundle whose members collapse to the SAME dirName before importing (#154 round 5)', async () => {
+    const realFetch = globalThis.fetch
+    // Two distinct archive paths whose LAST segment — the inferred
+    // folder name — is identical: `group-a/shared-skill` and
+    // `group-b/shared-skill` both infer dirName `shared-skill`.
+    const archive = zipSync({
+      'group-a/shared-skill/SKILL.md': strToU8('---\nname: shared-a\nversion: "1.0.0"\n---\n\n# From group A'),
+      'group-b/shared-skill/SKILL.md': strToU8('---\nname: shared-b\nversion: "2.0.0"\n---\n\n# From group B'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      await expect(
+        installSkillFromUrl('https://store.example/collide.zip'),
+      ).rejects.toThrow(/duplicate skill folders/)
+      // Neither member was written — the guard fires before ANY import.
+      expect(installed('shared-skill')).toBe(false)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('does NOT absorb sibling files into a root-level bundle member (#154 round 5)', async () => {
     const realFetch = globalThis.fetch
     // A bundle with a root-level SKILL.md (empty _commonRoot) alongside a

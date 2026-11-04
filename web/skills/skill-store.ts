@@ -502,6 +502,22 @@ export async function installSkillFromUrl(
         ? [preview.skill]
         : []
 
+    // Duplicate-dirName guard mirrors the bulk import: distinct archive
+    // paths can collapse to the SAME final folder name (e.g. `a/skill/…`
+    // and `b/skill/…` both infer `skill`), and the per-member path below
+    // would funnel both members into one installed directory — a later
+    // member silently replacing an earlier one. Reject before ANY member
+    // import, with the same message as importUserSkillZip (#154 round 5).
+    const seenDirNames = new Set<string>()
+    for (const s of memberSkills) {
+      if (seenDirNames.has(s.dirName)) {
+        throw new Error(
+          `ZIP bundle contains duplicate skill folders ("${s.dirName}") — each skill must live in its own folder.`,
+        )
+      }
+      seenDirNames.add(s.dirName)
+    }
+
     let count: number
     let doneMessage: string
     let outcome: InstallOutcome
