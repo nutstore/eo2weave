@@ -1148,18 +1148,29 @@ export async function migrateUserSkillsFromSQLite(): Promise<{
  * Write a user skill SKILL.md to OPFS `.skills/user/<dirName>/SKILL.md`.
  * Creates intermediate directories as needed.
  *
+ * The write runs under the SAME per-directory cross-tab lock the import
+ * pipeline holds (#154 round 4): an editor save racing a concurrent
+ * install/update of the same skill must not land inside that import's
+ * remove/backup/write phases — otherwise the save can be written into a
+ * directory the import is about to replace (and be silently lost with the
+ * old copy's backup), or interleave its writable with the import's writes.
+ * Holding the import lock here makes the save strictly precede or follow
+ * the whole import.
+ *
  * @param dirName  Skill directory name (slug-safe)
  * @param content  SKILL.md file content
  */
 export async function writeUserSkillMd(dirName: string, content: string): Promise<void> {
- const opfsRoot = await navigator.storage.getDirectory()
- const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
- const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
- const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
- const mdHandle = await skillDir.getFileHandle('SKILL.md', { create: true })
- const writable = await mdHandle.createWritable()
- await writable.write(content)
- await writable.close()
+  return withSkillImportSerialization([dirName], async () => {
+    const opfsRoot = await navigator.storage.getDirectory()
+    const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
+    const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
+    const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
+    const mdHandle = await skillDir.getFileHandle('SKILL.md', { create: true })
+    const writable = await mdHandle.createWritable()
+    await writable.write(content)
+    await writable.close()
+  })
 }
 
 /**
