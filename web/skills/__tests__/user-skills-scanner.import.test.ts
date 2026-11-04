@@ -1679,3 +1679,40 @@ describe('importUserSkillFolder uses the serialized import pipeline', () => {
     expect(backups?.dirs.size ?? 0).toBe(0)
   })
 })
+
+// ── Round 5 (Sourcery) regression tests ──────────────────────────────
+
+describe('installSkillFromUrl per-member path guards (round 5)', () => {
+  it('does NOT absorb sibling files into a root-level bundle member (#154 round 5)', async () => {
+    const realFetch = globalThis.fetch
+    // A bundle with a root-level SKILL.md (empty _commonRoot) alongside a
+    // nested sibling. The root member's slice used to match EVERY archive
+    // path (`startsWith('')`), pulling the sibling's files — including its
+    // SKILL.md — into the root skill's directory.
+    const archive = zipSync({
+      'SKILL.md': strToU8('---\nname: root-skill\nversion: "2.0.0"\n---\n\n# Root v2'),
+      'README.md': strToU8('# Root readme'),
+      'nested-skill/SKILL.md': strToU8('---\nname: nested-skill\nversion: "1.0.0"\n---\n\n# Nested'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // A root-level member has no folder to infer its name from — its
+      // dirName falls back to the ZIP file name ('root-mix').
+      writeInstalled('root-mix', '---\nname: root-skill\nversion: "1.0.0"\n---\n\n# Root v1')
+      const result = await installSkillFromUrl('https://store.example/root-mix.zip')
+      expect(result.outcome).toBe('updated')
+      // The root member took its own update…
+      expect(contentOf('root-mix', 'SKILL.md')).toContain('# Root v2')
+      // …but did NOT absorb the nested sibling: the sibling's SKILL.md must
+      // never land inside the root member's directory (the old
+      // `startsWith('')` slice pulled it in); it stays its own install.
+      const rootDir = dirOf(userRoot, '.skills/user/root-mix', false)!
+      expect(rootDir.files.has('SKILL.md')).toBe(true)
+      expect(rootDir.dirs.has('nested-skill')).toBe(false)
+      expect(contentOf('nested-skill', 'SKILL.md')).toContain('# Nested')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})

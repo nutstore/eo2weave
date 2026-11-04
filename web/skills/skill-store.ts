@@ -358,8 +358,22 @@ function extractStoreSkillMd(
 function slicePreview(preview: ZipSkillPreview, skill: ZipSkillEntry): ZipSkillPreview {
   const root = skill._commonRoot
   const prefix = `${skill.dirName}/`
+  // A root-level member (empty `_commonRoot`) would otherwise match EVERY
+  // archive path via `startsWith('')` and absorb its siblings' files —
+  // including nested skills' SKILL.md — into the root member's import.
+  // Exclude paths claimed by another member's prefix (its `_commonRoot` or
+  // `dirName/`) so each member keeps only its own files (#154 round 5).
+  const emptyRoot = root === ''
+  const otherPrefixes = emptyRoot
+    ? (preview.isBundle ? preview.skills ?? [] : [])
+        .filter((m) => m !== skill && m._commonRoot)
+        .map((m) => m._commonRoot)
+    : []
+  const claimedByOther = (path: string): boolean =>
+    otherPrefixes.some((p) => path.startsWith(p))
   const raw: Record<string, Uint8Array> = {}
   for (const [path, data] of Object.entries(preview._raw)) {
+    if (claimedByOther(path)) continue
     if (path.startsWith(root) || path.startsWith(prefix)) raw[path] = data
   }
   return { isBundle: false, skill, _raw: raw }
