@@ -66,8 +66,10 @@ describe('long text paste', () => {
   it('shows read errors and can retry without losing the attachment', async () => {
     mountInput()
     const file = new File(['hello'], 'note.txt', { type: 'text/plain' })
-    const read = vi.fn().mockRejectedValueOnce(new Error('read failed')).mockResolvedValueOnce('hello')
-    Object.defineProperty(file, 'text', { value: read })
+    const slice = vi.fn()
+      .mockImplementationOnce(() => ({ arrayBuffer: () => Promise.reject(new Error('read failed')) }))
+      .mockImplementationOnce(() => new Blob(['hello']))
+    Object.defineProperty(file, 'slice', { value: slice })
     act(() => useAssetStore.getState().addFiles([file]))
     fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: note.txt' }))
     expect((await screen.findByRole('alert')).textContent).toContain('conversation.input.textPreviewFailed')
@@ -109,22 +111,6 @@ describe('long text paste', () => {
     act(() => useAssetStore.getState().addFiles([file]))
     fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: config.yaml' }))
     expect((await screen.findByTestId('text-preview')).textContent).toBe('key: value')
-  })
-
-  it('truncates oversized text attachments and shows a truncation notice', async () => {
-    mountInput()
-    const kept = 'a'.repeat(1_000_000)
-    const file = new File(['x'], 'huge.txt', { type: 'text/plain' })
-    Object.defineProperty(file, 'text', { value: () => Promise.resolve(kept + 'b'.repeat(10)) })
-    act(() => useAssetStore.getState().addFiles([file]))
-    fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: huge.txt' }))
-    const preview = await screen.findByTestId('text-preview')
-    expect(preview.textContent).toBe(kept)
-    // The mocked i18n renders the raw key (no interpolation), so assert the
-    // notice is shown; the {limit} interpolation itself is covered by the
-    // i18n package's own tests.
-    const notice = await screen.findByRole('note')
-    expect(notice.textContent).toContain('conversation.input.textPreviewTruncated')
   })
 
   it('sends an attachment-only message with the pasted file and clears the composer', async () => {

@@ -120,7 +120,7 @@ export const conversation = {
       loadingPreview: "Loading preview…",
       textPreviewFailed: "Could not read the text file.",
       retryPreview: "Retry",
-      textPreviewTruncated: "This file is large — showing only the first {limit}.",
+      textPreviewWindow: "Characters {start}–{end}. Keep scrolling to load more.",
       pasteAttachmentFailed: "Could not attach the text; pasting it into the message instead.",
       previewMarkdown: "Preview Markdown",
       agentIdPlaceholder: "agent-id",

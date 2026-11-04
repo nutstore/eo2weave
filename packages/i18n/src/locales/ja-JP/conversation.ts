@@ -94,7 +94,7 @@ export const conversation = {
       loadingPreview: "プレビューを読み込み中…",
       textPreviewFailed: "テキストファイルを読み込めませんでした。",
       retryPreview: "再試行",
-      textPreviewTruncated: "ファイルが大きいため、先頭の {limit} のみ表示しています。",
+      textPreviewWindow: "{start}–{end} 文字目を表示中。スクロールで続きを読み込みます。",
       pasteAttachmentFailed: "テキストを添付できませんでした。メッセージに貼り付けます。",
       previewMarkdown: "Markdown をプレビュー",
       agentIdPlaceholder: "agent-id",
