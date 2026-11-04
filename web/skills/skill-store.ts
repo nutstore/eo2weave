@@ -12,6 +12,7 @@ import {
   importUserSkillZipPrelocked,
   withSkillImportSerialization,
   isNotFoundError,
+  userSkillDirExists,
   ZIP_IMPORT_LIMITS,
   type ZipSkillPreview,
   type ZipSkillEntry,
@@ -427,6 +428,14 @@ export async function installSkillFromUrl(
 
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS)
+  // Presence snapshot BEFORE the download (uninstall-resurrect guard, #154
+  // review): the ZIP's dirNames are unknown until it is downloaded and
+  // previewed, so this snapshot lists the OPFS user-skill dirNames at call
+  // time and the locked section compares it against a second check under
+  // the import lock. A member present at call time but gone inside the
+  // lock was uninstalled mid-download and must NOT be resurrected; a
+  // member absent in both snapshots is a plain fresh install and stays.
+  const presentAtCall = await scanInstalledDirNames()
   let resp: Response
   try {
     resp = await fetch(zipUrl, { credentials: 'omit', signal: controller.signal })
@@ -532,6 +541,28 @@ export async function installSkillFromUrl(
       const result = await withSkillImportSerialization(
         memberSkills.map((s) => s.dirName),
         async () => {
+          // Uninstall-resurrect guard (#154 review): a member present at
+          // call time but gone under the import lock was uninstalled while
+          // its ZIP was downloading — importing it would resurrect a skill
+          // the user just deleted, so it is dropped from the write. A
+          // member absent in BOTH snapshots is a plain fresh install and
+          // stays.
+          const members: ZipSkillEntry[] = []
+          for (const s of memberSkills) {
+            if (presentAtCall.has(s.dirName)) {
+              if (!(await userSkillDirExists(s.dirName))) continue
+            }
+            members.push(s)
+          }
+          if (members.length === 0) {
+            return {
+              count: 0,
+              storeVersion: null,
+              outcome: 'current' as InstallOutcome,
+              doneMessage: tr('skills.discover.alreadyInstalled'),
+            }
+          }
+
           // A failed read is NOT "unknown version": the update decision
           // cannot be made, so the failure is surfaced instead of silently
           // keeping the stale copy (the old fallback would report
@@ -551,7 +582,7 @@ export async function installSkillFromUrl(
           let skippedStoreVersion = ''
           let keptVersion = ''
 
-          for (const s of memberSkills) {
+          for (const s of members) {
             const installed = await readInstalledSkillVersion(s.dirName)
             if (installed.error) throw installed.error
             const storeVersion = parseSkillMdVersion(
