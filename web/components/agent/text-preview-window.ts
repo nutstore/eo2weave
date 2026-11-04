@@ -153,6 +153,8 @@ export async function readForwardWindow(
   startPoint: number = 0,
 ): Promise<LoadedWindow> {
   if (file.size > 0 && startByte >= file.size) throw new Error('readForwardWindow: startByte past end of file')
+  if (startChar < 0 || startPoint < 0) throw new Error('readForwardWindow: boundary offsets must not be negative')
+  if (startByte === 0 && (startChar !== 0 || startPoint !== 0)) throw new Error('readForwardWindow: a read at byte 0 must carry zero character offsets')
   const readBytes = Math.min(windowChars * MAX_UTF8_BYTES_PER_CHAR + READ_SLACK_BYTES, file.size - startByte)
   const raw = new Uint8Array(await file.slice(startByte, startByte + readBytes).arrayBuffer())
   const rangeEndsAtEof = startByte + readBytes >= file.size
@@ -186,8 +188,13 @@ export async function readForwardWindow(
     units -= 1
     points -= 1
   }
-  const text = new TextDecoder('utf-8').decode(raw.subarray(from, cut))
+  const trimmed = new TextDecoder('utf-8', { ignoreBOM: true }).decode(raw.subarray(from, cut))
   const endByte = startByte + cut
+  // An interior U+FEFF is content: TextDecoder's default BOM handling strips
+  // a leading one, which would silently drop a character the offsets count.
+  // ignoreBOM keeps every decoded code point, and the file's own leading BOM
+  // was already consumed in byte space above (`from`), so it cannot resurface.
+  const text = bom ? trimmed.replace(/^\uFEFF/, '') : trimmed
   return {
     startChar,
     startPoint,
@@ -221,6 +228,10 @@ export async function readBackwardWindow(
   endPoint: number = 0,
 ): Promise<LoadedWindow> {
   if (endByte <= 0) throw new Error('readBackwardWindow: endByte before start of file')
+  if (endChar < 0 || endPoint < 0) throw new Error('readBackwardWindow: boundary offsets must not be negative')
+  if (endByte === file.size && (endChar !== file.size || endPoint !== file.size)) {
+    throw new Error('readBackwardWindow: an endByte at EOF must carry the file-length character offsets')
+  }
   const budgetStart = Math.max(0, endByte - (windowChars * MAX_UTF8_BYTES_PER_CHAR + READ_SLACK_BYTES))
   // Read a few bytes before the budget so the sequence that contains the
   // arbitrary read start is visible.

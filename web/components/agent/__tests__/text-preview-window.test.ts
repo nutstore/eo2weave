@@ -346,7 +346,7 @@ describe('text-preview-window', () => {
     // must keep every character it read.
     const content = 'a'.repeat(500)
     const file = makeFile(content)
-    const back = await readBackwardWindow(file, 500, 500, 120)
+    const back = await readBackwardWindow(file, 500, 500, 120, 500)
     expect(back.text).toBe('a'.repeat(120))
     expect(back.startChar).toBe(380)
     expect(back.startByte).toBe(380)
@@ -443,5 +443,54 @@ describe('text-preview-window', () => {
     const back = await readAdjacentWindow(file, second, 'prev')
     expect(back.atStart).toBe(true)
     expect(back.startChar).toBe(0)
+  })
+
+  // --- Round 3: interior BOM, offset contracts, backward CRLF seams. ---
+
+  it('preserves an interior BOM as content while still skipping the file’s own BOM', async () => {
+    // A window whose text begins with a literal U+FEFF must keep it: the
+    // default TextDecoder strips it, which would silently drop a character
+    // the offsets count and desync text from startChar/endChar.
+    const file = makeFile('a'.repeat(300_000))
+    const first = await readForwardWindow(file, 0, 0)
+    const interior = makeFile(first.text + '\uFEFF' + 'b'.repeat(100))
+    const second = await readForwardWindow(interior, first.endChar, first.endByte)
+    expect(second.startChar).toBe(first.endChar)
+    expect(second.text.startsWith('\uFEFF')).toBe(true)
+    expect(second.text.length).toBe(101)
+    expect(second.endChar).toBe(first.endChar + 101)
+    expect(second.startByte + utf8ByteLength(second.text)).toBe(second.endByte)
+    // The file's own leading BOM is still consumed as an offset marker.
+    const withBom = makeFile('\uFEFF' + 'hello')
+    const bomWin = await readForwardWindow(withBom, 0, 0)
+    expect(bomWin.startByte).toBe(3)
+    expect(bomWin.text).toBe('hello')
+    expect(bomWin.text).not.toContain('\uFEFF')
+  })
+
+  it('rejects mismatched boundary offsets instead of silently corrupting the range', async () => {
+    // A nonzero byte boundary with origin character offsets cannot produce a
+    // correct startPoint/endPoint: fail loudly rather than emit wrong values.
+    const file = makeFile('中'.repeat(100))
+    // Forward: byte 0 with a nonzero character boundary is contradictory.
+    await expect(readForwardWindow(file, 5, 0)).rejects.toThrow(/byte 0/)
+    // Forward: a negative offset is nonsense in any coordinate system.
+    await expect(readForwardWindow(file, -1, 10)).rejects.toThrow(/negative/)
+    // Backward: endByte at EOF with origin character offsets is contradictory.
+    await expect(readBackwardWindow(file, 0, 300, 10, 0)).rejects.toThrow(/EOF/)
+  })
+
+  it('never starts a backward window on the LF of a split CRLF pair', async () => {
+    // Sweep arbitrary byte boundaries: however the budget lands, the backward
+    // window must never begin with a lone LF (a CR left in the previous
+    // window), or the joined text no longer reproduces the source.
+    const content = 'ab\r\ncd\r\n'.repeat(200)
+    const file = makeFile(content)
+    for (let endByte = 1; endByte <= file.size; endByte += 7) {
+      const win = await readBackwardWindow(file, 0, endByte, 40)
+      expect(win.text.startsWith('\n'), `endByte=${endByte}`).toBe(false)
+      expect(win.startChar + win.text.length).toBe(win.endChar)
+      expect(win.startByte + utf8ByteLength(win.text)).toBe(win.endByte)
+    }
   })
 })
