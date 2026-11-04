@@ -219,8 +219,20 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
   // old nested-card stack that flattened the hierarchy).
   const head = document.createElement('div')
   head.className = 'reg-head'
+  // The dot reflects REAL connection state, not a decorative always-green
+  // (finding: "Failed registries still look connected"): loading = pulsing
+  // amber, failed = red, connected = green.
+  const catalog = catalogs.get(registry.manifestUrl)
+  const dotState = catalog
+    ? 'ok'
+    : catalogLoads.has(registry.manifestUrl)
+      ? 'loading'
+      : catalogLoadFailures.has(registry.manifestUrl)
+        ? 'failed'
+        : 'ok'
   const dot = document.createElement('span')
-  dot.className = 'dot'
+  dot.className = `dot dot-${dotState}`
+  if (dotState === 'loading') dot.title = t('webmcpPackagesRefreshing')
   const name = document.createElement('div')
   name.className = 'name'
   name.textContent = registry.label
@@ -234,7 +246,6 @@ function buildRegistryCard(registry: PackageRegistry): HTMLElement {
   const body = document.createElement('div')
   body.className = 'body'
 
-  const catalog = catalogs.get(registry.manifestUrl)
   if (!catalog) {
     const hint = document.createElement('div')
     hint.className = 'desc'
