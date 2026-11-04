@@ -480,6 +480,11 @@ describe('AgentLoop', () => {
             { ...assistantMessage('old assistant response'), timestamp: now - 4000 },
             { role: 'user', content: 'latest user request', timestamp: now - 1000 },
             {
+              role: 'assistant',
+              content: [{ type: 'toolCall', id: 'call_1', name: 'read', arguments: '{}' }],
+              timestamp: now - 800,
+            },
+            {
               ...toolResultMessage('call_1', 'read', 'fresh tool result'),
               timestamp: now - 500,
             },
@@ -846,6 +851,11 @@ describe('AgentLoop', () => {
         return (async function* () {
           convertedMessages = await config.convertToLlm([
             createUserMessage('Please read big file'),
+            {
+              role: 'assistant',
+              content: [{ type: 'toolCall', id: 'call_read_1', name: 'read', arguments: '{}' }],
+              timestamp: Date.now(),
+            },
             toolResultMessage('call_read_1', 'read', 'x'.repeat(500)),
           ])
           yield { type: 'message_end', message: assistantMessage('ok') }

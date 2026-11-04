@@ -367,6 +367,50 @@ describe('conversation-export', () => {
       const html = await lastSave().blob.text()
       expect(html).toContain(`<img class="export-image" src="data:image/png;base64,${TINY_PNG_BASE64}"`)
     })
+
+    it('renders the fallback div when base64 contains a double quote, with no raw quote in an attribute', async () => {
+      mockGetWorkspace.mockResolvedValue(mockAssetsDir({}))
+
+      const malicious = `${TINY_PNG_BASE64}" onerror="alert(1)`
+      const conv = makeConversation([
+        makeMessage({
+          role: 'user',
+          content: 'look',
+          images: [{ data: malicious, mimeType: 'image/png' }],
+        }),
+      ])
+
+      const result = await exportConversation(conv, { format: 'html' })
+      expect(result.success).toBe(true)
+
+      const html = await lastSave().blob.text()
+      // The payload fails both the base64 allowlist and the atob decode, so
+      // the image renders as a fallback div — never as an <img> tag.
+      expect(html).not.toContain('<img')
+      expect(html).toContain('attachment-missing')
+      // No raw quote may land in an attribute position — every `"` in the
+      // output must be escaped or structural.
+      expect(html).not.toMatch(/base64,[^"]*"/)
+    })
+
+    it('renders the fallback div when base64 is empty', async () => {
+      mockGetWorkspace.mockResolvedValue(mockAssetsDir({}))
+
+      const conv = makeConversation([
+        makeMessage({
+          role: 'user',
+          content: 'look',
+          images: [{ data: '', mimeType: 'image/png' }],
+        }),
+      ])
+
+      const result = await exportConversation(conv, { format: 'html' })
+      expect(result.success).toBe(true)
+
+      const html = await lastSave().blob.text()
+      expect(html).not.toContain('<img')
+      expect(html).toContain('attachment-missing')
+    })
   })
 
   describe('error handling', () => {
