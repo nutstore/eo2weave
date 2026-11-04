@@ -13,7 +13,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createUserMessage } from '@/agent/message-types'
-import { useConversationRuntimeStore } from '../conversation-runtime.store'
+import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 
 const resolveCredentialMock = vi.hoisted(() => vi.fn())
 
@@ -30,7 +30,7 @@ vi.mock('@/streaming-bus', () => ({
   emitError: vi.fn(),
 }))
 
-vi.mock('../conversation-context.store', () => ({
+vi.mock('@/store/conversation-context.store', () => ({
   getActiveConversation: vi.fn(() => null),
   useConversationContextStore: {
     getState: vi.fn(() => ({
@@ -57,7 +57,7 @@ const mockSettingsState = vi.hoisted(() => ({
   })),
 }))
 
-vi.mock('../settings.store', () => ({
+vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
     getState: vi.fn(() => mockSettingsState),
   },
@@ -159,11 +159,11 @@ vi.mock('@/agent/subagent/runtime', () => ({
   getOrCreateSubagentRuntime: vi.fn(() => ({})),
 }))
 
-vi.mock('../workspace-preferences.store', () => ({
+vi.mock('@/store/workspace-preferences.store', () => ({
   getCurrentWorkspaceAgentMode: vi.fn(() => 'yolo'),
 }))
 
-import { useConversationStore } from '../conversation.store'
+import { useConversationStore } from '@/store/conversation.store'
 
 async function startRun(): Promise<void> {
   const store = useConversationStore.getState()

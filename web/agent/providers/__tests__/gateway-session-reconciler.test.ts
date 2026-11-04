@@ -278,6 +278,18 @@ describe('gateway session reconciler', () => {
     expect(settingsStoreState.modelCredentialStatus).toBe('valid')
   })
 
+  it('does not mark a rejected session valid when discovery cannot refresh it', async () => {
+    seedStoredTokens()
+    fetchMock.mockImplementation(async (url) => {
+      if (String(url).includes('/v1/models')) return { ok: false, status: 401 } as Response
+      return { ok: false, status: 401, json: async () => ({ error: 'invalid_grant' }) } as Response
+    })
+    dispose = setupGatewaySessionReconciler()
+    await whenGatewayReconcilerSettledForTests()
+    expect(settingsStoreState.modelCredentialStatus).toBe('expired')
+    expect(getProviderConfigRegistered()).toBe(false)
+  })
+
   it('treats a transient refresh failure as retryable and does NOT reconcile logged-out', async () => {
     dispose = setupGatewaySessionReconciler()
     // Drain the setup-time initial reconcile and reset the status it wrote

@@ -48,6 +48,7 @@
 
 import {
   getGatewayAuthSessionGeneration,
+  getGatewayCredentialStatus,
   resolveGatewayDispatchCredential,
   subscribeToGatewaySessionEvents,
   type GatewaySessionEvent,
@@ -202,6 +203,11 @@ async function reconcileLoggedIn(job: ReconcileJob, event: GatewaySessionEvent):
     console.warn('[gateway-session-reconciler] catalog discovery failed after login; keeping failed catalog:', e)
   }
   if (!fenceAfterResolve()) return 'superseded'
+
+  // Discovery may reject a seemingly fresh access token and then confirm
+  // that refreshing it is impossible. Preserve the auth layer's verdict.
+  const credentialStatus = getGatewayCredentialStatus()
+  if (credentialStatus === 'expired' || credentialStatus === 'missing') return 'logged-out'
 
   const statusOk = await reconcileCredentialStatus('valid', { clearError: true }, job, fenceAfterResolve)
   if (!statusOk) return 'superseded'
