@@ -187,11 +187,14 @@ export async function scanInstalledDirNames(): Promise<Set<string>> {
     return new Set(names)
   } catch {
     // Fallback: query store. May be slightly stale but better than nothing.
+    // Store ids are `user:<dirName>` while callers compare against bare
+    // directory names — strip the prefix so membership checks still match
+    // when OPFS is unavailable (#154 round 8).
     const state = useSkillsStore.getState()
     return new Set(
       state.skills
         .filter((s) => s.source === 'user')
-        .map((s) => s.id),
+        .map((s) => s.id.replace(/^user:/, '')),
     )
   }
 }
