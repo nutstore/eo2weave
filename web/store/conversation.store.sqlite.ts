@@ -3348,14 +3348,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       if (finalStatus === 'idle') {
         const nextMsg = useConversationRuntimeStore.getState().dequeueMessage(conversationId)
         if (nextMsg) {
-          const { createUserMessage: createMsg } = await import('@/agent/message-types')
-          const userMsg = createMsg(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
-            contentParts: nextMsg.contentParts,
-            readImageHandoff: nextMsg.readImageHandoff,
-          })
-          const currentConv = get().conversations.find((c) => c.id === conversationId)
-          if (currentConv) {
-            get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+          // rerunOnly trigger from an overlapping runAgent dispatch (its
+          // running state routed the dispatch into this queue): the user
+          // message is ALREADY persisted, so the follow-up must start
+          // directly — creating a user message here would add a blank
+          // "/empty" entry (the trigger's text is always ''). Same
+          // no-new-message behavior as runAgent's finalize consumer.
+          if (nextMsg.rerunOnly) {
             queueMicrotask(() => {
               get().runAgent(
                 conversationId,
@@ -3366,6 +3365,26 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                 nextMsg.agentOverrideId ?? null,
               )
             })
+          } else {
+            const { createUserMessage: createMsg } = await import('@/agent/message-types')
+            const userMsg = createMsg(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
+              contentParts: nextMsg.contentParts,
+              readImageHandoff: nextMsg.readImageHandoff,
+            })
+            const currentConv = get().conversations.find((c) => c.id === conversationId)
+            if (currentConv) {
+              get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+              queueMicrotask(() => {
+                get().runAgent(
+                  conversationId,
+                  pType,
+                  mName,
+                  maxTokens,
+                  null,
+                  nextMsg.agentOverrideId ?? null,
+                )
+              })
+            }
           }
         }
       }
