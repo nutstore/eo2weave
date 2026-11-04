@@ -126,8 +126,9 @@ vi.mock('@/agent/agent-loop', () => ({
   }),
 }))
 
+const createLLMProviderMock = vi.hoisted(() => vi.fn())
 vi.mock('@/agent/llm/provider-factory', () => ({
-  createLLMProvider: vi.fn(() => ({
+  createLLMProvider: createLLMProviderMock.mockImplementation(() => ({
     maxContextTokens: 128000,
   })),
 }))
@@ -233,5 +234,13 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     await startRun()
 
     expect(agentLoopConstructed).toHaveBeenCalledTimes(1)
+    // #175 review: the resolver's token must actually reach the provider —
+    // dropping `apiKey = resolved.accessToken` previously passed this test
+    // because the mocked custom-provider path tolerated an empty key.
+    const providerCall = createLLMProviderMock.mock.calls.find(
+      (call) => (call[0] as { providerType?: string })?.providerType === 'llm-gateway',
+    )
+    expect(providerCall).toBeDefined()
+    expect(providerCall![0]).toMatchObject({ apiKey: 'validated-token' })
   })
 })

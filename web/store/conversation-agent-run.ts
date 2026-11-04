@@ -460,6 +460,52 @@ export async function runAgentImpl(
         // that window; resolving provider configuration from the stale
         // selection would start the agent on a dead route instead of
         // showing the reauthentication guidance.
+        // Gateway exception (#175 review): a LOGGED-OUT gateway is also an
+        // unregistered dynamic provider (clearStoredTokens unregisters it).
+        // The generic "provider unavailable" message would hide the
+        // actionable login card, so an unregistered gateway resolves its
+        // credential here: confirmed missing/expired → the re-login card,
+        // transient failure → retryable error, and a session that has come
+        // back (another tab re-registered / reconciliation adopted it) →
+        // continue into the normal dispatch path.
+        if (providerMissing(providerType) && providerType === 'llm-gateway') {
+          const { resolveGatewayDispatchCredential } =
+            await import('@/agent/providers/llm-gateway-auth')
+          const { getLLMGatewayBaseURL, getLLMGatewayClientId } =
+            await import('@/agent/providers/llm-gateway-provider')
+          const resolvedMissing = await resolveGatewayDispatchCredential(
+            getLLMGatewayBaseURL(),
+            getLLMGatewayClientId(),
+          )
+          if (!resolvedMissing.ok && resolvedMissing.kind === 'temporary') {
+            failRunEarly(
+              i18nText(
+                'conversation.error.gatewayCredentialTemporary',
+                'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+              )
+            )
+            return
+          }
+          if (!resolvedMissing.ok) {
+            const code = resolvedMissing.kind === 'missing'
+              ? '[GATEWAY_CREDENTIALS_MISSING]'
+              : '[GATEWAY_CREDENTIALS_EXPIRED]'
+            const fallback = resolvedMissing.kind === 'missing'
+              ? i18nText('conversation.error.gatewayCredentialMissing', 'Not logged in to Nutstore AI. Please log in first.')
+              : i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
+            failRunEarly(`${code} ${fallback}`)
+            return
+          }
+          if (providerMissing(providerType)) {
+            failRunEarly(
+              i18nText(
+                'conversation.toast.providerReauthRequired',
+                'The selected provider is unavailable — sign in again to use it.'
+              )
+            )
+            return
+          }
+        }
         if (providerMissing(providerType)) {
           failRunEarly(
             i18nText(
@@ -532,9 +578,12 @@ export async function runAgentImpl(
             const code = resolved.kind === 'missing'
               ? '[GATEWAY_CREDENTIALS_MISSING]'
               : '[GATEWAY_CREDENTIALS_EXPIRED]'
+            // #175 review: the payload after the [CODE] prefix is rendered
+            // verbatim by the login card — localize it instead of the
+            // English-only literal (keys in all four locales).
             const fallback = resolved.kind === 'missing'
-              ? 'Not logged in to Nutstore AI. Please log in first.'
-              : 'Nutstore AI login has expired. Please log in again.'
+              ? i18nText('conversation.error.gatewayCredentialMissing', 'Not logged in to Nutstore AI. Please log in first.')
+              : i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
             failRunEarly(`${code} ${fallback}`)
             return
           }

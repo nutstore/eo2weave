@@ -1274,6 +1274,21 @@ describe('resolveGatewayDispatchCredential (#172 findings 3+4+5)', () => {
     expect(getGatewayCredentialStatus()).toBe('expired')
   })
 
+  it('reports temporary — NOT missing — when the token-PAIR read fails (#175)', async () => {
+    localStorage.clear()
+    // The refresh-token BACKUP read itself fails: a storage outage must not
+    // present as a logged-out session (previously collapsed to null →
+    // 'missing' login card).
+    loadApiKeyMock.mockImplementation(async (provider: string) => {
+      if (provider === '__llm_gateway_refresh_token__') throw new Error('sqlite worker hung')
+      return null
+    })
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
+  })
+
   it('reports temporary — NOT missing — when storage fails during the absence check (#172.3)', async () => {
     localStorage.clear()
     // The shadow read itself fails: storage error ≠ proof of logout.
@@ -1296,6 +1311,46 @@ describe('resolveGatewayDispatchCredential (#172 findings 3+4+5)', () => {
     // A possibly valid session is NOT cleared by a transient failure.
     expect(localStorage.getItem(TOKENS_KEY)).not.toBeNull()
     expect(getGatewayCredentialStatus()).not.toBe('missing')
+  })
+
+  it('does NOT pass a malformed record (future expiry, empty access token) as valid (#175)', async () => {
+    // A future access expiry with an EMPTY token previously passed the
+    // fresh-token branch and dispatched without Authorization.
+    const now = Date.now()
+    localStorage.setItem(TOKENS_KEY, JSON.stringify({
+      access_token: '',
+      refresh_token: 'refresh-token',
+      access_expires_at: now + 10 * 60 * 1000,
+      refresh_expires_at: now + 30 * 24 * 60 * 60 * 1000,
+      client_id: CLIENT_ID,
+      base_url: BASE_URL,
+    }))
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('network down')
+    }))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
+  })
+
+  it('does NOT pass a whitespace-only access token as valid (#175)', async () => {
+    const now = Date.now()
+    localStorage.setItem(TOKENS_KEY, JSON.stringify({
+      access_token: '   ',
+      refresh_token: 'refresh-token',
+      access_expires_at: now + 10 * 60 * 1000,
+      refresh_expires_at: now + 30 * 24 * 60 * 60 * 1000,
+      client_id: CLIENT_ID,
+      base_url: BASE_URL,
+    }))
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('network down')
+    }))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
   })
 
   it('reports expired when the refresh token is definitively invalid', async () => {
@@ -1332,12 +1387,17 @@ describe('cross-tab session events (#171 observer subscription)', () => {
     const events: GatewaySessionEvent[] = []
     const off = subscribeToGatewaySessionEvents((e) => events.push(e))
     try {
+      // #175 review: the bump itself is part of the contract (observers fence
+      // async work against the generation) — assert it actually moved.
+      const generationBefore = getGatewayAuthSessionGeneration()
       emit(tokensValue('old-refresh', 'a', false), tokensValue('new-refresh', 'b', false))
 
       expect(events).toHaveLength(1)
       expect(events[0].type).toBe('identity-change')
       expect(events[0].oldRefreshToken).toBe('old-refresh')
       expect(events[0].newRefreshToken).toBe('new-refresh')
+      expect(getGatewayAuthSessionGeneration()).toBe(generationBefore + 1)
+      expect(events[0].generation).toBe(generationBefore + 1)
     } finally {
       off()
     }
@@ -1363,10 +1423,13 @@ describe('cross-tab session events (#171 observer subscription)', () => {
     const events: GatewaySessionEvent[] = []
     const off = subscribeToGatewaySessionEvents((e) => events.push(e))
     try {
+      // #175 review: the logout path bumps the generation too — assert it.
+      const generationBefore = getGatewayAuthSessionGeneration()
       emit(tokensValue('old-refresh', 'a', false), null)
       expect(events).toHaveLength(1)
       expect(events[0].type).toBe('identity-change')
       expect(events[0].newRefreshToken).toBeNull()
+      expect(getGatewayAuthSessionGeneration()).toBe(generationBefore + 1)
     } finally {
       off()
     }

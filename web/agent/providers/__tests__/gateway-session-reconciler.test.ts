@@ -141,6 +141,7 @@ import {
   __resetGatewaySessionReconcilerForTests,
   getLastGatewayReconcileOutcome,
   setupGatewaySessionReconciler,
+  whenGatewayReconcilerSettledForTests,
 } from '@/agent/providers/gateway-session-reconciler'
 import { getGatewayAuthSessionGeneration } from '@/agent/providers/llm-gateway-auth'
 import {
@@ -165,7 +166,14 @@ function okResponse(body: unknown): Response {
 describe('gateway session reconciler', () => {
   let dispose: (() => void) | null = null
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Drain stragglers from the PREVIOUS test: happy-dom fires a REAL storage
+    // event for the localStorage writes in emitStorageEvent (in addition to
+    // the synthetic one), and its listener job can land inside the NEXT test
+    // and bump the auth generation there. Flushing here keeps every test's
+    // event stream its own.
+    await whenGatewayReconcilerSettledForTests()
+    await new Promise((resolve) => setTimeout(resolve, 0))
     localStorage.clear()
     settingsStoreState.modelCredentialStatus = 'unknown'
     settingsStoreState.modelCredentialStatusError = null
@@ -221,6 +229,13 @@ describe('gateway session reconciler', () => {
     settingsStoreState.modelCredentialStatus = 'valid'
     dispose = setupGatewaySessionReconciler()
 
+    // Drain the setup-time initial reconcile: it sees an empty shared session
+    // (localStorage cleared in beforeEach) and reconciles logged-out — its
+    // credential-lock work must settle before this test's logout event job
+    // queues behind it, or the event job waits on happy-dom's Web Locks
+    // manager past vi.waitFor's window.
+    await whenGatewayReconcilerSettledForTests()
+
     emitStorageEvent(tokensJson('refresh-token-a'), null)
     await vi.waitFor(() => {
       expect(getLastGatewayReconcileOutcome()).toBe('logged-out')
@@ -265,16 +280,32 @@ describe('gateway session reconciler', () => {
 
   it('treats a transient refresh failure as retryable and does NOT reconcile logged-out', async () => {
     dispose = setupGatewaySessionReconciler()
+    // Drain the setup-time initial reconcile and reset the status it wrote
+    // (empty session → 'missing') so the transient assertions below observe
+    // ONLY this test's refresh failure.
+    await whenGatewayReconcilerSettledForTests()
+    settingsStoreState.modelCredentialStatus = 'unknown'
     // Tokens exist but the access token is expired → resolver refreshes →
     // network failure = temporary_error.
-    const expired = tokensJson('refresh-token-a', 'stale-access')
-      .replace(`"access_expires_at":${Date.now() + 10 * 60 * 1000}`, `"access_expires_at":${Date.now() - 1000}`)
-    fetchMock.mockRejectedValue(new TypeError('network down'))
+    // #175 review: generate the expiry ONCE under FROZEN fake timers — two
+    // Date.now() calls can straddle a millisecond boundary, the replace()
+    // would miss, and the test would silently skip the refresh path it
+    // exists to cover.
+    vi.useFakeTimers({ now: Date.now() })
+    try {
+      const now = Date.now()
+      const expired = tokensJson('refresh-token-a', 'stale-access')
+        .replace(`"access_expires_at":${now + 10 * 60 * 1000}`, `"access_expires_at":${now - 1000}`)
+      expect(expired).toContain(`"access_expires_at":${now - 1000}`)
+      fetchMock.mockRejectedValue(new TypeError('network down'))
 
-    emitStorageEvent(tokensJson('old-refresh'), expired)
-    await vi.waitFor(() => {
-      expect(getLastGatewayReconcileOutcome()).toBe('transient')
-    })
+      emitStorageEvent(tokensJson('old-refresh'), expired)
+      await vi.waitFor(() => {
+        expect(getLastGatewayReconcileOutcome()).toBe('transient')
+      }, { timeout: 5000, interval: 20 })
+    } finally {
+      vi.useRealTimers()
+    }
 
     // Transient: status representations untouched (not 'missing'/'expired').
     expect(settingsStoreState.modelCredentialStatus).toBe('unknown')
@@ -289,6 +320,10 @@ describe('gateway session reconciler', () => {
     settingsStoreState.modelCredentialStatus = 'expired'
     dispose = setupGatewaySessionReconciler()
 
+    // The setup-time initial reconcile sees NO session yet — drain it via
+    // the deterministic hook so the event-driven access-refresh job's
+    // outcome is what the assertions observe.
+    await whenGatewayReconcilerSettledForTests()
     // Same refresh identity, fresher access token: storage rewrite from the
     // refreshing tab fires an access-refresh event here.
     seedStoredTokens({ refresh_token: 'refresh-token-a' })
@@ -311,7 +346,9 @@ describe('gateway session reconciler', () => {
 
     // The event says access-refresh, but by the time the reconciler re-reads
     // the shared session it is GONE (a logout won the race). Re-read wins
-    // over the event: reconcile logged-out.
+    // over the event: reconcile logged-out. Drain the setup-time initial
+    // reconcile first so the assertions observe the EVENT-driven job.
+    await whenGatewayReconcilerSettledForTests()
     emitStorageEvent(tokensJson('refresh-token-a', 'old'), tokensJson('refresh-token-a', 'fresh'))
     localStorage.removeItem(TOKENS_KEY)
     // The resolver's no-tokens path consults the access shadow; none either.
@@ -326,6 +363,9 @@ describe('gateway session reconciler', () => {
 
   it('fences an older job after a rapid login → logout: the stale adoption never lands', async () => {
     dispose = setupGatewaySessionReconciler()
+    // Drain the setup-time initial reconcile so the jobs tracked below belong
+    // to THIS test's events only.
+    await whenGatewayReconcilerSettledForTests()
 
     // Gate the /v1/models discovery so the first (login) job stays pending.
     let releaseDiscovery!: () => void
@@ -369,19 +409,30 @@ describe('gateway session reconciler', () => {
 
   it('dispose unsubscribes: events after dispose are ignored', async () => {
     dispose = setupGatewaySessionReconciler()
+    // Drain the setup-time initial reconcile (empty session → it reconciles
+    // logged-out); capture its outcome so the assertions below verify that
+    // NO NEW reconcile ran after dispose.
+    await whenGatewayReconcilerSettledForTests()
+    const outcomeAfterInitial = getLastGatewayReconcileOutcome()
+    const statusAfterInitial = settingsStoreState.modelCredentialStatus
     dispose()
     dispose = null
 
     emitStorageEvent(null, tokensJson('refresh-token-a'))
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(getLastGatewayReconcileOutcome()).toBeNull()
-    expect(settingsStoreState.modelCredentialStatus).toBe('unknown')
+    // The event must NOT have been reconciled: outcome and status are
+    // exactly what the (drained) initial reconcile left behind.
+    expect(getLastGatewayReconcileOutcome()).toBe(outcomeAfterInitial)
+    expect(settingsStoreState.modelCredentialStatus).toBe(statusAfterInitial)
   })
 
   it('setup is idempotent: a second call does not double-subscribe', async () => {
     const dispose1 = setupGatewaySessionReconciler()
     setupGatewaySessionReconciler()
 
+    // Drain the setup-time initial reconcile so checkHasApiKeyCalls reflects
+    // only THIS test's event below.
+    await whenGatewayReconcilerSettledForTests()
     emitStorageEvent(null, tokensJson('refresh-token-a'))
     await vi.waitFor(() => {
       expect(getLastGatewayReconcileOutcome()).toBe('adopted')
