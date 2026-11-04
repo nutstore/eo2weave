@@ -990,6 +990,34 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
     }
   })
 
+  it('normalizes a lowercase skill.md entry to SKILL.md when writing (#154 round 8)', async () => {
+    // Regression: the preview matches `skill.md` case-insensitively, but the
+    // writer used to keep the archive's filename — an update from an archive
+    // shipping lowercase `skill.md` REPLACED the installed `SKILL.md` with a
+    // lowercase file, and the scanner (exact `SKILL.md` lookup) stopped
+    // registering the skill even though its files remained on disk.
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: lower-skill\nversion: "2.0.0"\n---\n\n# Lower v2'
+    const archive = zipSync({ 'lower-skill/skill.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'lower-skill',
+        '---\nname: lower-skill\nversion: "1.0.0"\n---\n\n# Lower v1',
+      )
+      const result = await installSkillFromUrl('https://store.example/lower-skill.zip')
+      expect(result.outcome).toBe('updated')
+      // The written entry MUST be uppercase `SKILL.md` — the only filename
+      // the scanner registers.
+      expect(contentOf('lower-skill', 'SKILL.md')).toContain('# Lower v2')
+      const dir = dirOf(userRoot, '.skills/user/lower-skill', false)!
+      expect(dir.files.has('skill.md')).toBe(false)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('updates a bundle member when the store bundle is newer (#154)', async () => {
     const realFetch = globalThis.fetch
     const archive = zipSync({

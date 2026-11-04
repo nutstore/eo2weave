@@ -1395,6 +1395,14 @@ async function writeZipSkillToOpfs(
     // Split into path segments and navigate/create intermediate dirs
     const parts = relPath.split('/').filter(Boolean)
     if (parts.length === 0) continue
+    // The archive may ship the entry as `skill.md` (the preview matches it
+    // case-insensitively), but the scanner registers installed skills by
+    // EXACT `SKILL.md` — a case-variant filename would make an updated
+    // skill invisible after the next scan. Normalize the entry filename to
+    // `SKILL.md` (#154 round 8).
+    if (parts.length === 1 && /^skill\.md$/i.test(parts[0])) {
+      parts[0] = 'SKILL.md'
+    }
     if (parts.length === 1 && parts[0] === IMPORT_OWNER_FILE) {
       throw new Error(`ZIP archive contains reserved import file ${IMPORT_OWNER_FILE}.`)
     }
