@@ -5,9 +5,9 @@
  * Each message is stored as a separate row, keyed by (conversation_id, seq).
  */
 
-import { getSQLiteDB, parseJSON } from '../sqlite-database'
-import type { Message, MessageUsage, ToolCall } from '@/agent/message-types'
-import type { AssetMeta } from '@/types/asset'
+import { getSQLiteDB, parseJSON } from '@/sqlite/sqlite-database'
+import type { Message, MessageUsage } from '@/agent/message-types'
+import { deserializeMessageMetadata, serializeMessageMetadata } from '@/sqlite/message-meta'
 
 //=============================================================================
 // Types
@@ -24,33 +24,13 @@ export interface MessageRow {
   created_at: number
 }
 
-/** Fields stored in meta_json */
-interface MessageMeta {
-  displayContent?: string
-  deferredContext?: Message['deferredContext']
-  kind?: Message['kind']
-  contextCommit?: Message['contextCommit']
-  compressionBoundary?: Message['compressionBoundary']
-  pageContext?: Message['pageContext']
-  pageContextDelivery?: Message['pageContextDelivery']
-  reasoning?: string | null
-  reasoningDurationMs?: number
-  toolCalls?: ToolCall[]
-  toolCallId?: string
-  name?: string
-  usage?: MessageUsage
-  assets?: AssetMeta[]
-  images?: Array<{ data: string; mimeType: string }>
-  contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
-  runChanges?: { snapshotId: string }
-  readImageHandoff?: Message['readImageHandoff']
-  delegationNote?: Message['delegationNote']
-}
-
 interface AppSessionSerializedMessage {
   id: string
   role: 'user' | 'assistant' | 'tool'
   content: string | null
+  kind?: Message['kind']
+  stopReason?: Message['stopReason']
+  errorMessage?: string
   reasoning?: string | null
   toolCalls?: Array<{ id: string; name: string; arguments: string }>
   toolResults?: Array<{ toolCallId: string; name: string; content: string }>
@@ -250,87 +230,9 @@ export class MessageRepository {
    * Serialize a Message into content_json and meta_json
    */
   private serializeMessage(message: Message): { contentJson: string; metaJson: string | null } {
-    const contentJson = JSON.stringify(message.content)
-    const meta: MessageMeta = {}
-    let hasMeta = false
-
-    if (message.kind) {
-      meta.kind = message.kind
-      hasMeta = true
-    }
-    if (message.reasoning !== undefined) {
-      meta.reasoning = message.reasoning
-      hasMeta = true
-    }
-    if (message.reasoningDurationMs !== undefined) {
-      meta.reasoningDurationMs = message.reasoningDurationMs
-      hasMeta = true
-    }
-    if (message.toolCalls !== undefined) {
-      meta.toolCalls = message.toolCalls
-      hasMeta = true
-    }
-    if (message.toolCallId !== undefined) {
-      meta.toolCallId = message.toolCallId
-      hasMeta = true
-    }
-    if (message.name !== undefined) {
-      meta.name = message.name
-      hasMeta = true
-    }
-    if (message.usage !== undefined) {
-      meta.usage = message.usage
-      hasMeta = true
-    }
-    if (message.assets !== undefined) {
-      meta.assets = message.assets
-      hasMeta = true
-    }
-    if (message.images !== undefined) {
-      meta.images = message.images
-      hasMeta = true
-    }
-    if (message.displayContent !== undefined) {
-      meta.displayContent = message.displayContent
-      hasMeta = true
-    }
-    if (message.deferredContext !== undefined) {
-      meta.deferredContext = message.deferredContext
-      hasMeta = true
-    }
-    if (message.contentParts !== undefined) {
-      meta.contentParts = message.contentParts
-      hasMeta = true
-    }
-    if (message.compressionBoundary !== undefined) {
-      meta.compressionBoundary = message.compressionBoundary
-      hasMeta = true
-    }
-    if (message.contextCommit !== undefined) {
-      meta.contextCommit = message.contextCommit
-      hasMeta = true
-    }
-    if (message.pageContext !== undefined) {
-      meta.pageContext = message.pageContext
-      meta.pageContextDelivery = message.pageContextDelivery
-      hasMeta = true
-    }
-    if (message.runChanges !== undefined) {
-      meta.runChanges = message.runChanges
-      hasMeta = true
-    }
-    if (message.readImageHandoff !== undefined) {
-      meta.readImageHandoff = message.readImageHandoff
-      hasMeta = true
-    }
-    if (message.delegationNote !== undefined) {
-      meta.delegationNote = message.delegationNote
-      hasMeta = true
-    }
-
     return {
-      contentJson,
-      metaJson: hasMeta ? JSON.stringify(meta) : null,
+      contentJson: JSON.stringify(message.content),
+      metaJson: serializeMessageMetadata(message),
     }
   }
 
@@ -338,13 +240,15 @@ export class MessageRepository {
    * Deserialize a database row into a Message
    */
   private deserializeMessage(row: MessageRow): Message {
-    const meta: MessageMeta = row.meta_json ? JSON.parse(row.meta_json) : {}
+    const meta = deserializeMessageMetadata(row.meta_json)
 
     return {
       id: row.id,
       role: row.role as Message['role'],
       content: parseJSON<string | null>(row.content_json, null),
       kind: meta.kind,
+      stopReason: meta.stopReason,
+      errorMessage: meta.errorMessage,
       contextCommit: meta.contextCommit,
       compressionBoundary: meta.compressionBoundary,
       pageContext: meta.pageContext,
@@ -531,6 +435,12 @@ export class MessageRepository {
       timestamp: data.timestamp || Date.now(),
     }
 
+    // Preserve turn failure state so AppSession-snapshot recovery keeps the
+    // retry affordance (kind/stopReason drive the UI status banner and the
+    // empty-turn filtering in message-mappers).
+    if (data.kind !== undefined) msg.kind = data.kind
+    if (data.stopReason !== undefined) msg.stopReason = data.stopReason
+    if (data.errorMessage !== undefined) msg.errorMessage = data.errorMessage
     if (data.reasoning !== undefined) msg.reasoning = data.reasoning
     if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
       msg.toolCalls = data.toolCalls.map((tc) => ({

@@ -16,6 +16,14 @@ function rowFromLastInsert(): MessageRow {
 }
 
 describe('durable model context metadata', () => {
+  it('preserves an incomplete assistant turn and its stop reason', async () => {
+    const repository = new MessageRepository()
+    const message = { id: 'empty', role: 'assistant' as const, content: null, kind: 'empty' as const, stopReason: 'length' as const, timestamp: 5 }
+    await repository.insert('conversation', message, 0)
+    db.queryAll.mockResolvedValueOnce([rowFromLastInsert()])
+    const [restored] = await repository.findByConversation('conversation')
+    expect(restored).toMatchObject(message)
+  })
   it('preserves agent-input identity across reloads, including multimodal parts', async () => {
     const repository = new MessageRepository()
     const messages = [

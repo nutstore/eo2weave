@@ -165,6 +165,7 @@ export const conversation = {
       gatewayDeviceFlowTimeout: "Nutstore AI authorization session expired — please start again",
       requestFailed: "Request failed:",
       retry: "Retry",
+      emptyTurn: "The model returned no response.",
       failed: "The model request failed. Please try again later.",
       http: "The model provider returned an error (HTTP {status}).",
       network: "Network error — could not reach the model provider. Check your connection and try again.",

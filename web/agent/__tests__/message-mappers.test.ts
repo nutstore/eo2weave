@@ -8,6 +8,40 @@ import {
 } from '../loop/message-mappers'
 
 describe('message-mappers', () => {
+  it('preserves completion reasons and omits empty turns from model history', () => {
+    const model = { api: 'openai', provider: 'openai', id: 'test' } as never
+    const base = { role: 'assistant', provider: 'openai', model: 'test', timestamp: 1 }
+    const empty = piToInternalMessage({ ...base, content: [{ type: 'thinking', thinking: 'thinking' }], stopReason: 'length' } as never)!
+    expect(empty).toMatchObject({ kind: 'empty', stopReason: 'length', content: null })
+    expect(internalToPiMessages([empty], model, '')).toEqual([])
+    expect(internalToPiMessages([{ id: 'u', role: 'user', kind: 'empty', content: 'keep', timestamp: 1 }], model, '')).toHaveLength(1)
+
+    const partial = piToInternalMessage({ ...base, content: [{ type: 'text', text: 'partial' }], stopReason: 'length' } as never)!
+    expect(partial.stopReason).toBe('length')
+    expect(internalToPiMessages([partial], model, '')[0]).toMatchObject({ stopReason: 'length' })
+
+    const tool = piToInternalMessage({ ...base, content: [{ type: 'toolCall', id: 't', name: 'read', arguments: {} }], stopReason: 'toolUse' } as never)!
+    expect(tool.kind).not.toBe('empty')
+  })
+  it('keeps an image-only assistant turn as real output', () => {
+    const model = { api: 'openai', provider: 'openai', id: 'test' } as never
+    const base = { role: 'assistant', provider: 'openai', model: 'test', timestamp: 1 }
+    const imageOnly = piToInternalMessage({
+      ...base,
+      content: [{ type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' }],
+      stopReason: 'stop',
+    } as never)!
+    // Image blocks are visible output: not classified as empty and preserved
+    // on the message so the UI can render them.
+    expect(imageOnly.kind).not.toBe('empty')
+    expect(imageOnly.images).toEqual([{ data: 'aW1hZ2U=', mimeType: 'image/png' }])
+    // The wire form is a normal assistant message with a text block; the
+    // base64 payload stays on the internal record (same as text messages).
+    const wire = internalToPiMessages([imageOnly], model, '')
+    expect(wire).toHaveLength(1)
+    expect(wire[0]).toMatchObject({ role: 'assistant' })
+    expect(JSON.stringify(wire)).not.toContain('aW1hZ2U=')
+  })
   it('persists UI traces separately from the model conversation', () => {
     const deferred = [{ sourceCallId: 'child', sequence: 0, content: [{ type: 'text', text: 'observation' }] }]
     const mapped = piToInternalMessage({ role: 'toolResult', toolCallId: 'parent', toolName: 'run_code', content: [{ type: 'text', text: 'final result' }], details: { displayContent: 'PRIVATE_TRACE', deferred }, isError: false, timestamp: 1 } as never)!
@@ -115,6 +149,42 @@ describe('message-mappers', () => {
       toolCallId: 'call-interrupted',
       toolName: 'page_click',
     })
+  })
+
+  it('drops tool calls of aborted assistant turns instead of emitting orphaned results', () => {
+    const mapped = internalToPiMessages(
+      [
+        {
+          id: 'assistant-aborted',
+          role: 'assistant',
+          content: null,
+          kind: 'aborted',
+          stopReason: 'aborted',
+          toolCalls: [
+            {
+              id: 'call-orphan',
+              type: 'function',
+              function: { name: 'page_click', arguments: '{}' },
+            },
+          ],
+          timestamp: 1,
+        },
+        {
+          id: 'assistant-ok',
+          role: 'assistant',
+          content: 'done',
+          timestamp: 2,
+        },
+      ],
+      { api: 'openai', provider: 'openai', id: 'test-model' } as never,
+      ''
+    )
+
+    // The aborted turn (and its tool call) must vanish entirely — no orphaned
+    // toolResult placeholder for a call no assistant message declares.
+    expect(JSON.stringify(mapped)).not.toContain('call-orphan')
+    expect(mapped.filter((message) => message.role === 'assistant')).toHaveLength(1)
+    expect(mapped.filter((message) => message.role === 'toolResult')).toHaveLength(0)
   })
 
   it('moves a delayed tool result directly after its tool call', () => {

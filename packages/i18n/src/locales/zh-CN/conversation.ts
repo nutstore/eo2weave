@@ -169,6 +169,7 @@ export const conversation = {
       gatewayDeviceFlowTimeout: "坚果云 AI 授权会话已超时，请重新发起登录",
       requestFailed: "请求失败：",
       retry: "继续",
+      emptyTurn: "模型未返回内容。",
       failed: "模型请求失败，请稍后重试",
       http: "模型服务商返回错误（HTTP {status}）",
       network: "网络连接失败，无法访问模型服务商，请检查网络后重试",

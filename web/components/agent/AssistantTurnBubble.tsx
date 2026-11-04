@@ -877,6 +877,20 @@ const AssistantStep = memo(function AssistantStep({
   const hasToolCalls = visibleToolCalls.length > 0
   const isContextSummary = message.kind === 'context_summary'
   const isRunChanges = message.kind === 'run_changes'
+  const failureStatus =
+    message.kind === 'empty'
+      ? t('conversation.error.emptyTurn')
+      : message.kind === 'error'
+        ? t('conversation.error.failed')
+        : message.kind === 'aborted'
+          ? t('conversation.error.aborted')
+          : null
+  const failureStatusClass =
+    message.kind === 'error'
+      ? 'text-sm text-red-700 dark:text-red-300'
+      : message.kind === 'aborted'
+        ? 'text-sm text-neutral-600 dark:text-neutral-300'
+        : 'text-sm text-amber-700 dark:text-amber-300'
 
   return (
     <>
@@ -886,8 +900,18 @@ const AssistantStep = memo(function AssistantStep({
         <RunChangesCard snapshotId={message.runChanges.snapshotId} />
       )}
 
-      {!isRunChanges && (hasReasoning || hasContent || hasImages || hasToolCalls || hasAssets) && (
+      {!isRunChanges && (hasReasoning || hasContent || hasImages || hasToolCalls || hasAssets || failureStatus || message.errorMessage) && (
         <div className="space-y-2">
+          {failureStatus && (
+            <div role="status" className={failureStatusClass}>
+              {failureStatus}
+            </div>
+          )}
+          {message.errorMessage && (
+            <div className="break-words text-xs text-neutral-600 dark:text-neutral-300">
+              {message.errorMessage}
+            </div>
+          )}
           {hasReasoning && (
             <ReasoningSection reasoning={message.reasoning!} durationMs={message.reasoningDurationMs} />
           )}
