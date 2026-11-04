@@ -21,7 +21,9 @@ import {
   fetchSkillStoreManifest,
   installSkillFromUrl,
   planSkillUpdate,
+  scanInstalledDirNames,
 } from '@/skills/skill-store'
+import type { SkillStoreEntry } from '@/skills/skill-store'
 import { skillUpdateNeedsConsent } from '@/skills/skill-version'
 import { getSkillManager } from '@/skills/skill-manager'
 import { useSkillsStore } from '@/store/skills.store'
@@ -75,10 +77,26 @@ export async function installSkillExecutor(
   }
 
   try {
-    // Find the zipUrl from manifest
-    const manifest = await fetchSkillStoreManifest()
-    const entry = manifest.skills.find((s) => s.dirName === dirName)
-    if (!entry) {
+    // Offline fallback (#154 round 6): when the store manifest is
+    // unreachable, an already-installed skill is still usable locally —
+    // only a fresh install genuinely needs the network. Restore the old
+    // "already installed" fast path for that failure case so an offline
+    // call for an installed skill does not regress to install_failed.
+    let entry: SkillStoreEntry | null
+    try {
+      const manifest = await fetchSkillStoreManifest()
+      entry = manifest.skills.find((s) => s.dirName === dirName) ?? null
+    } catch (err) {
+      const installed = await scanInstalledDirNames()
+      if (!installed.has(dirName)) throw err
+      return toolOkJson('install_skill', {
+        dirName,
+        alreadyInstalled: true,
+        updated: false,
+        message: `Skill "${dirName}" is already installed locally; the Skill Store could not be reached to check for updates, so the installed copy was kept. You can use it via read_skill now.`,
+      })
+    }
+    if (entry === null) {
       return toolErrorJson(
         'install_skill',
         'not_found',
