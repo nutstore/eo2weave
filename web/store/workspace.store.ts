@@ -54,6 +54,35 @@ function updateCheckpointToolRegistration(shouldRegister: boolean): void {
 const switchWaiters = new Map<string, Array<() => void>>()
 const workspaceEnsures = new Map<string, Promise<Workspace>>()
 
+/**
+ * Upper bound for an in-flight `workspaceEnsures` entry (#166 item 2). A
+ * never-settling ensure promise would otherwise stay in the map forever:
+ * every later `ensureWorkspace` call for that workspace awaits the same
+ * wedged entry, blocking all future dispatches for the conversation. On
+ * expiry the shared entry rejects and is removed, so callers fail fast and
+ * the next attempt starts a fresh ensure.
+ *
+ * Same shape as META_PERSIST_WAIT_TIMEOUT_MS in webmcp/app-tools/workspace-setup.
+ */
+const WORKSPACE_ENSURE_TIMEOUT_MS = 15_000
+
+function withEnsureTimeout(pending: Promise<Workspace>): Promise<Workspace> {
+  return new Promise<Workspace>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error('WORKSPACE_ENSURE_TIMEOUT')),
+      WORKSPACE_ENSURE_TIMEOUT_MS
+    )
+    const settle = (fn: () => void) => {
+      clearTimeout(timer)
+      fn()
+    }
+    pending.then(
+      (record) => settle(() => resolve(record)),
+      (err) => settle(() => reject(err))
+    )
+  })
+}
+
 function notifySwitchComplete(workspaceId: string): void {
   const waiters = switchWaiters.get(workspaceId)
   if (waiters) {
@@ -642,7 +671,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         ensureWorkspace: async (id, name, targetProjectId) => {
           const pending = workspaceEnsures.get(id)
           if (pending) {
-            const record = await pending
+            // #166 item 2: bound the shared wait. A never-settling entry would
+            // otherwise wedge every later ensure (and every later agent
+            // dispatch) for this workspace; on expiry the entry is deleted
+            // below so the next attempt starts fresh.
+            const record = await withEnsureTimeout(pending)
             if (targetProjectId && record.projectId !== targetProjectId) {
               throw new Error(`Workspace ${id} already belongs to project ${record.projectId}`)
             }
@@ -688,7 +721,10 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           })()
           workspaceEnsures.set(id, ensure)
           try {
-            return await ensure
+            // Same bound on the owner's own await (#166 item 2): if the
+            // underlying ensure never settles, the entry is deleted and a
+            // fresh ensure can be started instead of wedging the workspace.
+            return await withEnsureTimeout(ensure)
           } finally {
             workspaceEnsures.delete(id)
           }

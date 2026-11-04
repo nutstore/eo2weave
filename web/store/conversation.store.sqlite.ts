@@ -2754,6 +2754,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         try {
           await get().deleteConversation(id)
           successIds.push(id)
+          // The per-conversation Agent selection must die with the
+          // conversation on EVERY successful deletion path. The single
+          // deleteConversation action already clears it; this redundant
+          // clearing documents the bulk contract — a bulk delete is not
+          // guaranteed to route through the single action (it may call the
+          // repository directly), and a stale `agentIdByWorkspace` entry
+          // would be inherited by a new conversation reusing the id.
+          try {
+            useWorkspacePreferencesStore.getState().clearWorkspaceAgentId(id)
+          } catch (error) {
+            console.warn('[conversation.store] Failed to clear conversation-scoped auth state:', error)
+          }
         } catch (error) {
           failed.push({
             id,
@@ -3338,14 +3350,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       if (finalStatus === 'idle') {
         const nextMsg = useConversationRuntimeStore.getState().dequeueMessage(conversationId)
         if (nextMsg) {
-          const { createUserMessage: createMsg } = await import('@/agent/message-types')
-          const userMsg = createMsg(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
-            contentParts: nextMsg.contentParts,
-            readImageHandoff: nextMsg.readImageHandoff,
-          })
-          const currentConv = get().conversations.find((c) => c.id === conversationId)
-          if (currentConv) {
-            get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+          // rerunOnly trigger from an overlapping runAgent dispatch (its
+          // running state routed the dispatch into this queue): the user
+          // message is ALREADY persisted, so the follow-up must start
+          // directly — creating a user message here would add a blank
+          // "/empty" entry (the trigger's text is always ''). Same
+          // no-new-message behavior as runAgent's finalize consumer.
+          if (nextMsg.rerunOnly) {
             queueMicrotask(() => {
               get().runAgent(
                 conversationId,
@@ -3356,6 +3367,26 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                 nextMsg.agentOverrideId ?? null,
               )
             })
+          } else {
+            const { createUserMessage: createMsg } = await import('@/agent/message-types')
+            const userMsg = createMsg(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
+              contentParts: nextMsg.contentParts,
+              readImageHandoff: nextMsg.readImageHandoff,
+            })
+            const currentConv = get().conversations.find((c) => c.id === conversationId)
+            if (currentConv) {
+              get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+              queueMicrotask(() => {
+                get().runAgent(
+                  conversationId,
+                  pType,
+                  mName,
+                  maxTokens,
+                  null,
+                  nextMsg.agentOverrideId ?? null,
+                )
+              })
+            }
           }
         }
       }

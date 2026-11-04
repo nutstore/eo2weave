@@ -277,6 +277,78 @@ describe('app-tools handlers', () => {
     expect(r.status).toBe('queued')
   })
 
+  it('send_message does not finalize a claim-overlap run while its trigger is queued (#170 round 2)', async () => {
+    // Claim-overlap: the conversation is NOT yet running when send_message
+    // enters (the owning dispatch is still inside its start claim), runAgent
+    // resolves immediately (it queued a rerun trigger and returned), and the
+    // owner's follow-up keeps the conversation running afterwards.
+    let pendingTrigger = true
+    let runningNow = false
+    const d2 = makeDeps()
+    initAppToolDeps({
+      ...d2,
+      getRuntimeStore: () => ({
+        runtimes: new Map(),
+        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '' }].filter(() => pendingTrigger)]]),
+        getQueuedMessage: vi.fn(() => (pendingTrigger ? { rerunOnly: true, text: '' } : undefined)),
+      }),
+      getConversationStore: () => {
+        const s = d2.getConversationStore()
+        s.isConversationRunning = () => runningNow
+        s.runAgent = vi.fn(async () => {
+          // Claim-overlap shape: the overlap resolution is not terminal —
+          // flip the conversation to "the owner's follow-up is running".
+          runningNow = true
+        })
+        return s
+      },
+    })
+    const r = JSON.parse(
+      (await handlers.send_message({ conversationId: 'c_1', content: 'overlap' })).content,
+    )
+    expect(r.status).toBe('started')
+
+    // The runAgent promise resolved (not terminal for the overlap) — the
+    // record must NOT read completed while the follow-up has not run.
+    const status = JSON.parse((await handlers.get_run_status({ runId: r.runId })).content)
+    expect(['queued', 'running']).toContain(status.status)
+    expect(status.status).not.toBe('completed')
+
+    // Once the trigger is dequeued and the conversation goes idle, the record
+    // finalizes from the store.
+    pendingTrigger = false
+    runningNow = false
+    const done = JSON.parse((await handlers.get_run_status({ runId: r.runId })).content)
+    expect(done.status).toBe('completed')
+  })
+
+  it('wait=true returns queued for a parked claim-overlap run instead of spinning to timeout (#170 round 2)', async () => {
+    let runningNow = false
+    const d2 = makeDeps()
+    initAppToolDeps({
+      ...d2,
+      getRuntimeStore: () => ({
+        runtimes: new Map(),
+        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '' }]]]),
+        getQueuedMessage: vi.fn(() => ({ rerunOnly: true, text: '' })),
+      }),
+      getConversationStore: () => {
+        const s = d2.getConversationStore()
+        s.isConversationRunning = () => runningNow
+        s.runAgent = vi.fn(async () => {
+          runningNow = true
+        })
+        return s
+      },
+      wait: vi.fn(async () => {}),
+    })
+    const r = JSON.parse(
+      (await handlers.send_message({ conversationId: 'c_1', content: 'overlap-wait', wait: true })).content,
+    )
+    expect(r.status).toBe('queued')
+    expect(r.error).toBeUndefined()
+  })
+
   it('send_message unknown conversation errors', async () => {
     const r = JSON.parse((await handlers.send_message({ conversationId: 'nope', content: 'x' })).content)
     expect(r.error).toMatch(/not found/i)

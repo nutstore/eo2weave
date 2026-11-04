@@ -206,6 +206,46 @@ describe('background conversation workspace initialization', () => {
     expect(mocks.upsert).not.toHaveBeenCalled()
   })
 
+  it('times out a never-settling in-flight ensure so later dispatches are not wedged (#166 item 2)', async () => {
+    vi.useFakeTimers()
+    try {
+      // The in-flight ensure NEVER settles — the exact stall the backstop
+      // guards (e.g. a wedged OPFS/SQLite bridge).
+      let stuck!: (record: Workspace) => void
+      mocks.getManager.mockImplementationOnce(
+        () => new Promise<WorkspaceManager>((resolve) => { stuck = resolve as never })
+      )
+
+      const first = useWorkspaceStore.getState().ensureWorkspace('new-chat', 'Stalled task')
+      // The overlapping waiter must share the entry and fail on the same bound.
+      const second = useWorkspaceStore.getState().ensureWorkspace('new-chat', 'Overlapping task')
+
+      // Advance past WORKSPACE_ENSURE_TIMEOUT_MS (15s): both awaits must
+      // reject with the timeout sentinel instead of hanging forever.
+      const expiry = Promise.allSettled([first, second])
+      await vi.advanceTimersByTimeAsync(15_000 + 100)
+      const results = await expiry
+      expect(results.map((r) => (r.status === 'rejected' ? r.reason?.message : r.status))).toEqual([
+        'WORKSPACE_ENSURE_TIMEOUT',
+        'WORKSPACE_ENSURE_TIMEOUT',
+      ])
+
+      // The wedged entry must not survive: the next attempt starts a FRESH
+      // ensure and succeeds.
+      mocks.getManager.mockResolvedValue(new WorkspaceManager())
+      mocks.initializeRuntime.mockResolvedValue(undefined)
+      await expect(
+        useWorkspaceStore.getState().ensureWorkspace('new-chat', 'Retry task')
+      ).resolves.toMatchObject({ id: 'new-chat', projectId: 'open-project' })
+
+      // Silence the still-pending original promise; never reachable.
+      stuck(record('new-chat'))
+      void stuck
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('creates in an explicit project without switching or polluting the open project', async () => {
     expect(
       await useWorkspaceStore.getState().ensureWorkspace('new-chat', 'Other task', 'other-project')

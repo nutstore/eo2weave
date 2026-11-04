@@ -297,10 +297,20 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
         // 创建 agent
         const agentInfo = await project.agentManager.createAgent(id)
 
-        // 刷新列表
+        // 刷新列表 — but only while the user is still on the project this
+        // agent belongs to. A create that settles after a project switch must
+        // not overwrite the new project's freshly loaded catalog (the composer
+        // would offer stale Agents it cannot select).
+        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
+          set({ isLoading: false })
+          return agentInfo
+        }
         const agents = await project.agentManager.listAgents()
+        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
+          set({ isLoading: false })
+          return agentInfo
+        }
         set({ agents, isLoading: false })
-
         toast.success(`Agent "${id}" created`)
         return agentInfo
       } catch (e) {
@@ -338,6 +348,14 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
 
         await project.agentManager.deleteAgent(id)
 
+        // Staleness check FIRST: a delete that settles after a project
+        // switch must neither reset the new project's active Agent selection
+        // (the fallback below) nor overwrite its catalog (the refresh below).
+        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
+          set({ isLoading: false })
+          return true
+        }
+
         // 如果删除的是当前活跃的，切换到 default
         if (activeAgentId === id) {
           const defaultAgent = await project.agentManager.getAgent('default')
@@ -347,8 +365,13 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
           })
         }
 
-        // 刷新列表
+        // 刷新列表 — but only while the user is still on the project the
+        // deletion belongs to (same staleness rule as createAgent).
         const agents = await project.agentManager.listAgents()
+        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
+          set({ isLoading: false })
+          return true
+        }
         set({ agents, isLoading: false })
 
         toast.success(`Agent "${id}" deleted`)
