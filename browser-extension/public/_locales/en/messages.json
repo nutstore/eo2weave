@@ -449,6 +449,9 @@
   "webmcpPackagesRepair": {
     "message": "Repair"
   },
+  "webmcpPackagesNotInstalled": {
+    "message": "Not installed"
+  },
   "webmcpPackagesInstalling": {
     "message": "Installing…"
   },
