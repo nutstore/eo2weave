@@ -105,17 +105,114 @@ export interface RateLimitsResponse {
 
 const TOKEN_STORAGE_KEY = 'llm-gateway-tokens'
 
+// ── Cross-tab session events (observer subscription) ─────────────────
+//
+// The storage listener below implements INVALIDATION only: it bumps the
+// tab-local auth generation and unregisters the provider. It deliberately
+// does NOT import the provider module (a static auth → provider import
+// would create the fragile cycle documented at LLM_GATEWAY_API_KEY_ID), so
+// re-adoption of the new session cannot live here. Instead the listener
+// publishes a small typed event, and the observer-side reconciler
+// (gateway-session-reconciler.ts, wired from the app lifecycle) subscribes
+// and performs the re-adoption. Subscribers receive the RAW storage values:
+// they must re-read the latest shared session rather than trusting the
+// event payload (the event can be stale by the time the handler runs).
+
+export type GatewaySessionEventType = 'identity-change' | 'access-refresh'
+
+export interface GatewaySessionEvent {
+  type: GatewaySessionEventType
+  /**
+   * Refresh-token identity BEFORE the change (null when the old value was
+   * absent/unparseable). Raw from the storage event — informational only.
+   */
+  oldRefreshToken: string | null
+  /** Refresh-token identity AFTER the change (null on logout). */
+  newRefreshToken: string | null
+  /**
+   * The auth generation observed when the listener ran (after the bump for
+   * identity changes). Observers fence their async work against
+   * `getGatewayAuthSessionGeneration()`, not this value.
+   */
+  generation: number
+}
+
+type GatewaySessionListener = (event: GatewaySessionEvent) => void
+
+const gatewaySessionListeners = new Set<GatewaySessionListener>()
+
+/**
+ * Subscribe to cross-tab gateway session events. Returns an unsubscribe
+ * function. Emitted from this module's `storage` listener only — local
+ * (same-tab) commits already reconcile their own state.
+ */
+export function subscribeToGatewaySessionEvents(
+  listener: GatewaySessionListener,
+): () => void {
+  gatewaySessionListeners.add(listener)
+  return () => {
+    gatewaySessionListeners.delete(listener)
+  }
+}
+
+function emitGatewaySessionEvent(event: GatewaySessionEvent): void {
+  for (const listener of gatewaySessionListeners) {
+    try {
+      listener(event)
+    } catch (e) {
+      // A broken subscriber must not break the other subscribers or the
+      // storage listener itself.
+      console.warn('[llm-gateway] session event subscriber threw:', e)
+    }
+  }
+}
+
 // Another tab can replace or clear the session without touching this tab's
 // registry. Drop its cached models before the next discovery can retain them.
+// Two distinct cases:
+//  - identity-change: the refresh token itself changed (login, account
+//    replacement or logout). The cached session generation is invalidated
+//    and the provider is unregistered; the reconciler re-adopts.
+//  - access-refresh: the SAME refresh token with a fresher access token —
+//    another tab refreshed under the documented non-rotating contract
+//    (#172 finding 1). No generation bump and no unregistration: the session
+//    identity did not change. The event lets a tab that had marked the
+//    session expired reconcile against the now-valid shared credential.
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
     if (event.key !== TOKEN_STORAGE_KEY) return
-    const refreshToken = (value: string | null): string | null => {
-      try { return value ? (JSON.parse(value) as StoredTokens).refresh_token : null } catch { return null }
+    const parse = (value: string | null): { refresh: string | null; accessChanged: boolean } => {
+      if (!value) return { refresh: null, accessChanged: false }
+      try {
+        const parsed = JSON.parse(value) as Partial<StoredTokens>
+        return {
+          refresh: typeof parsed.refresh_token === 'string' ? parsed.refresh_token : null,
+          accessChanged: true,
+        }
+      } catch {
+        return { refresh: null, accessChanged: false }
+      }
     }
-    if (refreshToken(event.oldValue) !== refreshToken(event.newValue)) {
+    const oldParsed = parse(event.oldValue)
+    const newParsed = parse(event.newValue)
+    if (oldParsed.refresh !== newParsed.refresh) {
       bumpAuthSessionGeneration()
       unregisterDynamicProvider('llm-gateway')
+      emitGatewaySessionEvent({
+        type: 'identity-change',
+        oldRefreshToken: oldParsed.refresh,
+        newRefreshToken: newParsed.refresh,
+        generation: getGatewayAuthSessionGeneration(),
+      })
+    } else if (oldParsed.accessChanged || newParsed.accessChanged) {
+      // Same refresh identity, different serialized value: an access-only
+      // refresh (or a metadata rewrite) in another tab.
+      emitGatewaySessionEvent({
+        type: 'access-refresh',
+        oldRefreshToken: oldParsed.refresh,
+        newRefreshToken: newParsed.refresh,
+        generation: getGatewayAuthSessionGeneration(),
+      })
     }
   })
 }
@@ -684,36 +781,49 @@ async function clearStoredTokens(
  * The card would then show "Logged in" + "Log out" while every gateway call
  * reports "not logged in" (user-reported bug).
  *
- * Returns true when a shadow was found — i.e. the user HAD logged in and the
- * session died ('expired') — and false when there was never a session
- * ('missing').
  */
-async function purgeStaleAccessTokenShadow(): Promise<boolean> {
+/**
+ * Inspect the access-token shadow to distinguish "session died" from
+ * "never logged in". Tri-state: 'had-session' (a shadow existed and was
+ * purged), 'none' (no token pair, no shadow), 'error' (storage unreachable
+ * — NOT evidence of logout; #172 finding 3).
+ */
+type ShadowInspection = 'had-session' | 'none' | 'error'
+
+async function inspectAccessTokenShadow(): Promise<ShadowInspection> {
   try {
-    return await withGatewayCredentialLock(async () => {
-      if (loadStoredTokens()) return false
+    return await withGatewayCredentialLock(async (): Promise<ShadowInspection> => {
+      if (loadStoredTokens()) return 'none'
       const { loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
       // The read is bounded only (see runBoundedKeyStoreOp): a stalled read
       // must not hold the credential lock forever.
       const shadow = await runBoundedKeyStoreOp(loadApiKey(LLM_GATEWAY_API_KEY_ID))
       // A new session can appear during the key-store read. Do not delete
       // its access shadow when the earlier no-token observation is stale.
-      if (!shadow || loadStoredTokens()) return false
+      if (!shadow || loadStoredTokens()) return 'none'
       // The deletion is fenced at its landing point: an op that stayed
       // pending past a newer credential commit must not delete that
       // commit's shadow key (round-20). A fenced deletion here is reported
-      // like any other purge failure — the caller degrades to false.
+      // like any other purge failure — the caller degrades to 'error'.
       await runBoundedFencedKeyStoreMutation(() => deleteApiKey(LLM_GATEWAY_API_KEY_ID))
-      return true
+      return 'had-session'
     })
   } catch (e) {
     // Diagnostic log on purpose — a silent failure here would keep the
     // "logged-in badge on a dead session" state with no way to debug.
-    // The caller (getValidAccessToken) already returns null on this path —
-    // the not-ready verdict stands; the settings card just shows a hint.
     console.warn('[llm-gateway] failed to inspect the access_token shadow:', e)
-    return false
+    return 'error'
   }
+}
+
+/**
+ * Purge a stale access_token shadow (pre-fencing callers). Returns true
+ * when a shadow was found — i.e. the user HAD logged in and the session
+ * died ('expired') — and false otherwise (never logged in, or the storage
+ * could not be read; those callers report 'missing' either way).
+ */
+async function purgeStaleAccessTokenShadow(): Promise<boolean> {
+  return (await inspectAccessTokenShadow()) === 'had-session'
 }
 
 //
@@ -1159,7 +1269,9 @@ export function refreshAccessTokenWithStatus(
   if (refreshInFlight && generation === (refreshInFlight as InFlightRefresh).generation) {
     return abortableRefreshResult(refreshInFlight, signal)
   }
-  const request = refreshAccessTokenWithStatusImpl(baseURL, clientId)
+  const request = withGatewayRefreshLock(() =>
+    refreshAccessTokenWithStatusImpl(baseURL, clientId),
+  )
   const tracked: InFlightRefresh = Object.assign(request, { generation })
   refreshInFlight = tracked
   // Clear on settle via then(onFulfilled, onRejected): unlike finally(), this
@@ -1202,6 +1314,49 @@ interface InFlightRefresh extends Promise<RefreshResult> {
 }
 
 let refreshInFlight: Promise<RefreshResult> | null = null
+
+/**
+ * Dedicated ORIGIN-WIDE refresh lock (#172 finding 2).
+ *
+ * `refreshInFlight` deduplicates only within one tab: two tabs can run
+ * `/v1/auth/refresh` concurrently. Under the documented non-rotating
+ * contract that is merely duplicate work — but if the backend ever starts
+ * rotating refresh tokens, the loser receives `invalid_grant` and would
+ * mislabel the winner's NEWER session as expired. Serializing the whole
+ * refresh (network call + credential commit) behind an origin-wide Web Lock
+ * closes that race: the second tab acquires the lock only after the first
+ * tab's commit, and `loadStoredTokensWithFallback` re-reads the refreshed
+ * pair, so it validates against the newest credential instead of racing.
+ *
+ * Deliberately NOT the credential commit lock: `refreshAccessTokenWithStatusImpl`
+ * acquires `withGatewayCredentialLock` internally, and Web Locks are not
+ * reentrant — wrapping it in the same lock would deadlock. This lock is
+ * acquired strictly outside and only orders refresh attempts against each
+ * other; the commit/ownership fencing inside the impl is unchanged.
+ *
+ * Without Web Locks (test environments, exotic browsers) the lock degrades
+ * to running directly — today's per-tab dedup behavior, which the current
+ * non-rotating contract makes safe.
+ */
+const GATEWAY_REFRESH_LOCK = 'eo2weave-gateway-refresh'
+
+function getWebLocksForRefresh(): { request<T>(name: string, cb: () => T | Promise<T>): Promise<T> } | null {
+  if (typeof navigator === 'undefined') return null
+  return (navigator as Navigator & { locks?: { request<T>(name: string, cb: () => T | Promise<T>): Promise<T> } }).locks ?? null
+}
+
+async function withGatewayRefreshLock<T>(refresh: () => Promise<T>): Promise<T> {
+  const locks = getWebLocksForRefresh()
+  if (!locks) return refresh()
+  try {
+    return await locks.request(GATEWAY_REFRESH_LOCK, refresh)
+  } catch (e) {
+    // A failed lock acquisition (SecurityError etc.) must not break refresh:
+    // degrade to the unlocked path (pre-lock behavior).
+    console.warn('[llm-gateway] refresh lock unavailable, refreshing without cross-tab serialization:', e)
+    return refresh()
+  }
+}
 
 /**
  * Session generation — bumped on every credential-set change (new login via
@@ -1390,6 +1545,85 @@ export async function forceRefreshAccessToken(
 ): Promise<string | null> {
   const result = await refreshAccessTokenWithStatus(baseURL, clientId)
   return result.status === 'success' ? result.accessToken : null
+}
+
+// ── Dispatch-time credential resolution (#172 findings 4+5) ───────────
+
+export type GatewayDispatchCredential =
+  | { ok: true; accessToken: string }
+  | { ok: false; kind: 'missing' | 'expired' | 'temporary'; error?: unknown }
+
+/**
+ * Authoritative, status-bearing gateway credential resolution for dispatch.
+ *
+ * The dispatch path (runAgent) previously loaded the api-key-store shadow
+ * (`__llm_gateway_token__`) directly and — because the keyless-custom-
+ * provider exception applied to the dynamically-registered gateway — let an
+ * EMPTY result pass the send gate, reaching the request layer which then
+ * sent without Authorization (#172 finding 4). The shadow is also a
+ * best-effort cache: a refresh whose SQLite shadow write failed leaves a
+ * stale or missing shadow behind even though localStorage holds the current
+ * token (#172 finding 5).
+ *
+ * This resolver reads the AUTHORITATIVE token pair (localStorage, with the
+ * SQLite refresh-token fallback), validates the access token's freshness,
+ * refreshes when needed, and reports WHY it failed:
+ *  - 'missing' / 'expired' — confirmed absence/expiry: the caller must stop
+ *    before network dispatch and offer login.
+ *  - 'temporary' — transient storage/refresh/network failure: retryable,
+ *    and it must NOT clear a possibly valid session.
+ */
+export async function resolveGatewayDispatchCredential(
+  baseURL: string,
+  clientId: string
+): Promise<GatewayDispatchCredential> {
+  const stored = await loadStoredTokensWithFallback()
+  if (!stored) {
+    // The token pair is gone. Distinguish a session that DIED (the access
+    // shadow of an earlier session survives — 'expired') from never having
+    // logged in ('missing'). A storage error is NOT proof of absence (#172
+    // finding 3): report it as temporary so the caller keeps the session
+    // retryable instead of falsely declaring the user logged out.
+    const inspection = await inspectAccessTokenShadow()
+    if (inspection === 'error') {
+      return { ok: false, kind: 'temporary', error: new Error('gateway credential storage unavailable') }
+    }
+    if (inspection === 'had-session') {
+      setCredentialStatus('expired')
+      return { ok: false, kind: 'expired' }
+    }
+    setCredentialStatus('missing')
+    return { ok: false, kind: 'missing' }
+  }
+
+  const now = Date.now()
+  // Fresh access token (60s buffer, same as getValidAccessToken).
+  if (stored.access_expires_at > now + 60_000) {
+    setCredentialStatus('valid')
+    return { ok: true, accessToken: stored.access_token }
+  }
+
+  // Expired access token but a live refresh token: refresh (the shared
+  // refresh lock + per-tab in-flight dedup inside
+  // refreshAccessTokenWithStatus serialize this across tabs).
+  if (stored.refresh_expires_at > now) {
+    const result = await refreshAccessTokenWithStatus(baseURL, clientId)
+    if (result.status === 'success') return { ok: true, accessToken: result.accessToken }
+    if (result.status === 'expired') return { ok: false, kind: 'expired', error: result.error }
+    if (result.status === 'missing') return { ok: false, kind: 'missing' }
+    return { ok: false, kind: 'temporary', error: result.error }
+  }
+
+  // Both tokens expired locally: clearStoredTokens marks 'expired' inside
+  // its critical section when this context still owns the session; a
+  // no-op purge (another context already replaced/cleared) still leaves
+  // the caller unable to dispatch — report expired (the liveness of a
+  // REPLACED session is re-checked on the next dispatch, and a refreshed
+  // foreign session is picked up by the resolver's next read).
+  if (await clearStoredTokens(stored.refresh_token, 'expired')) {
+    return { ok: false, kind: 'expired' }
+  }
+  return { ok: false, kind: 'expired', error: new Error('session changed during dispatch') }
 }
 
 /**

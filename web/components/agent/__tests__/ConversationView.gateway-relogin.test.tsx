@@ -305,3 +305,30 @@ describe('ConversationErrorBanner GATEWAY_CREDENTIALS_EXPIRED', () => {
     expect(screen.getByRole('button', { name: /conversation\.error\.retry/ })).toBeInTheDocument()
   })
 })
+
+// GATEWAY_CREDENTIALS_MISSING (#172 finding 3): a CONFIRMED absent gateway
+// credential gets the same actionable login card instead of a raw 401.
+const MISSING_ERROR = '[GATEWAY_CREDENTIALS_MISSING] Not logged in to Nutstore AI. Please log in first.'
+
+describe('ConversationErrorBanner GATEWAY_CREDENTIALS_MISSING', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    runtimeEntry.status = 'error'
+    runtimeEntry.error = MISSING_ERROR
+    startReloginMock.mockResolvedValue(true)
+  })
+
+  it('shows the login card (not a raw 401 retry card) for a confirmed-missing credential', () => {
+    render(<ConversationView />)
+
+    expect(screen.getByRole('button', { name: /conversation\.error\.gatewayRelogin/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /conversation\.error\.retry/ })).not.toBeInTheDocument()
+  })
+
+  it('starts the relogin flow when the login button is clicked', () => {
+    render(<ConversationView />)
+
+    fireEvent.click(screen.getByRole('button', { name: /conversation\.error\.gatewayRelogin/ }))
+    expect(startReloginMock).toHaveBeenCalledTimes(1)
+  })
+})

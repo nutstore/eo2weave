@@ -490,7 +490,56 @@ export async function runAgentImpl(
         // Custom providers may run keyless (e.g. Ollama at localhost:11434/v1):
         // no Authorization header is sent and Ollama ignores Bearer tokens, so
         // a missing key is not a hard error for them.
-        const apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
+        //
+        // EXCEPTION (issues #172 findings 3+4+5): the dynamically-registered
+        // llm-gateway provider is NOT keyless. The generic custom-provider
+        // exception in `isCustomProviderType` used to let an empty key pass
+        // this gate and reach the request layer, which then sent WITHOUT the
+        // Authorization header. It also relied on the api-key-store shadow —
+        // a best-effort SQLite cache a failed refresh write can leave stale
+        // or empty even though the shared session is valid. For the gateway,
+        // resolve the credential AUTHORITATIVELY from the shared token pair
+        // instead: refresh where possible, stop before network dispatch on
+        // confirmed absence/expiry (offering login), and surface transient
+        // storage/refresh failures as retryable errors without clearing a
+        // possibly valid session.
+        let apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
+        if (providerType === 'llm-gateway') {
+          const { resolveGatewayDispatchCredential } =
+            await import('@/agent/providers/llm-gateway-auth')
+          const { getLLMGatewayBaseURL, getLLMGatewayClientId } =
+            await import('@/agent/providers/llm-gateway-provider')
+          const resolved = await resolveGatewayDispatchCredential(
+            getLLMGatewayBaseURL(),
+            getLLMGatewayClientId(),
+          )
+          if (!resolved.ok) {
+            if (resolved.kind === 'temporary') {
+              // Retryable — do NOT clear a possibly valid session, and do
+              // not offer login (the session may be perfectly fine).
+              failRunEarly(
+                i18nText(
+                  'conversation.error.gatewayCredentialTemporary',
+                  'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+                )
+              )
+              return
+            }
+            // Confirmed absence/expiry: stop before dispatch and offer the
+            // re-login entry. A structured [CODE] prefix drives the error
+            // card's login button (same mechanism as
+            // GATEWAY_CREDENTIALS_EXPIRED from the fetch layer).
+            const code = resolved.kind === 'missing'
+              ? '[GATEWAY_CREDENTIALS_MISSING]'
+              : '[GATEWAY_CREDENTIALS_EXPIRED]'
+            const fallback = resolved.kind === 'missing'
+              ? 'Not logged in to Nutstore AI. Please log in first.'
+              : 'Nutstore AI login has expired. Please log in again.'
+            failRunEarly(`${code} ${fallback}`)
+            return
+          }
+          apiKey = resolved.accessToken
+        }
         if (!apiKey && !isCustomProviderType(providerType)) {
           failRunEarly('API Key 未设置，请先在设置中配置')
           return

@@ -67,6 +67,10 @@ import {
   invalidateGatewayAccessToken,
   performDeviceCodeFlow,
   persistDeviceLoginTokens,
+  resolveGatewayDispatchCredential,
+  subscribeToGatewaySessionEvents,
+  getGatewayAuthSessionGeneration,
+  type GatewaySessionEvent,
 } from '@/agent/providers/llm-gateway-auth'
 import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
@@ -1188,5 +1192,191 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(pendingKeyStoreOpIsFenced(opA)).toBe(true)
       expect(pendingKeyStoreOpIsFenced(opB)).toBe(true)
     }, 20_000)
+  })
+})
+
+// ── Dispatch-time credential resolution + session events (#171/#172) ──
+
+describe('resolveGatewayDispatchCredential (#172 findings 3+4+5)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    deleteApiKeyMock.mockReset()
+    deleteApiKeyMock.mockResolvedValue(undefined)
+    loadApiKeyMock.mockReset()
+    loadApiKeyMock.mockResolvedValue(null)
+    saveApiKeyMock.mockReset()
+    saveApiKeyMock.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+    unregisterDynamicProvider('llm-gateway')
+    vi.unstubAllGlobals()
+  })
+
+  function seed(overrides: Partial<{ access_expires_at: number; refresh_expires_at: number }> = {}) {
+    const now = Date.now()
+    localStorage.setItem(TOKENS_KEY, JSON.stringify({
+      access_token: 'access-token-1',
+      refresh_token: 'refresh-token',
+      access_expires_at: overrides.access_expires_at ?? now + 10 * 60 * 1000,
+      refresh_expires_at: overrides.refresh_expires_at ?? now + 30 * 24 * 60 * 60 * 1000,
+      client_id: CLIENT_ID,
+      base_url: BASE_URL,
+    }))
+  }
+
+  it('returns the current access token from the shared token pair WITHOUT the SQLite shadow (#172.5)', async () => {
+    // Shadow missing/stale: refresh's shadow write failed. The resolver must
+    // NOT depend on it.
+    seed()
+    loadApiKeyMock.mockResolvedValue(null)
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved).toEqual({ ok: true, accessToken: 'access-token-1' })
+    expect(getGatewayCredentialStatus()).toBe('valid')
+  })
+
+  it('refreshes an expired access token and returns the new token', async () => {
+    seed({ access_expires_at: Date.now() - 1000 })
+    let refreshCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes('/v1/auth/refresh')) {
+        refreshCalls++
+        return new Response(JSON.stringify({ access_token: 'brand-new-access', expires_in: 600, token_type: 'Bearer' }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved).toEqual({ ok: true, accessToken: 'brand-new-access' })
+    expect(refreshCalls).toBe(1)
+  })
+
+  it('reports confirmed missing when no token pair and no shadow exist', async () => {
+    localStorage.clear()
+    loadApiKeyMock.mockResolvedValue(null)
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('missing')
+    expect(getGatewayCredentialStatus()).toBe('missing')
+  })
+
+  it('reports expired (not missing) when the access shadow of a dead session survives', async () => {
+    localStorage.clear()
+    loadApiKeyMock.mockImplementation(async (provider: string) =>
+      provider === '__llm_gateway_token__' ? 'dead-shadow' : null)
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('expired')
+    expect(getGatewayCredentialStatus()).toBe('expired')
+  })
+
+  it('reports temporary — NOT missing — when storage fails during the absence check (#172.3)', async () => {
+    localStorage.clear()
+    // The shadow read itself fails: storage error ≠ proof of logout.
+    loadApiKeyMock.mockRejectedValue(new Error('sqlite worker hung'))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
+  })
+
+  it('reports temporary on a transient refresh failure and keeps the stored tokens', async () => {
+    seed({ access_expires_at: Date.now() - 1000 })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('network down')
+    }))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
+    // A possibly valid session is NOT cleared by a transient failure.
+    expect(localStorage.getItem(TOKENS_KEY)).not.toBeNull()
+    expect(getGatewayCredentialStatus()).not.toBe('missing')
+  })
+
+  it('reports expired when the refresh token is definitively invalid', async () => {
+    seed({ access_expires_at: Date.now() - 1000 })
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ code: 'invalid_grant', message: 'revoked' }), { status: 400 })
+    ))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('expired')
+    await vi.waitFor(() => {
+      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+    })
+  })
+})
+
+describe('cross-tab session events (#171 observer subscription)', () => {
+  const tokensValue = (refresh: string, access: string, accessExpired: boolean) =>
+    JSON.stringify({
+      access_token: access,
+      refresh_token: refresh,
+      access_expires_at: accessExpired ? Date.now() - 1000 : Date.now() + 10 * 60 * 1000,
+      refresh_expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000,
+      client_id: CLIENT_ID,
+      base_url: BASE_URL,
+    })
+
+  const emit = (oldValue: string | null, newValue: string | null) => {
+    window.dispatchEvent(new StorageEvent('storage', { key: TOKENS_KEY, oldValue, newValue }))
+  }
+
+  it('emits identity-change (with generation bump) when the refresh token changes', () => {
+    const events: GatewaySessionEvent[] = []
+    const off = subscribeToGatewaySessionEvents((e) => events.push(e))
+    try {
+      emit(tokensValue('old-refresh', 'a', false), tokensValue('new-refresh', 'b', false))
+
+      expect(events).toHaveLength(1)
+      expect(events[0].type).toBe('identity-change')
+      expect(events[0].oldRefreshToken).toBe('old-refresh')
+      expect(events[0].newRefreshToken).toBe('new-refresh')
+    } finally {
+      off()
+    }
+  })
+
+  it('emits access-refresh WITHOUT a generation bump for a same-refresh-token rewrite (#172.1)', () => {
+    const events: GatewaySessionEvent[] = []
+    const off = subscribeToGatewaySessionEvents((e) => events.push(e))
+    try {
+      const generationBefore = getGatewayAuthSessionGeneration()
+      // Same refresh identity, new access token: another tab's refresh.
+      emit(tokensValue('same-refresh', 'old-access', true), tokensValue('same-refresh', 'new-access', false))
+
+      expect(events).toHaveLength(1)
+      expect(events[0].type).toBe('access-refresh')
+      expect(getGatewayAuthSessionGeneration()).toBe(generationBefore)
+    } finally {
+      off()
+    }
+  })
+
+  it('emits identity-change with null newRefreshToken on logout (value removed)', () => {
+    const events: GatewaySessionEvent[] = []
+    const off = subscribeToGatewaySessionEvents((e) => events.push(e))
+    try {
+      emit(tokensValue('old-refresh', 'a', false), null)
+      expect(events).toHaveLength(1)
+      expect(events[0].type).toBe('identity-change')
+      expect(events[0].newRefreshToken).toBeNull()
+    } finally {
+      off()
+    }
+  })
+
+  it('unsubscribed listeners stop receiving events', () => {
+    const events: GatewaySessionEvent[] = []
+    const off = subscribeToGatewaySessionEvents((e) => events.push(e))
+    off()
+    emit(tokensValue('a', 'x', false), tokensValue('b', 'y', false))
+    expect(events).toHaveLength(0)
   })
 })

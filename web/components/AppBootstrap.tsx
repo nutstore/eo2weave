@@ -529,6 +529,29 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     })
   }, [])
 
+  // ── Gateway session reconciler (issues #171 + #172) ──
+  // A tab that only OBSERVES another tab's Nutstore AI login/logout/access-
+  // refresh gets invalidation from the auth layer's storage listener but no
+  // re-adoption: the provider stays unregistered and the tab can't send
+  // despite a valid shared session. The reconciler subscribes to the auth
+  // layer's session events (no static auth→provider import cycle — it lives
+  // in its own module) and re-adopts/reconciles. Dynamic import + dispose on
+  // unmount, same lifecycle pattern as the offline queue above.
+  useEffect(() => {
+    let dispose: (() => void) | null = null
+    let cancelled = false
+    void import('@/agent/providers/gateway-session-reconciler').then(
+      ({ setupGatewaySessionReconciler }) => {
+        if (cancelled) return
+        dispose = setupGatewaySessionReconciler()
+      },
+    )
+    return () => {
+      cancelled = true
+      dispose?.()
+    }
+  }, [])
+
   // ── OpenRouter model reference auto-refresh ──
   // The bundled openrouter-models.json is a bootstrap fallback that lags
   // upstream (new DeepSeek/Qwen releases missing → wrong context window,

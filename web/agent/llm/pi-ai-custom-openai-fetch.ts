@@ -143,9 +143,12 @@ function streamCwOpenAIChatCompletions(
       // Set only when a 401 triggered a force-refresh attempt that ended in
       // status === 'expired' — i.e. the gateway session is unrecoverable and
       // the user must re-login (drives the GATEWAY_CREDENTIALS_EXPIRED error
-      // card below). A transient refresh failure (network / 5xx) keeps the
-      // original gateway error and the generic retry UI.
+      // card below). 'missing' drives the GATEWAY_CREDENTIALS_MISSING card
+      // (confirmed absence — never logged in / fully purged; #172 finding 3).
+      // A transient refresh failure (network / 5xx) keeps the original
+      // gateway error and the generic retry UI.
       let gatewayCredentialsExpired = false
+      let gatewayCredentialsMissing = false
 
       // 401 + LLM Gateway provider → force-refresh token then retry once.
       // Gateway access tokens are short-lived; this transparently refreshes
@@ -173,11 +176,19 @@ function streamCwOpenAIChatCompletions(
           } else if (refreshResult.status === 'expired') {
             gatewayCredentialsExpired = true
             console.warn('[llm-gateway] refresh reported dead credentials')
+          } else if (refreshResult.status === 'missing') {
+            // Defensive fallback (#172 finding 3): the failed request may not
+            // have carried a token at all (the keyless exception let an empty
+            // key through, or the credential was purged mid-flight). A
+            // CONFIRMED absence on a gateway 401 maps to an actionable login
+            // entry; temporary failures keep the raw 401 below.
+            gatewayCredentialsMissing = true
+            console.warn('[llm-gateway] refresh reported missing credentials')
           } else {
-            // 'missing' (never logged in) and 'temporary_error' (network/5xx)
-            // keep the original gateway error — only a definitively expired
-            // credential gets the re-login card.
-            console.warn('[llm-gateway] refresh failed temporarily or missing; preserving original gateway error')
+            // 'temporary_error' (network/5xx) keeps the original gateway
+            // error — only a definitively dead/absent credential gets the
+            // re-login card.
+            console.warn('[llm-gateway] refresh failed temporarily; preserving original gateway error')
           }
         } catch (e) {
           console.warn('[llm-gateway] force-refresh threw temporarily:', e)
@@ -187,6 +198,27 @@ function streamCwOpenAIChatCompletions(
 
       if (!response.ok) {
         const errorBody = await safeReadText(response)
+        // LLM Gateway with a CONFIRMED absent credential (401 + refresh ended
+        // in 'missing' — never logged in / fully purged; #172 finding 3) →
+        // throw with a structured [CODE] prefix so the error card can offer a
+        // "Log in" action instead of a raw 401.
+        if (
+          response.status === 401 &&
+          String(model.provider) === 'llm-gateway' &&
+          gatewayCredentialsMissing
+        ) {
+          const { t: translateStatic } = await import('@creatorweave/i18n')
+          const { useI18nStore } = await import('@/i18n/store')
+          const locale = useI18nStore.getState().locale
+          const msg = translateStatic(locale, 'settings.gateway.notLoggedInError')
+          throw new Error(
+            `[GATEWAY_CREDENTIALS_MISSING] ${
+              msg !== 'settings.gateway.notLoggedInError'
+                ? msg
+                : 'Not logged in to Nutstore AI. Please log in first.'
+            }`
+          )
+        }
         // LLM Gateway with an unrecoverable dead credential (401 + refresh
         // ended in 'expired') → throw with a structured [CODE] prefix so the
         // error card can offer a "Re-login" action instead of a generic

@@ -156,6 +156,8 @@ export const conversation = {
     // 错误
     error: {
       gatewayReloginTitle: "坚果云 AI 登录已过期",
+      gatewayLoginRequiredTitle: "需要登录坚果云 AI",
+      gatewayCredentialTemporary: "坚果云 AI 暂时不可用，请重试",
       gatewayRelogin: "重新登录坚果云 AI",
       gatewayInsufficientCredit: "坚果云 AI 积分余额已耗尽，请充值后重试",
       gatewayRecharge: "前往充值",
