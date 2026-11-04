@@ -112,6 +112,25 @@ export type SkillUpdateAction =
   | 'installed-newer'
 
 /**
+ * Whether a re-install of an ALREADY-INSTALLED skill with this update action
+ * requires an explicit user confirmation before anything is written (#154,
+ * round 2). Only `update` replaces installed content: a fresh install keeps
+ * its existing opt-in, and `current` / `installed-newer` touch nothing.
+ *
+ * The agent's `install_skill` tool is policy-level `auto`, so the update
+ * consent gate is enforced in code (not just prompt instructions) by checking
+ * this decision before the install flow runs.
+ */
+export function skillUpdateNeedsConsent(action: SkillUpdateAction): boolean {
+  return action === 'update'
+}
+
+/** True when the string is a parseable semver-ish version, not junk text. */
+export function isKnownVersion(raw: string): boolean {
+  return parseVersion(raw) !== null
+}
+
+/**
  * Decide the action for re-installing a skill the user already has.
  *
  * @param storeVersion     Version declared by the store ZIP's SKILL.md.
@@ -121,6 +140,14 @@ export function decideSkillUpdateAction(
   storeVersion: string,
   installedVersion: string,
 ): SkillUpdateAction {
+  // An unparseable version on either side is UNKNOWN, never "lower than
+  // everything": lexical fallback would rank junk below a real version and
+  // let a store release overwrite a locally modified install of unknown
+  // provenance (#154 round 2). The conservative keep (never overwrite,
+  // never downgrade) is the backstop for callers that reach us with junk.
+  if (!isKnownVersion(storeVersion) || !isKnownVersion(installedVersion)) {
+    return 'installed-newer'
+  }
   const cmp = compareVersions(storeVersion, installedVersion)
   if (cmp > 0) return 'update'
   if (cmp < 0) return 'installed-newer'

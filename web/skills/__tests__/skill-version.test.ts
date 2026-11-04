@@ -3,6 +3,7 @@ import {
   compareVersions,
   decideSkillUpdateAction,
   parseSkillMdVersion,
+  skillUpdateNeedsConsent,
 } from '@/skills/skill-version'
 
 describe('compareVersions', () => {
@@ -68,6 +69,38 @@ describe('decideSkillUpdateAction (issue #154)', () => {
     expect(decideSkillUpdateAction('1.2.0-beta', '1.2.0')).toBe('installed-newer')
     // The other way round: a stable release DOES replace a prerelease.
     expect(decideSkillUpdateAction('1.2.0', '1.2.0-beta')).toBe('update')
+  })
+
+  it('treats an unparseable installed version as unknown — never overwrite (#154 round 2)', () => {
+    // Junk versions used to rank BELOW any parseable one, so a store
+    // release overwrote a locally modified install of unknown provenance.
+    // Unknown now keeps the installed copy (conservative, no overwrite).
+    expect(decideSkillUpdateAction('2.0.0', 'not-a-version')).toBe('installed-newer')
+    expect(decideSkillUpdateAction('2.0.0', '')).toBe('installed-newer')
+    expect(decideSkillUpdateAction('2.0.0', 'beta??')).toBe('installed-newer')
+    expect(decideSkillUpdateAction('2.0.0', 'latest-draft')).toBe('installed-newer')
+  })
+
+  it('treats an unparseable store version as unknown — no update from junk (#154 round 2)', () => {
+    expect(decideSkillUpdateAction('not-a-version', '1.0.0')).toBe('installed-newer')
+    expect(decideSkillUpdateAction('', '1.0.0')).toBe('installed-newer')
+  })
+
+  it('treats identical junk versions on both sides as unknown too (#154 round 2)', () => {
+    // Even string-equal junk stays in the unknown lane — the decision never
+    // depends on the lexical fallback.
+    expect(decideSkillUpdateAction('same', 'same')).toBe('installed-newer')
+  })
+})
+
+describe('skillUpdateNeedsConsent (issue #154 round 2)', () => {
+  it('asks before overwriting an older installed copy', () => {
+    expect(skillUpdateNeedsConsent('update')).toBe(true)
+  })
+
+  it('does not ask when nothing would be written', () => {
+    expect(skillUpdateNeedsConsent('current')).toBe(false)
+    expect(skillUpdateNeedsConsent('installed-newer')).toBe(false)
   })
 })
 
