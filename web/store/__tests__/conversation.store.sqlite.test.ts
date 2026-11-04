@@ -45,6 +45,7 @@ vi.mock('../settings.store', () => {
     providerType: 'openai',
     modelName: 'mock-model',
     maxIterations: 20,
+    hasApiKey: true,
     getEffectiveProviderConfig: vi.fn(() => ({
       apiKeyProviderKey: 'openai',
       baseUrl: 'https://example.com',
@@ -136,6 +137,23 @@ vi.mock('@/agent/agent-loop', () => {
     }
 
     cancel() {}
+
+    async runCompactOnly(messages: any[], _callbacks?: any) {
+      const customCompact = (globalThis as any).__conversationStoreCustomCompact
+      if (typeof customCompact === 'function') {
+        return await customCompact(messages)
+      }
+      return [
+        ...messages,
+        {
+          id: 'summary-1',
+          kind: 'context_summary',
+          role: 'assistant',
+          content: 'compacted summary',
+          timestamp: Date.now(),
+        },
+      ]
+    }
 
     async run(messages: any[], callbacks: any) {
       const customRun = (globalThis as any).__conversationStoreCustomRun
@@ -233,6 +251,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
     delete (globalThis as any).__conversationStoreBeforeCompressionStart
     delete (globalThis as any).__lastAgentLoopConfig
     delete (globalThis as any).__conversationStoreCustomRun
+    delete (globalThis as any).__conversationStoreCustomCompact
   })
 
   it('routes a subagent event to its owning spawn call instead of the active one', () => {
@@ -449,6 +468,54 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(userMsgCounts).toEqual([1, 0])
   })
 
+  it('preserves accepted rerun triggers when a queue-full dispatch drains (#170 round 2: accepted triggers must not be dropped)', async () => {
+    const conv = useConversationStore.getState().createNew('accepted-trigger-preserved', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+
+    let releaseRun!: () => void
+    const runGate = new Promise<void>((resolve) => { releaseRun = resolve })
+    const loopRuns: number[] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async () => {
+      loopRuns.push(Date.now())
+      await runGate
+      return [
+        { id: `assistant-owned-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() },
+      ]
+    }
+
+    // First dispatch owns the run.
+    const first = useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
+    await vi.waitFor(() => {
+      expect(useConversationStore.getState().getConversationStatus(conv.id)).not.toBe('idle')
+    })
+
+    // Fill the queue to capacity: one ACCEPTED trigger stamped with the live
+    // owner, then filler (untagged legacy residue).
+    const runtime = useConversationRuntimeStore.getState()
+    expect(
+      runtime.enqueueMessage(conv.id, { text: '', enqueuedAt: Date.now(), rerunOnly: true, ownerToken: useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.activeRunId ?? null }).enqueued
+    ).toBe(true)
+    for (let i = 0; i < 19; i++) {
+      expect(runtime.enqueueMessage(conv.id, { text: '', enqueuedAt: Date.now(), rerunOnly: true }).enqueued).toBe(true)
+    }
+
+    // Queue full: the dispatch may throw or succeed after reclaiming stale
+    // slots — but the ACCEPTED trigger stamped with the live owner must
+    // survive either way, so its follow-up still runs.
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true }).catch(() => {})
+
+    const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conv.id) ?? []
+    const liveOwner = useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.activeRunId ?? null
+    expect(queue.some((m) => m.rerunOnly && m.ownerToken != null && m.ownerToken === liveOwner)).toBe(true)
+
+    // The owner run still consumes the accepted trigger as a follow-up turn.
+    releaseRun()
+    await first
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
   it('rejects an active-run dispatch when the rerun queue is full instead of dropping it (#166 item 3)', async () => {
     const conv = useConversationStore.getState().createNew('running-queue-full', { activate: false })
     useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
@@ -464,10 +531,14 @@ describe('conversation.store.sqlite tool-call routing', () => {
     await vi.waitFor(() => {
       expect(useConversationStore.getState().getConversationStatus(conv.id)).not.toBe('idle')
     })
-    // Fill the rerun queue to MAX_QUEUE_SIZE (20) with rerun triggers.
+    // Fill the rerun queue to MAX_QUEUE_SIZE (20) with ACCEPTED rerun triggers
+    // stamped with the live owner run: the queue-full drain spares accepted
+    // triggers (#170 round 2), so no slot can be reclaimed and the dispatch
+    // must surface a rejection instead of dropping the message silently.
     const runtime = useConversationRuntimeStore.getState()
+    const liveOwner = useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.activeRunId ?? null
     for (let i = 0; i < 20; i++) {
-      expect(runtime.enqueueMessage(conv.id, { text: '', enqueuedAt: Date.now(), rerunOnly: true }).enqueued).toBe(true)
+      expect(runtime.enqueueMessage(conv.id, { text: '', enqueuedAt: Date.now(), rerunOnly: true, ownerToken: liveOwner }).enqueued).toBe(true)
     }
 
     // Queue full: the dispatch must surface a rejection, not resolve silently.
@@ -538,7 +609,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
     ensureWorkspaceMock.mockRejectedValueOnce(
       new Error('WORKSPACE_ENSURE_TIMEOUT')
     )
-    const setupTimeout = await import('../conversation-context.store')
+    const setupTimeout = await import('@/store/conversation-context.store')
 
     await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null, null, { background: true })
 
@@ -1505,5 +1576,89 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(closeThink?.reasoning).toBe('分析中')
     expect(closeThink?.reasoningStep?.content).toBe('分析中')
     expect(closeThink?.content).toBe('最终答案')
+  })
+
+  it('compaction consumes a queued rerunOnly trigger without creating a blank user message (#170 round 2)', async () => {
+    const conv = useConversationStore.getState().createNew('compact-rerunonly', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    // An assistant turn so compaction has something compressible (the early
+    // return for user-only history would otherwise skip the whole flow).
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
+
+    // The queue holds a rerunOnly trigger (as if a runAgent dispatch
+    // overlapped and was routed into the shared queue), then compact runs.
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, { text: '', enqueuedAt: Date.now(), rerunOnly: true })
+
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => [
+      ...messages,
+      {
+        id: 'summary-compact-1',
+        kind: 'context_summary',
+        role: 'assistant',
+        content: 'compacted',
+        timestamp: Date.now(),
+      },
+    ]
+    const loopRuns: any[][] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[]) => {
+      loopRuns.push(messages)
+      return [
+        { id: `assistant-followup-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() },
+      ]
+    }
+
+    await useConversationStore.getState().compactConversation(conv.id)
+
+    // The trigger is consumed, NOT turned into a blank user message...
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBe(1)
+    })
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(0)
+    // The follow-up run starts against the already-persisted message: no
+    // blank '' user message was synthesized from the trigger.
+    const runUsers = loopRuns[0].filter((m: any) => m.role === 'user').map((m: any) => m.content)
+    expect(runUsers).not.toContain('')
+    // ...and the conversation settles idle.
+    await vi.waitFor(() => {
+      expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
+    })
+  })
+
+  it('compaction still creates a user message for a real queued message (#170 round 2)', async () => {
+    const conv = useConversationStore.getState().createNew('compact-real-queued', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
+
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, { text: 'real queued question', enqueuedAt: Date.now() })
+
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => [
+      ...messages,
+      {
+        id: 'summary-compact-2',
+        kind: 'context_summary',
+        role: 'assistant',
+        content: 'compacted',
+        timestamp: Date.now(),
+      },
+    ]
+    const loopRuns: any[][] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[]) => {
+      loopRuns.push(messages)
+      return [
+        { id: `assistant-followup-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() },
+      ]
+    }
+
+    await useConversationStore.getState().compactConversation(conv.id)
+
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBe(1)
+    })
+    // The real queued message becomes a proper user message.
+    const runUsers = loopRuns[0].filter((m: any) => m.role === 'user').map((m: any) => m.content)
+    expect(runUsers).toContain('real queued question')
+    await vi.waitFor(() => {
+      expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
+    })
   })
 })
