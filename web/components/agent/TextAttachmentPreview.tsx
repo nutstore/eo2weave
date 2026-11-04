@@ -5,7 +5,7 @@ import { X } from 'lucide-react'
 import { useT } from '@/i18n'
 import '@/lib/monaco-setup'
 import { BrandDialog, BrandDialogContent, BrandDialogTitle } from '@creatorweave/ui'
-import { readBackwardWindow, readForwardWindow, type LoadedWindow } from './text-preview-window'
+import { readAdjacentWindow, readForwardWindow, type LoadedWindow } from '@/components/agent/text-preview-window'
 
 loader.config({ monaco })
 
@@ -18,14 +18,24 @@ function formatChars(value: number): string {
   return value.toLocaleString('en-US')
 }
 
+/** Absolute file character offset of the line at the top of the viewport. */
+function topVisibleCharOffset(editor: monaco.editor.IStandaloneCodeEditor, win: LoadedWindow): number {
+  const model = editor.getModel()
+  const range = editor.getVisibleRanges()[0]
+  if (!model || !range) return win.startChar
+  return win.startChar + model.getOffsetAt({ lineNumber: range.startLineNumber, column: 1 })
+}
+
 /**
  * Read-only preview for text attachments using virtualized windowed loading.
  *
  * The File stays a random-access source (Blob.slice); only one ~200k-character
  * window is materialized in the Monaco model at a time. Scrolling into the
- * bottom/top edge loads the next/previous window and re-anchors the viewport
- * at the seam, so any file size is viewable at constant memory. Ctrl+F only
- * searches the loaded window — the model never holds the whole file.
+ * bottom/top edge loads the next/previous window, which overlaps the current
+ * one around the seam, and the viewport is restored to the character the user
+ * was reading — so nothing is skipped at the seam and the last window is
+ * always scrollable. Any file size is viewable at constant memory; Ctrl+F
+ * only searches the loaded window — the model never holds the whole file.
  */
 export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }: { file: File; onClose: () => void; onRestoreFocus: () => void }) {
   const t = useT()
@@ -37,9 +47,12 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
   const winRef = useRef<LoadedWindow | null>(null)
   const busyRef = useRef(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Set when a swap lands; consumed on the model content change it triggers,
-  // so the seam re-anchor happens after Monaco has the new window text.
-  const anchorRef = useRef<'top' | 'bottom' | null>(null)
+  // Absolute character offset of the line the user was reading when a swap
+  // was requested; re-applied once the new window is in the model.
+  const pendingRef = useRef<number | null>(null)
+  // Scroll position set by the anchor after a swap — the scroll event it
+  // triggers must not start another swap.
+  const anchorScrollRef = useRef<number | null>(null)
 
   // Initial load: the first window covering the head of the file.
   useEffect(() => {
@@ -48,7 +61,11 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
     winRef.current = null
     setError(false)
     readForwardWindow(file, 0, 0)
-      .then((first) => { if (active) setWin(first) })
+      .then((first) => {
+        if (!active) return
+        winRef.current = first
+        setWin(first)
+      })
       .catch(() => { if (active) setError(true) })
     return () => { active = false }
   }, [file, attempt])
@@ -61,22 +78,39 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
 
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
 
+  // Restore the reading position after a swap: scroll so the character the
+  // user was on sits at the top of the viewport again.
+  const applyPendingScroll = useCallback(() => {
+    const editor = editorRef.current
+    const current = winRef.current
+    const pending = pendingRef.current
+    if (!editor || !current || pending === null) return
+    const model = editor.getModel()
+    if (!model) return
+    // The model still holds the old window: wait for the content change.
+    if (model.getValue() !== current.text) return
+    const offset = Math.max(0, pending - current.startChar)
+    const position = model.getPositionAt(Math.min(offset, model.getValueLength()))
+    editor.setScrollTop(editor.getTopForLineNumber(position.lineNumber))
+    anchorScrollRef.current = editor.getScrollTop()
+    pendingRef.current = null
+  }, [])
+
   const swapTo = useCallback(async (direction: 'next' | 'prev') => {
     const current = winRef.current
-    if (!current || busyRef.current) return
+    const editor = editorRef.current
+    if (!current || !editor || busyRef.current) return
     if (direction === 'next' ? current.atEof : current.atStart) return
     busyRef.current = true
     try {
-      const next = direction === 'next'
-        ? await readForwardWindow(file, current.endChar, current.endByte)
-        : await readBackwardWindow(file, current.startChar, current.startByte)
-      // Forward: the seam is the line the user was reading → window top.
-      // Backward: the seam is its last line → window bottom.
-      anchorRef.current = direction === 'next' ? 'top' : 'bottom'
+      // Remember where the user is reading before the model changes.
+      pendingRef.current = topVisibleCharOffset(editor, current)
+      const next = await readAdjacentWindow(file, current, direction)
       winRef.current = next
       setWin(next)
     } catch {
       setError(true) // reuse the pane-level error/retry path
+      pendingRef.current = null
     } finally {
       busyRef.current = false
       timerRef.current = setTimeout(() => { timerRef.current = null }, SWAP_DEBOUNCE_MS)
@@ -86,13 +120,14 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
   const handleEditorMount = useCallback((editor: monaco.editor.IStandaloneCodeEditor) => {
     editorRef.current = editor
 
-    editor.onDidChangeModelContent(() => {
-      if (!anchorRef.current) return
-      editor.setScrollTop(anchorRef.current === 'top' ? 0 : editor.getScrollHeight())
-      anchorRef.current = null
-    })
+    editor.onDidChangeModelContent(() => { applyPendingScroll() })
 
     editor.onDidScrollChange((event) => {
+      // Ignore the scroll event caused by the anchor after a swap.
+      if (anchorScrollRef.current !== null && Math.abs(event.scrollTop - anchorScrollRef.current) < 2) {
+        anchorScrollRef.current = null
+        return
+      }
       const current = winRef.current
       if (!current || busyRef.current || timerRef.current) return
       const atBottom = event.scrollTop + editor.getLayoutInfo().height >= event.scrollHeight - EDGE_TRIGGER_PX
@@ -101,7 +136,17 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
       if (!wanted) return
       timerRef.current = setTimeout(() => { timerRef.current = null; void swapTo(wanted) }, SWAP_DEBOUNCE_MS)
     })
-  }, [swapTo])
+  }, [swapTo, applyPendingScroll])
+
+  // Apply the pending scroll once the new window is rendered. Runs on every
+  // win change, so it also covers swaps whose new window has the same text
+  // as the old one — Monaco fires no content-change event for those, and the
+  // anchor would otherwise never be applied (leaving the viewport stuck).
+  useEffect(() => {
+    if (!win) return
+    const id = window.setTimeout(() => { applyPendingScroll() }, 0)
+    return () => window.clearTimeout(id)
+  }, [win, applyPendingScroll])
 
   useEffect(() => () => { editorRef.current = null }, [])
 
@@ -118,9 +163,9 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
         </div>
         <div className="min-h-0 flex-1">
           {error ? <div role="alert" className="p-4 text-sm">{t('conversation.input.textPreviewFailed')} <button type="button" onClick={() => setAttempt((n) => n + 1)} className="underline">{t('conversation.input.retryPreview')}</button></div> : win === null ? <div role="status" className="p-4 text-sm">{t('conversation.input.loadingPreview')}</div> : (
-            <>
+            <div className="flex min-h-0 flex-1 flex-col">
               {multiWindow && <div role="note" className="border-b border-neutral-200 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">{t('conversation.input.textPreviewWindow', { start: formatChars(win.startChar + 1), end: formatChars(win.endChar) })}</div>}
-              <div className="h-full">
+              <div className="min-h-0 flex-1">
                 {/* Ctrl+F only searches the loaded ~200k-char window, not the
                     whole file — see the component header comment. */}
                 <Editor
@@ -132,7 +177,7 @@ export default function TextAttachmentPreview({ file, onClose, onRestoreFocus }:
                   options={{ readOnly: true, minimap: { enabled: false }, scrollBeyondLastLine: false, automaticLayout: true, wordWrap: 'on' }}
                 />
               </div>
-            </>
+            </div>
           )}
         </div>
       </BrandDialogContent>

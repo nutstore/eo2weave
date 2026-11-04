@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readBackwardWindow, readForwardWindow, utf8ByteLength, WINDOW_CHARS, type LoadedWindow } from '@/components/agent/text-preview-window'
+import { readAdjacentWindow, readBackwardWindow, readForwardWindow, utf8ByteLength, WINDOW_CHARS, type LoadedWindow } from '@/components/agent/text-preview-window'
 
 /** Build a File-like from a string. */
 function makeFile(content: string): File {
@@ -134,7 +134,6 @@ describe('text-preview-window', () => {
     await expect(readForwardWindow(file, 99, 99)).rejects.toThrow()
     await expect(readBackwardWindow(file, 0, 0)).rejects.toThrow()
   })
-
   it('handles an empty file as one empty at-start/at-eof window', async () => {
     const file = makeFile('')
     const win = await readForwardWindow(file, 0, 0)
@@ -143,5 +142,118 @@ describe('text-preview-window', () => {
     expect(win.atEof).toBe(true)
     expect(win.endChar).toBe(0)
     expect(win.endByte).toBe(0)
+  })
+
+  it('keeps the whole file reachable when a UTF-8 BOM is present', async () => {
+    const content = 'a'.repeat(WINDOW_CHARS * 2 + 10)
+    const file = makeFile('\uFEFF' + content)
+    const first = await readForwardWindow(file, 0, 0)
+    expect(first.startByte).toBe(3) // BOM consumed as source bytes
+    expect(first.text).not.toContain('\uFEFF')
+    expect(first.atEof).toBe(false)
+    const second = await readForwardWindow(file, first.endChar, first.endByte)
+    expect(second.atEof).toBe(false)
+    const last = await readForwardWindow(file, second.endChar, second.endByte)
+    expect(last.endByte).toBe(file.size)
+    expect(last.atEof).toBe(true)
+    // The windows tile the whole file exactly: no duplicated tail, no gap.
+    expect(first.text + second.text + last.text).toBe(content)
+  })
+
+  it('reads a BOM-less file from byte 0', async () => {
+    const content = 'hello'
+    const file = makeFile(content)
+    const win = await readForwardWindow(file, 0, 0)
+    expect(win.startByte).toBe(0)
+    expect(win.text).toBe(content)
+    expect(win.atEof).toBe(true)
+  })
+
+  it('reads a very short BOM file as one window without a phantom skip', async () => {
+    const file = makeFile('\uFEFFhi')
+    const win = await readForwardWindow(file, 0, 0)
+    expect(win.startByte).toBe(3)
+    expect(win.text).toBe('hi')
+    expect(win.endByte).toBe(file.size)
+    expect(win.atEof).toBe(true)
+  })
+
+  it('never splits a surrogate pair or a CRLF pair at a forward boundary', async () => {
+    // Mix of emoji and CRLF so a boundary can land mid-pair for either.
+    const content = '🚀\r\n'.repeat(WINDOW_CHARS)
+    const file = makeFile(content)
+    const windows = await tileForward(file, 10)
+    expect(windows.length).toBeGreaterThan(1)
+    const whole = windows.map((w) => w.text).join('')
+    expect(whole).toBe(content)
+    for (const win of windows) {
+      // No lone surrogates.
+      expect(/[\uD800-\uDBFF]/.test(win.text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ''))).toBe(false)
+      // No dangling CR at the window tail (always paired with its LF).
+      expect(win.text.endsWith('\r')).toBe(false)
+      expect(win.text.startsWith('\n')).toBe(false)
+    }
+  })
+
+  it('never splits a surrogate pair or a CRLF pair at a backward boundary', async () => {
+    const content = '🚀\r\n'.repeat(WINDOW_CHARS)
+    const file = makeFile(content)
+    const first = await readForwardWindow(file, 0, 0)
+    const second = await readForwardWindow(file, first.endChar, first.endByte)
+    const back = await readBackwardWindow(file, second.startChar, second.startByte, 10)
+    expect(back.text).toBe(content.slice(back.startChar, second.startChar))
+    expect(/[\uD800-\uDBFF]/.test(back.text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ''))).toBe(false)
+    expect(back.text.endsWith('\r')).toBe(false)
+    expect(back.text.startsWith('\n')).toBe(false)
+  })
+
+  it('overlaps the next window with the current one so no text is skipped', async () => {
+    const content = 'y'.repeat(WINDOW_CHARS * 3)
+    const file = makeFile(content)
+    const first = await readForwardWindow(file, 0, 0)
+    const next = await readAdjacentWindow(file, first, 'next')
+    // The new window starts before the old one ended, so the seam text is
+    // present in both windows and nothing is dropped at the boundary.
+    expect(next.startChar).toBeLessThan(first.endChar)
+    expect(next.startChar + next.text.length).toBeGreaterThan(first.endChar)
+    // The overlap content is identical in both windows.
+    expect(first.text.slice(first.endChar - (first.endChar - next.startChar))).toBe(
+      next.text.slice(0, first.endChar - next.startChar),
+    )
+    // Boundaries stay exact.
+    expect(next.startChar + next.text.length).toBe(next.endChar)
+    expect(next.startByte + utf8ByteLength(next.text)).toBe(next.endByte)
+  })
+
+  it('keeps a short final window scrollable by overlapping it backward', async () => {
+    // Whole file ≈ 1.05 windows: the final window is short and at EOF.
+    const content = 'y'.repeat(WINDOW_CHARS + 5000)
+    const file = makeFile(content)
+    const first = await readForwardWindow(file, 0, 0)
+    expect(first.atEof).toBe(false)
+    const last = await readAdjacentWindow(file, first, 'next')
+    expect(last.atEof).toBe(true)
+    // The final window carries the whole tail plus the overlap before it,
+    // so it has content to scroll and the user can navigate back.
+    expect(last.text.length).toBeGreaterThan(5000)
+    expect(last.endChar).toBe(content.length)
+    expect(last.text.endsWith(content.slice(-5000))).toBe(true)
+    expect(last.startChar).toBeLessThan(first.endChar)
+    // Its offsets stay exact.
+    expect(last.startChar + last.text.length).toBe(last.endChar)
+    expect(last.startByte + utf8ByteLength(last.text)).toBe(last.endByte)
+  })
+
+  it('navigates backward to a window that reaches the start of the file', async () => {
+    const content = 'z'.repeat(WINDOW_CHARS * 2 + 5)
+    const file = makeFile(content)
+    const first = await readForwardWindow(file, 0, 0)
+    const second = await readAdjacentWindow(file, first, 'next')
+    expect(second.startChar).toBeLessThan(first.endChar)
+    const back = await readAdjacentWindow(file, second, 'prev')
+    expect(back.atStart).toBe(true)
+    expect(back.startChar).toBe(0)
+    expect(back.text).toBe(content.slice(0, back.endChar))
+    expect(back.startChar + back.text.length).toBe(back.endChar)
   })
 })
