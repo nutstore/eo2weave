@@ -17,6 +17,7 @@ import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 
 const resolveCredentialMock = vi.hoisted(() => vi.fn())
 const setFaviconStateMock = vi.hoisted(() => vi.fn())
+const gatewayRegistered = vi.hoisted(() => ({ value: true }))
 
 vi.mock('@/services/favicon-indicator', () => ({ setFaviconState: setFaviconStateMock }))
 
@@ -104,7 +105,7 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
     // providerMissing guard rejects before the credential gate runs.
     getProviderConfig: vi.fn((type: string) =>
       type === 'llm-gateway'
-        ? { baseURL: 'https://ai.jianguoyun.com/v1', modelName: '', headers: {}, apiMode: 'chat-completions' as const }
+        ? (gatewayRegistered.value ? { baseURL: 'https://ai.jianguoyun.com/v1', modelName: '', headers: {}, apiMode: 'chat-completions' as const } : undefined)
         : actual.getProviderConfig(type as never)
     ),
   }
@@ -178,6 +179,7 @@ async function startRun(): Promise<void> {
 describe('llm-gateway dispatch credential gate (issue #172)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    gatewayRegistered.value = true
     useConversationRuntimeStore.setState({ runtimes: new Map() })
     useConversationStore.setState({
       conversations: [],
@@ -207,6 +209,13 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     await vi.waitFor(() => expect(setFaviconStateMock).toHaveBeenLastCalledWith('idle'))
     // The user message is retained.
     expect(conv.messages.some((m) => m.role === 'user')).toBe(true)
+  })
+
+  it('shows login guidance when a logged-out gateway is not registered', async () => {
+    gatewayRegistered.value = false
+    resolveCredentialMock.mockResolvedValue({ ok: false, kind: 'missing' })
+    await startRun()
+    expect(useConversationStore.getState().conversations[0].error).toContain('[GATEWAY_CREDENTIALS_MISSING]')
   })
 
   it('stops BEFORE dispatch with the expired card when the session is irrecoverably expired', async () => {

@@ -351,7 +351,7 @@ export async function runAgentImpl(
       // conversation with no result to roll back.
       const providerMissing = (type: LLMProviderType | string): boolean =>
         !!type && isPotentiallyDynamicProviderType(type) && !getProviderConfig(type as LLMProviderType)
-      if (providerMissing(providerType)) {
+      if (providerMissing(providerType) && providerType !== 'llm-gateway') {
         const unavailableMessage = i18nText(
           'conversation.toast.providerReauthRequired',
           'The selected provider is unavailable — sign in again to use it.'
