@@ -1443,3 +1443,71 @@ describe('cross-tab session events (#171 observer subscription)', () => {
     expect(events).toHaveLength(0)
   })
 })
+
+describe('gateway follow-up review regressions', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    loadApiKeyMock.mockReset().mockResolvedValue(null)
+    deleteApiKeyMock.mockReset().mockResolvedValue(undefined)
+    saveApiKeyMock.mockReset().mockResolvedValue(undefined)
+  })
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear() })
+
+  it('treats an unreadable local token store as temporary when no backup exists', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => {
+        if (key === TOKENS_KEY) throw new Error('localStorage unavailable')
+        return null
+      },
+    })
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved).toMatchObject({ ok: false, kind: 'temporary' })
+  })
+
+  it('treats an unreadable local token store and unusable backup as temporary', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('localStorage unavailable') } })
+    loadApiKeyMock.mockResolvedValue('{invalid')
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved).toMatchObject({ ok: false, kind: 'temporary' })
+  })
+
+  it('rejects a whitespace-only access token returned by refresh', async () => {
+    seedStoredTokens()
+    vi.stubGlobal('fetch', vi.fn(async () => refreshResponse('   ', 600)))
+    const result = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(result).toMatchObject({ ok: false, kind: 'temporary' })
+    expect(JSON.parse(localStorage.getItem(TOKENS_KEY)!).access_token).toBe('stale-access-token')
+  })
+
+  it('does not rerun a refresh when the acquired lock callback rejects', async () => {
+    seedStoredTokens()
+    const fetchMock = vi.fn(async () => refreshResponse('new-access', 600))
+    vi.stubGlobal('fetch', fetchMock)
+    const existingLocks = navigator.locks
+    vi.stubGlobal('navigator', { locks: { request: async (name: string, callback: () => Promise<unknown>) => {
+      if (name !== 'eo2weave-gateway-refresh') return existingLocks.request(name, callback)
+      await callback()
+      throw new Error('callback failed')
+    } } })
+    await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).rejects.toThrow('callback failed')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('cross-tab refresh coalescing', () => {
+  afterEach(() => { vi.unstubAllGlobals(); localStorage.clear() })
+  it('adopts a token refreshed while waiting for the cross-tab lock', async () => {
+    seedStoredTokens()
+    const initial = JSON.parse(localStorage.getItem(TOKENS_KEY)!)
+    const fetchMock = vi.fn(async () => refreshResponse('unnecessary', 600))
+    vi.stubGlobal('fetch', fetchMock)
+    const existingLocks = navigator.locks
+    vi.stubGlobal('navigator', { locks: { request: async (name: string, callback: () => Promise<unknown>) => {
+      if (name !== 'eo2weave-gateway-refresh') return existingLocks.request(name, callback)
+      localStorage.setItem(TOKENS_KEY, JSON.stringify({ ...initial, access_token: 'peer-token', access_expires_at: Date.now() + 600_000 }))
+      return callback()
+    } } })
+    await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'success', accessToken: 'peer-token' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})

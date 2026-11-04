@@ -133,6 +133,10 @@ vi.mock('@/agent/llm/provider-factory', () => ({
   })),
 }))
 
+vi.mock('@/agent/conversation-agent-routing', () => ({
+  resolveConversationAgentId: vi.fn(async () => 'default'),
+}))
+
 vi.mock('@/agent/context-manager', () => ({
   ContextManager: vi.fn().mockImplementation(() => ({})),
 }))

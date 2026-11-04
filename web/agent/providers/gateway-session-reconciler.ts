@@ -160,25 +160,11 @@ async function reconcileLoggedIn(job: ReconcileJob, event: GatewaySessionEvent):
       // status representations untouched — a possibly valid session must not
       // be labeled expired/missing, and a stale error is not cleared either
       // (the outcome is unknown, not healthy).
+      // An identity change invalidates all account-scoped models. Clear the
+      // registry before registering an unknown catalog so failed discovery
+      // cannot retain a previous account's model IDs.
+      if (event.type === 'identity-change') unregisterLLMGatewayProvider()
       registerLLMGatewayProvider()
-      if (event.type === 'identity-change') {
-        // The identity changed (login / account replacement): any catalog
-        // still registered belongs to the PREVIOUS account and must not be
-        // presented as the new session's verified models (#175 review).
-        // Demote it to a FAILED (non-authoritative) catalog — the same
-        // semantics as a failed post-login discovery — so the retrying
-        // reconcile re-discovers instead of re-serving old models.
-        try {
-          const { registerGatewayModels, LLM_GATEWAY_PROVIDER_TYPE } =
-            await import('@/agent/providers/llm-gateway-provider')
-          const { getModelsForProvider } = await import('@/agent/providers/types')
-          if (getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).length > 0) {
-            registerGatewayModels([], 'failed')
-          }
-        } catch {
-          // Best-effort: registration above already re-established retry.
-        }
-      }
       return 'transient'
     }
     // Confirmed absent ('missing' = never logged in / fully purged) or

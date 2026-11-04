@@ -376,9 +376,22 @@ export class GatewayTokenStoreUnavailableError extends Error {
  * into the 'missing' branch (#175 review).
  */
 async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
-  // Fast path: localStorage hit
-  const cached = loadStoredTokens()
+  // Distinguish an inaccessible localStorage from a confirmed absent key.
+  let cached: StoredTokens | null = null
+  let localReadError: unknown
+  try {
+    const raw = localStorage.getItem(TOKEN_STORAGE_KEY)
+    if (raw) {
+      try { cached = JSON.parse(raw) as StoredTokens } catch { /* malformed record */ }
+    }
+  } catch (error) {
+    localReadError = error
+  }
   if (cached) return cached
+  const absentOrUnavailable = (): null => {
+    if (localReadError) throw new GatewayTokenStoreUnavailableError(localReadError)
+    return null
+  }
 
   // Slow path: recover from SQLite api-key-store
   let raw: string | null
@@ -390,10 +403,12 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
     // storage error instead of the confirmed-absent null.
     throw new GatewayTokenStoreUnavailableError(e)
   }
-  if (!raw) return null
+  if (!raw) {
+    return absentOrUnavailable()
+  }
   try {
     const recovered = JSON.parse(raw) as Partial<StoredTokens>
-    if (!recovered.refresh_token || !recovered.refresh_expires_at) return null
+    if (!recovered.refresh_token || !recovered.refresh_expires_at) return absentOrUnavailable()
     // Freshness check: SQLite is written fire-and-forget AFTER localStorage,
     // so a failed/gapped write can leave a PREVIOUS generation behind
     // (e.g. an already-rotated-out or already-expired refresh token).
@@ -407,7 +422,7 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
       console.warn(
         '[llm-gateway] SQLite fallback: stored refresh token is expired or malformed — not restoring'
       )
-      return null
+      return absentOrUnavailable()
     }
     // The BACKUP READ itself must sit inside the credential lock: a logout
     // that purges both stores between our read (outside the lock) and the
@@ -433,20 +448,22 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
       // Hold the lock until the read settles (a deadline-expired read that
       // lands late must not race the restore write below).
       await freshSettled
-      if (!fresh) return null
+      if (!fresh) {
+        return absentOrUnavailable()
+      }
       let freshRecovered: Partial<StoredTokens>
       try {
         freshRecovered = JSON.parse(fresh) as Partial<StoredTokens>
       } catch {
-        return null
+        return absentOrUnavailable()
       }
-      if (!freshRecovered.refresh_token || !freshRecovered.refresh_expires_at) return null
+      if (!freshRecovered.refresh_token || !freshRecovered.refresh_expires_at) return absentOrUnavailable()
       if (
         typeof freshRecovered.refresh_expires_at !== 'number' ||
         !Number.isFinite(freshRecovered.refresh_expires_at) ||
         freshRecovered.refresh_expires_at <= Date.now()
       ) {
-        return null
+        return absentOrUnavailable()
       }
       const freshRestored: StoredTokens = {
         access_token: freshRecovered.access_token || '',
@@ -466,7 +483,7 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
     })
   } catch (e) {
     if (e instanceof GatewayTokenStoreUnavailableError) throw e
-    return null
+    return absentOrUnavailable()
   }
 }
 
@@ -1295,9 +1312,24 @@ export function refreshAccessTokenWithStatus(
   if (refreshInFlight && generation === (refreshInFlight as InFlightRefresh).generation) {
     return abortableRefreshResult(refreshInFlight, signal)
   }
-  const request = withGatewayRefreshLock(() =>
-    refreshAccessTokenWithStatusImpl(baseURL, clientId),
-  )
+  const beforeLock = loadStoredTokens()
+  const request = withGatewayRefreshLock(async (): Promise<RefreshResult> => {
+    // A peer may refresh while this tab waits. Adopt only a newer token for
+    // the same session; a replacement account must not receive this request.
+    const current = loadStoredTokens()
+    if (beforeLock && current && current.refresh_token !== beforeLock.refresh_token) {
+      return { status: 'temporary_error', error: new Error('session changed while waiting for refresh') }
+    }
+    if (
+      beforeLock && current && current.refresh_token === beforeLock.refresh_token &&
+      typeof current.access_token === 'string' && current.access_token.trim() &&
+      current.access_token !== beforeLock.access_token && current.access_expires_at > Date.now() + 60_000
+    ) {
+      setCredentialStatus('valid')
+      return { status: 'success', accessToken: current.access_token }
+    }
+    return refreshAccessTokenWithStatusImpl(baseURL, clientId)
+  })
   const tracked: InFlightRefresh = Object.assign(request, { generation })
   refreshInFlight = tracked
   // Clear on settle via then(onFulfilled, onRejected): unlike finally(), this
@@ -1374,9 +1406,14 @@ function getWebLocksForRefresh(): { request<T>(name: string, cb: () => T | Promi
 async function withGatewayRefreshLock<T>(refresh: () => Promise<T>): Promise<T> {
   const locks = getWebLocksForRefresh()
   if (!locks) return refresh()
+  let acquired = false
   try {
-    return await locks.request(GATEWAY_REFRESH_LOCK, refresh)
+    return await locks.request(GATEWAY_REFRESH_LOCK, () => {
+      acquired = true
+      return refresh()
+    })
   } catch (e) {
+    if (acquired) throw e
     // A failed lock acquisition (SecurityError etc.) must not break refresh:
     // degrade to the unlocked path (pre-lock behavior).
     console.warn('[llm-gateway] refresh lock unavailable, refreshing without cross-tab serialization:', e)
@@ -1470,7 +1507,8 @@ async function refreshAccessTokenWithStatusImpl(
     // as a transient gateway problem instead.
     const expiresIn = tokens.expires_in
     if (
-      !tokens.access_token ||
+      typeof tokens.access_token !== 'string' ||
+      !tokens.access_token.trim() ||
       typeof expiresIn !== 'number' ||
       !Number.isFinite(expiresIn) ||
       expiresIn <= 0

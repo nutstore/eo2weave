@@ -315,6 +315,15 @@ describe('gateway session reconciler', () => {
     expect(localStorage.getItem(TOKENS_KEY)).not.toBeNull()
   })
 
+  it('clears the previous catalog when identity reconciliation fails transiently', async () => {
+    registerGatewayModels([{ id: 'old-model', name: 'Old', capabilities: ['code'], contextWindow: 128000 }], 'ready')
+    seedStoredTokens({ access_expires_at: Date.now() - 1000 })
+    fetchMock.mockRejectedValue(new TypeError('network down'))
+    dispose = setupGatewaySessionReconciler()
+    await vi.waitFor(() => expect(getLastGatewayReconcileOutcome()).toBe('transient'))
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+  })
+
   it('reconciles an expired-marked tab to valid after an access-only refresh in another tab (#172.1)', async () => {
     // This tab marked the session expired (its own refresh raced and failed).
     settingsStoreState.modelCredentialStatus = 'expired'
