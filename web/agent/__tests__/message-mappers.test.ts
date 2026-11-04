@@ -24,7 +24,6 @@ describe('message-mappers', () => {
     expect(tool.kind).not.toBe('empty')
   })
   it('keeps an image-only assistant turn as real output', () => {
-    const model = { api: 'openai', provider: 'openai', id: 'test' } as never
     const base = { role: 'assistant', provider: 'openai', model: 'test', timestamp: 1 }
     const imageOnly = piToInternalMessage({
       ...base,
@@ -39,8 +38,13 @@ describe('message-mappers', () => {
     // (issue #165, item 4): without it the turn after an image-only reply
     // would send an empty assistant message and the model would lose the
     // context of what it just produced. The image block must survive the
-    // mapping — dropping the base64 here was the old bug.
-    const wire = internalToPiMessages([imageOnly], model, '')
+    // mapping — dropping the base64 here was the old bug. The model declares
+    // image input: vision-capable models keep the real image block.
+    const wire = internalToPiMessages(
+      [imageOnly],
+      { api: 'openai', provider: 'openai', id: 'test', input: ['text', 'image'] } as never,
+      ''
+    )
     expect(wire).toHaveLength(1)
     expect(wire[0]).toMatchObject({ role: 'assistant' })
     expect((wire[0] as { content: Array<{ type: string }> }).content).toContainEqual({
@@ -48,6 +52,24 @@ describe('message-mappers', () => {
       data: 'aW1hZ2U=',
       mimeType: 'image/png',
     })
+  })
+  it('drops assistant image blocks for text-only models but keeps the turn non-empty', () => {
+    const model = { api: 'openai', provider: 'openai', id: 'test' } as never
+    const base = { role: 'assistant', provider: 'openai', model: 'test', timestamp: 1 }
+    const imageOnly = piToInternalMessage({
+      ...base,
+      content: [{ type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' }],
+      stopReason: 'stop',
+    } as never)!
+    // Mirrors the user branch's `model.input.includes('image')` guard: a
+    // text-only model must not receive image blocks on assistant turns.
+    const wire = internalToPiMessages([imageOnly], model, '')
+    expect(wire).toHaveLength(1)
+    const content = (wire[0] as { content: Array<{ type: string; text?: string }> }).content
+    expect(content.some((part) => part.type === 'image')).toBe(false)
+    // Dropping the images must not leave a fully-empty assistant message.
+    expect(content.some((part) => part.type === 'text' && part.text)).toBe(true)
+    expect(JSON.stringify(wire)).not.toContain('aW1hZ2U=')
   })
   it('persists UI traces separately from the model conversation', () => {
     const deferred = [{ sourceCallId: 'child', sequence: 0, content: [{ type: 'text', text: 'observation' }] }]

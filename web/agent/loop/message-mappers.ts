@@ -181,11 +181,27 @@ function mapInternalToPiMessage(
     // Round-trip assistant-generated images back into provider history
     // (issue #165, item 4): without this, the turn after an image-only reply
     // sends an EMPTY assistant message — the model loses the context of what
-    // it just produced. Text stays first; images follow it.
+    // it just produced. Text stays first; images follow it. Only
+    // vision-capable models can accept image blocks on any turn (mirrors the
+    // user-branch `model.input.includes('image')` guard above); a
+    // text-only model gets an OCR-style text placeholder instead so the
+    // message is never emitted with fully empty content.
+    const hasVision = model.input?.includes('image') ?? false
+    let imageCount = 0
     for (const image of msg.images ?? []) {
       if (image.data && image.mimeType) {
+        if (!hasVision) {
+          imageCount += 1
+          continue
+        }
         content.push({ type: 'image', data: image.data, mimeType: image.mimeType })
       }
+    }
+    if (imageCount > 0) {
+      content.push({
+        type: 'text',
+        text: imageCount === 1 ? '[generated an image]' : `[generated ${imageCount} images]`,
+      })
     }
     for (const toolCall of msg.toolCalls || []) {
       content.push({
