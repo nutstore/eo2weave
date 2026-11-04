@@ -88,6 +88,7 @@ export const conversation = {
       dropFilesHere: "ここにファイルをドロップ",
       extractingFolder: "フォルダ内のファイルを展開中…",
       attachFiles: "ファイルを添付",
+      textPreviewUnavailable: "プレビューを読み込めませんでした。閉じてページを再読み込みしてください。",
       previewText: "テキストをプレビュー",
       closePreview: "プレビューを閉じる",
       loadingPreview: "プレビューを読み込み中…",

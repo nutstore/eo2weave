@@ -118,6 +118,7 @@ export const conversation = {
       dropFilesHere: "拖拽文件到此处",
       extractingFolder: "正在展开文件夹中的文件…",
       attachFiles: "添加附件",
+      textPreviewUnavailable: "无法加载预览。请关闭预览并刷新页面后重试。",
       previewText: "预览文本",
       closePreview: "关闭预览",
       loadingPreview: "正在加载预览…",

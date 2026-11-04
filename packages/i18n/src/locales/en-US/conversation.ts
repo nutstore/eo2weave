@@ -114,6 +114,7 @@ export const conversation = {
       dropFilesHere: "Drop files here",
       extractingFolder: "Extracting files from folder…",
       attachFiles: "Attach files",
+      textPreviewUnavailable: "Preview could not be loaded. Close it and refresh the page to try again.",
       previewText: "Preview text",
       closePreview: "Close preview",
       loadingPreview: "Loading preview…",

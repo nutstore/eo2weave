@@ -412,25 +412,23 @@ export function useConversationLogic() {
         return
       }
 
-      // Snapshot staged attachments SYNCHRONOUSLY, before any await. The
-      // optimistic input clear (see handleSend) bumps resetToken, and the
-      // editor's reset effect calls useAssetStore.clearAll() once React
-      // commits — so by the time the awaits below resume, the pending-asset
-      // store may already be empty. Keep the File references so a rejected
-      // send can hand the files back to the input.
+      // Capture the files belonging to this send before any async work.
+      // Files added later belong to the next message.
       const pendingSnapshot =
         options?.assets && options.assets.length > 0
           ? []
           : [...useAssetStore.getState().pendingAssets]
-      /** Re-attach staged files if the optimistic clear already wiped them. */
-      const restoreAssetsIfWiped = () => {
-        if (pendingSnapshot.length === 0) return
-        const { pendingAssets: current, addFiles } = useAssetStore.getState()
-        if (current.length === 0) addFiles(pendingSnapshot.map((a) => a.file))
+      // Move only this send's snapshot out of the composer synchronously.
+      // New attachments staged while writes are pending belong to the next send.
+      for (const asset of pendingSnapshot) useAssetStore.getState().removeAsset(asset.id)
+      const restoreSentAssets = () => {
+        if (pendingSnapshot.length > 0) {
+          useAssetStore.getState().addFiles(pendingSnapshot.map((a) => a.file))
+        }
       }
       const rejectSend = () => {
         options?.onInputRejected?.(text)
-        restoreAssetsIfWiped()
+        restoreSentAssets()
       }
 
       const { directoryHandle: dh } = useAgentStore.getState()
@@ -484,9 +482,7 @@ export function useConversationLogic() {
       // messages silently lost their attachments.
       let assets = options?.assets
       let wrotePendingAssets = false
-      let clearPendingAssets: (() => void) | undefined
       if (!assets || assets.length === 0) {
-        const { clearAll } = useAssetStore.getState()
         if (pendingSnapshot.length > 0) {
           try {
             // Ensure workspace is ready for asset writes.
@@ -542,7 +538,6 @@ export function useConversationLogic() {
               return Object.keys(carry).length > 0 ? { ...assetMeta, ...carry } : assetMeta
             })
             wrotePendingAssets = true
-            clearPendingAssets = clearAll
           } catch (err) {
             toast.error(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
             // Don't send — user can retry. Hand the typed text and the staged
@@ -582,10 +577,6 @@ export function useConversationLogic() {
           pageContext: pageContext ?? undefined,
         })
         if (result.enqueued) {
-          clearPendingAssets?.()
-          setInput('')
-          setMentionedAgentIds([])
-          setInputResetToken((v) => v + 1)
           useInputDraftStore.getState().clearDraft(targetConvId)
           setDraftTextToRestore(null)
           draftConvIdRef.current = null
@@ -603,10 +594,6 @@ export function useConversationLogic() {
 
       const userMsg = createUserMessage(text, assets, pageContext ?? undefined)
       updateMessages(targetConvId, targetConv ? [...targetConv.messages, userMsg] : [userMsg])
-      clearPendingAssets?.()
-      setInput('')
-      setMentionedAgentIds([])
-      setInputResetToken((v) => v + 1)
       // Clear any draft for this conversation (message sent) and reset restore state
       useInputDraftStore.getState().clearDraft(targetConvId)
       setDraftTextToRestore(null)

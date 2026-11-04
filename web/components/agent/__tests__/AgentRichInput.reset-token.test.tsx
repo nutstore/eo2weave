@@ -99,7 +99,7 @@ describe('AgentRichInput reset effect does not clear pending assets on editor mo
     expect(clearAllSpy).not.toHaveBeenCalled()
   })
 
-  it('clears pending assets only when resetToken actually bumps', async () => {
+  it('does not clear staged assets when resetToken bumps', async () => {
     const { rerender } = render(<Harness remountKey="conv-1" resetToken={0} />)
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0))
@@ -112,6 +112,6 @@ describe('AgentRichInput reset effect does not clear pending assets on editor mo
       await new Promise((r) => setTimeout(r, 0))
     })
 
-    expect(clearAllSpy).toHaveBeenCalledTimes(1)
+    expect(clearAllSpy).not.toHaveBeenCalled()
   })
 })

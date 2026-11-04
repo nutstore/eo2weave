@@ -53,12 +53,14 @@ describe('long text paste', () => {
   })
   it('leaves boundary-length text as normal paste', async () => {
     const { container } = mountInput()
-    const editor = await waitFor(() => container.querySelector('.ProseMirror')!)
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).toBeTruthy())
+    const editor = container.querySelector('.ProseMirror')!
     await waitFor(() => expect(editor.textContent).toContain('existing'))
     const event = new Event('paste', { bubbles: true, cancelable: true })
     Object.defineProperty(event, 'clipboardData', { value: { items: [], getData: () => 'x'.repeat(10_000), files: [] } })
     fireEvent(editor, event)
     expect(useAssetStore.getState().pendingAssets).toHaveLength(0)
+    await waitFor(() => expect(editor.textContent).toContain('x'.repeat(10_000)))
   })
 
   it('shows read errors and can retry without losing the attachment', async () => {
@@ -80,6 +82,15 @@ describe('long text paste', () => {
     act(() => useAssetStore.getState().addFiles([new File(['first'], 'first.txt', { type: 'text/plain' }), new File(['second'], 'second.txt', { type: 'text/plain' })]))
     fireEvent.click(await screen.findByRole('button', { name: 'Remove first.txt' }))
     expect(useAssetStore.getState().pendingAssets.map((a) => a.name)).toEqual(['second.txt'])
+  })
+
+  it('previews CSV text attachments', async () => {
+    mountInput()
+    const file = new File(['a,b'], 'data.csv', { type: 'text/csv' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve('a,b') })
+    act(() => useAssetStore.getState().addFiles([file]))
+    fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: data.csv' }))
+    expect((await screen.findByTestId('text-preview')).textContent).toBe('a,b')
   })
 
 })

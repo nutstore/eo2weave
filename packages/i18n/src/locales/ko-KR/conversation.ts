@@ -88,6 +88,7 @@ export const conversation = {
       dropFilesHere: "여기에 파일을 드롭하세요",
       extractingFolder: "폴더 내 파일을 추출하는 중…",
       attachFiles: "파일 첨부",
+      textPreviewUnavailable: "미리보기를 불러오지 못했습니다. 닫고 페이지를 새로고침하세요.",
       previewText: "텍스트 미리보기",
       closePreview: "미리보기 닫기",
       loadingPreview: "미리보기 불러오는 중…",
