@@ -1506,7 +1506,52 @@ export async function importUserSkillZip(
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const dirNames = [...seenDirNames].sort()
-  return withImportSerialization(runId, dirNames, async () => {
+  return withImportSerialization(runId, dirNames, () =>
+    importUserSkillZipLocked(preview, skills, dirNames, runId, options),
+  )
+}
+
+/**
+ * Import previewed skills WITHOUT acquiring the per-directory import lock —
+ * for callers that ALREADY hold it (#154): the store install flow must read
+ * the installed version and decide update-vs-skip under the SAME
+ * serialization as the write, or a concurrent install/delete (this tab or
+ * another) can slip between the decision and the import. Calling the
+ * locking `importUserSkillZip` from inside that critical section would
+ * deadlock on the same per-directory lock.
+ */
+export async function importUserSkillZipPrelocked(
+  preview: ZipSkillPreview,
+  options: { ifAbsent?: boolean } = {},
+): Promise<number> {
+  const skills = preview.isBundle ? (preview.skills ?? []) : preview.skill ? [preview.skill] : []
+  if (skills.length === 0) return 0
+
+  const seenDirNames = new Set<string>()
+  for (const s of skills) {
+    if (seenDirNames.has(s.dirName)) {
+      throw new Error(
+        `ZIP bundle contains duplicate skill folders ("${s.dirName}") — each skill must live in its own folder.`,
+      )
+    }
+    seenDirNames.add(s.dirName)
+  }
+
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  const dirNames = [...seenDirNames].sort()
+  return importUserSkillZipLocked(preview, skills, dirNames, runId, options)
+}
+
+/** The `ifAbsent` check + import body, run by both entry points INSIDE the
+ * per-directory import serialization. */
+async function importUserSkillZipLocked(
+  preview: ZipSkillPreview,
+  skills: ZipSkillEntry[],
+  dirNames: string[],
+  runId: string,
+  options: { ifAbsent?: boolean },
+): Promise<number> {
+  {
     if (options.ifAbsent) {
       // This check must happen AFTER acquiring the cross-tab locks. A second
       // landing page may have observed "not installed" before the first one
@@ -1524,7 +1569,24 @@ export async function importUserSkillZip(
       }
     }
     return importUserSkillZipInner(preview, skills, runId)
-  })
+  }
+}
+
+/**
+ * Run `fn` while holding the per-directory cross-tab import locks for
+ * `dirNames` — the same serialization `importUserSkillZip` uses. Install
+ * flows that must make a version-aware decision call this so the decision
+ * and the subsequent (prelocked) import cannot interleave with a concurrent
+ * install or delete of the same skill (#154).
+ */
+export async function withSkillImportSerialization<T>(
+  dirNames: string[],
+  fn: () => Promise<T>,
+): Promise<T> {
+  const unique = [...new Set(dirNames)].sort()
+  if (unique.length === 0) return fn()
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  return withImportSerialization(runId, unique, fn)
 }
 
 async function importUserSkillZipInner(
@@ -2018,13 +2080,21 @@ function buildFileTreeFromPaths(
 /**
  * Delete a user skill directory from OPFS `.skills/user/<dirName>/`.
  *
+ * The removal runs under the SAME per-directory cross-tab lock the import
+ * pipeline holds (#154): an uninstall racing a concurrent install/update of
+ * the same skill must not interleave with that import's remove/write phases
+ * (otherwise a delete between the import's version-read and its write makes
+ * the older install reappear as if freshly installed).
+ *
  * @param dirName  Skill directory name (slug-safe)
  */
 export async function deleteUserSkillDir(dirName: string): Promise<void> {
- const opfsRoot = await navigator.storage.getDirectory()
- const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: false })
- const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: false })
- await userDir.removeEntry(dirName, { recursive: true })
+  return withSkillImportSerialization([dirName], async () => {
+    const opfsRoot = await navigator.storage.getDirectory()
+    const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: false })
+    const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: false })
+    await userDir.removeEntry(dirName, { recursive: true })
+  })
 }
 
 /**
