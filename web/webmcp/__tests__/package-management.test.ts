@@ -2,15 +2,21 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { memoryProvider } from '@creatorweave/fs-provider/memory'
 import { createProviderHandler } from '../../../browser-extension/entrypoints/webmcp/provider-handler'
 import { createPackageManagement } from '../../../browser-extension/entrypoints/webmcp/package-management'
-import { readWebMCPCatalog } from '../../../browser-extension/entrypoints/webmcp/package-repository'
+import { readWebMCPCatalog, readWebMCPCatalogDetailed } from '../../../browser-extension/entrypoints/webmcp/package-repository'
 import { setBuiltinConfig } from '../../../browser-extension/entrypoints/webmcp/builtin-storage'
 import { pkg } from './fixtures'
-vi.mock('../../../browser-extension/entrypoints/webmcp/package-repository', () => ({ readWebMCPCatalog: vi.fn() }))
+vi.mock('../../../browser-extension/entrypoints/webmcp/package-repository', () => ({ readWebMCPCatalog: vi.fn(), readWebMCPCatalogDetailed: vi.fn() }))
 vi.mock('../../../browser-extension/entrypoints/webmcp/builtin-storage', () => ({ setBuiltinConfig: vi.fn() }))
 const entry = { directory: pkg.manifest.id, mount: 'webmcp', uri: 'vfs://external/webmcp/com.example.tools/', access: 'read-write' as const, config: {}, activation: 'disabled' as const, diagnostics: [], package: pkg }
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(readWebMCPCatalog).mockResolvedValue([entry])
+  // `webmcp_packages_list` reads the DETAILED catalog; delegate to the mocked
+  // single-value reader so a test's catalog fixture stays its only knob.
+  vi.mocked(readWebMCPCatalogDetailed).mockImplementation(async () => [
+    await vi.mocked(readWebMCPCatalog)(),
+    { userMountComplete: true },
+  ])
   // The management handler holds the cross-context package lease (round 3:
   // "Management mutations bypass package lock") — chrome.storage.local backs
   // it; a real map keeps acquire/heartbeat/release working in tests.
@@ -48,6 +54,11 @@ it('lists invalid packages and diagnostics without loading source into the page 
   const result = await manage({ type: 'webmcp_packages_list' })
   expect(result).toMatchObject({ ok: true, entries: [{ manifest: pkg.manifest }, { directory: 'broken', diagnostics: ['Missing manifest.json'] }] })
   expect(JSON.stringify(result)).not.toContain('sources')
+})
+it('tells the page when the user mount could not be listed instead of reporting an empty one', async () => {
+  vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[], { userMountComplete: false }])
+  const manage = createPackageManagement(vi.fn(), vi.fn())
+  expect(await manage({ type: 'webmcp_packages_list' })).toMatchObject({ ok: true, entries: [], userMountComplete: false })
 })
 it('rejects traversal, booleans, missing packages and invalid enables without committing', async () => {
   const write = vi.fn(), refresh = vi.fn()
