@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('../package-repository', () => ({
   readWebMCPCatalog: async () => [{ directory: 'com.example.pkg', mount: 'webmcp', access: 'read-write', diagnostics: [], package: {} }],
+  readWebMCPCatalogDetailed: async () => [[{ directory: 'com.example.pkg', mount: 'webmcp', access: 'read-write', diagnostics: [], package: {} }], { userMountComplete: true }],
 }))
 vi.mock('../package-lock', () => ({
   withPackageLock: async (_id: string, callback: (signal: AbortSignal) => Promise<unknown>) => callback(new AbortController().signal),

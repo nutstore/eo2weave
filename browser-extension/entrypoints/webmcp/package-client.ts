@@ -3,10 +3,20 @@ import type { WebMCPPackageManifest } from '@creatorweave/shared/webmcp-adapter'
 import type { WebMCPConfig } from '@creatorweave/shared/webmcp-config'
 export type ManagedWebMCPPackage = Omit<WebMCPPackageEntry, 'package'> & { manifest: WebMCPPackageManifest | null }
 
-export async function listManagedPackages(): Promise<ManagedWebMCPPackage[]> {
+export interface ManagedPackageCatalog {
+  entries: ManagedWebMCPPackage[]
+  /**
+   * False when the writable user mount could not be listed, so `entries` is
+   * builtin-only. "Mine" must not read that as "no packages" — the section is
+   * unavailable, not empty.
+   */
+  userMountComplete: boolean
+}
+
+export async function listManagedPackages(): Promise<ManagedPackageCatalog> {
   const response = await chrome.runtime.sendMessage({ type: 'webmcp_packages_list' })
   if (!response?.ok) throw new Error(response?.error ?? 'Package catalog unavailable')
-  return response.entries
+  return { entries: response.entries, userMountComplete: response.userMountComplete !== false }
 }
 export async function setManagedPackageConfig(entry: ManagedWebMCPPackage, config: WebMCPConfig): Promise<void> {
   const response = await chrome.runtime.sendMessage({ type: 'webmcp_packages_set_config', mount: entry.mount, directory: entry.directory, config })

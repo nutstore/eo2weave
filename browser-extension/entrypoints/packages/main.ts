@@ -58,14 +58,17 @@ async function renderAll(): Promise<void> {
   // second (or fails first). The generation guard is checked per arrival, so a
   // superseded render still lands nothing.
   let packages: ManagedWebMCPPackage[] | undefined
+  /** False when the user mount could not be listed (builtin-only catalog). */
+  let userMountComplete = true
   let registries: RegistryListResult | undefined
 
   const packagesSettled = listManagedPackages().then(
-    entries => {
-      packages = entries
+    catalog => {
+      packages = catalog.entries
+      userMountComplete = catalog.userMountComplete
       if (current !== generation) return
-      builtin.render(entries)
-      if (registries) mine.render(entries, new Set(registries.installed))
+      builtin.render(catalog.entries)
+      if (registries) mine.render(catalog.entries, new Set(registries.installed), { userMountComplete })
     },
     error => {
       if (current !== generation) return
@@ -79,7 +82,7 @@ async function renderAll(): Promise<void> {
       registries = result
       if (current !== generation) return
       registry.render(result)
-      if (packages) mine.render(packages, new Set(result.installed))
+      if (packages) mine.render(packages, new Set(result.installed), { userMountComplete })
     },
     error => {
       if (current !== generation) return

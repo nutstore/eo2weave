@@ -550,6 +550,9 @@
   "webmcpPackagesActivationUnknown": {
     "message": "Installed · activation unavailable"
   },
+  "webmcpPackagesMineUnavailable": {
+    "message": "Your packages could not be read right now — reload the page to try again."
+  },
   "webmcpPackagesInstalledActive": {
     "message": "Installed · active"
   },

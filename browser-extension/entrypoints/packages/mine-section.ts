@@ -8,11 +8,16 @@
  */
 
 import type { ManagedWebMCPPackage } from '../webmcp/package-client'
-import { buildManagedCard, classifyPackage, createSection } from './shared'
+import { buildManagedCard, classifyPackage, createSection, t } from './shared'
 
 export interface MineSection {
   /** Render from a package load plus the registry install records. */
-  render(entries: ManagedWebMCPPackage[], installedDirectories: ReadonlySet<string>): void
+  render(
+    entries: ManagedWebMCPPackage[],
+    installedDirectories: ReadonlySet<string>,
+    /** `false` when the user mount could not be listed: not "empty", UNKNOWN. */
+    options?: { userMountComplete?: boolean },
+  ): void
   /** Render ONLY this section's error — the other sections stay usable. */
   fail(error: unknown): void
 }
@@ -29,7 +34,7 @@ export function createMineSection(
     summary,
   })
   return {
-    render(entries, installedDirectories) {
+    render(entries, installedDirectories, options) {
       shell.error.clear()
       // Registry-installed packages must NOT reappear here: their own row in
       // the registry section already owns enable/remove.
@@ -39,7 +44,11 @@ export function createMineSection(
       shell.list.replaceChildren()
       shell.setCount(mine.length)
       if (!mine.length) {
-        shell.empty('webmcpPackagesEmptyMine')
+        // A catalog read from an unlistable user mount contains no authored
+        // package BY CONSTRUCTION, so an empty list here is not evidence that
+        // the user has none. Say the section is unavailable, not empty.
+        if (options?.userMountComplete === false) shell.error.show(new Error(t('webmcpPackagesMineUnavailable')))
+        else shell.empty('webmcpPackagesEmptyMine')
         return
       }
       for (const entry of mine) {

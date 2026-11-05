@@ -1,6 +1,6 @@
 import { FsError, normalizeProviderPath } from '@creatorweave/fs-provider'
 import { parseWebMCPConfig, serializeWebMCPConfig } from '@creatorweave/shared/webmcp-config'
-import { readWebMCPCatalog } from './package-repository'
+import { readWebMCPCatalog, readWebMCPCatalogDetailed } from './package-repository'
 import { setBuiltinConfig } from './builtin-storage'
 import { withPackageLock } from './package-lock'
 import { recordUninstallIntent } from './package-installer'
@@ -13,8 +13,16 @@ export function createPackageManagement(
   return async (message: Record<string, unknown>) => {
     try {
       if (message.type === 'webmcp_packages_list') {
-        const entries = await readWebMCPCatalog()
-        return { ok: true, entries: entries.map(({ package: pkg, ...entry }) => ({ ...entry, manifest: pkg?.manifest ?? null })) }
+        // COMPLETENESS: a user mount that could not be listed degrades to a
+        // builtin-only catalog. The page must know: an empty "Mine" over an
+        // unreadable mount is indistinguishable from "you have no packages",
+        // so the flag travels with the entries.
+        const [entries, completeness] = await readWebMCPCatalogDetailed()
+        return {
+          ok: true,
+          entries: entries.map(({ package: pkg, ...entry }) => ({ ...entry, manifest: pkg?.manifest ?? null })),
+          userMountComplete: completeness.userMountComplete,
+        }
       }
       if (!['webmcp_packages_set_config', 'webmcp_packages_delete'].includes(String(message.type))) throw new FsError('EINVAL', 'Unknown package operation')
       if (typeof message.directory !== 'string' || normalizeProviderPath(message.directory) !== message.directory || message.directory.includes('/'))

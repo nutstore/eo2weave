@@ -153,6 +153,19 @@ describe('mine section', () => {
     expect(doc.querySelectorAll('#mineHost .btn.danger')).toHaveLength(1)
   })
 
+  it('reports an unreadable user mount instead of an empty section', () => {
+    // The catalog degrades to builtin-only when the user mount cannot be
+    // listed; "empty" would then be a claim the page cannot make.
+    const { doc } = setupDom()
+    const mine = createMineSection(host(doc, 'mineHost'), () => {})
+    mine.render([entry({ id: 'com.example.builtin', mount: 'builtin-webmcp', access: 'read-only' })], new Set(), { userMountComplete: false })
+
+    const error = doc.querySelector('#mineHost .error') as HTMLElement
+    expect(error.hidden).toBe(false)
+    expect(error.textContent).toContain('webmcpPackagesMineUnavailable')
+    expect(doc.body.textContent).not.toContain('webmcpPackagesEmptyMine')
+  })
+
   it('keeps a failed config write out of the sibling section', async () => {
     const { win, doc } = setupDom()
     vi.mocked(setManagedPackageConfig).mockRejectedValueOnce(new Error('Storage unavailable'))

@@ -233,6 +233,7 @@
   "webmcpPackagesInstalledInactive": { "message": "已安装 · 未激活" },
   "webmcpPackagesInstalledInactiveHint": { "message": "在这里打开开关后，到匹配站点打开侧边栏即可使用。" },
   "webmcpPackagesActivationUnknown": { "message": "已安装 · 状态不可读" },
+  "webmcpPackagesMineUnavailable": { "message": "暂时无法读取你的包，请刷新页面重试。" },
   "webmcpPackagesInstalledActive": { "message": "已安装 · 已激活" },
   "webmcpPackagesToolsCount": {
     "message": "$COUNT$ 个工具",
