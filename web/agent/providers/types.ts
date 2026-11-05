@@ -235,6 +235,8 @@ export function registerDynamicProvider(
 /**
  * Catalog status of a provider's registered model list.
  *
+ * - `'loading'` — catalog discovery is in progress; treat the list as
+ *   pending rather than a failed or authoritative empty catalog.
  * - `'ready'` — the list was loaded successfully and is non-empty.
  * - `'empty'` — the list was loaded successfully and IS empty (authoritative:
  *   the provider positively reported it serves no models).

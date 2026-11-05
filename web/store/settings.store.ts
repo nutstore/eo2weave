@@ -263,11 +263,9 @@ interface SettingsState {
     authoritativeIds: string[]
     /**
      * Whether the state snapshot this result was built from is still current.
-     * False when a newer `getAvailableProviders` run started while this one
-     * was awaiting: the caller must not feed a superseded snapshot into
-     * `ensureValidModelSelection` (only the store's own run may reconcile,
-     * and a newer run supersedes it — Sourcery: "Stale discovery changes
-     * selection").
+     * False when a newer discovery starts or provider state changes while
+     * this run is awaiting, even if no replacement run has started yet.
+     * Callers must not reconcile selection from a superseded snapshot.
      */
     current: boolean
     /**
