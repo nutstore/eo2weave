@@ -5,6 +5,7 @@ import { WorkspaceLayout } from '@/components/layout/WorkspaceLayout'
 import { useProjectStore } from '@/store/project.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { InitErrorBanner } from '@/components/project/InitErrorBanner'
+import { StorageLoading } from '@/components/StorageLoading'
 import { useWorkspaceRouteSync } from '@/hooks/useWorkspaceRouteSync'
 import { projectWorkspacePath, projectsPath } from '@/lib/route-paths'
 
@@ -32,7 +33,7 @@ export default function WorkspaceRouteView() {
   const projectId = params.projectId ?? ''
   const workspaceId = params.workspaceId ?? undefined
 
-  useWorkspaceRouteSync(projectId, workspaceId)
+  const initialSyncComplete = useWorkspaceRouteSync(projectId, workspaceId)
 
   const projects = useProjectStore((s) => s.projects)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
@@ -52,6 +53,10 @@ export default function WorkspaceRouteView() {
   // Surface the same banner + Retry the projects page shows.
   if (initError) {
     return <InitErrorBanner />
+  }
+
+  if (!initialSyncComplete) {
+    return <StorageLoading />
   }
 
   return (

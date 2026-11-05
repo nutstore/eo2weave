@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useT } from '@/i18n'
@@ -26,6 +26,13 @@ import { projectWorkspacePath } from '@/lib/route-paths'
  */
 export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
   const router = useRouter()
+  // Only gate the first restore. Later route changes must keep the workspace
+  // UI mounted so switching conversations preserves its layout and controls.
+  const [initialSyncComplete, setInitialSyncComplete] = useState(false)
+  // Canonical navigation can replay the effect after the store installs
+  // metadata/active IDs but before their transcript reads have finished.
+  const pendingLoad = useRef<Promise<void> | null>(null)
+  const pendingActivation = useRef<{ workspaceId: string; promise: Promise<void> } | null>(null)
 
   const setActiveProject = useProjectStore((s) => s.setActiveProject)
   const initialized = useProjectStore((s) => s.initialized)
@@ -129,6 +136,7 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
         })
         if (!workspaceId) {
           // Already on bare project URL, nothing more to do
+          setInitialSyncComplete(true)
           return
         }
         router.replace(projectWorkspacePath(projectId))
@@ -157,6 +165,23 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
 
       if (cancelled) return
 
+      // WorkspaceLayout is held behind the initial gate, so its mount effect
+      // cannot load cold conversation metadata for us. Await the full load,
+      // including the active transcript (loaded=true alone only means metadata).
+      if (!useConversationStore.getState().loaded && !pendingLoad.current) {
+        pendingLoad.current = useConversationStore.getState().loadFromDB()
+      }
+      const load = pendingLoad.current
+      if (load) {
+        try {
+          await load
+        } finally {
+          if (pendingLoad.current === load) pendingLoad.current = null
+        }
+      }
+
+      if (cancelled) return
+
       // Step 6: Activate conversation (loads messages, no workspace side-effects)
       const activeConversationId = useConversationStore.getState().activeConversationId
       console.log('[syncFromRoute] step6 activate conversation', {
@@ -164,16 +189,39 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
         activeConversationId,
         willCall: activeConversationId !== targetWorkspaceId,
       })
-      if (activeConversationId !== targetWorkspaceId) {
-        await useConversationStore.getState().setActive(targetWorkspaceId)
+      if (activeConversationId !== targetWorkspaceId &&
+          pendingActivation.current?.workspaceId !== targetWorkspaceId) {
+        pendingActivation.current = {
+          workspaceId: targetWorkspaceId,
+          promise: useConversationStore.getState().setActive(targetWorkspaceId),
+        }
       }
+      const activation = pendingActivation.current
+      if (activation?.workspaceId === targetWorkspaceId) {
+        try {
+          await activation.promise
+        } finally {
+          if (pendingActivation.current === activation) pendingActivation.current = null
+        }
+      }
+      if (cancelled) return
+      setInitialSyncComplete(true)
       console.log('[syncFromRoute] done', { targetWorkspaceId })
     }
 
-    void syncFromRoute()
+    void syncFromRoute().catch((error: unknown) => {
+      if (cancelled) return
+      console.error('[syncFromRoute] Failed to restore workspace:', error)
+      toast.error(error instanceof Error ? error.message : t('app.switchProjectFailed'))
+      // Preserve the workspace navigation and existing recovery controls
+      // instead of stranding an initialization failure behind a loading screen.
+      setInitialSyncComplete(true)
+    })
 
     return () => {
       cancelled = true
     }
   }, [projectId, workspaceId, setActiveProject, router, t, initialized, projectLoading])
+
+  return initialSyncComplete
 }

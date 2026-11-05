@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 
 // ── Mocks ────────────────────────────────────────────────────────────
 const routerReplaceMock = vi.fn()
+const routerMock = { replace: routerReplaceMock, push: vi.fn(), back: vi.fn() }
+const translate = (key: string) => key
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: routerReplaceMock, push: vi.fn(), back: vi.fn() }),
+  useRouter: () => routerMock,
   usePathname: () => '/',
   useParams: () => ({}),
   useSearchParams: () => new URLSearchParams(),
@@ -20,7 +22,7 @@ vi.mock('sonner', () => ({
 }))
 
 vi.mock('@/i18n', () => ({
-  useT: () => (key: string) => key,
+  useT: () => translate,
 }))
 
 import { useWorkspaceRouteSync } from '../useWorkspaceRouteSync'
@@ -54,6 +56,7 @@ let switchWorkspaceSpy: ReturnType<typeof vi.fn>
 let refreshPendingChangesSpy: ReturnType<typeof vi.fn>
 let setActiveConversationSpy: ReturnType<typeof vi.fn>
 let setActiveProjectSpy: ReturnType<typeof vi.fn>
+let loadConversationsSpy: ReturnType<typeof vi.fn>
 
 function setupStores(opts: {
   projects?: typeof PROJECT_A[]
@@ -62,6 +65,7 @@ function setupStores(opts: {
   activeWorkspaceId?: string | null
   conversations?: Array<{ id: string }>
   activeConversationId?: string | null
+  loaded?: boolean
 }) {
   const projects = opts.projects ?? [PROJECT_A]
   const workspaces = opts.workspaces ?? [makeWorkspace('ws-old', 100), makeWorkspace('ws-recent', 500)]
@@ -70,6 +74,7 @@ function setupStores(opts: {
   refreshPendingChangesSpy = vi.fn(async () => {})
   setActiveConversationSpy = vi.fn(async () => {})
   setActiveProjectSpy = vi.fn(async () => true)
+  loadConversationsSpy = vi.fn(async () => {})
 
   useProjectStore.setState({
     projects,
@@ -93,9 +98,11 @@ function setupStores(opts: {
   })
 
   useConversationStore.setState({
+    loaded: opts.loaded ?? true,
     conversations: (opts.conversations ?? []) as never,
     activeConversationId: opts.activeConversationId ?? null,
     setActive: setActiveConversationSpy as never,
+    loadFromDB: loadConversationsSpy,
   })
 }
 
@@ -182,5 +189,118 @@ describe('useWorkspaceRouteSync', () => {
     await waitFor(() => expect(refreshPendingChangesSpy).toHaveBeenCalledWith(true))
     expect(switchWorkspaceSpy).not.toHaveBeenCalled()
     expect(setActiveConversationSpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps the initial route pending until saved conversation messages are restored', async () => {
+    setupStores({})
+    let finishRestore!: () => void
+    setActiveConversationSpy.mockImplementation(() => new Promise<void>((resolve) => {
+      finishRestore = resolve
+    }))
+    const { result } = renderHook(() => useWorkspaceRouteSync(PROJECT_A.id, 'ws-old'))
+
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('ws-old'))
+    expect(result.current).toBe(false)
+
+    await act(async () => finishRestore())
+    await waitFor(() => expect(result.current).toBe(true))
+  })
+
+  it('finishes an empty project without waiting for a conversation', async () => {
+    setupStores({ workspaces: [] })
+    const { result } = renderHook(() => useWorkspaceRouteSync(PROJECT_A.id))
+
+    await waitFor(() => expect(result.current).toBe(true))
+    expect(setActiveConversationSpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps the workspace UI mounted during later conversation switches', async () => {
+    setupStores({})
+    const { result, rerender } = renderHook(
+      ({ workspaceId }) => useWorkspaceRouteSync(PROJECT_A.id, workspaceId),
+      { initialProps: { workspaceId: 'ws-old' } },
+    )
+    await waitFor(() => expect(result.current).toBe(true))
+
+    let finishSwitch!: () => void
+    setActiveConversationSpy.mockImplementation(() => new Promise<void>((resolve) => {
+      finishSwitch = resolve
+    }))
+    rerender({ workspaceId: 'ws-recent' })
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledWith('ws-recent'))
+    expect(result.current).toBe(true)
+    await act(async () => finishSwitch())
+  })
+
+  it('awaits the cold metadata and transcript load before showing the workspace', async () => {
+    setupStores({ loaded: false, conversations: [] })
+    let finishTranscript!: () => void
+    loadConversationsSpy.mockImplementation(async () => {
+      // The real loader installs metadata and loaded=true BEFORE it reads
+      // the active transcript. Readiness must await the whole load promise.
+      useConversationStore.setState({ loaded: true, activeConversationId: 'ws-old' })
+      await new Promise<void>((resolve) => { finishTranscript = resolve })
+    })
+    const { result } = renderHook(() => useWorkspaceRouteSync(PROJECT_A.id, 'ws-old'))
+
+    await waitFor(() => expect(loadConversationsSpy).toHaveBeenCalled())
+    expect(useConversationStore.getState().loaded).toBe(true)
+    expect(result.current).toBe(false)
+    expect(setActiveConversationSpy).not.toHaveBeenCalled()
+
+    await act(async () => finishTranscript())
+    await waitFor(() => expect(result.current).toBe(true))
+  })
+
+  it('reveals the existing workspace recovery UI if the initial switch fails', async () => {
+    setupStores({})
+    switchWorkspaceSpy.mockRejectedValue(new Error('Workspace could not be opened'))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { result } = renderHook(() => useWorkspaceRouteSync(PROJECT_A.id, 'ws-old'))
+
+      await waitFor(() => expect(result.current).toBe(true))
+      expect(error).toHaveBeenCalled()
+    } finally {
+      error.mockRestore()
+    }
+  })
+
+  it('keeps awaiting the cold transcript when the canonical route commits', async () => {
+    setupStores({ loaded: false, conversations: [] })
+    let finishTranscript!: () => void
+    loadConversationsSpy.mockImplementation(async () => {
+      useConversationStore.setState({ loaded: true, activeConversationId: 'ws-recent' })
+      await new Promise<void>((resolve) => { finishTranscript = resolve })
+    })
+    const { result, rerender } = renderHook(
+      ({ workspaceId }) => useWorkspaceRouteSync(PROJECT_A.id, workspaceId),
+      { initialProps: { workspaceId: undefined as string | undefined } },
+    )
+    await waitFor(() => expect(loadConversationsSpy).toHaveBeenCalledTimes(1))
+
+    await act(async () => rerender({ workspaceId: 'ws-recent' }))
+    expect(result.current).toBe(false)
+    await act(async () => finishTranscript())
+    await waitFor(() => expect(result.current).toBe(true))
+  })
+
+  it('keeps awaiting an active selection when the canonical route commits', async () => {
+    setupStores({})
+    let finishTranscript!: () => void
+    setActiveConversationSpy.mockImplementation(async (id: string) => {
+      useConversationStore.setState({ activeConversationId: id })
+      await new Promise<void>((resolve) => { finishTranscript = resolve })
+    })
+    const { result, rerender } = renderHook(
+      ({ workspaceId }) => useWorkspaceRouteSync(PROJECT_A.id, workspaceId),
+      { initialProps: { workspaceId: undefined as string | undefined } },
+    )
+    await waitFor(() => expect(setActiveConversationSpy).toHaveBeenCalledTimes(1))
+
+    await act(async () => rerender({ workspaceId: 'ws-recent' }))
+    expect(result.current).toBe(false)
+    await act(async () => finishTranscript())
+    await waitFor(() => expect(result.current).toBe(true))
   })
 })
