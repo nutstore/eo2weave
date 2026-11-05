@@ -162,5 +162,9 @@ export const agent = {
         running: "Running...",
         reading: "Reading...",
         loadingLargeResultSet: "Loading large result set...",
+        stateRunning: "running",
+        stateStarting: "starting (port not ready yet)",
+        stateExited: "exited",
+        stateStopped: "stopped",
     },
 } as const

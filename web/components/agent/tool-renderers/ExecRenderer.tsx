@@ -19,6 +19,7 @@ registerRenderer({
   name: 'exec',
   icon: <Terminal className="h-3.5 w-3.5 text-neutral-400" />,
   Summary(ctx) {
+    const t = useT()
     const cmd = extractCommand(ctx)
     const output = extractOutput(ctx)
 
@@ -52,7 +53,7 @@ registerRenderer({
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
             </span>
-            <span className="text-xs text-blue-500">running</span>
+            <span className="text-xs text-blue-500">{t('agent.toolStatus.stateRunning')}</span>
           </span>
         </>
       )
@@ -189,12 +190,12 @@ registerRenderer({
               {bg.state === 'ready' && (
                 <span className="flex items-center gap-1 text-emerald-500">
                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  running
+                  {t('agent.toolStatus.stateRunning')}
                 </span>
               )}
-              {bg.state === 'timeout' && <span className="text-amber-500">starting (port not ready yet)</span>}
-              {bg.state === 'exited' && <span className="text-red-400">exited{bg.exitCode != null ? ` (${bg.exitCode})` : ''}</span>}
-              {bg.state === 'stopped' && <span className="text-neutral-400">stopped</span>}
+              {bg.state === 'timeout' && <span className="text-amber-500">{t('agent.toolStatus.stateStarting')}</span>}
+              {bg.state === 'exited' && <span className="text-red-400">{t('agent.toolStatus.stateExited')}{bg.exitCode != null ? ` (${bg.exitCode})` : ''}</span>}
+              {bg.state === 'stopped' && <span className="text-neutral-400">{t('agent.toolStatus.stateStopped')}</span>}
               {bg.url && (
                 <a href={bg.url} target="_blank" rel="noreferrer" className="ml-auto text-sky-500 hover:underline font-mono text-[11px]">
                   {bg.url}

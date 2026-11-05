@@ -162,5 +162,9 @@ export const agent = {
         running: "运行中…",
         reading: "读取中…",
         loadingLargeResultSet: "正在加载大量结果…",
+        stateRunning: "运行中",
+        stateStarting: "启动中（端口尚未就绪）",
+        stateExited: "已退出",
+        stateStopped: "已停止",
     },
 } as const
