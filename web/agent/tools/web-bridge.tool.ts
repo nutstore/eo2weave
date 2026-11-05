@@ -184,6 +184,8 @@ interface AgentWebFetchResponse {
     length: number
   }
   error?: string
+  /** True when the extension refused the URL outright (address-space guard). */
+  refused?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +325,8 @@ export const webFetchDefinition: ToolDefinition = {
       '',
       'You can set render=true to force JavaScript rendering (useful when you know the page is an SPA like a React/Vue app).',
       '',
+      'Only public http(s) URLs are fetched: private, loopback, link-local and metadata addresses are refused, and redirects are re-checked hop by hop against that rule (a refusal is reported as a non-retryable URL_REFUSED error).',
+      '',
       'Returns: body (Markdown for HTML, raw for everything else), HTTP status, headers, and readability metadata (title, excerpt, byline) for HTML pages.',
       '',
       'This tool requires the Browser Extension to be installed and active.',
@@ -438,6 +442,15 @@ export const webFetchExecutor: ToolExecutor = async (args, context) => {
 
   try {
     const result = await bridge.fetch(url, options)
+
+    // Address-space refusals (private / loopback / metadata targets, redirects
+    // into them, opaque redirects) are a policy verdict: retrying can never
+    // succeed, so this must not be handed back as a retryable fetch error.
+    if (!result.ok && result.refused) {
+      return toolErrorJson('web_fetch', 'URL_REFUSED', result.error || 'URL refused by the browser extension', {
+        hint: 'web_fetch fetches public http(s) URLs only; private, loopback and link-local addresses are refused.',
+      })
+    }
 
     if (!result.ok && result.status === 0) {
       return toolErrorJson('web_fetch', 'FETCH_ERROR', result.error || 'Failed to fetch URL', { retryable: true })

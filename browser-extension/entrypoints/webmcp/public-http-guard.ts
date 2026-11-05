@@ -1,0 +1,309 @@
+/**
+ * Address-space guard for URLs the extension fetches with background
+ * privileges (#148, #157).
+ *
+ * Every privileged fetch of a URL that came from an untrusted page result —
+ * plugin downloads, the web tool's web_fetch/web_fetch_render, MCP endpoint
+ * proxies — must pass the same two gates:
+ *
+ *   1. `assertPublicUrl`: URL TEXT only — scheme, no credentials, no
+ *      localhost / single-label / .local / .internal / .home.arpa hosts, no
+ *      private / loopback / link-local / CGNAT / reserved IP literals (IPv4
+ *      and IPv6, including IPv4-mapped, IPv4-compatible and NAT64 forms).
+ *   2. `fetchPublicUrl`: the privileged fetch itself, with `redirect:
+ *      'manual'` so EVERY 3xx hop is re-validated before the next request and
+ *      an opaque-redirect (unfollowable in Chrome) is refused outright.
+ *
+ * Without gate 2 the default `redirect: 'follow'` turns any public URL into a
+ * trampoline: a 302 to 169.254.169.254 or 127.0.0.1:port would be followed by
+ * the background worker and its response handed back to the agent context.
+ *
+ * Known limitation: this checks URL TEXT only. A public hostname that resolves
+ * to a private address (DNS rebinding) cannot be detected from MV3 JS — there
+ * is no DNS API and the browser resolves internally. Resolution-time
+ * enforcement is the native host's responsibility; the extension layer is
+ * defense-in-depth.
+ */
+
+/** Reject the private/reserved IPv4 ranges a privileged fetch must never hit. */
+function isForbiddenIPv4(parts: [number, number, number, number]): boolean {
+  const [a, b, c] = parts
+  return (
+    a === 0 ||                                      // "this network" 0.0.0.0/8
+    a === 10 ||                                     // RFC1918 private
+    (a === 100 && b >= 64 && b <= 127) ||           // CGNAT 100.64/10
+    a === 127 ||                                    // loopback 127/8
+    (a === 169 && b === 254) ||                     // link-local 169.254/16 (metadata)
+    (a === 172 && b >= 16 && b <= 31) ||            // RFC1918 private
+    (a === 192 && b === 168) ||                     // RFC1918 private
+    (a === 192 && b === 0 && (c === 0 || c === 2)) || // 192.0.0/24 + TEST-NET-1
+    (a === 198 && (b === 18 || b === 19)) ||        // benchmarking 198.18/15
+    (a === 198 && b === 51 && c === 100) ||         // TEST-NET-2
+    (a === 203 && b === 0 && c === 113) ||          // TEST-NET-3
+    a >= 224                                        // multicast 224/4 + reserved 240/4
+  )
+}
+
+/**
+ * Parse a literal IPv6 address (no brackets) into its 8 16-bit groups.
+ * Returns null for anything that is not a valid IPv6 literal.
+ */
+function parseIPv6Groups(host: string): number[] | null {
+  if (!host.includes(':')) return null
+  const doubleColons = host.match(/::/g)?.length ?? 0
+  if (doubleColons > 1) return null
+  const [leftRaw, rightRaw] = doubleColons === 1 ? host.split('::') : [host, '']
+  const parseGroups = (part: string): number[] | null => {
+    if (!part) return []
+    const groups: number[] = []
+    for (const piece of part.split(':')) {
+      if (piece.includes('.')) {
+        // Trailing IPv4-embedded form (e.g. ::ffff:127.0.0.1).
+        if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(piece)) return null
+        const octets = piece.split('.').map(Number)
+        if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null
+        groups.push(octets[0]! * 256 + octets[1]!, octets[2]! * 256 + octets[3]!)
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(piece)) return null
+        groups.push(parseInt(piece, 16))
+      }
+    }
+    return groups
+  }
+  const head = parseGroups(leftRaw)
+  const tail = parseGroups(rightRaw)
+  if (!head || !tail) return null
+  if (doubleColons === 0) {
+    return head.length === 8 ? head : null
+  }
+  const fill = 8 - head.length - tail.length
+  if (fill < 1) return null
+  return [...head, ...new Array<number>(fill).fill(0), ...tail]
+}
+
+/** Reject the private/reserved IPv6 ranges a privileged fetch must never hit. */
+function isForbiddenIPv6(groups: number[]): boolean {
+  const isZero = (g: number) => g === 0
+  // Unspecified :: and loopback ::1.
+  if (groups.every(isZero)) return true
+  if (groups.slice(0, 7).every(isZero) && groups[7] === 1) return true
+  // Link-local fe80::/10, unique-local fc00::/7 and the deprecated
+  // site-local fec0::/10.
+  const first = groups[0]!
+  if ((first & 0xffc0) === 0xfe80) return true
+  if ((first & 0xfe00) === 0xfc00) return true
+  // fec0::/10 is deprecated (RFC 3879) but some stacks still route it
+  // site-locally, so a literal here reaches intranet services exactly like
+  // unique-local fc00::/7 (#148 review round 8).
+  if ((first & 0xffc0) === 0xfec0) return true
+  // IPv4-mapped ::ffff:0:0/96: groups[0..4] are zero, groups[5] is 0xffff —
+  // apply the IPv4 rules to the embedded address. Also the deprecated
+  // IPv4-compatible ::/96 form (all six leading groups zero).
+  if (
+    (groups.slice(0, 5).every(isZero) && groups[5] === 0xffff) ||
+    groups.slice(0, 6).every(isZero)
+  ) {
+    const hi = groups[6]!
+    const lo = groups[7]!
+    return isForbiddenIPv4([Math.floor(hi / 256), hi % 256, Math.floor(lo / 256), lo % 256])
+  }
+  // NAT64 well-known prefix 64:ff9b::/96 and the RFC 8215 local-use prefix
+  // 64:ff9b:1::/96 both embed an IPv4 target — same rules. The local-use
+  // variant routes through a LOCAL NAT64 gateway, so an attacker embedding a
+  // private IPv4 there reaches intranet endpoints exactly like the
+  // well-known prefix.
+  if (
+    (groups[0] === 0x64 && groups[1] === 0xff9b && (groups[2] === 0 || groups[2] === 1)) &&
+    groups.slice(3, 6).every(isZero)
+  ) {
+    const hi = groups[6]!
+    const lo = groups[7]!
+    return isForbiddenIPv4([Math.floor(hi / 256), hi % 256, Math.floor(lo / 256), lo % 256])
+  }
+  return false
+}
+
+export function isForbiddenIpLiteral(hostname: string, opts: { allowLoopback: boolean } = { allowLoopback: false }): boolean {
+  // hostname: URL.hostname lowercased, trailing dot stripped, NO brackets.
+  if (hostname.includes(':')) {
+    const groups = parseIPv6Groups(hostname)
+    // An IPv6-looking host that does not parse is refused outright.
+    if (groups === null) return true
+    if (opts.allowLoopback) {
+      // Loopback exemptions apply to the plain forms only; an IPv4-mapped or
+      // NAT64-embedded loopback still routes as its embedded IPv4 address.
+      // NOTE: the plain unspecified address :: is NOT exempted — it routes to
+      // "this host" on many stacks just like a loopback, so only the true
+      // loopback ::1 may pass (it is handled by isForbiddenIPv6 below).
+      const isLoopback = groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1
+      if (isLoopback) return false
+    }
+    return isForbiddenIPv6(groups)
+  }
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
+    const octets = hostname.split('.').map(Number) as [number, number, number, number]
+    if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true
+    if (opts.allowLoopback && octets[0] === 127) return false
+    return isForbiddenIPv4(octets)
+  }
+  return false
+}
+
+/**
+ * Thrown when a target is refused by the address-space guard. Callers map this
+ * to a NON-retryable, user-visible tool error: retrying the same private /
+ * loopback / opaque-redirect target can never succeed.
+ */
+export class PublicUrlRefusedError extends Error {
+  readonly refused = true
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'PublicUrlRefusedError'
+  }
+}
+
+/** URL-shape policy for `assertPublicUrl`. All fields are optional. */
+export interface PublicUrlPolicy {
+  /** Allowed protocols; defaults to https only. */
+  protocols?: readonly string[]
+  /**
+   * When set, only these hostnames pass (plugin downloads). Omit for callers
+   * that legitimately fetch any public host (the web tool).
+   */
+  hostAllowlist?: readonly string[]
+  /** Leading noun for error messages, e.g. 'Download URL' → 'Download URL must use https'. */
+  label?: string
+}
+
+/** Hostname as the guard derives it: lowercased, no brackets, no trailing dot. */
+function normalizedHostname(url: URL): string {
+  return url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '').replace(/\.$/, '')
+}
+
+/**
+ * Gate 1: validate a URL a privileged fetch is about to hit. Throws with a
+ * user-facing message on any scheme / credentials / host / IP-family violation.
+ */
+export function assertPublicUrl(rawUrl: string, policy: PublicUrlPolicy = {}): URL {
+  const label = policy.label ?? 'URL'
+  const protocols = policy.protocols ?? ['https:']
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    throw new PublicUrlRefusedError(`Invalid ${label}`)
+  }
+  if (!protocols.includes(url.protocol)) {
+    throw new PublicUrlRefusedError(
+      `${label} must use ${protocols.map((p) => p.replace(':', '')).join(' or ')} (got ${url.protocol})`
+    )
+  }
+  if (url.username || url.password) {
+    throw new PublicUrlRefusedError(`${label} must not embed credentials`)
+  }
+  const hostname = normalizedHostname(url)
+  if (
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.internal') ||
+    hostname.endsWith('.home.arpa') ||
+    // Single-label hostname (no dot): on the public internet these do not
+    // resolve globally; a bare name would resolve via local search domains.
+    (!hostname.includes('.') && !hostname.includes(':')) ||
+    isForbiddenIpLiteral(hostname)
+  ) {
+    throw new PublicUrlRefusedError(`${label} host is not allowed: ${hostname}`)
+  }
+  // Browser fetch does not expose or pin the connected IP. Callers that know
+  // which hosts they need can restrict the privileged fetch to hosts whose
+  // DNS cannot be controlled by the URL's author.
+  if (policy.hostAllowlist && !policy.hostAllowlist.includes(hostname)) {
+    throw new PublicUrlRefusedError(`${label} host is not allowed: ${hostname}`)
+  }
+  return url
+}
+
+/** The web tool's policy: any public host, http or https, no allowlist. */
+export function assertPublicWebUrl(rawUrl: string): URL {
+  return assertPublicUrl(rawUrl, { protocols: ['http:', 'https:'], label: 'Web fetch URL' })
+}
+
+const DEFAULT_MAX_REDIRECTS = 5
+
+export interface GuardedFetchOptions {
+  /** Validate one hop's absolute URL; must throw to refuse. */
+  validate?: (rawUrl: string) => URL
+  /** Request init forwarded to every hop (redirect is forced to 'manual'). */
+  init?: RequestInit
+  abortSignal?: AbortSignal
+  /** Leading noun for redirect errors, e.g. 'Download' → 'Download exceeded 5 redirects'. */
+  label?: string
+  maxRedirects?: number
+  /** Exact message for a refused opaque-redirect hop. */
+  opaqueRedirectError?: string
+}
+
+/**
+ * Gate 2: fetch `rawUrl` WITHOUT letting the browser follow redirects, so
+ * every 3xx target is validated before the next privileged request. Capped at
+ * 5 hops by default.
+ *
+ * In Chrome a 3xx met with `redirect: 'manual'` arrives as an opaque-redirect
+ * filtered response (status 0, empty header list), so the hop loop is
+ * unreachable there and the fetch refuses instead — an unfollowed redirect can
+ * never reach a non-validated target. Extensions with host permissions are NOT
+ * exempt from this filtering, hence the explicit refusal rather than surfacing
+ * a misleading "status 0".
+ */
+export async function fetchPublicUrl(rawUrl: string, opts: GuardedFetchOptions = {}): Promise<Response> {
+  const label = opts.label ?? 'URL'
+  const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS
+  const validate = opts.validate ?? ((raw: string) => assertPublicUrl(raw))
+  let currentUrl = rawUrl
+  for (let hops = 0; hops <= maxRedirects; hops++) {
+    const validated = validate(currentUrl)
+    const response = await fetch(validated.href, {
+      ...opts.init,
+      redirect: 'manual',
+      signal: opts.abortSignal ?? opts.init?.signal,
+    })
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (!location) {
+        throw new PublicUrlRefusedError(`${label} redirect (${response.status}) missing Location header`)
+      }
+      if (hops === maxRedirects) {
+        throw new PublicUrlRefusedError(`${label} exceeded ${maxRedirects} redirects`)
+      }
+      // Resolve relative Location values against the current URL, then the
+      // loop head re-validates the absolute target before it is fetched.
+      currentUrl = new URL(location, validated).href
+      continue
+    }
+    if (response.type === 'opaqueredirect') {
+      throw new PublicUrlRefusedError(opts.opaqueRedirectError ?? `${label} redirected; redirects are not followed`)
+    }
+    return response
+  }
+  // Unreachable: the loop either returns or throws on hop maxRedirects.
+  throw new PublicUrlRefusedError(`${label} redirect loop`)
+}
+
+/**
+ * The web tool's fetch (web_fetch): gate 1 before the first request, gate 2
+ * with per-hop revalidation for every redirect (#157).
+ */
+export async function fetchPublicWebUrl(
+  rawUrl: string,
+  init: RequestInit = {},
+  abortSignal?: AbortSignal,
+): Promise<Response> {
+  return fetchPublicUrl(rawUrl, {
+    validate: assertPublicWebUrl,
+    init,
+    abortSignal,
+    label: 'Web fetch',
+  })
+}

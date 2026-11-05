@@ -130,6 +130,7 @@ import {
   fetchMcpEndpointNoRedirects,
 } from './webmcp/plugin-download-transfer'
 import type { WebMCPPluginDownloadPlan, WebMCPDiscoveredTool } from './webmcp/types'
+import { assertPublicWebUrl, fetchPublicWebUrl, PublicUrlRefusedError } from './webmcp/public-http-guard'
 import { registerTab, unregisterTab } from './webmcp/registry'
 import { getRegistryEntries, entriesToDiscoveredTools } from './webmcp/registry'
 import { getWebMCPNativeBridge } from './webmcp/native-bridge'
@@ -587,15 +588,20 @@ async function handleSearch(message: any) {
 async function handleFetch(message: any) {
   const { url, method = 'GET', headers = {}, body = null, extract = 'raw' } = message;
 
-  // Validate URL
-  try {
-    new URL(url);
-  } catch {
-    return { ok: false, status: 0, error: 'Invalid URL' };
-  }
+  // The URL comes from the agent and is fetched with background privileges, so
+  // it goes through the same address-space guard as plugin downloads (#157):
+  // only public http(s) targets pass, redirects are NOT followed by fetch
+  // itself — every hop is re-validated before the next request. A refused
+  // target surfaces as a structured tool error, never a silent empty body.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONFIG.TIMEOUT_MS);
 
   try {
-    const resp = await fetchWithTimeout(url, { method, headers, body });
+    const resp = await fetchPublicWebUrl(
+      url,
+      { method, headers, body },
+      controller.signal,
+    );
     const status = resp.status;
     const respHeaders: Record<string, string> = {};
     resp.headers.forEach((value, key) => {
@@ -636,7 +642,16 @@ async function handleFetch(message: any) {
     return result;
 
   } catch (err: any) {
-    return { ok: false, status: 0, error: err.message };
+    // A refused target (private / loopback / non-http scheme / opaque
+    // redirect) and a timeout both land here: report the reason explicitly so
+    // the agent sees WHY the fetch was refused instead of an empty body.
+    // `refused` marks the address-space verdicts as non-retryable — the same
+    // URL can never succeed.
+    const message = controller.signal.aborted ? 'Request timeout' : err.message;
+    const refused = !controller.signal.aborted && err?.name === 'PublicUrlRefusedError';
+    return { ok: false, status: 0, error: message, ...(refused ? { refused: true } : {}) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -650,15 +665,15 @@ async function handleFetch(message: any) {
 async function handleFetchRender(message: any) {
   const { url } = message;
 
-  // Validate URL
+  // Same address-space guard as web_fetch (#157): render mode hands the URL to
+  // a real tab, so a private / loopback / non-http(s) target must be refused
+  // BEFORE a tab is created — and every navigation the tab commits is
+  // re-validated before its DOM is extracted below.
+  let renderUrl: string;
   try {
-    const parsed = new URL(url);
-    // Only allow http/https
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return { ok: false, status: 0, error: 'Only http/https URLs are supported for render mode' };
-    }
-  } catch {
-    return { ok: false, status: 0, error: 'Invalid URL' };
+    renderUrl = assertPublicWebUrl(url).href;
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err.message, refused: true };
   }
 
   let tab: chrome.tabs.Tab | null = null;
@@ -666,7 +681,7 @@ async function handleFetchRender(message: any) {
   try {
     // Create a hidden (inactive) tab
     tab = await chrome.tabs.create({
-      url,
+      url: renderUrl,
       active: false,
     });
 
@@ -679,11 +694,28 @@ async function handleFetchRender(message: any) {
         resolve();
       }, CONFIG.RENDER_TIMEOUT_MS);
 
+      function settle() {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timeout);
+      }
+
       function listener(tabId: any, info: any) {
         if (tabId !== createdTabId) return;
+        // A redirect (or a scripted navigation) inside the tab is the render
+        // path's equivalent of a fetch hop: re-validate each committed URL so
+        // a public URL cannot bounce the tab into the private address space.
+        // `about:blank` is the tab's pre-navigation placeholder, not a target.
+        if (info.url && info.url !== 'about:blank') {
+          try {
+            assertPublicWebUrl(info.url);
+          } catch (err: any) {
+            settle();
+            reject(new PublicUrlRefusedError(`Render refused: ${err.message}`));
+            return;
+          }
+        }
         if (info.status === 'complete') {
-          chrome.tabs.onUpdated.removeListener(listener);
-          clearTimeout(timeout);
+          settle();
           resolve();
         }
       }
@@ -693,6 +725,17 @@ async function handleFetchRender(message: any) {
 
     // Extra settle time for JS frameworks to finish rendering
     await new Promise(r => setTimeout(r, CONFIG.RENDER_SETTLE_MS));
+
+    // The tab may have been navigated after `complete` (client-side routing /
+    // meta refresh): re-check the live URL before any DOM is read out.
+    const liveTab = await chrome.tabs.get(createdTabId!);
+    const liveUrl = !liveTab.url || liveTab.url === 'about:blank' ? renderUrl : liveTab.url;
+    try {
+      assertPublicWebUrl(liveUrl);
+    } catch (err: any) {
+      // The outer catch closes the tab and reports the structured refusal.
+      throw new PublicUrlRefusedError(`Render refused: ${err.message}`);
+    }
 
     // Extract rendered HTML from the tab
     const [result] = await chrome.scripting.executeScript({
@@ -752,6 +795,11 @@ async function handleFetchRender(message: any) {
     // Clean up tab on error
     if (tab) {
       try { await chrome.tabs.remove((tab as chrome.tabs.Tab).id!); } catch {}
+    }
+    // A navigation/redirect into the private address space is a policy
+    // verdict, not a transient render failure: report it as such (#157).
+    if (err?.name === 'PublicUrlRefusedError') {
+      return { ok: false, status: 0, error: err.message, refused: true };
     }
     return { ok: false, status: 0, error: `Render failed: ${err.message}` };
   }
