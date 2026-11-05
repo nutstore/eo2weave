@@ -10,6 +10,7 @@
 import {
   previewUserSkillZip,
   importUserSkillZip,
+  isNotFoundError,
   ZIP_IMPORT_LIMITS,
   type ZipSkillPreview,
 } from './user-skills-scanner'
@@ -146,8 +147,11 @@ export function annotateInstalled(
 /**
  * Extract all installed user skill dirNames by directly scanning OPFS.
  * Bypasses store state to avoid race conditions where the store hasn't yet
- * refreshed after a fresh install. Falls back to the store cache if OPFS is
- * unavailable (e.g., browser without File System Access support).
+ * refreshed after a fresh install. Falls back to the store cache only when
+ * OPFS is genuinely unavailable (`.skills/user/` absent, no File System
+ * Access support) — a transient OPFS error propagates instead of silently
+ * degrading to a possibly-stale cached list (issue #185), which would make
+ * installed skills look missing or vice versa.
  */
 export async function scanInstalledDirNames(): Promise<Set<string>> {
   try {
@@ -159,8 +163,11 @@ export async function scanInstalledDirNames(): Promise<Set<string>> {
       if (entry.kind === 'directory') names.push(entry.name)
     }
     return new Set(names)
-  } catch {
-    // Fallback: query store. May be slightly stale but better than nothing.
+  } catch (e) {
+    if (!isNotFoundError(e)) throw e
+    // `.skills/user/` doesn't exist yet (or no OPFS support at the root
+    // handle) — nothing installed per OPFS. The store cache may still hold
+    // legacy SQLite-era entries, so fall back to it.
     const state = useSkillsStore.getState()
     return new Set(
       state.skills

@@ -152,8 +152,16 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
     },
 
     createSkillSkeleton: async (dirName, name, description) => {
-      // Guard: a directory with this name already exists.
-      const exists = await userSkillDirExists(dirName).catch(() => false)
+      // Guard: a directory with this name already exists. A storage failure
+      // here must NOT read as "not exists" — that would overwrite an
+      // existing skill — so the error surfaces as a failed create (#185).
+      let exists: boolean
+      try {
+        exists = await userSkillDirExists(dirName)
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        return { success: false, error: `Failed to check skill existence: ${msg}` }
+      }
       if (exists) {
         return { success: false, error: 'A skill with this directory name already exists' }
       }

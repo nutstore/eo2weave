@@ -219,7 +219,7 @@ async function isImportRunUnfinished(runId: string): Promise<boolean> {
 }
 
 /** True when the error is an OPFS "not found" (absence — not a failure). */
-function isNotFoundError(e: unknown): boolean {
+export function isNotFoundError(e: unknown): boolean {
   if (e instanceof DOMException && e.name === 'NotFoundError') return true
   // Test doubles and polyfills may not produce real DOMExceptions.
   return e instanceof Error && e.message.includes('NotFoundError')
@@ -394,14 +394,17 @@ async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Ar
 
 /**
  * Get the user skills directory handle from OPFS root.
- * Returns null if `.skills/user/` does not exist (not an error).
+ * Returns null if `.skills/user/` does not exist (NotFoundError — no user
+ * skills yet, not a failure). Any other storage error propagates so callers
+ * can surface it instead of mistaking it for "empty".
  */
 async function getUserSkillsDir(): Promise<FileSystemDirectoryHandle | null> {
   try {
     const opfsRoot = await navigator.storage.getDirectory()
     const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: false })
     return await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: false })
-  } catch {
+  } catch (e) {
+    if (!isNotFoundError(e)) throw e
     // .skills/user/ doesn't exist yet — no user skills
     return null
   }
@@ -2030,14 +2033,21 @@ export async function deleteUserSkillDir(dirName: string): Promise<void> {
 /**
  * Check if a user skill directory exists in OPFS.
  * Used for validation before write operations.
+ *
+ * Throws on storage failures other than NotFoundError — a transient OPFS
+ * error must not read as "not installed" (issue #185), which would make
+ * callers silently skip updates or misroute deletions. Callers that only
+ * need a best-effort UI hint can catch.
  */
 export async function userSkillDirExists(skillDirName: string): Promise<boolean> {
+  const userDir = await getUserSkillsDir()
+  if (!userDir) return false
   try {
-    const userDir = await getUserSkillsDir()
-    if (!userDir) return false
     await userDir.getDirectoryHandle(skillDirName)
     return true
-  } catch {
+  } catch (e) {
+    // Absence is a valid answer; any other storage failure must surface.
+    if (!isNotFoundError(e)) throw e
     return false
   }
 }

@@ -280,6 +280,63 @@ describe('useSkillsStore', () => {
     })
   })
 
+  describe('createSkillSkeleton (#185 existence-check error surfacing)', () => {
+    const parseValid = () => {
+      vi.mocked(parser.parseSkillMd).mockReturnValue({
+        skill: createMockMetadata({ id: 'new-skill', name: 'new-skill' }) as unknown as Skill,
+        error: null,
+      })
+    }
+
+    it('refuses to create when the directory already exists', async () => {
+      parseValid()
+      mockUserSkillsScanner.userSkillDirExists.mockResolvedValue(true)
+
+      const { createSkillSkeleton } = useSkillsStore.getState()
+      const result = await createSkillSkeleton('new-skill', 'new-skill', 'desc')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('already exists')
+      // No write attempted when the guard trips.
+      expect(mockUserSkillsScanner.writeUserSkillMd).not.toHaveBeenCalled()
+    })
+
+    it('surfaces an existence-check storage failure instead of overwriting (#185)', async () => {
+      parseValid()
+      mockUserSkillsScanner.userSkillDirExists.mockRejectedValue(
+        new Error('PermissionDeniedError: OPFS unavailable'),
+      )
+
+      const { createSkillSkeleton } = useSkillsStore.getState()
+      const result = await createSkillSkeleton('new-skill', 'new-skill', 'desc')
+
+      // The create must FAIL — not fall through to writeUserSkillMd and
+      // overwrite an existing skill behind a swallowed error.
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Failed to check skill existence')
+      expect(result.error).toContain('PermissionDeniedError')
+      expect(mockUserSkillsScanner.writeUserSkillMd).not.toHaveBeenCalled()
+    })
+
+    it('creates the skeleton when the directory is genuinely absent', async () => {
+      parseValid()
+      mockUserSkillsScanner.userSkillDirExists.mockResolvedValue(false)
+      mockManager.getSkillMetadata.mockReturnValue([
+        createMockMetadata({ id: 'new-skill', name: 'new-skill' }),
+      ])
+
+      const { createSkillSkeleton } = useSkillsStore.getState()
+      const result = await createSkillSkeleton('new-skill', 'new-skill', 'desc')
+
+      expect(result.success).toBe(true)
+      expect(result.skillId).toBe('user:new-skill')
+      expect(mockUserSkillsScanner.writeUserSkillMd).toHaveBeenCalledWith(
+        'new-skill',
+        expect.stringContaining('name: "new-skill"'),
+      )
+    })
+  })
+
   describe('toggleSkill', () => {
     it('should toggle skill enabled state', async () => {
       const initialSkills: SkillMetadata[] = [
