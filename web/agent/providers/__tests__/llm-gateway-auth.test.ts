@@ -1575,9 +1575,10 @@ describe('credential status generation fence (#180)', () => {
     seedStoredTokens({ access_expires_at: Date.now() + 3_600_000 })
 
     expect(await getValidAccessToken(BASE_URL, CLIENT_ID)).toBeTruthy()
-    await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(settingsStoreState.modelCredentialStatus).toBe('valid')
+    // The verdict lands through a dynamic settings-store import: wait for the
+    // write instead of racing a zero-delay timer.
+    await vi.waitFor(() => expect(settingsStoreState.modelCredentialStatus).toBe('valid'))
   })
 
   it('reports valid after a successful refresh commit', async () => {
@@ -1589,7 +1590,7 @@ describe('credential status generation fence (#180)', () => {
 
     // The refresh's own commit advances the generation; the verdict must be
     // attributed to that commit, not to the pre-refresh snapshot.
-    expect(settingsStoreState.modelCredentialStatus).toBe('valid')
+    await vi.waitFor(() => expect(settingsStoreState.modelCredentialStatus).toBe('valid'))
   })
 
   it('treats the refreshed token as current and a replaced one as stale (#214)', async () => {
