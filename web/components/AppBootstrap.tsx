@@ -406,11 +406,19 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         }
       } catch (err) {
         console.error('[App] Failed to register LLM Gateway provider:', err)
+        // Best-effort failure marking: a chunk/module-load failure while
+        // handling the original gateway error must not reject
+        // initializeApp before the checkHasApiKey recovery below runs
+        // (Sourcery: "Bootstrap recovery can escape").
         if (gatewayRestoreVersion !== undefined) {
-          const { registerGatewayModels } = await import('@/agent/providers/llm-gateway-provider')
-          const { getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
-          if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
-            registerGatewayModels([], 'failed', gatewayRestoreVersion)
+          try {
+            const { registerGatewayModels } = await import('@/agent/providers/llm-gateway-provider')
+            const { getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
+            if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
+              registerGatewayModels([], 'failed', gatewayRestoreVersion)
+            }
+          } catch (statusErr) {
+            console.error('[App] Failed to mark gateway catalog failed:', statusErr)
           }
         }
         // Registration failed (e.g. network error, saved token invalid).
