@@ -547,6 +547,9 @@
   "webmcpPackagesInstalledInactiveHint": {
     "message": "Switch it on here, then use it from the side panel on a matching site."
   },
+  "webmcpPackagesActivationUnknown": {
+    "message": "Installed · activation unavailable"
+  },
   "webmcpPackagesInstalledActive": {
     "message": "Installed · active"
   },

@@ -52,6 +52,8 @@ export function createRegistrySection(
   /** Installed package ids + their activation state (from the background). */
   let installed = new Set<string>()
   let activations: Record<string, 'enabled' | 'disabled'> = {}
+  /** Installed ids whose activation read failed: state is UNKNOWN, not disabled. */
+  let activationUnknown = new Set<string>()
   /** The last successful load, so catalog/preview arrivals can redraw locally. */
   let lastState: RegistryListResult | undefined
 
@@ -333,7 +335,8 @@ export function createRegistrySection(
     }
 
     const isInstalled = installed.has(pkg.id)
-    const isEnabled = isInstalled && activations[pkg.id] === 'enabled'
+    const stateUnknown = isInstalled && activationUnknown.has(pkg.id)
+    const isEnabled = isInstalled && !stateUnknown && activations[pkg.id] === 'enabled'
     // Status is a COMPACT inline pill on the id line — never a block element
     // that stretches to its container.
     const state = document.createElement('span')
@@ -341,11 +344,14 @@ export function createRegistrySection(
     const stateDot = document.createElement('span')
     stateDot.className = 'dot'
     state.append(stateDot, isInstalled
-      ? (isEnabled ? t('webmcpPackagesInstalledActive') : t('webmcpPackagesInstalledInactive'))
+      ? (stateUnknown
+        ? t('webmcpPackagesActivationUnknown')
+        : (isEnabled ? t('webmcpPackagesInstalledActive') : t('webmcpPackagesInstalledInactive')))
       : t('webmcpPackagesNotInstalled'))
     titleLine.append(state)
-    // The enable hint is only meaningful for a package that is NOT enabled.
-    if (isInstalled && !isEnabled) {
+    // The enable hint is only meaningful for a package that is NOT enabled —
+    // and not when we could not read its state at all.
+    if (isInstalled && !isEnabled && !stateUnknown) {
       const hint = document.createElement('div')
       hint.className = 'desc'
       hint.textContent = t('webmcpPackagesInstalledInactiveHint')
@@ -358,7 +364,7 @@ export function createRegistrySection(
     // "mine" excludes registry installs and an install records the disabled
     // default, so without this toggle a freshly installed registry package
     // could never be turned on from the merged page.
-    if (isInstalled) {
+    if (isInstalled && !stateUnknown) {
       const toggle = document.createElement('input')
       toggle.type = 'checkbox'
       toggle.className = 'toggle'
@@ -457,10 +463,12 @@ export function createRegistrySection(
     name.className = 'name'
     name.textContent = id
     const state = document.createElement('span')
-    state.className = 'state' + (activations[id] === 'enabled' ? '' : ' inactive')
-    state.textContent = activations[id] === 'enabled'
-      ? t('webmcpPackagesInstalledActive')
-      : t('webmcpPackagesInstalledInactive')
+    const unknown = activationUnknown.has(id)
+    const active = !unknown && activations[id] === 'enabled'
+    state.className = 'state' + (active ? '' : ' inactive')
+    state.textContent = unknown
+      ? t('webmcpPackagesActivationUnknown')
+      : active ? t('webmcpPackagesInstalledActive') : t('webmcpPackagesInstalledInactive')
     titleLine.append(name, sourceChip('registry'), state)
     const hint = document.createElement('div')
     hint.className = 'desc'
@@ -494,6 +502,7 @@ export function createRegistrySection(
     lastState = state
     installed = new Set(state.installed)
     activations = state.activations
+    activationUnknown = new Set(state.activationErrors ?? [])
 
     // Recompute the notice area from THIS state (findings: a recovered load
     // left its own failure on screen, and the session-only warning outlived the

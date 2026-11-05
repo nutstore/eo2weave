@@ -13,6 +13,12 @@ export interface RegistryListResult {
   installed: string[]
   /** Activation state per installed package id. */
   activations: Record<string, 'enabled' | 'disabled'>
+  /**
+   * Installed ids whose activation could not be read. They are still installed
+   * (so the row keeps its uninstall path) but their state is UNKNOWN — a
+   * missing entry must never be rendered as `disabled`.
+   */
+  activationErrors?: string[]
   /** False when the registry list could not be persisted (session-only). */
   persisted: boolean
 }

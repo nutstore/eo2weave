@@ -367,6 +367,30 @@ describe('registry section feedback', () => {
     expect(h.sectionError().textContent).not.toContain('webmcpPackagesNotPersisted')
   })
 
+  it('renders an unknown activation instead of "inactive" when the state read failed', async () => {
+    // One package's config could not be read: it is still INSTALLED (so it
+    // keeps its uninstall path) but the row must not claim "inactive" — that
+    // is a state the page did not observe.
+    const h = await setup({
+      state: () => ({
+        registries: [registry],
+        installed: [pkgA.id],
+        activations: {},
+        activationErrors: [pkgA.id],
+        persisted: true,
+      }),
+      handlers: {
+        webmcp_registry_catalog: { manifest: { manifestUrl: registry.manifestUrl, name: 'Example', packages: [pkgA] } },
+      },
+    })
+    const row = [...h.document.querySelectorAll('.pkg-row')]
+      .find(element => element.querySelector('.name')?.textContent === pkgA.id)
+    expect(row?.querySelector('.state')?.textContent).toContain('webmcpPackagesActivationUnknown')
+    // No toggle: an unchecked switch would read as "off".
+    expect(row?.querySelector('input.toggle')).toBeNull()
+    expect(buttonByLabel(h.document, 'webmcpPackagesUninstall')).toBeTruthy()
+  })
+
   it('enables an installed registry package from its own row', async () => {
     // Installs record the disabled default and "mine" excludes registry
     // installs, so this row's toggle is the ONLY activation path on the page.
