@@ -13,9 +13,10 @@ web/public/wasm/*.wasm
 web/public/wasm/*.js
 web/public/wasm/*.json
 
-# Node.js
-node_modules/
-web/node_modules/
+# Node.js (no trailing slash: a bare `node_modules/` misses a SYMLINK named
+# node_modules, which worktrees create and `git add -A` then commits)
+node_modules
+web/node_modules
 package-lock.json
 npm-debug.log*
 yarn-debug.log*
@@ -90,9 +91,9 @@ docs/design/p0-performance-and-testing.md
 docs/technical-debt-plan.md
 .worktrees
 
-# Browser extension (WXT)
+# Browser extension (WXT) — no trailing slash, same symlink reason as node_modules
 browser-extension/.output/
-browser-extension/.wxt/
+browser-extension/.wxt
 .codegraph/
 
 # Local design prototypes (HTML exploration files, not shippable assets)
