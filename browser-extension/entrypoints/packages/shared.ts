@@ -24,19 +24,28 @@ export function t(key: string, substitutions?: string | string[]): string {
 /**
  * Classify one package:
  *
- *   builtin-webmcp (read-only)            → builtin
- *   webmcp + install record (package id)  → registry
- *   webmcp without an install record      → mine (user / agent authored)
+ *   builtin-webmcp (read-only)              → builtin
+ *   webmcp + install record (DIRECTORY)     → registry
+ *   webmcp without an install record        → mine (user / agent authored)
+ *
+ * Ownership is decided by the INSTALL DIRECTORY, never by the manifest id: the
+ * installer names a package directory after the id it installs, and
+ * `listInstalledPackageIds` reports those directory names. A user- or
+ * agent-authored package whose manifest merely DECLARES an id that an installed
+ * registry package also uses therefore stays "mine" — it has its own directory
+ * and its own delete action — instead of disappearing from "mine" and being
+ * handed the registry row's uninstall action (which removes the registry
+ * install, not the authored package, while the page claimed otherwise).
  *
  * A registry install is deliberately NOT mirrored into "mine": two views
  * offering the same disable switch could disagree about the package's state.
  */
 export function classifyPackage(
-  entry: Pick<ManagedWebMCPPackage, 'mount' | 'directory' | 'manifest'>,
-  installedIds: ReadonlySet<string> = NO_INSTALLS,
+  entry: Pick<ManagedWebMCPPackage, 'mount' | 'directory'>,
+  installedDirectories: ReadonlySet<string> = NO_INSTALLS,
 ): PackageSource {
   if (entry.mount === 'builtin-webmcp') return 'builtin'
-  return installedIds.has(entry.manifest?.id ?? entry.directory) ? 'registry' : 'mine'
+  return installedDirectories.has(entry.directory) ? 'registry' : 'mine'
 }
 
 const SOURCE_LABEL: Record<PackageSource, string> = {

@@ -12,7 +12,7 @@ import { buildManagedCard, classifyPackage, createSection } from './shared'
 
 export interface MineSection {
   /** Render from a package load plus the registry install records. */
-  render(entries: ManagedWebMCPPackage[], installedIds: ReadonlySet<string>): void
+  render(entries: ManagedWebMCPPackage[], installedDirectories: ReadonlySet<string>): void
   /** Render ONLY this section's error — the other sections stay usable. */
   fail(error: unknown): void
 }
@@ -29,11 +29,13 @@ export function createMineSection(
     summary,
   })
   return {
-    render(entries, installedIds) {
+    render(entries, installedDirectories) {
       shell.error.clear()
       // Registry-installed packages must NOT reappear here: their own row in
       // the registry section already owns enable/remove.
-      const mine = entries.filter(entry => classifyPackage(entry, installedIds) === 'mine')
+      // `installedDirectories` holds the install DIRECTORY names, which is the
+      // install identity `classifyPackage` matches on.
+      const mine = entries.filter(entry => classifyPackage(entry, installedDirectories) === 'mine')
       shell.list.replaceChildren()
       shell.setCount(mine.length)
       if (!mine.length) {

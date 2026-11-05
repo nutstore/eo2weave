@@ -53,6 +53,14 @@ const cases: Case[] = [
     expected: 'mine',
   },
   {
+    name: 'webmcp mount, authored package whose manifest id collides with an installed registry id',
+    mount: 'webmcp',
+    directory: 'my-worker-demo',
+    manifestId: 'com.example.registry',
+    installed: ['com.example.registry'],
+    expected: 'mine',
+  },
+  {
     name: 'webmcp mount, unreadable manifest, install record by directory',
     mount: 'webmcp',
     directory: 'com.example.broken',
