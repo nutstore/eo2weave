@@ -589,14 +589,17 @@ describe('WebMCPPackageRegistrySection round-6 findings', () => {
     // renders NO oversized rows: the fallback fetch fails the same way.
     fireEvent.click(screen.getAllByRole('button', { name: '' })[0]!)
     await waitFor(() => expect(screen.queryByText('tool_100')).toBeNull())
-    // Nothing indexed: searching for an oversized-manifest tool name does
-    // not surface the package.
+    // Nothing indexed: searching for an oversized-manifest tool name reports
+    // NO tool match and renders no row. The card itself stays visible because
+    // its preview failed and its tools are unknown (finding: "Tool-only
+    // matches disappear" — an unresolved preview must not hide the package).
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'tool_100' } })
-    expect(screen.queryByText(pkgId)).toBeNull()
-    // Sanity: REG_B's legitimately-indexed tools still match.
+    expect(screen.queryByText('settings.webmcpPackages.matchesTools')).toBeNull()
+    expect(screen.queryByText('tool_100')).toBeNull()
+    // Sanity: REG_B's legitimately-indexed tools still report their match.
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'tool_owner/repo-b.pkg3' } })
     await waitFor(() => expect(screen.getByText('owner/repo-b.pkg3')).toBeTruthy())
-    expect(screen.queryByText(pkgId)).toBeNull()
+    await waitFor(() => expect(screen.getByText('settings.webmcpPackages.matchesTools')).toBeTruthy())
   })
 
   it('reconciles packageCounts and toolIndex when another tab REMOVES a registry (storage event)', async () => {
