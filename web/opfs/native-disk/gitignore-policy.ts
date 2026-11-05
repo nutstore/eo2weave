@@ -110,18 +110,13 @@ function matchesRule(
   const anchored = pattern.startsWith('/')
   if (anchored) pattern = pattern.slice(1)
   if (!pattern) return false
+  // A directory-only rule never matches a file path directly; it governs the
+  // files below the directories it matches, which isGitIgnored reaches through
+  // the excluded-ancestor check.
   if (directoryPattern && kind === 'file') return false
 
   const hasSlash = pattern.includes('/')
   const prefixes = anchored || hasSlash ? [''] : ['', '**/']
-  if (directoryPattern && kind === 'file') {
-    const slash = relativePath.lastIndexOf('/')
-    if (slash < 0) return false
-    const parent = relativePath.slice(0, slash)
-    return micromatch.isMatch(parent, prefixes.flatMap((prefix) => [`${prefix}${pattern}`, `${prefix}${pattern}/**`]), {
-      dot: true, nonegate: true, nocase: false,
-    })
-  }
   const candidates = prefixes.flatMap((prefix) => {
     const target = `${prefix}${pattern}`
     if (target.endsWith('/**')) {
@@ -137,7 +132,14 @@ function matchesRule(
       // startsWith prefix check missed (#184).
       return [`${target}/*`]
     }
-    return [target, `${target}/**`]
+    // A pattern names the paths it matches at the depth it names them:
+    // `logs/*` matches `logs/keep` but NOT `logs/keep/audit.txt`. Git
+    // reaches the entries below a matched directory through the excluded
+    // ancestor check in isGitIgnored, not by letting the pattern match
+    // deeper. Matching deeper here ignored files that a later negation had
+    // re-included (`logs/*` + `!logs/keep/`), so deleteFile deleted them
+    // from disk instead of sending them for review (#189).
+    return [target]
   })
 
   return micromatch.isMatch(relativePath, candidates, {

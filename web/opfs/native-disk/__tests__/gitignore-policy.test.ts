@@ -86,4 +86,34 @@ describe('gitignore policy', () => {
     const unqualified = parseGitIgnore('dist/**\n!dist/a/keep.txt\n')
     expect(isGitIgnored('dist/a/keep.txt', unqualified, 'file')).toBe(true)
   })
+
+  it('re-includes files beneath a directory re-included by a negated directory rule (#189)', () => {
+    // git check-ignore: with `logs/*` + `!logs/keep/`, `logs/keep/audit.txt`
+    // is NOT ignored — the negation re-includes the whole subtree. The
+    // pattern `logs/*` names one level, so matching it against deeper paths
+    // kept ignoring the re-included files and deleteFile deleted them from
+    // disk instead of sending them for review.
+    const rules = parseGitIgnore('logs/*\n!logs/keep/\n')
+    expect(isGitIgnored('logs/keep', rules, 'directory')).toBe(false)
+    expect(isGitIgnored('logs/keep/audit.txt', rules, 'file')).toBe(false)
+    expect(isGitIgnored('logs/keep/sub/deep.txt', rules, 'file')).toBe(false)
+    // Entries the negation does not cover stay ignored.
+    expect(isGitIgnored('logs/other.txt', rules, 'file')).toBe(true)
+    expect(isGitIgnored('logs/other', rules, 'directory')).toBe(true)
+    // A later negation of a single file still applies.
+    const withFile = parseGitIgnore('logs/*\n!logs/keep/\n!logs/keep/audit.txt\n')
+    expect(isGitIgnored('logs/keep/audit.txt', withFile, 'file')).toBe(false)
+  })
+
+  it('matches a pattern only at the depth it names', () => {
+    // git check-ignore: `logs/*` matches `logs/other` but not
+    // `logs/other/x.txt`; Git reaches the entries below a matched directory
+    // through the excluded-ancestor check, not by matching deeper.
+    const rules = parseGitIgnore('logs/*\n')
+    expect(isGitIgnored('logs/other', rules, 'directory')).toBe(true)
+    expect(isGitIgnored('logs/other/x.txt', rules, 'file')).toBe(true)
+    // The file below the excluded directory stays ignored through the
+    // excluded ancestor, even though the pattern itself does not match it.
+    expect(isGitIgnored('logs/other/x.txt', parseGitIgnore('logs/*\n'), 'file')).toBe(true)
+  })
 })
