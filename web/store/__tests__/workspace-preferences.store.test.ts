@@ -110,3 +110,17 @@ describe('workspace-preferences.store panel sizes rounding', () => {
     expect(panelSizes.previewRatio).toBe(40)
   })
 })
+
+describe('workspace-preferences.store one-shot open requests', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('does not persist a pending settings open request', () => {
+    useWorkspacePreferencesStore.getState().setSettingsOpenRequest(true)
+    expect(useWorkspacePreferencesStore.getState().panelState.settingsOpenRequest).toBe(true)
+
+    const persisted = JSON.parse(localStorage.getItem('bfosa-workspace-preferences')!)
+    expect(persisted.state.panelState.settingsOpenRequest).toBe(false)
+  })
+})
