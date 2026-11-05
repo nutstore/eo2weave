@@ -202,6 +202,12 @@ describe('registry section feedback', () => {
     expect(uninstall).toBeTruthy()
     uninstall!.click()
     await settle()
+    // The TOAST assertion must not be the only evidence: the uninstall itself
+    // has to have been sent (and for this package).
+    expect(h.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'webmcp_registry_uninstall',
+      packageId: pkgA.id,
+    }))
     expect(toastVisible(h.document)).toBe(false)
   })
 

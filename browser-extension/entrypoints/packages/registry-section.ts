@@ -514,8 +514,15 @@ export function createRegistrySection(
     const configured = new Set(state.registries.map(registry => registry.manifestUrl))
     for (const manifestUrl of [...catalogs.keys()]) {
       if (configured.has(manifestUrl)) continue
+      // Bump FIRST: a catalog request still in flight for this URL would
+      // otherwise pass its epoch check and repopulate the cache we just dropped
+      // (a registry removed here and re-added elsewhere would then show rows
+      // from the old fetch).
+      bumpCatalogEpoch(manifestUrl)
       catalogs.delete(manifestUrl)
+      catalogLoadFailures.delete(manifestUrl)
       catalogRefreshFailures.delete(manifestUrl)
+      catalogLoads.delete(manifestUrl)
       clearToolPreviews(manifestUrl)
     }
 
@@ -550,7 +557,10 @@ export function createRegistrySection(
               // legitimately due for the re-added registry.
               if ((catalogEpochs.get(registry.manifestUrl) ?? 0) !== epoch) return
               catalogLoadFailures.add(registry.manifestUrl)
-              shell.error.show(error)
+              // Never REPLACE a failed operation the user has not read yet: the
+              // card's red dot already carries this catalog failure, and the
+              // section box is the only place an operation's detail appears.
+              if (!operationErrorShown) shell.error.show(error)
             })
             .finally(() => {
               if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) catalogLoads.delete(registry.manifestUrl)
@@ -614,13 +624,26 @@ export function createRegistrySection(
       // fetch still matches.
       bumpCatalogEpoch(registry.manifestUrl)
       const epoch = catalogEpochs.get(registry.manifestUrl) ?? 0
+      // THIS fetch owns the loading marker from here: the bump above invalidated
+      // any in-flight auto-load for the same URL, and that request's `finally`
+      // is epoch-guarded, so it will never clear the marker it set — without
+      // taking it over here the card would pulse "refreshing" forever and no
+      // automatic load would ever run again for this registry.
+      catalogLoads.add(registry.manifestUrl)
       try {
         const manifest = await loadRegistryCatalog(registry)
         if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) {
           catalogs.set(registry.manifestUrl, manifest)
+          catalogLoadFailures.delete(registry.manifestUrl)
+          catalogRefreshFailures.delete(registry.manifestUrl)
         }
       } catch (error) {
-        showOperationError(error)
+        if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) {
+          catalogLoadFailures.add(registry.manifestUrl)
+          showOperationError(error)
+        }
+      } finally {
+        if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) catalogLoads.delete(registry.manifestUrl)
       }
       input.value = ''
     } catch (error) {
