@@ -663,7 +663,10 @@ export function ModelQuickSwitch({
             </div>
           )
         ) : (
-          <div className="min-h-0 max-h-[240px] flex-1 space-y-0.5 overflow-auto px-1.5 py-1.5" aria-label={t('topbar.modelSwitcher.title')}>
+          <div
+            className={`min-h-0 max-h-[240px] flex-1 space-y-0.5 overflow-auto px-1.5 py-1.5 transition-opacity ${refreshingExistingList ? 'opacity-60' : ''}`}
+            aria-label={t('topbar.modelSwitcher.title')}
+          >
             {enrichedProviders
               .filter((p) => !visionOnly || p.models.some((m) => m.hasVision))
               .map((provider) => {
