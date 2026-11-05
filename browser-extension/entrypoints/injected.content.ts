@@ -670,6 +670,14 @@ export default defineContentScript({
           if (renderResponse.ok && renderResponse.body) {
             return toMarkdown(renderResponse);
           }
+          // A refused render is the same non-retryable policy verdict as a
+          // refused HTTP fetch. Returning the original status-0 network error
+          // here would downgrade it to a retryable FETCH_ERROR, so the caller
+          // (which maps `refused` to URL_REFUSED) would retry a target the
+          // guard already rejected.
+          if (renderResponse.refused) {
+            return renderResponse;
+          }
           return response;
         }
 
