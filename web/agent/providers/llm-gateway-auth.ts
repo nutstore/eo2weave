@@ -282,11 +282,35 @@ export const LLM_GATEWAY_REFRESH_TOKEN_KEY_ID = REFRESH_TOKEN_DB_KEY
  */
 let lastCredentialStatus: 'unknown' | 'valid' | 'expired' | 'missing' = 'unknown'
 
+/**
+ * Whether a status verdict produced under `generation` may still be applied.
+ *
+ * A resolution that spans awaits can outlive the credential set it inspected
+ * (logout, or a new login in this tab or another one). The verdict's status
+ * write must then be dropped rather than overwrite the newer session's state.
+ */
+export function isCredentialStatusCurrent(generation: number): boolean {
+  return generation === authSessionGeneration
+}
+
 /** Keep the settings UI's credential state aligned with background auth checks. */
-function setCredentialStatus(status: 'valid' | 'expired' | 'missing'): void {
+function setCredentialStatus(
+  status: 'valid' | 'expired' | 'missing',
+  expectedGeneration?: number,
+): void {
+  // A verdict produced by an operation that started under an older credential
+  // set must not overwrite the current session's status (#180). The settings
+  // import below is itself an await boundary during which a logout or a new
+  // login can land, so the generation is re-checked after it resolves too.
+  // The authoritative credential state is unaffected — only this UI mirror.
+  if (expectedGeneration !== undefined && !isCredentialStatusCurrent(expectedGeneration)) return
   lastCredentialStatus = status
+  const generation = authSessionGeneration
   void import('@/store/settings.store')
-    .then(({ useSettingsStore }) => useSettingsStore.getState().setModelCredentialStatus(status))
+    .then(({ useSettingsStore }) => {
+      if (!isCredentialStatusCurrent(generation)) return
+      useSettingsStore.getState().setModelCredentialStatus(status)
+    })
     .catch(() => {
       // Auth must remain usable even when the settings store is unavailable.
     })
@@ -1579,7 +1603,7 @@ async function refreshAccessTokenWithStatusImpl(
       } catch (error) {
         console.warn('[llm-gateway] persist refreshed access token shadow failed:', error)
       }
-      setCredentialStatus('valid')
+      setCredentialStatus('valid', generation)
       return { status: 'success', accessToken: tokens.access_token }
     })
   } catch (e) {
@@ -1600,7 +1624,7 @@ async function refreshAccessTokenWithStatusImpl(
           '[llm-gateway] forceRefresh: stored refresh token changed during refresh; clearing local session state only'
         )
         bumpAuthSessionGeneration()
-        setCredentialStatus('expired')
+        setCredentialStatus('expired', generation)
         return { status: 'expired', error: e }
       }
       console.warn('[llm-gateway] forceRefresh: token invalid, clearing stored tokens', e)
@@ -1658,6 +1682,9 @@ export async function resolveGatewayDispatchCredential(
   baseURL: string,
   clientId: string
 ): Promise<GatewayDispatchCredential> {
+  // Snapshot before the first await: a logout/login during credential
+  // resolution bumps this and makes the verdict's status write stale (#180).
+  const dispatchGeneration = authSessionGeneration
   let stored: StoredTokens | null
   try {
     stored = await loadStoredTokensWithFallback()
@@ -1681,10 +1708,10 @@ export async function resolveGatewayDispatchCredential(
       return { ok: false, kind: 'temporary', error: new Error('gateway credential storage unavailable') }
     }
     if (inspection === 'had-session') {
-      setCredentialStatus('expired')
+      setCredentialStatus('expired', dispatchGeneration)
       return { ok: false, kind: 'expired' }
     }
-    setCredentialStatus('missing')
+    setCredentialStatus('missing', dispatchGeneration)
     return { ok: false, kind: 'missing' }
   }
 
@@ -1697,7 +1724,7 @@ export async function resolveGatewayDispatchCredential(
     typeof stored.access_token === 'string' && stored.access_token.trim().length > 0
   // Fresh access token (60s buffer, same as getValidAccessToken).
   if (accessTokenUsable && stored.access_expires_at > now + 60_000) {
-    setCredentialStatus('valid')
+    setCredentialStatus('valid', dispatchGeneration)
     return { ok: true, accessToken: stored.access_token }
   }
 
@@ -1732,6 +1759,9 @@ export async function getValidAccessToken(
   baseURL: string,
   clientId: string
 ): Promise<string | null> {
+  // Snapshot before the first await so a logout/login during the read cannot
+  // let this verdict overwrite the newer session's status (#180).
+  const loadGeneration = authSessionGeneration
   // Use the async fallback loader — recovers refresh_token from SQLite
   // when localStorage has been cleared
   const stored = await loadStoredTokensWithFallback()
@@ -1742,7 +1772,7 @@ export async function getValidAccessToken(
     // 'expired' and purge the shadow so the settings card offers a re-login
     // instead of a logout.
     const hadSession = await purgeStaleAccessTokenShadow()
-    setCredentialStatus(hadSession ? 'expired' : 'missing')
+    setCredentialStatus(hadSession ? 'expired' : 'missing', loadGeneration)
     return null
   }
 
@@ -1750,7 +1780,7 @@ export async function getValidAccessToken(
 
   // If access token is still valid (with 60s buffer), return it
   if (stored.access_expires_at > now + 60_000) {
-    setCredentialStatus('valid')
+    setCredentialStatus('valid', loadGeneration)
     return stored.access_token
   }
 

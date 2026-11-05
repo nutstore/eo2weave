@@ -70,6 +70,7 @@ import {
   resolveGatewayDispatchCredential,
   subscribeToGatewaySessionEvents,
   getGatewayAuthSessionGeneration,
+  isCredentialStatusCurrent,
   type GatewaySessionEvent,
 } from '@/agent/providers/llm-gateway-auth'
 import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
@@ -512,6 +513,8 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(result.status).toBe('temporary_error')
       // Nothing from the dead session may be written
       expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+      // The settings mirror keeps the logged-out verdict too.
+      expect(settingsStoreState.modelCredentialStatus).not.toBe('valid')
     })
 
     it('does not overwrite a newer login committed in another tab', async () => {
@@ -1509,5 +1512,19 @@ describe('cross-tab refresh coalescing', () => {
     } } })
     await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'success', accessToken: 'peer-token' })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('credential status generation fence (#180)', () => {
+  it('treats a verdict as current only while the credential set it saw is unchanged', async () => {
+    localStorage.clear()
+    seedStoredTokens()
+    const generation = getGatewayAuthSessionGeneration()
+    expect(isCredentialStatusCurrent(generation)).toBe(true)
+
+    await logoutGateway()
+
+    expect(getGatewayAuthSessionGeneration()).not.toBe(generation)
+    expect(isCredentialStatusCurrent(generation)).toBe(false)
   })
 })
