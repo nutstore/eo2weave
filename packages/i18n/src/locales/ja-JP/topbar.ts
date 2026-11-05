@@ -27,6 +27,7 @@ export const topbar = {
       searchPlaceholder: "モデルを検索…",
       noResults: "一致するモデルはありません",
       manageProviders: "LLM プロバイダーを管理",
+      configureProviders: "設定する",
       visionOnly: "ビジョンのみ",
       visionOnlyTooltip: "画像入力対応のモデルだけ表示",
       visionCapable: "画像入力対応",
