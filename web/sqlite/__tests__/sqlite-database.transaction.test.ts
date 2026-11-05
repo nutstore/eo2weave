@@ -214,12 +214,22 @@ describe('SQLiteDatabaseManager transaction serialization', () => {
     const commitAt = types.indexOf('commit')
     expect(beginAt).toBeGreaterThan(-1)
     expect(commitAt).toBeGreaterThan(beginAt)
-    // Exactly two writes: the transaction's own, then the outside one…
-    expect(types.filter((type) => type === 'execute')).toHaveLength(2)
+    // Exactly two writes: the transaction's own, then the outside one. The
+    // POSITIONS alone are not enough — a swapped pair (outside write before
+    // COMMIT, transaction write after) would satisfy them — so identify each
+    // write by its SQL.
+    const writes = FakeWorker.requests
+      .map((request, index) => ({ request, index }))
+      .filter(({ request }) => request.type === 'execute')
+    expect(writes).toHaveLength(2)
+    expect(writes.map(({ request }) => request.sql)).toEqual([
+      'INSERT INTO test VALUES (1)', // the transaction's write
+      'INSERT INTO test VALUES (2)', // the outside write
+    ])
     // …the transaction's write before the commit…
-    expect(types.indexOf('execute')).toBeLessThan(commitAt)
+    expect(writes[0].index).toBeLessThan(commitAt)
     // …and the outside write AFTER it, as the last request of the run.
-    expect(types.lastIndexOf('execute')).toBeGreaterThan(commitAt)
+    expect(writes[1].index).toBeGreaterThan(commitAt)
     expect(types[types.length - 1]).toBe('execute')
   })
 
