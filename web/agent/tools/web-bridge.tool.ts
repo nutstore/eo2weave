@@ -325,7 +325,7 @@ export const webFetchDefinition: ToolDefinition = {
       '',
       'You can set render=true to force JavaScript rendering (useful when you know the page is an SPA like a React/Vue app).',
       '',
-      'Only public http(s) URLs are fetched: private, loopback, link-local and metadata addresses are refused, and redirects are re-checked hop by hop against that rule (a refusal is reported as a non-retryable URL_REFUSED error).',
+      'Only public http(s) URLs are fetched: private, loopback, link-local and metadata addresses are refused. Redirects are NOT followed — a response that would redirect is reported as a non-retryable URL_REFUSED error instead, because Chrome hides a manual redirect\'s target until the request has already been sent, so the hop cannot be validated first. If a URL redirects, pass the final target URL instead.',
       '',
       'Returns: body (Markdown for HTML, raw for everything else), HTTP status, headers, and readability metadata (title, excerpt, byline) for HTML pages.',
       '',
