@@ -141,10 +141,18 @@ describe('read_skill / read_skill_resource direct-mode guard', () => {
   })
 
   it('read_skill still serves user skills in direct mode (retained capability)', async () => {
-    state.skills = [skill({ id: 'user:notes', name: 'user-skill', source: 'user' })]
+    // Assert the CONTENT, not just ok:true — a metadata-only response would
+    // satisfy parsed.ok while the capability under test (reading the user
+    // skill's actual instructions) silently regressed.
+    const userSkill = {
+      ...skill({ id: 'user:notes', name: 'user-skill', source: 'user' }),
+      instruction: 'Always cite the notes file.',
+    } as Skill
+    state.skills = [userSkill]
     const raw = await readSkillExecutor({ skill_name: 'user-skill' }, directContext)
-    const parsed = JSON.parse(raw) as { ok: boolean }
+    const parsed = JSON.parse(raw) as { ok: boolean; content?: string }
     expect(parsed.ok).toBe(true)
+    expect(raw).toContain('Always cite the notes file.')
   })
 
   it('read_skill serves project skills in project mode (zero drift)', async () => {
