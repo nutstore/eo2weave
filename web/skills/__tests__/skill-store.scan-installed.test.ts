@@ -83,8 +83,10 @@ describe('scanInstalledDirNames (#185 fallback policy)', () => {
 
   it('falls back to the store cache when `.skills/user/` is absent (NotFoundError)', async () => {
     useOpfsRoot(makeDir('opfs-root'))
+    // Fallback strips the `user:` id prefix so callers comparing against
+    // bare directory names still match (#154 round 8, merged from main).
     await expect(scanInstalledDirNames()).resolves.toEqual(
-      new Set(['user:cached-skill', 'user:other-skill']),
+      new Set(['cached-skill', 'other-skill']),
     )
   })
 

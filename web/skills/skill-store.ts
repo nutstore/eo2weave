@@ -12,6 +12,7 @@ import {
   importUserSkillZipPrelocked,
   withSkillImportSerialization,
   isNotFoundError,
+  isOpfsUnavailableError,
   userSkillDirExists,
   ZIP_IMPORT_LIMITS,
   type ZipSkillPreview,
@@ -189,7 +190,10 @@ export async function scanInstalledDirNames(): Promise<Set<string>> {
     }
     return new Set(names)
   } catch (e) {
-    if (!isNotFoundError(e)) throw e
+    // A browser without File System Access support throws TypeError from
+    // getDirectory() — same documented fallback as a missing directory
+    // (#185): nothing is installed per OPFS, query the store cache.
+    if (!isNotFoundError(e) && !isOpfsUnavailableError(e)) throw e
     // `.skills/user/` doesn't exist yet — nothing installed per OPFS. The
     // store cache may still hold legacy SQLite-era entries, so fall back to
     // it. Store ids are `user:<dirName>` while callers compare against bare

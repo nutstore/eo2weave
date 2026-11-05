@@ -225,6 +225,17 @@ export function isNotFoundError(e: unknown): boolean {
   return e instanceof Error && e.message.includes('NotFoundError')
 }
 
+/**
+ * True when the error means "no OPFS at all": a browser without File System
+ * Access support throws a TypeError from `navigator.storage.getDirectory()`.
+ * Callers treat it like absence (#185) — nothing is installed per OPFS and
+ * the documented store-cache fallback applies, instead of the scan rejecting
+ * and every installed-status flow failing.
+ */
+export function isOpfsUnavailableError(e: unknown): boolean {
+  return e instanceof TypeError
+}
+
 /** Concatenate streamed decoder chunks into a single buffer. */
 function concatChunks(chunks: Uint8Array[]): Uint8Array {
   if (chunks.length === 1) return chunks[0]
