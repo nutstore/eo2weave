@@ -85,6 +85,12 @@ export function createRegistrySection(
   const catalogEpochs = new Map<string, number>()
   /** Registries whose auto-load FAILED (no automatic retry from render). */
   const catalogLoadFailures = new Set<string>()
+  /**
+   * Registries whose last FORCED refresh failed while a cached catalog is
+   * still on screen. The cache is kept (it is better than nothing) but it is
+   * STALE, and the card must not present it as a live connection.
+   */
+  const catalogRefreshFailures = new Set<string>()
 
   function bumpCatalogEpoch(manifestUrl: string): void {
     catalogEpochs.set(manifestUrl, (catalogEpochs.get(manifestUrl) ?? 0) + 1)
@@ -140,18 +146,24 @@ export function createRegistrySection(
     const head = document.createElement('div')
     head.className = 'reg-head'
     // The dot reflects REAL connection state: loading = pulsing amber,
-    // failed = red, connected = green.
+    // failed = red, connected = green. A CACHED catalog only counts as
+    // connected if the last refresh did not fail — after a failed forced
+    // refresh the rows below are the stale cache, not a live connection.
     const catalog = catalogs.get(registry.manifestUrl)
-    const dotState = catalog
-      ? 'ok'
-      : catalogLoads.has(registry.manifestUrl)
-        ? 'loading'
-        : catalogLoadFailures.has(registry.manifestUrl)
-          ? 'failed'
-          : 'ok'
+    const refreshFailed = catalogRefreshFailures.has(registry.manifestUrl)
+    const dotState = refreshFailed
+      ? 'failed'
+      : catalog
+        ? 'ok'
+        : catalogLoads.has(registry.manifestUrl)
+          ? 'loading'
+          : catalogLoadFailures.has(registry.manifestUrl)
+            ? 'failed'
+            : 'ok'
     const dot = document.createElement('span')
     dot.className = `dot dot-${dotState}`
     if (dotState === 'loading') dot.title = t('webmcpPackagesRefreshing')
+    if (refreshFailed) dot.title = t('webmcpPackagesCatalogStale')
     const name = document.createElement('div')
     name.className = 'name'
     name.textContent = registry.label
@@ -164,6 +176,15 @@ export function createRegistrySection(
 
     const body = document.createElement('div')
     body.className = 'body'
+
+    // Cached-but-unrevalidated catalog: say so, so the rows are not read as
+    // the registry's current content.
+    if (catalog && refreshFailed) {
+      const stale = document.createElement('div')
+      stale.className = 'desc stale'
+      stale.textContent = t('webmcpPackagesCatalogStale')
+      body.append(stale)
+    }
 
     if (!catalog) {
       const hint = document.createElement('div')
@@ -206,9 +227,15 @@ export function createRegistrySection(
         const manifest = await loadRegistryCatalog(registry, true)
         if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) {
           catalogs.set(registry.manifestUrl, manifest)
+          catalogRefreshFailures.delete(registry.manifestUrl)
         }
       } catch (error) {
-        shell.error.show(error)
+        // A superseded refresh (removal, re-add, another refresh) says nothing
+        // about the CURRENT registry state — its failure must not land.
+        if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) {
+          catalogRefreshFailures.add(registry.manifestUrl)
+          shell.error.show(error)
+        }
       } finally {
         if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) catalogLoads.delete(registry.manifestUrl)
         refreshButton.disabled = false
@@ -229,6 +256,7 @@ export function createRegistrySection(
         shell.error.clear()
         await removeRegistry(registry.manifestUrl)
         catalogs.delete(registry.manifestUrl)
+        catalogRefreshFailures.delete(registry.manifestUrl)
         clearToolPreviews(registry.manifestUrl)
       } catch (error) {
         shell.error.show(error)
@@ -531,6 +559,7 @@ export function createRegistrySection(
       // extra click. A failed auto-load of the SAME URL (re-added registry)
       // gets a fresh attempt — this is the explicit path.
       catalogLoadFailures.delete(registry.manifestUrl)
+      catalogRefreshFailures.delete(registry.manifestUrl)
       // EPOCH GUARD: the re-add may race a refresh of the SAME URL still in
       // flight — store the catalog only when the epoch captured before the
       // fetch still matches.

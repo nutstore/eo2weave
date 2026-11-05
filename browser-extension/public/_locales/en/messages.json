@@ -711,5 +711,9 @@
   "webmcpPackagesNotPersisted": {
     "message": "The registry list could not be saved to browser storage — changes are only kept for this browser session.",
     "description": "Shown when the registry list could not be written to chrome.storage.local."
+  },
+  "webmcpPackagesCatalogStale": {
+    "message": "The last refresh failed — the package list below is the cached catalog, not a live connection.",
+    "description": "Shown on a registry card whose forced catalog refresh failed while a cached catalog was still displayed."
   }
 }
