@@ -155,11 +155,20 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
     try {
       // The version-aware install flow decides install vs. update vs. keep
       // (#154) — an already-installed skill may still be outdated.
-      await installSkillFromUrl(skill.zipUrl, setProgress)
+      const result = await installSkillFromUrl(skill.zipUrl, setProgress)
       // Refresh skill store so the new skill appears everywhere
       await loadSkills()
       bumpScanVersion()
       setInstallState('installed')
+      // Partial member drops ride ANY successful outcome (#185 review round
+      // N): the chat card must not report a clean install when a bundle
+      // member was omitted. The install progress line carries the notice.
+      if ((result.droppedMembers?.length ?? 0) > 0) {
+        setProgress({
+          phase: 'done',
+          message: t('skills.discover.memberRemovedDuringInstall'),
+        })
+      }
     } catch (err) {
       console.error('[SkillSearchRenderer] Install failed:', err)
       setInstallState('error')

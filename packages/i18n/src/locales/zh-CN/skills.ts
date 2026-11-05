@@ -88,6 +88,7 @@ export const discover = {
     installedFiles: "已安装 {count} 个文件",
     alreadyInstalledVersion: "已安装（v{version}）",
     skippedUpdate: "已跳过更新：本地版本 v{installed} 高于商店版本 v{store}",
+    memberRemovedDuringInstall: "安装完成，但安装期间被删除的技能未被重新创建",
     updatedVersion: "已更新 v{from} → v{to}（{count} 个文件）",
     update: "更新",
     updating: "正在更新",

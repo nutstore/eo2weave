@@ -82,6 +82,7 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
   const [editingSkill, setEditingSkill] = useState<SkillMetadata | undefined>()
   const [editorMode, setEditorMode] = useState<EditorMode>()
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [userImportOpen, setUserImportOpen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('manage')
@@ -146,8 +147,19 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
 
   const handleToggle = useCallback(async (id: string, enabled: boolean) => { await toggleSkill(id, enabled) }, [loadSkills, bumpSkillsScanVersion])
   const handleDeleteConfirm = useCallback(async () => {
-    if (deleteTarget) { await deleteSkill(deleteTarget.id); setDeleteTarget(null) }
-  }, [deleteSkill, deleteTarget])
+    if (!deleteTarget) return
+    try {
+      await deleteSkill(deleteTarget.id)
+      setDeleteTarget(null)
+    } catch (error) {
+      // The skill may still be on disk — keep the dialog open so the user
+      // can retry instead of pretending the deletion succeeded (#185).
+      console.error('[SkillsManager] delete failed:', error)
+      setDeleteError(
+        error instanceof Error ? error.message : t('skills.deleteFailed') || 'Failed to delete. Please try again.'
+      )
+    }
+  }, [deleteSkill, deleteTarget, t])
   // Determine which editor to use based on skill source.
   // user/builtin → SkillFileEditor (VSCode-style file tree + Monaco)
   // project/import → SkillEditor (form-based, since files are on native FS not OPFS)
@@ -394,6 +406,9 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
             <p className="text-sm text-secondary">
               {(t('skills.deleteConfirmMessage') || 'Are you sure you want to delete "{name}"? This action cannot be undone.').replace('{name}', deleteTarget?.name || '')}
             </p>
+            {deleteError && (
+              <p className="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">{deleteError}</p>
+            )}
           </BrandDialogBody>
           <BrandDialogFooter>
             <BrandButton variant="outline" onClick={() => setDeleteTarget(null)}>

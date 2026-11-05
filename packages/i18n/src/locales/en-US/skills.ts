@@ -88,6 +88,7 @@ export const discover = {
     installedFiles: "Installed {count} files",
     alreadyInstalledVersion: "Already installed (v{version})",
     skippedUpdate: "Skipped update: installed v{installed} is newer than store v{store}",
+    memberRemovedDuringInstall: "Install finished, but a skill removed during the install was not re-created",
     updatedVersion: "Updated v{from} → v{to} ({count} files)",
     update: "Update",
     updating: "Updating",

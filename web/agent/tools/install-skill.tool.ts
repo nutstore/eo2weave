@@ -171,6 +171,22 @@ export async function installSkillExecutor(
     // on the next turn (or even the same turn if read_skill follows).
     useSkillsStore.getState().bumpSkillsScanVersion()
 
+    // Partial member drops ride ANY successful outcome (#185 req. 3 /
+    // review round N): checked BEFORE the per-outcome early returns below,
+    // otherwise an updated/current/installed-newer result would report a
+    // clean install while a member was silently omitted.
+    if ((result.droppedMembers?.length ?? 0) > 0) {
+      return toolOkJson('install_skill', {
+        dirName,
+        name: entry.name,
+        version: entry.version,
+        filesInstalled: result.count,
+        outcome: result.outcome,
+        missingMembers: result.droppedMembers ?? [],
+        message: `Install finished (${result.outcome}), but ${result.droppedMembers?.join(', ')} ${result.droppedMembers?.length === 1 ? 'was' : 'were'} removed during the install and ${result.droppedMembers?.length === 1 ? 'was' : 'were'} NOT re-created.`,
+      })
+    }
+
     if (result.outcome === 'updated') {
       return toolOkJson('install_skill', {
         dirName,

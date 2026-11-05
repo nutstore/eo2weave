@@ -134,13 +134,37 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
         const skillsStore = useSkillsStore.getState()
         await skillsStore.deleteSkill(`user:${entry.dirName}`)
       }
-      // Re-annotate from OPFS (the source of truth).
-      const installed = await scanInstalledDirNames()
+      // Re-annotate from OPFS (the source of truth). The operation itself
+      // already succeeded — a rescan failure must NOT mark it failed (#185):
+      // the skill IS installed/uninstalled on disk, and skipping
+      // bumpScanVersion/onInstalled would leave caches stale while the UI
+      // reports failure. Keep the success path, fall back to the manifest's
+      // previous annotation, and still refresh caches.
+      let installed: Set<string>
+      let rescanFailed = false
+      try {
+        installed = await scanInstalledDirNames()
+      } catch (scanErr) {
+        console.warn('[SkillDiscover] post-operation rescan failed:', scanErr)
+        rescanFailed = true
+        installed = new Set(
+          (manifest ?? []).filter((e) => e.installed).map((e) => e.dirName),
+        )
+      }
       setManifest((prev) =>
         prev
-          ? prev.map((e) =>
-              e.dirName === entry.dirName ? { ...e, installed: installed.has(e.dirName) } : e,
-            )
+          ? prev.map((e) => {
+              if (e.dirName !== entry.dirName) return e
+              // The rescan failed but the OPERATION succeeded — reusing the
+              // card's pre-operation annotation would show the OPPOSITE of
+              // what just happened on disk until a later manifest refresh
+              // (#185 review round N). Patch the changed card from the
+              // operation itself; the fallback set still covers the others.
+              if (rescanFailed) {
+                return { ...e, installed: op === 'install' || op === 'update' }
+              }
+              return { ...e, installed: installed.has(e.dirName) }
+            })
           : null,
       )
       bumpScanVersion()
@@ -163,9 +187,20 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
           result.count > 0
             ? t('skills.discover.installedFiles', { count: result.count })
             : t('skills.discover.progressInstallDone')
+      } else if (result.outcome === 'member-deleted') {
+        // A member present at install start was uninstalled mid-download and
+        // dropped by the locked re-check (#185 req. 3) — never report this
+        // as a plain success.
+        doneMessage = t('skills.discover.memberRemovedDuringInstall')
       } else {
         // 'current' and 'installed-newer': the installed copy was kept as is.
         doneMessage = t('skills.discover.alreadyInstalled')
+      }
+      if (result !== null && (result.droppedMembers?.length ?? 0) > 0) {
+        // Partial drops ride ANY successful outcome (#185 req. 3): surface the
+        // dropped members on top of the install/update result instead of a
+        // clean success.
+        doneMessage = t('skills.discover.memberRemovedDuringInstall')
       }
       setProgress({ phase: 'done', message: doneMessage })
     } catch (err) {

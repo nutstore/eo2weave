@@ -28,8 +28,14 @@ vi.mock('@/skills/skill-storage', () => ({
 const { mockUserSkillsScanner } = vi.hoisted(() => ({
   mockUserSkillsScanner: {
     writeUserSkillMd: vi.fn(() => Promise.resolve()),
+    writeUserSkillMdLocked: vi.fn(() => Promise.resolve()),
     deleteUserSkillDir: vi.fn(() => Promise.resolve()),
     userSkillDirExists: vi.fn(() => Promise.resolve(false)),
+    // Real per-directory Web Locks serializer (no-op in tests — vitest runs
+    // the callback immediately when no lock contention exists).
+    withSkillImportSerialization: vi.fn(
+      (_dirNames: unknown, fn: () => Promise<unknown>) => fn(),
+    ),
   },
 }))
 
@@ -277,6 +283,94 @@ describe('useSkillsStore', () => {
       expect(storage.deleteSkill).toHaveBeenCalledWith('skill-1')
       expect(useSkillsStore.getState().skills).toHaveLength(1)
       expect(useSkillsStore.getState().skills[0].id).toBe('skill-2')
+    })
+  })
+
+  describe('deleteSkill (user skills, #185 existence-check error propagation)', () => {
+    it('propagates an existence-check storage failure instead of deleting SQLite-only', async () => {
+      const initialSkills: SkillMetadata[] = [
+        createMockMetadata({ id: 'user:doomed', name: 'doomed' }),
+      ]
+      useSkillsStore.setState({ skills: initialSkills })
+      mockManager.getSkillMetadata.mockReturnValue([])
+      mockUserSkillsScanner.userSkillDirExists.mockRejectedValue(
+        new Error('PermissionDeniedError: OPFS unavailable'),
+      )
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+      const { deleteSkill } = useSkillsStore.getState()
+      await expect(deleteSkill('user:doomed')).rejects.toThrow('Failed to delete skill')
+
+      // Neither the OPFS removal nor the SQLite record removal ran — the
+      // error surfaced (via the store's console.error) instead of being
+      // misread as "absent" and taking the SQLite-only path.
+      expect(mockUserSkillsScanner.deleteUserSkillDir).not.toHaveBeenCalled()
+      expect(storage.deleteSkill).not.toHaveBeenCalled()
+      // The failed delete must NOT remove the skill from store state — the
+      // skill may still be on disk and a silent state removal would report
+      // a deletion that never happened (#185 review round N).
+      expect(useSkillsStore.getState().skills.some((s) => s.id === 'user:doomed')).toBe(true)
+      consoleError.mockRestore()
+    })
+  })
+
+  describe('createSkillSkeleton (#185 existence-check error surfacing)', () => {
+    const parseValid = () => {
+      vi.mocked(parser.parseSkillMd).mockReturnValue({
+        skill: createMockMetadata({ id: 'new-skill', name: 'new-skill' }) as unknown as Skill,
+        error: null,
+      })
+    }
+
+    it('refuses to create when the directory already exists', async () => {
+      parseValid()
+      mockUserSkillsScanner.userSkillDirExists.mockResolvedValue(true)
+
+      const { createSkillSkeleton } = useSkillsStore.getState()
+      const result = await createSkillSkeleton('new-skill', 'new-skill', 'desc')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('already exists')
+      // No write attempted when the guard trips.
+      expect(mockUserSkillsScanner.writeUserSkillMd).not.toHaveBeenCalled()
+    })
+
+    it('surfaces an existence-check storage failure instead of overwriting (#185)', async () => {
+      parseValid()
+      mockUserSkillsScanner.userSkillDirExists.mockRejectedValue(
+        new Error('PermissionDeniedError: OPFS unavailable'),
+      )
+
+      const { createSkillSkeleton } = useSkillsStore.getState()
+      const result = await createSkillSkeleton('new-skill', 'new-skill', 'desc')
+
+      // The create must FAIL — not fall through to writeUserSkillMd and
+      // overwrite an existing skill behind a swallowed error.
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Failed to check skill existence')
+      expect(result.error).toContain('PermissionDeniedError')
+      expect(mockUserSkillsScanner.writeUserSkillMd).not.toHaveBeenCalled()
+    })
+
+    it('creates the skeleton when the directory is genuinely absent', async () => {
+      parseValid()
+      mockUserSkillsScanner.userSkillDirExists.mockResolvedValue(false)
+      mockManager.getSkillMetadata.mockReturnValue([
+        createMockMetadata({ id: 'new-skill', name: 'new-skill' }),
+      ])
+
+      const { createSkillSkeleton } = useSkillsStore.getState()
+      const result = await createSkillSkeleton('new-skill', 'new-skill', 'desc')
+
+      expect(result.success).toBe(true)
+      expect(result.skillId).toBe('user:new-skill')
+      // The write runs through the reentrancy-safe locked helper (the store
+      // already holds the per-directory serializer here — calling the
+      // lock-acquiring writeUserSkillMd would deadlock, #185 review).
+      expect(mockUserSkillsScanner.writeUserSkillMdLocked).toHaveBeenCalledWith(
+        'new-skill',
+        expect.stringContaining('name: "new-skill"'),
+      )
     })
   })
 

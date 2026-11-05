@@ -87,6 +87,7 @@ export const discover = {
     installedFiles: "{count}개 파일을 설치했습니다",
     alreadyInstalledVersion: "설치됨(v{version})",
     skippedUpdate: "업데이트를 건너뛰었습니다: 설치된 버전 v{installed}이(가) 스토어 버전 v{store}보다 최신입니다",
+    memberRemovedDuringInstall: "설치가 완료되었지만, 설치 중 삭제된 스킬은 다시 생성되지 않았습니다",
     updatedVersion: "v{from} → v{to}(으)로 업데이트했습니다({count}개 파일)",
     update: "업데이트",
     updating: "업데이트 중",
