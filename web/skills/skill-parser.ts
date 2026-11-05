@@ -151,12 +151,26 @@ export function parseDescriptionI18nFromSkillMd(
   if (!trimmed.startsWith('---')) return undefined
   const end = trimmed.indexOf('---', 3)
   if (end === -1) return undefined
+  const yamlBlock = trimmed.substring(3, end).trim()
+  const read = (block: string): Record<string, unknown> | null => {
+    const meta = yaml.load(block)
+    return meta && typeof meta === 'object' ? (meta as Record<string, unknown>) : null
+  }
   try {
-    const meta = yaml.load(trimmed.substring(3, end).trim())
-    if (!meta || typeof meta !== 'object') return undefined
-    return parseDescriptionI18n(meta as Record<string, unknown>)
+    const meta = read(yamlBlock)
+    return meta ? parseDescriptionI18n(meta) : undefined
   } catch {
-    return undefined
+    // Hand-written frontmatter routinely trips strict YAML (`description: Use
+    // when: X`). parseSkillMd repairs and retries, so this path must too —
+    // otherwise those files simply lose their translations.
+    try {
+      const repaired = repairFrontmatter(yamlBlock)
+      if (repaired === yamlBlock) return undefined
+      const meta = read(repaired)
+      return meta ? parseDescriptionI18n(meta) : undefined
+    } catch {
+      return undefined
+    }
   }
 }
 

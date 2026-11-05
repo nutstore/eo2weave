@@ -201,3 +201,18 @@ describe('parseDescriptionI18n — locale tag coverage', () => {
     expect(parseDescriptionI18nFromSkillMd('no frontmatter here')).toBeUndefined()
   })
 })
+
+describe('parseDescriptionI18nFromSkillMd — hand-written frontmatter', () => {
+  it('still extracts translations when strict YAML needs the repair path', () => {
+    // The same class the full parser repairs: an unquoted scalar containing ": ".
+    const raw = doc(
+      [
+        'name: broken-yaml-skill',
+        'description: Use when: the user asks about X',
+        'description.zh-CN: "中文描述。"',
+        '',
+      ].join('\n'),
+    )
+    expect(parseDescriptionI18nFromSkillMd(raw)).toEqual({ 'zh-CN': '中文描述。' })
+  })
+})
