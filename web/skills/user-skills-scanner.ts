@@ -231,9 +231,36 @@ export function isNotFoundError(e: unknown): boolean {
  * Callers treat it like absence (#185) — nothing is installed per OPFS and
  * the documented store-cache fallback applies, instead of the scan rejecting
  * and every installed-status flow failing.
+ *
+ * Only an error from the SUPPORT CHECK itself qualifies (#185 review round
+ * N): a TypeError thrown later — during directory enumeration or a read —
+ * is an operational failure inside an OPFS that exists, and misclassifying
+ * it as "OPFS unavailable" would send callers to a stale store cache.
  */
 export function isOpfsUnavailableError(e: unknown): boolean {
   return e instanceof TypeError
+}
+
+/**
+ * Same contract as {@link isOpfsUnavailableError} for an OPFS-absence
+ * fallback, plus `navigator.storage` being entirely missing (the API-surface
+ * check): true only when the error can be attributed to the environment not
+ * having the File System Access API at all. Any TypeError from deeper in the
+ * scan (enumeration, handle resolution) is NOT an environment gap and must
+ * propagate to the caller instead of degrading to cached data.
+ */
+export function isOpfsSupportMissing(e: unknown): boolean {
+  if (!(e instanceof TypeError)) return false
+  // `navigator.storage` undefined / getDirectory not a function is thrown
+  // SYNCHRONOUSLY at the API surface, before any OPFS handle exists — that
+  // is the documented unsupported-browser signal. Everything else (async
+  // TypeErrors from enumeration) is an operational failure.
+  const msg = e instanceof Error ? e.message : ''
+  return (
+    msg.includes('navigator.storage') ||
+    msg.includes('getDirectory is not a function') ||
+    msg.includes("Cannot read properties of undefined")
+  )
 }
 
 /** Concatenate streamed decoder chunks into a single buffer. */
@@ -1175,16 +1202,28 @@ export async function migrateUserSkillsFromSQLite(): Promise<{
  * @param content  SKILL.md file content
  */
 export async function writeUserSkillMd(dirName: string, content: string): Promise<void> {
-  return withSkillImportSerialization([dirName], async () => {
-    const opfsRoot = await navigator.storage.getDirectory()
-    const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
-    const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
-    const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
-    const mdHandle = await skillDir.getFileHandle('SKILL.md', { create: true })
-    const writable = await mdHandle.createWritable()
-    await writable.write(content)
-    await writable.close()
-  })
+  return withSkillImportSerialization([dirName], () => writeUserSkillMdLocked(dirName, content))
+}
+
+/**
+ * The raw OPFS write, WITHOUT acquiring the per-directory import lock.
+ *
+ * Only for callers that already hold the lock (#185 review): re-entering
+ * `withSkillImportSerialization` from inside its own critical section
+ * deadlocks — the inner call queues behind the outer hold in the in-tab
+ * mutex chain while the outer waits for the inner to finish.
+ * `createSkillSkeleton` is such a caller (its existence check and write
+ * share one serialized section).
+ */
+export async function writeUserSkillMdLocked(dirName: string, content: string): Promise<void> {
+  const opfsRoot = await navigator.storage.getDirectory()
+  const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
+  const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
+  const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
+  const mdHandle = await skillDir.getFileHandle('SKILL.md', { create: true })
+  const writable = await mdHandle.createWritable()
+  await writable.write(content)
+  await writable.close()
 }
 
 /**

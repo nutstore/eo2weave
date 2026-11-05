@@ -18,6 +18,7 @@ export const skillInstall = {
     keyStoreUnavailable: "保存されたAI認証情報を確認できませんでした（ストレージエラー）。もう一度お試しください。",
     readinessTimeout: "AI状態の確認に時間がかかりすぎています。もう一度お試しください。",
     registerFailed: "スキルはインストールされましたが、登録に失敗しました。再試行してください。",
+    memberRemovedDuringInstall: "インストールは完了しましたが、インストール中に削除されたスキルは再作成されていません。",
     aiReady: "AI モデルの準備ができています",
     aiNotReady: "最後のステップ：Nutstore AI にログインするとスキルを実行できます",
     aiGatewayUnavailable: "このビルドでは AI が未設定です。設定で API キーを構成してからスキルを実行してください。",

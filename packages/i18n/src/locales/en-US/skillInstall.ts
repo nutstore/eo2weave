@@ -18,6 +18,7 @@ export const skillInstall = {
     keyStoreUnavailable: "Couldn't check your saved AI credentials (storage error). Please try again.",
     readinessTimeout: "Checking your AI setup took too long. Please try again.",
     registerFailed: "Skill installed but registration failed — please retry.",
+    memberRemovedDuringInstall: "Install finished, but a skill removed during the install was not re-created.",
     aiReady: "AI model is ready",
     aiNotReady: "One last step: log in to Nutstore AI to run the skill",
     aiGatewayUnavailable: "AI isn't set up yet on this build — configure an API key in Settings to run the skill.",

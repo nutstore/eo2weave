@@ -11,9 +11,10 @@ import { parseSkillMd, serializeSkillMd, slugify } from '@/skills/skill-parser'
 import { getSkillManager } from '@/skills/skill-manager'
 import { useProjectStore } from '@/store/project.store'
 import {
-  writeUserSkillMd,
   deleteUserSkillDir,
   userSkillDirExists,
+  writeUserSkillMd,
+  writeUserSkillMdLocked,
   withSkillImportSerialization,
 } from '@/skills/user-skills-scanner'
 import { deleteProjectSkillFromNativeFs } from '@/skills/project-skill-live-reader'
@@ -207,7 +208,11 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
           if (exists) {
             throw new Error('A skill with this directory name already exists')
           }
-          await writeUserSkillMd(dirName, content)
+          // Already inside the per-directory serializer — call the locked
+          // write directly. Re-acquiring via writeUserSkillMd() would wait
+          // on the lock this call holds and hang the create forever
+          // (#185 review round N).
+          await writeUserSkillMdLocked(dirName, content)
         })
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
@@ -268,8 +273,13 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
           await storage.deleteSkill(id)
         }
       } catch (error) {
+        // Storage failed — the skill may still exist on disk, so removing it
+        // from store state would report a deletion that never happened and
+        // the next rescan would resurrect it (#185 review round N). Stop
+        // here and surface the failure instead.
         console.error('[SkillsStore] deleteSkill failed for', id, error)
-        // Still remove from store so UI reflects intent even if storage fails
+        const msg = error instanceof Error ? error.message : String(error)
+        throw new Error(`Failed to delete skill: ${msg}`)
       }
       set((state) => {
         state.skills = state.skills.filter((s) => s.id !== id)

@@ -14,12 +14,12 @@ const { scanUserSkillsMock } = vi.hoisted(() => ({
   scanUserSkillsMock: vi.fn(),
 }))
 
-vi.mock('../user-skills-scanner', () => ({
+vi.mock('@/skills/user-skills-scanner', () => ({
   scanUserSkills: scanUserSkillsMock,
 }))
 
-import { SkillManager } from '../skill-manager'
-import type { Skill, SkillResource } from '../skill-types'
+import { SkillManager } from '@/skills/skill-manager'
+import type { Skill, SkillResource } from '@/skills/skill-types'
 
 const makeSkill = (id: string): Skill =>
   ({

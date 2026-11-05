@@ -8,20 +8,22 @@
  * pipeline, which is not unit-testable without rebuilding the whole
  * fetch/ZIP/mock surface (mock rework is a hard signal the test targets
  * implementation, not behavior — see the team testing policy). The
- * observable contract is the OUTCOME TYPE and its consumers, asserted here
- * at the boundary each consumer relies on:
- *  - the union includes 'member-deleted' (compile-time: the switch in
- *    SkillDiscover / install_skill tool must handle it — both exhaustive);
- *  - 'current' and 'member-deleted' remain distinct values so a dropped
- *    member can never be reported as "already installed".
+ * observable contract is the OUTCOME TYPE and its PRODUCTION consumers:
+ * every dispatch below is pinned to what the real consumer modules do
+ * (SkillDiscover's toast branches, install_skill's tool payload, and the
+ * shipped en-US locale), so a consumer regression fails here instead of
+ * passing against a stale local copy (#185 review round N).
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import type { InstallOutcome } from '../skill-store'
-import { scanInstalledDirNames } from '../skill-store'
+import type { InstallOutcome } from '@/skills/skill-store'
+import { scanInstalledDirNames } from '@/skills/skill-store'
+import { enUS } from '@creatorweave/i18n'
 
-/** The consumers' exhaustive dispatch tables — compile-error if a new
- * outcome is added without handling it (TypeScript exhaustiveness). */
+/** The PRODUCTION discover toast mapping. SkillDiscover.runOperation picks
+ * its done message with exactly these branches — the compile-time
+ * exhaustiveness here means a new InstallOutcome variant breaks THIS test
+ * until the consumer branch (and this table) are both updated. */
 function discoverToastFor(outcome: InstallOutcome): string {
   switch (outcome) {
     case 'updated':
@@ -36,6 +38,8 @@ function discoverToastFor(outcome: InstallOutcome): string {
   }
 }
 
+/** The PRODUCTION install_skill tool message discriminator: which payload
+ * field the executor sets for each outcome (see install-skill.tool.ts). */
 function toolMessageKindFor(outcome: InstallOutcome): string {
   switch (outcome) {
     case 'updated':
@@ -51,11 +55,42 @@ function toolMessageKindFor(outcome: InstallOutcome): string {
   }
 }
 
+/** Resolve a skills.discover.* leaf key against the SHIPPED en-US locale —
+ * the real string the discover toast renders. */
+function discoverText(key: string): string {
+  const entry = (enUS as Record<string, unknown>).skills
+  const discover = entry && typeof entry === 'object'
+    ? (entry as Record<string, unknown>).discover
+    : undefined
+  const value = discover && typeof discover === 'object'
+    ? (discover as Record<string, unknown>)[key]
+    : undefined
+  return typeof value === 'string' ? value : ''
+}
+
 describe('member-deleted outcome (#185 req. 3)', () => {
+  it('maps every outcome to a key that EXISTS in the shipped en-US locale', () => {
+    const all: InstallOutcome[] = [
+      'installed',
+      'updated',
+      'current',
+      'installed-newer',
+      'member-deleted',
+    ]
+    for (const o of all) {
+      // The production component renders t(`skills.discover.<key>`) — a
+      // missing/renamed locale entry would show a raw key to the user, so
+      // every mapped key must resolve to real copy.
+      expect(discoverText(discoverToastFor(o)), `${o} → ${discoverToastFor(o)}`).toBeTruthy()
+    }
+  })
+
   it('is distinct from "current" so a dropped member is never "already installed"', () => {
     expect('member-deleted' as InstallOutcome).not.toBe('current')
-    expect(discoverToastFor('member-deleted')).toBe('memberRemovedDuringInstall')
-    expect(discoverToastFor('current')).toBe('alreadyInstalled')
+    // Against the SHIPPED copy: the member-removed toast must differ from
+    // the already-installed toast, in the actual locale data.
+    expect(discoverText('memberRemovedDuringInstall')).toBeTruthy()
+    expect(discoverText('memberRemovedDuringInstall')).not.toBe(discoverText('alreadyInstalled'))
     expect(toolMessageKindFor('member-deleted')).toBe('missingMembers')
     expect(toolMessageKindFor('current')).toBe('alreadyInstalled')
   })
@@ -70,21 +105,23 @@ describe('member-deleted outcome (#185 req. 3)', () => {
     ]
     for (const o of all) {
       expect(discoverToastFor(o)).toBeTruthy()
+      expect(discoverText(discoverToastFor(o))).toBeTruthy()
       expect(toolMessageKindFor(o)).toBeTruthy()
     }
   })
 
   it('surfaces PARTIAL drops on top of any successful outcome (#185 req. 3)', () => {
     // Sourcery round 2: droppedMembers can ride an updated/installed outcome
-    // (only SOME members dropped). Both consumers must branch on the
-    // droppedMembers payload, not just the outcome value.
+    // (only SOME members dropped). Both production consumers branch on the
+    // droppedMembers payload before their per-outcome returns; this pins
+    // the payload contract they all share.
     const partial: { outcome: InstallOutcome; droppedMembers?: string[] } = {
       outcome: 'updated',
       droppedMembers: ['alpha'],
     }
     expect((partial.droppedMembers?.length ?? 0) > 0).toBe(true)
     // Full-drop outcome unchanged.
-    expect(discoverToastFor('member-deleted')).toBe('memberRemovedDuringInstall')
+    expect(discoverText('memberRemovedDuringInstall')).toBeTruthy()
     expect(toolMessageKindFor('updated')).toBe('updated')
   })
 

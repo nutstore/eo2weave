@@ -141,19 +141,30 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
       // reports failure. Keep the success path, fall back to the manifest's
       // previous annotation, and still refresh caches.
       let installed: Set<string>
+      let rescanFailed = false
       try {
         installed = await scanInstalledDirNames()
       } catch (scanErr) {
         console.warn('[SkillDiscover] post-operation rescan failed:', scanErr)
+        rescanFailed = true
         installed = new Set(
           (manifest ?? []).filter((e) => e.installed).map((e) => e.dirName),
         )
       }
       setManifest((prev) =>
         prev
-          ? prev.map((e) =>
-              e.dirName === entry.dirName ? { ...e, installed: installed.has(e.dirName) } : e,
-            )
+          ? prev.map((e) => {
+              if (e.dirName !== entry.dirName) return e
+              // The rescan failed but the OPERATION succeeded — reusing the
+              // card's pre-operation annotation would show the OPPOSITE of
+              // what just happened on disk until a later manifest refresh
+              // (#185 review round N). Patch the changed card from the
+              // operation itself; the fallback set still covers the others.
+              if (rescanFailed) {
+                return { ...e, installed: op === 'install' || op === 'update' }
+              }
+              return { ...e, installed: installed.has(e.dirName) }
+            })
           : null,
       )
       bumpScanVersion()

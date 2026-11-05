@@ -18,6 +18,7 @@ export const skillInstall = {
     keyStoreUnavailable: "无法读取已保存的 AI 凭据（存储错误），请重试。",
     readinessTimeout: "AI 状态检查耗时过长，请重试。",
     registerFailed: "技能已安装但注册失败，请重试。",
+    memberRemovedDuringInstall: "安装完成，但安装期间被删除的技能未被重新创建。",
     aiReady: "AI 模型已就绪",
     aiNotReady: "最后一步：登录坚果云 AI 即可运行该技能",
     aiGatewayUnavailable: "此版本尚未配置 AI——请在设置中配置 API Key 后运行该技能。",

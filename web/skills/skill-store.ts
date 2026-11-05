@@ -12,7 +12,7 @@ import {
   importUserSkillZipPrelocked,
   withSkillImportSerialization,
   isNotFoundError,
-  isOpfsUnavailableError,
+  isOpfsSupportMissing,
   userSkillDirExists,
   ZIP_IMPORT_LIMITS,
   type ZipSkillPreview,
@@ -194,18 +194,23 @@ export async function scanInstalledDirNames(): Promise<Set<string>> {
     for await (const entry of (userDir as any).values()) {
       if (entry.kind === 'directory') names.push(entry.name)
     }
+    lastScanWasOpfsBacked = true
     return new Set(names)
   } catch (e) {
     // A browser without File System Access support throws TypeError from
     // getDirectory() — same documented fallback as a missing directory
     // (#185): nothing is installed per OPFS, query the store cache.
-    if (!isNotFoundError(e) && !isOpfsUnavailableError(e)) throw e
+    // A TypeError from DEEPER in the scan (enumeration, handle resolution)
+    // is an operational failure, not a missing API, and must propagate
+    // instead of degrading to the stale cache (#185 review round N).
+    if (!isNotFoundError(e) && !isOpfsSupportMissing(e)) throw e
     // `.skills/user/` doesn't exist yet — nothing installed per OPFS. The
     // store cache may still hold legacy SQLite-era entries, so fall back to
     // it. Store ids are `user:<dirName>` while callers compare against bare
     // directory names — strip the prefix so membership checks still match
     // when OPFS is unavailable (#154 round 8).
     const state = useSkillsStore.getState()
+    lastScanWasOpfsBacked = false
     return new Set(
       state.skills
         .filter((s) => s.source === 'user')
@@ -214,7 +219,8 @@ export async function scanInstalledDirNames(): Promise<Set<string>> {
   }
 }
 
-/** Synchronous store-based lookup (legacy). Use scanInstalledDirNames() instead. */
+/**
+ * Synchronous store-based lookup (legacy). Use scanInstalledDirNames() instead. */
 export function getInstalledDirNames(): Set<string> {
   const state = useSkillsStore.getState()
   return new Set(
@@ -222,6 +228,19 @@ export function getInstalledDirNames(): Set<string> {
       .filter((s) => s.source === 'user')
       .map((s) => s.id),
   )
+}
+
+/**
+ * Whether the most recent {@link scanInstalledDirNames} call returned names
+ * read from OPFS itself (true) or from the store-cache fallback (false).
+ * Callers that compare the snapshot against a second OPFS check — the
+ * uninstall-resurrect guard — must know whether "present" means a confirmed
+ * directory or a possibly stale cache entry (#185 review round N).
+ */
+let lastScanWasOpfsBacked = false
+
+export function lastInstalledDirNamesScanWasOpfsBacked(): boolean {
+  return lastScanWasOpfsBacked
 }
 
 // ---------- URL install ----------
@@ -471,7 +490,13 @@ export async function installSkillFromUrl(
   // the import lock. A member present at call time but gone inside the
   // lock was uninstalled mid-download and must NOT be resurrected; a
   // member absent in both snapshots is a plain fresh install and stays.
+  // NOTE the snapshot's OPFS fallback (no-OPFS browser): when the scan
+  // fell back to the store cache, those names are NOT confirmed OPFS
+  // presence, so the locked re-check below must not treat a cache-only
+  // name's absence as a mid-download drop (#185 review round N) — it is
+  // just a legacy SQLite-era entry that was never a directory on disk.
   const presentAtCall = await scanInstalledDirNames()
+  const presentAtCallIsOpfsScan = lastInstalledDirNamesScanWasOpfsBacked()
   let resp: Response
   try {
     resp = await fetch(zipUrl, { credentials: 'omit', signal: controller.signal })
@@ -592,7 +617,13 @@ export async function installSkillFromUrl(
           // them instead of a silent partial success.
           const droppedMembers: string[] = []
           for (const s of memberSkills) {
-            if (presentAtCall.has(s.dirName)) {
+            // The drop decision needs the snapshot to be OPFS-backed: a
+            // cache-only name (store-cache fallback, e.g. legacy SQLite-era
+            // entry with no directory on disk) was never confirmed present
+            // in OPFS, so its absence under the lock is NOT a mid-download
+            // drop — treating it as one reported a removed skill that never
+            // existed on disk and skipped installing it (#185 review N).
+            if (presentAtCall.has(s.dirName) && presentAtCallIsOpfsScan) {
               if (!(await userSkillDirExists(s.dirName))) {
                 droppedMembers.push(s.dirName)
                 continue
@@ -616,7 +647,6 @@ export async function installSkillFromUrl(
               droppedMembers,
             }
           }
-
           // A failed read is NOT "unknown version": the update decision
           // cannot be made, so the failure is surfaced instead of silently
           // keeping the stale copy (the old fallback would report
@@ -678,6 +708,11 @@ export async function installSkillFromUrl(
 
           // Summary against the strongest action any member took: the
           // per-member counts stay exact, the message names one example.
+          // Partial-success results carry the collected droppedMembers too
+          // (#185 review round N): members dropped by the locked re-check
+          // can accompany an updated/installed-newer/current outcome (only
+          // SOME members dropped), and callers report drops from this
+          // payload — omitting it would make a partial install look clean.
           if (updatedAny) {
             return {
               count: filesWritten,
@@ -688,6 +723,7 @@ export async function installSkillFromUrl(
                 to: updatedTo,
                 count: filesWritten,
               }),
+              droppedMembers,
             }
           }
           if (installedAny) {
@@ -696,6 +732,7 @@ export async function installSkillFromUrl(
               storeVersion: null,
               outcome: 'installed' as InstallOutcome,
               doneMessage: tr('skills.discover.installedFiles', { count: filesWritten }),
+              droppedMembers,
             }
           }
           if (skippedInstalled) {
@@ -707,6 +744,7 @@ export async function installSkillFromUrl(
                 installed: skippedInstalled,
                 store: skippedStoreVersion,
               }),
+              droppedMembers,
             }
           }
           return {
@@ -716,6 +754,7 @@ export async function installSkillFromUrl(
             doneMessage: keptVersion
               ? tr('skills.discover.alreadyInstalledVersion', { version: keptVersion })
               : tr('skills.discover.alreadyInstalled'),
+            droppedMembers,
           }
         },
       )

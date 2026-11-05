@@ -441,6 +441,15 @@ function SkillInstallView() {
       // compares the store's version with the installed one.
       const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress)
       if (result.outcome === 'updated') setUpdateAvailable(false)
+      // Partial member drops ride ANY successful outcome (#185 review round
+      // N): the visitor must know a bundle member was omitted, not just see
+      // "installed".
+      if ((result.droppedMembers?.length ?? 0) > 0) {
+        setErrorMessage(
+          t('skillInstall.memberRemovedDuringInstall') ||
+            'Install finished, but a skill removed during the install was not re-created.'
+        )
+      }
       // The archive IS on disk from this point on — a retry after a
       // failure in the steps below must refresh/verify registration
       // instead of downloading and importing again (a re-import would
@@ -597,6 +606,14 @@ function SkillInstallView() {
         // re-register for every write outcome, not just `updated`.
         await getSkillManager().refreshUserSkills()
         if (isStale()) return
+      }
+      // Partial member drops ride ANY successful outcome (#185 review round
+      // N): surface the omission instead of a clean "already installed".
+      if ((result.droppedMembers?.length ?? 0) > 0) {
+        setErrorMessage(
+          t('skillInstall.memberRemovedDuringInstall') ||
+            'Install finished, but a skill removed during the install was not re-created.'
+        )
       }
       setInstallProgress(null)
       setPhase('details')

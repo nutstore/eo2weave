@@ -171,6 +171,22 @@ export async function installSkillExecutor(
     // on the next turn (or even the same turn if read_skill follows).
     useSkillsStore.getState().bumpSkillsScanVersion()
 
+    // Partial member drops ride ANY successful outcome (#185 req. 3 /
+    // review round N): checked BEFORE the per-outcome early returns below,
+    // otherwise an updated/current/installed-newer result would report a
+    // clean install while a member was silently omitted.
+    if ((result.droppedMembers?.length ?? 0) > 0) {
+      return toolOkJson('install_skill', {
+        dirName,
+        name: entry.name,
+        version: entry.version,
+        filesInstalled: result.count,
+        outcome: result.outcome,
+        missingMembers: result.droppedMembers ?? [],
+        message: `Install finished (${result.outcome}), but ${result.droppedMembers?.join(', ')} ${result.droppedMembers?.length === 1 ? 'was' : 'were'} removed during the install and ${result.droppedMembers?.length === 1 ? 'was' : 'were'} NOT re-created.`,
+      })
+    }
+
     if (result.outcome === 'updated') {
       return toolOkJson('install_skill', {
         dirName,
@@ -202,19 +218,6 @@ export async function installSkillExecutor(
         // keeps an unparseable installed version as "installed-newer"), so the
         // message must not claim a verified newer version.
         message: `Skill "${entry.name}" is already installed — the installed copy was kept (it is newer than the store version, or its version could not be compared with the store's). You can use it via read_skill now.`,
-      })
-    }
-    if ((result.droppedMembers?.length ?? 0) > 0) {
-      // A member present at install start was uninstalled mid-download and
-      // dropped by the locked re-check (#185 req. 3). Partial drops ride ANY
-      // successful outcome: report them, never as a clean install.
-      return toolOkJson('install_skill', {
-        dirName,
-        name: entry.name,
-        version: entry.version,
-        filesInstalled: result.count,
-        missingMembers: result.droppedMembers ?? [],
-        message: `Install finished, but ${result.droppedMembers?.join(', ')} ${result.droppedMembers?.length === 1 ? 'was' : 'were'} removed during the install and ${result.droppedMembers?.length === 1 ? 'was' : 'were'} NOT re-created.`,
       })
     }
     return toolOkJson('install_skill', {

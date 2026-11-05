@@ -28,6 +28,7 @@ vi.mock('@/skills/skill-storage', () => ({
 const { mockUserSkillsScanner } = vi.hoisted(() => ({
   mockUserSkillsScanner: {
     writeUserSkillMd: vi.fn(() => Promise.resolve()),
+    writeUserSkillMdLocked: vi.fn(() => Promise.resolve()),
     deleteUserSkillDir: vi.fn(() => Promise.resolve()),
     userSkillDirExists: vi.fn(() => Promise.resolve(false)),
     // Real per-directory Web Locks serializer (no-op in tests — vitest runs
@@ -298,13 +299,17 @@ describe('useSkillsStore', () => {
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
       const { deleteSkill } = useSkillsStore.getState()
-      await deleteSkill('user:doomed')
+      await expect(deleteSkill('user:doomed')).rejects.toThrow('Failed to delete skill')
 
       // Neither the OPFS removal nor the SQLite record removal ran — the
       // error surfaced (via the store's console.error) instead of being
       // misread as "absent" and taking the SQLite-only path.
       expect(mockUserSkillsScanner.deleteUserSkillDir).not.toHaveBeenCalled()
       expect(storage.deleteSkill).not.toHaveBeenCalled()
+      // The failed delete must NOT remove the skill from store state — the
+      // skill may still be on disk and a silent state removal would report
+      // a deletion that never happened (#185 review round N).
+      expect(useSkillsStore.getState().skills.some((s) => s.id === 'user:doomed')).toBe(true)
       consoleError.mockRestore()
     })
   })
@@ -359,7 +364,10 @@ describe('useSkillsStore', () => {
 
       expect(result.success).toBe(true)
       expect(result.skillId).toBe('user:new-skill')
-      expect(mockUserSkillsScanner.writeUserSkillMd).toHaveBeenCalledWith(
+      // The write runs through the reentrancy-safe locked helper (the store
+      // already holds the per-directory serializer here — calling the
+      // lock-acquiring writeUserSkillMd would deadlock, #185 review).
+      expect(mockUserSkillsScanner.writeUserSkillMdLocked).toHaveBeenCalledWith(
         'new-skill',
         expect.stringContaining('name: "new-skill"'),
       )
