@@ -84,7 +84,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', async (importOriginal) => {
       registerCalls.count++
       // Register through the REAL registry so getProviderConfig reflects it
       // (bypassing only the region gate the real function starts with).
-      actual.registerGatewayModels([], 'failed')
+      actual.registerGatewayModels([], 'loading')
     },
   }
 })
@@ -323,6 +323,7 @@ describe('gateway session reconciler', () => {
     expect(settingsStoreState.modelCredentialStatus).toBe('unknown')
     // Provider re-registered for retry.
     expect(registerCalls.count).toBeGreaterThan(0)
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
     // Tokens NOT wiped.
     expect(localStorage.getItem(TOKENS_KEY)).not.toBeNull()
   })

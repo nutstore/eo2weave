@@ -62,17 +62,21 @@ export interface ModelInfo {
 /**
  * Status of a provider's registered model catalog.
  *
- * - `ready` — the catalog was loaded successfully (non-empty).
- * - `empty` — the catalog was loaded successfully and IS empty. This is the
+ * - `'loading'` — the provider is registered but its catalog discovery is
+ *   still in flight (e.g. the gateway between registration and its first
+ *   successful `/v1/models` fetch). Transient by construction; consumers
+ *   show a neutral loading presentation, not a failure.
+ * - `'ready'` — the catalog was loaded successfully (non-empty).
+ * - `'empty'` — the catalog was loaded successfully and IS empty. This is the
  *   ONLY case where an empty list is authoritative information: the producer
  *   positively reported "this provider serves no models".
- * - `failed` — the catalog could not be loaded (fetch error, timeout, never
+ * - `'failed'` — the catalog could not be loaded (fetch error, timeout, never
  *   attempted). The registered list is then missing information, NOT proof
  *   that every model is gone.
  *
  * An absent status means "unknown" and must be treated like `failed`.
  */
-export type ProviderCatalogStatus = 'ready' | 'empty' | 'failed'
+export type ProviderCatalogStatus = 'loading' | 'ready' | 'empty' | 'failed'
 
 /** Provider metadata for UI display */
 export interface ProviderMeta {
@@ -231,6 +235,8 @@ export function registerDynamicProvider(
 /**
  * Catalog status of a provider's registered model list.
  *
+ * - `'loading'` — catalog discovery is in progress; treat the list as
+ *   pending rather than a failed or authoritative empty catalog.
  * - `'ready'` — the list was loaded successfully and is non-empty.
  * - `'empty'` — the list was loaded successfully and IS empty (authoritative:
  *   the provider positively reported it serves no models).
