@@ -360,10 +360,12 @@ export function showOperationSuccess(token: string, message: string): void {
 /**
  * Removal completed: the toast announcing THIS package's earlier install must
  * go (it still claims the package is installed). An unrelated package's
- * confirmation is still true and stays up.
+ * confirmation is still true and stays up — the page has ONE toast, so only
+ * the package that toast is actually announcing may take it down.
  */
 export function showOperationRemoved(token: string): void {
   if (!isFeedbackCurrent(token)) return
-  if (successToastPackage === token.slice(0, token.lastIndexOf('#'))) dismissSuccess()
+  if (successToastPackage !== token.slice(0, token.lastIndexOf('#'))) return
+  dismissSuccess()
   successToastPackage = undefined
 }
