@@ -121,6 +121,25 @@ describe('getAvailableProviders single-flight coalescing (#188)', () => {
     }
   })
 
+  it('refreshes discovery when pinned models are removed', async () => {
+    useSettingsStore.setState({ pinnedModelsByProvider: { [P]: ['m1', 'm2'] } })
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm1', name: 'M1' }, { id: 'm2', name: 'M2' }])
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let calls = 0
+    mocks.loadApiKey.mockImplementation(async (id) => {
+      if (++calls === 1) await gate
+      return id === P ? 'key' : null
+    })
+    const pending = useSettingsStore.getState().getAvailableProviders()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    useSettingsStore.getState().removePinnedModels(P, ['m2'])
+    const fresh = useSettingsStore.getState().getAvailableProviders()
+    release()
+    expect((await pending).runCurrent).toBe(false)
+    expect((await fresh).find((provider) => provider.providerType === P)?.models.map((m) => m.id)).toEqual(['m1'])
+  })
+
   it('joins concurrent callers into ONE run sharing the same generation', async () => {
     mocks.loadApiKey.mockImplementation(async (id: string) => (id === P ? 'key' : null))
     mocks.getModelsForProvider.mockReturnValue([{ id: 'm1', name: 'M1' }])

@@ -319,7 +319,7 @@ interface SettingsState {
    * Remove the given ids from a provider's pinned list (and its seen
    * bookkeeping). Returns the ids actually removed.
    */
-  removePinnedModels: (providerType: string, modelIds: string[]) => string[]
+  removePinnedModels: (providerType: string, modelIds: string[], invalidate?: boolean) => string[]
 
   /**
    * Runtime version counter — incremented when provider/model list changes
@@ -909,7 +909,7 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
     const keep = r.providerType === current.providerType ? new Set([current.modelName]) : new Set<string>()
     const toRemove = staleIds.filter((id) => !keep.has(id))
     if (toRemove.length === 0) continue
-    get().removePinnedModels(r.providerType, toRemove)
+    get().removePinnedModels(r.providerType, toRemove, false)
     console.info(
       `[settings] auto-removed delisted pinned models (${r.providerType}): ${toRemove.join(', ')}`,
     )
@@ -971,7 +971,7 @@ export function invalidateProviderDiscovery(): void {
   providerDiscoveryInFlight = null
 }
 
-subscribeToProviderRegistry(invalidateProviderDiscovery)
+subscribeToProviderRegistry(() => useSettingsStore.getState().triggerProviderRefresh())
 
 export const useSettingsStore = create<SettingsState, [['zustand/persist', unknown]]>(
   persist<SettingsState, [], [], PersistedSettingsState>(
@@ -1641,12 +1641,13 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         )
       },
 
-      removePinnedModels: (providerType, modelIds) => {
+      removePinnedModels: (providerType, modelIds, invalidate = true) => {
         const state = get()
         const ids = new Set(modelIds)
         const current = state.pinnedModelsByProvider[providerType] || []
         const kept = current.filter((id) => !ids.has(id))
         if (kept.length === current.length) return []
+        if (invalidate) invalidateProviderDiscovery()
         const seen = state.pinnedSeenByProvider[providerType] || []
         set({
           pinnedModelsByProvider: {

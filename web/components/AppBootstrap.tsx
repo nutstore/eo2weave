@@ -370,23 +370,27 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       }
 
       // Register LLM Gateway provider + restore session from saved access_token
+      let gatewayRestoreVersion: number | undefined
+      let gatewayRestoreGeneration: number | undefined
       try {
-        const { registerLLMGatewayProvider, registerGatewayModels, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId } = await import('@/agent/providers/llm-gateway-provider')
+        const { registerLLMGatewayProvider, registerGatewayModels, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId } = await import('@/agent/providers/llm-gateway-provider')
         const { getValidAccessToken, getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
         registerLLMGatewayProvider()
         const clientId = getLLMGatewayClientId()
         const baseURL = getLLMGatewayBaseURL()
         if (clientId) {
-          const generationBeforeRestore = getGatewayAuthSessionGeneration()
+          gatewayRestoreGeneration = getGatewayAuthSessionGeneration()
+          gatewayRestoreVersion = beginGatewayCatalogRefresh()
           const token = await getValidAccessToken(baseURL, clientId)
           if (token) {
             const tokenGeneration = getGatewayAuthSessionGeneration()
+            gatewayRestoreGeneration = tokenGeneration
             // Persist refreshed access_token back so SQLite stays in sync
             const { saveApiKey } = await import('@/security/api-key-store')
             await saveApiKey(getLLMGatewayApiKeyProviderKey(), token)
             await updateGatewayModels(token, tokenGeneration)
-          } else if (generationBeforeRestore === getGatewayAuthSessionGeneration()) {
-            registerGatewayModels([], 'failed')
+          } else if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
+            registerGatewayModels([], 'failed', gatewayRestoreVersion)
           }
         } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {
           // The gateway can never register here (region-gated off on global
@@ -402,6 +406,13 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         }
       } catch (err) {
         console.error('[App] Failed to register LLM Gateway provider:', err)
+        if (gatewayRestoreVersion !== undefined) {
+          const { registerGatewayModels } = await import('@/agent/providers/llm-gateway-provider')
+          const { getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
+          if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
+            registerGatewayModels([], 'failed', gatewayRestoreVersion)
+          }
+        }
         // Registration failed (e.g. network error, saved token invalid).
         // Flush the API-key cache so the UI doesn't stay stuck in a stale
         // "has API key" state from a previous session — re-evaluate with

@@ -152,6 +152,7 @@ export function WorkspaceLayout({
     .map((r) => `${r.name}:${r.status}:${r.handle ? 'y' : 'n'}`)
     .join('|')
   const skillsScanVersion = useSkillsStore((s) => s.skillsScanVersion)
+  const providerRefreshVersion = useSettingsStore((s) => s._providerRefreshVersion)
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
   const syncModelForWorkspace = useSettingsStore((s) => s.syncModelForWorkspace)
@@ -395,6 +396,9 @@ export function WorkspaceLayout({
   // overrides are ignored by the store so they cannot erase a valid choice.
   useEffect(() => {
     syncModelForWorkspace(activeConversationId ?? null)
+  }, [activeConversationId, syncModelForWorkspace])
+
+  useEffect(() => {
     void useSettingsStore.getState().getAvailableProviders().then((providers) => {
       // A SUPERSEDED run must not reconcile: when a newer
       // getAvailableProviders() started while this one was awaiting, this
@@ -408,7 +412,7 @@ export function WorkspaceLayout({
     }).catch((error) => {
       console.warn('[WorkspaceLayout] model reconciliation deferred:', error)
     })
-  }, [activeConversationId, ensureValidModelSelection, syncModelForWorkspace])
+  }, [activeConversationId, ensureValidModelSelection, providerRefreshVersion])
 
   // Persist current model selection for active workspace
   useEffect(() => {

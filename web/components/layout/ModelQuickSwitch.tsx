@@ -355,6 +355,7 @@ export function ModelQuickSwitch({
 
   const currentModelLabel = useMemo(() => {
     // No API key configured → always show "unavailable" regardless of persisted values
+    if (loading && selectedProviderRestoring) return `${modelName} · ${t('topbar.modelSwitcher.sessionRestoring')}`
     if (loading) return t('topbar.modelSwitcher.loading')
     if (modelCredentialStatus === 'expired' && modelName && !selectedProviderUnregistered) {
       return `${modelName} · ${t('topbar.modelSwitcher.credentialExpired')}`
@@ -429,7 +430,7 @@ export function ModelQuickSwitch({
   useEffect(() => () => cancelThinkingClose(), [])
 
   const handleSelect = (provider: AvailableProvider, nextModelName: string) => {
-    if (isUnverifiedGateway(provider)) return
+    if (isUnverifiedGateway(provider) || (isPotentiallyDynamicProviderType(provider.providerType) && !getProviderConfig(provider.providerType))) return
     switchProviderAndModel(provider.providerType, nextModelName)
     setOpen(false)
   }
@@ -629,7 +630,7 @@ export function ModelQuickSwitch({
                     key={`${provider.providerKey}:${model.id}`}
                     type="button"
                     onClick={() => handleSelect(provider, model.id)}
-                    disabled={unverifiedGateway}
+                    disabled={unverifiedGateway || (isPotentiallyDynamicProviderType(provider.providerType) && !getProviderConfig(provider.providerType))}
                     aria-selected={selected}
                     className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50 ${
                       selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : isActive ? 'bg-primary/10 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'
@@ -700,7 +701,7 @@ export function ModelQuickSwitch({
                             key={`${provider.providerKey}:${model.id}`}
                             type="button"
                             onClick={() => handleSelect(provider, model.id)}
-                            disabled={unverifiedGateway}
+                            disabled={unverifiedGateway || (isPotentiallyDynamicProviderType(provider.providerType) && !getProviderConfig(provider.providerType))}
                             aria-selected={selected}
                             className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50 ${selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'}`}
                           >
