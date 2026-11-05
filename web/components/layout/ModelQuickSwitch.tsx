@@ -824,7 +824,10 @@ export function ModelQuickSwitch({
             when nothing is available, because that is exactly when the user
             needs it. */}
         <section className="border-t border-border/70 bg-muted/25 px-3 py-2">
-          {!loading && providers.length === 0 ? (
+          {/* Gate on the same list the popover renders (`visibleProviders`):
+              providers whose catalog is empty contribute no selectable model,
+              so they must not demote the setup entry to the secondary row. */}
+          {!loading && visibleProviders.length === 0 ? (
             <BrandButton variant="primary" className="w-full" onClick={openProviderSettings}>
               <Settings2 className="h-4 w-4" />
               {t('topbar.modelSwitcher.manageProviders')}
