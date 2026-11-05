@@ -190,6 +190,9 @@ function SkillInstallView() {
     setErrorMessage(null)
     setEntry(null)
     setAlreadyInstalled(false)
+    // The notice belongs to the PREVIOUS skill's install (#197): leaving it
+    // set shows "a member was removed" on a page for a skill never installed.
+    setInstallNotice(null)
     // Stale UI flags from the PREVIOUS skill: the cached readiness verdict
     // and the zero-credit warning both belong to the old entry. Without
     // this reset, a changed `skill` query would (a) take runAiReadiness's
@@ -668,6 +671,10 @@ function SkillInstallView() {
         )
       }
       setInstallNotice(notices.length > 0 ? notices.join(' ') : null)
+      // A dropped target never landed on disk (#197): clear the flag so the
+      // details view offers Install again instead of "Start using" a skill
+      // that is not there.
+      if (result.droppedMembers?.includes(entry.dirName)) setAlreadyInstalled(false)
       setInstallProgress(null)
       setPhase('details')
     } catch (e) {
