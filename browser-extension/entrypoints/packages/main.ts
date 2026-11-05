@@ -7,8 +7,8 @@
  * section's error — before the merge either failure blanked the whole page.
  */
 
-import { listManagedPackages } from '../webmcp/package-client'
-import { listRegistries } from '../webmcp/registry-client-page'
+import { listManagedPackages, type ManagedWebMCPPackage } from '../webmcp/package-client'
+import { listRegistries, type RegistryListResult } from '../webmcp/registry-client-page'
 import { createBuiltinSection } from './builtin-section'
 import { createMineSection } from './mine-section'
 import { createRegistrySection } from './registry-section'
@@ -51,25 +51,46 @@ function refresh(): void {
 
 async function renderAll(): Promise<void> {
   const current = ++generation
-  const [packages, registries] = await Promise.allSettled([listManagedPackages(), listRegistries()])
-  // A newer render started meanwhile — its state is the current one.
-  if (current !== generation) return
+  // Each section renders the moment ITS source settles: awaiting both spends a
+  // slow (or hanging) request as a blank section for the other, healthy source.
+  // "Mine" needs both — the catalog says what exists, the install records say
+  // what a registry owns — so it is drawn by whichever of the two arrives
+  // second (or fails first). The generation guard is checked per arrival, so a
+  // superseded render still lands nothing.
+  let packages: ManagedWebMCPPackage[] | undefined
+  let registries: RegistryListResult | undefined
 
-  if (packages.status === 'fulfilled') builtin.render(packages.value)
-  else builtin.fail(packages.reason)
+  const packagesSettled = listManagedPackages().then(
+    entries => {
+      packages = entries
+      if (current !== generation) return
+      builtin.render(entries)
+      if (registries) mine.render(entries, new Set(registries.installed))
+    },
+    error => {
+      if (current !== generation) return
+      builtin.fail(error)
+      mine.fail(error)
+    },
+  )
 
-  if (registries.status === 'fulfilled') registry.render(registries.value)
-  else registry.fail(registries.reason)
+  const registriesSettled = listRegistries().then(
+    result => {
+      registries = result
+      if (current !== generation) return
+      registry.render(result)
+      if (packages) mine.render(packages, new Set(result.installed))
+    },
+    error => {
+      if (current !== generation) return
+      registry.fail(error)
+      // Without the install records "mine" must not claim a registry install
+      // is authored (it would offer a delete the registry section owns).
+      mine.fail(error)
+    },
+  )
 
-  if (packages.status === 'fulfilled' && registries.status === 'fulfilled') {
-    mine.render(packages.value, new Set(registries.value.installed))
-  } else if (packages.status === 'rejected') {
-    mine.fail(packages.reason)
-  } else if (registries.status === 'rejected') {
-    // "Mine" needs both: the catalog says what exists, the install records say
-    // what a registry owns. Without them it must not claim registry installs.
-    mine.fail(registries.reason)
-  }
+  await Promise.allSettled([packagesSettled, registriesSettled])
 }
 
 chrome.runtime.onMessage.addListener(message => {
