@@ -185,6 +185,12 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
         // 'current' and 'installed-newer': the installed copy was kept as is.
         doneMessage = t('skills.discover.alreadyInstalled')
       }
+      if (result !== null && (result.droppedMembers?.length ?? 0) > 0) {
+        // Partial drops ride ANY successful outcome (#185 req. 3): surface the
+        // dropped members on top of the install/update result instead of a
+        // clean success.
+        doneMessage = t('skills.discover.memberRemovedDuringInstall')
+      }
       setProgress({ phase: 'done', message: doneMessage })
     } catch (err) {
       setProgress({

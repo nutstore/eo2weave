@@ -204,10 +204,10 @@ export async function installSkillExecutor(
         message: `Skill "${entry.name}" is already installed — the installed copy was kept (it is newer than the store version, or its version could not be compared with the store's). You can use it via read_skill now.`,
       })
     }
-    if (result.outcome === 'member-deleted') {
+    if ((result.droppedMembers?.length ?? 0) > 0) {
       // A member present at install start was uninstalled mid-download and
-      // dropped by the locked re-check (#185 req. 3): report it, never as a
-      // clean install.
+      // dropped by the locked re-check (#185 req. 3). Partial drops ride ANY
+      // successful outcome: report them, never as a clean install.
       return toolOkJson('install_skill', {
         dirName,
         name: entry.name,

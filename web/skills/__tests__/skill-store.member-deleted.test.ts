@@ -74,6 +74,20 @@ describe('member-deleted outcome (#185 req. 3)', () => {
     }
   })
 
+  it('surfaces PARTIAL drops on top of any successful outcome (#185 req. 3)', () => {
+    // Sourcery round 2: droppedMembers can ride an updated/installed outcome
+    // (only SOME members dropped). Both consumers must branch on the
+    // droppedMembers payload, not just the outcome value.
+    const partial: { outcome: InstallOutcome; droppedMembers?: string[] } = {
+      outcome: 'updated',
+      droppedMembers: ['alpha'],
+    }
+    expect((partial.droppedMembers?.length ?? 0) > 0).toBe(true)
+    // Full-drop outcome unchanged.
+    expect(discoverToastFor('member-deleted')).toBe('memberRemovedDuringInstall')
+    expect(toolMessageKindFor('updated')).toBe('updated')
+  })
+
   it('still exports the membership check the drop decision depends on', async () => {
     // No navigator.storage in the test environment → the TypeError path
     // classifies as absence and falls back to the (empty) store cache.
