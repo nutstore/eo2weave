@@ -468,7 +468,7 @@ export function ActivityHeatmap() {
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
             <span className="home-mono text-[11px] text-tertiary dark:text-muted">
-              {t('common.loading') || 'Loading...'}
+              {t('common.loading')}
             </span>
           </div>
         </div>
