@@ -47,5 +47,8 @@ export const webmcpPackages = {
   errorGeneric: "작업에 실패했습니다. {detail}",
   addSessionOnly: "{label}이(가) 이 세션에만 추가되었습니다 — 브라우저 저장소를 사용할 수 없어 새로고침하면 목록에서 사라집니다.",
   dismissError: "닫기",
+  searchPlaceholder: "패키지 또는 도구 검색…",
+  matchesTools: "{count}개 도구 일치",
+  moreTools: "더 보기(총 {count}개)",
   catalogRefreshUnavailable: "작업은 성공했지만 확장 프로그램의 도구 카탈로그를 지금 새로 고칠 수 없습니다 — 다음 새로 고침 때 반영됩니다.",
 }
