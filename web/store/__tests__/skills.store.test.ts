@@ -280,6 +280,30 @@ describe('useSkillsStore', () => {
     })
   })
 
+  describe('deleteSkill (user skills, #185 existence-check error propagation)', () => {
+    it('propagates an existence-check storage failure instead of deleting SQLite-only', async () => {
+      const initialSkills: SkillMetadata[] = [
+        createMockMetadata({ id: 'user:doomed', name: 'doomed' }),
+      ]
+      useSkillsStore.setState({ skills: initialSkills })
+      mockManager.getSkillMetadata.mockReturnValue([])
+      mockUserSkillsScanner.userSkillDirExists.mockRejectedValue(
+        new Error('PermissionDeniedError: OPFS unavailable'),
+      )
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+      const { deleteSkill } = useSkillsStore.getState()
+      await deleteSkill('user:doomed')
+
+      // Neither the OPFS removal nor the SQLite record removal ran — the
+      // error surfaced (via the store's console.error) instead of being
+      // misread as "absent" and taking the SQLite-only path.
+      expect(mockUserSkillsScanner.deleteUserSkillDir).not.toHaveBeenCalled()
+      expect(storage.deleteSkill).not.toHaveBeenCalled()
+      consoleError.mockRestore()
+    })
+  })
+
   describe('createSkillSkeleton (#185 existence-check error surfacing)', () => {
     const parseValid = () => {
       vi.mocked(parser.parseSkillMd).mockReturnValue({

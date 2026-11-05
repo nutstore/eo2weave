@@ -235,7 +235,11 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
           const existsInOpfs = await withSkillImportSerialization(
             [dirName],
             () => userSkillDirExists(dirName),
-          ).catch(() => false)
+          )
+          // A storage failure here must NOT read as "absent" (#185): taking
+          // the SQLite-only path on a transient OPFS error would leave the
+          // OPFS directory orphaned and the skill would reappear on the next
+          // rescan. Let the error surface instead.
           if (existsInOpfs) {
             await deleteUserSkillDir(dirName)
           } else {
