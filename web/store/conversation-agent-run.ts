@@ -725,10 +725,11 @@ export async function runAgentImpl(
         // back (another tab re-registered / reconciliation adopted it) →
         // continue into the normal dispatch path.
         if (providerMissing(providerType) && providerType === 'llm-gateway') {
-          const { resolveGatewayDispatchCredential } =
+          const { resolveGatewayDispatchCredential, getGatewayAuthSessionGeneration } =
             await import('@/agent/providers/llm-gateway-auth')
           const { getLLMGatewayBaseURL, getLLMGatewayClientId, registerLLMGatewayProvider } =
             await import('@/agent/providers/llm-gateway-provider')
+          const credentialGeneration = getGatewayAuthSessionGeneration()
           const resolvedMissing = await resolveGatewayDispatchCredential(
             getLLMGatewayBaseURL(),
             getLLMGatewayClientId(),
@@ -759,7 +760,14 @@ export async function runAgentImpl(
           // reconciler may not have run yet, and nothing else on the dispatch
           // path registers the provider. Mirror reconcileLoggedIn and register
           // it here rather than telling a logged-in user to sign in again.
-          if (providerMissing(providerType)) {
+          // Only for the credential set the resolution validated: a logout
+          // landing during the await already unregistered the provider, and
+          // registering it again would leave a logged-out tab with a
+          // selectable gateway (#180 review round 2).
+          if (
+            providerMissing(providerType) &&
+            getGatewayAuthSessionGeneration() === credentialGeneration
+          ) {
             registerLLMGatewayProvider()
           }
           if (providerMissing(providerType)) {

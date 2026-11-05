@@ -18,6 +18,7 @@ import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 const resolveCredentialMock = vi.hoisted(() => vi.fn())
 const setFaviconStateMock = vi.hoisted(() => vi.fn())
 const gatewayRegistered = vi.hoisted(() => ({ value: true }))
+const authGeneration = vi.hoisted(() => ({ value: 0 }))
 const replaceAllMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 
 vi.mock('@/services/favicon-indicator', () => ({ setFaviconState: setFaviconStateMock }))
@@ -114,6 +115,7 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
 
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   resolveGatewayDispatchCredential: resolveCredentialMock,
+  getGatewayAuthSessionGeneration: () => authGeneration.value,
 }))
 const registerProviderMock = vi.hoisted(() =>
   vi.fn(() => {
@@ -188,6 +190,7 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     gatewayRegistered.value = true
+    authGeneration.value = 0
     useConversationRuntimeStore.setState({ runtimes: new Map() })
     useConversationStore.setState({
       conversations: [],
@@ -279,6 +282,22 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     expect(agentLoopConstructed).toHaveBeenCalledTimes(1)
     const conv = useConversationStore.getState().conversations[0]
     expect(conv.error ?? '').not.toContain('provider is unavailable')
+  })
+
+  it('does not re-register the gateway when a logout lands during resolution (#180 review)', async () => {
+    gatewayRegistered.value = false
+    resolveCredentialMock.mockImplementation(async () => {
+      // The session ended while the credential read was in flight, so the
+      // resolver's verdict describes a credential set that no longer exists.
+      authGeneration.value += 1
+      return { ok: true, accessToken: 'token-from-a-dead-session' }
+    })
+
+    await startRun()
+
+    expect(registerProviderMock).not.toHaveBeenCalled()
+    const conv = useConversationStore.getState().conversations[0]
+    expect(conv.status).toBe('error')
   })
 
   it('dispatches with the validated current token when a usable session exists', async () => {
