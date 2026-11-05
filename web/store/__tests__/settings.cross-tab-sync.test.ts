@@ -100,6 +100,25 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     expect(useSettingsStore.getState().temperature).toBe(0.42)
   })
 
+  it('invalidates provider discovery when another tab changes pinned models', async () => {
+    const { useSettingsStore } = await importStore()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let calls = 0
+    loadApiKeyMock.mockImplementation(async () => {
+      if (++calls === 1) await gate
+      return null
+    })
+    const pending = useSettingsStore.getState().getAvailableProviders()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const version = useSettingsStore.getState()._providerRefreshVersion
+    dispatchStorageEvent(performance.now() + 10, revSnapshot({ pinnedModelsByProvider: { openai: ['m2'] } }, 5))
+    release()
+    expect((await pending).runCurrent).toBe(false)
+    expect(useSettingsStore.getState()._providerRefreshVersion).toBeGreaterThan(version)
+    expect(useSettingsStore.getState().pinnedModelsByProvider.openai).toEqual(['m2'])
+  })
+
   it('ignores a queued snapshot with an OLDER revision even when its event fires later (write-order guard)', async () => {
     // Pre-fix this test ordered by StorageEvent.timeStamp, which measures
     // receiving-tab timing: the stale snapshot's event fired LAST and the

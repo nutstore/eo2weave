@@ -90,7 +90,12 @@ export function resolveDefaultModelSelection(
   providers: ReadonlyArray<AvailableProviderLike>,
   current: { providerType: string; modelName: string },
 ): ModelSelectionResolution {
-  if (providers.some((provider) => provider.catalogStatus === 'loading')) {
+  const currentProvider = providers.find((provider) => provider.providerType === current.providerType)
+  // Defer only while the CURRENT selection's own catalog is still loading —
+  // an unrelated provider's in-flight catalog must not freeze reconciliation
+  // of an invalid selection (Sourcery: "Unrelated selection stays invalid").
+  if (currentProvider?.catalogStatus === 'loading' ||
+      (!currentProvider && providers.some((provider) => provider.catalogStatus === 'loading'))) {
     return {
       action: 'defer',
       providerType: current.providerType,
@@ -108,7 +113,6 @@ export function resolveDefaultModelSelection(
     }
   }
 
-  const currentProvider = providers.find((provider) => provider.providerType === current.providerType)
   // A failed or empty gateway catalog cannot prove that the persisted
   // selection is invalid. Preserve it until a later usable refresh.
   if ((currentProvider?.catalogStatus === 'failed' ||

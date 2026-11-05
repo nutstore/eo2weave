@@ -152,6 +152,7 @@ export function WorkspaceLayout({
     .map((r) => `${r.name}:${r.status}:${r.handle ? 'y' : 'n'}`)
     .join('|')
   const skillsScanVersion = useSkillsStore((s) => s.skillsScanVersion)
+  const providerRefreshVersion = useSettingsStore((s) => s._providerRefreshVersion)
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
   const syncModelForWorkspace = useSettingsStore((s) => s.syncModelForWorkspace)
@@ -395,6 +396,9 @@ export function WorkspaceLayout({
   // overrides are ignored by the store so they cannot erase a valid choice.
   useEffect(() => {
     syncModelForWorkspace(activeConversationId ?? null)
+  }, [activeConversationId, syncModelForWorkspace])
+
+  useEffect(() => {
     void useSettingsStore.getState().getAvailableProviders().then((providers) => {
       // A SUPERSEDED run must not reconcile: when a newer
       // getAvailableProviders() started while this one was awaiting, this
@@ -403,12 +407,12 @@ export function WorkspaceLayout({
       // selection"). Feeding it into ensureValidModelSelection here would
       // let the stale catalog switch the active model after the newer run
       // began. The newer run re-derives everything from fresher state.
-      if (!providers.every((p) => p.current)) return
+      if (providers.runCurrent === false || !providers.every((p) => p.current)) return
       ensureValidModelSelection(providers, { preserveExpiredCredential: true })
     }).catch((error) => {
       console.warn('[WorkspaceLayout] model reconciliation deferred:', error)
     })
-  }, [activeConversationId, ensureValidModelSelection, syncModelForWorkspace])
+  }, [activeConversationId, ensureValidModelSelection, providerRefreshVersion])
 
   // Persist current model selection for active workspace
   useEffect(() => {

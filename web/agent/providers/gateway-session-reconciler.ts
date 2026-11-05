@@ -58,6 +58,7 @@ import {
   getLLMGatewayBaseURL,
   getLLMGatewayClientId,
   registerLLMGatewayProvider,
+  registerGatewayModels,
   unregisterLLMGatewayProvider,
   updateGatewayModels,
 } from '@/agent/providers/llm-gateway-provider'
@@ -166,6 +167,7 @@ async function reconcileLoggedIn(job: ReconcileJob, event: GatewaySessionEvent):
       // cannot retain a previous account's model IDs.
       if (event.type === 'identity-change') unregisterLLMGatewayProvider()
       registerLLMGatewayProvider()
+      registerGatewayModels([], 'failed')
       return 'transient'
     }
     // Confirmed absent ('missing' = never logged in / fully purged) or

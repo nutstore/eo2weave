@@ -36,9 +36,12 @@ import {
   ChevronDown,
   ChevronRight,
   Clapperboard,
+  Github,
   Globe,
+  Layers,
   Mail,
   MessageSquare,
+  NotebookPen,
   ShoppingBag,
   Wrench,
   type LucideIcon,
@@ -63,6 +66,9 @@ const PACKAGE_ICONS: Record<string, LucideIcon> = {
   'com.douban.movie': Clapperboard,
   'com.douban.search': Clapperboard,
   'com.discord.main': MessageSquare,
+  'com.github.main': Github,
+  'com.notion.main': NotebookPen,
+  'com.linear.main': Layers,
 }
 
 export function packageIcon(packageId: string): LucideIcon {

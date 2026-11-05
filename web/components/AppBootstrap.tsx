@@ -355,21 +355,42 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         console.error('[App] Failed to hydrate snapshot watermarks from DB:', err)
       }
 
-      // Register LLM Gateway provider + restore session from saved access_token
+      // Register custom-* providers from persisted settings BEFORE the
+      // gateway network block (#188 fix 3): this is a synchronous registry
+      // write with no dependency on gateway token refresh or model
+      // discovery — serializing it behind that block (up to the 15s
+      // discovery deadline) left the session with neither the gateway
+      // catalog nor the custom providers registered, so the quick switcher
+      // had nothing to render even when a discovery run completed.
       try {
-        const { registerLLMGatewayProvider, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId } = await import('@/agent/providers/llm-gateway-provider')
+        const { useSettingsStore } = await import('@/store/settings.store')
+        useSettingsStore.getState()._restoreDynamicProviders()
+      } catch (err) {
+        console.error('[App] Failed to restore dynamic providers:', err)
+      }
+
+      // Register LLM Gateway provider + restore session from saved access_token
+      let gatewayRestoreVersion: number | undefined
+      let gatewayRestoreGeneration: number | undefined
+      try {
+        const { registerLLMGatewayProvider, registerGatewayModels, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId } = await import('@/agent/providers/llm-gateway-provider')
         const { getValidAccessToken, getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
         registerLLMGatewayProvider()
         const clientId = getLLMGatewayClientId()
         const baseURL = getLLMGatewayBaseURL()
         if (clientId) {
+          gatewayRestoreGeneration = getGatewayAuthSessionGeneration()
+          gatewayRestoreVersion = beginGatewayCatalogRefresh()
           const token = await getValidAccessToken(baseURL, clientId)
           if (token) {
             const tokenGeneration = getGatewayAuthSessionGeneration()
+            gatewayRestoreGeneration = tokenGeneration
             // Persist refreshed access_token back so SQLite stays in sync
             const { saveApiKey } = await import('@/security/api-key-store')
             await saveApiKey(getLLMGatewayApiKeyProviderKey(), token)
             await updateGatewayModels(token, tokenGeneration)
+          } else if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
+            registerGatewayModels([], 'failed', gatewayRestoreVersion)
           }
         } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {
           // The gateway can never register here (region-gated off on global
@@ -385,6 +406,21 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         }
       } catch (err) {
         console.error('[App] Failed to register LLM Gateway provider:', err)
+        // Best-effort failure marking: a chunk/module-load failure while
+        // handling the original gateway error must not reject
+        // initializeApp before the checkHasApiKey recovery below runs
+        // (Sourcery: "Bootstrap recovery can escape").
+        if (gatewayRestoreVersion !== undefined) {
+          try {
+            const { registerGatewayModels } = await import('@/agent/providers/llm-gateway-provider')
+            const { getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
+            if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
+              registerGatewayModels([], 'failed', gatewayRestoreVersion)
+            }
+          } catch (statusErr) {
+            console.error('[App] Failed to mark gateway catalog failed:', statusErr)
+          }
+        }
         // Registration failed (e.g. network error, saved token invalid).
         // Flush the API-key cache so the UI doesn't stay stuck in a stale
         // "has API key" state from a previous session — re-evaluate with
@@ -397,21 +433,21 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         }
       }
 
-      // Restore custom-* providers from persisted settings and re-check the
-      // API key. Without this, `getProviderConfig('custom-xxx')` returns
-      // null on startup and the user would see a spurious "no API key"
-      // setup card for providers they've already configured.
+      // Restore custom-* providers (registered above) and re-check the API
+      // key now that both registration paths have settled. Without the
+      // restore, `getProviderConfig('custom-xxx')` returns null on startup
+      // and the user would see a spurious "no API key" setup card for
+      // providers they've already configured.
       //
-      // NOTE: deliberately NOT using `{ flush: true }` here. We only restored
-      // custom-* providers in this step; for extension-managed providers
-      // (codex-oauth), the registration happens asynchronously in
-      // extension.store.checkStatus() which runs on a 1s timer. Flushing
-      // here would force a false "no API key" conclusion for codex users
-      // before the extension has had a chance to register, causing the
-      // welcome screen to flash the setup card.
+      // NOTE: deliberately NOT using `{ flush: true }` here. This step only
+      // re-checks keys for providers that have registered by now; for
+      // extension-managed providers (codex-oauth), the registration happens
+      // asynchronously in extension.store.checkStatus() which runs on a 1s
+      // timer. Flushing here would force a false "no API key" conclusion
+      // for codex users before the extension has had a chance to register,
+      // causing the welcome screen to flash the setup card.
       try {
         const { useSettingsStore } = await import('@/store/settings.store')
-        useSettingsStore.getState()._restoreDynamicProviders()
         await useSettingsStore.getState().checkHasApiKey()
       } catch (err) {
         console.error('[App] Failed to restore dynamic providers:', err)

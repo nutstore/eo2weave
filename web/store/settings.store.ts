@@ -16,6 +16,7 @@ import {
   unregisterDynamicProvider,
   getProviderConfig,
   getDynamicProviderIds,
+  subscribeToProviderRegistry,
 } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
@@ -262,14 +263,21 @@ interface SettingsState {
     authoritativeIds: string[]
     /**
      * Whether the state snapshot this result was built from is still current.
-     * False when a newer `getAvailableProviders` run started while this one
-     * was awaiting: the caller must not feed a superseded snapshot into
-     * `ensureValidModelSelection` (only the store's own run may reconcile,
-     * and a newer run supersedes it — Sourcery: "Stale discovery changes
-     * selection").
+     * False when a newer discovery starts or provider state changes while
+     * this run is awaiting, even if no replacement run has started yet.
+     * Callers must not reconcile selection from a superseded snapshot.
      */
     current: boolean
-  }>>
+    /**
+     * Whether the RUN is current, independent of the entries (Sourcery:
+     * "Empty stale snapshots erase providers"). A superseded run that found
+     * ZERO providers maps to `[]` whose per-entry `current` flags carry no
+     * information (`[].every(...)` is true) — the UI snapshot gate must read
+     * THIS field, or an empty superseded result replaces a non-empty
+     * accepted snapshot and blanks the switcher.
+     */
+    runCurrent: boolean
+  }> & { runCurrent?: boolean }>
 
   /**
    * Restore dynamic providers from persisted customProviders on app load
@@ -309,7 +317,7 @@ interface SettingsState {
    * Remove the given ids from a provider's pinned list (and its seen
    * bookkeeping). Returns the ids actually removed.
    */
-  removePinnedModels: (providerType: string, modelIds: string[]) => string[]
+  removePinnedModels: (providerType: string, modelIds: string[], invalidate?: boolean) => string[]
 
   /**
    * Runtime version counter — incremented when provider/model list changes
@@ -520,13 +528,449 @@ function persistWritesSuppressed(): boolean {
   return suppressPersistWrites > 0
 }
 
-/**
- * Monotonic generation counter for `getAvailableProviders` discovery runs.
- * A module-level (not per-call) counter so concurrent runs are ordered
- * regardless of store instance; see the superseded-guard at the end of each
- * run.
- */
+/** Attach run currency even when the provider list is empty. */
+function discoveryResult<T extends object>(results: T[], current: boolean) {
+  const entries = results.map((result) => ({ ...result, current, runCurrent: current }))
+  return Object.defineProperty(entries, 'runCurrent', { value: current }) as typeof entries & { runCurrent: boolean }
+}
+
+// Invalidating a discovery also retires any pending run.
 let getAvailableProvidersGeneration = 0
+
+/**
+ * Uncached discovery run behind `getAvailableProviders`' single-flight
+ * wrapper. Runs with the store's `get` only — the store-side reconciliation
+ * and seen-bookkeeping all read live state through it. The generation
+ * gate inside keeps this safe even when a caller somehow races a new run.
+ */
+async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<ReturnType<SettingsState["getAvailableProviders"]>>> {
+  // Generation token: concurrent discovery runs must not apply each
+  // other's reconciliation. This function awaits many async steps
+  // (API-key reads, dynamic imports, gateway lookups); an OLDER run
+  // that finishes after a newer one would otherwise feed a stale
+  // catalog snapshot to ensureValidModelSelection and the stale-pin
+  // sweep, letting it switch the active model or remove pins based on
+  // information the newer run already superseded (Sourcery: "Older
+  // refresh overrides newer catalog").
+  const generation = ++getAvailableProvidersGeneration
+  const superseded = () => generation !== getAvailableProvidersGeneration
+  const { loadApiKey } = await import('@/security/api-key-store')
+  const { PROVIDER_META, getModelsForProvider } = await import('@/agent/providers/types')
+  const { getCachedModels, getCachedModelsResult } = await import('@/agent/providers/model-store')
+  const { getProviderCatalogStatus: getDynCatalogStatus } = await import('@/agent/providers/types')
+  const { canFetchModels, hasAuthoritativeStaticRegistry } = await import('@/agent/providers/model-fetcher')
+  let llmGatewayProviderKey: string | undefined
+  try {
+    const mod = await import('@/agent/providers/llm-gateway-provider')
+    if (mod.isLLMGatewayConfigured()) {
+      llmGatewayProviderKey = mod.LLM_GATEWAY_PROVIDER_TYPE
+    }
+  } catch { /* ignore */ }
+  const state = get()
+  // Whether this run is still the newest one. Latched at the same two
+  // gates as the sweep/reconciliation below: every provider-collection
+  // step between them is awaited and synchronous, so the flag matches
+  // `superseded()` at the reconciliation gate. Exposed on each result
+  // so UI callers can skip feeding a stale snapshot into
+  // ensureValidModelSelection themselves (Sourcery: "Stale discovery
+  // changes selection" — WorkspaceLayout reconciles from its own
+  // captured result; ModelQuickSwitch/ModelSettings/InlineModelSelector
+  // display it only).
+  let runIsCurrent = true
+  // Seen-bookkeeping collected during provider collection, applied only
+  // after the run is confirmed current (see pendingSeenMarks below).
+  const pendingSeenMarks: Array<{ providerType: LLMProviderType; ids: string[] }> = []
+  const results: Array<{
+    providerType: LLMProviderType
+    displayName: string
+    models: Array<{ id: string; name: string }>
+    providerKey: string
+    catalogStatus: ModelCatalogStatus
+    /** Authoritative model ids for this provider (registry / static list),
+     *  NOT the pinned-derived display list. Pins missing from here are stale. */
+    authoritativeIds: string[]
+  }> = []
+
+  // Check built-in providers (parallel loadApiKey for performance)
+  const builtInTypes = Object.keys(PROVIDER_META) as LLMProviderType[]
+  const builtInKeys = await Promise.all(
+    builtInTypes.map(async (type) => ({ type, key: await loadApiKey(type) }))
+  )
+  for (const { type, key } of builtInKeys) {
+    const meta = PROVIDER_META[type]
+    const providerType = type
+    if (key) {
+      // Use pinned models if available, otherwise fallback to all models
+      const pinned = state.pinnedModelsByProvider[providerType]
+      const allModels = getModelsForProvider(providerType)
+      const models = pinned && pinned.length > 0
+        ? pinned
+            .map((id) => {
+              const found = allModels.find((m) => m.id === id)
+              return found ? { id: found.id, name: found.name } : { id, name: id }
+            })
+        : allModels.map((m) => ({ id: m.id, name: m.name }))
+
+      // Authoritative list = static registry + dynamic /models cache,
+      // merged the same way ProviderManager's allModels does. A
+      // static-only list here wrongly flags pins for models the
+      // provider added after this app build was released (e.g.
+      // glm-5.3-flash): the settings page sees them via the /models
+      // cache while this path flags them as delisted.
+      // Try both cache keys because useDynamicModels stores under
+      // (providerType, providerKey) and providerKey === providerType
+      // for built-in providers.
+      const dynamic = [
+        ...(getCachedModels(providerType, providerType) ?? []),
+        ...(getCachedModels(providerType) ?? []),
+      ]
+      const staticIds = new Set(allModels.map((m) => m.id.toLowerCase()))
+      const authoritativeIds = [
+        ...allModels.map((m) => m.id),
+        ...dynamic
+          .map((m) => m.id)
+          .filter((id) => !staticIds.has(id.toLowerCase())),
+      ]
+
+      // Merged list is authoritative for seen bookkeeping (a pinned id
+      // that's absent from static + dynamic lists is effectively delisted).
+      // Recording is DEFERRED to the superseded gate below (Sourcery
+      // round 6, "Superseded runs still confirm pins"): this snapshot
+      // may be stale by the time the run finishes, and a pin confirmed
+      // against a stale catalog is exactly what the newer run's
+      // authoritative sweep would then remove.
+      pendingSeenMarks.push({ providerType, ids: authoritativeIds })
+
+      // Catalog status for a BUILT-IN provider: the static registry is
+      // the floor, the dynamic /models cache adds to it. Precedence:
+      // - STATIC-ONLY providers (e.g. anthropic — no /models endpoint,
+      //   see STATIC_ONLY_PROVIDERS in model-fetcher.ts) have an
+      //   authoritative registry BY CONSTRUCTION: `canFetchModels` is
+      //   false, so a missing/failed refresh result carries no catalog
+      //   information for them. Non-empty registry → 'ready'; empty
+      //   registry → 'empty'. Classifying them 'failed' for an absent
+      //   refresh made their usable static models invisible to
+      //   reconciliation (Sourcery: "Anthropic models are unusable").
+      //   Extension-fed providers excluded from canFetchModels (e.g.
+      //   codex-oauth) do NOT share this property — see below.
+      // - Otherwise, if the last /models refresh RECORDED an error, the
+      //   catalog is unknown ('failed' — defer) EVEN when the fallback
+      //   list is non-empty: dynamic-only models are missing from it;
+      // - if there is NO cached refresh result at all, the catalog has
+      //   never been observed — that is unknown too ('failed'), not a
+      //   confirmed empty catalog (Sourcery: "Unknown catalogs appear
+      //   empty" — getCachedModelsResult() === null means the refresh
+      //   was never attempted, and reconciliation must not treat a
+      //   provider it has never seen as one that positively reported
+      //   no models);
+      // - only a SUCCESSFUL refresh makes the list authoritative:
+      //   non-empty → 'ready', positively-nothing → 'empty'.
+      const cachedResults = [
+        getCachedModelsResult(providerType, providerType),
+        getCachedModelsResult(providerType),
+      ]
+      const dynamicRefreshFailed =
+        cachedResults.some((r) => r?.error != null)
+      const dynamicRefreshObserved =
+        cachedResults.some((r) => r != null)
+      const refreshInformsCatalog = canFetchModels(providerType)
+      // STATIC-ONLY vs EXTENSION-FED distinction (Sourcery round 8,
+      // 🟠 "Extension catalog treated as empty"): `canFetchModels()` is
+      // false for BOTH anthropic (no /models endpoint — its static
+      // registry is authoritative BY CONSTRUCTION) and codex-oauth
+      // (models arrive ASYNCHRONOUSLY from the browser extension).
+      // Treating both alike let a codex-oauth registration that raced
+      // ahead of its extension catalog (or a catalog that never
+      // arrived) read as a confirmed empty registry: the stale-pin
+      // sweep removed previously confirmed pins and reconciliation
+      // switched away from the provider while its catalog was merely
+      // not-yet-loaded. Only the static-only set may classify an EMPTY
+      // registry as authoritative 'empty'; an extension-fed provider
+      // with no positively reported catalog is unknown ('failed' —
+      // defer), matching the dynamic-branch behavior for a registry
+      // that never received a catalog. A NON-empty registry is a
+      // positive report in both cases → 'ready'.
+      const staticRegistryAuthoritative = hasAuthoritativeStaticRegistry(providerType)
+      // The FAILED refresh check precedes the non-empty fallback
+      // (Sourcery round 6, 🟠 "Dynamic models appear delisted"): when
+      // the /models fetch errors, the merged static+dynamic catalog is
+      // INCOMPLETE — dynamic-only models the user selected or pinned
+      // are missing from it through no fault of their own. Reporting
+      // 'ready' let reconciliation switch away from those models and
+      // the stale-pin sweep remove those pins during a mere outage.
+      // 'failed' is missing information: the resolver defers, the
+      // sweep skips, and the static floor stays visible in the UI.
+      // A never-observed catalog is likewise 'failed' (unknown).
+      const catalogStatus: ModelCatalogStatus =
+        !refreshInformsCatalog
+          ? authoritativeIds.length > 0
+            ? 'ready'
+            : staticRegistryAuthoritative
+              // Static-only provider: the empty registry is the
+              // authoritative answer.
+              ? 'empty'
+              // Extension-fed provider: the catalog has not been
+              // reported yet — unknown, NOT authoritative-empty.
+              : 'failed'
+          : (dynamicRefreshFailed || !dynamicRefreshObserved)
+            ? 'failed'
+            : authoritativeIds.length > 0
+              ? 'ready'
+              : 'empty'
+
+      results.push({
+        providerType,
+        displayName: localizedProviderDisplayName(providerType, meta.displayName),
+        models,
+        providerKey: providerType,
+        catalogStatus,
+        authoritativeIds,
+      })
+    }
+  }
+
+  // Check custom providers (parallel)
+  const customKeys = await Promise.all(
+    state.customProviders.map(async (cp) => ({ cp, key: await loadApiKey(cp.id) }))
+  )
+  for (const { cp, key } of customKeys) {
+    if (key) {
+      // Use pinned models if available, otherwise fallback to custom provider models
+      const pinned = state.pinnedModelsByProvider[cp.id]
+      const models = pinned && pinned.length > 0
+        ? pinned.map((id) => ({ id, name: id }))
+        : cp.models.map((m) => ({ id: m, name: m }))
+
+      // A custom provider's model list is USER-CONFIGURED, not fetched:
+      // it is authoritative by construction, and an empty list means the
+      // user configured no models — not that a fetch failed.
+      results.push({
+        providerType: cp.id,
+        displayName: cp.name,
+        models,
+        providerKey: cp.id,
+        catalogStatus: cp.models.length > 0 ? 'ready' : 'empty',
+        authoritativeIds: cp.models,
+      })
+    }
+  }
+
+  // Check dynamically registered providers (parallel)
+  const { getDynamicProviderIds, getProviderMeta: getDynamicMeta } = await import('@/agent/providers/types')
+  const dynamicIds = getDynamicProviderIds().filter(
+    (id) => !results.some((r) => r.providerType === id) && id !== llmGatewayProviderKey
+  )
+  const dynamicKeys = await Promise.all(
+    dynamicIds.map(async (id) => ({ id, key: await loadApiKey(id) }))
+  )
+  for (const { id, key } of dynamicKeys) {
+    if (key) {
+      const meta = getDynamicMeta(id)
+      const pinned = state.pinnedModelsByProvider[id]
+      const allModels = getModelsForProvider(id)
+      const models = pinned && pinned.length > 0
+        ? pinned.map((pid) => {
+            const found = allModels.find((m) => m.id === pid)
+            return found ? { id: found.id, name: found.name } : { id: pid, name: pid }
+          })
+        : allModels.map((m) => ({ id: m.id, name: m.name }))
+
+      // Dynamic registry list is authoritative (e.g. codex-oauth models
+      // registered from the extension response). Seen-bookkeeping is
+      // deferred to the superseded gate (see the built-in branch).
+      pendingSeenMarks.push({ providerType: id, ids: allModels.map((m) => m.id) })
+
+      // A dynamic provider's registry list comes from an external
+      // source (the browser extension, the gateway). The registry
+      // records HOW it was obtained: a list fetched successfully but
+      // EMPTY is authoritative ('empty'), while a provider whose
+      // registration never carried a usable catalog is 'failed'
+      // (unknown). Without this distinction an empty registry would
+      // switch the user's selection and wipe their pins on a transient
+      // outage.
+      const catalogStatus = getDynCatalogStatus(id) ?? 'failed'
+
+      results.push({
+        providerType: id,
+        displayName: meta?.displayName || id,
+        models,
+        providerKey: id,
+        catalogStatus,
+        authoritativeIds: allModels.map((m) => m.id),
+      })
+    }
+  }
+
+  // Handle llm-gateway separately (uses different API key storage)
+  if (llmGatewayProviderKey) {
+    try {
+      const gwMod = await import('@/agent/providers/llm-gateway-provider')
+      const gwKey = await loadApiKey(gwMod.getLLMGatewayApiKeyProviderKey())
+      // A registered gateway WITHOUT its saved access-token shadow yet
+      // (startup: registration lands before AppBootstrap persists the
+      // restored token) must still appear in discovery with its registry status
+      // (Sourcery: "Gateway selection is lost during restore"). Omitting it
+      // made ensureValidModelSelection see no pending gateway and switch the
+      // persisted gateway selection to another available provider before
+      // token restoration finished. `catalogStatus: 'loading'` defers
+      // reconciliation (resolveDefaultModelSelection) and keeps the
+      // selected gateway out of the stale-pin sweep.
+      const gwMeta = getDynamicMeta(llmGatewayProviderKey)
+      const gwRegistered = gwMeta !== undefined
+      if (!gwKey && gwRegistered) {
+        results.push({
+          providerType: llmGatewayProviderKey,
+          displayName: localizedProviderDisplayName(llmGatewayProviderKey, gwMeta?.displayName || 'Nutstore AI'),
+          models: [],
+          providerKey: llmGatewayProviderKey,
+          catalogStatus: getDynCatalogStatus(llmGatewayProviderKey) ?? 'failed',
+          authoritativeIds: [],
+        })
+      }
+      if (gwKey) {
+        const pinned = state.pinnedModelsByProvider[llmGatewayProviderKey]
+        const allModels = getModelsForProvider(llmGatewayProviderKey)
+        const models = pinned && pinned.length > 0
+          ? pinned.map((pid) => {
+              const found = allModels.find((m) => m.id === pid)
+              return found ? { id: found.id, name: found.name } : { id: pid, name: pid }
+            })
+          : allModels.map((m) => ({ id: m.id, name: m.name }))
+        // Seen-bookkeeping goes through a Zustand set() whose persist
+        // middleware writes to localStorage. The mark itself is
+        // deferred to the superseded gate below (see the built-in
+        // branch), so a superseded run can no longer confirm pins
+        // against a stale gateway catalog.
+        pendingSeenMarks.push({ providerType: llmGatewayProviderKey, ids: allModels.map((m) => m.id) })
+        // The registry records HOW the gateway's catalog was obtained:
+        // 'ready' (fetched, non-empty), 'empty' (the gateway answered
+        // and positively reports it serves no models) or 'failed' (the
+        // /models fetch produced nothing usable). Only 'ready' and
+        // 'empty' are authoritative; 'failed' is missing information
+        // and must never switch the user's selection or flag pins.
+        const catalogStatus = getDynCatalogStatus(llmGatewayProviderKey) ?? 'failed'
+        results.push({
+          providerType: llmGatewayProviderKey,
+          // Locale-aware provider name (zh: 坚果云 AI / others: Nutstore AI);
+          // helper covers the llm-gateway -> settings.gateway.name mapping.
+          displayName: localizedProviderDisplayName(llmGatewayProviderKey, gwMeta?.displayName || 'Nutstore AI'),
+          models,
+          providerKey: llmGatewayProviderKey,
+          catalogStatus,
+          authoritativeIds: allModels.map((m) => m.id),
+        })
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Auto-remove stale pins (pinned + previously confirmed available +
+  // absent from the authoritative list → delisted upstream). Runs on
+  // every provider-list load and is idempotent. Guards:
+  // - A SUPERSEDED run (a newer getAvailableProviders() started while
+  //   this one was awaiting) must not apply destructive pin updates
+  //   from a stale snapshot — the newer run owns reconciliation now.
+  // - A FAILED catalog ('failed') is missing information, not proof of
+  //   delisting — skip it entirely, never wipe pins.
+  // - An empty catalog cannot prove that every pin was delisted.
+  // - Keep the currently selected model even if stale: the user is on
+  //   it, and the topbar already flags it (currentModelDelistedTooltip).
+  // A newer discovery run has started while this one was collecting:
+  // this run's snapshot is stale — skip BOTH the destructive pin sweep
+  // and reconciliation, and return the (still valid, read-only) results
+  // to the caller. The newer run re-derives everything from fresher
+  // state (Sourcery: "Older refresh overrides newer catalog").
+  runIsCurrent = !superseded()
+  if (!runIsCurrent) return discoveryResult(results, false)
+
+  // Seen-bookkeeping flush: only a CURRENT run may confirm pins. Every
+  // mark was collected against this run's snapshot; had a newer run
+  // started meanwhile, recording those marks would make the newer run's
+  // authoritative sweep treat stale-snapshot pins as previously
+  // confirmed and remove them (Sourcery round 6, "Superseded runs
+  // still confirm pins"). A set() throwing here is logged and
+  // tolerated — a failed bookkeeping write must not drop the results.
+  for (const mark of pendingSeenMarks) {
+    try {
+      get().markPinnedModelsSeen(mark.providerType, mark.ids)
+    } catch (e) {
+      console.warn(`[settings] markPinnedModelsSeen failed for ${mark.providerType}; skipping:`, e)
+    }
+  }
+
+  const current = get()
+  for (const r of results) {
+    if (r.catalogStatus === 'failed') continue
+    // getStalePinnedModels guards empty lists as unknown, even when
+    // an upstream provider marked its empty response successful.
+    const staleIds = current.getStalePinnedModels(r.providerType, r.authoritativeIds, r.catalogStatus)
+    if (staleIds.length === 0) continue
+    const keep = r.providerType === current.providerType ? new Set([current.modelName]) : new Set<string>()
+    const toRemove = staleIds.filter((id) => !keep.has(id))
+    if (toRemove.length === 0) continue
+    get().removePinnedModels(r.providerType, toRemove, false)
+    console.info(
+      `[settings] auto-removed delisted pinned models (${r.providerType}): ${toRemove.join(', ')}`,
+    )
+    // Hide them from this response too, so the UI never renders a pin
+    // that was just auto-removed (no flash between refreshes).
+    r.models = r.models.filter((m) => !toRemove.includes(m.id))
+  }
+
+  // A second superseded-check before reconciliation: the sweep above
+  // awaits nothing, but keep the two destructive steps under one gate
+  // so any future edit that adds awaits to the sweep cannot reopen the
+  // stale-run window.
+  runIsCurrent = !superseded()
+  if (!runIsCurrent) return discoveryResult(results, false)
+
+  // Reconcile only after every provider source has been collected. This
+  // prevents an early provider from winning while a later provider is
+  // still being restored.
+  //
+  // The catalog status travels with each provider: a 'failed' catalog
+  // is UNKNOWN, so the resolver DEFERS the selection change instead of
+  // switching the user off a provider that is merely unreachable. A
+  // 'ready'/'empty' catalog is authoritative and reconciles normally.
+  const reconciliationProviders: AvailableProviderLike[] = results.map((result) => ({
+    providerType: result.providerType,
+    models: result.models,
+    authoritativeIds: result.authoritativeIds,
+    catalogStatus: result.catalogStatus,
+  }))
+  get().ensureValidModelSelection(reconciliationProviders, {
+    preserveExpiredCredential: get().modelCredentialStatus === 'expired',
+  })
+
+  return discoveryResult(results, runIsCurrent)
+}
+
+/**
+ * In-flight discovery promise for `getAvailableProviders` (#188 fix 2,
+ * single-flight). Startup fires several overlapping calls (ModelQuickSwitch
+ * mount, WorkspaceLayout reconcile, the session reconciler, the gateway
+ * card); before coalescing, each started its own run and bumped the
+ * generation, so every earlier run landed superseded (current:false) and
+ * the switcher — which drops superseded snapshots — stayed empty until the
+ * last run finished. Concurrent callers now JOIN one run: the store still
+ * collects/reconciles once, the generation machinery stays as the
+ * correctness gate for any run that does start, and the in-flight slot is
+ * cleared in `finally` so a later call always gets a fresh generation.
+ */
+let providerDiscoveryInFlight: Promise<Awaited<ReturnType<SettingsState['getAvailableProviders']>>> | null = null
+
+/**
+ * Break the single-flight slot so the NEXT `getAvailableProviders` call
+ * starts a fresh discovery instead of joining a run that captured
+ * pre-mutation state. Exported for `triggerProviderRefresh`, which must
+ * invalidate on every provider/registry/pin mutation it announces.
+ */
+export function invalidateProviderDiscovery(): void {
+  getAvailableProvidersGeneration++
+  providerDiscoveryInFlight = null
+}
+
+let notifyRegistryDiscoveryChange = invalidateProviderDiscovery
+subscribeToProviderRegistry(() => notifyRegistryDiscoveryChange())
 
 export const useSettingsStore = create<SettingsState, [['zustand/persist', unknown]]>(
   persist<SettingsState, [], [], PersistedSettingsState>(
@@ -564,6 +1008,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       _providerRefreshVersion: 0,
 
       triggerProviderRefresh: () => {
+        // A refresh means state just mutated: an in-flight discovery run
+        // captured PRE-mutation state, so callers must not JOIN it and
+        // receive stale results flagged current:true (Sourcery: "Provider
+        // refreshes keep stale results"). Break the slot; the refresh-driven
+        // reload starts a FRESH discovery from the mutated state. The
+        // in-flight run still settles normally (its finally-clear is a
+        // no-op on the replaced slot) — no cancellation machinery needed.
+        invalidateProviderDiscovery()
         set((s) => ({ _providerRefreshVersion: s._providerRefreshVersion + 1 }))
       },
 
@@ -1081,394 +1533,29 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         return resolution
       },
 
-      getAvailableProviders: async () => {
-        // Generation token: concurrent discovery runs must not apply each
-        // other's reconciliation. This function awaits many async steps
-        // (API-key reads, dynamic imports, gateway lookups); an OLDER run
-        // that finishes after a newer one would otherwise feed a stale
-        // catalog snapshot to ensureValidModelSelection and the stale-pin
-        // sweep, letting it switch the active model or remove pins based on
-        // information the newer run already superseded (Sourcery: "Older
-        // refresh overrides newer catalog").
-        const generation = ++getAvailableProvidersGeneration
-        const superseded = () => generation !== getAvailableProvidersGeneration
-        const { loadApiKey } = await import('@/security/api-key-store')
-        const { PROVIDER_META, getModelsForProvider } = await import('@/agent/providers/types')
-        const { getCachedModels, getCachedModelsResult } = await import('@/agent/providers/model-store')
-        const { getProviderCatalogStatus: getDynCatalogStatus } = await import('@/agent/providers/types')
-        const { canFetchModels, hasAuthoritativeStaticRegistry } = await import('@/agent/providers/model-fetcher')
-        let llmGatewayProviderKey: string | undefined
-        try {
-          const mod = await import('@/agent/providers/llm-gateway-provider')
-          if (mod.isLLMGatewayConfigured()) {
-            llmGatewayProviderKey = mod.LLM_GATEWAY_PROVIDER_TYPE
-          }
-        } catch { /* ignore */ }
-        const state = get()
-        // Whether this run is still the newest one. Latched at the same two
-        // gates as the sweep/reconciliation below: every provider-collection
-        // step between them is awaited and synchronous, so the flag matches
-        // `superseded()` at the reconciliation gate. Exposed on each result
-        // so UI callers can skip feeding a stale snapshot into
-        // ensureValidModelSelection themselves (Sourcery: "Stale discovery
-        // changes selection" — WorkspaceLayout reconciles from its own
-        // captured result; ModelQuickSwitch/ModelSettings/InlineModelSelector
-        // display it only).
-        let runIsCurrent = true
-        // Seen-bookkeeping collected during provider collection, applied only
-        // after the run is confirmed current (see pendingSeenMarks below).
-        const pendingSeenMarks: Array<{ providerType: LLMProviderType; ids: string[] }> = []
-        const results: Array<{
-          providerType: LLMProviderType
-          displayName: string
-          models: Array<{ id: string; name: string }>
-          providerKey: string
-          catalogStatus: ModelCatalogStatus
-          /** Authoritative model ids for this provider (registry / static list),
-           *  NOT the pinned-derived display list. Pins missing from here are stale. */
-          authoritativeIds: string[]
-        }> = []
-
-        // Check built-in providers (parallel loadApiKey for performance)
-        const builtInTypes = Object.keys(PROVIDER_META) as LLMProviderType[]
-        const builtInKeys = await Promise.all(
-          builtInTypes.map(async (type) => ({ type, key: await loadApiKey(type) }))
-        )
-        for (const { type, key } of builtInKeys) {
-          const meta = PROVIDER_META[type]
-          const providerType = type
-          if (key) {
-            // Use pinned models if available, otherwise fallback to all models
-            const pinned = state.pinnedModelsByProvider[providerType]
-            const allModels = getModelsForProvider(providerType)
-            const models = pinned && pinned.length > 0
-              ? pinned
-                  .map((id) => {
-                    const found = allModels.find((m) => m.id === id)
-                    return found ? { id: found.id, name: found.name } : { id, name: id }
-                  })
-              : allModels.map((m) => ({ id: m.id, name: m.name }))
-
-            // Authoritative list = static registry + dynamic /models cache,
-            // merged the same way ProviderManager's allModels does. A
-            // static-only list here wrongly flags pins for models the
-            // provider added after this app build was released (e.g.
-            // glm-5.3-flash): the settings page sees them via the /models
-            // cache while this path flags them as delisted.
-            // Try both cache keys because useDynamicModels stores under
-            // (providerType, providerKey) and providerKey === providerType
-            // for built-in providers.
-            const dynamic = [
-              ...(getCachedModels(providerType, providerType) ?? []),
-              ...(getCachedModels(providerType) ?? []),
-            ]
-            const staticIds = new Set(allModels.map((m) => m.id.toLowerCase()))
-            const authoritativeIds = [
-              ...allModels.map((m) => m.id),
-              ...dynamic
-                .map((m) => m.id)
-                .filter((id) => !staticIds.has(id.toLowerCase())),
-            ]
-
-            // Merged list is authoritative for seen bookkeeping (a pinned id
-            // that's absent from static + dynamic lists is effectively delisted).
-            // Recording is DEFERRED to the superseded gate below (Sourcery
-            // round 6, "Superseded runs still confirm pins"): this snapshot
-            // may be stale by the time the run finishes, and a pin confirmed
-            // against a stale catalog is exactly what the newer run's
-            // authoritative sweep would then remove.
-            pendingSeenMarks.push({ providerType, ids: authoritativeIds })
-
-            // Catalog status for a BUILT-IN provider: the static registry is
-            // the floor, the dynamic /models cache adds to it. Precedence:
-            // - STATIC-ONLY providers (e.g. anthropic — no /models endpoint,
-            //   see STATIC_ONLY_PROVIDERS in model-fetcher.ts) have an
-            //   authoritative registry BY CONSTRUCTION: `canFetchModels` is
-            //   false, so a missing/failed refresh result carries no catalog
-            //   information for them. Non-empty registry → 'ready'; empty
-            //   registry → 'empty'. Classifying them 'failed' for an absent
-            //   refresh made their usable static models invisible to
-            //   reconciliation (Sourcery: "Anthropic models are unusable").
-            //   Extension-fed providers excluded from canFetchModels (e.g.
-            //   codex-oauth) do NOT share this property — see below.
-            // - Otherwise, if the last /models refresh RECORDED an error, the
-            //   catalog is unknown ('failed' — defer) EVEN when the fallback
-            //   list is non-empty: dynamic-only models are missing from it;
-            // - if there is NO cached refresh result at all, the catalog has
-            //   never been observed — that is unknown too ('failed'), not a
-            //   confirmed empty catalog (Sourcery: "Unknown catalogs appear
-            //   empty" — getCachedModelsResult() === null means the refresh
-            //   was never attempted, and reconciliation must not treat a
-            //   provider it has never seen as one that positively reported
-            //   no models);
-            // - only a SUCCESSFUL refresh makes the list authoritative:
-            //   non-empty → 'ready', positively-nothing → 'empty'.
-            const cachedResults = [
-              getCachedModelsResult(providerType, providerType),
-              getCachedModelsResult(providerType),
-            ]
-            const dynamicRefreshFailed =
-              cachedResults.some((r) => r?.error != null)
-            const dynamicRefreshObserved =
-              cachedResults.some((r) => r != null)
-            const refreshInformsCatalog = canFetchModels(providerType)
-            // STATIC-ONLY vs EXTENSION-FED distinction (Sourcery round 8,
-            // 🟠 "Extension catalog treated as empty"): `canFetchModels()` is
-            // false for BOTH anthropic (no /models endpoint — its static
-            // registry is authoritative BY CONSTRUCTION) and codex-oauth
-            // (models arrive ASYNCHRONOUSLY from the browser extension).
-            // Treating both alike let a codex-oauth registration that raced
-            // ahead of its extension catalog (or a catalog that never
-            // arrived) read as a confirmed empty registry: the stale-pin
-            // sweep removed previously confirmed pins and reconciliation
-            // switched away from the provider while its catalog was merely
-            // not-yet-loaded. Only the static-only set may classify an EMPTY
-            // registry as authoritative 'empty'; an extension-fed provider
-            // with no positively reported catalog is unknown ('failed' —
-            // defer), matching the dynamic-branch behavior for a registry
-            // that never received a catalog. A NON-empty registry is a
-            // positive report in both cases → 'ready'.
-            const staticRegistryAuthoritative = hasAuthoritativeStaticRegistry(providerType)
-            // The FAILED refresh check precedes the non-empty fallback
-            // (Sourcery round 6, 🟠 "Dynamic models appear delisted"): when
-            // the /models fetch errors, the merged static+dynamic catalog is
-            // INCOMPLETE — dynamic-only models the user selected or pinned
-            // are missing from it through no fault of their own. Reporting
-            // 'ready' let reconciliation switch away from those models and
-            // the stale-pin sweep remove those pins during a mere outage.
-            // 'failed' is missing information: the resolver defers, the
-            // sweep skips, and the static floor stays visible in the UI.
-            // A never-observed catalog is likewise 'failed' (unknown).
-            const catalogStatus: ModelCatalogStatus =
-              !refreshInformsCatalog
-                ? authoritativeIds.length > 0
-                  ? 'ready'
-                  : staticRegistryAuthoritative
-                    // Static-only provider: the empty registry is the
-                    // authoritative answer.
-                    ? 'empty'
-                    // Extension-fed provider: the catalog has not been
-                    // reported yet — unknown, NOT authoritative-empty.
-                    : 'failed'
-                : (dynamicRefreshFailed || !dynamicRefreshObserved)
-                  ? 'failed'
-                  : authoritativeIds.length > 0
-                    ? 'ready'
-                    : 'empty'
-
-            results.push({
-              providerType,
-              displayName: localizedProviderDisplayName(providerType, meta.displayName),
-              models,
-              providerKey: providerType,
-              catalogStatus,
-              authoritativeIds,
-            })
-          }
-        }
-
-        // Check custom providers (parallel)
-        const customKeys = await Promise.all(
-          state.customProviders.map(async (cp) => ({ cp, key: await loadApiKey(cp.id) }))
-        )
-        for (const { cp, key } of customKeys) {
-          if (key) {
-            // Use pinned models if available, otherwise fallback to custom provider models
-            const pinned = state.pinnedModelsByProvider[cp.id]
-            const models = pinned && pinned.length > 0
-              ? pinned.map((id) => ({ id, name: id }))
-              : cp.models.map((m) => ({ id: m, name: m }))
-
-            // A custom provider's model list is USER-CONFIGURED, not fetched:
-            // it is authoritative by construction, and an empty list means the
-            // user configured no models — not that a fetch failed.
-            results.push({
-              providerType: cp.id,
-              displayName: cp.name,
-              models,
-              providerKey: cp.id,
-              catalogStatus: cp.models.length > 0 ? 'ready' : 'empty',
-              authoritativeIds: cp.models,
-            })
-          }
-        }
-
-        // Check dynamically registered providers (parallel)
-        const { getDynamicProviderIds, getProviderMeta: getDynamicMeta } = await import('@/agent/providers/types')
-        const dynamicIds = getDynamicProviderIds().filter(
-          (id) => !results.some((r) => r.providerType === id) && id !== llmGatewayProviderKey
-        )
-        const dynamicKeys = await Promise.all(
-          dynamicIds.map(async (id) => ({ id, key: await loadApiKey(id) }))
-        )
-        for (const { id, key } of dynamicKeys) {
-          if (key) {
-            const meta = getDynamicMeta(id)
-            const pinned = state.pinnedModelsByProvider[id]
-            const allModels = getModelsForProvider(id)
-            const models = pinned && pinned.length > 0
-              ? pinned.map((pid) => {
-                  const found = allModels.find((m) => m.id === pid)
-                  return found ? { id: found.id, name: found.name } : { id: pid, name: pid }
-                })
-              : allModels.map((m) => ({ id: m.id, name: m.name }))
-
-            // Dynamic registry list is authoritative (e.g. codex-oauth models
-            // registered from the extension response). Seen-bookkeeping is
-            // deferred to the superseded gate (see the built-in branch).
-            pendingSeenMarks.push({ providerType: id, ids: allModels.map((m) => m.id) })
-
-            // A dynamic provider's registry list comes from an external
-            // source (the browser extension, the gateway). The registry
-            // records HOW it was obtained: a list fetched successfully but
-            // EMPTY is authoritative ('empty'), while a provider whose
-            // registration never carried a usable catalog is 'failed'
-            // (unknown). Without this distinction an empty registry would
-            // switch the user's selection and wipe their pins on a transient
-            // outage.
-            const catalogStatus = getDynCatalogStatus(id) ?? 'failed'
-
-            results.push({
-              providerType: id,
-              displayName: meta?.displayName || id,
-              models,
-              providerKey: id,
-              catalogStatus,
-              authoritativeIds: allModels.map((m) => m.id),
-            })
-          }
-        }
-
-        // Handle llm-gateway separately (uses different API key storage)
-        if (llmGatewayProviderKey) {
-          try {
-            const gwMod = await import('@/agent/providers/llm-gateway-provider')
-            const gwKey = await loadApiKey(gwMod.getLLMGatewayApiKeyProviderKey())
-            if (gwKey) {
-              const gwMeta = getDynamicMeta(llmGatewayProviderKey)
-              const pinned = state.pinnedModelsByProvider[llmGatewayProviderKey]
-              const allModels = getModelsForProvider(llmGatewayProviderKey)
-              const models = pinned && pinned.length > 0
-                ? pinned.map((pid) => {
-                    const found = allModels.find((m) => m.id === pid)
-                    return found ? { id: found.id, name: found.name } : { id: pid, name: pid }
-                  })
-                : allModels.map((m) => ({ id: m.id, name: m.name }))
-              // Seen-bookkeeping goes through a Zustand set() whose persist
-              // middleware writes to localStorage. The mark itself is
-              // deferred to the superseded gate below (see the built-in
-              // branch), so a superseded run can no longer confirm pins
-              // against a stale gateway catalog.
-              pendingSeenMarks.push({ providerType: llmGatewayProviderKey, ids: allModels.map((m) => m.id) })
-              // The registry records HOW the gateway's catalog was obtained:
-              // 'ready' (fetched, non-empty), 'empty' (the gateway answered
-              // and positively reports it serves no models) or 'failed' (the
-              // /models fetch produced nothing usable). Only 'ready' and
-              // 'empty' are authoritative; 'failed' is missing information
-              // and must never switch the user's selection or flag pins.
-              const catalogStatus = getDynCatalogStatus(llmGatewayProviderKey) ?? 'failed'
-              results.push({
-                providerType: llmGatewayProviderKey,
-                // Locale-aware provider name (zh: 坚果云 AI / others: Nutstore AI);
-                // helper covers the llm-gateway -> settings.gateway.name mapping.
-                displayName: localizedProviderDisplayName(llmGatewayProviderKey, gwMeta?.displayName || 'Nutstore AI'),
-                models,
-                providerKey: llmGatewayProviderKey,
-                catalogStatus,
-                authoritativeIds: allModels.map((m) => m.id),
-              })
-            }
-          } catch { /* ignore */ }
-        }
-
-        // Auto-remove stale pins (pinned + previously confirmed available +
-        // absent from the authoritative list → delisted upstream). Runs on
-        // every provider-list load and is idempotent. Guards:
-        // - A SUPERSEDED run (a newer getAvailableProviders() started while
-        //   this one was awaiting) must not apply destructive pin updates
-        //   from a stale snapshot — the newer run owns reconciliation now.
-        // - A FAILED catalog ('failed') is missing information, not proof of
-        //   delisting — skip it entirely, never wipe pins.
-        // - An empty catalog cannot prove that every pin was delisted.
-        // - Keep the currently selected model even if stale: the user is on
-        //   it, and the topbar already flags it (currentModelDelistedTooltip).
-        // A newer discovery run has started while this one was collecting:
-        // this run's snapshot is stale — skip BOTH the destructive pin sweep
-        // and reconciliation, and return the (still valid, read-only) results
-        // to the caller. The newer run re-derives everything from fresher
-        // state (Sourcery: "Older refresh overrides newer catalog").
-        // runIsCurrent feeds the per-result `current` flag the callers read;
-        // latch it at the same gate so the UI-side reconciliation skip
-        // (WorkspaceLayout) agrees with the store-side skip below.
-        runIsCurrent = !superseded()
-        if (!runIsCurrent) return results.map((r) => ({ ...r, current: false }))
-
-        // Seen-bookkeeping flush: only a CURRENT run may confirm pins. Every
-        // mark was collected against this run's snapshot; had a newer run
-        // started meanwhile, recording those marks would make the newer run's
-        // authoritative sweep treat stale-snapshot pins as previously
-        // confirmed and remove them (Sourcery round 6, "Superseded runs
-        // still confirm pins"). A set() throwing here is logged and
-        // tolerated — a failed bookkeeping write must not drop the results.
-        for (const mark of pendingSeenMarks) {
-          try {
-            get().markPinnedModelsSeen(mark.providerType, mark.ids)
-          } catch (e) {
-            console.warn(`[settings] markPinnedModelsSeen failed for ${mark.providerType}; skipping:`, e)
-          }
-        }
-
-        const current = get()
-        for (const r of results) {
-          if (r.catalogStatus === 'failed') continue
-          // getStalePinnedModels guards empty lists as unknown, even when
-          // an upstream provider marked its empty response successful.
-          const staleIds = current.getStalePinnedModels(r.providerType, r.authoritativeIds, r.catalogStatus)
-          if (staleIds.length === 0) continue
-          const keep = r.providerType === current.providerType ? new Set([current.modelName]) : new Set<string>()
-          const toRemove = staleIds.filter((id) => !keep.has(id))
-          if (toRemove.length === 0) continue
-          get().removePinnedModels(r.providerType, toRemove)
-          console.info(
-            `[settings] auto-removed delisted pinned models (${r.providerType}): ${toRemove.join(', ')}`,
-          )
-          // Hide them from this response too, so the UI never renders a pin
-          // that was just auto-removed (no flash between refreshes).
-          r.models = r.models.filter((m) => !toRemove.includes(m.id))
-        }
-
-        // A second superseded-check before reconciliation: the sweep above
-        // awaits nothing, but keep the two destructive steps under one gate
-        // so any future edit that adds awaits to the sweep cannot reopen the
-        // stale-run window.
-        runIsCurrent = !superseded()
-        if (!runIsCurrent) return results.map((r) => ({ ...r, current: false }))
-
-        // Reconcile only after every provider source has been collected. This
-        // prevents an early provider from winning while a later provider is
-        // still being restored.
-        //
-        // The catalog status travels with each provider: a 'failed' catalog
-        // is UNKNOWN, so the resolver DEFERS the selection change instead of
-        // switching the user off a provider that is merely unreachable. A
-        // 'ready'/'empty' catalog is authoritative and reconciles normally.
-        const reconciliationProviders: AvailableProviderLike[] = results.map((result) => ({
-          providerType: result.providerType,
-          models: result.models,
-          authoritativeIds: result.authoritativeIds,
-          catalogStatus: result.catalogStatus,
-        }))
-        get().ensureValidModelSelection(reconciliationProviders, {
-          preserveExpiredCredential: get().modelCredentialStatus === 'expired',
+      getAvailableProviders: () => {
+        // Single-flight (#188 fix 2): concurrent callers share one run so
+        // they cannot supersede each other. A caller that explicitly wants
+        // a FRESH discovery still can — the slot is cleared when the run
+        // settles, and `triggerProviderRefresh`-driven reloads arrive after
+        // mutations, by which time any prior run has typically settled.
+        if (providerDiscoveryInFlight) return providerDiscoveryInFlight
+        const run = runProviderDiscovery(get)
+        // Compare against the WRAPPED promise (`run.finally` returns a new
+        // one): comparing against `run` never matches and the slot would
+        // never clear, freezing every later call onto a settled promise.
+        const wrapped = run.finally(() => {
+          if (providerDiscoveryInFlight === wrapped) providerDiscoveryInFlight = null
         })
-
-        return results.map((r) => ({ ...r, current: runIsCurrent }))
+        providerDiscoveryInFlight = wrapped
+        return wrapped
       },
 
       pinModel: (providerType, modelId) => {
         const state = get()
         const current = state.pinnedModelsByProvider[providerType] || []
         if (current.includes(modelId)) return
+        invalidateProviderDiscovery()
         set({
           pinnedModelsByProvider: {
             ...state.pinnedModelsByProvider,
@@ -1482,6 +1569,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const state = get()
         const current = state.pinnedModelsByProvider[providerType] || []
         if (!current.includes(modelId)) return
+        invalidateProviderDiscovery()
         set({
           pinnedModelsByProvider: {
             ...state.pinnedModelsByProvider,
@@ -1493,6 +1581,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
 
       setPinnedModels: (providerType, modelIds) => {
         const state = get()
+        invalidateProviderDiscovery()
         set({
           pinnedModelsByProvider: {
             ...state.pinnedModelsByProvider,
@@ -1551,12 +1640,13 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         )
       },
 
-      removePinnedModels: (providerType, modelIds) => {
+      removePinnedModels: (providerType, modelIds, invalidate = true) => {
         const state = get()
         const ids = new Set(modelIds)
         const current = state.pinnedModelsByProvider[providerType] || []
         const kept = current.filter((id) => !ids.has(id))
         if (kept.length === current.length) return []
+        if (invalidate) invalidateProviderDiscovery()
         const seen = state.pinnedSeenByProvider[providerType] || []
         set({
           pinnedModelsByProvider: {
@@ -1715,6 +1805,15 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
     }
   )
 )
+
+notifyRegistryDiscoveryChange = () => {
+  suppressPersistWrites++
+  try {
+    useSettingsStore.getState().triggerProviderRefresh()
+  } finally {
+    suppressPersistWrites--
+  }
+}
 
 // ── Cross-tab settings sync ─────────────────────────────────────────────────
 // Without this, a STALE tab persists its full settings snapshot over another
@@ -1978,9 +2077,13 @@ function setupCrossTabSettingsSync(): void {
         providerType: useSettingsStore.getState().providerType,
         modelName: useSettingsStore.getState().modelName,
       }
+      const pinsChanged = applied.pinnedModelsByProvider !== undefined &&
+        JSON.stringify(applied.pinnedModelsByProvider) !== JSON.stringify(current.pinnedModelsByProvider)
+      if (pinsChanged) invalidateProviderDiscovery()
       suppressPersistWrites++
       try {
         useSettingsStore.setState(applied as Partial<SettingsState>)
+        if (pinsChanged) useSettingsStore.getState().triggerProviderRefresh()
       } finally {
         suppressPersistWrites--
       }

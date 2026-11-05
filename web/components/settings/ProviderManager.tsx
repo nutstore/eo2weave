@@ -41,6 +41,7 @@ import { DEEPSEEK_PROVIDER_TYPE, fetchDeepSeekBalance, type DeepSeekBalanceRespo
 import type {
   LLMProviderType,
   ModelInfo,
+  ProviderCatalogStatus,
   ProviderCategory,
 } from '@/agent/providers/types'
 import { useDynamicModels } from '@/agent/providers/use-dynamic-models'
@@ -1261,7 +1262,7 @@ export function LLMGatewayCard({
    * flagged stale. 'empty' is authoritative (the gateway answered and serves
    * no models). 'ready' means the list has content.
    */
-  const [catalogStatus, setCatalogStatus] = useState<'ready' | 'empty' | 'failed'>('failed')
+  const [catalogStatus, setCatalogStatus] = useState<ProviderCatalogStatus>('failed')
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [modelSearch, setModelSearch] = useState('')
   const [addingManual, setAddingManual] = useState(false)
