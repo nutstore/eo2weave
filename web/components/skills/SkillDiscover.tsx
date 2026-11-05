@@ -134,8 +134,21 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
         const skillsStore = useSkillsStore.getState()
         await skillsStore.deleteSkill(`user:${entry.dirName}`)
       }
-      // Re-annotate from OPFS (the source of truth).
-      const installed = await scanInstalledDirNames()
+      // Re-annotate from OPFS (the source of truth). The operation itself
+      // already succeeded — a rescan failure must NOT mark it failed (#185):
+      // the skill IS installed/uninstalled on disk, and skipping
+      // bumpScanVersion/onInstalled would leave caches stale while the UI
+      // reports failure. Keep the success path, fall back to the manifest's
+      // previous annotation, and still refresh caches.
+      let installed: Set<string>
+      try {
+        installed = await scanInstalledDirNames()
+      } catch (scanErr) {
+        console.warn('[SkillDiscover] post-operation rescan failed:', scanErr)
+        installed = new Set(
+          (manifest ?? []).filter((e) => e.installed).map((e) => e.dirName),
+        )
+      }
       setManifest((prev) =>
         prev
           ? prev.map((e) =>
