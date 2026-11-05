@@ -309,6 +309,28 @@ describe('registry section feedback', () => {
     expect(toastVisible(h.document)).toBe(true)
   })
 
+  it('keeps an uninstall path for an install no configured catalog lists', async () => {
+    // A package installed from a registry that is no longer configured: its
+    // old catalog must not keep its id "listed", or the row disappears with no
+    // way to remove the install.
+    const h = await setup({
+      state: () => ({ registries: [registry], installed: ['com.example.gone'], activations: {}, persisted: true }),
+      handlers: {
+        webmcp_registry_catalog: { manifest: { manifestUrl: registry.manifestUrl, name: 'Example', packages: [pkgA] } },
+      },
+    })
+    const uninstalls = [...h.document.querySelectorAll('button')]
+      .filter(b => b.textContent === 'webmcpPackagesUninstall') as HTMLButtonElement[]
+    expect(uninstalls).toHaveLength(1)
+
+    uninstalls[0]!.click()
+    await settle()
+    expect(h.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'webmcp_registry_uninstall',
+      packageId: 'com.example.gone',
+    }))
+  })
+
   it('a recovered load clears its own failure and the session-only warning', async () => {
     const state = (persisted: boolean): RegistryListResult => ({ registries: [registry], installed: [], activations: {}, persisted })
     const h = await setup({

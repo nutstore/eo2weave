@@ -507,6 +507,18 @@ export function createRegistrySection(
       if (!state.persisted) shell.error.show(t('webmcpPackagesNotPersisted'))
     }
 
+    // Drop the caches of registries the user removed: a catalog that outlives
+    // its registry would keep that registry's package ids "known" (so an
+    // install from it never became an orphan with an uninstall action) and a
+    // re-added registry would show the old catalog without re-fetching.
+    const configured = new Set(state.registries.map(registry => registry.manifestUrl))
+    for (const manifestUrl of [...catalogs.keys()]) {
+      if (configured.has(manifestUrl)) continue
+      catalogs.delete(manifestUrl)
+      catalogRefreshFailures.delete(manifestUrl)
+      clearToolPreviews(manifestUrl)
+    }
+
     const list = shell.list
     list.replaceChildren()
     shell.setCount(state.registries.length)
@@ -550,8 +562,14 @@ export function createRegistrySection(
     }
 
     // A catalog count for the summary strip: what can be installed right now.
+    // Built from the CONFIGURED registries only — `catalogs` still holds
+    // entries fetched for a registry that has since been removed, and those
+    // ids must not count as "listed by a catalog" (below).
     const catalogIds = new Set<string>()
-    for (const manifest of catalogs.values()) for (const pkg of manifest.packages) catalogIds.add(pkg.id)
+    for (const registry of state.registries) {
+      const manifest = catalogs.get(registry.manifestUrl)
+      if (manifest) for (const pkg of manifest.packages) catalogIds.add(pkg.id)
+    }
     shell.setCount(state.registries.length, catalogIds.size)
 
     // Installed packages no catalog lists keep an uninstall path (a removed
