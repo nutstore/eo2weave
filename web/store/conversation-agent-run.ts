@@ -767,7 +767,7 @@ export async function runAgentImpl(
           // advanced it itself.
           if (
             providerMissing(providerType) &&
-            isGatewayAccessTokenCurrent(resolvedMissing.accessToken)
+            (await isGatewayAccessTokenCurrent(resolvedMissing.accessToken))
           ) {
             registerLLMGatewayProvider()
           }

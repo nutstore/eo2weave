@@ -301,9 +301,20 @@ export function isCredentialStatusCurrent(generation: number): boolean {
  * (saveStoredTokens), which is not a session change. What must block a
  * follow-up action is the stored credential being replaced or cleared by a
  * logout or a newer login (#180 review round 3).
+ *
+ * Reads through `loadStoredTokensWithFallback` so a credential recovered
+ * from the SQLite backup (localStorage unavailable or gapped) counts as
+ * current — the resolver may have validated exactly that recovered pair
+ * (#214 Sourcery round 3). A storage layer that cannot be read at all
+ * vouches for nothing: fail closed.
  */
-export function isGatewayAccessTokenCurrent(accessToken: string): boolean {
-  const stored = loadStoredTokens()
+export async function isGatewayAccessTokenCurrent(accessToken: string): Promise<boolean> {
+  let stored: StoredTokens | null
+  try {
+    stored = await loadStoredTokensWithFallback()
+  } catch {
+    return false
+  }
   return typeof stored?.access_token === 'string' && stored.access_token === accessToken
 }
 

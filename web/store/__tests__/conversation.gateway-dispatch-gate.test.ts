@@ -120,7 +120,7 @@ vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   resolveGatewayDispatchCredential: resolveCredentialMock,
   // Mirrors the real helper: the validated token counts as current while the
   // store still holds it. A logout or newer login replaces/clears it (#180).
-  isGatewayAccessTokenCurrent: (accessToken: string) =>
+  isGatewayAccessTokenCurrent: async (accessToken: string) =>
     accessToken === storedAccessToken.value,
 }))
 const registerProviderMock = vi.hoisted(() =>

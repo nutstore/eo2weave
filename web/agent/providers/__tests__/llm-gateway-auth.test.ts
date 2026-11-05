@@ -1603,7 +1603,40 @@ describe('credential status generation fence (#180)', () => {
     // The refresh committed a NEW pair: the token it returned is the stored
     // one. Dispatch gates compare tokens for exactly this reason — the
     // generation bump here is the refresh's own work, not a session change.
-    expect(isGatewayAccessTokenCurrent('refreshed-token')).toBe(true)
-    expect(isGatewayAccessTokenCurrent('stale-token')).toBe(false)
+    expect(await isGatewayAccessTokenCurrent('refreshed-token')).toBe(true)
+    expect(await isGatewayAccessTokenCurrent('stale-token')).toBe(false)
+  })
+
+  it('counts a SQLite-recovered credential as current (#214 Sourcery round 3)', async () => {
+    // localStorage unreadable → the resolver recovers the pair from the
+    // SQLite api-key-store backup. The helper must vouch for THAT token.
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(refreshResponse('recovered-token', 600))))
+    const recovered = JSON.stringify({
+      access_token: 'recovered-token',
+      refresh_token: 'recovered-refresh',
+      access_expires_at: Date.now() + 600_000,
+      refresh_expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    })
+    const brokenGetItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    loadApiKeyMock.mockImplementation(async (provider: string) =>
+      provider === '__llm_gateway_refresh_token__' ? recovered : null,
+    )
+
+    try {
+      expect(await isGatewayAccessTokenCurrent('recovered-token')).toBe(true)
+      expect(await isGatewayAccessTokenCurrent('replaced-token')).toBe(false)
+    } finally {
+      brokenGetItem.mockRestore()
+    }
+  })
+
+  it('fails closed when the credential store cannot be read at all (#214 Sourcery round 3)', async () => {
+    // No localStorage record and the SQLite read throws: nothing vouches for
+    // the token — currentness must not silently pass.
+    loadApiKeyMock.mockRejectedValue(new Error('sqlite down'))
+
+    expect(await isGatewayAccessTokenCurrent('any-token')).toBe(false)
   })
 })
