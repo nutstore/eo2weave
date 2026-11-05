@@ -14,13 +14,54 @@ export interface TreeIgnoreCandidate {
 }
 
 /**
- * Parse the root .gitignore for the file tree.
+ * Accumulated ignore rules keyed by the directory that holds them, using the
+ * path relative to the tree root (`''` is the root).
+ */
+export type TreeIgnoreRules = ReadonlyMap<string, GitIgnoreRule[]>
+
+/**
+ * Parse one .gitignore for the file tree, scoped to the directory holding it.
  *
  * The tree reuses the backend parser so both sides agree on which rules are
- * directory-only and which are negated.
+ * directory-only and which are negated. A nested .gitignore has to pass its
+ * own directory, otherwise its rules would read as if they were root rules
+ * and leak into sibling subtrees.
  */
-export function parseTreeIgnoreRules(content: string): GitIgnoreRule[] {
-  return parseGitIgnore(content)
+export function parseTreeIgnoreRules(content: string, basePath = ''): GitIgnoreRule[] {
+  return parseGitIgnore(content, basePath)
+}
+
+/**
+ * Rules that govern an entry or directory: those inherited by the directory
+ * holding it, falling back to the nearest loaded ancestor. A directory's own
+ * .gitignore never decides its own row.
+ */
+export function treeIgnoreRulesFor(path: string, rulesByDirectory: TreeIgnoreRules): GitIgnoreRule[] {
+  const ancestors = path.split('/').slice(0, -1)
+  for (let depth = ancestors.length; depth >= 0; depth--) {
+    const rules = rulesByDirectory.get(ancestors.slice(0, depth).join('/'))
+    if (rules) return rules
+  }
+  return []
+}
+
+/**
+ * Extend the rules inherited by a directory with the rules of its own
+ * .gitignore.
+ *
+ * This mirrors web/vfs/walk.ts, which appends `parseGitIgnore(content,
+ * current.path)` to the rules it carries down the tree: a nested file only
+ * applies to its own subtree, and an entry is checked against root plus every
+ * ancestor rule.
+ */
+export function withDirectoryIgnoreRules(
+  rulesByDirectory: TreeIgnoreRules,
+  directory: string,
+  ownRules: readonly GitIgnoreRule[]
+): TreeIgnoreRules {
+  const next = new Map(rulesByDirectory)
+  next.set(directory, [...treeIgnoreRulesFor(directory, rulesByDirectory), ...ownRules])
+  return next
 }
 
 /**

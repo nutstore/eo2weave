@@ -2,7 +2,23 @@ import { describe, expect, it } from 'vitest'
 import {
   isTreeEntryIgnored,
   parseTreeIgnoreRules,
+  treeIgnoreRulesFor,
+  withDirectoryIgnoreRules,
+  type TreeIgnoreRules,
 } from '@/components/file-viewer/file-tree-ignore'
+
+/** Accumulate .gitignore files the way the tree does while it loads directories. */
+function loadRules(directories: Array<[string, string]>): TreeIgnoreRules {
+  return directories.reduce<TreeIgnoreRules>(
+    (rules, [directory, content]) =>
+      withDirectoryIgnoreRules(rules, directory, parseTreeIgnoreRules(content, directory)),
+    new Map()
+  )
+}
+
+function ignored(rulesByDirectory: TreeIgnoreRules, path: string, kind: 'file' | 'directory' = 'file'): boolean {
+  return isTreeEntryIgnored({ path, kind }, treeIgnoreRulesFor(path, rulesByDirectory))
+}
 
 describe('file tree ignore status', () => {
   it('marks a directory-only rule\'s contents ignored and its root not', () => {
@@ -74,5 +90,62 @@ describe('file tree ignore status', () => {
       true, // logs/other.txt
       false, // src/app.ts
     ])
+  })
+})
+
+describe('file tree nested ignore rules', () => {
+  it('applies a nested .gitignore that the root file does not repeat', () => {
+    // git check-ignore in a scratch repo: empty root .gitignore plus
+    // sub/.gitignore `build/` reports sub/build/out.js ignored (exit 0).
+    const rules = loadRules([
+      ['', ''],
+      ['sub', 'build/\n'],
+    ])
+
+    expect(ignored(rules, 'sub/build', 'directory')).toBe(true)
+    expect(ignored(rules, 'sub/build/out.js')).toBe(true)
+    // The rule is scoped to sub/, so a sibling build directory stays clean.
+    expect(ignored(rules, 'other/build', 'directory')).toBe(false)
+    expect(ignored(rules, 'other/build/out.js')).toBe(false)
+  })
+
+  it('lets a nested negation re-include a file the root rule ignores', () => {
+    // git check-ignore: root `*.log` plus sub/.gitignore `!keep.log` leaves
+    // sub/keep.log untracked-but-clean (exit 1), while sub/other.log and
+    // other/a.log stay ignored (exit 0).
+    const rules = loadRules([
+      ['', '*.log\n'],
+      ['sub', '!keep.log\n'],
+    ])
+
+    expect(ignored(rules, 'sub/keep.log')).toBe(false)
+    expect(ignored(rules, 'sub/other.log')).toBe(true)
+    expect(ignored(rules, 'other/a.log')).toBe(true)
+  })
+
+  it('keeps a nested rule from leaking into sibling subtrees', () => {
+    // git check-ignore: sub/.gitignore `*.log` does not ignore other/a.log
+    // (exit 1), only sub/other.log (exit 0).
+    const rules = loadRules([
+      ['', ''],
+      ['sub', '*.log\n'],
+    ])
+
+    expect(ignored(rules, 'sub/other.log')).toBe(true)
+    expect(ignored(rules, 'other/a.log')).toBe(false)
+  })
+
+  it('inherits root rules into nested directories', () => {
+    // git check-ignore: a root `dist/` rule also covers sub/dist/app.js
+    // (unqualified patterns match at any depth), while sub/build/out.js stays
+    // clean because no rule names it.
+    const rules = loadRules([
+      ['', 'dist/\n'],
+      ['sub', 'build/\n'],
+    ])
+
+    expect(ignored(rules, 'sub/dist/app.js')).toBe(true)
+    expect(ignored(rules, 'sub/build/out.js')).toBe(true)
+    expect(ignored(rules, 'other/build/out.js')).toBe(false)
   })
 })
