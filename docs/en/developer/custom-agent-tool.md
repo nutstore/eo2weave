@@ -104,7 +104,7 @@ Conventions:
     }
     // context.directoryHandle / context.projectId / context.currentAgentId
     // are for tools that touch the workspace — see read.tool.ts / write.tool.ts.
-    ...
+    // ...your logic here
   }
   ```
 
@@ -206,6 +206,11 @@ set('my_disk_writer', {
 
 `describe` names a key under `agent.toolAuth.*`; add it to all four locales (`packages/i18n/src/locales/{en-US,zh-CN,ja-JP,ko-KR}`) or the modal renders the raw key. `memoryKey` lets "always allow this conversation" apply per tool family.
 
+Two behaviours come from `authorize()` itself, not from your table entry:
+
+- With YOLO mode on, it returns `allow` without prompting. That is the user's global choice, not a bypass your tool introduces.
+- `memoryKey` is what makes "always allow this conversation" skip later prompts. Omit it for irreversible operations so every call asks again.
+
 ## 7. Test it
 
 Tool executors are plain functions — test them without React, in `web/agent/tools/__tests__/word-count.test.ts`:
@@ -220,7 +225,12 @@ const ctx = { directoryHandle: null } as never
 describe('word_count', () => {
   it('counts words, characters and lines', async () => {
     const result = JSON.parse(await wordCountExecutor({ text: 'one two\nthree' }, ctx))
-    expect(result).toMatchObject({ success: true, words: 3, lines: 2 })
+    expect(result).toMatchObject({ success: true, words: 3, characters: 13, lines: 2 })
+  })
+
+  it('counts code points, not UTF-16 units', async () => {
+    const result = JSON.parse(await wordCountExecutor({ text: '😀' }, ctx))
+    expect(result.characters).toBe(1)
   })
 
   it('rejects an empty string instead of returning zero counts', async () => {
