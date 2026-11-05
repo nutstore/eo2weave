@@ -23,6 +23,18 @@ export const SEARCH_MIN_PACKAGES = 5
 export const TOOL_PREVIEW_WINDOW = 8
 
 /**
+ * Composite section-level tool-index key: registries are user-added remote
+ * catalogs, so different registries can publish the same package ID with
+ * different tool lists — keying by package ID alone let one registry's list
+ * overwrite the other's (round-6 finding: "Registries share tool results").
+ * The NUL separator cannot occur in an https URL, so the join is unambiguous
+ * and a registry's entries can be removed by prefix when it is removed.
+ */
+export function toolIndexKey(registryUrl: string, pkgId: string): string {
+  return `${registryUrl}\u0000${pkgId}`
+}
+
+/**
  * Case-insensitive substring match: does `query` occur in `text`?
  * An empty/whitespace query matches everything.
  */
