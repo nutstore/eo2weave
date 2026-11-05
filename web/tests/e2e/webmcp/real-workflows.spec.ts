@@ -615,7 +615,7 @@ test.beforeAll(async () => {
     management.on('console', (message) =>
       events.push({ type: 'console', level: message.type(), text: message.text() })
     )
-    await management.goto(`chrome-extension://${extensionId}/recipes.html`)
+    await management.goto(`chrome-extension://${extensionId}/packages.html`)
     await expect(management.locator('.card')).toHaveCount(packages.length)
     for (const pkg of packages) {
       const toggle = management.getByRole('checkbox', {
