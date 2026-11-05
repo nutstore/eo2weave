@@ -141,8 +141,9 @@ export function ModelQuickSwitch({
 
   // Stale-while-revalidate (#188): a refresh that started while an accepted
   // snapshot is already rendered must NOT swap the list for the skeleton —
-  // the last accepted list stays visible (dimmed) until the fresh run
-  // lands. Only the FIRST load (nothing accepted yet) shows the skeleton.
+  // the last accepted list stays visible (with the refresh indicator)
+  // until the fresh run lands. Only the FIRST load (nothing accepted yet)
+  // shows the skeleton.
   const refreshingExistingList = loading && (acceptedSnapshotRef.current?.length ?? 0) > 0
 
   useEffect(() => {
@@ -332,7 +333,7 @@ export function ModelQuickSwitch({
 
   // Registered but its catalog discovery is still in flight (#188 fix 4):
   // a gateway between registration and its first successful /v1/models
-  // fetch is RESTORING, not unregistered — the 请重新登录 warning must
+  // fetch is RESTORING, not unregistered — the re-login warning must
   // not fire for it (selectedProviderUnregistered stays false above) and
   // neither does the amber no-usable-model state. A neutral "restoring
   // session" label renders instead until the catalog lands.
