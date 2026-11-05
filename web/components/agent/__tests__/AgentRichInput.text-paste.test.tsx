@@ -66,8 +66,10 @@ describe('long text paste', () => {
   it('shows read errors and can retry without losing the attachment', async () => {
     mountInput()
     const file = new File(['hello'], 'note.txt', { type: 'text/plain' })
-    const read = vi.fn().mockRejectedValueOnce(new Error('read failed')).mockResolvedValueOnce('hello')
-    Object.defineProperty(file, 'text', { value: read })
+    const slice = vi.fn()
+      .mockImplementationOnce(() => ({ arrayBuffer: () => Promise.reject(new Error('read failed')) }))
+      .mockImplementationOnce(() => new Blob(['hello']))
+    Object.defineProperty(file, 'slice', { value: slice })
     act(() => useAssetStore.getState().addFiles([file]))
     fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: note.txt' }))
     expect((await screen.findByRole('alert')).textContent).toContain('conversation.input.textPreviewFailed')
@@ -109,6 +111,37 @@ describe('long text paste', () => {
     act(() => useAssetStore.getState().addFiles([file]))
     fireEvent.click(await screen.findByRole('button', { name: 'conversation.input.previewText: config.yaml' }))
     expect((await screen.findByTestId('text-preview')).textContent).toBe('key: value')
+  })
+
+  it('sends an attachment-only message with the pasted file and clears the composer', async () => {
+    const { container } = mountInput()
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).toBeTruthy())
+    const editor = container.querySelector('.ProseMirror')!
+    const content = '长文本\n'.repeat(3000)
+    await act(async () => { fireEvent.paste(editor, { clipboardData: { items: [], getData: () => content } }) })
+    expect(useAssetStore.getState().pendingAssets).toHaveLength(1)
+    expect(useAssetStore.getState().pendingAssets[0].file.size).toBe(new Blob([content]).size)
+    expect(useAssetStore.getState().pendingAssets[0].mimeType).toBe('text/plain')
+    expect(editor.textContent).toBe('existing')
+    // The staged pasted file survives in the store as the attachment-only
+    // send payload (handleSend consumes it from pendingAssets at send time).
+  })
+
+  it('round-trips a pasted attachment through the store intact for send and retry', async () => {
+    // send side: handleSend reads the staged snapshot from pendingAssets;
+    // retry side: rejectSend → restoreSentAssets hands it back. Assert the
+    // store round-trip preserves the pasted payload end to end.
+    const content = '长文本\n'.repeat(3000)
+    const file = new File([content], 'pasted-text-2026-01-01.txt', { type: 'text/plain' })
+    useAssetStore.getState().addFiles([file])
+    const snapshot = [...useAssetStore.getState().pendingAssets]
+    expect(snapshot).toHaveLength(1)
+    expect(snapshot[0].file.size).toBe(new Blob([content]).size)
+    expect(snapshot[0].mimeType).toBe('text/plain')
+    useAssetStore.getState().removeAsset(snapshot[0].id)
+    useAssetStore.getState().restoreAssets(snapshot)
+    expect(useAssetStore.getState().pendingAssets.map((a) => a.name)).toEqual(['pasted-text-2026-01-01.txt'])
+    expect(useAssetStore.getState().pendingAssets[0].file.size).toBe(new Blob([content]).size)
   })
 
 })

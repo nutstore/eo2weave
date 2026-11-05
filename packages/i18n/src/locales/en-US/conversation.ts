@@ -120,6 +120,8 @@ export const conversation = {
       loadingPreview: "Loading preview…",
       textPreviewFailed: "Could not read the text file.",
       retryPreview: "Retry",
+      textPreviewWindow: "Characters {start}–{end}. Keep scrolling to load more.",
+      textPreviewWindowEof: "Characters {start}–{end}. End of file.",
       pasteAttachmentFailed: "Could not attach the text; pasting it into the message instead.",
       previewMarkdown: "Preview Markdown",
       agentIdPlaceholder: "agent-id",
