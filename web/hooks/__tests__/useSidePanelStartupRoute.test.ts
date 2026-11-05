@@ -66,6 +66,20 @@ describe('useSidePanelStartupRoute', () => {
     expect(result.current).toBe(false)
   })
 
+  it('reveals the route that interrupts the startup replacement', async () => {
+    mocks.handleReady.mockImplementation(async (navigate) => {
+      navigate('/projects/site/workspaces/saved')
+    })
+    const { result, rerender } = renderHook(() => useSidePanelStartupRoute(true))
+    await waitFor(() => expect(mocks.router.replace).toHaveBeenCalled())
+    expect(result.current).toBe(true)
+
+    // Back/navigation can commit elsewhere before the requested route does.
+    mocks.pathname = '/settings'
+    rerender()
+    await waitFor(() => expect(result.current).toBe(false))
+  })
+
   it('waits for the original lookup through StrictMode effect replay', async () => {
     let finishLookup!: () => void
     mocks.handleReady.mockImplementation(() => new Promise<void>((resolve) => {

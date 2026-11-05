@@ -9,6 +9,7 @@ import {
 export function useSidePanelStartupRoute(storageReady: boolean): boolean {
   const router = useRouter()
   const pathname = usePathname()
+  const launchPathname = useRef(pathname)
   const started = useRef(false)
   const [resolving, setResolving] = useState(hasPendingSidePanelProjectRoute)
   const [targetPath, setTargetPath] = useState<string | null>(null)
@@ -24,7 +25,11 @@ export function useSidePanelStartupRoute(storageReady: boolean): boolean {
   }, [storageReady, router])
 
   useEffect(() => {
-    if (pathname === targetPath) setTargetPath(null)
+    // A different committed route can supersede the launch replacement.
+    // Release the gate for that destination as well as the requested one.
+    if (targetPath !== null && (pathname === targetPath || pathname !== launchPathname.current)) {
+      setTargetPath(null)
+    }
   }, [pathname, targetPath])
 
   return resolving || targetPath !== null
