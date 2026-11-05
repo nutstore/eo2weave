@@ -21,7 +21,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef, memo } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronRight, ChevronDown, Folder, FolderOpen, RefreshCw, Copy, MousePointer2, Cloud, Trash2 } from 'lucide-react'
-import micromatch from 'micromatch'
 import { BrandButton, BrandBadge } from '@creatorweave/ui'
 import { formatBytes } from '@/lib/utils'
 import { FileIcon } from '@/lib/file-icons'
@@ -30,6 +29,11 @@ import { useWorkspaceStore } from '@/store/workspace.store'
 import { useSkillsStore } from '@/store/skills.store'
 import { SidebarPanelHeader } from '@/components/layout/SidebarPanelHeader'
 import { useT } from '@/i18n'
+import {
+  isTreeEntryIgnored,
+  parseTreeIgnoreRules,
+  type GitIgnoreRule,
+} from '@/components/file-viewer/file-tree-ignore'
 import type { PendingChange } from '@/opfs/types/opfs-types'
 import type { DiskExecutor } from '@/opfs/native-disk/executor'
 
@@ -54,76 +58,6 @@ interface TreeNode {
   loaded?: boolean
   /** File handle - null indicates OPFS-only file (not on disk) */
   handle: FileSystemDirectoryHandle | FileSystemFileHandle | null
-}
-
-interface GitIgnoreRule {
-  pattern: string
-  negative: boolean
-  directoryOnly: boolean
-}
-
-/** Parse the root .gitignore while preserving rule order and negations. */
-function parseGitIgnore(content: string): GitIgnoreRule[] {
-  const rules: GitIgnoreRule[] = []
-
-  for (const rawLine of content.split(/\r?\n/)) {
-    let line = rawLine.trim()
-    if (!line || line.startsWith('#')) continue
-
-    let negative = false
-    if (line.startsWith('!')) {
-      negative = true
-      line = line.slice(1)
-    } else if (line.startsWith('\\!')) {
-      line = line.slice(1)
-    }
-    if (line.startsWith('\\#')) line = line.slice(1)
-
-    const directoryOnly = line.endsWith('/')
-    if (directoryOnly) line = line.slice(0, -1)
-    if (line.startsWith('/')) line = line.slice(1)
-    if (!line) continue
-
-    rules.push({ pattern: line, negative, directoryOnly })
-  }
-
-  return rules
-}
-
-/** Evaluate a path with gitignore's ordered, last-match-wins behavior. */
-function matchesGitIgnore(
-  path: string,
-  kind: TreeNode['kind'],
-  rules: GitIgnoreRule[]
-): boolean {
-  const segments = path.split('/').filter(Boolean)
-  const candidates = segments.map((_, index) => ({
-    path: segments.slice(0, index + 1).join('/'),
-    isDirectory: index < segments.length - 1 || kind === 'directory',
-  }))
-  let ignored = false
-
-  for (const rule of rules) {
-    const basenamePattern = !rule.pattern.includes('/')
-    const matched = candidates.some((candidate) => {
-      if (rule.directoryOnly && !candidate.isDirectory) return false
-      // Git semantics: a `dir/**` rule covers the directory's contents but
-      // not the directory itself, while micromatch's `a/**` also matches the
-      // bare `a` — keep the tree's ignored marking consistent with the
-      // backend delete policy (#186): contents ignored, same-named regular
-      // file not.
-      if (candidate.path === path && !candidate.isDirectory && rule.pattern.endsWith('/**')) {
-        return false
-      }
-      return micromatch.isMatch(candidate.path, rule.pattern, {
-        basename: basenamePattern,
-        dot: true,
-      })
-    })
-    if (matched) ignored = !rule.negative
-  }
-
-  return ignored
 }
 
 interface FileTreePanelBaseProps {
@@ -854,7 +788,7 @@ export const FileTreePanel = memo(function FileTreePanel({
         const handle = await directoryHandle.getFileHandle('.gitignore')
         content = await (await handle.getFile()).text()
       }
-      return content === null ? [] : parseGitIgnore(content)
+      return content === null ? [] : parseTreeIgnoreRules(content)
     } catch {
       // A missing or unreadable .gitignore should not block the file tree.
       return []
@@ -862,7 +796,7 @@ export const FileTreePanel = memo(function FileTreePanel({
   }, [directoryHandle, diskRootId, diskExecutor])
 
   const isGitIgnored = useCallback(
-    (node: TreeNode) => matchesGitIgnore(node.path, node.kind, gitIgnoreRules),
+    (node: TreeNode) => isTreeEntryIgnored({ path: node.path, kind: node.kind }, gitIgnoreRules),
     [gitIgnoreRules]
   )
 
