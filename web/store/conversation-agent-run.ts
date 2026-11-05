@@ -729,75 +729,87 @@ export async function runAgentImpl(
             await import('@/agent/providers/llm-gateway-auth')
           const { getLLMGatewayBaseURL, getLLMGatewayClientId, registerLLMGatewayProvider } =
             await import('@/agent/providers/llm-gateway-provider')
-          const resolvedMissing = await resolveGatewayDispatchCredential(
-            getLLMGatewayBaseURL(),
-            getLLMGatewayClientId(),
-          )
-          if (!resolvedMissing.ok && resolvedMissing.kind === 'temporary') {
-            failRunEarly(
-              i18nText(
-                'conversation.error.gatewayCredentialTemporary',
-                'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
-              )
-            )
-            releaseClaim()
-            return
-          }
-          if (!resolvedMissing.ok) {
-            const code = resolvedMissing.kind === 'missing'
-              ? '[GATEWAY_CREDENTIALS_MISSING]'
-              : '[GATEWAY_CREDENTIALS_EXPIRED]'
-            const fallback = resolvedMissing.kind === 'missing'
-              ? i18nText('conversation.error.gatewayCredentialMissing', 'Not logged in to Nutstore AI. Please log in first.')
-              : i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
-            failRunEarly(`${code} ${fallback}`)
-            releaseClaim()
-            return
-          }
+          const baseURL = getLLMGatewayBaseURL()
+          const clientId = getLLMGatewayClientId()
           // A usable session with an unregistered provider is a per-tab
           // registry gap, not a credential problem (#180): this tab's
           // reconciler may not have run yet, and nothing else on the dispatch
           // path registers the provider. Mirror reconcileLoggedIn and register
           // it here rather than telling a logged-in user to sign in again.
-          // Only while the token this resolution validated is still the stored
-          // one: a logout or a newer login during the await replaced it, and
-          // re-registering would leave the tab pointing at a dead session
-          // (#180 review rounds 2-3). The session generation is NOT the right
-          // signal here — a resolution that refreshed an expired token
-          // advanced it itself.
+          //
+          // Resolve, then check the token this resolution validated is still
+          // the stored one — a logout or a newer login during the await
+          // replaced it, and re-registering would leave the tab pointing at a
+          // dead session (#180 review rounds 2-3). The session generation is
+          // NOT the right signal here: a resolution that refreshed an expired
+          // token advanced it itself.
+          //
+          // Re-resolve ONCE when the token is no longer current (#215): another
+          // tab's refresh replaces the stored token as soon as the old one
+          // enters its expiry buffer, which makes a live session look
+          // superseded. The second resolution continues with the newer pair on
+          // a rotation, and yields the correct missing/expired verdict on a
+          // logout or newer login — instead of offering a re-login card to a
+          // user who is still signed in.
+          //
           // A storage read failure inside the currentness check is NOT a
           // stale credential: surface it as the retryable temporary error
           // (same classification the resolver itself uses) instead of the
           // re-login guidance (#214 Sourcery round 4).
-          let tokenCurrent: boolean
-          try {
-            tokenCurrent = await isGatewayAccessTokenCurrent(resolvedMissing.accessToken)
-          } catch (error) {
-            console.warn('[conversation.store] Gateway credential re-read failed:', error)
-            failRunEarly(
-              i18nText(
-                'conversation.error.gatewayCredentialTemporary',
-                'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+          let tokenCurrent = false
+          for (let attempt = 0; attempt < 2 && !tokenCurrent; attempt++) {
+            const resolved = await resolveGatewayDispatchCredential(baseURL, clientId)
+            if (!resolved.ok) {
+              if (resolved.kind === 'temporary') {
+                failRunEarly(
+                  i18nText(
+                    'conversation.error.gatewayCredentialTemporary',
+                    'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+                  )
+                )
+              } else {
+                const code = resolved.kind === 'missing'
+                  ? '[GATEWAY_CREDENTIALS_MISSING]'
+                  : '[GATEWAY_CREDENTIALS_EXPIRED]'
+                const fallback = resolved.kind === 'missing'
+                  ? i18nText('conversation.error.gatewayCredentialMissing', 'Not logged in to Nutstore AI. Please log in first.')
+                  : i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
+                failRunEarly(`${code} ${fallback}`)
+              }
+              releaseClaim()
+              return
+            }
+            try {
+              tokenCurrent = await isGatewayAccessTokenCurrent(resolved.accessToken)
+            } catch (error) {
+              console.warn('[conversation.store] Gateway credential re-read failed:', error)
+              failRunEarly(
+                i18nText(
+                  'conversation.error.gatewayCredentialTemporary',
+                  'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+                )
               )
-            )
-            releaseClaim()
-            return
-          }
-          if (providerMissing(providerType) && tokenCurrent) {
-            registerLLMGatewayProvider()
+              releaseClaim()
+              return
+            }
           }
           if (providerMissing(providerType)) {
-            failRunEarly(
-              i18nText(
-                'conversation.toast.providerReauthRequired',
-                'The selected provider is unavailable — sign in again to use it.'
+            if (tokenCurrent) {
+              registerLLMGatewayProvider()
+            }
+            if (providerMissing(providerType)) {
+              failRunEarly(
+                i18nText(
+                  'conversation.toast.providerReauthRequired',
+                  'The selected provider is unavailable — sign in again to use it.'
+                )
               )
-            )
-            // This branch fails before the dispatch try/finally that owns the
-            // claim; leaving it set makes later sends believe a run is still
-            // starting (#180 review).
-            releaseClaim()
-            return
+              // This branch fails before the dispatch try/finally that owns the
+              // claim; leaving it set makes later sends believe a run is still
+              // starting (#180 review).
+              releaseClaim()
+              return
+            }
           }
         }
         if (providerMissing(providerType)) {
