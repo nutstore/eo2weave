@@ -106,6 +106,12 @@ export type InstallOutcome =
   | 'current'
   /** The installed copy is newer than the store — kept, never downgraded. */
   | 'installed-newer'
+  /**
+   * A member present when the install started was uninstalled mid-download
+   * and the locked re-check dropped it from the write (#185 req. 3) — never
+   * reported as a plain success or "current".
+   */
+  | 'member-deleted'
 
 // ---------- Config ----------
 
@@ -444,7 +450,13 @@ export async function planSkillUpdate(
 export async function installSkillFromUrl(
   zipUrl: string,
   onProgress?: (p: InstallProgress) => void,
-): Promise<{ count: number; manifest: SkillStoreEntry; outcome: InstallOutcome }> {
+): Promise<{
+  count: number
+  manifest: SkillStoreEntry
+  outcome: InstallOutcome
+  /** Members dropped by the locked absence re-check (#185 req. 3). */
+  droppedMembers?: string[]
+}> {
   const report = (p: Omit<InstallProgress, 'bytesLoaded' | 'bytesTotal'>) =>
     onProgress?.(p)
 
@@ -556,6 +568,9 @@ export async function installSkillFromUrl(
     let outcome: InstallOutcome
     // The first member's store version (best-effort, for the manifest echo).
     let manifestVersion: string | null = null
+    // Members dropped by the locked absence re-check (#185 req. 3) — empty
+    // unless the user uninstalled a present member mid-download.
+    let droppedMembers: string[] = []
 
     if (memberSkills.length === 0) {
       count = 0
@@ -572,18 +587,33 @@ export async function installSkillFromUrl(
           // member absent in BOTH snapshots is a plain fresh install and
           // stays.
           const members: ZipSkillEntry[] = []
+          // Members present at call time but gone under the import lock
+          // (#154 review / #185 req. 3): recorded so the outcome can report
+          // them instead of a silent partial success.
+          const droppedMembers: string[] = []
           for (const s of memberSkills) {
             if (presentAtCall.has(s.dirName)) {
-              if (!(await userSkillDirExists(s.dirName))) continue
+              if (!(await userSkillDirExists(s.dirName))) {
+                droppedMembers.push(s.dirName)
+                continue
+              }
             }
             members.push(s)
           }
           if (members.length === 0) {
+            // EVERY member was dropped: the user uninstalled the whole bundle
+            // while its ZIP was downloading. Reporting plain "current" would
+            // hide that (#185 req. 3).
             return {
               count: 0,
               storeVersion: null,
-              outcome: 'current' as InstallOutcome,
-              doneMessage: tr('skills.discover.alreadyInstalled'),
+              outcome: droppedMembers.length > 0
+                ? ('member-deleted' as InstallOutcome)
+                : ('current' as InstallOutcome),
+              doneMessage: droppedMembers.length > 0
+                ? tr('skills.discover.memberRemovedDuringInstall')
+                : tr('skills.discover.alreadyInstalled'),
+              droppedMembers,
             }
           }
 
@@ -693,6 +723,7 @@ export async function installSkillFromUrl(
       outcome = result.outcome
       doneMessage = result.doneMessage
       manifestVersion = result.storeVersion
+      droppedMembers = result.droppedMembers ?? []
     }
 
     // Find manifest entry (best effort — caller may not have it)
@@ -708,7 +739,9 @@ export async function installSkillFromUrl(
     }
 
     report({ phase: 'done', message: doneMessage })
-    return { count, manifest, outcome }
+    return droppedMembers.length > 0
+      ? { count, manifest, outcome, droppedMembers }
+      : { count, manifest, outcome }
   } catch (e) {
     clearTimeout(timeoutId)
     if (e instanceof DOMException && e.name === 'AbortError') {

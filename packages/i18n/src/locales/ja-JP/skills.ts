@@ -87,6 +87,7 @@ export const discover = {
     installedFiles: "{count} 個のファイルをインストールしました",
     alreadyInstalledVersion: "インストール済み（v{version}）",
     skippedUpdate: "更新をスキップしました：ローカル版 v{installed} はストア版 v{store} より新しいためです",
+    memberRemovedDuringInstall: "インストールは完了しましたが、インストール中に削除されたスキルは再作成されていません",
     updatedVersion: "v{from} → v{to} に更新しました（{count} 個のファイル）",
     update: "更新",
     updating: "更新中",

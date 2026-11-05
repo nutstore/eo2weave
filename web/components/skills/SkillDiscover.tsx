@@ -176,6 +176,11 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
           result.count > 0
             ? t('skills.discover.installedFiles', { count: result.count })
             : t('skills.discover.progressInstallDone')
+      } else if (result.outcome === 'member-deleted') {
+        // A member present at install start was uninstalled mid-download and
+        // dropped by the locked re-check (#185 req. 3) — never report this
+        // as a plain success.
+        doneMessage = t('skills.discover.memberRemovedDuringInstall')
       } else {
         // 'current' and 'installed-newer': the installed copy was kept as is.
         doneMessage = t('skills.discover.alreadyInstalled')
