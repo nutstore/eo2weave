@@ -269,6 +269,15 @@ interface SettingsState {
      * selection").
      */
     current: boolean
+    /**
+     * Whether the RUN is current, independent of the entries (Sourcery:
+     * "Empty stale snapshots erase providers"). A superseded run that found
+     * ZERO providers maps to `[]` whose per-entry `current` flags carry no
+     * information (`[].every(...)` is true) — the UI snapshot gate must read
+     * THIS field, or an empty superseded result replaces a non-empty
+     * accepted snapshot and blanks the switcher.
+     */
+    runCurrent: boolean
   }>>
 
   /**
@@ -797,8 +806,28 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
     try {
       const gwMod = await import('@/agent/providers/llm-gateway-provider')
       const gwKey = await loadApiKey(gwMod.getLLMGatewayApiKeyProviderKey())
+      // A registered gateway WITHOUT its saved access-token shadow yet
+      // (startup: registration lands before AppBootstrap persists the
+      // restored token) must still appear in discovery as a LOADING entry
+      // (Sourcery: "Gateway selection is lost during restore"). Omitting it
+      // made ensureValidModelSelection see no pending gateway and switch the
+      // persisted gateway selection to another available provider before
+      // token restoration finished. `catalogStatus: 'loading'` defers
+      // reconciliation (resolveDefaultModelSelection) and keeps the
+      // selected gateway out of the stale-pin sweep.
+      const gwMeta = getDynamicMeta(llmGatewayProviderKey)
+      const gwRegistered = gwMeta !== undefined
+      if (!gwKey && gwRegistered) {
+        results.push({
+          providerType: llmGatewayProviderKey,
+          displayName: localizedProviderDisplayName(llmGatewayProviderKey, gwMeta?.displayName || 'Nutstore AI'),
+          models: [],
+          providerKey: llmGatewayProviderKey,
+          catalogStatus: 'loading',
+          authoritativeIds: [],
+        })
+      }
       if (gwKey) {
-        const gwMeta = getDynamicMeta(llmGatewayProviderKey)
         const pinned = state.pinnedModelsByProvider[llmGatewayProviderKey]
         const allModels = getModelsForProvider(llmGatewayProviderKey)
         const models = pinned && pinned.length > 0
@@ -850,11 +879,16 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
   // and reconciliation, and return the (still valid, read-only) results
   // to the caller. The newer run re-derives everything from fresher
   // state (Sourcery: "Older refresh overrides newer catalog").
+  // Single-flight note: with `getAvailableProviders` coalescing concurrent
+  // callers into one run and `invalidateProviderDiscovery` clearing the slot
+  // on mutations, no second run can start while this one is awaiting, so the
+  // `superseded()` gates below are CURRENTLY unreachable. They stay as the
+  // correctness gate for any future caller that starts non-coalesced runs.
   // runIsCurrent feeds the per-result `current` flag the callers read;
   // latch it at the same gate so the UI-side reconciliation skip
   // (WorkspaceLayout) agrees with the store-side skip below.
   runIsCurrent = !superseded()
-  if (!runIsCurrent) return results.map((r) => ({ ...r, current: false }))
+  if (!runIsCurrent) return results.map((r) => ({ ...r, current: false, runCurrent: false }))
 
   // Seen-bookkeeping flush: only a CURRENT run may confirm pins. Every
   // mark was collected against this run's snapshot; had a newer run
@@ -895,7 +929,7 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
   // so any future edit that adds awaits to the sweep cannot reopen the
   // stale-run window.
   runIsCurrent = !superseded()
-  if (!runIsCurrent) return results.map((r) => ({ ...r, current: false }))
+  if (!runIsCurrent) return results.map((r) => ({ ...r, current: false, runCurrent: false }))
 
   // Reconcile only after every provider source has been collected. This
   // prevents an early provider from winning while a later provider is
@@ -915,7 +949,7 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
     preserveExpiredCredential: get().modelCredentialStatus === 'expired',
   })
 
-  return results.map((r) => ({ ...r, current: runIsCurrent }))
+  return results.map((r) => ({ ...r, current: runIsCurrent, runCurrent: runIsCurrent }))
 }
 
 /**
@@ -931,6 +965,16 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
  * cleared in `finally` so a later call always gets a fresh generation.
  */
 let providerDiscoveryInFlight: Promise<Awaited<ReturnType<SettingsState['getAvailableProviders']>>> | null = null
+
+/**
+ * Break the single-flight slot so the NEXT `getAvailableProviders` call
+ * starts a fresh discovery instead of joining a run that captured
+ * pre-mutation state. Exported for `triggerProviderRefresh`, which must
+ * invalidate on every provider/registry/pin mutation it announces.
+ */
+export function invalidateProviderDiscovery(): void {
+  providerDiscoveryInFlight = null
+}
 
 export const useSettingsStore = create<SettingsState, [['zustand/persist', unknown]]>(
   persist<SettingsState, [], [], PersistedSettingsState>(
@@ -968,6 +1012,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       _providerRefreshVersion: 0,
 
       triggerProviderRefresh: () => {
+        // A refresh means state just mutated: an in-flight discovery run
+        // captured PRE-mutation state, so callers must not JOIN it and
+        // receive stale results flagged current:true (Sourcery: "Provider
+        // refreshes keep stale results"). Break the slot; the refresh-driven
+        // reload starts a FRESH discovery from the mutated state. The
+        // in-flight run still settles normally (its finally-clear is a
+        // no-op on the replaced slot) — no cancellation machinery needed.
+        invalidateProviderDiscovery()
         set((s) => ({ _providerRefreshVersion: s._providerRefreshVersion + 1 }))
       },
 

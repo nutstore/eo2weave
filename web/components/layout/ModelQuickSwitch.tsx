@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Search } from 'lucide-react'
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Loader2, Search } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
 import { isPotentiallyDynamicProviderType, getProviderConfig, getProviderCatalogStatus, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
 import type { LLMProviderType } from '@/agent/providers/types'
@@ -31,25 +31,36 @@ interface FlatModel {
 }
 
 function isUnverifiedGateway(provider: AvailableProvider): boolean {
+  // 'loading' is excluded (Sourcery: "Loading gateway appears unavailable"):
+  // a gateway whose catalog is still restoring is NOT an outage — the amber
+  // unavailable banner must not fire before the /v1/models fetch finished.
+  // Only positively-negative outcomes ('empty' / 'failed') banner + retry.
   return provider.providerType === 'llm-gateway' &&
-    (provider.catalogStatus === 'loading' || provider.catalogStatus === 'empty' || provider.catalogStatus === 'failed')
+    (provider.catalogStatus === 'empty' || provider.catalogStatus === 'failed')
 }
 
 /**
  * Issue #188 fix 1 (soft-land superseded snapshots): decide whether a
  * finished run's snapshot may replace the rendered list. A superseded run
- * (current:false everywhere) is still a valid read-only catalog — dropping
- * it blanked the popover until the newest run landed and was the visible
- * "skeleton refresh". Only apply it when we have nothing yet; otherwise
- * keep the last accepted snapshot (stale-while-revalidate) until a CURRENT
- * run replaces it.
+ * (the run started while a newer one was already in flight) is still a
+ * valid read-only catalog — dropping it blanked the popover until the
+ * newest run landed and was the visible "skeleton refresh". Only apply it
+ * when we have nothing yet; otherwise keep the last accepted snapshot
+ * (stale-while-revalidate) until a CURRENT run replaces it.
+ *
+ * The run's currency comes from the top-level `runCurrent` flag, NOT the
+ * per-entry `current` mapping (Sourcery: "Empty stale snapshots erase
+ * providers"): a superseded run that found ZERO providers maps to `[]`
+ * with no current:false marker, and `[].every(...)` is true — reading the
+ * entries let an empty superseded result erase a non-empty accepted
+ * snapshot and blank the switcher.
  */
 export function shouldApplyProviderSnapshot(
-  result: Array<{ current: boolean }>,
+  result: { length: number; runCurrent?: boolean },
   hasAcceptedSnapshot: boolean,
 ): boolean {
   if (!hasAcceptedSnapshot) return true
-  return result.every((p) => p.current)
+  return result.runCurrent !== false
 }
 
 interface ModelQuickSwitchProps {
@@ -128,6 +139,12 @@ export function ModelQuickSwitch({
   // the live warning until the refresh resolves.
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
 
+  // Stale-while-revalidate (#188): a refresh that started while an accepted
+  // snapshot is already rendered must NOT swap the list for the skeleton —
+  // the last accepted list stays visible (dimmed) until the fresh run
+  // lands. Only the FIRST load (nothing accepted yet) shows the skeleton.
+  const refreshingExistingList = loading && acceptedSnapshotRef.current !== null
+
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -136,8 +153,8 @@ export function ModelQuickSwitch({
       try {
         const result = await getAvailableProviders()
         // A superseded run (a newer getAvailableProviders() started while
-        // this one was awaiting) reports current:false on every entry —
-        // applying it over a newer run's data would let an older overlapping
+        // this one was awaiting) reports runCurrent:false — applying it
+        // over a newer run's data would let an older overlapping
         // run that resolves late overwrite the newer run's provider data
         // (Sourcery: "Superseded model lists remain selectable"). But
         // DROPPING it outright blanked the popover until the newest run
@@ -561,7 +578,7 @@ export function ModelQuickSwitch({
           </div>
         )}
 
-        {!loading && gatewayCatalogUnavailable && (
+        {!loading && !refreshingExistingList && gatewayCatalogUnavailable && (
           <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-2 text-xs text-tertiary">
             <span>{t('topbar.modelSwitcher.catalogUnavailable')}</span>
             <button
@@ -575,13 +592,23 @@ export function ModelQuickSwitch({
           </div>
         )}
 
-        {loading ? (
+        {/* Refreshing indicator (stale-while-revalidate #188): the last accepted list stays
+            visible below, dimmed, with a small spinner in the header while a reload is in
+            flight — instead of hiding it behind the first-load skeleton. */}
+        {refreshingExistingList && (
+          <div className="flex items-center gap-2 border-b border-border/70 px-3 py-1.5 text-xs text-tertiary">
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
+            <span>{t('topbar.modelSwitcher.refreshing')}</span>
+          </div>
+        )}
+
+        {!refreshingExistingList && loading ? (
                       <div className="space-y-1.5 py-1.5">
             <div className="h-9 animate-pulse rounded-lg border border-border/60 bg-muted/40" />
             <div className="h-7 animate-pulse rounded-md bg-muted/30" />
             <div className="h-7 animate-pulse rounded-md bg-muted/30" />
           </div>
-        ) : enrichedProviders.length === 0 ? (
+        ) : !refreshingExistingList && enrichedProviders.length === 0 ? (
                       <div className="flex flex-col items-center gap-2 px-2 py-4 text-center">
             <span className="text-xs text-tertiary">{loadError ? t('topbar.modelSwitcher.temporarilyUnavailable') : t('topbar.modelSwitcher.noModels')}</span>
           </div>

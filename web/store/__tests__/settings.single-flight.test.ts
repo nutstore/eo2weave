@@ -151,6 +151,79 @@ describe('getAvailableProviders single-flight coalescing (#188)', () => {
     // rejection. It succeeds because loadApiKey no longer throws.
     mocks.loadApiKey.mockImplementation(async (id: string) => (id === P ? 'key' : null))
     const recovery = await useSettingsStore.getState().getAvailableProviders()
+    expect(recovery.length).toBeGreaterThan(0)
     expect(recovery.every((p) => p.current)).toBe(true)
+  })
+
+  it('reports runCurrent on every result and lets triggerProviderRefresh break the in-flight slot', async () => {
+    mocks.loadApiKey.mockImplementation(async (id: string) => (id === P ? 'key' : null))
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm1', name: 'M1' }])
+
+    // Hold the run mid-flight so a refresh can arrive while it is in flight —
+    // the exact mutation-during-discovery overlap.
+    let releaseBatch: (() => void) | null = null
+    const batchGate = new Promise<void>((resolve) => { releaseBatch = resolve })
+    let batchCalls = 0
+    mocks.loadApiKey.mockImplementation(async () => {
+      batchCalls += 1
+      if (batchCalls === 1) await batchGate
+      return 'key'
+    })
+
+    const inFlight = useSettingsStore.getState().getAvailableProviders()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // A mutation announces a refresh while the run is in flight: the run
+    // captured PRE-mutation state, so the slot must be broken and the
+    // refresh-driven reload must start a FRESH discovery (not JOIN the stale
+    // one and receive it flagged current).
+    useSettingsStore.getState().triggerProviderRefresh()
+    const refreshed = useSettingsStore.getState().getAvailableProviders()
+    releaseBatch!()
+    const stale = await inFlight
+    const fresh = await refreshed
+
+    // The refresh caller did NOT receive the pre-mutation run's promise.
+    expect(fresh).not.toBe(stale)
+    // The old run still settles normally (read-only snapshot, no crash).
+    expect(stale.length).toBeGreaterThan(0)
+    // The fresh run is current and reports the run-level currency flag.
+    expect(fresh.length).toBeGreaterThan(0)
+    expect(fresh.every((r) => r.runCurrent === true)).toBe(true)
+    expect(fresh.find((r) => r.providerType === P)?.models.map((m) => m.id)).toContain('m1')
+  })
+
+  it('flags a superseded run via runCurrent even when it found ZERO providers', async () => {
+    // Regression for Sourcery "Empty stale snapshots erase providers": an
+    // empty superseded result carries no per-entry current:false marker —
+    // the run-level flag must still say superseded so the UI gate
+    // (shouldApplyProviderSnapshot) keeps the accepted snapshot.
+    mocks.loadApiKey.mockImplementation(async () => null)
+    mocks.getModelsForProvider.mockReturnValue([])
+
+    let releaseFirst: (() => void) | null = null
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let batchCalls = 0
+    mocks.loadApiKey.mockImplementation(async () => {
+      batchCalls += 1
+      if (batchCalls === 1) await firstGate
+      return null
+    })
+
+    // Run 1 held mid-flight; run 2 starts (no keys → empty results) and
+    // completes while run 1 is still awaiting, making run 1 superseded.
+    const p1 = useSettingsStore.getState().getAvailableProviders()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const p2 = useSettingsStore.getState().getAvailableProviders()
+    releaseFirst!()
+    const stale = await p1
+    const fresh = await p2
+
+    expect(stale.length).toBe(0)
+    expect(fresh.length).toBe(0)
+    // The empty result is still flagged as coming from a SUPERSEDED run.
+    expect(stale.every((r) => r.current === false)).toBe(true)
+    expect(stale.every((r) => r.runCurrent === false)).toBe(true)
+    expect(fresh.every((r) => r.runCurrent === true)).toBe(true)
   })
 })
