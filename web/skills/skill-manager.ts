@@ -437,9 +437,12 @@ export class SkillManager {
       // Keep slash commands in sync
       this.syncSlashCommands()
     } catch (error) {
-      console.warn('[SkillManager] User skills scan failed:', error)
-      this.cachedUserSkills = []
-      this.userResourcesBySkillId = new Map()
+      // Keep the previously loaded skills and resources (#185): a transient
+      // OPFS failure must not make already-loaded skills disappear from the
+      // UI and agent context — the stale cache is the best available state
+      // until the next successful refresh. Do NOT syncSlashCommands here:
+      // rebuilding from a stale cache adds no information.
+      console.warn('[SkillManager] User skills scan failed (keeping previous cache):', error)
     }
   }
 
