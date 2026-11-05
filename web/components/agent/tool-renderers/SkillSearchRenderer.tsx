@@ -152,11 +152,16 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
   // Omission / declined-update notice. Kept OUT of `progress` so the
   // `finally` cleanup below cannot clear it (#197).
   const [notice, setNotice] = useState<string | null>(null)
+  // The archive's own member for this skill was dropped by the locked absence
+  // re-check (#197) — the installed flag from the search result is then stale
+  // and the card must offer Install, not Update.
+  const [targetDropped, setTargetDropped] = useState(false)
 
   const handleInstall = useCallback(async () => {
     if (installState === 'installing') return
     setInstallState('installing')
     setNotice(null)
+    setTargetDropped(false)
     setProgress({ phase: 'fetching', message: t('skills.discover.progressPreparing') })
     try {
       // The version-aware install flow decides install vs. update vs. keep
@@ -173,7 +178,9 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
       const dropped = result.droppedMembers ?? []
       // A dropped target is NOT on disk: never show the installed badge for
       // it, and let the button retry (#197).
-      setInstallState(dropped.includes(skill.dirName) ? 'idle' : 'installed')
+      const isDropped = dropped.includes(skill.dirName)
+      setTargetDropped(isDropped)
+      setInstallState(isDropped ? 'idle' : 'installed')
       const messages: string[] = []
       if (dropped.length > 0) {
         messages.push(t('skills.discover.memberRemovedDuringInstall'))
@@ -203,7 +210,7 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
       // skill.installed FIRST keeps that label visible; a result that was
       // installed during this session (no longer updateable-marked) still
       // reports "Installed".
-      : skill.installed && installState !== 'error'
+      : skill.installed && !targetDropped && installState !== 'error'
       ? t('skills.discover.update') || 'Update'
       : installState === 'installed'
       ? t('skills.discover.installedBadge') || 'Installed'
