@@ -149,5 +149,8 @@ if (typeof navigator !== 'undefined' && !(navigator as any).locks) {
   Object.defineProperty(navigator, 'locks', {
     value: { request },
     configurable: true,
+    // Tests swap `navigator.locks` around a scenario and restore it in
+    // afterEach; a non-writable definition would make that restore throw.
+    writable: true,
   })
 }
