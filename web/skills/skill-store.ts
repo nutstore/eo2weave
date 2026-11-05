@@ -874,7 +874,10 @@ export async function installSkillFromUrl(
     if (consentCandidates.length > 0) {
       const declined = consentCandidates
         .map((candidate) => candidate.dirName)
-        .filter((dirName) => !approvedSiblings.has(dirName))
+        // A member the locked re-check dropped is GONE, not kept: reporting it
+        // as "skipped" tells the user their installed copy survived when the
+        // other actor's uninstall removed it (#183 review).
+        .filter((dirName) => !approvedSiblings.has(dirName) && !droppedMembers.includes(dirName))
       bundleUpdates = { updated: [...updatedSiblings], skipped: declined }
       if (declined.length > 0 && !droppedMembers.length) {
         doneMessage = `${doneMessage} ${tr('skills.discover.bundleUpdatesSkipped', {

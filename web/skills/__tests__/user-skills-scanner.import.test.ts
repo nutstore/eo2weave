@@ -1052,6 +1052,37 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
     }
   })
 
+  it('does not report a sibling another actor uninstalled mid-install as kept (#183)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "2.0.0"\n---\n\n# A2'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "2.0.0"\n---\n\n# B2'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled('bundle-a', '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A1')
+      writeInstalled('bundle-b', '---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1')
+
+      const result = await installSkillFromUrl('https://store.example/bundle.zip', undefined, {
+        focusDirName: 'bundle-a',
+        confirmBundleUpdates: async (candidates) => {
+          // Another tab uninstalls the sibling while the prompt is open.
+          expect(candidates.map((candidate) => candidate.dirName)).toEqual(['bundle-b'])
+          dirOf(userRoot, '.skills/user', false)!.dirs.delete('bundle-b')
+          return [] // declined
+        },
+      })
+
+      expect(result.outcome).toBe('updated')
+      // Gone is not kept: the summary must not claim an installed copy survived.
+      expect(result.bundleUpdates).toEqual({ updated: [], skipped: [] })
+      expect(result.droppedMembers).toContain('bundle-b')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('updates only the bundle siblings the user approved (#183)', async () => {
     const realFetch = globalThis.fetch
     const archive = zipSync({
