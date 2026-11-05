@@ -102,7 +102,13 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
           const registries = await getRegistries()
           const installed = await listInstalledPackageIds()
           const activations: Record<string, 'enabled' | 'disabled'> = {}
-          for (const id of installed) activations[id] = await readInstalledPackageActivation(id)
+          for (const id of installed) {
+            // One package's unreadable config must not reject the whole list
+            // (same containment as `listInstalledPackageIds`): the row reads
+            // as inactive — the default an absent config already means — and
+            // the row's toggle can rewrite the file.
+            activations[id] = await readInstalledPackageActivation(id).catch(() => 'disabled' as const)
+          }
           return {
             ok: true,
             registries,
