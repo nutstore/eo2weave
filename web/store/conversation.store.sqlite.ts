@@ -2630,7 +2630,11 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const messagesToCopy = sourceMessages.slice(0, branchIndex + 1)
 
       // Create a new conversation (new ID)
-      const branched = createConversation()
+      // A branch keeps its source's kind: branching a standalone chat must not
+      // mint a project conversation (it would surface in the projects sidebar
+      // with no authorized folder, while the /chats route that spawned it
+      // expects a folder-less chat).
+      const branched = createConversation(undefined, { kind: sourceConv.kind })
       const sourceTitle = sourceConv.title || 'Chat'
       branched.title = `分支: ${sourceTitle}`
       branched.titleMode = 'auto'

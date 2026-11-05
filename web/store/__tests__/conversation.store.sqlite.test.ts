@@ -83,6 +83,7 @@ vi.mock('@/sqlite', () => ({
   getMessageRepository: vi.fn(() => ({
     findByConversation: vi.fn(() => Promise.resolve([])),
     insert: messageRepoInsertMock,
+    insertBatch: vi.fn(() => Promise.resolve()),
     replaceAll: messageRepoReplaceAllMock,
     migrateFromJsonBlob: vi.fn(() => Promise.resolve({ conversations: 0, messages: 0 })),
     recoverFromAppSessions: vi.fn(() =>
@@ -1853,6 +1854,34 @@ describe('conversation.store.sqlite tool-call routing', () => {
         .runAgent(projectConv.id, 'openai' as any, 'mock-model', 1024, null)
       const projectConfig = (globalThis as any).__lastAgentLoopConfig
       expect(projectConfig?.toolContext?.directMode).toBeFalsy()
+    })
+
+    it('branchConversation keeps the source kind (a standalone chat branches into a standalone chat)', async () => {
+      // Finding (Sourcery round 8): branching created an unscoped conversation,
+      // so branching inside /chats/:chatId produced a project-kind row that the
+      // chats route then rejected — the view stayed on the old chat id and the
+      // loading gate never cleared.
+      const store = useConversationStore.getState()
+      const source = store.createNew('direct-branch-src', { kind: 'direct' })
+      const userMsg = createUserMessage('branch from here')
+      useConversationStore.getState().addMessage(source.id, userMsg)
+
+      const branched = await useConversationStore.getState().branchConversation(source.id, userMsg.id)
+
+      expect(branched.kind).toBe('direct')
+      expect(useConversationStore.getState().conversations.find((c) => c.id === branched.id)?.kind).toBe('direct')
+      await vi.waitFor(() => {
+        expect(conversationRepoSaveMetaMock).toHaveBeenCalledWith(
+          expect.objectContaining({ id: branched.id, kind: 'direct' })
+        )
+      })
+
+      // A project conversation still branches into an unscoped (project) one.
+      const projectSource = store.createNew('project-branch-src')
+      const projectMsg = createUserMessage('project branch')
+      useConversationStore.getState().addMessage(projectSource.id, projectMsg)
+      const projectBranch = await useConversationStore.getState().branchConversation(projectSource.id, projectMsg.id)
+      expect(projectBranch.kind).toBeUndefined()
     })
   })
 
