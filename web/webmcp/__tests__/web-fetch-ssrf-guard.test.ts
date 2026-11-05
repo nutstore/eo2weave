@@ -267,6 +267,57 @@ describe('web_fetch redirect discipline (#157, same pattern as #148)', () => {
     expect(new Headers(seen307[1]!.headers).get('content-type')).toBe('text/plain')
   })
 
+  it('returns non-redirect 3xx responses (304, 300) instead of refusing them', async () => {
+    const notModified = {
+      ok: false,
+      status: 304,
+      type: 'basic' as const,
+      url: '',
+      headers: new Headers({ etag: '"v1"' }),
+      text: async () => '',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    }
+    await withFetch(
+      () => notModified,
+      async (spy) => {
+        const response = await fetchPublicWebUrl('https://example.com/cache')
+        expect(response.status).toBe(304)
+        expect(response.headers.get('etag')).toBe('"v1"')
+        // 304 carries no Location and is not a hop: one request, no refusal.
+        expect(spy).toHaveBeenCalledTimes(1)
+      },
+    )
+
+    const multipleChoices = { ...notModified, status: 300 }
+    await withFetch(
+      () => multipleChoices,
+      async () => {
+        await expect(fetchPublicWebUrl('https://example.com/choices')).resolves.toMatchObject({ status: 300 })
+      },
+    )
+  })
+
+  it('returns a redirect status that carries no Location instead of refusing it', async () => {
+    // No Location means no next hop exists: the server's response is the
+    // answer, and a policy refusal would misreport it.
+    await withFetch(
+      () => ({
+        ok: false,
+        status: 302,
+        type: 'basic' as const,
+        url: '',
+        headers: new Headers(),
+        text: async () => '',
+        arrayBuffer: async () => new ArrayBuffer(0),
+      }),
+      async (spy) => {
+        const response = await fetchPublicWebUrl('https://example.com/start')
+        expect(response.status).toBe(302)
+        expect(spy).toHaveBeenCalledTimes(1)
+      },
+    )
+  })
+
   it('passes a successful public response through untouched', async () => {
     await withFetch(
       () => ok('hello world'),

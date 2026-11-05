@@ -335,8 +335,10 @@ export interface GuardedFetchOptions {
 
 /**
  * Gate 2: fetch `rawUrl` WITHOUT letting the browser follow redirects, so
- * every 3xx target is validated before the next privileged request. Capped at
- * 5 hops by default.
+ * every redirect target (301/302/303/307/308) is validated before the next
+ * privileged request. Capped at 5 hops by default. Non-redirect 3xx responses
+ * (304 Not Modified, 300 Multiple Choices, …) are ordinary responses and are
+ * handed back to the caller.
  *
  * In Chrome a 3xx met with `redirect: 'manual'` arrives as an opaque-redirect
  * filtered response (status 0, empty header list), so the hop loop is
@@ -362,25 +364,35 @@ export async function fetchPublicUrl(rawUrl: string, opts: GuardedFetchOptions =
       redirect: 'manual',
       signal: opts.abortSignal ?? init.signal,
     })
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      if (!location) {
-        throw new PublicUrlRefusedError(`${label} redirect (${response.status}) missing Location header`)
-      }
-      if (hops === maxRedirects) {
-        throw new PublicUrlRefusedError(`${label} exceeded ${maxRedirects} redirects`)
-      }
-      // Resolve relative Location values against the current URL, then the
-      // loop head re-validates the absolute target before it is fetched.
-      const nextUrl = new URL(location, validated)
-      init = nextHopInit(init, response.status, validated, nextUrl)
-      currentUrl = nextUrl.href
-      continue
-    }
+    // Chrome filters a manual redirect into an opaque-redirect response:
+    // status 0, no header list, no readable Location. There is nothing to
+    // validate, so the hop is refused rather than followed blind. Checked
+    // before the status branch because the filtered response reports status 0.
     if (response.type === 'opaqueredirect') {
       throw new PublicUrlRefusedError(opts.opaqueRedirectError ?? `${label} redirected; redirects are not followed`)
     }
-    return response
+    // Only Fetch's redirect statuses continue the loop. 304 Not Modified, 300
+    // Multiple Choices and the rest of the 3xx class are ordinary responses —
+    // the caller gets the server's answer instead of a bogus policy refusal.
+    if (!REDIRECT_STATUSES.has(response.status)) return response
+    const location = response.headers.get('location')
+    // A redirect status without Location has no next hop to validate and no
+    // next request to make, so it is returned as-is (Fetch: "if locationURL is
+    // failure, return response").
+    if (!location) return response
+    if (hops === maxRedirects) {
+      throw new PublicUrlRefusedError(`${label} exceeded ${maxRedirects} redirects`)
+    }
+    // Resolve relative Location values against the current URL, then the loop
+    // head re-validates the absolute target before it is fetched.
+    let nextUrl: URL
+    try {
+      nextUrl = new URL(location, validated)
+    } catch {
+      throw new PublicUrlRefusedError(`${label} redirect (${response.status}) has an invalid Location header`)
+    }
+    init = nextHopInit(init, response.status, validated, nextUrl)
+    currentUrl = nextUrl.href
   }
   // Unreachable: the loop either returns or throws on hop maxRedirects.
   throw new PublicUrlRefusedError(`${label} redirect loop`)
