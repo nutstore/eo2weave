@@ -28,4 +28,26 @@ describe('gitignore policy', () => {
     expect(isGitIgnored('packages/app/cache/index.json', rules)).toBe(true)
     expect(isGitIgnored('packages/other/cache/index.json', rules)).toBe(false)
   })
+
+  it('does not match a same-named regular file under a directory-only rule (#186)', () => {
+    const rules = parseGitIgnore('build/\n')
+
+    // A REGULAR file named `build` must not be classified as ignored by the
+    // directory-only `build/` rule — otherwise deleteFile bypasses pending
+    // review and silently removes it from disk.
+    expect(isGitIgnored('build', rules, 'file')).toBe(false)
+    // The directory itself and anything beneath it stay ignored.
+    expect(isGitIgnored('build', rules, 'directory')).toBe(true)
+    expect(isGitIgnored('build/generated/app.js', rules, 'file')).toBe(true)
+    // Same for glob-qualified directory-only patterns.
+    expect(isGitIgnored('build', parseGitIgnore('**/build/\n'), 'file')).toBe(false)
+    expect(isGitIgnored('packages/x/build', parseGitIgnore('**/build/\n'), 'file')).toBe(false)
+    expect(isGitIgnored('packages/x/build', parseGitIgnore('**/build/\n'), 'directory')).toBe(true)
+    // Git: `dir/**` covers a directory's contents but not the directory
+    // itself — a same-named REGULAR file must not match it either.
+    expect(isGitIgnored('dist', parseGitIgnore('dist/**\n'), 'file')).toBe(false)
+    expect(isGitIgnored('dist/a.js', parseGitIgnore('dist/**\n'), 'file')).toBe(true)
+    expect(isGitIgnored('a/dist', parseGitIgnore('**/dist/**\n'), 'file')).toBe(false)
+    expect(isGitIgnored('a/dist/a.js', parseGitIgnore('**/dist/**\n'), 'file')).toBe(true)
+  })
 })

@@ -84,7 +84,7 @@ export interface WorkspaceFileOpsInternals {
   readFromNativeFS(path: string, directoryHandle: FileSystemDirectoryHandle): Promise<{ content: FileContent; metadata: FileMetadata }>
   writeFileToOPFS(targetDir: FileSystemDirectoryHandle, path: string, content: ArrayBuffer): Promise<void>
   getFileMetadata(directoryHandle: FileSystemDirectoryHandle, path: string): Promise<{ mtime: number; size: number; contentType: 'text' | 'binary' }>
-  isGitIgnoredPath(nativePath: string, directoryHandle: FileSystemDirectoryHandle | null, rootId: string | null): Promise<boolean>
+  isGitIgnoredPath(nativePath: string, directoryHandle: FileSystemDirectoryHandle | null, rootId: string | null, kind?: 'file' | 'directory'): Promise<boolean>
   deleteIgnoredPathImmediately(workspacePath: string, nativePath: string, directoryHandle: FileSystemDirectoryHandle | null, recursive: boolean, resolvedRootId?: string | null): Promise<void>
   collectGitIgnoreRules(nativePath: string, directoryHandle: FileSystemDirectoryHandle): Promise<GitIgnoreRule[]>
   validatePath(path: string): string
@@ -694,7 +694,7 @@ export async function deleteFileImpl(
       .getAll()
       .find((change) => rt.normalizeWorkspacePath(change.path) === normalizedPath)
 
-    if (await rt.isGitIgnoredPath(nativePath, nativeHandle, rootId)) {
+    if (await rt.isGitIgnoredPath(nativePath, nativeHandle, rootId, 'file')) {
       await rt.deleteIgnoredPathImmediately(normalizedPath, nativePath, nativeHandle, false, rootId)
       return
     }
@@ -933,11 +933,12 @@ export async function isGitIgnoredPathImpl(
   rt: WorkspaceFileOpsInternals,
   nativePath: string,
   directoryHandle: FileSystemDirectoryHandle | null,
-  rootId: string | null
+  rootId: string | null,
+  kind: 'file' | 'directory' = 'directory'
 ): Promise<boolean> {
     if (!nativePath) return false
     if (directoryHandle) {
-      return isGitIgnored(nativePath, await rt.collectGitIgnoreRules(nativePath, directoryHandle))
+      return isGitIgnored(nativePath, await rt.collectGitIgnoreRules(nativePath, directoryHandle), kind)
     }
     if (!rootId) return false
 
@@ -957,7 +958,7 @@ export async function isGitIgnoredPathImpl(
       const segment = directories[i]
       if (segment) baseDir = baseDir ? `${baseDir}/${segment}` : segment
     }
-    return isGitIgnored(nativePath, rules)
+    return isGitIgnored(nativePath, rules, kind)
   }
 
   /**

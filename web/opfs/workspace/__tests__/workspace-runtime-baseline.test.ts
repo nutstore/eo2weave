@@ -194,6 +194,40 @@ describe('WorkspaceRuntime baseline mtime', () => {
     expect(runtime.pendingManager.markForDeletion).not.toHaveBeenCalled()
   })
 
+  it('deleteFile checks gitignore with kind "file" so a directory-only rule cannot bypass review (#186)', async () => {
+    const runtime = new WorkspaceRuntime('w1', {} as FileSystemDirectoryHandle, '/tmp') as any
+    runtime.initialized = true
+    runtime.metadata = { lastAccessedAt: 0 }
+    runtime.hasAnyNativeDirectoryHandle = vi.fn(async () => true)
+    runtime.getNativeDirectoryHandleForPath = vi.fn(async () => null)
+    runtime.resolvePath = vi.fn(async () => ({ relativePath: 'build', rootId: 'root-1' }))
+
+    const seenKinds: Array<'file' | 'directory' | undefined> = []
+    runtime.isGitIgnoredPath = vi.fn(async (_p: string, _h: unknown, _r: unknown, kind?: 'file' | 'directory') => {
+      seenKinds.push(kind)
+      return false
+    })
+    runtime.deleteIgnoredPathImmediately = vi.fn(async () => {})
+    runtime.readFromFilesDir = vi.fn(async () => null)
+    runtime.hasFileInIndex = vi.fn(() => false)
+    runtime.captureModifyBaseline = vi.fn(async () => {})
+    runtime.deleteFromFilesDir = vi.fn(async () => {})
+    runtime.saveMetadata = vi.fn(async () => {})
+    runtime.pendingManager = {
+      getAll: vi.fn(() => []),
+      markForDeletion: vi.fn(async () => {}),
+    }
+
+    // A regular file named `build` under a `build/` directory-only rule:
+    // the checker must be asked about a FILE, and since it answers "not
+    // ignored", the delete must go through the pending-review path.
+    await runtime.deleteFile('rootName/build')
+
+    expect(seenKinds).toEqual(['file'])
+    expect(runtime.deleteIgnoredPathImmediately).not.toHaveBeenCalled()
+    expect(runtime.pendingManager.markForDeletion).toHaveBeenCalledWith('rootName/build', 0)
+  })
+
   it('does not capture baseline when deleting a file created in current pending cycle', async () => {
     const runtime = new WorkspaceRuntime('w1', {} as FileSystemDirectoryHandle, '/tmp') as any
     runtime.initialized = true
