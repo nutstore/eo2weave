@@ -659,6 +659,8 @@ export function WorkspaceLayout({
           setShowShortcutsHelp(false)
         } else if (showWorkspaceSettings) {
           setShowWorkspaceSettings(false)
+          // Same reset as the dialog's onOpenChange close path.
+          setSettingsInitialTab('workspace-layout')
         } else if (quickActionsOpen) {
           setQuickActionsOpen(false)
         } else if (toolsPanelOpen) {
@@ -1150,7 +1152,13 @@ export function WorkspaceLayout({
           Workspace settings (layout/editor/shortcuts/data) are now tabs inside. */}
       <SettingsDialog
         open={showWorkspaceSettings}
-        onOpenChange={() => setShowWorkspaceSettings(false)}
+        onOpenChange={(next) => {
+          setShowWorkspaceSettings(next)
+          // Reset the requested tab on close: a one-shot request from another
+          // surface (e.g. the model switcher) must not leak into later opens
+          // from entry points that name no tab (⌘-, command palette).
+          if (!next) setSettingsInitialTab('workspace-layout')
+        }}
         initialTab={settingsInitialTab}
       />
 
