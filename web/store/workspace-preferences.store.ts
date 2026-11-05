@@ -338,7 +338,10 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
       version: 7, // Bump version for completion auto-apply policy; v7: round panel sizes to integers
       partialize: (state) => ({
         panelSizes: state.panelSizes,
-        panelState: state.panelState,
+        // A pending one-shot open request must not outlive the page: persisting it
+        // would reopen Settings on the next mount if the tab closes before the
+        // consumer clears it.
+        panelState: { ...state.panelState, settingsOpenRequest: false },
         display: state.display,
         onboardingCompleted: state.onboardingCompleted,
         agentMode: state.agentMode,
@@ -360,10 +363,16 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
               previewRatio: Math.round(state.panelSizes.previewRatio),
             }
           : DEFAULT_PREFERENCES.panelSizes
+        // A one-shot open request from an older build must not survive hydration.
+        const panelState = {
+          ...(state.panelState || DEFAULT_PREFERENCES.panelState),
+          settingsOpenRequest: false,
+        }
         return {
           ...DEFAULT_PREFERENCES,
           ...state,
           panelSizes,
+          panelState,
           agentModeByWorkspace: state.agentModeByWorkspace || {},
           agentIdByWorkspace: state.agentIdByWorkspace || {},
           autoApplyOnRunCompleteByWorkspace: state.autoApplyOnRunCompleteByWorkspace || {},

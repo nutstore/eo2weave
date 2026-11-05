@@ -27,6 +27,7 @@ export const topbar = {
       searchPlaceholder: "모델 검색…",
       noResults: "일치하는 모델 없음",
       manageProviders: "LLM 서비스 관리",
+      configureProviders: "설정",
       visionOnly: "비전만",
       visionOnlyTooltip: "이미지 입력 지원 모델만 표시",
       visionCapable: "이미지 입력 지원",

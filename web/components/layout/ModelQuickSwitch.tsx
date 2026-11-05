@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Loader2, Search } from 'lucide-react'
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Loader2, Search, Settings2 } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
+import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
 import { isPotentiallyDynamicProviderType, getProviderConfig, getProviderCatalogStatus, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
 import type { LLMProviderType } from '@/agent/providers/types'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
@@ -86,6 +87,7 @@ export function ModelQuickSwitch({
   const getAvailableProviders = useSettingsStore((s) => s.getAvailableProviders)
   const switchProviderAndModel = useSettingsStore((s) => s.switchProviderAndModel)
   const providerRefreshVersion = useSettingsStore((s) => s._providerRefreshVersion)
+  const requestSettingsOpen = useWorkspacePreferencesStore((s) => s.setSettingsOpenRequest)
 
   const [open, setOpen] = useState(false)
   const [providers, setProviders] = useState<AvailableProvider[]>([])
@@ -436,6 +438,20 @@ export function ModelQuickSwitch({
     setOpen(false)
   }
 
+  /**
+   * Cross-component entry point into LLM provider management.
+   *
+   * `ModelQuickSwitch` is mounted inside `WorkspaceLayout`, which owns the
+   * SettingsDialog, so this goes through the one-shot
+   * `settingsOpenRequest` channel (the same one `/skill-install`'s
+   * gateway-disabled view uses): WorkspaceLayout consumes it and opens the
+   * dialog on the `llm` tab, where ProviderManager lives.
+   */
+  const openProviderSettings = () => {
+    setOpen(false)
+    requestSettingsOpen(true)
+  }
+
   const retryGatewayCatalog = async () => {
     setRetryingGatewayCatalog(true)
     try {
@@ -583,14 +599,26 @@ export function ModelQuickSwitch({
         {!loading && !refreshingExistingList && gatewayCatalogUnavailable && (
           <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-2 text-xs text-tertiary">
             <span>{t('topbar.modelSwitcher.catalogUnavailable')}</span>
-            <button
-              type="button"
-              onClick={() => void retryGatewayCatalog()}
-              disabled={retryingGatewayCatalog}
-              className="shrink-0 text-primary hover:underline disabled:opacity-50"
-            >
-              {retryingGatewayCatalog ? t('topbar.modelSwitcher.loading') : t('topbar.modelSwitcher.retryCatalog')}
-            </button>
+            <span className="flex shrink-0 items-center gap-2">
+              {/* The catalog failure is often a missing/expired provider
+                  credential — offer the management entry right where the user
+                  is stuck, not only in the footer. */}
+              <button
+                type="button"
+                onClick={openProviderSettings}
+                className="text-primary hover:underline"
+              >
+                {t('topbar.modelSwitcher.configureProviders')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void retryGatewayCatalog()}
+                disabled={retryingGatewayCatalog}
+                className="text-primary hover:underline disabled:opacity-50"
+              >
+                {retryingGatewayCatalog ? t('topbar.modelSwitcher.loading') : t('topbar.modelSwitcher.retryCatalog')}
+              </button>
+            </span>
           </div>
         )}
 
@@ -789,6 +817,35 @@ export function ModelQuickSwitch({
             </Popover>
           </section>
         )}
+
+        {/* Provider management entry (owner request): the switcher lists what
+            is configured but offered no way to configure anything. Rendered
+            last so it reads as a footer action; promoted to a primary button
+            when nothing is available, because that is exactly when the user
+            needs it. */}
+        <section className="border-t border-border/70 bg-muted/25 px-3 py-2">
+          {/* Gate on the same list the popover renders (`visibleProviders`):
+              providers whose catalog is empty contribute no selectable model,
+              so they must not demote the setup entry to the secondary row. */}
+          {!loading && visibleProviders.length === 0 ? (
+            <BrandButton variant="primary" className="w-full" onClick={openProviderSettings}>
+              <Settings2 className="h-4 w-4" />
+              {t('topbar.modelSwitcher.manageProviders')}
+            </BrandButton>
+          ) : (
+            <button
+              type="button"
+              onClick={openProviderSettings}
+              className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left outline-none transition-colors hover:bg-primary/10 hover:text-primary-800 focus-visible:ring-2 focus-visible:ring-primary dark:hover:text-primary-200"
+            >
+              <Settings2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="flex-1 truncate text-xs font-semibold text-secondary">
+                {t('topbar.modelSwitcher.manageProviders')}
+              </span>
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-tertiary" />
+            </button>
+          )}
+        </section>
 
       </PopoverContent>
     </Popover>
