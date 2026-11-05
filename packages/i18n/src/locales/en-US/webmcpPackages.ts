@@ -48,4 +48,7 @@ export const webmcpPackages = {
   addSessionOnly: "{label} was added for this session only — browser storage is unavailable, so the list will not survive a reload.",
   catalogRefreshUnavailable: "The operation succeeded, but the extension's tool catalog could not be refreshed right now — it updates on the next refresh.",
   dismissError: "Dismiss",
+  searchPlaceholder: "Search packages or tools…",
+  matchesTools: "matches {count} tools",
+  moreTools: "More ({count} total)",
 }

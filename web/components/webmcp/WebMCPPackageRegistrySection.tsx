@@ -39,6 +39,13 @@ import {
   uninstallRegistryPackage,
 } from '@/webmcp/package-registry-store'
 import { ADAPTER_PAGE_MARKER } from '@creatorweave/shared/webmcp-adapter-protocol'
+import {
+  packageMatchesFilter,
+  SEARCH_MIN_PACKAGES,
+  toolMatchCount,
+  toolWindow,
+  type PreviewTool,
+} from '@/webmcp/registry-filter'
 import type { PackageRegistry, RegistryManifest, RegistryManifestPackage } from '@/webmcp/package-registry-client'
 
 interface WebMCPPackageRegistrySectionProps {
@@ -145,12 +152,20 @@ interface RegistryCardProps {
   /** Activation state per installed id (read from the package config). */
   activations: Map<string, 'enabled' | 'disabled'>
   busyId: string | null
+  /** Cached tool lists per pkg id from the section (filled by readToolCount). */
+  toolIndex: Map<string, PreviewTool[]>
+  /** Section-level filter query; empty string shows everything. */
+  filter: string
+  /** Cache a package's validated tool list in the section-level index (issue #187). */
+  onTools: (pkgId: string, tools: PreviewTool[]) => void
+  /** Report this registry's catalog size to the section (gates the search input). */
+  onPackageCount: (registryUrl: string, count: number) => void
   onInstall: (registry: PackageRegistry, pkg: RegistryManifestPackage, verifiedToolCount: number) => Promise<boolean>
   onUninstall: (pkgId: string) => Promise<boolean>
   onRemoveRegistry: (registry: PackageRegistry) => void
 }
 
-function RegistryCard({ t, registry, installedIds, activations, busyId, onInstall, onUninstall, onRemoveRegistry }: RegistryCardProps) {
+function RegistryCard({ t, registry, installedIds, activations, busyId, toolIndex, filter, onTools, onPackageCount, onInstall, onUninstall, onRemoveRegistry }: RegistryCardProps) {
   const [manifest, setManifest] = useState<RegistryManifest | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -183,6 +198,11 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
     void load(false)
   }, [load])
 
+  // Report the catalog size so the section can gate the search input (issue #187).
+  useEffect(() => {
+    if (manifest) onPackageCount(registry.manifestUrl, manifest.packages.length)
+  }, [manifest, registry.manifestUrl, onPackageCount])
+
   /** Read one package's manifest.json and record its real tool count. */
   const readToolCount = useCallback(async (pkgId: string, version: string) => {
     try {
@@ -207,6 +227,10 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
         throw new Error('The preview manifest does not match the catalog entry')
       }
       const count = (data.tools as unknown[]).length
+      // Cache the tool list for the section-level search (issue #187): the
+      // same manifest pass that verifies the count also feeds the tool-name
+      // filter — the data was fetched and thrown away before.
+      onTools(pkgId, (data.tools as unknown[]).filter(isPreviewTool))
       // Record the count TOGETHER with the catalog version it was verified
       // for (round-3 finding: "Refresh shows stale tool count"): a catalog
       // refresh that bumps the version drops the stale entry immediately,
@@ -240,7 +264,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
         return next
       })
     }
-  }, [registry])
+  }, [registry, onTools])
 
   useEffect(() => {
     // Bound concurrent preview fetches (finding: "Large catalogs overwhelm
@@ -303,7 +327,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
       )}
 
       <div className="mt-2 space-y-2">
-        {manifest?.packages.map((pkg) => {
+        {manifest?.packages.filter(pkg => packageMatchesFilter(pkg, toolIndex.get(pkg.id), filter)).map((pkg) => {
           const installed = installedIds.has(pkg.id)
           const busy = busyId === pkg.id
           const expanded = expandedId === pkg.id
@@ -318,6 +342,9 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
           const toolCount = verifiedCount ?? pkg.toolCount
           const countUnverified = verifiedCount === null
           const active = installed && activations.get(pkg.id) === 'enabled'
+          // "matches N tools" hint (issue #187): shown only when the query
+          // hit this package's TOOLS rather than its id/description.
+          const toolMatches = toolMatchCount(pkg, toolIndex.get(pkg.id), filter)
           return (
             <div key={pkg.id} className="rounded-md border border-neutral-200 p-2.5 dark:border-neutral-700">
               <div className="flex items-start gap-2">
@@ -340,6 +367,11 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
                     <span>·</span>
                     <span>{format(t('settings.webmcpPackages.version'), { version: pkg.version })}</span>
                   </div>
+                  {toolMatches > 0 && (
+                    <div className="mt-0.5 text-xs text-tertiary">
+                      {format(t('settings.webmcpPackages.matchesTools'), { count: toolMatches })}
+                    </div>
+                  )}
                   {installed && (
                     <div className="mt-1.5">
                       <span className="inline-flex items-center gap-1 rounded-full border border-neutral-300 px-2 py-0.5 text-xs text-tertiary dark:border-neutral-600">
@@ -378,7 +410,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
               </div>
               {expanded && manifest && (
                 <div className="mt-2 border-t border-neutral-200 pt-2 dark:border-neutral-700">
-                  <ToolCatalogPreview registry={registry} pkg={pkg} />
+                  <ToolCatalogPreview registry={registry} pkg={pkg} tools={toolIndex.get(pkg.id) ?? null} t={t} />
                 </div>
               )}
             </div>
@@ -401,10 +433,6 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
  * without well-formed tool entries renders the unavailable-preview
  * fallback instead.
  */
-interface PreviewTool {
-  name: string
-  description: string
-}
 
 function isPreviewTool(value: unknown): value is PreviewTool {
   return (
@@ -414,10 +442,17 @@ function isPreviewTool(value: unknown): value is PreviewTool {
   )
 }
 
-function ToolCatalogPreview({ registry, pkg }: { registry: PackageRegistry; pkg: RegistryManifestPackage }) {
-  const [tools, setTools] = useState<PreviewTool[] | null>(null)
+function ToolCatalogPreview({ registry, pkg, tools, t }: { registry: PackageRegistry; pkg: RegistryManifestPackage; tools: PreviewTool[] | null; t: (key: string) => string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [fetched, setFetched] = useState<PreviewTool[] | null>(null)
 
   useEffect(() => {
+    // Section-level cache hit (issue #187): the readToolCount pass already
+    // fetched this manifest — reuse its tools instead of a second request.
+    if (tools !== null) {
+      setFetched(null)
+      return
+    }
     let disposed = false
     void (async () => {
       try {
@@ -431,25 +466,38 @@ function ToolCatalogPreview({ registry, pkg }: { registry: PackageRegistry; pkg:
         // Keep only well-formed entries; anything else (null, a number, a
         // nameless object) makes the preview unavailable rather than crash.
         const validated = Array.isArray(data.tools) ? data.tools.filter(isPreviewTool) : []
-        if (!disposed) setTools(validated)
+        if (!disposed) setFetched(validated)
       } catch {
-        if (!disposed) setTools([])
+        if (!disposed) setFetched([])
       }
     })()
     return () => { disposed = true }
-  }, [registry, pkg.id])
+  }, [registry, pkg.id, tools])
 
-  if (tools === null) return <div className="text-xs text-tertiary">…</div>
-  if (tools.length === 0) return <div className="text-xs text-tertiary">—</div>
+  const catalog = tools ?? fetched
+  if (catalog === null) return <div className="text-xs text-tertiary">…</div>
+  if (catalog.length === 0) return <div className="text-xs text-tertiary">—</div>
+  const { visible, hiddenCount } = toolWindow(catalog)
   return (
-    <ul className="space-y-1">
-      {tools.map(tool => (
-        <li key={tool.name} className="flex items-baseline gap-2 text-xs">
-          <span className="shrink-0 font-mono text-tertiary">{tool.name}</span>
-          <span className="truncate text-tertiary">{tool.description}</span>
-        </li>
-      ))}
-    </ul>
+    <div>
+      <ul className={`space-y-1 ${expanded ? 'max-h-56 overflow-y-auto' : ''}`}>
+        {visible.map(tool => (
+          <li key={tool.name} className="flex items-baseline gap-2 text-xs">
+            <span className="shrink-0 font-mono text-tertiary">{tool.name}</span>
+            <span className="truncate text-tertiary">{tool.description}</span>
+          </li>
+        ))}
+      </ul>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          className="mt-1 text-xs text-tertiary hover:text-primary"
+          onClick={() => setExpanded(true)}
+        >
+          {format(t('settings.webmcpPackages.moreTools'), { count: catalog.length })}
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -476,6 +524,32 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
    * would appear uninstalled and could be installed a second time.
    */
   const refreshGeneration = useRef(0)
+  /** Section-level search (issue #187): filter text shared by all cards. */
+  const [filter, setFilter] = useState('')
+  /** Validated tool lists per pkg id, filled by each card's preview pass. */
+  const [toolIndex, setToolIndex] = useState<Map<string, PreviewTool[]>>(new Map())
+
+  const handleTools = useCallback((pkgId: string, tools: PreviewTool[]) => {
+    setToolIndex(previous => {
+      const cached = previous.get(pkgId)
+      // Same content → same state: keeps the Map identity stable so the
+      // cards' memo/effect chains do not re-run for repeated previews.
+      if (cached && cached.length === tools.length) return previous
+      const next = new Map(previous)
+      next.set(pkgId, tools)
+      return next
+    })
+  }, [])
+
+  /** Total catalog size across registries — gates the search input. */
+  const packageCounts = useRef<Map<string, number>>(new Map())
+
+  const handlePackageCount = useCallback((registryUrl: string, count: number) => {
+    packageCounts.current.set(registryUrl, count)
+    setTotalPackages([...packageCounts.current.values()].reduce((sum, count) => sum + count, 0))
+  }, [])
+
+  const [totalPackages, setTotalPackages] = useState(0)
 
   const refreshInstalled = useCallback(async () => {
     const generation = refreshGeneration.current + 1
@@ -624,6 +698,16 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
         )}
       </div>
 
+      {totalPackages > SEARCH_MIN_PACKAGES && (
+        <input
+          type="search"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder={t('settings.webmcpPackages.searchPlaceholder')}
+          className="w-full rounded-md border border-neutral-300 bg-transparent px-2.5 py-1.5 text-xs focus:border-blue-500 focus:outline-none dark:border-neutral-600"
+        />
+      )}
+
       {!hasRegistries && (
         <div className="rounded-lg border border-dashed border-neutral-300 p-4 text-xs text-tertiary dark:border-neutral-700">
           {t('settings.webmcpPackages.noRegistries')}
@@ -638,6 +722,10 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
           installedIds={installedIds}
           activations={activations}
           busyId={busyId}
+          toolIndex={toolIndex}
+          filter={filter}
+          onTools={handleTools}
+          onPackageCount={handlePackageCount}
           onInstall={(reg, pkg, verifiedCount) => {
             // The confirmation discloses the count VERIFIED from the package
             // manifest (finding: "Confirmation shows wrong tool count") — an

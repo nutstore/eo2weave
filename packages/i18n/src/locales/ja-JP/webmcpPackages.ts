@@ -47,5 +47,8 @@ export const webmcpPackages = {
   errorGeneric: "操作に失敗しました。{detail}",
   addSessionOnly: "{label} はこのセッションのみに追加されました——ブラウザストレージが利用できないため、再読み込みするとリストから消えます。",
   dismissError: "閉じる",
+  searchPlaceholder: "パッケージやツールを検索…",
+  matchesTools: "{count} 個のツールに一致",
+  moreTools: "さらに表示（合計 {count} 件）",
   catalogRefreshUnavailable: "操作は成功しましたが、拡張機能のツールカタログを今すぐ更新できませんでした — 次回の更新時に反映されます。",
 }
