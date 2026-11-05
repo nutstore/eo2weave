@@ -77,7 +77,11 @@ describe('install_skill tool (#154)', () => {
 
     const result = parse(await installSkillExecutor({ dirName: 'demo-skill' }))
 
-    expect(installSkillFromUrlMock).toHaveBeenCalledWith(ENTRY.zipUrl)
+    expect(installSkillFromUrlMock).toHaveBeenCalledWith(
+      ENTRY.zipUrl,
+      undefined,
+      expect.objectContaining({ focusDirName: 'demo-skill' }),
+    )
     expect(result.ok).toBe(true)
     expect(result.data.filesInstalled).toBe(4)
   })
@@ -97,7 +101,11 @@ describe('install_skill tool (#154)', () => {
 
     const result = parse(await installSkillExecutor({ dirName: 'demo-skill' }))
 
-    expect(installSkillFromUrlMock).toHaveBeenCalledWith(ENTRY.zipUrl)
+    expect(installSkillFromUrlMock).toHaveBeenCalledWith(
+      ENTRY.zipUrl,
+      undefined,
+      expect.objectContaining({ focusDirName: 'demo-skill' }),
+    )
     expect(result.ok).toBe(true)
     expect(result.data.updated).toBe(true)
     expect(result.data.message).toContain('1.1.3')
@@ -112,7 +120,11 @@ describe('install_skill tool (#154)', () => {
 
     const result = parse(await installSkillExecutor({ dirName: 'demo-skill' }))
 
-    expect(installSkillFromUrlMock).toHaveBeenCalledWith(ENTRY.zipUrl)
+    expect(installSkillFromUrlMock).toHaveBeenCalledWith(
+      ENTRY.zipUrl,
+      undefined,
+      expect.objectContaining({ focusDirName: 'demo-skill' }),
+    )
     expect(result.ok).toBe(true)
     expect(result.data.alreadyInstalled).toBe(true)
     expect(result.data.updated).toBeUndefined()
@@ -127,9 +139,82 @@ describe('install_skill tool (#154)', () => {
 
     const result = parse(await installSkillExecutor({ dirName: 'demo-skill' }))
 
-    expect(installSkillFromUrlMock).toHaveBeenCalledWith(ENTRY.zipUrl)
+    expect(installSkillFromUrlMock).toHaveBeenCalledWith(
+      ENTRY.zipUrl,
+      undefined,
+      expect.objectContaining({ focusDirName: 'demo-skill' }),
+    )
     expect(result.ok).toBe(true)
     expect(result.data.alreadyInstalled).toBe(true)
+  })
+
+  it('asks ONE aggregated question for sibling bundle updates and forwards the approval (#183)', async () => {
+    const askUserQuestion = vi
+      .fn()
+      .mockResolvedValue({ confirmed: true, answer: 'yes' })
+    // The install flow enumerates the siblings and calls back before writing.
+    installSkillFromUrlMock.mockImplementation(
+      async (
+        _zipUrl: string,
+        _onProgress: unknown,
+        options: {
+          confirmBundleUpdates?: (
+            candidates: Array<{ dirName: string }>,
+          ) => Promise<string[]>
+        },
+      ) => {
+        const approved = await options.confirmBundleUpdates!([
+          { dirName: 'sibling-a' },
+          { dirName: 'sibling-b' },
+        ])
+        return { count: 2, manifest: ENTRY, outcome: 'updated', bundleUpdates: { updated: approved, skipped: [] } }
+      },
+    )
+
+    const result = parse(
+      await installSkillExecutor({ dirName: 'demo-skill' }, { askUserQuestion }),
+    )
+
+    // ONE prompt names every affected sibling — not one prompt per member.
+    expect(askUserQuestion).toHaveBeenCalledTimes(1)
+    const question = askUserQuestion.mock.calls[0][0].question as string
+    expect(question).toContain('sibling-a')
+    expect(question).toContain('sibling-b')
+    // The approval is forwarded as one install: the result names what changed.
+    expect(result.data.bundleUpdates).toEqual({
+      updated: ['sibling-a', 'sibling-b'],
+      skipped: [],
+    })
+  })
+
+  it('skips sibling updates when the user declines, and reports them (#183)', async () => {
+    const askUserQuestion = vi.fn().mockResolvedValue({ confirmed: true, answer: 'no' })
+    installSkillFromUrlMock.mockImplementation(
+      async (
+        _zipUrl: string,
+        _onProgress: unknown,
+        options: {
+          confirmBundleUpdates?: (
+            candidates: Array<{ dirName: string }>,
+          ) => Promise<string[]>
+        },
+      ) => {
+        const approved = await options.confirmBundleUpdates!([{ dirName: 'sibling-a' }])
+        return {
+          count: 1,
+          manifest: ENTRY,
+          outcome: 'updated',
+          bundleUpdates: { updated: approved, skipped: approved.length ? [] : ['sibling-a'] },
+        }
+      },
+    )
+
+    const result = parse(
+      await installSkillExecutor({ dirName: 'demo-skill' }, { askUserQuestion }),
+    )
+
+    expect(result.data.bundleUpdates).toEqual({ updated: [], skipped: ['sibling-a'] })
+    expect(result.data.message).toContain('sibling-a')
   })
 
   it('reports a store miss without calling the install flow', async () => {
