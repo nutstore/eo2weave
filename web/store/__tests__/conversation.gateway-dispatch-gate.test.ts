@@ -333,6 +333,69 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     expect(conv.error).not.toContain('temporarily unavailable')
   })
 
+  it('re-resolves once and dispatches when another tab refreshed the credential (#215)', async () => {
+    gatewayRegistered.value = false
+    // Rotation, not a session change: the first resolution validated the
+    // token this tab saw, then another tab's refresh committed its successor
+    // before the currentness re-read (a refresh starts as soon as the access
+    // token enters its 60s expiry buffer). The stored access token no longer
+    // matches, but the session is alive — the gate must resolve again instead
+    // of showing a re-login card to a signed-in user.
+    let resolution = 0
+    // Count only the resolutions the GATE takes: the downstream api-key
+    // resolution runs after the provider is registered.
+    let gateResolutions = 0
+    resolveCredentialMock.mockImplementation(async () => {
+      resolution += 1
+      if (!gatewayRegistered.value) gateResolutions += 1
+      if (resolution === 1) {
+        storedAccessToken.value = 'rotated-token'
+        return { ok: true, accessToken: 'superseded-token' }
+      }
+      return { ok: true, accessToken: 'rotated-token' }
+    })
+
+    await startRun()
+
+    expect(gateResolutions).toBe(2)
+    expect(registerProviderMock).toHaveBeenCalledTimes(1)
+    expect(agentLoopConstructed).toHaveBeenCalledTimes(1)
+    // The rerun must actually dispatch WITH the rotated credential: the
+    // custom-provider path tolerates a missing api-key and would still build
+    // an AgentLoop, so construction alone cannot prove the token was used.
+    const providerCall = createLLMProviderMock.mock.calls.find(
+      (call) => (call[0] as { providerType?: string })?.providerType === 'llm-gateway',
+    )
+    expect(providerCall).toBeDefined()
+    expect(providerCall![0]).toMatchObject({ apiKey: 'rotated-token' })
+    const conv = useConversationStore.getState().conversations[0]
+    expect(conv.error ?? '').not.toContain('sign in again')
+  })
+
+  it('offers the login card when the credential is cleared before the currentness re-read (#215)', async () => {
+    gatewayRegistered.value = false
+    // The session really ended: the re-resolution finds no credential, so the
+    // retry must land on the missing-credential card and dispatch nothing.
+    let resolution = 0
+    resolveCredentialMock.mockImplementation(async () => {
+      resolution += 1
+      if (resolution === 1) {
+        storedAccessToken.value = null
+        return { ok: true, accessToken: 'token-from-a-dead-session' }
+      }
+      return { ok: false, kind: 'missing' }
+    })
+
+    await startRun()
+
+    expect(resolveCredentialMock).toHaveBeenCalledTimes(2)
+    expect(registerProviderMock).not.toHaveBeenCalled()
+    expect(agentLoopConstructed).not.toHaveBeenCalled()
+    const conv = useConversationStore.getState().conversations[0]
+    expect(conv.status).toBe('error')
+    expect(conv.error).toContain('[GATEWAY_CREDENTIALS_MISSING]')
+  })
+
   it('reports the retryable temporary error when the currentness check hits a storage failure (#214 Sourcery round 4)', async () => {
     gatewayRegistered.value = false
     resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
