@@ -84,7 +84,7 @@ export const wordCountExecutor: ToolExecutor = async (args) => {
   return JSON.stringify({
     success: true,
     words,
-    characters: text.length,
+    characters: [...text].length, // code points, not UTF-16 units
     lines,
   })
 }
@@ -170,21 +170,41 @@ Add:
 
 ## 6. Authorization
 
-`web/agent/policy-engine.ts` decides whether a call needs user approval:
+Adding a policy entry does **not** gate anything by itself. `web/agent/policy-engine.ts` exposes `authorize(req)`; the tool has to call it. Today only `call_tool` (through `external-tool-bridge.ts`) and `sync-to-disk` do — a tool that never calls `authorize()` runs regardless of what the table says about it.
 
-- `auto` — run without asking (also the default for **unregistered** tools)
-- `prompt` — show the unified `ToolAuthModal`
+The table (`createPolicyTable()` in the same file) supplies the inputs to that decision:
+
+- `auto` — run without asking (also the default for unregistered tools)
+- `prompt` — the call needs approval
 - `forbidden` — never callable by the model
 
-A read-only tool needs no entry: it inherits `auto`. Add an entry when the tool mutates something outside OPFS, reaches the network, or performs a destructive/irreversible operation *even inside OPFS* — rollbacks and bulk deletes deserve a prompt too (`snapshot_restore` is registered as `prompt` for exactly that reason):
+Most tools need neither an entry nor an `authorize()` call: no entry means `auto`. Network reads (`web_search`, `web_fetch`) are `auto` too — reaching the network is not by itself a reason to prompt.
+
+If your tool does something irreversible — writes the real disk, deletes in bulk, rolls back — call `authorize()` inside the executor and honour a denial:
 
 ```ts
-set('word_count', { level: 'auto' })
-// vs.
-set('my_disk_writer', { level: 'prompt', describe: () => ({ key: 'describeMyDiskWriter' }), memoryKey: () => 'my-disk-writer' })
+const auth = await authorize({
+  toolName: 'my_disk_writer',
+  args: { ... },
+  conversationId: context.workspaceId,
+  signal: context.abortSignal,
+})
+if (auth.decision === 'deny') {
+  return JSON.stringify({ error: 'AUTH_DENIED_BY_USER', reason: auth.reason })
+}
 ```
 
-`describe` returns an i18n key under `agent.toolAuth.*` so the modal follows the user's locale; `memoryKey` lets "always allow this conversation" work per tool family.
+Then register the level in `createPolicyTable()`:
+
+```ts
+set('my_disk_writer', {
+  level: 'prompt',
+  describe: () => ({ key: 'describeMyDiskWriter' }),
+  memoryKey: () => 'my-disk-writer',
+})
+```
+
+`describe` names a key under `agent.toolAuth.*`; add it to all four locales (`packages/i18n/src/locales/{en-US,zh-CN,ja-JP,ko-KR}`) or the modal renders the raw key. `memoryKey` lets "always allow this conversation" apply per tool family.
 
 ## 7. Test it
 
