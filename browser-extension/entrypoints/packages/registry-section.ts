@@ -92,6 +92,26 @@ export function createRegistrySection(
    */
   const catalogRefreshFailures = new Set<string>()
 
+  /**
+   * True while the box shows a FAILED OPERATION (install / uninstall /
+   * activation / add / forced refresh). An operation failure is NOT state: a
+   * later successful load must not erase it before the user has read it.
+   * Load failures and the session-only warning ARE derived from the last load
+   * (and the current `persisted` flag), so `render` recomputes those.
+   */
+  let operationErrorShown = false
+
+  function showOperationError(error: unknown): void {
+    operationErrorShown = true
+    shell.error.show(error)
+  }
+
+  /** An operation starts: its own feedback replaces whatever the box showed. */
+  function clearBox(): void {
+    operationErrorShown = false
+    shell.error.clear()
+  }
+
   function bumpCatalogEpoch(manifestUrl: string): void {
     catalogEpochs.set(manifestUrl, (catalogEpochs.get(manifestUrl) ?? 0) + 1)
   }
@@ -223,7 +243,7 @@ export function createRegistrySection(
       catalogLoads.add(registry.manifestUrl)
       const epoch = catalogEpochs.get(registry.manifestUrl) ?? 0
       try {
-        shell.error.clear()
+        clearBox()
         const manifest = await loadRegistryCatalog(registry, true)
         if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) {
           catalogs.set(registry.manifestUrl, manifest)
@@ -234,7 +254,7 @@ export function createRegistrySection(
         // about the CURRENT registry state — its failure must not land.
         if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) {
           catalogRefreshFailures.add(registry.manifestUrl)
-          shell.error.show(error)
+          showOperationError(error)
         }
       } finally {
         if ((catalogEpochs.get(registry.manifestUrl) ?? 0) === epoch) catalogLoads.delete(registry.manifestUrl)
@@ -253,13 +273,13 @@ export function createRegistrySection(
       bumpCatalogEpoch(registry.manifestUrl)
       catalogLoads.delete(registry.manifestUrl)
       try {
-        shell.error.clear()
+        clearBox()
         await removeRegistry(registry.manifestUrl)
         catalogs.delete(registry.manifestUrl)
         catalogRefreshFailures.delete(registry.manifestUrl)
         clearToolPreviews(registry.manifestUrl)
       } catch (error) {
-        shell.error.show(error)
+        showOperationError(error)
       } finally {
         refresh()
       }
@@ -346,7 +366,7 @@ export function createRegistrySection(
       toggle.setAttribute('aria-label', `${t('webmcpPackageActivation')}: ${pkg.id}`)
       toggle.addEventListener('change', async () => {
         toggle.disabled = true
-        shell.error.clear()
+        clearBox()
         const token = nextFeedbackToken(pkg.id)
         try {
           const activation = toggle.checked ? 'enabled' : 'disabled'
@@ -355,7 +375,7 @@ export function createRegistrySection(
         } catch (error) {
           // The write did not land: the switch must show the real state again.
           toggle.checked = isEnabled
-          if (isFeedbackCurrent(token)) shell.error.show(error)
+          if (isFeedbackCurrent(token)) showOperationError(error)
         } finally {
           toggle.disabled = false
           refresh()
@@ -373,17 +393,17 @@ export function createRegistrySection(
       // one — its success must not announce an absent package.
       const token = nextFeedbackToken(pkg.id)
       try {
-        shell.error.clear()
+        clearBox()
         const result = await installRegistryPackage(registry, pkg)
         installed.add(pkg.id)
         activations[pkg.id] = 'disabled'
         // Success supersedes a stale failure: op A may have failed while op B
         // was still in flight, and B's completion must not leave A's red box
         // beside the green toast.
-        shell.error.clear()
+        clearBox()
         showOperationSuccess(token, t('webmcpPackagesInstallSuccess', [pkg.id, String(result.filesWritten)]))
       } catch (error) {
-        if (isFeedbackCurrent(token)) shell.error.show(error)
+        if (isFeedbackCurrent(token)) showOperationError(error)
       } finally {
         btn.textContent = previous
         btn.disabled = false
@@ -404,13 +424,13 @@ export function createRegistrySection(
         uninstall.textContent = t('webmcpPackagesUninstalling')
         const token = nextFeedbackToken(pkg.id)
         try {
-          shell.error.clear()
+          clearBox()
           await uninstallRegistryPackage(pkg.id)
           // A toast still announcing this package's install would claim it is
           // installed after the user just removed it.
           showOperationRemoved(token)
         } catch (error) {
-          if (isFeedbackCurrent(token)) shell.error.show(error)
+          if (isFeedbackCurrent(token)) showOperationError(error)
         } finally {
           uninstall.textContent = previous
           uninstall.disabled = false
@@ -454,11 +474,11 @@ export function createRegistrySection(
       uninstall.textContent = t('webmcpPackagesUninstalling')
       const token = nextFeedbackToken(id)
       try {
-        shell.error.clear()
+        clearBox()
         await uninstallRegistryPackage(id)
         showOperationRemoved(token)
       } catch (error) {
-        if (isFeedbackCurrent(token)) shell.error.show(error)
+        if (isFeedbackCurrent(token)) showOperationError(error)
       } finally {
         uninstall.textContent = previous
         uninstall.disabled = false
@@ -475,11 +495,17 @@ export function createRegistrySection(
     installed = new Set(state.installed)
     activations = state.activations
 
-    // A registry list that could not be persisted reads back empty on the next
-    // load — the user must know the list is session-only. This is a
-    // NON-BLOCKING warning drawn in the section box, never an operation
-    // failure, so it does not dismiss the success toast.
-    if (!state.persisted) shell.error.show(t('webmcpPackagesNotPersisted'))
+    // Recompute the notice area from THIS state (findings: a recovered load
+    // left its own failure on screen, and the session-only warning outlived the
+    // persistence it warned about). A registry list that could not be persisted
+    // reads back empty on the next load, so the user must know the list is
+    // session-only — a NON-BLOCKING warning, never an operation failure, so it
+    // does not dismiss the success toast. A failed OPERATION in the same box is
+    // not state and stays until the user reads it.
+    if (!operationErrorShown) {
+      shell.error.clear()
+      if (!state.persisted) shell.error.show(t('webmcpPackagesNotPersisted'))
+    }
 
     const list = shell.list
     list.replaceChildren()
@@ -506,6 +532,11 @@ export function createRegistrySection(
               }
             })
             .catch(error => {
+              // A request superseded by a refresh / removal / re-add (epoch
+              // bumped) says nothing about the CURRENT registry: recording it
+              // would show a stale error and suppress the auto-load that is
+              // legitimately due for the re-added registry.
+              if ((catalogEpochs.get(registry.manifestUrl) ?? 0) !== epoch) return
               catalogLoadFailures.add(registry.manifestUrl)
               shell.error.show(error)
             })
@@ -553,7 +584,7 @@ export function createRegistrySection(
     const previous = addButton.textContent
     addButton.textContent = t('webmcpPackagesAdding')
     try {
-      shell.error.clear()
+      clearBox()
       const registry = await addRegistry(value)
       // Fetch the catalog right away so the packages are visible without an
       // extra click. A failed auto-load of the SAME URL (re-added registry)
@@ -571,11 +602,11 @@ export function createRegistrySection(
           catalogs.set(registry.manifestUrl, manifest)
         }
       } catch (error) {
-        shell.error.show(error)
+        showOperationError(error)
       }
       input.value = ''
     } catch (error) {
-      shell.error.show(error)
+      showOperationError(error)
     } finally {
       addButton.textContent = previous
       addButton.disabled = false
@@ -593,6 +624,8 @@ export function createRegistrySection(
   return {
     render,
     fail(error) {
+      // A LOAD failure is state-derived: a later successful render clears it.
+      operationErrorShown = false
       shell.error.show(error)
     },
   }

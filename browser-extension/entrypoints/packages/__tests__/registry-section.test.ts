@@ -38,6 +38,8 @@ type SendHandler = (message: { type: string; [key: string]: unknown }) => unknow
 
 interface Harness {
   document: Document
+  /** The section itself (to drive fail/render transitions directly). */
+  section: RegistrySection
   /** The happy-dom window the section was built in (event constructors). */
   window: Window
   send: ReturnType<typeof vi.fn>
@@ -86,6 +88,7 @@ async function setup({ state, handlers = {} }: SetupOptions): Promise<Harness> {
   await settle()
   return {
     document: win.document as unknown as Document,
+    section,
     window: win,
     send,
     refresh,
@@ -304,6 +307,28 @@ describe('registry section feedback', () => {
     releaseB()
     await settle()
     expect(toastVisible(h.document)).toBe(true)
+  })
+
+  it('a recovered load clears its own failure and the session-only warning', async () => {
+    const state = (persisted: boolean): RegistryListResult => ({ registries: [registry], installed: [], activations: {}, persisted })
+    const h = await setup({
+      state: () => state(false),
+      handlers: {
+        webmcp_registry_catalog: { manifest: { manifestUrl: registry.manifestUrl, name: 'Example', packages: [] } },
+      },
+    })
+    expect(h.sectionError().textContent).toContain('webmcpPackagesNotPersisted')
+
+    h.section.fail(new Error('registry list unavailable'))
+    expect(h.sectionError().hidden).toBe(false)
+    expect(h.sectionError().textContent).toContain('registry list unavailable')
+
+    // Persistence recovered AND the load succeeded: neither message survives.
+    h.section.render(state(true))
+    await settle()
+    expect(h.sectionError().hidden).toBe(true)
+    expect(h.sectionError().textContent).not.toContain('registry list unavailable')
+    expect(h.sectionError().textContent).not.toContain('webmcpPackagesNotPersisted')
   })
 
   it('enables an installed registry package from its own row', async () => {
