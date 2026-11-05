@@ -727,7 +727,7 @@ export async function runAgentImpl(
         if (providerMissing(providerType) && providerType === 'llm-gateway') {
           const { resolveGatewayDispatchCredential } =
             await import('@/agent/providers/llm-gateway-auth')
-          const { getLLMGatewayBaseURL, getLLMGatewayClientId } =
+          const { getLLMGatewayBaseURL, getLLMGatewayClientId, registerLLMGatewayProvider } =
             await import('@/agent/providers/llm-gateway-provider')
           const resolvedMissing = await resolveGatewayDispatchCredential(
             getLLMGatewayBaseURL(),
@@ -751,6 +751,14 @@ export async function runAgentImpl(
               : i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
             failRunEarly(`${code} ${fallback}`)
             return
+          }
+          // A usable session with an unregistered provider is a per-tab
+          // registry gap, not a credential problem (#180): this tab's
+          // reconciler may not have run yet, and nothing else on the dispatch
+          // path registers the provider. Mirror reconcileLoggedIn and register
+          // it here rather than telling a logged-in user to sign in again.
+          if (providerMissing(providerType)) {
+            registerLLMGatewayProvider()
           }
           if (providerMissing(providerType)) {
             failRunEarly(
