@@ -83,7 +83,7 @@ function isDirectoryExcluded(dirPath: string, rules: readonly GitIgnoreRule[]): 
   let excluded = false
 
   for (const rule of rules) {
-    if (matchesRule(dirPath, rule, 'directory', true)) {
+    if (matchesRule(dirPath, rule, 'directory')) {
       excluded = !rule.negated
     }
   }
@@ -94,8 +94,7 @@ function isDirectoryExcluded(dirPath: string, rules: readonly GitIgnoreRule[]): 
 function matchesRule(
   path: string,
   rule: GitIgnoreRule,
-  kind: 'file' | 'directory',
-  forDirectoryExclusion = false
+  kind: 'file' | 'directory'
 ): boolean {
   const basePrefix = rule.baseDir ? `${rule.baseDir}/` : ''
   if (rule.baseDir && path !== rule.baseDir && !path.startsWith(basePrefix)) return false
@@ -125,22 +124,17 @@ function matchesRule(
   }
   const candidates = prefixes.flatMap((prefix) => {
     const target = `${prefix}${pattern}`
-    if (forDirectoryExclusion) {
+    if (target.endsWith('/**')) {
       // Git semantics: a `dir/**` pattern covers the directory's contents but
-      // not the directory itself, while micromatch's `a/**` also matches `a`.
-      // Reject that self match here or every `dir/**` rule would mark its own
-      // base directory excluded and prune the whole tree.
-      if (target.endsWith('/**')) {
-        return relativePath.startsWith(`${target.slice(0, -3)}/`) ? [target] : []
-      }
-      return [target]
-    }
-    if (kind === 'file' && target.endsWith('/**')) {
-      // Git: `dir/**` covers the directory's contents but not the directory
-      // itself, while micromatch's `a/**` also matches the bare `a` (and
-      // `**/a/**` matches a path ending at `a`). Requiring one trailing
-      // segment keeps contents ignored without classifying a same-named
-      // REGULAR file as ignored (which let deleteFile bypass review, #186).
+      // not the directory itself, while micromatch's `a/**` also matches the
+      // bare `a` (and `**/a/**` matches a path ending at `a`). Requiring at
+      // least one segment beyond the rule's base keeps the contents ignored
+      // without ever matching the base itself (which let deleteDirPending
+      // silently wipe an ignored tree, and a same-named REGULAR file bypass
+      // review, #186). The trailing `*` also stays glob-aware for qualified
+      // bases (`**/dist/**/*` matches `dist/x` but not `dist`), so
+      // isDirectoryExcluded recognizes excluded ancestors that a literal
+      // startsWith prefix check missed (#184).
       return [`${target}/*`]
     }
     return [target, `${target}/**`]
