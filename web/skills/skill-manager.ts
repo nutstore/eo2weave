@@ -18,6 +18,7 @@ import {
 import { scanProjectSkills } from './skill-scanner'
 import { scanUserSkills, migrateUserSkillsFromSQLite } from './user-skills-scanner'
 import {
+  dirNameFromScanError,
   reconcileUserSkillScan,
   removeUserSkill,
   userSkillId,
@@ -39,6 +40,12 @@ export class SkillManager {
   private projectResourcesBySkillId = new Map<string, SkillResource[]>()
   private activeProjectId: string | null = null
   private initPromise: Promise<void> | null = null
+  /**
+   * Bumped by forgetUserSkill(). A scan that started BEFORE a completed delete
+   * must not be applied afterwards — it would put the deleted skill back
+   * (#183 review).
+   */
+  private userCacheEpoch = 0
 
   /** Check if the skill manager has been initialized */
   get initialized(): boolean {
@@ -407,7 +414,15 @@ export class SkillManager {
    */
   async refreshUserSkills(): Promise<void> {
     try {
+      const epoch = this.userCacheEpoch
       const result = await scanUserSkills()
+      // A delete completed while this scan was in flight: its directory view
+      // predates the delete, so applying it would resurrect the skill. The
+      // next refresh re-scans (#183 review).
+      if (epoch !== this.userCacheEpoch) {
+        console.warn('[SkillManager] Discarding a user-skills scan that predates a completed delete')
+        return
+      }
       // Apply persisted enabled state from localStorage so that user-skill
       // toggle choices survive page refreshes.
       const savedState = this.loadUserSkillState()
@@ -434,10 +449,22 @@ export class SkillManager {
       }
       // Carried-over skills keep their previously loaded resources, so a
       // single unreadable SKILL.md does not also strip the skill's files.
+      // A skill whose SKILL.md parsed but whose RESOURCE scan reported errors
+      // gets the same treatment: the new list is partial, so merge it over the
+      // previous one instead of replacing it (#183 review).
+      const erroredSkillIds = new Set<string>()
+      for (const message of result.errors) {
+        const dirName = dirNameFromScanError(message)
+        if (dirName) erroredSkillIds.add(userSkillId(dirName))
+      }
       for (const skill of reconciled) {
-        if (scannedIds.has(skill.id)) continue
+        const isCarried = !scannedIds.has(skill.id)
+        if (!isCarried && !erroredSkillIds.has(skill.id)) continue
         const previous = this.userResourcesBySkillId.get(skill.id)
-        if (previous) bySkillId.set(skill.id, previous)
+        if (!previous) continue
+        const merged = new Map(previous.map((resource) => [resource.id, resource]))
+        for (const resource of bySkillId.get(skill.id) ?? []) merged.set(resource.id, resource)
+        bySkillId.set(skill.id, [...merged.values()])
       }
       this.userResourcesBySkillId = bySkillId
 
@@ -475,6 +502,8 @@ export class SkillManager {
   forgetUserSkill(dirName: string): void {
     this.cachedUserSkills = removeUserSkill(this.cachedUserSkills, dirName)
     this.userResourcesBySkillId.delete(userSkillId(dirName))
+    // Invalidate any scan that is already in flight (see refreshUserSkills).
+    this.userCacheEpoch += 1
     this.syncSlashCommands()
   }
 

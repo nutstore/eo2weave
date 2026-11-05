@@ -79,6 +79,64 @@ describe('SkillManager.refreshUserSkills cache retention (#185 review, #197)', (
     expect(ids(manager)).not.toContain('user:alpha')
   })
 
+  it('discards a scan that started before a completed delete (#183 review)', async () => {
+    await manager.refreshUserSkills()
+    expect(ids(manager)).toContain('user:alpha')
+
+    // A scan is in flight when the delete completes…
+    let releaseScan!: (value: unknown) => void
+    scanUserSkillsMock.mockReturnValue(
+      new Promise((resolve) => {
+        releaseScan = resolve
+      }),
+    )
+    const refresh = manager.refreshUserSkills()
+    manager.forgetUserSkill('alpha')
+    // …and resolves with its pre-delete view, which still lists alpha.
+    releaseScan({
+      skills: [makeSkill('alpha')],
+      resources: [makeResource('user:alpha')],
+      errors: [],
+    })
+    await refresh
+
+    // The stale view must not resurrect the deleted skill.
+    expect(ids(manager)).not.toContain('user:alpha')
+  })
+
+  it('merges resources for a skill whose resource scan reported errors (#183 review)', async () => {
+    const previousResource = {
+      ...makeResource('user:alpha'),
+      id: 'user:alpha-keep',
+      resourcePath: 'references/keep.md',
+    } as SkillResource
+    scanUserSkillsMock.mockResolvedValue({
+      skills: [makeSkill('alpha')],
+      resources: [previousResource],
+      errors: [],
+    })
+    await manager.refreshUserSkills()
+
+    // Next scan: SKILL.md still parses, but one resource file is unreadable —
+    // the scan returns only the OTHER resource.
+    const freshResource = {
+      ...makeResource('user:alpha'),
+      id: 'user:alpha-new',
+      resourcePath: 'references/new.md',
+    } as SkillResource
+    scanUserSkillsMock.mockResolvedValue({
+      skills: [makeSkill('alpha')],
+      resources: [freshResource],
+      errors: ['user:alpha/old.md: permission denied'],
+    })
+    await manager.refreshUserSkills()
+
+    const paths = (await manager.getSkillResources('user:alpha'))
+      .map((resource) => resource.resourcePath)
+      .sort()
+    expect(paths).toEqual(['references/keep.md', 'references/new.md'])
+  })
+
   it('keeps a skill whose SKILL.md errored during an otherwise successful scan (#197)', async () => {
     scanUserSkillsMock.mockResolvedValue({
       skills: [makeSkill('alpha'), makeSkill('beta')],
