@@ -232,10 +232,98 @@ export function assertPublicWebUrl(rawUrl: string): URL {
 
 const DEFAULT_MAX_REDIRECTS = 5
 
+/** Fetch's redirect statuses. Any other 3xx code (300, 304, 305, 306) is an
+ * ordinary response, not a hop. */
+const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308])
+
+/**
+ * Headers that carry a caller credential. They are never forwarded to a
+ * DIFFERENT origin: the redirect target is chosen by the remote server, not by
+ * the caller, so replaying a Secret Manager value there hands it to a host the
+ * caller never meant to talk to.
+ */
+const SENSITIVE_HEADER_NAMES: ReadonlySet<string> = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'cookie2',
+  'x-api-key',
+  'api-key',
+  'apikey',
+  'x-auth-token',
+  'x-access-token',
+  'x-session-token',
+  'x-csrf-token',
+  'x-xsrf-token',
+  'x-amz-security-token',
+])
+
+/**
+ * Credential-shaped names beyond the well-known set (`x-service-secret`,
+ * `x-goog-api-key`, …). Over-stripping on a cross-origin hop is the safe
+ * direction; under-stripping leaks.
+ */
+const SENSITIVE_HEADER_PATTERN = /(?:^|[-_])(?:auth|authorization|token|secret|session|cookie|password|passwd|credential|key)(?:$|[-_])/i
+
+/** Headers that describe a request body and must go when the body goes. */
+const BODY_HEADER_NAMES = ['content-type', 'content-length', 'content-encoding', 'transfer-encoding'] as const
+
+function isSensitiveHeaderName(name: string): boolean {
+  const lowered = name.toLowerCase()
+  return SENSITIVE_HEADER_NAMES.has(lowered) || SENSITIVE_HEADER_PATTERN.test(lowered)
+}
+
+/**
+ * Compute the request for the NEXT hop. Two independent rule sets:
+ *
+ *  - Fetch's redirect method rules (Fetch §HTTP-redirect fetch): 301/302 turn a
+ *    POST into a GET and drop its body; 303 turns any non-GET/HEAD method into
+ *    a GET; 307/308 replay method and body unchanged. Replaying a POST through
+ *    a 302 re-submits the caller's payload to whatever the server named.
+ *  - Our cross-origin rule: when the hop changes origin the server picked the
+ *    target, so caller credentials and the request payload are dropped (a
+ *    method whose body was dropped becomes GET). This is deliberately stricter
+ *    than the browser's own redirect handling, which keeps the body.
+ */
+function nextHopInit(init: RequestInit, status: number, from: URL, to: URL): RequestInit {
+  const headers = new Headers(init.headers ?? undefined)
+  const method = (init.method ?? 'GET').toUpperCase()
+  const hadBody = init.body !== undefined && init.body !== null
+  const crossOrigin = from.origin !== to.origin
+
+  let nextMethod = method
+  let dropBody = false
+
+  if (status === 303 || ((status === 301 || status === 302) && method === 'POST')) {
+    if (method !== 'GET' && method !== 'HEAD') {
+      nextMethod = 'GET'
+      dropBody = true
+    }
+  }
+
+  if (crossOrigin) {
+    for (const name of [...headers.keys()]) {
+      if (isSensitiveHeaderName(name)) headers.delete(name)
+    }
+    if (hadBody) {
+      dropBody = true
+      if (nextMethod !== 'GET' && nextMethod !== 'HEAD') nextMethod = 'GET'
+    }
+  }
+
+  let nextBody = init.body
+  if (dropBody) {
+    nextBody = undefined
+    for (const name of BODY_HEADER_NAMES) headers.delete(name)
+  }
+
+  return { ...init, method: nextMethod, headers, body: nextBody }
+}
+
 export interface GuardedFetchOptions {
   /** Validate one hop's absolute URL; must throw to refuse. */
   validate?: (rawUrl: string) => URL
-  /** Request init forwarded to every hop (redirect is forced to 'manual'). */
+  /** Request init for the first hop; later hops get a recomputed init. */
   init?: RequestInit
   abortSignal?: AbortSignal
   /** Leading noun for redirect errors, e.g. 'Download' → 'Download exceeded 5 redirects'. */
@@ -262,12 +350,17 @@ export async function fetchPublicUrl(rawUrl: string, opts: GuardedFetchOptions =
   const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS
   const validate = opts.validate ?? ((raw: string) => assertPublicUrl(raw))
   let currentUrl = rawUrl
+  // Per-hop request state: starts as the caller's init and is recomputed after
+  // every redirect (see nextHopInit) instead of replayed unchanged — otherwise
+  // the caller's headers (possibly Secret Manager values) and body follow the
+  // server's Location header to a host the caller never addressed.
+  let init: RequestInit = { ...(opts.init ?? {}) }
   for (let hops = 0; hops <= maxRedirects; hops++) {
     const validated = validate(currentUrl)
     const response = await fetch(validated.href, {
-      ...opts.init,
+      ...init,
       redirect: 'manual',
-      signal: opts.abortSignal ?? opts.init?.signal,
+      signal: opts.abortSignal ?? init.signal,
     })
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location')
@@ -279,7 +372,9 @@ export async function fetchPublicUrl(rawUrl: string, opts: GuardedFetchOptions =
       }
       // Resolve relative Location values against the current URL, then the
       // loop head re-validates the absolute target before it is fetched.
-      currentUrl = new URL(location, validated).href
+      const nextUrl = new URL(location, validated)
+      init = nextHopInit(init, response.status, validated, nextUrl)
+      currentUrl = nextUrl.href
       continue
     }
     if (response.type === 'opaqueredirect') {

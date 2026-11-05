@@ -189,10 +189,88 @@ describe('web_fetch redirect discipline (#157, same pattern as #148)', () => {
     )
   })
 
+  it('drops caller credentials and the request body on a cross-origin redirect hop', async () => {
+    // A 307 asks for the method + body to be replayed — the cross-origin rule
+    // still must not forward the caller's secrets or payload to the host the
+    // server chose.
+    const seen: Array<RequestInit | undefined> = []
+    await withFetch(
+      (_url, init) => {
+        seen.push(init)
+        return seen.length === 1 ? redirect(307, 'https://cdn.example-cdn.net/collect') : ok('final')
+      },
+      async () => {
+        const response = await fetchPublicWebUrl('https://example.com/api', {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer sk-live-secret',
+            'x-api-key': 'key-123',
+            'content-type': 'application/json',
+            'x-trace-id': 'abc',
+          },
+          body: '{"secret":"value"}',
+        })
+        expect(response.status).toBe(200)
+      },
+    )
+    expect(seen).toHaveLength(2)
+    const hop = seen[1]!
+    const headers = new Headers(hop.headers)
+    expect(headers.get('authorization')).toBeNull()
+    expect(headers.get('x-api-key')).toBeNull()
+    expect(headers.get('content-type')).toBeNull()
+    // Non-credential headers still ride along.
+    expect(headers.get('x-trace-id')).toBe('abc')
+    expect(hop.method).toBe('GET')
+    expect(hop.body).toBeUndefined()
+    expect(hop.redirect).toBe('manual')
+  })
+
+  it('applies the Fetch method rules: 302 POST→GET, 307 keeps method and body', async () => {
+    const seen302: Array<RequestInit | undefined> = []
+    await withFetch(
+      (_url, init) => {
+        seen302.push(init)
+        return seen302.length === 1 ? redirect(302, '/next') : ok()
+      },
+      async () => {
+        await fetchPublicWebUrl('https://example.com/form', {
+          method: 'POST',
+          headers: { 'content-type': 'text/plain', 'x-trace-id': 'abc' },
+          body: 'a=1',
+        })
+      },
+    )
+    expect(seen302).toHaveLength(2)
+    expect(seen302[1]!.method).toBe('GET')
+    expect(seen302[1]!.body).toBeUndefined()
+    expect(new Headers(seen302[1]!.headers).get('content-type')).toBeNull()
+    // Same-origin hop: ordinary headers survive.
+    expect(new Headers(seen302[1]!.headers).get('x-trace-id')).toBe('abc')
+
+    const seen307: Array<RequestInit | undefined> = []
+    await withFetch(
+      (_url, init) => {
+        seen307.push(init)
+        return seen307.length === 1 ? redirect(307, '/next') : ok()
+      },
+      async () => {
+        await fetchPublicWebUrl('https://example.com/form', {
+          method: 'POST',
+          headers: { 'content-type': 'text/plain' },
+          body: 'a=1',
+        })
+      },
+    )
+    expect(seen307[1]!.method).toBe('POST')
+    expect(seen307[1]!.body).toBe('a=1')
+    expect(new Headers(seen307[1]!.headers).get('content-type')).toBe('text/plain')
+  })
+
   it('passes a successful public response through untouched', async () => {
     await withFetch(
       () => ok('hello world'),
-      async () => {
+      async (spy) => {
         const response = await fetchPublicWebUrl('https://example.com/data', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -201,6 +279,11 @@ describe('web_fetch redirect discipline (#157, same pattern as #148)', () => {
         expect(response.status).toBe(200)
         expect(response.headers.get('content-type')).toBe('text/plain')
         expect(await response.text()).toBe('hello world')
+        // The caller's request actually reaches the first hop: guards against
+        // the init being silently dropped on the way to fetch.
+        const init = spy.mock.calls[0]![1] as RequestInit
+        expect(init).toMatchObject({ method: 'POST', body: '{"a":1}', redirect: 'manual' })
+        expect(new Headers(init.headers).get('content-type')).toBe('application/json')
       },
     )
   })
