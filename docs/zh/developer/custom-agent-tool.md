@@ -104,7 +104,7 @@ export const wordCountExecutor: ToolExecutor = async (args) => {
     }
     // context.directoryHandle / context.projectId / context.currentAgentId
     // for tools that touch the workspace — see read.tool.ts / write.tool.ts.
-    ...
+    // ...your logic here
   }
   ```
 
@@ -206,6 +206,11 @@ set('my_disk_writer', {
 
 `describe` 指向 `agent.toolAuth.*` 下的 key，必须补进四个语言（`packages/i18n/src/locales/{en-US,zh-CN,ja-JP,ko-KR}`），否则弹窗会直接显示 key 原文。`memoryKey` 让「本对话内总是允许」按工具族生效。
 
+还有两个行为来自 `authorize()` 本身，而不是你的表记录：
+
+- 开启 YOLO 模式时它直接返回 `allow`，不弹窗。这是用户的全局选择，不是你的工具引入的绕过。
+- `memoryKey` 才是让「本对话内总是允许」跳过后续提示的原因。不可逆操作建议不要给 `memoryKey`，这样每次调用都会再问一次。
+
 ## 7. 测试
 
 执行器就是普通函数，不需要渲染 React，放在 `web/agent/tools/__tests__/word-count.test.ts`：
@@ -220,7 +225,12 @@ const ctx = { directoryHandle: null } as never
 describe('word_count', () => {
   it('counts words, characters and lines', async () => {
     const result = JSON.parse(await wordCountExecutor({ text: 'one two\nthree' }, ctx))
-    expect(result).toMatchObject({ success: true, words: 3, lines: 2 })
+    expect(result).toMatchObject({ success: true, words: 3, characters: 13, lines: 2 })
+  })
+
+  it('counts code points, not UTF-16 units', async () => {
+    const result = JSON.parse(await wordCountExecutor({ text: '😀' }, ctx))
+    expect(result.characters).toBe(1)
   })
 
   it('rejects an empty string instead of returning zero counts', async () => {
