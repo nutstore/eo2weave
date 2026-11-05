@@ -23,6 +23,7 @@ import {
   planSkillUpdate,
   scanInstalledDirNames,
 } from '@/skills/skill-store'
+import { plainSkillLabel } from '@/skills/bundle-update-consent'
 import type { SkillStoreEntry } from '@/skills/skill-store'
 import { skillUpdateNeedsConsent } from '@/skills/skill-version'
 import { getSkillManager } from '@/skills/skill-manager'
@@ -123,11 +124,11 @@ export async function installSkillExecutor(
         )
       }
       const answer = await context.askUserQuestion({
-        question: `The skill "${entry.name}" is already installed and the Skill Store ships a newer version (would overwrite your installed copy). Install the update?`,
+        question: `The skill "${plainSkillLabel(entry.name)}" is already installed and the Skill Store ships a newer version (would overwrite your installed copy). Install the update?`,
         type: 'yes_no',
         defaultAnswer: 'no',
         context: {
-          preview: `Updating "${entry.name}" to store v${entry.version}`,
+          preview: `Updating "${plainSkillLabel(entry.name)}" to store v${entry.version}`,
         },
         signal: context.abortSignal,
         toolCallId: context.currentToolCallId,
@@ -168,16 +169,16 @@ export async function installSkillExecutor(
             const list = candidates
               .map(
                 (candidate) =>
-                  `- ${candidate.dirName}: installed v${candidate.installedVersion}, store v${candidate.storeVersion}`,
+                  `- ${plainSkillLabel(candidate.dirName)}: installed v${candidate.installedVersion}, store v${candidate.storeVersion}`,
               )
               .join('\n')
             const answer = await askUserQuestion({
-              question: `Installing "${entry.name}" also ships newer versions of ${candidates.length} other skill(s) already installed from the same bundle:\n${list}\n\nUpdating them replaces your installed copies (including any local edits). Update them too?`,
+              question: `Installing "${plainSkillLabel(entry.name)}" also ships newer versions of ${candidates.length} other skill(s) already installed from the same bundle:\n${list}\n\nUpdating them replaces your installed copies (including any local edits). Update them too?`,
               type: 'yes_no',
               defaultAnswer: 'no',
               context: {
                 preview: `Bundle members that would be updated: ${candidates
-                  .map((candidate) => candidate.dirName)
+                  .map((candidate) => plainSkillLabel(candidate.dirName))
                   .join(', ')}`,
               },
               signal: context.abortSignal,

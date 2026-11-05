@@ -29,6 +29,23 @@ export interface BundleUpdateCandidate {
 }
 
 /**
+ * Render a store/manifest-provided name as plain text inside a consent prompt.
+ *
+ * Skill names come from a remote manifest (`entry.name`) or from the archive
+ * (`dirName`) and the question is rendered as Markdown, so an unfiltered name
+ * can forge a link, a bullet, emphasis or a code span and make the prompt say
+ * something the user never approved. Consent copy must show the literal name.
+ */
+export function plainSkillLabel(name: string): string {
+  return name
+    // Markdown structure characters: links/images, emphasis, code, HTML,
+    // table cells, heading markers and list bullets.
+    .replace(/[[\]()<>*_`#|\\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
  * Members the install would OVERWRITE (installed + archive version newer).
  *
  * `focusDirName` is the skill the caller explicitly asked to install/update:

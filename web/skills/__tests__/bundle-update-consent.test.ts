@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   collectBundleUpdateCandidates,
+  plainSkillLabel,
   resolveBundleUpdateConsent,
   type BundleMemberUpdateFacts,
 } from '@/skills/bundle-update-consent'
@@ -89,5 +90,18 @@ describe('resolveBundleUpdateConsent (#183)', () => {
       approved: ['alpha'],
       skipped: ['beta'],
     })
+  })
+})
+
+describe('plainSkillLabel (#183 consent prompt)', () => {
+  it('keeps a manifest name literal so it cannot forge consent copy', () => {
+    // A store entry named by an attacker: a link plus a fake "approved" line.
+    expect(plainSkillLabel('[click to approve](https://evil.example) all skills')).toBe(
+      'click to approvehttps://evil.example all skills',
+    )
+    // Bullets, emphasis, code spans and headings are structure, not name text.
+    expect(plainSkillLabel('- **cw-free** `now`')).toBe('- cw-free now')
+    // Legitimate names survive.
+    expect(plainSkillLabel('cw-legal-evidence-chain')).toBe('cw-legal-evidence-chain')
   })
 })
