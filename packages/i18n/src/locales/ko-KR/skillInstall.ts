@@ -11,6 +11,7 @@ export const skillInstall = {
     versionLabel: "버전",
     filesLabel: "{count}개 파일",
     installButton: "스킬 설치",
+    updateButton: "v{version}(으)로 업데이트",
     installing: "설치 중…",
     installDone: "설치 완료!",
     installFailed: "설치 실패",

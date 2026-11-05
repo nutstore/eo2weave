@@ -83,6 +83,15 @@ export const discover = {
     progressUninstallFailed: "Uninstall failed",
     progressDownloadPercent: "Download progress {percent}%",
     loadMore: "Load more ({remaining} remaining)",
+    progressDownloadingBytes: "Downloading… ({loaded})",
+    alreadyInstalled: "Already installed",
+    installedFiles: "Installed {count} files",
+    alreadyInstalledVersion: "Already installed (v{version})",
+    skippedUpdate: "Skipped update: installed v{installed} is newer than store v{store}",
+    updatedVersion: "Updated v{from} → v{to} ({count} files)",
+    update: "Update",
+    updating: "Updating",
+    updateDone: "Updated",
 } as const
 
 export const skillCard = {

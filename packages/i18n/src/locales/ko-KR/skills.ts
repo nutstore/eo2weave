@@ -82,6 +82,15 @@ export const discover = {
     progressUninstallFailed: "제거 실패",
     progressDownloadPercent: "다운로드 진행률 {percent}%",
     loadMore: "더 보기 ({remaining}개 남음)",
+    progressDownloadingBytes: "다운로드 중…({loaded})",
+    alreadyInstalled: "설치됨",
+    installedFiles: "{count}개 파일을 설치했습니다",
+    alreadyInstalledVersion: "설치됨(v{version})",
+    skippedUpdate: "업데이트를 건너뛰었습니다: 설치된 버전 v{installed}이(가) 스토어 버전 v{store}보다 최신입니다",
+    updatedVersion: "v{from} → v{to}(으)로 업데이트했습니다({count}개 파일)",
+    update: "업데이트",
+    updating: "업데이트 중",
+    updateDone: "업데이트 완료",
 } as const
 
 export const skillCard = {

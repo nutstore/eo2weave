@@ -40,11 +40,11 @@ export function parseGitIgnore(content: string, baseDir = ''): GitIgnoreRule[] {
  * `kind` controls directory-only pattern matching (a trailing-slash rule such
  * as `build/` matches directories only). Callers that know the entry kind must
  * pass it; a regular file named `build` must not be classified ignored by a
- * `build/` rule. Like Git, a file beneath a directory excluded by a
- * directory-only rule is still ignored (an ancestor exclusion applies to
- * everything beneath it), so `build/x.js` under `build/` stays ignored even
- * when the entry kind is 'file'. The default treats the path as a directory,
- * which preserves the matching behavior of the kindless call sites.
+ * `build/` rule. Like Git, a path beneath an excluded directory cannot be
+ * re-included: each ancestor directory is evaluated on its own, and once an
+ * ancestor ends up excluded no negation may rescue the path. A negation can
+ * still re-include paths inside a non-excluded tree, and a negated directory
+ * rule can re-include a directory before exclusion is reached.
  */
 export function isGitIgnored(
   path: string,
@@ -54,15 +54,13 @@ export function isGitIgnored(
   const normalizedPath = normalizePath(path)
 
   // Git: "It is not possible to re-include a file if a parent directory of
-  // that file is excluded." For file entries, each ancestor directory is
-  // evaluated on its own; if one is excluded by a directory-only rule, the
-  // path is ignored regardless of the rules matching the path itself.
-  if (kind === 'file') {
-    const segments = normalizedPath.split('/')
-    for (let i = 1; i < segments.length; i++) {
-      const ancestor = segments.slice(0, i).join('/')
-      if (isDirectoryExcluded(ancestor, rules)) return true
-    }
+  // that file is excluded." Each ancestor directory is evaluated on its own;
+  // if one is excluded by a directory-only rule, the path is ignored
+  // regardless of the rules matching the path itself.
+  const segments = normalizedPath.split('/')
+  for (let i = 1; i < segments.length; i++) {
+    const ancestor = segments.slice(0, i).join('/')
+    if (isDirectoryExcluded(ancestor, rules)) return true
   }
 
   let ignored = false
@@ -117,13 +115,21 @@ function matchesRule(
 
   const hasSlash = pattern.includes('/')
   const prefixes = anchored || hasSlash ? [''] : ['', '**/']
+  if (directoryPattern && kind === 'file') {
+    const slash = relativePath.lastIndexOf('/')
+    if (slash < 0) return false
+    const parent = relativePath.slice(0, slash)
+    return micromatch.isMatch(parent, prefixes.flatMap((prefix) => [`${prefix}${pattern}`, `${prefix}${pattern}/**`]), {
+      dot: true, nonegate: true, nocase: false,
+    })
+  }
   const candidates = prefixes.flatMap((prefix) => {
     const target = `${prefix}${pattern}`
     if (forDirectoryExclusion) {
       // Git semantics: a `dir/**` pattern covers the directory's contents but
       // not the directory itself, while micromatch's `a/**` also matches `a`.
       // Reject that self match here or every `dir/**` rule would mark its own
-      // base directory excluded and prune everything beneath it.
+      // base directory excluded and prune the whole tree.
       if (target.endsWith('/**')) {
         return relativePath.startsWith(`${target.slice(0, -3)}/`) ? [target] : []
       }
@@ -137,9 +143,7 @@ function matchesRule(
       // REGULAR file as ignored (which let deleteFile bypass review, #186).
       return [`${target}/*`]
     }
-    return directoryPattern
-      ? [target, `${target}/**`]
-      : [target, `${target}/**`]
+    return [target, `${target}/**`]
   })
 
   return micromatch.isMatch(relativePath, candidates, {
