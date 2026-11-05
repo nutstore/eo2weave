@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSkillMd, serializeSkillMd } from '../skill-parser'
+import { parseDescriptionI18nFromSkillMd, parseSkillMd, serializeSkillMd } from '../skill-parser'
 
 /** Build a SKILL.md document from a frontmatter block + body. */
 function doc(yamlBlock: string, body = '# Instruction\n\nDo things.'): string {
@@ -169,5 +169,35 @@ describe('parseSkillMd/serializeSkillMd — localized descriptions', () => {
       doc('name: odd-skill\ndescription: Base.\ndescription.swagger: not a locale\n'),
     )
     expect(skill!.description_i18n).toBeUndefined()
+  })
+})
+
+describe('parseDescriptionI18n — locale tag coverage', () => {
+  it('accepts multi-subtag locales (zh-Hant-TW) without dropping them', () => {
+    const { skill } = parseSkillMd(
+      doc(
+        [
+          'name: hant-skill',
+          'description: Base description.',
+          'description.zh-Hant-TW: "繁體中文描述。"',
+          '',
+        ].join('\n'),
+      ),
+    )
+    expect(skill!.description_i18n).toEqual({ 'zh-Hant-TW': '繁體中文描述。' })
+  })
+
+  it('extracts translations from raw SKILL.md text (SQLite reload path)', () => {
+    const raw = doc(
+      [
+        'name: raw-skill',
+        'description: Base.',
+        'description.zh-CN: "中文描述。"',
+        '',
+      ].join('\n'),
+    )
+    expect(parseDescriptionI18nFromSkillMd(raw)).toEqual({ 'zh-CN': '中文描述。' })
+    // Unreadable/absent frontmatter is not an error — just no translations.
+    expect(parseDescriptionI18nFromSkillMd('no frontmatter here')).toBeUndefined()
   })
 })

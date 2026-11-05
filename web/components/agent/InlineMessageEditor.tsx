@@ -24,6 +24,8 @@ import { SlashCommandExtension, type SlashCommandItem } from './SlashCommandExte
 import { Paperclip, X, ImageIcon, FileIcon, FolderIcon, Loader2 } from 'lucide-react'
 import { extractDroppedFiles } from '@/lib/dragdrop'
 import { useT } from '@/i18n'
+import { useI18nStore } from '@/i18n/store'
+import { resolveSlashCommandDescription } from '@/skills/slash-command-registry'
 import { formatBytes as formatFileSize } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
@@ -217,6 +219,9 @@ export function InlineMessageEditor({
   submitLabel,
 }: InlineMessageEditorProps) {
   const t = useT()
+  // Subscribed directly so switching the UI language re-renders the
+  // slash-command descriptions (same pattern as AgentRichInput).
+  const locale = useI18nStore((state) => state.locale)
   const [isDragOver, setIsDragOver] = useState(false)
   /** True while dropped folders are being expanded into files. */
   const [isExtractingDropped, setIsExtractingDropped] = useState(false)
@@ -812,7 +817,11 @@ export function InlineMessageEditor({
           renderItem={(cmd) => (
             <span className="text-neutral-700 dark:text-neutral-300">
               /{cmd.id}
-              <span className="ml-2 text-neutral-500 dark:text-neutral-500">{cmd.description}</span>
+              <span className="ml-2 text-neutral-500 dark:text-neutral-500">
+                {cmd.source === 'builtin'
+                  ? t(`conversation.input.slashCommands.${cmd.label}.description`)
+                  : resolveSlashCommandDescription(cmd, locale)}
+              </span>
             </span>
           )}
         />

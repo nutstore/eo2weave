@@ -120,20 +120,44 @@ export function parseSkillMd(content: string, source: SkillSource = 'import'): P
  * translations of the skill description. The base `description` stays the
  * agent-facing trigger text.
  *
- * A locale is a BCP-47-ish tag (`zh-CN`, `ja`, `ko-KR`); anything else under a
- * `description.` prefix is ignored rather than surfaced as a locale.
+ * A locale is a BCP-47-ish tag with any number of subtags (`ja`, `zh-CN`,
+ * `zh-Hant-TW`); anything else under a `description.` prefix is ignored rather
+ * than surfaced as a locale.
  */
 export function parseDescriptionI18n(
   meta: Record<string, unknown>,
 ): Record<string, string> | undefined {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(meta)) {
-    const match = /^description\.([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?)$/.exec(key)
+    const match = /^description\.([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)$/.exec(key)
     if (!match || typeof value !== 'string') continue
     const text = value.trim()
     if (text) out[match[1]] = text
   }
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+/**
+ * Extract only the `description.<locale>` map from raw SKILL.md text.
+ *
+ * The cheap path for callers that already store the raw file (SQLite rows) and
+ * need the translations without a full parse. Unreadable frontmatter yields
+ * undefined — translations are display-only, never load-blocking.
+ */
+export function parseDescriptionI18nFromSkillMd(
+  content: string,
+): Record<string, string> | undefined {
+  const trimmed = content.trim()
+  if (!trimmed.startsWith('---')) return undefined
+  const end = trimmed.indexOf('---', 3)
+  if (end === -1) return undefined
+  try {
+    const meta = yaml.load(trimmed.substring(3, end).trim())
+    if (!meta || typeof meta !== 'object') return undefined
+    return parseDescriptionI18n(meta as Record<string, unknown>)
+  } catch {
+    return undefined
+  }
 }
 
 /**
