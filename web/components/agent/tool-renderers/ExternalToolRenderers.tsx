@@ -9,6 +9,7 @@ import { CopyIconButton } from '../CopyIconButton'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
 import { formatBytes } from '@/lib/utils'
+import { useT } from '@/i18n'
 
 // ── search_tools ──
 
@@ -129,6 +130,7 @@ registerRenderer({
     )
   },
   Detail(ctx) {
+    const t = useT()
     const fullName = typeof ctx.args.full_tool_name === 'string' ? ctx.args.full_tool_name : ''
     const toolArgs = ctx.args.args as Record<string, unknown> | undefined
     const data = ctx.result?.data as Record<string, unknown> | undefined
@@ -191,7 +193,7 @@ registerRenderer({
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
             </span>
-            <span>Running...</span>
+            <span>{t('agent.toolStatus.running')}</span>
           </div>
         )}
 

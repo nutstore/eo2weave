@@ -6,11 +6,13 @@ import { FileText } from 'lucide-react'
 import { CopyIconButton } from '../CopyIconButton'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
+import { useT } from '@/i18n'
 
 registerRenderer({
   name: 'read',
   icon: <FileText className="h-3.5 w-3.5 text-neutral-400" />,
   Summary(ctx) {
+    const t = useT()
     const path = extractPath(ctx.args)
     const content = extractContent(ctx)
     const lineCount = content ? content.split('\n').length : 0
@@ -22,7 +24,7 @@ registerRenderer({
           <span className="truncate text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500">{shortPath(path)}</span>
         )}
         {ctx.isExecuting ? (
-          <span className="ml-auto text-blue-500 text-xs shrink-0">reading...</span>
+          <span className="ml-auto text-blue-500 text-xs shrink-0">{t('agent.toolStatus.reading')}</span>
         ) : ctx.isError ? null : (
           <span className="ml-auto text-neutral-400 text-xs shrink-0">{lineCount} lines</span>
         )}

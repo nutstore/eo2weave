@@ -9,6 +9,7 @@ import { GitBranch } from 'lucide-react'
 import { CopyIconButton } from '../CopyIconButton'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
+import { useT } from '@/i18n'
 
 // ── Types (mirrors opfs/git/index.ts) ──
 
@@ -80,6 +81,7 @@ registerRenderer({
   name: 'snapshot_diff',
   icon: <GitBranch className="h-3.5 w-3.5 text-neutral-400" />,
   Summary(ctx) {
+    const t = useT()
     const mode = typeof ctx.args.mode === 'string' ? ctx.args.mode : 'working'
     const path = typeof ctx.args.path === 'string' ? ctx.args.path : undefined
     const diff = extractDiffData(ctx)
@@ -90,7 +92,7 @@ registerRenderer({
           <code className="font-medium text-neutral-700 dark:text-foreground">snapshot_diff</code>
           {MODE_LABELS[mode] && <span className="text-xs text-neutral-400">{MODE_LABELS[mode]}</span>}
           {path && <span className="max-w-[200px] truncate font-mono text-[11px] text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500">{path}</span>}
-          {ctx.isExecuting && <span className="ml-auto text-xs text-blue-500 shrink-0">loading...</span>}
+          {ctx.isExecuting && <span className="ml-auto text-xs text-blue-500 shrink-0">{t('common.loading')}</span>}
         </>
       )
     }

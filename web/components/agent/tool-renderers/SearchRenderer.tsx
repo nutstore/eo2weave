@@ -52,6 +52,7 @@ registerRenderer({
   name: 'search',
   icon: <Search className="h-3.5 w-3.5 text-neutral-400" />,
   Summary(ctx) {
+    const t = useT()
     const query = typeof ctx.args.query === 'string' ? ctx.args.query : ''
     const { files, loading: overflowLoading } = useOverflowFiles(ctx)
     const fileCount = files.length
@@ -85,7 +86,7 @@ registerRenderer({
           <span className="ml-auto text-xs text-neutral-400 shrink-0">no results</span>
         )}
         {overflowLoading && (
-          <span className="ml-auto text-xs text-neutral-400 shrink-0 animate-pulse">loading...</span>
+          <span className="ml-auto text-xs text-neutral-400 shrink-0 animate-pulse">{t('common.loading')}</span>
         )}
         {ctx.isError && (
           <ErrorSummary ctx={ctx} />
@@ -94,6 +95,7 @@ registerRenderer({
     )
   },
   Detail(ctx) {
+    const t = useT()
     // Hooks must run unconditionally (rules-of-hooks) — early returns stay below.
     const { files: fileResults, loading: overflowLoading, error: overflowError } = useOverflowFiles(ctx)
     if (ctx.isError) {
@@ -108,7 +110,7 @@ registerRenderer({
       return (
         <div className="px-3 py-2 space-y-2">
           <StreamingPlaceholder />
-          <div className="text-[10px] text-neutral-400 animate-pulse">Loading large result set...</div>
+          <div className="text-[10px] text-neutral-400 animate-pulse">{t('agent.toolStatus.loadingLargeResultSet')}</div>
         </div>
       )
     }

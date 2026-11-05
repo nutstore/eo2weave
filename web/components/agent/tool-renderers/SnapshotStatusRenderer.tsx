@@ -15,6 +15,7 @@
 import { GitBranch } from 'lucide-react'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
+import { useT } from '@/i18n'
 
 // ── Status code helpers ────────────────────────────────────────────────────
 
@@ -174,11 +175,12 @@ registerRenderer({
   name: 'snapshot_status',
   icon: <GitBranch className="h-3.5 w-3.5 text-neutral-400" />,
   Summary(ctx) {
+    const t = useT()
     if (ctx.isExecuting) {
       return (
         <>
           <code className="font-medium text-neutral-700 dark:text-foreground">snapshot_status</code>
-          <span className="text-xs text-blue-500">loading...</span>
+          <span className="text-xs text-blue-500">{t('common.loading')}</span>
         </>
       )
     }

@@ -157,4 +157,10 @@ export const agent = {
             resetTitle: "重置视图",
         },
     },
+    // Tool renderer status labels
+    toolStatus: {
+        running: "运行中…",
+        reading: "读取中…",
+        loadingLargeResultSet: "正在加载大量结果…",
+    },
 } as const
