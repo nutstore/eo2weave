@@ -654,6 +654,16 @@ export default defineContentScript({
         // ── Default: fast HTTP fetch first ──
         let response = await getRawHtml(false);
 
+        // A policy refusal (private / loopback / metadata target, redirect into
+        // one, opaque redirect) is FINAL: render mode would load the very same
+        // URL in a tab, follow the redirect, and hand back the rendered tab
+        // HTML as if it were the resource — so a refused JSON endpoint would
+        // come back as a misleading HTML "success". Never retry a refusal (or
+        // any caller-side request error) through render mode.
+        if (response.refused) {
+          return response;
+        }
+
         // HTTP failed entirely → try render as last resort
         if (!response.ok || !response.body) {
           const renderResponse = await getRawHtml(true);
