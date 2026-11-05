@@ -704,6 +704,12 @@ export default defineContentScript({
               return rendered;
             }
           }
+          // A refused render is a policy verdict, not a "keep the shell" case:
+          // returning the short HTML would report a target the guard rejected as
+          // a successful fetch.
+          if (renderResponse.refused) {
+            return renderResponse;
+          }
         }
 
         return extracted;
