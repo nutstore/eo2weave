@@ -22,6 +22,7 @@ import {
   type InstallProgress,
 } from '@/skills/skill-store'
 import { SkillSearchInput, SkillSegmentFilter, SkillRefreshButton } from './SkillToolbar'
+import { useBundleUpdateConsent } from './BundleUpdateConsent'
 import type { SkillFilterOption } from './SkillToolbar'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -52,6 +53,8 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
   const t = useT()
   const [locale] = useLocale()
   const bumpScanVersion = useSkillsStore((s) => s.bumpSkillsScanVersion)
+  // Aggregated consent for sibling bundle updates (#183).
+  const bundleConsent = useBundleUpdateConsent()
 
   const [manifest, setManifest] = useState<SkillStoreEntry[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -127,7 +130,12 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
         // The version-aware install flow decides whether this is a fresh
         // install, an update of an older copy, or a no-op (#154) — the card
         // must not overwrite a newer local copy itself.
-        result = await installSkillFromUrl(entry.zipUrl, setProgress)
+        result = await installSkillFromUrl(entry.zipUrl, setProgress, {
+          focusDirName: entry.dirName,
+          // #183: bundle siblings this archive would overwrite are consented
+          // to in ONE aggregated prompt; unchecked members are kept.
+          confirmBundleUpdates: bundleConsent.confirm,
+        })
       } else {
         // Store keys user skills by `user:<dirName>`. deleteSkill handles the
         // OPFS removal and bumps the scan version automatically.
@@ -160,8 +168,15 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
               // what just happened on disk until a later manifest refresh
               // (#185 review round N). Patch the changed card from the
               // operation itself; the fallback set still covers the others.
+              // EXCEPT when the selected member itself was dropped mid-install
+              // (#197): it is NOT on disk, so the card must not claim it is.
               if (rescanFailed) {
-                return { ...e, installed: op === 'install' || op === 'update' }
+                const targetDropped =
+                  result?.droppedMembers?.includes(entry.dirName) ?? false
+                return {
+                  ...e,
+                  installed: op === 'uninstall' ? false : !targetDropped,
+                }
               }
               return { ...e, installed: installed.has(e.dirName) }
             })
@@ -201,6 +216,13 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
         // dropped members on top of the install/update result instead of a
         // clean success.
         doneMessage = t('skills.discover.memberRemovedDuringInstall')
+      }
+      if ((result?.bundleUpdates?.skipped.length ?? 0) > 0) {
+        // #183: sibling skills the user declined to update must be named, not
+        // silently left behind while the toast reads like a full success.
+        doneMessage = `${doneMessage} ${t('skills.discover.bundleUpdatesSkipped', {
+          names: result!.bundleUpdates!.skipped.join(', '),
+        })}`
       }
       setProgress({ phase: 'done', message: doneMessage })
     } catch (err) {
@@ -399,6 +421,7 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
         </div>
       )}
       </div>
+      {bundleConsent.element}
     </>
   )
 }

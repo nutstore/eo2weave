@@ -113,4 +113,27 @@ describe('scanInstalledDirNames (#185 fallback policy)', () => {
     )
     await expect(scanInstalledDirNames()).rejects.toThrow('walk failed')
   })
+
+  it('propagates a NotFoundError raised AFTER the dir handle was obtained (#197)', async () => {
+    // The directory existed when the handle was resolved, so its absence now
+    // is a mid-scan storage event — NOT "no skills installed". Falling back
+    // to the store cache here reported a deleted/garbled scan as a valid
+    // (stale) install list.
+    const vanishingUserDir: DirStub = {
+      kind: 'directory',
+      name: 'user',
+      getDirectoryHandle: async () => vanishingUserDir,
+      values: async function* () {
+        throw new DOMException('user vanished', 'NotFoundError')
+        // eslint-disable-next-line no-unreachable
+        yield { kind: 'directory', name: 'alpha' }
+      },
+    }
+    useOpfsRoot(
+      makeDir('opfs-root', {
+        '.skills': makeDir('.skills', { user: vanishingUserDir }),
+      }),
+    )
+    await expect(scanInstalledDirNames()).rejects.toThrow()
+  })
 })

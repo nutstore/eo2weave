@@ -27,6 +27,12 @@ import {
   parseSkillMdVersion,
   type SkillUpdateAction,
 } from '@/skills/skill-version'
+import {
+  collectBundleUpdateCandidates,
+  resolveBundleUpdateConsent,
+  type BundleUpdateCandidate,
+  type BundleMemberUpdateFacts,
+} from '@/skills/bundle-update-consent'
 
 // ---------- Types ----------
 
@@ -204,23 +210,24 @@ export async function scanInstalledDirNamesSnapshot(): Promise<{
   names: Set<string>
   opfsBacked: boolean
 }> {
+  // Only HANDLE RESOLUTION owns the absent-directory fallback (#197): a
+  // NotFoundError raised further down — e.g. `.skills/user/` disappearing
+  // between handle resolution and enumeration — is a failed scan, not an
+  // empty install set, and must not be reported as (or replaced by) cached
+  // data.
+  let userDir: FileSystemDirectoryHandle | null = null
   try {
     const root = await navigator.storage.getDirectory()
     const skillsDir = await (root as any).getDirectoryHandle('.skills', { create: false })
-    const userDir = await skillsDir.getDirectoryHandle('user', { create: false })
-    const names: string[] = []
-    for await (const entry of (userDir as any).values()) {
-      if (entry.kind === 'directory') names.push(entry.name)
-    }
-    return { names: new Set(names), opfsBacked: true }
+    userDir = await skillsDir.getDirectoryHandle('user', { create: false })
   } catch (e) {
-    // A browser without File System Access support throws TypeError from
+    // A browser without File System Access support throws a TypeError from
     // getDirectory() — same documented fallback as a missing directory
-    // (#185): nothing is installed per OPFS, query the store cache.
-    // A TypeError from DEEPER in the scan (enumeration, handle resolution)
-    // is an operational failure, not a missing API, and must propagate
-    // instead of degrading to the stale cache (#185 review round N).
+    // (#185): nothing is installed per OPFS, query the store cache. Any
+    // other failure here stays a failure.
     if (!isNotFoundError(e) && !isOpfsSupportMissing(e)) throw e
+  }
+  if (!userDir) {
     // `.skills/user/` doesn't exist yet — nothing installed per OPFS. The
     // store cache may still hold legacy SQLite-era entries, so fall back to
     // it. Store ids are `user:<dirName>` while callers compare against bare
@@ -236,6 +243,12 @@ export async function scanInstalledDirNamesSnapshot(): Promise<{
       opfsBacked: false,
     }
   }
+
+  const names: string[] = []
+  for await (const entry of (userDir as any).values()) {
+    if (entry.kind === 'directory') names.push(entry.name)
+  }
+  return { names: new Set(names), opfsBacked: true }
 }
 
 /**
@@ -451,6 +464,33 @@ function tr(key: string, params?: Record<string, string | number>): string {
 export type SkillUpdatePlan = SkillUpdateAction | 'install'
 
 /**
+ * Choices for one install call (#183).
+ */
+export interface InstallSkillOptions {
+  /**
+   * dirName the caller explicitly asked for (the store entry, or the
+   * `install_skill` target). The user already consented to updating that one,
+   * so it is excluded from the aggregated bundle-update prompt.
+   */
+  focusDirName?: string
+  /**
+   * One aggregated prompt listing every OTHER bundle member this install would
+   * overwrite. Return the dirNames the user approved; anything else is
+   * skipped and named in the result summary. Absent (or returning nothing) →
+   * no sibling is overwritten: consent must never be assumed.
+   */
+  confirmBundleUpdates?: (candidates: BundleUpdateCandidate[]) => Promise<string[]>
+}
+
+/** What a bundle install did with its sibling members (#183). */
+export interface BundleUpdateOutcome {
+  /** Siblings the user approved and that were overwritten. */
+  updated: string[]
+  /** Siblings the user declined — installed copies kept untouched. */
+  skipped: string[]
+}
+
+/**
  * Decide what to do with a store skill BEFORE downloading it: compare the
  * store's version with the installed copy's version, exactly like
  * `installSkillFromUrl` does, but without the download.
@@ -475,12 +515,15 @@ export async function planSkillUpdate(
 export async function installSkillFromUrl(
   zipUrl: string,
   onProgress?: (p: InstallProgress) => void,
+  options?: InstallSkillOptions,
 ): Promise<{
   count: number
   manifest: SkillStoreEntry
   outcome: InstallOutcome
   /** Members dropped by the locked absence re-check (#185 req. 3). */
   droppedMembers?: string[]
+  /** Sibling bundle members this install updated or skipped (#183). */
+  bundleUpdates?: BundleUpdateOutcome
 }> {
   const report = (p: Omit<InstallProgress, 'bytesLoaded' | 'bytesTotal'>) =>
     onProgress?.(p)
@@ -604,6 +647,51 @@ export async function installSkillFromUrl(
     // Members dropped by the locked absence re-check (#185 req. 3) — empty
     // unless the user uninstalled a present member mid-download.
     let droppedMembers: string[] = []
+    // Sibling bundle members this install overwrote / kept (#183).
+    let bundleUpdates: BundleUpdateOutcome | undefined
+
+    // Aggregated bundle-update consent (#183): enumerate every OTHER member
+    // this archive would overwrite BEFORE anything is written, so the caller
+    // can present one prompt naming all affected skills. The selected entry is
+    // excluded — the caller already obtained consent for it (the Update
+    // button, or install_skill's update gate). Version reads only, so a
+    // declined prompt leaves the disk untouched.
+    const approvedSiblings = new Set<string>()
+    let consentCandidates: BundleUpdateCandidate[] = []
+    const updatedSiblings: string[] = []
+    // The skill the caller asked for: an explicit focus dirName, or — for a
+    // single-skill archive — the archive's only member. Everything else that
+    // would be overwritten needs consent.
+    const focusDirName =
+      options?.focusDirName ?? (preview.isBundle ? undefined : preview.skill?.dirName)
+    if (memberSkills.length > 0) {
+      const installedVersions = new Map<string, string | null>()
+      for (const s of memberSkills) {
+        const installed = await readInstalledSkillVersion(s.dirName)
+        if (installed.error) throw installed.error
+        installedVersions.set(s.dirName, installed.version)
+      }
+      const facts: BundleMemberUpdateFacts[] = memberSkills.map((s) => ({
+        dirName: s.dirName,
+        storeVersion: parseSkillMdVersion(extractStoreSkillMd(preview, s) ?? ''),
+      }))
+      consentCandidates = collectBundleUpdateCandidates(
+        facts,
+        installedVersions,
+        focusDirName,
+      )
+      if (consentCandidates.length > 0) {
+        // No channel (or an empty answer) → keep every installed sibling:
+        // consent is required, never assumed. Declined members are named in
+        // the summary below.
+        const approved = options?.confirmBundleUpdates
+          ? await options.confirmBundleUpdates(consentCandidates)
+          : []
+        for (const dirName of resolveBundleUpdateConsent(consentCandidates, approved).approved) {
+          approvedSiblings.add(dirName)
+        }
+      }
+    }
 
     if (memberSkills.length === 0) {
       count = 0
@@ -697,10 +785,18 @@ export async function installSkillFromUrl(
 
             const action = decideSkillUpdateAction(storeVersion, installed.version)
             if (action === 'update') {
+              // Aggregated consent (#183): overwriting a SIBLING needs an
+              // explicit approval from this install's prompt. A sibling that
+              // became updatable only after the prompt (another actor
+              // installed it mid-flight) is not approved either — keep it.
+              if (s.dirName !== focusDirName && !approvedSiblings.has(s.dirName)) {
+                continue
+              }
               const n = await importUserSkillZipPrelocked(slicePreview(preview, s))
               if (n > 0) {
                 updatedAny = true
                 filesWritten += n
+                if (approvedSiblings.has(s.dirName)) updatedSiblings.push(s.dirName)
                 if (!updatedFrom) {
                   updatedFrom = installed.version
                   updatedTo = storeVersion
@@ -773,6 +869,20 @@ export async function installSkillFromUrl(
       droppedMembers = result.droppedMembers ?? []
     }
 
+    // Declined sibling updates are part of the result, not a silent detail
+    // (#183): the summary the user/agent sees must name what was kept.
+    if (consentCandidates.length > 0) {
+      const declined = consentCandidates
+        .map((candidate) => candidate.dirName)
+        .filter((dirName) => !approvedSiblings.has(dirName))
+      bundleUpdates = { updated: [...updatedSiblings], skipped: declined }
+      if (declined.length > 0 && !droppedMembers.length) {
+        doneMessage = `${doneMessage} ${tr('skills.discover.bundleUpdatesSkipped', {
+          names: declined.join(', '),
+        })}`
+      }
+    }
+
     // Find manifest entry (best effort — caller may not have it)
     const manifest: SkillStoreEntry = {
       id: preview.skill?.dirName ?? filename.replace(/\.zip$/, ''),
@@ -786,9 +896,13 @@ export async function installSkillFromUrl(
     }
 
     report({ phase: 'done', message: doneMessage })
-    return droppedMembers.length > 0
-      ? { count, manifest, outcome, droppedMembers }
-      : { count, manifest, outcome }
+    return {
+      count,
+      manifest,
+      outcome,
+      ...(droppedMembers.length > 0 ? { droppedMembers } : {}),
+      ...(bundleUpdates ? { bundleUpdates } : {}),
+    }
   } catch (e) {
     clearTimeout(timeoutId)
     if (e instanceof DOMException && e.name === 'AbortError') {

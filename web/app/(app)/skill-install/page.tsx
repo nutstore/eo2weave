@@ -28,6 +28,7 @@ import {
 } from '@/skills/skill-store'
 import { mergePrefillText } from '@/lib/skill-install-flow'
 import { getSkillManager } from '@/skills/skill-manager'
+import { useBundleUpdateConsent } from '@/components/skills/BundleUpdateConsent'
 import { useProjectStore } from '@/store/project.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
@@ -99,6 +100,13 @@ function SkillInstallView() {
   const [phase, setPhase] = useState<Phase>('loading')
   const [errorKind, setErrorKind] = useState<ErrorKind>('load-failed')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  // Non-fatal install notices (a bundle member removed mid-install, sibling
+  // updates the visitor declined). Kept apart from `errorMessage` so a later
+  // registration failure cannot replace them, and so `continueToConversation`
+  // clearing the error does not erase what actually happened (#197/#183).
+  const [installNotice, setInstallNotice] = useState<string | null>(null)
+  const bundleConsent = useBundleUpdateConsent()
+  const confirmBundleUpdates = bundleConsent.confirm
   const [entry, setEntry] = useState<SkillStoreEntry | null>(null)
   const [alreadyInstalled, setAlreadyInstalled] = useState(false)
   // The store ships a newer version than the installed copy — the page
@@ -436,25 +444,43 @@ function SkillInstallView() {
     const installGeneration = installGenerationRef.current
     const isStale = () => currentGeneration() !== installGeneration
     setPhase('installing')
+    setErrorMessage(null)
+    setInstallNotice(null)
     try {
       // Fresh install, update of an older copy, or a no-op — the flow
       // compares the store's version with the installed one.
-      const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress)
+      const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress, {
+        focusDirName: entry.dirName,
+        // #183: every sibling this archive would overwrite is consented to in
+        // one aggregated prompt; unchecked members keep their installed copy.
+        confirmBundleUpdates,
+      })
       if (result.outcome === 'updated') setUpdateAvailable(false)
       // Partial member drops ride ANY successful outcome (#185 review round
       // N): the visitor must know a bundle member was omitted, not just see
-      // "installed".
+      // "installed". Sibling updates the visitor declined are named too
+      // (#183). Both are NOTICES, not errors: a later registration failure
+      // must not replace them, and proceeding must not clear them.
+      const targetDropped = result.droppedMembers?.includes(entry.dirName) ?? false
+      const notices: string[] = []
       if ((result.droppedMembers?.length ?? 0) > 0) {
-        setErrorMessage(
-          t('skillInstall.memberRemovedDuringInstall') ||
-            'Install finished, but a skill removed during the install was not re-created.'
+        notices.push(t('skillInstall.memberRemovedDuringInstall'))
+      }
+      if ((result.bundleUpdates?.skipped.length ?? 0) > 0) {
+        notices.push(
+          t('skills.discover.bundleUpdatesSkipped', {
+            names: result.bundleUpdates!.skipped.join(', '),
+          }),
         )
       }
+      setInstallNotice(notices.length > 0 ? notices.join(' ') : null)
       // The archive IS on disk from this point on — a retry after a
       // failure in the steps below must refresh/verify registration
       // instead of downloading and importing again (a re-import would
-      // replace any local changes the visitor made to the skill).
-      setAlreadyInstalled(true)
+      // replace any local changes the visitor made to the skill). A dropped
+      // target is the exception: nothing was created, so the page must keep
+      // offering installation (#197).
+      if (!targetDropped) setAlreadyInstalled(true)
       // A query change during the download abandons the old skill's flow:
       // never verify or navigate for it. The skill IS on disk though, so
       // the manager cache must still be refreshed — otherwise the
@@ -472,6 +498,15 @@ function SkillInstallView() {
       // rescans OPFS and re-syncs the slash-command registry.
       await getSkillManager().refreshUserSkills()
       if (isStale()) return
+      // The requested skill was dropped by the locked re-check: nothing was
+      // created, so there is nothing to register and no conversation to open.
+      // The omission notice (set above) is the explanation; a
+      // "registration failed" error here would be misleading (#197).
+      if (targetDropped) {
+        setInstallProgress(null)
+        setPhase('details')
+        return
+      }
       // The skill must be REGISTERED and ENABLED after the refresh — a
       // directory alone is not enough: refreshUserSkills() swallows scan
       // failures, and a dir-only check would let the page navigate with
@@ -502,7 +537,7 @@ function SkillInstallView() {
     } finally {
       installStartedRef.current = false
     }
-  }, [entry, runAiReadiness, t])
+  }, [entry, runAiReadiness, t, confirmBundleUpdates])
 
   // Guard against overlapping Start attempts: while a readiness check /
   // navigation is in flight, a second click (or double-click) must be a
@@ -597,8 +632,15 @@ function SkillInstallView() {
     const installGeneration = installGenerationRef.current
     const isStale = () => currentGeneration() !== installGeneration
     setPhase('installing')
+    setErrorMessage(null)
+    setInstallNotice(null)
     try {
-      const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress)
+      const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress, {
+        focusDirName: entry.dirName,
+        // #183: sibling members this archive would overwrite are consented to
+        // in one aggregated prompt; declined members keep their installed copy.
+        confirmBundleUpdates,
+      })
       if (result.outcome !== 'current' && result.outcome !== 'installed-newer') {
         setUpdateAvailable(false)
         // The copy on disk changed — an update request can also land as a
@@ -609,12 +651,23 @@ function SkillInstallView() {
       }
       // Partial member drops ride ANY successful outcome (#185 review round
       // N): surface the omission instead of a clean "already installed".
+      // Declined sibling updates are named too (#183) — as a NOTICE, so
+      // proceeding does not erase them.
+      const notices: string[] = []
       if ((result.droppedMembers?.length ?? 0) > 0) {
-        setErrorMessage(
+        notices.push(
           t('skillInstall.memberRemovedDuringInstall') ||
-            'Install finished, but a skill removed during the install was not re-created.'
+            'Install finished, but a skill removed during the install was not re-created.',
         )
       }
+      if ((result.bundleUpdates?.skipped.length ?? 0) > 0) {
+        notices.push(
+          t('skills.discover.bundleUpdatesSkipped', {
+            names: result.bundleUpdates!.skipped.join(', '),
+          }),
+        )
+      }
+      setInstallNotice(notices.length > 0 ? notices.join(' ') : null)
       setInstallProgress(null)
       setPhase('details')
     } catch (e) {
@@ -625,7 +678,7 @@ function SkillInstallView() {
     } finally {
       installStartedRef.current = false
     }
-  }, [entry, t])
+  }, [entry, t, confirmBundleUpdates])
 
   const handleLoginSuccess = useCallback(async () => {
     setCreditExhausted(false)
@@ -782,6 +835,15 @@ function SkillInstallView() {
             <p className="min-w-0 flex-1 break-words">{errorMessage}</p>
           </div>
         )}
+        {installNotice && (
+          <div
+            role="status"
+            className="flex max-w-md items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200"
+          >
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+            <p className="min-w-0 flex-1 break-words">{installNotice}</p>
+          </div>
+        )}
         {creditExhausted && (
           <div className="flex max-w-md items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
             <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
@@ -830,6 +892,7 @@ function SkillInstallView() {
             </button>
           </div>
         )}
+        {bundleConsent.element}
       </Centered>
     )
   }

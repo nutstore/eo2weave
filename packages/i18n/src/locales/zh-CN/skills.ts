@@ -93,6 +93,13 @@ export const discover = {
     update: "更新",
     updating: "正在更新",
     updateDone: "更新成功",
+    bundleUpdateTitle: "同时更新这个包里的其他技能？",
+    bundleUpdateBody:
+      "这个技能包还包含 {count} 个你已安装技能的新版本。更新会覆盖已安装的副本，包括本地修改。取消勾选即可保留。",
+    bundleUpdateVersion: "已安装 v{from} → 商店 v{to}",
+    bundleUpdateAccept: "更新所选（{count}）",
+    bundleUpdateSkip: "保留已安装副本",
+    bundleUpdatesSkipped: "已保留 {names} 的已安装副本。",
 } as const
 
 export const skillCard = {
@@ -173,6 +180,8 @@ export const skillEditor = {
     nameRequired: "请输入技能名称",
     descriptionRequired: "请输入描述",
     saveFailed: "保存失败",
+    renameCleanupFailed:
+      "已保存新名称，但删除旧技能 \"{name}\" 失败（{error}）。两个技能现在都存在，请在技能列表中删除其中一个。",
     // Category labels
     categories: {
       codeReview: "代码审查",

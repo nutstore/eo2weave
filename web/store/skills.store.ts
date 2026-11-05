@@ -255,6 +255,11 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
           // rescan. Let the error surface instead.
           if (existsInOpfs) {
             await deleteUserSkillDir(dirName)
+            // Reconcile the runtime cache with the COMPLETED delete before
+            // the rescan below: when that rescan fails, the manager keeps its
+            // previous cache wholesale, which would leave the deleted skill in
+            // the UI and agent context (#197).
+            getSkillManager().forgetUserSkill(dirName)
           } else {
             await storage.deleteSkill(id)
           }

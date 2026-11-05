@@ -146,7 +146,16 @@ export function SkillEditor({ skill, open, onClose, readOnly = false }: SkillEdi
         // If IDs match, importSkillMd already performed an in-place update, so
         // deleting would wipe the just-saved skill.
         if (skill && result.skillId && skill.id !== result.skillId) {
-          await skillsStore.deleteSkill(skill.id)
+          try {
+            await skillsStore.deleteSkill(skill.id)
+          } catch (deleteErr) {
+            // The rename already wrote the new directory — only removing the
+            // OLD one failed, so both skills now exist. Report it instead of
+            // closing the editor on a silent, half-done rename (#197).
+            const msg = deleteErr instanceof Error ? deleteErr.message : String(deleteErr)
+            setError(t('skillEditor.renameCleanupFailed', { name: skill.name, error: msg }))
+            return
+          }
         }
         onClose()
       } else {

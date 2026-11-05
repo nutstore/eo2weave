@@ -17,6 +17,11 @@ import {
 } from './skill-injection'
 import { scanProjectSkills } from './skill-scanner'
 import { scanUserSkills, migrateUserSkillsFromSQLite } from './user-skills-scanner'
+import {
+  reconcileUserSkillScan,
+  removeUserSkill,
+  userSkillId,
+} from './user-skill-cache'
 import { generateResourceId } from './skill-resources'
 import {
   clearSkillCommands,
@@ -406,7 +411,13 @@ export class SkillManager {
       // Apply persisted enabled state from localStorage so that user-skill
       // toggle choices survive page refreshes.
       const savedState = this.loadUserSkillState()
-      this.cachedUserSkills = result.skills.map((skill) => ({
+      // A scan that RESOLVED with per-skill errors carries no entry for the
+      // unreadable skill — replacing the cache wholesale dropped it from the
+      // UI and agent context (#197). Reconcile instead: scanned skills win,
+      // skills whose directory errored this round keep their previous entry.
+      const reconciled = reconcileUserSkillScan(this.cachedUserSkills, result)
+      const scannedIds = new Set(result.skills.map((skill) => skill.id))
+      this.cachedUserSkills = reconciled.map((skill) => ({
         ...skill,
         enabled: Object.prototype.hasOwnProperty.call(savedState, skill.id)
           ? savedState[skill.id]
@@ -420,6 +431,13 @@ export class SkillManager {
         } else {
           bySkillId.set(resource.skillId, [resource])
         }
+      }
+      // Carried-over skills keep their previously loaded resources, so a
+      // single unreadable SKILL.md does not also strip the skill's files.
+      for (const skill of reconciled) {
+        if (scannedIds.has(skill.id)) continue
+        const previous = this.userResourcesBySkillId.get(skill.id)
+        if (previous) bySkillId.set(skill.id, previous)
       }
       this.userResourcesBySkillId = bySkillId
 
@@ -444,6 +462,20 @@ export class SkillManager {
       // rebuilding from a stale cache adds no information.
       console.warn('[SkillManager] User skills scan failed (keeping previous cache):', error)
     }
+  }
+
+  /**
+   * Drop one user skill from the runtime cache after its OPFS directory was
+   * deleted (#197).
+   *
+   * The follow-up `refreshUserSkills()` keeps the previous cache wholesale
+   * when the scan fails, so without this the deleted skill would stay in the
+   * UI and in agent context until a later successful scan.
+   */
+  forgetUserSkill(dirName: string): void {
+    this.cachedUserSkills = removeUserSkill(this.cachedUserSkills, dirName)
+    this.userResourcesBySkillId.delete(userSkillId(dirName))
+    this.syncSlashCommands()
   }
 
   /**

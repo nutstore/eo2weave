@@ -92,6 +92,13 @@ export const discover = {
     update: "업데이트",
     updating: "업데이트 중",
     updateDone: "업데이트 완료",
+    bundleUpdateTitle: "이 번들의 다른 스킬도 업데이트할까요?",
+    bundleUpdateBody:
+      "이 번들에는 이미 설치한 스킬 {count}개의 새 버전이 포함되어 있습니다. 업데이트하면 로컬 편집 내용을 포함해 설치된 사본이 교체됩니다. 유지할 스킬은 선택을 해제하세요.",
+    bundleUpdateVersion: "설치됨 v{from} → 스토어 v{to}",
+    bundleUpdateAccept: "선택 항목 업데이트({count})",
+    bundleUpdateSkip: "설치된 사본 유지",
+    bundleUpdatesSkipped: "{names}의 설치된 사본을 유지했습니다.",
 } as const
 
 export const skillCard = {
@@ -172,6 +179,8 @@ export const skillEditor = {
     nameRequired: "스킬 이름을 입력하세요",
     descriptionRequired: "설명을 입력하세요",
     saveFailed: "저장 실패",
+    renameCleanupFailed:
+      "새 이름은 저장했지만 이전 스킬 \"{name}\"을(를) 삭제하지 못했습니다({error}). 이제 두 스킬이 모두 존재하므로 스킬 목록에서 하나를 삭제하세요.",
     // Category labels
     categories: {
       codeReview: "코드 리뷰",
