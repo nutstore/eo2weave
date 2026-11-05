@@ -766,6 +766,20 @@ async function handleFetchRender(message: any) {
       return { ok: false, status: 0, error: 'Failed to extract rendered DOM' };
     }
 
+    // The live-URL check above runs BEFORE executeScript, so a navigation that
+    // commits in between would still let a private page's DOM reach the agent.
+    // The injected script reports the document URL it actually read, so
+    // re-validate THAT before any of the extracted content is returned (#157
+    // review: extraction TOCTOU). The remaining window — a private DOM already
+    // read into the worker before the check — is only closable by
+    // request-level interception, which is tracked separately.
+    const extractedUrl = !data.finalUrl || data.finalUrl === 'about:blank' ? liveUrl : data.finalUrl;
+    try {
+      assertPublicWebUrl(extractedUrl);
+    } catch (err: any) {
+      throw new PublicUrlRefusedError(`Render refused: ${err.message}`);
+    }
+
     let responseBody = data.html;
     let truncated = false;
 
