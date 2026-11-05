@@ -96,6 +96,16 @@ function isForbiddenIPv6(groups: number[]): boolean {
   // site-locally, so a literal here reaches intranet services exactly like
   // unique-local fc00::/7 (#148 review round 8).
   if ((first & 0xffc0) === 0xfec0) return true
+  // 6to4 2002::/16: bits 16-47 carry the IPv4 address of the 6to4 gateway's
+  // endpoint (RFC 3056), so 2002:0a00:0001:: routes to 10.0.0.1 on any host
+  // with an active 6to4 route. Decode that embedded address and apply the same
+  // IPv4 rules — the literal is indistinguishable from its IPv4 target to the
+  // network, exactly like the IPv4-mapped and NAT64 forms below.
+  if (first === 0x2002) {
+    const hi = groups[1]!
+    const lo = groups[2]!
+    if (isForbiddenIPv4([Math.floor(hi / 256), hi % 256, Math.floor(lo / 256), lo % 256])) return true
+  }
   // IPv4-mapped ::ffff:0:0/96: groups[0..4] are zero, groups[5] is 0xffff —
   // apply the IPv4 rules to the embedded address. Also the deprecated
   // IPv4-compatible ::/96 form (all six leading groups zero).

@@ -104,6 +104,21 @@ describe('web_fetch URL validation (#157)', () => {
     expect(calls).toEqual([])
   })
 
+  it('refuses 6to4 literals that embed a forbidden IPv4 address (#157 round 2)', () => {
+    // 2002::/16 carries the IPv4 target in bits 16-47 (RFC 3056), so these
+    // literals route to the embedded address through a 6to4 gateway.
+    for (const url of [
+      'http://[2002:0a00:0001::1]/',        // 10.0.0.1
+      'http://[2002:c0a8:0101::]/',         // 192.168.1.1
+      'http://[2002:7f00:0001::]/',         // 127.0.0.1
+      'http://[2002:a9fe:a9fe::]/',         // 169.254.169.254
+    ]) {
+      expect(() => assertPublicWebUrl(url)).toThrow(/not allowed/)
+    }
+    // A 6to4 literal embedding a public IPv4 address stays fetchable.
+    expect(() => assertPublicWebUrl('http://[2002:0808:0808::]/')).not.toThrow()
+  })
+
   it('accepts ordinary public http(s) URLs', () => {
     expect(() => assertPublicWebUrl('https://example.com/article')).not.toThrow()
     expect(() => assertPublicWebUrl('http://example.com/legacy')).not.toThrow()
