@@ -73,17 +73,25 @@ afterEach(() => {
   delete (navigator as unknown as { storage?: unknown }).storage
 })
 
-describe('isOpfsSupportMissing (#185 review round N)', () => {
-  it('classifies a missing navigator.storage API surface as unavailable', () => {
-    // What `navigator.storage` being undefined produces at the API surface.
+describe('isOpfsSupportMissing (#185 review round N, #197)', () => {
+  it('classifies a missing File System Access API as unavailable', () => {
+    // Capability check, not message matching (#197): with no
+    // navigator.storage at all the platform cannot scan OPFS.
+    const storage = (navigator as unknown as { storage?: unknown }).storage
+    delete (navigator as unknown as { storage?: unknown }).storage
     expect(isOpfsSupportMissing(new TypeError('Cannot read properties of undefined (reading getDirectory)'))).toBe(true)
-    expect(isOpfsSupportMissing(new TypeError('navigator.storage.getDirectory is not a function'))).toBe(true)
+    expect(isOpfsSupportMissing(new Error('anything at all'))).toBe(true)
+    ;(navigator as unknown as { storage?: unknown }).storage = storage
     expect(isOpfsUnavailableError(new TypeError('anything'))).toBe(true)
   })
 
   it('does NOT classify an operational TypeError (mid-scan) as OPFS unavailability', () => {
+    // The API surface EXISTS here (see beforeEach), so a TypeError raised
+    // during enumeration cannot be a support gap — even the generic
+    // "Cannot read properties of undefined" message the old matcher keyed on.
     expect(isOpfsSupportMissing(new TypeError('Failed to enumerate directory entries'))).toBe(false)
     expect(isOpfsSupportMissing(new TypeError('undefined is not iterable'))).toBe(false)
+    expect(isOpfsSupportMissing(new TypeError('Cannot read properties of undefined (reading values)'))).toBe(false)
     // Non-TypeError errors are never an API gap.
     expect(isOpfsSupportMissing(new Error('PermissionDeniedError: nope'))).toBe(false)
   })

@@ -92,6 +92,14 @@ export const discover = {
     update: "更新",
     updating: "更新中",
     updateDone: "更新完了",
+    bundleUpdateTitle: "このバンドルの他のスキルも更新しますか？",
+    bundleUpdateBody:
+      "このバンドルには、すでにインストール済みの {count} 個のスキルの新しいバージョンが含まれています。更新すると、ローカルでの編集を含めてインストール済みのコピーが置き換わります。保持したいスキルのチェックを外してください。",
+    bundleUpdateVersion: "インストール済み v{from} → ストア v{to}",
+    bundleUpdateAccept: "選択したものを更新（{count}）",
+    bundleUpdateSkip: "インストール済みのコピーを保持",
+    bundleUpdatesSkipped: "{names} のインストール済みコピーを保持しました。",
+    siblingUpdatesApplied: "バンドル内のスキルを更新しました: {names}。",
 } as const
 
 export const skillCard = {
@@ -172,6 +180,8 @@ export const skillEditor = {
     nameRequired: "スキル名を入力してください",
     descriptionRequired: "説明を入力してください",
     saveFailed: "保存に失敗しました",
+    renameCleanupFailed:
+      "新しい名前は保存されましたが、旧スキル \"{name}\" の削除に失敗しました（{error}）。両方のスキルが残っています。スキル一覧から一方を削除してください。",
     // Category labels
     categories: {
       codeReview: "コードレビュー",

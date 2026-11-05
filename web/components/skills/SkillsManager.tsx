@@ -146,8 +146,22 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
   }, [directoryHandle, loadSkills, activeProjectId])
 
   const handleToggle = useCallback(async (id: string, enabled: boolean) => { await toggleSkill(id, enabled) }, [loadSkills, bumpSkillsScanVersion])
+  // Opening and closing the confirmation must not carry a previous attempt's
+  // error into the next skill's dialog (#197): clear it on every target change
+  // and every close.
+  const requestDelete = useCallback((id: string) => {
+    const skill = skills.find((s) => s.id === id)
+    if (!skill) return
+    setDeleteError(null)
+    setDeleteTarget({ id, name: skill.name })
+  }, [skills])
+  const closeDeleteDialog = useCallback(() => {
+    setDeleteTarget(null)
+    setDeleteError(null)
+  }, [])
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return
+    setDeleteError(null)
     try {
       await deleteSkill(deleteTarget.id)
       setDeleteTarget(null)
@@ -238,8 +252,7 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
       skills: projectSkills,
       isReadOnly: true,
       onDelete: (id) => {
-        const skill = skills.find((s) => s.id === id)
-        if (skill) setDeleteTarget({ id, name: skill.name })
+        requestDelete(id)
       },
       onExport: handleExport,
       action: roots.length > 0
@@ -252,8 +265,7 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
       label: t('skills.mySkills'),
       skills: userSkills,
       onDelete: (id) => {
-        const skill = skills.find((s) => s.id === id)
-        if (skill) setDeleteTarget({ id, name: skill.name })
+        requestDelete(id)
       },
       onExport: handleExport,
       action: { label: t('skills.createNew'), icon: <Plus className="h-4 w-4" />, onClick: handleCreateNew, primary: true },
@@ -395,7 +407,7 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
       <SkillEditor skill={editingSkill} open={formEditorOpen} onClose={handleFormEditorClose} readOnly={editorMode === 'view'} />
 
       {/* Delete Confirmation */}
-      <BrandDialog open={deleteTarget !== null} onOpenChange={(isOpen) => { if (!isOpen) setDeleteTarget(null) }}>
+      <BrandDialog open={deleteTarget !== null} onOpenChange={(isOpen) => { if (!isOpen) closeDeleteDialog() }}>
         <BrandDialogContent className="max-w-sm">
           <BrandDialogHeader>
             <BrandDialogTitle>
@@ -411,7 +423,7 @@ export function SkillsManager({ open, onClose, directoryHandle = null, roots = [
             )}
           </BrandDialogBody>
           <BrandDialogFooter>
-            <BrandButton variant="outline" onClick={() => setDeleteTarget(null)}>
+            <BrandButton variant="outline" onClick={closeDeleteDialog}>
               {t('common.cancel') || 'Cancel'}
             </BrandButton>
             <BrandButton variant="danger" onClick={handleDeleteConfirm}>

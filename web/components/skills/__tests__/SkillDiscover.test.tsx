@@ -34,6 +34,8 @@ vi.mock('../SkillToolbar', () => ({
 }))
 
 // BrandButton: minimal stub matching the props SkillDiscover uses.
+// BrandDialog* are pass-through stubs — the bundle-update consent dialog
+// (#183) is only rendered as an element and never opened in these tests.
 vi.mock('@creatorweave/ui', () => ({
   BrandButton: ({
     children,
@@ -50,6 +52,16 @@ vi.mock('@creatorweave/ui', () => ({
       {children}
     </button>
   ),
+  BrandCheckbox: ({ 'aria-label': ariaLabel }: { 'aria-label'?: string }) => (
+    <input type="checkbox" aria-label={ariaLabel} />
+  ),
+  BrandDialog: ({ open, children }: { open?: boolean; children: React.ReactNode }) =>
+    open ? <div>{children}</div> : null,
+  BrandDialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  BrandDialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  BrandDialogTitle: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  BrandDialogBody: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  BrandDialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
 
 vi.mock('@/store/skills.store', () => ({

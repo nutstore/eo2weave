@@ -23,6 +23,7 @@ import {
   planSkillUpdate,
   scanInstalledDirNames,
 } from '@/skills/skill-store'
+import { plainSkillLabel } from '@/skills/bundle-update-consent'
 import type { SkillStoreEntry } from '@/skills/skill-store'
 import { skillUpdateNeedsConsent } from '@/skills/skill-version'
 import { getSkillManager } from '@/skills/skill-manager'
@@ -123,11 +124,11 @@ export async function installSkillExecutor(
         )
       }
       const answer = await context.askUserQuestion({
-        question: `The skill "${entry.name}" is already installed and the Skill Store ships a newer version (would overwrite your installed copy). Install the update?`,
+        question: `The skill "${plainSkillLabel(entry.name)}" is already installed and the Skill Store ships a newer version (would overwrite your installed copy). Install the update?`,
         type: 'yes_no',
         defaultAnswer: 'no',
         context: {
-          preview: `Updating "${entry.name}" to store v${entry.version}`,
+          preview: `Updating "${plainSkillLabel(entry.name)}" to store v${entry.version}`,
         },
         signal: context.abortSignal,
         toolCallId: context.currentToolCallId,
@@ -154,7 +155,53 @@ export async function installSkillExecutor(
     // fresh install, an update of an older installed copy, or a no-op
     // (#154). An already-installed skill is NOT short-circuited here: the
     // store may ship a newer version, and only the install flow can tell.
-    const result = await installSkillFromUrl(entry.zipUrl)
+    //
+    // Bundle consent (#183): the archive may ALSO carry other installed
+    // skills at an older version, which the install flow would overwrite.
+    // They are consented to in ONE aggregated question naming every affected
+    // skill; a "no" (or no user channel) keeps the installed copies and the
+    // result names what was skipped.
+    const askUserQuestion = context?.askUserQuestion
+    const result = await installSkillFromUrl(entry.zipUrl, undefined, {
+      focusDirName: entry.dirName,
+      confirmBundleUpdates: askUserQuestion
+        ? async (candidates) => {
+            const list = candidates
+              .map(
+                (candidate) =>
+                  `- ${plainSkillLabel(candidate.dirName)}: installed v${candidate.installedVersion}, store v${candidate.storeVersion}`,
+              )
+              .join('\n')
+            const answer = await askUserQuestion({
+              question: `Installing "${plainSkillLabel(entry.name)}" also ships newer versions of ${candidates.length} other skill(s) already installed from the same bundle:\n${list}\n\nUpdating them replaces your installed copies (including any local edits). Update them too?`,
+              type: 'yes_no',
+              defaultAnswer: 'no',
+              context: {
+                preview: `Bundle members that would be updated: ${candidates
+                  .map((candidate) => plainSkillLabel(candidate.dirName))
+                  .join(', ')}`,
+              },
+              signal: context.abortSignal,
+              toolCallId: context.currentToolCallId,
+            })
+            const said = answer.answer.trim().toLowerCase()
+            return answer.confirmed && said === 'yes'
+              ? candidates.map((candidate) => candidate.dirName)
+              : []
+          }
+        : undefined,
+    })
+
+    // Structured bundle-update outcome the model can present (#183), plus a
+    // sentence naming what was kept so no summary claims a full update.
+    const bundleFields = result.bundleUpdates
+      ? { bundleUpdates: result.bundleUpdates }
+      : {}
+    const skippedBundleMembers = result.bundleUpdates?.skipped ?? []
+    const skippedNote =
+      skippedBundleMembers.length > 0
+        ? ` Kept your installed copies of ${skippedBundleMembers.join(', ')} (sibling bundle updates were declined).`
+        : ''
 
     // Refresh skill caches so the new skill is immediately available
     // — both the SkillManager (for read_skill) and the store (for UI).
@@ -183,7 +230,8 @@ export async function installSkillExecutor(
         filesInstalled: result.count,
         outcome: result.outcome,
         missingMembers: result.droppedMembers ?? [],
-        message: `Install finished (${result.outcome}), but ${result.droppedMembers?.join(', ')} ${result.droppedMembers?.length === 1 ? 'was' : 'were'} removed during the install and ${result.droppedMembers?.length === 1 ? 'was' : 'were'} NOT re-created.`,
+        ...bundleFields,
+        message: `Install finished (${result.outcome}), but ${result.droppedMembers?.join(', ')} ${result.droppedMembers?.length === 1 ? 'was' : 'were'} removed during the install and ${result.droppedMembers?.length === 1 ? 'was' : 'were'} NOT re-created.${skippedNote}`,
       })
     }
 
@@ -194,7 +242,8 @@ export async function installSkillExecutor(
         version: entry.version,
         filesInstalled: result.count,
         updated: true,
-        message: `Skill "${entry.name}" updated to v${entry.version} (${result.count} files). You can now use it via read_skill("${entry.name}").`,
+        ...bundleFields,
+        message: `Skill "${entry.name}" updated to v${entry.version} (${result.count} files). You can now use it via read_skill("${entry.name}").${skippedNote}`,
       })
     }
     if (result.outcome === 'current') {
@@ -204,7 +253,8 @@ export async function installSkillExecutor(
         version: entry.version,
         filesInstalled: result.count,
         alreadyInstalled: true,
-        message: `Skill "${entry.name}" is already installed (v${entry.version}). You can use it via read_skill now.`,
+        ...bundleFields,
+        message: `Skill "${entry.name}" is already installed (v${entry.version}). You can use it via read_skill now.${skippedNote}`,
       })
     }
     if (result.outcome === 'installed-newer') {
@@ -214,10 +264,11 @@ export async function installSkillExecutor(
         version: entry.version,
         filesInstalled: result.count,
         alreadyInstalled: true,
+        ...bundleFields,
         // The unknown-version fallback also lands here (decideSkillUpdateAction
         // keeps an unparseable installed version as "installed-newer"), so the
         // message must not claim a verified newer version.
-        message: `Skill "${entry.name}" is already installed — the installed copy was kept (it is newer than the store version, or its version could not be compared with the store's). You can use it via read_skill now.`,
+        message: `Skill "${entry.name}" is already installed — the installed copy was kept (it is newer than the store version, or its version could not be compared with the store's). You can use it via read_skill now.${skippedNote}`,
       })
     }
     return toolOkJson('install_skill', {
@@ -225,7 +276,8 @@ export async function installSkillExecutor(
       name: entry.name,
       version: entry.version,
       filesInstalled: result.count,
-      message: `Skill "${entry.name}" installed successfully (${result.count} files). You can now use it via read_skill("${entry.name}").`,
+      ...bundleFields,
+      message: `Skill "${entry.name}" installed successfully (${result.count} files). You can now use it via read_skill("${entry.name}").${skippedNote}`,
     })
   } catch (err) {
     return toolErrorJson(
@@ -244,6 +296,6 @@ export const installSkillPromptDoc: ToolPromptDoc = {
   category: 'skills',
   section: '### Skill Tools',
   lines: [
-    '- `install_skill(dirName)` — Install a skill from the Skill Store. MUST get user consent via ask_user_question FIRST. Updating an ALREADY-INSTALLED older skill triggers an in-tool user confirmation; a declined update keeps the installed copy. After install, call read_skill immediately to use it.',
+    '- `install_skill(dirName)` — Install a skill from the Skill Store. MUST get user consent via ask_user_question FIRST. Updating an ALREADY-INSTALLED older skill triggers an in-tool user confirmation; a declined update keeps the installed copy. When the same archive is a bundle that would also update OTHER installed skills, ONE aggregated confirmation lists every affected skill; declined members are skipped and named in `bundleUpdates.skipped`. After install, call read_skill immediately to use it.',
   ],
 }

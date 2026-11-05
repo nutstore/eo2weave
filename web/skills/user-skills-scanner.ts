@@ -242,25 +242,29 @@ export function isOpfsUnavailableError(e: unknown): boolean {
 }
 
 /**
- * Same contract as {@link isOpfsUnavailableError} for an OPFS-absence
- * fallback, plus `navigator.storage` being entirely missing (the API-surface
- * check): true only when the error can be attributed to the environment not
- * having the File System Access API at all. Any TypeError from deeper in the
- * scan (enumeration, handle resolution) is NOT an environment gap and must
- * propagate to the caller instead of degrading to cached data.
+ * True when the environment has no File System Access API at all.
+ *
+ * A capability check, not message matching (#197): the caller's fallback to
+ * cached data is only valid when the platform cannot scan OPFS in the first
+ * place. A TypeError raised mid-scan carries no reliable signal (the old
+ * `Cannot read properties of undefined` match also caught generic operational
+ * TypeErrors) and must propagate instead of degrading to the cache.
  */
-export function isOpfsSupportMissing(e: unknown): boolean {
-  if (!(e instanceof TypeError)) return false
-  // `navigator.storage` undefined / getDirectory not a function is thrown
-  // SYNCHRONOUSLY at the API surface, before any OPFS handle exists — that
-  // is the documented unsupported-browser signal. Everything else (async
-  // TypeErrors from enumeration) is an operational failure.
-  const msg = e instanceof Error ? e.message : ''
+export function hasFileSystemAccess(): boolean {
   return (
-    msg.includes('navigator.storage') ||
-    msg.includes('getDirectory is not a function') ||
-    msg.includes("Cannot read properties of undefined")
+    typeof navigator !== 'undefined' &&
+    typeof navigator.storage?.getDirectory === 'function'
   )
+}
+
+/**
+ * Same contract as {@link isOpfsUnavailableError} for an OPFS-absence
+ * fallback: true only when the File System Access API is missing. The error is
+ * accepted for call-site symmetry but is NOT inspected — see
+ * {@link hasFileSystemAccess}.
+ */
+export function isOpfsSupportMissing(_e?: unknown): boolean {
+  return !hasFileSystemAccess()
 }
 
 /** Concatenate streamed decoder chunks into a single buffer. */
@@ -433,8 +437,10 @@ async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Ar
 /**
  * Get the user skills directory handle from OPFS root.
  * Returns null if `.skills/user/` does not exist (NotFoundError — no user
- * skills yet, not a failure). Any other storage error propagates so callers
- * can surface it instead of mistaking it for "empty".
+ * skills yet, not a failure) or when the browser has no File System Access
+ * API at all (#197: a no-OPFS browser still has to reach the SQLite-only
+ * deletion path for legacy skills). Any other storage error propagates so
+ * callers can surface it instead of mistaking it for "empty".
  */
 async function getUserSkillsDir(): Promise<FileSystemDirectoryHandle | null> {
   try {
@@ -442,8 +448,8 @@ async function getUserSkillsDir(): Promise<FileSystemDirectoryHandle | null> {
     const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: false })
     return await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: false })
   } catch (e) {
-    if (!isNotFoundError(e)) throw e
-    // .skills/user/ doesn't exist yet — no user skills
+    if (!isNotFoundError(e) && !isOpfsSupportMissing(e)) throw e
+    // .skills/user/ doesn't exist yet (or OPFS is unsupported) — no user skills
     return null
   }
 }

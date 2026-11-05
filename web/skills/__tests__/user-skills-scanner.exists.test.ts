@@ -79,6 +79,18 @@ describe('userSkillDirExists (#185 error-surfacing)', () => {
     await expect(userSkillDirExists('my-skill')).resolves.toBe(false)
   })
 
+  it('returns false when the browser has no File System Access API (#197)', async () => {
+    // A no-OPFS browser throws a TypeError from navigator.storage.getDirectory.
+    // That must read as absence — NOT propagate — so deleteSkill reaches its
+    // SQLite-only path for legacy skills instead of failing outright.
+    vi.stubGlobal('navigator', {} as Navigator)
+    try {
+      await expect(userSkillDirExists('legacy-skill')).resolves.toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('throws when resolving `.skills` fails with a non-NotFound storage error', async () => {
     useOpfsRoot({
       fail: new Error('PermissionDeniedError: OPFS unavailable'),

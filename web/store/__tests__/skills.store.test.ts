@@ -67,6 +67,7 @@ const { mockManager } = vi.hoisted(() => ({
     getSkills: vi.fn<[], Skill[]>(() => []),
     setProjectSkillEnabled: vi.fn(),
     setUserSkillEnabled: vi.fn(),
+    forgetUserSkill: vi.fn(),
   },
 }))
 
@@ -287,6 +288,43 @@ describe('useSkillsStore', () => {
   })
 
   describe('deleteSkill (user skills, #185 existence-check error propagation)', () => {
+    it('reconciles the manager cache after a completed OPFS delete (#197)', async () => {
+      useSkillsStore.setState({
+        skills: [createMockMetadata({ id: 'user:gone', name: 'gone' })],
+      })
+      mockManager.getSkillMetadata.mockReturnValue([])
+      mockUserSkillsScanner.userSkillDirExists.mockResolvedValue(true)
+
+      const { deleteSkill } = useSkillsStore.getState()
+      await deleteSkill('user:gone')
+
+      expect(mockUserSkillsScanner.deleteUserSkillDir).toHaveBeenCalledWith('gone')
+      // Applied BEFORE the follow-up rescan: when that rescan fails the
+      // manager keeps its previous cache wholesale, so the deleted skill must
+      // already be gone from it.
+      expect(mockManager.forgetUserSkill).toHaveBeenCalledWith('gone')
+      expect(useSkillsStore.getState().skills).toHaveLength(0)
+    })
+
+    it('deletes a legacy SQLite-only user skill when OPFS is absent (#197)', async () => {
+      useSkillsStore.setState({
+        skills: [createMockMetadata({ id: 'user:legacy', name: 'legacy' })],
+      })
+      mockManager.getSkillMetadata.mockReturnValue([])
+      // No File System Access API: the scanner reports the directory as
+      // absent instead of throwing the missing-API TypeError, so the store
+      // must reach its SQLite-only deletion path.
+      mockUserSkillsScanner.userSkillDirExists.mockResolvedValue(false)
+
+      const { deleteSkill } = useSkillsStore.getState()
+      await deleteSkill('user:legacy')
+
+      expect(storage.deleteSkill).toHaveBeenCalledWith('user:legacy')
+      expect(mockUserSkillsScanner.deleteUserSkillDir).not.toHaveBeenCalled()
+      expect(mockManager.forgetUserSkill).not.toHaveBeenCalled()
+      expect(useSkillsStore.getState().skills).toHaveLength(0)
+    })
+
     it('propagates an existence-check storage failure instead of deleting SQLite-only', async () => {
       const initialSkills: SkillMetadata[] = [
         createMockMetadata({ id: 'user:doomed', name: 'doomed' }),

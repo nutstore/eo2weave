@@ -13,6 +13,7 @@ import type { ToolRenderCtx } from './types'
 import { installSkillFromUrl, type InstallProgress } from '@/skills/skill-store'
 import { useSkillsStore } from '@/store/skills.store'
 import { useT } from '@/i18n'
+import { useBundleUpdateConsent } from '@/components/skills/BundleUpdateConsent'
 
 // ── Types ──
 
@@ -143,39 +144,62 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
   const t = useT()
   const bumpScanVersion = useSkillsStore((s) => s.bumpSkillsScanVersion)
   const loadSkills = useSkillsStore((s) => s.loadSkills)
+  const bundleConsent = useBundleUpdateConsent()
   const [installState, setInstallState] = useState<
     'idle' | 'installing' | 'installed' | 'error'
   >(skill.installed ? 'installed' : 'idle')
   const [progress, setProgress] = useState<InstallProgress | null>(null)
+  // Omission / declined-update notice. Kept OUT of `progress` so the
+  // `finally` cleanup below cannot clear it (#197).
+  const [notice, setNotice] = useState<string | null>(null)
+  // The archive's own member for this skill was dropped by the locked absence
+  // re-check (#197) — the installed flag from the search result is then stale
+  // and the card must offer Install, not Update.
+  const [targetDropped, setTargetDropped] = useState(false)
 
   const handleInstall = useCallback(async () => {
     if (installState === 'installing') return
     setInstallState('installing')
+    setNotice(null)
+    setTargetDropped(false)
     setProgress({ phase: 'fetching', message: t('skills.discover.progressPreparing') })
     try {
       // The version-aware install flow decides install vs. update vs. keep
       // (#154) — an already-installed skill may still be outdated.
-      const result = await installSkillFromUrl(skill.zipUrl, setProgress)
+      const result = await installSkillFromUrl(skill.zipUrl, setProgress, {
+        focusDirName: skill.dirName,
+        // #183: sibling members this archive would overwrite are consented to
+        // in one aggregated prompt; declined members keep their installed copy.
+        confirmBundleUpdates: bundleConsent.confirm,
+      })
       // Refresh skill store so the new skill appears everywhere
       await loadSkills()
       bumpScanVersion()
-      setInstallState('installed')
-      // Partial member drops ride ANY successful outcome (#185 review round
-      // N): the chat card must not report a clean install when a bundle
-      // member was omitted. The install progress line carries the notice.
-      if ((result.droppedMembers?.length ?? 0) > 0) {
-        setProgress({
-          phase: 'done',
-          message: t('skills.discover.memberRemovedDuringInstall'),
-        })
+      const dropped = result.droppedMembers ?? []
+      // A dropped target is NOT on disk: never show the installed badge for
+      // it, and let the button retry (#197).
+      const isDropped = dropped.includes(skill.dirName)
+      setTargetDropped(isDropped)
+      setInstallState(isDropped ? 'idle' : 'installed')
+      const messages: string[] = []
+      if (dropped.length > 0) {
+        messages.push(t('skills.discover.memberRemovedDuringInstall'))
       }
+      if ((result.bundleUpdates?.skipped.length ?? 0) > 0) {
+        messages.push(
+          t('skills.discover.bundleUpdatesSkipped', {
+            names: result.bundleUpdates!.skipped.join(', '),
+          }),
+        )
+      }
+      setNotice(messages.length > 0 ? messages.join(' ') : null)
     } catch (err) {
       console.error('[SkillSearchRenderer] Install failed:', err)
       setInstallState('error')
     } finally {
       setProgress(null)
     }
-  }, [installState, skill.zipUrl, loadSkills, bumpScanVersion, t])
+  }, [installState, skill.zipUrl, skill.dirName, loadSkills, bumpScanVersion, t, bundleConsent.confirm])
 
   const buttonLabel =
     installState === 'installing'
@@ -186,7 +210,7 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
       // skill.installed FIRST keeps that label visible; a result that was
       // installed during this session (no longer updateable-marked) still
       // reports "Installed".
-      : skill.installed && installState !== 'error'
+      : skill.installed && !targetDropped && installState !== 'error'
       ? t('skills.discover.update') || 'Update'
       : installState === 'installed'
       ? t('skills.discover.installedBadge') || 'Installed'
@@ -259,6 +283,16 @@ function SkillResultCard({ skill }: SkillResultCardProps) {
         )}
         {buttonLabel}
       </button>
+
+      {/* Omission / declined sibling updates — persists after the install
+          finishes (the progress state above is cleared). */}
+      {notice && (
+        <p className="mt-1.5 flex items-start gap-1 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>{notice}</span>
+        </p>
+      )}
+      {bundleConsent.element}
     </div>
   )
 }

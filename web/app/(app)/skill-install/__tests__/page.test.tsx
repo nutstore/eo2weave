@@ -299,7 +299,11 @@ describe('SkillInstallPage (issue #126)', () => {
     fireEvent.click(installButton)
 
     await waitFor(() => {
-      expect(installSkillFromUrlMock).toHaveBeenCalledWith('/skills/cw-legal-evidence-chain.zip', expect.any(Function))
+      expect(installSkillFromUrlMock).toHaveBeenCalledWith(
+        '/skills/cw-legal-evidence-chain.zip',
+        expect.any(Function),
+        expect.objectContaining({ focusDirName: 'cw-legal-evidence-chain' }),
+      )
     })
     // While the download is pending, the page must neither register nor navigate.
     expect(refreshUserSkillsMock).not.toHaveBeenCalled()
@@ -467,6 +471,7 @@ describe('SkillInstallPage (issue #126)', () => {
       expect(installSkillFromUrlMock).toHaveBeenCalledWith(
         '/skills/cw-legal-evidence-chain.zip',
         expect.any(Function),
+        expect.objectContaining({ focusDirName: 'cw-legal-evidence-chain' }),
       )
     })
   })
@@ -481,6 +486,7 @@ describe('SkillInstallPage (issue #126)', () => {
       expect(installSkillFromUrlMock).toHaveBeenCalledWith(
         '/skills/cw-legal-evidence-chain.zip',
         expect.any(Function),
+        expect.objectContaining({ focusDirName: 'cw-legal-evidence-chain' }),
       )
     })
   })

@@ -777,6 +777,11 @@ describe('previewUserSkillZip size caps (issue #128)', () => {
 
 // ── installSkillFromUrl download cap ─────────────────────────────────
 
+// #183: bundle members that would be overwritten are consented to by the
+// caller; approving every candidate reproduces the pre-#183 update path.
+const approveAll = async (candidates: Array<{ dirName: string }>) =>
+  candidates.map((candidate) => candidate.dirName)
+
 describe('installSkillFromUrl download cap (issue #128)', () => {
   it('preserves local edits when a store install is repeated (no version frontmatter)', async () => {
     const realFetch = globalThis.fetch
@@ -1018,6 +1023,163 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
     }
   })
 
+  it('does NOT overwrite a bundle sibling without consent (#183)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "2.0.0"\n---\n\n# A2'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "2.0.0"\n---\n\n# B2'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled('bundle-a', '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A1')
+      writeInstalled('bundle-b', '---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1-local-edits')
+
+      // The caller selected bundle-a only: bundle-b would be overwritten as a
+      // side effect, and no consent channel was provided.
+      const result = await installSkillFromUrl('https://store.example/bundle.zip', undefined, {
+        focusDirName: 'bundle-a',
+      })
+
+      // The requested skill updated…
+      expect(result.outcome).toBe('updated')
+      expect(contentOf('bundle-a', 'SKILL.md')).toContain('# A2')
+      // …the sibling kept its installed copy, and the result names it.
+      expect(contentOf('bundle-b', 'SKILL.md')).toBe('---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1-local-edits')
+      expect(result.bundleUpdates).toEqual({ updated: [], skipped: ['bundle-b'] })
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('does not report a sibling another actor uninstalled mid-install as kept (#183)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "2.0.0"\n---\n\n# A2'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "2.0.0"\n---\n\n# B2'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled('bundle-a', '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A1')
+      writeInstalled('bundle-b', '---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1')
+
+      const result = await installSkillFromUrl('https://store.example/bundle.zip', undefined, {
+        focusDirName: 'bundle-a',
+        confirmBundleUpdates: async (candidates) => {
+          // Another tab uninstalls the sibling while the prompt is open.
+          expect(candidates.map((candidate) => candidate.dirName)).toEqual(['bundle-b'])
+          dirOf(userRoot, '.skills/user', false)!.dirs.delete('bundle-b')
+          return [] // declined
+        },
+      })
+
+      expect(result.outcome).toBe('updated')
+      // Gone is not kept: the summary must not claim an installed copy survived.
+      expect(result.bundleUpdates).toEqual({ updated: [], skipped: [] })
+      expect(result.droppedMembers).toContain('bundle-b')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('updates only the bundle siblings the user approved (#183)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "2.0.0"\n---\n\n# A2'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "2.0.0"\n---\n\n# B2'),
+      'bundle-c/SKILL.md': strToU8('---\nname: bundle-c\nversion: "2.0.0"\n---\n\n# C2'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled('bundle-a', '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A1')
+      writeInstalled('bundle-b', '---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1')
+      writeInstalled('bundle-c', '---\nname: bundle-c\nversion: "1.0.0"\n---\n\n# C1')
+
+      const prompted: string[][] = []
+      const result = await installSkillFromUrl('https://store.example/bundle.zip', undefined, {
+        focusDirName: 'bundle-a',
+        confirmBundleUpdates: async (candidates) => {
+          prompted.push(candidates.map((candidate) => candidate.dirName))
+          return ['bundle-c'] // bundle-b declined
+        },
+      })
+
+      // ONE aggregated prompt listing every affected sibling.
+      expect(prompted).toEqual([['bundle-b', 'bundle-c']])
+      expect(contentOf('bundle-a', 'SKILL.md')).toContain('# A2')
+      expect(contentOf('bundle-b', 'SKILL.md')).toBe('---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1')
+      expect(contentOf('bundle-c', 'SKILL.md')).toContain('# C2')
+      expect(result.bundleUpdates).toEqual({ updated: ['bundle-c'], skipped: ['bundle-b'] })
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('does not claim the selected skill was updated when only a sibling changed (#183)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      // bundle-a is the requested skill and already matches the store.
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A-store'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "2.0.0"\n---\n\n# B2'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled('bundle-a', '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A-local')
+      writeInstalled('bundle-b', '---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1')
+
+      const progress: Array<{ phase: string; message: string }> = []
+      const result = await installSkillFromUrl('https://store.example/bundle.zip', (p) => progress.push(p), {
+        focusDirName: 'bundle-a',
+        confirmBundleUpdates: async () => ['bundle-b'],
+      })
+
+      // The requested skill was kept — its copy still says so.
+      expect(contentOf('bundle-a', 'SKILL.md')).toBe('---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A-local')
+      // …so the outcome must not be "updated" (the selected skill did not change).
+      expect(result.outcome).toBe('current')
+      expect(result.bundleUpdates).toEqual({ updated: ['bundle-b'], skipped: [] })
+      const done = progress.find((p) => p.phase === 'done')
+      expect(done?.message).toContain('bundle-b')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('keeps an approved sibling that changed after the consent prompt (#183)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "2.0.0"\n---\n\n# A2'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "2.0.0"\n---\n\n# B2'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled('bundle-a', '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A1')
+      writeInstalled('bundle-b', '---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1-approved')
+
+      const result = await installSkillFromUrl('https://store.example/bundle.zip', undefined, {
+        focusDirName: 'bundle-a',
+        confirmBundleUpdates: async () => {
+          // Another actor rewrites the approved sibling AFTER the user said yes.
+          writeInstalled('bundle-b', '---\nname: bundle-b\nversion: "1.5.0"\n---\n\n# B1-changed-by-other-tab')
+          return ['bundle-b']
+        },
+      })
+
+      // The copy the user actually approved is gone — keep what replaced it.
+      expect(contentOf('bundle-b', 'SKILL.md')).toBe(
+        '---\nname: bundle-b\nversion: "1.5.0"\n---\n\n# B1-changed-by-other-tab',
+      )
+      expect(result.bundleUpdates?.updated).toEqual([])
+      expect(result.bundleUpdates?.skipped).toEqual(['bundle-b'])
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('updates a bundle member when the store bundle is newer (#154)', async () => {
     const realFetch = globalThis.fetch
     const archive = zipSync({
@@ -1035,7 +1197,11 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
         'bundle-b',
         '---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1',
       )
-      const result = await installSkillFromUrl('https://store.example/bundle.zip')
+      const result = await installSkillFromUrl('https://store.example/bundle.zip', undefined, {
+        // #183: sibling updates require consent; this test asserts the
+        // per-member update path itself.
+        confirmBundleUpdates: approveAll,
+      })
       // Bundles have no preview.skill — the old code read no version at all
       // and fell back to ifAbsent, leaving members stale.
       expect(result.outcome).toBe('updated')
@@ -1065,7 +1231,9 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
         'bundle-b',
         '---\nname: bundle-b\nversion: "3.0.0"\n---\n\n# B-local-newer',
       )
-      const result = await installSkillFromUrl('https://store.example/bundle.zip')
+      const result = await installSkillFromUrl('https://store.example/bundle.zip', undefined, {
+        confirmBundleUpdates: approveAll,
+      })
       expect(result.outcome).toBe('updated')
       // a took the update…
       expect(contentOf('bundle-a', 'SKILL.md')).toContain('# A2')
@@ -1750,7 +1918,9 @@ describe('installSkillFromUrl per-member path guards (round 5)', () => {
       // A root-level member has no folder to infer its name from — its
       // dirName falls back to the ZIP file name ('root-mix').
       writeInstalled('root-mix', '---\nname: root-skill\nversion: "1.0.0"\n---\n\n# Root v1')
-      const result = await installSkillFromUrl('https://store.example/root-mix.zip')
+      const result = await installSkillFromUrl('https://store.example/root-mix.zip', undefined, {
+        confirmBundleUpdates: approveAll,
+      })
       expect(result.outcome).toBe('updated')
       // The root member took its own update…
       expect(contentOf('root-mix', 'SKILL.md')).toContain('# Root v2')
@@ -1783,7 +1953,9 @@ describe('installSkillFromUrl per-member path guards (round 5)', () => {
       ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
         new Response(archive, { status: 200 })) as typeof fetch
       writeInstalled('pkg', '---\nname: pkg\nversion: "1.0.0"\n---\n\n# Pkg v1')
-      const result = await installSkillFromUrl('https://store.example/pkg.zip')
+      const result = await installSkillFromUrl('https://store.example/pkg.zip', undefined, {
+        confirmBundleUpdates: approveAll,
+      })
       expect(result.outcome).toBe('updated')
       expect(contentOf('pkg', 'SKILL.md')).toContain('# Pkg v2')
       // The parent absorbed the nested member's files…
