@@ -34,4 +34,86 @@ describe('gitignore policy', () => {
     expect(isGitIgnored('packages/app/cache/index.json', rules)).toBe(true)
     expect(isGitIgnored('packages/other/cache/index.json', rules)).toBe(false)
   })
+
+  it('does not match a same-named regular file under a directory-only rule (#186)', () => {
+    const rules = parseGitIgnore('build/\n')
+
+    // A REGULAR file named `build` must not be classified as ignored by the
+    // directory-only `build/` rule — otherwise deleteFile bypasses pending
+    // review and silently removes it from disk.
+    expect(isGitIgnored('build', rules, 'file')).toBe(false)
+    // The directory itself and anything beneath it stay ignored.
+    expect(isGitIgnored('build', rules, 'directory')).toBe(true)
+    expect(isGitIgnored('build/generated/app.js', rules, 'file')).toBe(true)
+    // Same for glob-qualified directory-only patterns.
+    expect(isGitIgnored('build', parseGitIgnore('**/build/\n'), 'file')).toBe(false)
+    expect(isGitIgnored('packages/x/build', parseGitIgnore('**/build/\n'), 'file')).toBe(false)
+    expect(isGitIgnored('packages/x/build', parseGitIgnore('**/build/\n'), 'directory')).toBe(true)
+    // Git: `dir/**` covers a directory's contents but not the directory
+    // itself — a same-named REGULAR file must not match it either.
+    expect(isGitIgnored('dist', parseGitIgnore('dist/**\n'), 'file')).toBe(false)
+    expect(isGitIgnored('dist/a.js', parseGitIgnore('dist/**\n'), 'file')).toBe(true)
+    expect(isGitIgnored('a/dist', parseGitIgnore('**/dist/**\n'), 'file')).toBe(false)
+    expect(isGitIgnored('a/dist/a.js', parseGitIgnore('**/dist/**\n'), 'file')).toBe(true)
+  })
+
+  it('does not classify the directory itself as ignored under a trailing-/** rule', () => {
+    // git check-ignore: `dist/**` does NOT ignore the directory `dist` itself
+    // (it covers contents only). The previous candidate set let micromatch's
+    // `a/**` match the bare `a`, so deleteDirPending treated an ignored tree's
+    // root as ignored and deleted it immediately without pending review.
+    expect(isGitIgnored('dist', parseGitIgnore('dist/**\n'), 'directory')).toBe(false)
+    // Contents beneath the directory stay ignored.
+    expect(isGitIgnored('dist/a', parseGitIgnore('dist/**\n'), 'directory')).toBe(true)
+    expect(isGitIgnored('dist/a.js', parseGitIgnore('dist/**\n'), 'file')).toBe(true)
+    // Glob-qualified variant: the base matched through `**` is equally exempt.
+    expect(isGitIgnored('a/dist', parseGitIgnore('**/dist/**\n'), 'directory')).toBe(false)
+    expect(isGitIgnored('a/dist/x', parseGitIgnore('**/dist/**\n'), 'directory')).toBe(true)
+  })
+
+  it('keeps a negated file ignored under a glob-qualified trailing-/** rule (#184)', () => {
+    // git check-ignore: with `**/dist/**` + `!dist/generated/keep.json`,
+    // keep.json stays IGNORED — an exclusion qualified with `**` blocks
+    // re-inclusion beneath it. The old ancestor check compared the literal
+    // prefix `**/dist/` with startsWith and never recognized `dist` or
+    // `dist/generated` as excluded, so the negation won and the file missed
+    // immediate deletion.
+    const rules = parseGitIgnore('**/dist/**\n!dist/generated/keep.json\n')
+    expect(isGitIgnored('dist/generated/keep.json', rules, 'file')).toBe(true)
+    expect(isGitIgnored('dist/generated/app.js', rules, 'file')).toBe(true)
+    // Unqualified `dir/**` behaves the same (excluded dir cannot be
+    // re-included beneath): `!dist/a/keep.txt` does NOT rescue the file.
+    const unqualified = parseGitIgnore('dist/**\n!dist/a/keep.txt\n')
+    expect(isGitIgnored('dist/a/keep.txt', unqualified, 'file')).toBe(true)
+  })
+
+  it('re-includes files beneath a directory re-included by a negated directory rule (#189)', () => {
+    // git check-ignore: with `logs/*` + `!logs/keep/`, `logs/keep/audit.txt`
+    // is NOT ignored — the negation re-includes the whole subtree. The
+    // pattern `logs/*` names one level, so matching it against deeper paths
+    // kept ignoring the re-included files and deleteFile deleted them from
+    // disk instead of sending them for review.
+    const rules = parseGitIgnore('logs/*\n!logs/keep/\n')
+    expect(isGitIgnored('logs/keep', rules, 'directory')).toBe(false)
+    expect(isGitIgnored('logs/keep/audit.txt', rules, 'file')).toBe(false)
+    expect(isGitIgnored('logs/keep/sub/deep.txt', rules, 'file')).toBe(false)
+    // Entries the negation does not cover stay ignored.
+    expect(isGitIgnored('logs/other.txt', rules, 'file')).toBe(true)
+    expect(isGitIgnored('logs/other', rules, 'directory')).toBe(true)
+    // A later negation of a single file still applies.
+    const withFile = parseGitIgnore('logs/*\n!logs/keep/\n!logs/keep/audit.txt\n')
+    expect(isGitIgnored('logs/keep/audit.txt', withFile, 'file')).toBe(false)
+  })
+
+  it('matches a pattern only at the depth it names', () => {
+    // git check-ignore: `logs/*` matches `logs/other` but not
+    // `logs/other/x.txt`; Git reaches the entries below a matched directory
+    // through the excluded-ancestor check, not by matching deeper.
+    const rules = parseGitIgnore('logs/*\n')
+    expect(isGitIgnored('logs/other', rules, 'directory')).toBe(true)
+    expect(isGitIgnored('logs/other/x.txt', rules, 'file')).toBe(true)
+    // The file below the excluded directory stays ignored through the
+    // excluded ancestor, even though the pattern itself does not match it.
+    expect(isGitIgnored('logs/other/x.txt', parseGitIgnore('logs/*\n'), 'file')).toBe(true)
+  })
 })

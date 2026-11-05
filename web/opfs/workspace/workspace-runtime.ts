@@ -1438,9 +1438,10 @@ export class WorkspaceRuntime {
   isGitIgnoredPath(
     nativePath: string,
     directoryHandle: FileSystemDirectoryHandle | null,
-    rootId: string | null
+    rootId: string | null,
+    kind: 'file' | 'directory' = 'directory'
   ): Promise<boolean> {
-    return isGitIgnoredPathImpl(this as unknown as WorkspaceFileOpsInternals, nativePath, directoryHandle, rootId)
+    return isGitIgnoredPathImpl(this as unknown as WorkspaceFileOpsInternals, nativePath, directoryHandle, rootId, kind)
   }
 
   // Public (was private) — bridge interface for workspace-file-ops.ts needs it.

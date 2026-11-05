@@ -30,9 +30,9 @@ describe('gitignore policy excluded-parent pruning', () => {
   })
 
   it('still re-includes files when their parent directories are not excluded', () => {
-    // `build/**` matches descendants (and, under this walker's micromatch
-    // semantics, the `build` directory itself), but it is not a directory-only
-    // exclusion, so the negation on the file itself must still win.
+    // `build/**` matches descendants only — it is not a directory-only
+    // exclusion and never marks `build` itself excluded, so the negation on
+    // the file itself must still win.
     const rules = parseGitIgnore('build/**\n!build/keep.txt\n')
     expect(isGitIgnored('build/generated/app.js', rules)).toBe(true)
     expect(isGitIgnored('build/keep.txt', rules)).toBe(false)
