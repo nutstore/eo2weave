@@ -18,7 +18,10 @@ import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 const resolveCredentialMock = vi.hoisted(() => vi.fn())
 const setFaviconStateMock = vi.hoisted(() => vi.fn())
 const gatewayRegistered = vi.hoisted(() => ({ value: true }))
-const authGeneration = vi.hoisted(() => ({ value: 0 }))
+// Access token the credential store currently holds ('validated-token' by
+// default). A test simulating a logout / newer login during resolution
+// mutates this.
+const storedAccessToken = vi.hoisted(() => ({ value: 'validated-token' as string | null }))
 const replaceAllMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 
 vi.mock('@/services/favicon-indicator', () => ({ setFaviconState: setFaviconStateMock }))
@@ -115,7 +118,10 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
 
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   resolveGatewayDispatchCredential: resolveCredentialMock,
-  getGatewayAuthSessionGeneration: () => authGeneration.value,
+  // Mirrors the real helper: the validated token counts as current while the
+  // store still holds it. A logout or newer login replaces/clears it (#180).
+  isGatewayAccessTokenCurrent: (accessToken: string) =>
+    accessToken === storedAccessToken.value,
 }))
 const registerProviderMock = vi.hoisted(() =>
   vi.fn(() => {
@@ -190,7 +196,7 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     gatewayRegistered.value = true
-    authGeneration.value = 0
+    storedAccessToken.value = 'validated-token'
     useConversationRuntimeStore.setState({ runtimes: new Map() })
     useConversationStore.setState({
       conversations: [],
@@ -284,12 +290,32 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     expect(conv.error ?? '').not.toContain('provider is unavailable')
   })
 
+  it('registers the gateway when the resolution refreshed an expired token itself (#214 review)', async () => {
+    // Provider missing + expired access token with a live refresh token: the
+    // resolver refreshes and commits the new pair, which advances the auth
+    // generation. That bump is the resolution's OWN work — it must not read
+    // as "the session moved", or a healthy session is told to sign in again.
+    gatewayRegistered.value = false
+    resolveCredentialMock.mockImplementation(async () => {
+      storedAccessToken.value = 'refreshed-token'
+      return { ok: true, accessToken: 'refreshed-token' }
+    })
+
+    await startRun()
+
+    expect(registerProviderMock).toHaveBeenCalledTimes(1)
+    expect(agentLoopConstructed).toHaveBeenCalledTimes(1)
+    expect(useConversationStore.getState().conversations[0].error ?? '').not.toContain(
+      'unavailable',
+    )
+  })
+
   it('does not re-register the gateway when a logout lands during resolution (#180 review)', async () => {
     gatewayRegistered.value = false
     resolveCredentialMock.mockImplementation(async () => {
       // The session ended while the credential read was in flight, so the
       // resolver's verdict describes a credential set that no longer exists.
-      authGeneration.value += 1
+      storedAccessToken.value = null
       return { ok: true, accessToken: 'token-from-a-dead-session' }
     })
 

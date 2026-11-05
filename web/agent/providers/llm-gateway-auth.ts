@@ -293,6 +293,20 @@ export function isCredentialStatusCurrent(generation: number): boolean {
   return generation === authSessionGeneration
 }
 
+/**
+ * Whether an access token a caller just validated is still the stored one.
+ *
+ * Dispatch gates use this instead of the coarse session generation: a
+ * resolution that refreshed an expired token advances the generation itself
+ * (saveStoredTokens), which is not a session change. What must block a
+ * follow-up action is the stored credential being replaced or cleared by a
+ * logout or a newer login (#180 review round 3).
+ */
+export function isGatewayAccessTokenCurrent(accessToken: string): boolean {
+  const stored = loadStoredTokens()
+  return typeof stored?.access_token === 'string' && stored.access_token === accessToken
+}
+
 /** Keep the settings UI's credential state aligned with background auth checks. */
 function setCredentialStatus(
   status: 'valid' | 'expired' | 'missing',

@@ -71,6 +71,7 @@ import {
   subscribeToGatewaySessionEvents,
   getGatewayAuthSessionGeneration,
   isCredentialStatusCurrent,
+  isGatewayAccessTokenCurrent,
   type GatewaySessionEvent,
 } from '@/agent/providers/llm-gateway-auth'
 import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
@@ -1585,10 +1586,23 @@ describe('credential status generation fence (#180)', () => {
 
     const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
     expect(result.status).toBe('success')
-    await new Promise((resolve) => setTimeout(resolve, 0))
 
     // The refresh's own commit advances the generation; the verdict must be
     // attributed to that commit, not to the pre-refresh snapshot.
     expect(settingsStoreState.modelCredentialStatus).toBe('valid')
+  })
+
+  it('treats the refreshed token as current and a replaced one as stale (#214)', async () => {
+    seedStoredTokens()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(refreshResponse('refreshed-token', 60))))
+
+    const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+    expect(result.status).toBe('success')
+
+    // The refresh committed a NEW pair: the token it returned is the stored
+    // one. Dispatch gates compare tokens for exactly this reason — the
+    // generation bump here is the refresh's own work, not a session change.
+    expect(isGatewayAccessTokenCurrent('refreshed-token')).toBe(true)
+    expect(isGatewayAccessTokenCurrent('stale-token')).toBe(false)
   })
 })
