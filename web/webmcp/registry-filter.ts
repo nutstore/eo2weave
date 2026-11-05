@@ -80,8 +80,20 @@ export function toolMatchCount(
 }
 
 /**
- * Window the expanded tool list: the first `TOOL_PREVIEW_WINDOW` entries up
- * front plus a "More (N total)" expander for the rest.
+ * Upper bound on previewed/indexed tools per package — mirrors the package
+ * validator's 1–100 tool limit (`validateManifest` in
+ * `@creatorweave/shared/webmcp-adapter`): a manifest listing more tools is
+ * an invalid package and fails its preview instead of rendering or indexing
+ * an unbounded row list (the 512 KiB preview byte cap bounds the BODY, not
+ * the row count).
+ */
+export const MAX_PREVIEW_TOOLS = 100
+
+/**
+ * Window the COLLAPSED tool preview: the first `TOOL_PREVIEW_WINDOW`
+ * entries up front plus a "More (N total)" expander for the rest. The
+ * EXPANDED view deliberately renders the full catalog — windowing again
+ * behind the expander would make the hidden entries unreachable.
  */
 export function toolWindow(tools: PreviewTool[]): { visible: PreviewTool[]; hiddenCount: number } {
   return {
