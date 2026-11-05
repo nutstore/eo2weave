@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Search } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
-import { isPotentiallyDynamicProviderType, getProviderConfig, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
+import { isPotentiallyDynamicProviderType, getProviderConfig, getProviderCatalogStatus, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
 import type { LLMProviderType } from '@/agent/providers/types'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
@@ -35,6 +35,23 @@ function isUnverifiedGateway(provider: AvailableProvider): boolean {
     (provider.catalogStatus === 'loading' || provider.catalogStatus === 'empty' || provider.catalogStatus === 'failed')
 }
 
+/**
+ * Issue #188 fix 1 (soft-land superseded snapshots): decide whether a
+ * finished run's snapshot may replace the rendered list. A superseded run
+ * (current:false everywhere) is still a valid read-only catalog — dropping
+ * it blanked the popover until the newest run landed and was the visible
+ * "skeleton refresh". Only apply it when we have nothing yet; otherwise
+ * keep the last accepted snapshot (stale-while-revalidate) until a CURRENT
+ * run replaces it.
+ */
+export function shouldApplyProviderSnapshot(
+  result: Array<{ current: boolean }>,
+  hasAcceptedSnapshot: boolean,
+): boolean {
+  if (!hasAcceptedSnapshot) return true
+  return result.every((p) => p.current)
+}
+
 interface ModelQuickSwitchProps {
   /** Show the thinking level beside the model when rendered in the composer toolbar. */
   compact?: boolean
@@ -61,6 +78,9 @@ export function ModelQuickSwitch({
 
   const [open, setOpen] = useState(false)
   const [providers, setProviders] = useState<AvailableProvider[]>([])
+  // Last snapshot the render gate accepted — tracks "do we have anything on
+  // screen" across registry-triggered reloads without extra state churn.
+  const acceptedSnapshotRef = useRef<AvailableProvider[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [retryingGatewayCatalog, setRetryingGatewayCatalog] = useState(false)
@@ -116,13 +136,17 @@ export function ModelQuickSwitch({
       try {
         const result = await getAvailableProviders()
         // A superseded run (a newer getAvailableProviders() started while
-        // this one was awaiting) reports current:false on every entry — its
-        // snapshot is stale. Applying it would let an older overlapping run
-        // that resolves late overwrite the newer run's provider data, so
-        // models absent from the current catalog stayed selectable. Same
-        // gate WorkspaceLayout uses for its reconciliation
-        // (Sourcery: "Superseded model lists remain selectable").
-        if (!cancelled && result.every((p) => p.current)) {
+        // this one was awaiting) reports current:false on every entry —
+        // applying it over a newer run's data would let an older overlapping
+        // run that resolves late overwrite the newer run's provider data
+        // (Sourcery: "Superseded model lists remain selectable"). But
+        // DROPPING it outright blanked the popover until the newest run
+        // landed (#188 fix 1): a superseded snapshot is still a valid
+        // read-only catalog, so soft-land it when nothing is rendered yet
+        // and otherwise keep the last accepted snapshot until the CURRENT
+        // run replaces it.
+        if (!cancelled && shouldApplyProviderSnapshot(result, acceptedSnapshotRef.current !== null)) {
+          acceptedSnapshotRef.current = result
           setProviders(result)
         }
       } catch (err) {
@@ -289,6 +313,20 @@ export function ModelQuickSwitch({
     return !getProviderConfig(providerType)
   }, [hasLoadedOnce, providerType, modelName, providerRegistryVersion])
 
+  // Registered but its catalog discovery is still in flight (#188 fix 4):
+  // a gateway between registration and its first successful /v1/models
+  // fetch is RESTORING, not unregistered — the 请重新登录 warning must
+  // not fire for it (selectedProviderUnregistered stays false above) and
+  // neither does the amber no-usable-model state. A neutral "restoring
+  // session" label renders instead until the catalog lands.
+  const selectedProviderRestoring = useMemo(() => {
+    void providerRegistryVersion
+    if (!providerType || !modelName) return false
+    if (!isPotentiallyDynamicProviderType(providerType)) return false
+    if (!getProviderConfig(providerType)) return false
+    return getProviderCatalogStatus(providerType) === 'loading'
+  }, [providerType, modelName, providerRegistryVersion])
+
   // Warning copy must name the provider the user must re-login to
   // (Sourcery round 5): codex-oauth gets the Codex-specific recovery text;
   // llm-gateway and custom-* would otherwise see guidance for the wrong
@@ -311,14 +349,17 @@ export function ModelQuickSwitch({
     // state, not "no models" (#84 review round 2) — keep showing the model
     // name so the chip's amber warning reads as re-credentials, not re-pick.
     // An unregistered dynamic provider (#87) appends the provider-specific
-    // re-login warning instead of the bare model name.
+    // re-login warning instead of the bare model name. A registered gateway
+    // whose catalog is still restoring (#188 fix 4) shows a neutral
+    // "restoring session" note — NOT the re-login warning.
     const currentProvider = providers.find((p) => p.providerType === providerType)
     const model = currentProvider?.models.find((m) => m.id === modelName)
     const base = model?.name || modelName
+    if (selectedProviderRestoring) return `${base} · ${t('topbar.modelSwitcher.sessionRestoring')}`
     return selectedProviderUnregistered
       ? `${base} · ${t(unregisteredWarningKey)}`
       : base
-  }, [loading, selectedProviderUnregistered, modelCredentialStatus, providerType, providers, modelName, t, unregisteredWarningKey])
+  }, [loading, selectedProviderUnregistered, selectedProviderRestoring, modelCredentialStatus, providerType, providers, modelName, t, unregisteredWarningKey])
 
   // No usable model (#82): nothing selectable — the composer's input is
   // disabled and this chip carries the amber warning state pointing at
