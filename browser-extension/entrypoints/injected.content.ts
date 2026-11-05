@@ -654,11 +654,29 @@ export default defineContentScript({
         // ── Default: fast HTTP fetch first ──
         let response = await getRawHtml(false);
 
+        // A policy refusal (private / loopback / metadata target, redirect into
+        // one, opaque redirect) is FINAL: render mode would load the very same
+        // URL in a tab, follow the redirect, and hand back the rendered tab
+        // HTML as if it were the resource — so a refused JSON endpoint would
+        // come back as a misleading HTML "success". Never retry a refusal (or
+        // any caller-side request error) through render mode.
+        if (response.refused) {
+          return response;
+        }
+
         // HTTP failed entirely → try render as last resort
         if (!response.ok || !response.body) {
           const renderResponse = await getRawHtml(true);
           if (renderResponse.ok && renderResponse.body) {
             return toMarkdown(renderResponse);
+          }
+          // A refused render is the same non-retryable policy verdict as a
+          // refused HTTP fetch. Returning the original status-0 network error
+          // here would downgrade it to a retryable FETCH_ERROR, so the caller
+          // (which maps `refused` to URL_REFUSED) would retry a target the
+          // guard already rejected.
+          if (renderResponse.refused) {
+            return renderResponse;
           }
           return response;
         }
@@ -685,6 +703,12 @@ export default defineContentScript({
             if (rendered.body.trim().length > extractedLength) {
               return rendered;
             }
+          }
+          // A refused render is a policy verdict, not a "keep the shell" case:
+          // returning the short HTML would report a target the guard rejected as
+          // a successful fetch.
+          if (renderResponse.refused) {
+            return renderResponse;
           }
         }
 
