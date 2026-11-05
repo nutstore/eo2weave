@@ -1349,7 +1349,7 @@ export function refreshAccessTokenWithStatus(
       typeof current.access_token === 'string' && current.access_token.trim() &&
       current.access_token !== beforeLock.access_token && current.access_expires_at > Date.now() + 60_000
     ) {
-      setCredentialStatus('valid')
+      setCredentialStatus('valid', generation)
       return { status: 'success', accessToken: current.access_token }
     }
     return refreshAccessTokenWithStatusImpl(baseURL, clientId)
@@ -1498,7 +1498,7 @@ async function refreshAccessTokenWithStatusImpl(
     if (inspection === 'error') {
       return { status: 'temporary_error', error: new Error('gateway credential storage unavailable') }
     }
-    setCredentialStatus(inspection === 'had-session' ? 'expired' : 'missing')
+    setCredentialStatus(inspection === 'had-session' ? 'expired' : 'missing', generation)
     return inspection === 'had-session' ? { status: 'expired' } : { status: 'missing' }
   }
 

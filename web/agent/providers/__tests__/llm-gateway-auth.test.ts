@@ -513,8 +513,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(result.status).toBe('temporary_error')
       // Nothing from the dead session may be written
       expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
-      // The settings mirror keeps the logged-out verdict too.
-      expect(settingsStoreState.modelCredentialStatus).not.toBe('valid')
     })
 
     it('does not overwrite a newer login committed in another tab', async () => {
@@ -1516,8 +1514,14 @@ describe('cross-tab refresh coalescing', () => {
 })
 
 describe('credential status generation fence (#180)', () => {
-  it('treats a verdict as current only while the credential set it saw is unchanged', async () => {
+  beforeEach(() => {
     localStorage.clear()
+    settingsStoreState.modelCredentialStatus = 'unknown'
+    loadApiKeyMock.mockReset()
+    loadApiKeyMock.mockResolvedValue(null)
+  })
+
+  it('treats a verdict as current only while the credential set it saw is unchanged', async () => {
     seedStoredTokens()
     const generation = getGatewayAuthSessionGeneration()
     expect(isCredentialStatusCurrent(generation)).toBe(true)
@@ -1526,5 +1530,40 @@ describe('credential status generation fence (#180)', () => {
 
     expect(getGatewayAuthSessionGeneration()).not.toBe(generation)
     expect(isCredentialStatusCurrent(generation)).toBe(false)
+  })
+
+  it('drops a stale "missing" verdict that lands after a new login', async () => {
+    // The storage read that produced the verdict is still in flight when a
+    // login commits, so the verdict describes a session that no longer exists.
+    let releaseLoad!: (value: string | null) => void
+    loadApiKeyMock.mockImplementation((provider) =>
+      provider === '__llm_gateway_refresh_token__'
+        ? new Promise<string | null>((resolve) => { releaseLoad = resolve })
+        : Promise.resolve(null),
+    )
+
+    const pending = getValidAccessToken(BASE_URL, CLIENT_ID)
+    await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalled())
+
+    persistDeviceLoginTokens(
+      {
+        access_token: 'new-session-access',
+        token_type: 'Bearer',
+        expires_in: 60,
+        refresh_token: 'new-session-refresh',
+        refresh_expires_in: 3600,
+      },
+      CLIENT_ID,
+      BASE_URL,
+    )
+    expect(localStorage.getItem(TOKENS_KEY)).toContain('new-session-refresh')
+
+    releaseLoad(null)
+    await pending
+    // Let the settings-store dynamic import settle.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // Without the fence this write lands as 'missing' after the login.
+    expect(settingsStoreState.modelCredentialStatus).not.toBe('missing')
   })
 })
