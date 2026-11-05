@@ -73,6 +73,11 @@ const GATEWAY_META: ProviderMeta = {
   category: 'chinese',
   displayName: 'Nutstore AI',
   models: [], // populated dynamically via updateGatewayModels()
+  // Registered-but-loading must be distinguishable from failed (#188):
+  // without this the switcher derives 'failed' from the empty list during
+  // startup discovery and treats the gateway as unverified while it is
+  // merely restoring its session.
+  catalogStatus: 'loading',
 }
 
 // Shared ordering for startup, settings-card, switcher and login registrations.

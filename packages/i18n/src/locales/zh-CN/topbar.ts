@@ -18,6 +18,7 @@ export const topbar = {
             credentialExpiredWarning: "所选模型需要重新登录，点击管理网关凭证",
       codexUnavailableWarning: "Codex 不可用，请重新登录",
       providerUnavailableWarning: "服务商不可用，请重新登录",
+      sessionRestoring: "恢复会话中…",
       temporarilyUnavailable: "暂时无法验证",
       catalogUnavailable: "模型列表暂时无法更新",
       retryCatalog: "重试",

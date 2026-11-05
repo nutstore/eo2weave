@@ -17,6 +17,7 @@ export const topbar = {
             credentialExpiredWarning: "Selected model needs re-login — click to manage the gateway credential",
       codexUnavailableWarning: "Codex unavailable — sign in again",
       providerUnavailableWarning: "Provider unavailable — sign in again",
+      sessionRestoring: "Restoring session…",
       temporarilyUnavailable: "Temporarily unable to verify",
       catalogUnavailable: "Model list temporarily unavailable",
       retryCatalog: "Retry",

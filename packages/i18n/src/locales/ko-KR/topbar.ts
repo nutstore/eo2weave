@@ -18,6 +18,7 @@ export const topbar = {
             credentialExpiredWarning: "선택한 모델은 다시 로그인이 필요합니다. 클릭하여 자격 증명 관리",
       codexUnavailableWarning: "Codex를 사용할 수 없습니다. 다시 로그인하세요",
       providerUnavailableWarning: "공급자를 사용할 수 없습니다. 다시 로그인하세요",
+      sessionRestoring: "세션 복원 중…",
       temporarilyUnavailable: "일시적으로 확인할 수 없음",
       catalogUnavailable: "모델 목록을 일시적으로 업데이트할 수 없습니다",
       retryCatalog: "다시 시도",
