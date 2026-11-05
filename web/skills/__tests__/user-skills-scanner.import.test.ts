@@ -109,6 +109,13 @@ function makeOpfsRoot(
               file.data.byteOffset + file.data.byteLength,
             ) as ArrayBuffer,
           text: async () => new TextDecoder().decode(file.data),
+          // Blob.slice semantics — the version lookup reads only the head of
+          // the file so an oversized local SKILL.md is never buffered whole.
+          slice: (start = 0, end = file.data.byteLength) => ({
+            size: Math.max(0, end - start),
+            text: async () =>
+              new TextDecoder().decode(file.data.subarray(start, end)),
+          }),
         }
       },
       createWritable: async () => {
@@ -771,8 +778,10 @@ describe('previewUserSkillZip size caps (issue #128)', () => {
 // ── installSkillFromUrl download cap ─────────────────────────────────
 
 describe('installSkillFromUrl download cap (issue #128)', () => {
-  it('preserves local edits when a store install is repeated', async () => {
+  it('preserves local edits when a store install is repeated (no version frontmatter)', async () => {
     const realFetch = globalThis.fetch
+    // Store ZIP without a `version:` frontmatter — unknown provenance falls
+    // back to the conservative ifAbsent behavior (#154).
     const archive = zipSync({ 'store-skill/SKILL.md': strToU8('# Store version') })
     try {
       ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
@@ -783,6 +792,330 @@ describe('installSkillFromUrl download cap (issue #128)', () => {
       const second = await installSkillFromUrl('https://store.example/store-skill.zip')
       expect(second.count).toBe(0)
       expect(contentOf('store-skill', 'SKILL.md')).toBe('# Local edit')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('updates an installed skill in place when the store version is newer (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.3"\n---\n\n# Store guidance v1.1.3'
+    const archive = zipSync({
+      'versioned-skill/SKILL.md': strToU8(storeMd),
+      'versioned-skill/references/new.md': strToU8('new file'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Old guidance',
+      )
+      const progress: Array<{ phase: string; message: string }> = []
+      const result = await installSkillFromUrl(
+        'https://store.example/versioned-skill.zip',
+        (p) => progress.push(p),
+      )
+      expect(result.count).toBe(2)
+      expect(contentOf('versioned-skill', 'SKILL.md')).toContain('v1.1.3')
+      expect(contentOf('versioned-skill/references', 'new.md')).toBe('new file')
+      const done = progress.find((p) => p.phase === 'done')
+      expect(done?.message).toContain('Updated v1.1.2 → v1.1.3')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('reports "Already installed" when the installed version matches the store (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Store guidance'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Local customization',
+      )
+      const progress: Array<{ phase: string; message: string }> = []
+      const result = await installSkillFromUrl(
+        'https://store.example/versioned-skill.zip',
+        (p) => progress.push(p),
+      )
+      expect(result.count).toBe(0)
+      expect(contentOf('versioned-skill', 'SKILL.md')).toBe(
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Local customization',
+      )
+      const done = progress.find((p) => p.phase === 'done')
+      expect(done?.message).toContain('Already installed')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('skips without downgrading when the installed version is newer than the store (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Older store copy'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.2.0"\n---\n\n# Newer local copy',
+      )
+      const progress: Array<{ phase: string; message: string }> = []
+      const result = await installSkillFromUrl(
+        'https://store.example/versioned-skill.zip',
+        (p) => progress.push(p),
+      )
+      expect(result.count).toBe(0)
+      expect(contentOf('versioned-skill', 'SKILL.md')).toContain('# Newer local copy')
+      const done = progress.find((p) => p.phase === 'done')
+      expect(done?.message).toContain('Skipped update')
+      expect(done?.message).toContain('1.2.0')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('reports the outcome so callers can branch without parsing the message (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.3"\n---\n\n# Store'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // Not installed → fresh install.
+      const fresh = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      expect(fresh.outcome).toBe('installed')
+
+      // Older installed copy → update.
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Old',
+      )
+      const updated = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      expect(updated.outcome).toBe('updated')
+
+      // Matching copy → keep.
+      const current = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      expect(current.outcome).toBe('current')
+
+      // Newer installed copy → keep, never downgrade.
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "2.0.0"\n---\n\n# Newer',
+      )
+      const newer = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      expect(newer.outcome).toBe('installed-newer')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('surfaces an OPFS read failure instead of silently keeping the stale copy (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.3"\n---\n\n# Store'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'versioned-skill',
+        '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Old',
+      )
+      // The installed SKILL.md cannot be read (OPFS access error). The flow
+      // must NOT degrade to "unknown version" and silently keep the stale
+      // copy — the read failure is surfaced.
+      ;(navigator as unknown as { storage: unknown }).storage = {
+        getDirectory: async () => makeOpfsRoot(undefined, 'versioned-skill/SKILL.md'),
+      }
+      await expect(
+        installSkillFromUrl('https://store.example/versioned-skill.zip'),
+      ).rejects.toThrow(/PermissionDeniedError|read failed/i)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('reads only the head of an oversized installed SKILL.md (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.1.3"\n---\n\n# Store'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // A locally grown SKILL.md: the version sits in the frontmatter, the
+      // rest is bulk. The lookup must not buffer the whole file.
+      writeInstalled(
+        'versioned-skill',
+        `---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n${'x'.repeat(2 * 1024 * 1024)}`,
+      )
+      const result = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      // The version was still found → the update happened.
+      expect(result.outcome).toBe('updated')
+      expect(contentOf('versioned-skill', 'SKILL.md')).toContain('# Store')
+      expect(contentOf('versioned-skill', 'SKILL.md')).not.toContain('x'.repeat(100))
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('updates a skill installed with a case-variant skill.md file (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: versioned-skill\nversion: "1.2.0"\n---\n\n# Store v1.2.0'
+    const archive = zipSync({ 'versioned-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // Installed via an archive that shipped the lowercase name: the exact
+      // SKILL.md handle lookup misses it, the version reads as unknown, and
+      // the update silently degrades to ifAbsent (keeping the stale copy).
+      const dir = dirOf(userRoot, '.skills/user', true)!
+      const sub = makeDir()
+      sub.files.set('skill.md', {
+        data: new TextEncoder().encode(
+          '---\nname: versioned-skill\nversion: "1.1.2"\n---\n\n# Old',
+        ),
+      })
+      dir.dirs.set('versioned-skill', sub)
+
+      const result = await installSkillFromUrl('https://store.example/versioned-skill.zip')
+      // The lowercase installed SKILL.md's version WAS found → not a fresh
+      // ifAbsent install but a version-aware update.
+      expect(result.outcome).toBe('updated')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('normalizes a lowercase skill.md entry to SKILL.md when writing (#154 round 8)', async () => {
+    // Regression: the preview matches `skill.md` case-insensitively, but the
+    // writer used to keep the archive's filename — an update from an archive
+    // shipping lowercase `skill.md` REPLACED the installed `SKILL.md` with a
+    // lowercase file, and the scanner (exact `SKILL.md` lookup) stopped
+    // registering the skill even though its files remained on disk.
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: lower-skill\nversion: "2.0.0"\n---\n\n# Lower v2'
+    const archive = zipSync({ 'lower-skill/skill.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'lower-skill',
+        '---\nname: lower-skill\nversion: "1.0.0"\n---\n\n# Lower v1',
+      )
+      const result = await installSkillFromUrl('https://store.example/lower-skill.zip')
+      expect(result.outcome).toBe('updated')
+      // The written entry MUST be uppercase `SKILL.md` — the only filename
+      // the scanner registers.
+      expect(contentOf('lower-skill', 'SKILL.md')).toContain('# Lower v2')
+      const dir = dirOf(userRoot, '.skills/user/lower-skill', false)!
+      expect(dir.files.has('skill.md')).toBe(false)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('updates a bundle member when the store bundle is newer (#154)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "2.0.0"\n---\n\n# A2'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "2.0.0"\n---\n\n# B2'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'bundle-a',
+        '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A1',
+      )
+      writeInstalled(
+        'bundle-b',
+        '---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B1',
+      )
+      const result = await installSkillFromUrl('https://store.example/bundle.zip')
+      // Bundles have no preview.skill — the old code read no version at all
+      // and fell back to ifAbsent, leaving members stale.
+      expect(result.outcome).toBe('updated')
+      expect(contentOf('bundle-a', 'SKILL.md')).toContain('# A2')
+      expect(contentOf('bundle-b', 'SKILL.md')).toContain('# B2')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('decides PER MEMBER: one updated bundle member does not overwrite a newer sibling (#154 round 2)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      // a is updatable (store newer); b's installed copy is NEWER than the
+      // store — a bundle-wide import would downgrade b.
+      'bundle-a/SKILL.md': strToU8('---\nname: bundle-a\nversion: "2.0.0"\n---\n\n# A2'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B-store'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled(
+        'bundle-a',
+        '---\nname: bundle-a\nversion: "1.0.0"\n---\n\n# A1',
+      )
+      writeInstalled(
+        'bundle-b',
+        '---\nname: bundle-b\nversion: "3.0.0"\n---\n\n# B-local-newer',
+      )
+      const result = await installSkillFromUrl('https://store.example/bundle.zip')
+      expect(result.outcome).toBe('updated')
+      // a took the update…
+      expect(contentOf('bundle-a', 'SKILL.md')).toContain('# A2')
+      // …while b was NOT downgraded.
+      expect(contentOf('bundle-b', 'SKILL.md')).toContain('# B-local-newer')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('decides PER MEMBER: unknown members use ifAbsent without dragging siblings (#154 round 2)', async () => {
+    const realFetch = globalThis.fetch
+    const archive = zipSync({
+      // a has no version (unknown → per-member ifAbsent: installed, kept);
+      // b is missing locally and must still get installed.
+      'bundle-a/SKILL.md': strToU8('# A no version'),
+      'bundle-b/SKILL.md': strToU8('---\nname: bundle-b\nversion: "1.0.0"\n---\n\n# B fresh'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // a is installed with local edits and no version frontmatter.
+      writeInstalled('bundle-a', '# A local edits')
+      const result = await installSkillFromUrl('https://store.example/bundle.zip')
+      expect(result.outcome).toBe('installed')
+      // a's unknown-provenance copy was preserved (ifAbsent)…
+      expect(contentOf('bundle-a', 'SKILL.md')).toBe('# A local edits')
+      // …while the missing b was still installed (a bundle-wide ifAbsent
+      // would have skipped it).
+      expect(contentOf('bundle-b', 'SKILL.md')).toContain('# B fresh')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('does not overwrite an installed skill whose version is unparseable junk (#154 round 2)', async () => {
+    const realFetch = globalThis.fetch
+    const storeMd = '---\nname: junky-skill\nversion: "2.0.0"\n---\n\n# Store v2'
+    const archive = zipSync({ 'junky-skill/SKILL.md': strToU8(storeMd) })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // Installed copy carries a NONEMPTY but unparseable version — junk
+      // used to rank below any parseable version, so the store release
+      // overwrote these local edits. Unknown provenance must be kept.
+      const local = '---\nname: junky-skill\nversion: latest-draft\n---\n\n# Local edits'
+      writeInstalled('junky-skill', local)
+      const result = await installSkillFromUrl('https://store.example/junky.zip')
+      expect(result.count).toBe(0)
+      expect(contentOf('junky-skill', 'SKILL.md')).toBe(local)
     } finally {
       globalThis.fetch = realFetch
     }
@@ -1372,5 +1705,93 @@ describe('importUserSkillFolder uses the serialized import pipeline', () => {
     expect(['# From ZIP', '# From folder']).toContain(final)
     const backups = dirOf(userRoot, '.skills/.import-backups', false)
     expect(backups?.dirs.size ?? 0).toBe(0)
+  })
+})
+
+// ── Round 5 (Sourcery) regression tests ──────────────────────────────
+
+describe('installSkillFromUrl per-member path guards (round 5)', () => {
+  it('rejects a bundle whose members collapse to the SAME dirName before importing (#154 round 5)', async () => {
+    const realFetch = globalThis.fetch
+    // Two distinct archive paths whose LAST segment — the inferred
+    // folder name — is identical: `group-a/shared-skill` and
+    // `group-b/shared-skill` both infer dirName `shared-skill`.
+    const archive = zipSync({
+      'group-a/shared-skill/SKILL.md': strToU8('---\nname: shared-a\nversion: "1.0.0"\n---\n\n# From group A'),
+      'group-b/shared-skill/SKILL.md': strToU8('---\nname: shared-b\nversion: "2.0.0"\n---\n\n# From group B'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      await expect(
+        installSkillFromUrl('https://store.example/collide.zip'),
+      ).rejects.toThrow(/duplicate skill folders/)
+      // Neither member was written — the guard fires before ANY import.
+      expect(installed('shared-skill')).toBe(false)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('does NOT absorb sibling files into a root-level bundle member (#154 round 5)', async () => {
+    const realFetch = globalThis.fetch
+    // A bundle with a root-level SKILL.md (empty _commonRoot) alongside a
+    // nested sibling. The root member's slice used to match EVERY archive
+    // path (`startsWith('')`), pulling the sibling's files — including its
+    // SKILL.md — into the root skill's directory.
+    const archive = zipSync({
+      'SKILL.md': strToU8('---\nname: root-skill\nversion: "2.0.0"\n---\n\n# Root v2'),
+      'README.md': strToU8('# Root readme'),
+      'nested-skill/SKILL.md': strToU8('---\nname: nested-skill\nversion: "1.0.0"\n---\n\n# Nested'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      // A root-level member has no folder to infer its name from — its
+      // dirName falls back to the ZIP file name ('root-mix').
+      writeInstalled('root-mix', '---\nname: root-skill\nversion: "1.0.0"\n---\n\n# Root v1')
+      const result = await installSkillFromUrl('https://store.example/root-mix.zip')
+      expect(result.outcome).toBe('updated')
+      // The root member took its own update…
+      expect(contentOf('root-mix', 'SKILL.md')).toContain('# Root v2')
+      // …but did NOT absorb the nested sibling: the sibling's SKILL.md must
+      // never land inside the root member's directory (the old
+      // `startsWith('')` slice pulled it in); it stays its own install.
+      const rootDir = dirOf(userRoot, '.skills/user/root-mix', false)!
+      expect(rootDir.files.has('SKILL.md')).toBe(true)
+      expect(rootDir.dirs.has('nested-skill')).toBe(false)
+      expect(contentOf('nested-skill', 'SKILL.md')).toContain('# Nested')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('excludes a nested bundle member from its CONTAINING parent member (#154 round 8)', async () => {
+    const realFetch = globalThis.fetch
+    // One skill directory nested INSIDE another: `pkg/` is the parent member
+    // and `pkg/nested-skill/` is its own member. The parent's slice starts
+    // with `pkg/` and used to include every path beneath it — the nested
+    // member's files got copied into the parent's directory even though the
+    // nested member is imported on its own. Only the store bundle's own
+    // files land in `pkg/`.
+    const archive = zipSync({
+      'pkg/SKILL.md': strToU8('---\nname: pkg\nversion: "2.0.0"\n---\n\n# Pkg v2'),
+      'pkg/README.md': strToU8('# Pkg readme'),
+      'pkg/nested-skill/SKILL.md': strToU8('---\nname: nested-skill\nversion: "1.0.0"\n---\n\n# Nested'),
+    })
+    try {
+      ;(globalThis as { fetch: typeof fetch }).fetch = (async () =>
+        new Response(archive, { status: 200 })) as typeof fetch
+      writeInstalled('pkg', '---\nname: pkg\nversion: "1.0.0"\n---\n\n# Pkg v1')
+      const result = await installSkillFromUrl('https://store.example/pkg.zip')
+      expect(result.outcome).toBe('updated')
+      expect(contentOf('pkg', 'SKILL.md')).toContain('# Pkg v2')
+      // The parent absorbed the nested member's files…
+      const pkgDir = dirOf(userRoot, '.skills/user/pkg', false)!
+      expect(pkgDir.dirs.has('nested-skill')).toBe(false)
+      expect(contentOf('nested-skill', 'SKILL.md')).toContain('# Nested')
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 })

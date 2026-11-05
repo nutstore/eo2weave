@@ -11,6 +11,7 @@ export const skillInstall = {
     versionLabel: "Version",
     filesLabel: "{count} files",
     installButton: "Install skill",
+    updateButton: "Update to v{version}",
     installing: "Installing…",
     installDone: "Installed!",
     installFailed: "Install failed",

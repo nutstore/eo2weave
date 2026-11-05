@@ -1670,7 +1670,7 @@ export class WorkspaceRuntime {
     path: string,
     maxDepth: number,
     projectId?: string | null,
-    options?: { includeSizes?: boolean; excludeDirs?: string[]; maxEntries?: number; deadlineMs?: number }
+    options?: { includeSizes?: boolean; excludeDirs?: string[]; maxEntries?: number; deadlineMs?: number; respectGitignore?: boolean; includeIgnored?: boolean }
   ): Promise<Array<{ path: string; type: 'file' | 'directory'; size: number; depth: number }> | null> {
     return scanDiskTreeImpl(this as unknown as WorkspaceRuntimeInternals, path, maxDepth, projectId, options)
   }

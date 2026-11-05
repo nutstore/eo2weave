@@ -748,7 +748,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           if (!workspace) continue
           try {
             // Pass root name as path prefix so resolvePath can match it
-            const entries = await workspace.scanDiskTree(root.name, 10, projectId, { maxEntries: 5000 })
+            const entries = await workspace.scanDiskTree(root.name, 10, projectId, { maxEntries: 5000, respectGitignore: true })
             if (entries) {
               for (const entry of entries) {
                 if (entry.type === 'file') {

@@ -14,6 +14,7 @@ import {
   writeUserSkillMd,
   deleteUserSkillDir,
   userSkillDirExists,
+  withSkillImportSerialization,
 } from '@/skills/user-skills-scanner'
 import { deleteProjectSkillFromNativeFs } from '@/skills/project-skill-live-reader'
 
@@ -225,7 +226,16 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
           // Check if the directory exists before attempting deletion.
           // If it doesn't exist, it may be a legacy SQLite-only skill that
           // wasn't migrated yet — fall through to SQLite deletion.
-          const existsInOpfs = await userSkillDirExists(dirName).catch(() => false)
+          // The existence check runs UNDER the same per-directory import
+          // lock as the removal (#154 review): a concurrent update holds
+          // that lock and its staging phase temporarily REMOVES the
+          // directory — a lock-free check would see it absent, take the
+          // SQLite-only path, and let the update recreate the skill the
+          // user just uninstalled.
+          const existsInOpfs = await withSkillImportSerialization(
+            [dirName],
+            () => userSkillDirExists(dirName),
+          ).catch(() => false)
           if (existsInOpfs) {
             await deleteUserSkillDir(dirName)
           } else {

@@ -82,6 +82,15 @@ export const discover = {
     progressUninstallFailed: "アンインストール失敗",
     progressDownloadPercent: "ダウンロード進捗 {percent}%",
     loadMore: "もっと読み込む（残り {remaining}）",
+    progressDownloadingBytes: "ダウンロード中…（{loaded}）",
+    alreadyInstalled: "インストール済み",
+    installedFiles: "{count} 個のファイルをインストールしました",
+    alreadyInstalledVersion: "インストール済み（v{version}）",
+    skippedUpdate: "更新をスキップしました：ローカル版 v{installed} はストア版 v{store} より新しいためです",
+    updatedVersion: "v{from} → v{to} に更新しました（{count} 個のファイル）",
+    update: "更新",
+    updating: "更新中",
+    updateDone: "更新完了",
 } as const
 
 export const skillCard = {
