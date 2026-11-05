@@ -119,6 +119,15 @@ describe('web_fetch URL validation (#157)', () => {
     expect(() => assertPublicWebUrl('http://[2002:0808:0808::]/')).not.toThrow()
   })
 
+  it('refuses local-DNS hostnames such as router.lan (#157 round 2)', () => {
+    // These suffixes are never delegated publicly: they resolve only through
+    // the host's search domains / mDNS, i.e. to intranet addresses.
+    for (const url of ['http://router.lan/', 'http://nas.lan:5000/api', 'http://printer.home/']) {
+      expect(() => assertPublicWebUrl(url)).toThrow(/not allowed/)
+    }
+    expect(() => assertPublicWebUrl('https://example.com/')).not.toThrow()
+  })
+
   it('accepts ordinary public http(s) URLs', () => {
     expect(() => assertPublicWebUrl('https://example.com/article')).not.toThrow()
     expect(() => assertPublicWebUrl('http://example.com/legacy')).not.toThrow()

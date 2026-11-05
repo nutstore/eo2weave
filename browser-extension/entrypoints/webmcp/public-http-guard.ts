@@ -227,6 +227,14 @@ export function assertPublicUrl(rawUrl: string, policy: PublicUrlPolicy = {}): U
     hostname.endsWith('.local') ||
     hostname.endsWith('.internal') ||
     hostname.endsWith('.home.arpa') ||
+    // Consumer-router / local-DNS suffixes that are never delegated on the
+    // public internet: `.lan` and `.home` resolve only through the host's own
+    // search domains or mDNS, so `router.lan` reaches a private address the
+    // same way `router.local` does. Other local names that do not use one of
+    // these suffixes stay a documented limitation (resolution-time enforcement
+    // is the native host's job — see the file header).
+    hostname.endsWith('.lan') ||
+    hostname.endsWith('.home') ||
     // Single-label hostname (no dot): on the public internet these do not
     // resolve globally; a bare name would resolve via local search domains.
     (!hostname.includes('.') && !hostname.includes(':')) ||
