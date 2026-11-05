@@ -97,6 +97,7 @@ export function parseSkillMd(content: string, source: SkillSource = 'import'): P
     name,
     version: meta.version ? String(meta.version) : '1.0.0',
     description: meta.description ? String(meta.description) : '',
+    description_i18n: parseDescriptionI18n(meta),
     author: meta.author ? String(meta.author) : 'Unknown',
     category: validateCategory(meta.category),
     tags: parseStringArray(meta.tags),
@@ -115,6 +116,27 @@ export function parseSkillMd(content: string, source: SkillSource = 'import'): P
 }
 
 /**
+ * Collect `description.<locale>:` frontmatter values — display-only
+ * translations of the skill description. The base `description` stays the
+ * agent-facing trigger text.
+ *
+ * A locale is a BCP-47-ish tag (`zh-CN`, `ja`, `ko-KR`); anything else under a
+ * `description.` prefix is ignored rather than surfaced as a locale.
+ */
+export function parseDescriptionI18n(
+  meta: Record<string, unknown>,
+): Record<string, string> | undefined {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(meta)) {
+    const match = /^description\.([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?)$/.exec(key)
+    if (!match || typeof value !== 'string') continue
+    const text = value.trim()
+    if (text) out[match[1]] = text
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/**
  * Serialize a Skill back to SKILL.md format.
  */
 export function serializeSkillMd(skill: Skill): string {
@@ -124,6 +146,14 @@ export function serializeSkillMd(skill: Skill): string {
   lines.push(`version: "${skill.version}"`)
   if (skill.description) {
     lines.push(`description: "${escapeYamlString(skill.description)}"`)
+  }
+  // Localized descriptions round-trip, so editing a skill does not silently
+  // drop the translations that ship in its SKILL.md.
+  if (skill.description_i18n) {
+    for (const [locale, text] of Object.entries(skill.description_i18n)) {
+      if (!text) continue
+      lines.push(`description.${locale}: "${escapeYamlString(text)}"`)
+    }
   }
   lines.push(`author: "${escapeYamlString(skill.author)}"`)
   lines.push(`category: ${skill.category}`)

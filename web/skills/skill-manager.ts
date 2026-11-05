@@ -239,6 +239,7 @@ export class SkillManager {
       name: s.name,
       version: s.version,
       description: s.description,
+      description_i18n: s.description_i18n,
       author: s.author,
       category: s.category,
       tags: s.tags,
@@ -487,6 +488,10 @@ export class SkillManager {
             id: skill.source === 'provider' ? skill.id : skill.name,
             label: skill.name,
             description: skill.description,
+            // Localized display text from `description.<locale>:` — resolved
+            // at render time by the dropdown, so a locale switch needs no
+            // re-registration.
+            descriptionI18n: skill.description_i18n,
             source: 'skill' as const,
           }))
         )

@@ -128,3 +128,46 @@ describe('parseSkillMd/serializeSkillMd round-trip after repair', () => {
     expect(reparsed.skill!.name).toBe('my-skill')
   })
 })
+
+describe('parseSkillMd/serializeSkillMd — localized descriptions', () => {
+  const withI18n = doc(
+    [
+      'name: cw-legal-evidence-chain',
+      'version: "1.1.3"',
+      'description: Use for lawyers evidence-chain work.',
+      'description.zh-CN: "面向律师的证据链工作技能。"',
+      'description.ja-JP: "弁護士向けの証拠チェーン作業スキル。"',
+      'description.ko-KR: "변호사를 위한 증거 사슬 작업 스킬."',
+      '',
+    ].join('\n'),
+  )
+
+  it('collects description.<locale> values into description_i18n', () => {
+    const { skill } = parseSkillMd(withI18n)
+    expect(skill).not.toBeNull()
+    expect(skill!.description).toBe('Use for lawyers evidence-chain work.')
+    expect(skill!.description_i18n).toEqual({
+      'zh-CN': '面向律师的证据链工作技能。',
+      'ja-JP': '弁護士向けの証拠チェーン作業スキル。',
+      'ko-KR': '변호사를 위한 증거 사슬 작업 스킬.',
+    })
+  })
+
+  it('omits description_i18n when the skill ships no translations', () => {
+    const { skill } = parseSkillMd(doc('name: plain-skill\ndescription: Only English.\n'))
+    expect(skill!.description_i18n).toBeUndefined()
+  })
+
+  it('survives a serialize → parse round-trip (editing keeps translations)', () => {
+    const { skill } = parseSkillMd(withI18n)
+    const reparsed = parseSkillMd(serializeSkillMd(skill!))
+    expect(reparsed.skill!.description_i18n).toEqual(skill!.description_i18n)
+  })
+
+  it('ignores non-locale keys under the description prefix', () => {
+    const { skill } = parseSkillMd(
+      doc('name: odd-skill\ndescription: Base.\ndescription.swagger: not a locale\n'),
+    )
+    expect(skill!.description_i18n).toBeUndefined()
+  })
+})

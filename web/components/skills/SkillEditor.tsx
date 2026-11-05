@@ -88,6 +88,11 @@ export function SkillEditor({ skill, open, onClose, readOnly = false }: SkillEdi
     lines.push(`name: "${yamlEscape(name)}"`)
     lines.push(`version: "${skill?.version || '1.0.0'}"`)
     lines.push(`description: "${yamlEscape(description)}"`)
+    // Localized descriptions are not edited in this form, but dropping them on
+    // save would silently remove the translations shipped in SKILL.md.
+    for (const [locale, text] of Object.entries(skill?.description_i18n ?? {})) {
+      if (text) lines.push(`description.${locale}: "${yamlEscape(text)}"`)
+    }
     lines.push(`author: "${skill?.author || 'User'}"`)
     lines.push(`category: ${skill?.category || 'general'}`)
     // Preserve existing tags/triggers (UI doesn't edit them)
