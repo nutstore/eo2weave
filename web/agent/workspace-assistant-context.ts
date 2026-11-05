@@ -431,11 +431,22 @@ export async function handleWorkspaceAssistantOnReady(
       localStorage.setItem(HOSTNAME_TO_PROJECT_KEY, JSON.stringify(map))
     } catch { /* ignore: best-effort persistence, routing still proceeds */ }
 
-    // Bare project URL (workspace resolved from store state by the route
-    // sync hook). NOTE: this module intentionally has no top-level imports
-    // (kept out of the startup bundle), so the path builder is imported here.
+    // Resolve the canonical route before mounting the project layout. Opening
+    // the bare project first lets the side-panel settle hook register it,
+    // then register the workspace URL after route sync. Each path change can
+    // reload the whole panel in Edge, even after the conversation is visible.
     const { projectWorkspacePath } = await import('@/lib/route-paths')
-    navigate(projectWorkspacePath(projectId!))
+    let workspaceId: string | undefined
+    try {
+      const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
+      // This query uses the same last-accessed ordering as useWorkspaceRouteSync.
+      const [workspace] = await getWorkspaceRepository().findWorkspacesByProject(projectId!)
+      workspaceId = workspace?.id
+    } catch (err) {
+      // Keep the existing route-sync recovery path available after a read failure.
+      console.warn('[Workspace Assistant] Failed to resolve startup workspace:', err)
+    }
+    navigate(projectWorkspacePath(projectId!, workspaceId))
   } catch (err) {
     console.warn('[Workspace Assistant] Failed to handle side panel open:', err)
   }
