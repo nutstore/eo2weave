@@ -1603,7 +1603,11 @@ async function refreshAccessTokenWithStatusImpl(
       } catch (error) {
         console.warn('[llm-gateway] persist refreshed access token shadow failed:', error)
       }
-      setCredentialStatus('valid', generation)
+      // The verdict belongs to the session this refresh just committed, and
+      // that commit advanced the generation itself — declaring it under the
+      // pre-commit snapshot would fence it out and leave the mirror stale
+      // (#180 review round 2).
+      setCredentialStatus('valid', getGatewayAuthSessionGeneration())
       return { status: 'success', accessToken: tokens.access_token }
     })
   } catch (e) {

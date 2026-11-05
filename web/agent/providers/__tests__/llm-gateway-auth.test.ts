@@ -1557,6 +1557,9 @@ describe('credential status generation fence (#180)', () => {
       BASE_URL,
     )
     expect(localStorage.getItem(TOKENS_KEY)).toContain('new-session-refresh')
+    // The login flow reports 'valid' through its own settings write; the stale
+    // verdict must not overwrite that known status.
+    settingsStoreState.modelCredentialStatus = 'valid'
 
     releaseLoad(null)
     await pending
@@ -1564,6 +1567,28 @@ describe('credential status generation fence (#180)', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     // Without the fence this write lands as 'missing' after the login.
-    expect(settingsStoreState.modelCredentialStatus).not.toBe('missing')
+    expect(settingsStoreState.modelCredentialStatus).toBe('valid')
+  })
+
+  it('still applies a verdict produced under the current session', async () => {
+    seedStoredTokens({ access_expires_at: Date.now() + 3_600_000 })
+
+    expect(await getValidAccessToken(BASE_URL, CLIENT_ID)).toBeTruthy()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(settingsStoreState.modelCredentialStatus).toBe('valid')
+  })
+
+  it('reports valid after a successful refresh commit', async () => {
+    seedStoredTokens()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(refreshResponse('refreshed-token', 60))))
+
+    const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+    expect(result.status).toBe('success')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // The refresh's own commit advances the generation; the verdict must be
+    // attributed to that commit, not to the pre-refresh snapshot.
+    expect(settingsStoreState.modelCredentialStatus).toBe('valid')
   })
 })
