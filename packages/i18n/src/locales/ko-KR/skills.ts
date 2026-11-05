@@ -99,6 +99,7 @@ export const discover = {
     bundleUpdateAccept: "선택 항목 업데이트({count})",
     bundleUpdateSkip: "설치된 사본 유지",
     bundleUpdatesSkipped: "{names}의 설치된 사본을 유지했습니다.",
+    siblingUpdatesApplied: "번들 스킬을 업데이트했습니다: {names}.",
 } as const
 
 export const skillCard = {

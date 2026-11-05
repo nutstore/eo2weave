@@ -100,6 +100,7 @@ export const discover = {
     bundleUpdateAccept: "更新所选（{count}）",
     bundleUpdateSkip: "保留已安装副本",
     bundleUpdatesSkipped: "已保留 {names} 的已安装副本。",
+    siblingUpdatesApplied: "已更新同包技能：{names}。",
 } as const
 
 export const skillCard = {

@@ -659,6 +659,9 @@ export async function installSkillFromUrl(
     const approvedSiblings = new Set<string>()
     let consentCandidates: BundleUpdateCandidate[] = []
     const updatedSiblings: string[] = []
+    // Siblings that changed AFTER the consent prompt (another tab/tool wrote a
+    // different version than the user approved): never overwrite those.
+    const consentDrifted: string[] = []
     // The skill the caller asked for: an explicit focus dirName, or — for a
     // single-skill archive — the archive's only member. Everything else that
     // would be overwritten needs consent.
@@ -754,6 +757,7 @@ export async function installSkillFromUrl(
           // ifAbsent (#154 round 2).
           let updatedAny = false
           let installedAny = false
+          let focusUpdated = false
           let filesWritten = 0
           // First decision per category, for the human-readable summary.
           let updatedFrom = ''
@@ -792,10 +796,21 @@ export async function installSkillFromUrl(
               if (s.dirName !== focusDirName && !approvedSiblings.has(s.dirName)) {
                 continue
               }
+              // The approval named a VERSION: if the copy changed between the
+              // prompt and this locked write, the user did not consent to
+              // replacing the new one — keep it and report it (#183 review).
+              const approvedVersion = consentCandidates.find(
+                (candidate) => candidate.dirName === s.dirName,
+              )?.installedVersion
+              if (approvedVersion && approvedVersion !== installed.version) {
+                consentDrifted.push(s.dirName)
+                continue
+              }
               const n = await importUserSkillZipPrelocked(slicePreview(preview, s))
               if (n > 0) {
                 updatedAny = true
                 filesWritten += n
+                if (s.dirName === focusDirName) focusUpdated = true
                 if (approvedSiblings.has(s.dirName)) updatedSiblings.push(s.dirName)
                 if (!updatedFrom) {
                   updatedFrom = installed.version
@@ -817,6 +832,22 @@ export async function installSkillFromUrl(
           // can accompany an updated/installed-newer/current outcome (only
           // SOME members dropped), and callers report drops from this
           // payload — omitting it would make a partial install look clean.
+          // A focused install whose SELECTED skill was already current: only
+          // approved siblings changed, so reporting the selected skill as
+          // "updated" would be false (#183 review).
+          if (updatedAny && focusDirName !== undefined && !focusUpdated) {
+            return {
+              count: filesWritten,
+              storeVersion: null,
+              outcome: 'current' as InstallOutcome,
+              doneMessage: `${keptVersion
+                ? tr('skills.discover.alreadyInstalledVersion', { version: keptVersion })
+                : tr('skills.discover.alreadyInstalled')} ${tr('skills.discover.siblingUpdatesApplied', {
+                names: updatedSiblings.join(', '),
+              })}`,
+              droppedMembers,
+            }
+          }
           if (updatedAny) {
             return {
               count: filesWritten,
@@ -876,8 +907,13 @@ export async function installSkillFromUrl(
         .map((candidate) => candidate.dirName)
         // A member the locked re-check dropped is GONE, not kept: reporting it
         // as "skipped" tells the user their installed copy survived when the
-        // other actor's uninstall removed it (#183 review).
-        .filter((dirName) => !approvedSiblings.has(dirName) && !droppedMembers.includes(dirName))
+        // other actor's uninstall removed it (#183 review). A sibling that
+        // changed after the prompt is kept too — it just was not updated.
+        .filter(
+          (dirName) =>
+            (!approvedSiblings.has(dirName) || consentDrifted.includes(dirName)) &&
+            !droppedMembers.includes(dirName),
+        )
       bundleUpdates = { updated: [...updatedSiblings], skipped: declined }
       if (declined.length > 0 && !droppedMembers.length) {
         doneMessage = `${doneMessage} ${tr('skills.discover.bundleUpdatesSkipped', {

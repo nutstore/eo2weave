@@ -100,6 +100,7 @@ export const discover = {
     bundleUpdateAccept: "Update selected ({count})",
     bundleUpdateSkip: "Keep installed copies",
     bundleUpdatesSkipped: "Kept your installed copies of {names}.",
+    siblingUpdatesApplied: "Updated bundled skills: {names}.",
 } as const
 
 export const skillCard = {

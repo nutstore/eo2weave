@@ -99,6 +99,7 @@ export const discover = {
     bundleUpdateAccept: "選択したものを更新（{count}）",
     bundleUpdateSkip: "インストール済みのコピーを保持",
     bundleUpdatesSkipped: "{names} のインストール済みコピーを保持しました。",
+    siblingUpdatesApplied: "バンドル内のスキルを更新しました: {names}。",
 } as const
 
 export const skillCard = {
