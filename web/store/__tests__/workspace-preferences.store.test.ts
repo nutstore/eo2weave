@@ -123,4 +123,18 @@ describe('workspace-preferences.store one-shot open requests', () => {
     const persisted = JSON.parse(localStorage.getItem('bfosa-workspace-preferences')!)
     expect(persisted.state.panelState.settingsOpenRequest).toBe(false)
   })
+
+  it('drops a pending settings open request persisted by an older build', async () => {
+    localStorage.setItem(
+      'bfosa-workspace-preferences',
+      JSON.stringify({
+        state: { panelState: { settingsOpenRequest: true, sidebarCollapsed: false } },
+        version: 6,
+      })
+    )
+    vi.resetModules()
+    const { useWorkspacePreferencesStore: fresh } = await import('../workspace-preferences.store')
+    expect(fresh.getState().panelState.settingsOpenRequest).toBe(false)
+    expect(fresh.getState().panelState.sidebarCollapsed).toBe(false)
+  })
 })

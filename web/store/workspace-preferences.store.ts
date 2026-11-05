@@ -363,10 +363,16 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
               previewRatio: Math.round(state.panelSizes.previewRatio),
             }
           : DEFAULT_PREFERENCES.panelSizes
+        // A one-shot open request from an older build must not survive hydration.
+        const panelState = {
+          ...(state.panelState || DEFAULT_PREFERENCES.panelState),
+          settingsOpenRequest: false,
+        }
         return {
           ...DEFAULT_PREFERENCES,
           ...state,
           panelSizes,
+          panelState,
           agentModeByWorkspace: state.agentModeByWorkspace || {},
           agentIdByWorkspace: state.agentIdByWorkspace || {},
           autoApplyOnRunCompleteByWorkspace: state.autoApplyOnRunCompleteByWorkspace || {},
