@@ -69,6 +69,13 @@ function makeMockBackend(files: Record<string, string | Uint8Array> = {}): VfsBa
 // ---------------------------------------------------------------------------
 
 describe('VfsBridgeFs path routing', () => {
+  it('hides ignored files in directory listings while allowing explicit reads', async () => {
+    const backend = makeMockBackend({ 'root/.gitignore': '*.log\n', 'root/debug.log': 'secret', 'root/app.ts': 'source' })
+    const bridge = new VfsBridgeFs(backend, ['root'])
+    expect(await bridge.readdir('/workspace/root')).toEqual(expect.arrayContaining(['app.ts']))
+    expect(await bridge.readdir('/workspace/root')).not.toContain('debug.log')
+    expect(await bridge.readFile('/workspace/root/debug.log')).toBe('secret')
+  })
   it('routes /workspace/<root>/file.txt to backend as "<root>/file.txt"', async () => {
     const backend = makeMockBackend({ 'myroot/src/app.ts': 'content' })
     const bridge = new VfsBridgeFs(backend, ['myroot'])

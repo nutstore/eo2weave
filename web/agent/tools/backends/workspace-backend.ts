@@ -13,8 +13,90 @@ import type { VfsBackend, VfsReadResult, VfsReadOptions, VfsDirEntry, VfsListOpt
 import { resolveNativeDirectoryHandle } from '../tool-utils'
 import type { ReadPolicy } from '@/opfs/types/opfs-types'
 import { getWorkspaceManager } from '@/opfs'
+import { isGitIgnored, parseGitIgnore, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
 import { fromFileSystemHandle } from '@creatorweave/fs-provider/file-system-handle'
 import { FsError } from '@creatorweave/fs-provider'
+
+/** Workspace-runtime surfaces the deletion gitignore loader may use. */
+type DeleteIgnoreReads = {
+  resolvePath?: (path: string, projectId?: string | null) => Promise<{ rootId: string | null; relativePath: string }>
+  readFromDiskRoot?: (rootId: string, path: string) => Promise<{ content: string | ArrayBuffer | Blob }>
+  readFile?: (path: string, handle?: unknown, options?: { projectId?: string | null }) => Promise<{ content: string | ArrayBuffer | Blob }>
+}
+
+/**
+ * Thrown when applicable .gitignore rules cannot be loaded (or their absence
+ * proven). Recursive deletion treats this as "ignore state unknown" and
+ * deliberately fails open so tracked files are never skipped.
+ */
+export class MissingGitignoreRulesError extends Error {}
+
+/** Candidate directories for ancestor .gitignore loading (bounded walk). */
+function* collectSelfAndAncestorDirs(): Generator<string> {
+  yield ''
+  for (let depth = 1; depth < 32; depth++) {
+    yield Array.from({ length: depth }, (_, i) => `l${i}`).join('/')
+  }
+}
+
+/**
+ * Native-disk ignore checker for the recursive deletion path. Rules loaded
+ * this way complement the workspace-level rules and cover native-host roots
+ * whose .gitignore files live only on disk. Returns null when the runtime
+ * exposes no disk read surface (checker unavailable — rely on rules only).
+ */
+function createDeleteIgnoreChecker(
+  getWorkspace: () => Promise<unknown | null>,
+  basePath: string
+): ((path: string, kind: 'file' | 'directory') => Promise<boolean>) | null {
+  type DiskReads = NonNullable<DeleteIgnoreReads>
+  let cached: Promise<DiskReads | null> | null = null
+  const getDiskReads = (): Promise<DiskReads | null> => {
+    if (!cached) {
+      cached = (async () => {
+        const workspace = (await getWorkspace()) as DeleteIgnoreReads | null
+        if (!workspace || typeof workspace.readFromDiskRoot !== 'function') return null
+        return { resolvePath: workspace.resolvePath, readFromDiskRoot: workspace.readFromDiskRoot }
+      })()
+    }
+    return cached
+  }
+  const cache = new Map<string, Promise<GitIgnoreRule[]>>()
+  const readRules = (directory: string): Promise<GitIgnoreRule[]> => {
+    const existing = cache.get(directory)
+    if (existing) return existing
+    const pending = (async () => {
+      const slash = directory.lastIndexOf('/')
+      const parent = slash < 0 ? '' : directory.slice(0, slash)
+      const inherited = directory ? await readRules(parent) : []
+      const workspace = await getDiskReads()
+      if (!workspace) return inherited
+      try {
+        const readFromDiskRoot = workspace.readFromDiskRoot
+        if (typeof readFromDiskRoot !== 'function') return inherited
+        const resolved = typeof workspace.resolvePath === 'function'
+          ? await workspace.resolvePath(basePath, null)
+          : null
+        const rootId = resolved?.rootId ?? ''
+        const file = await readFromDiskRoot(rootId, directory ? `${directory}/.gitignore` : '.gitignore')
+        return typeof file.content === 'string'
+          ? [...inherited, ...parseGitIgnore(file.content, directory)]
+          : inherited
+      } catch {
+        return inherited
+      }
+    })()
+    cache.set(directory, pending)
+    return pending
+  }
+  return async (path: string, kind: 'file' | 'directory'): Promise<boolean> => {
+    const workspace = await getDiskReads()
+    if (!workspace) return false
+    const slash = path.lastIndexOf('/')
+    const directory = slash < 0 ? '' : path.slice(0, slash)
+    return isGitIgnored(path, await readRules(directory), kind)
+  }
+}
 
 function inferMimeType(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -144,28 +226,83 @@ export class WorkspaceBackend implements VfsBackend {
 
     let discoveredFiles = new Set<string>()
     let nativeDirs: VfsDirEntry[] = []
+    let loadedRules: GitIgnoreRule[] = []
+    let opfsIsIgnored: ((path: string, kind: 'file' | 'directory') => Promise<boolean>) | null = null
 
     try {
       const nativeEntries = await this.listDir(path, { recursive: true, maxDepth: 100 })
-      discoveredFiles = new Set(
-        nativeEntries.filter((e) => e.kind === 'file').map((e) => e.path)
-      )
+      const rules = await this.readDeleteIgnoreRules()
+      const isIgnored = createDeleteIgnoreChecker(this.readWorkspaceForDeletion, path)
+      const prefix = path ? `${path}/` : ''
+      loadedRules = rules
+      opfsIsIgnored = isIgnored
+      const allowed = async (p: string, kind: 'file' | 'directory'): Promise<boolean> => {
+        if (isGitIgnored(p, rules, kind)) return false
+        if (!isIgnored) return true
+        return !(await isIgnored(p, kind))
+      }
+      const deletableFiles: VfsDirEntry[] = []
+      for (const entry of nativeEntries) {
+        if (entry.kind !== 'file') continue
+        if (await allowed(entry.path, 'file')) deletableFiles.push(entry)
+      }
+      discoveredFiles = new Set(deletableFiles.map((e) => e.path))
+      // Deleted trees keep only directories that still hold deletable files.
+      const keptDirs = new Set<string>()
+      for (const filePath of discoveredFiles) {
+        let dir = filePath.slice(0, filePath.lastIndexOf('/'))
+        while (dir.startsWith(prefix) && dir) {
+          keptDirs.add(dir)
+          dir = dir.slice(0, dir.lastIndexOf('/'))
+        }
+      }
       nativeDirs = nativeEntries
-        .filter((e) => e.kind === 'directory')
+        .filter((e) => e.kind === 'directory' && keptDirs.has(e.path))
         .sort((a, b) => b.path.split('/').length - a.path.split('/').length)
-    } catch {
-      // Directory doesn't exist on native filesystem — OPFS-only, that's OK
+      // A gitignored directory with unignored content (e.g. via negation)
+      // still loses that content — record it as deleted.
+      nativeDirs.push({ name: '', path, kind: 'directory' })
+    } catch (error) {
+      if (error instanceof MissingGitignoreRulesError) {
+        // Ignore state unknown — fail open so tracked files are never skipped.
+        try {
+          const nativeEntries = await this.listDir(path, { recursive: true, maxDepth: 100 })
+          discoveredFiles = new Set(
+            nativeEntries.filter((e) => e.kind === 'file').map((e) => e.path)
+          )
+          nativeDirs = nativeEntries
+            .filter((e) => e.kind === 'directory')
+            .sort((a, b) => b.path.split('/').length - a.path.split('/').length)
+        } catch {
+          // Directory doesn't exist on native filesystem — OPFS-only, that's OK
+        }
+      } else {
+        // Directory doesn't exist on native filesystem — OPFS-only, that's OK
+      }
     }
 
     // Also collect OPFS-only files that might have been missed by listDir (safety net)
     const prefix = path ? path + '/' : ''
     const opfsOnlyFiles = new Set<string>()
 
+    // Reuse the ignore checker when rules loaded successfully above; ignored
+    // OPFS-only files (cached paths, pending creates/modifies) stay on disk
+    // exactly like ignored native files. A null checker (no ignore state)
+    // keeps the fail-open behavior.
+    const opfsAllowed = discoveredFiles.size > 0 || nativeDirs.length > 0
+      ? async (p: string): Promise<boolean> => {
+          if (isGitIgnored(p, loadedRules, 'file')) return false
+          if (!opfsIsIgnored) return true
+          return !(await opfsIsIgnored(p, 'file'))
+        }
+      : null
+
     // From cached paths (files written to OPFS but not on native disk)
     const { getCachedPaths } = useOPFSStore.getState()
     const cachedPaths = getCachedPaths()
     for (const cachedPath of cachedPaths) {
       if (cachedPath.startsWith(prefix) && !discoveredFiles.has(cachedPath)) {
+        if (opfsAllowed && !(await opfsAllowed(cachedPath))) continue
         opfsOnlyFiles.add(cachedPath)
       }
     }
@@ -182,6 +319,7 @@ export class WorkspaceBackend implements VfsBackend {
         !discoveredFiles.has(change.path) &&
         !opfsOnlyFiles.has(change.path)
       ) {
+        if (opfsAllowed && !(await opfsAllowed(change.path))) continue
         opfsOnlyFiles.add(change.path)
       }
     }
@@ -659,5 +797,74 @@ export class WorkspaceBackend implements VfsBackend {
     if (!workspace) return
 
     await workspace.discardPendingPaths(paths)
+  }
+
+  /**
+   * Resolve the workspace runtime for the active workspace (delete path).
+   * Returns null when unavailable — callers must fail open.
+   */
+  private async readWorkspaceForDeletion(): Promise<unknown | null> {
+    try {
+      const { workspace } = await this.getWorkspaceForBackend()
+      return workspace ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Load applicable .gitignore rules for the recursive deletion path.
+   * Throws MissingGitignoreRulesError when rules cannot be proven absent,
+   * so deleteDir can fail open instead of silently over-deleting.
+   */
+  private async readDeleteIgnoreRules(): Promise<GitIgnoreRule[]> {
+    let workspace: DeleteIgnoreReads | null = null
+    try {
+      workspace = (await this.getWorkspaceForBackend()).workspace as DeleteIgnoreReads | null
+    } catch {
+      workspace = null
+    }
+    if (!workspace) throw new MissingGitignoreRulesError('workspace runtime unavailable')
+
+    if (typeof workspace.readFromDiskRoot !== 'function' && typeof workspace.readFile !== 'function') {
+      throw new MissingGitignoreRulesError('no gitignore read surface')
+    }
+
+    const rules: GitIgnoreRule[] = []
+    let sawLiveRead = false
+    for (const directory of collectSelfAndAncestorDirs()) {
+      const ignorePath = directory ? `${directory}/.gitignore` : '.gitignore'
+      let answeredHere = false
+      if (typeof workspace.readFromDiskRoot === 'function') {
+        try {
+          const resolved = typeof workspace.resolvePath === 'function'
+            ? await workspace.resolvePath('', this.projectId)
+            : null
+          const rootId = resolved?.rootId ?? ''
+          const file = await workspace.readFromDiskRoot(rootId, ignorePath)
+          sawLiveRead = true
+          answeredHere = true
+          if (typeof file.content === 'string') {
+            rules.push(...parseGitIgnore(file.content, directory))
+          }
+        } catch {
+          // Not found on the native disk — expected for most directories.
+        }
+      }
+      if (!answeredHere && typeof workspace.readFile === 'function') {
+        try {
+          const file = await workspace.readFile(ignorePath, null, { projectId: this.projectId })
+          sawLiveRead = true
+          answeredHere = true
+          if (typeof file.content === 'string') {
+            rules.push(...parseGitIgnore(file.content, directory))
+          }
+        } catch {
+          // Not found in the workspace overlay — expected for most directories.
+        }
+      }
+    }
+    if (!sawLiveRead) throw new MissingGitignoreRulesError('no readable .gitignore source')
+    return rules
   }
 }

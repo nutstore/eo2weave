@@ -99,7 +99,7 @@ function parseEnvelope(result: string) {
 }
 
 /** Build a nested OPFS-mirror directory tree from slash-separated paths. */
-function createNestedDirectoryHandle(paths: string[], name = 'files'): FileSystemDirectoryHandle {
+function createNestedDirectoryHandle(paths: string[], name = 'files', contents: Record<string, string> = {}): FileSystemDirectoryHandle {
   // Build { dirName → children[], fileName → true }
   const dirs = new Map<string, { dirs: Set<string>; files: Set<string> }>()
   const ensureDir = (dirPath: string) => {
@@ -130,12 +130,18 @@ function createNestedDirectoryHandle(paths: string[], name = 'files'): FileSyste
           yield [d, buildHandle(dirPath ? `${dirPath}/${d}` : d, d)] as const
         }
         for (const f of [...node.files].sort()) {
-          yield [f, { kind: 'file', name: f } as unknown as FileSystemFileHandle] as const
+          const fullPath = dirPath ? `${dirPath}/${f}` : f
+          yield [f, { kind: 'file', name: f, getFile: async () => new File([contents[fullPath] ?? ''], f) } as unknown as FileSystemFileHandle] as const
         }
       },
       getDirectoryHandle: vi.fn(async (child: string) => {
         if (!node.dirs.has(child)) throw new Error(`NotFound: ${child}`)
         return buildHandle(dirPath ? `${dirPath}/${child}` : child, child)
+      }),
+      getFileHandle: vi.fn(async (child: string) => {
+        if (!node.files.has(child)) throw new Error(`NotFound: ${child}`)
+        const fullPath = dirPath ? `${dirPath}/${child}` : child
+        return { kind: 'file', name: child, getFile: async () => new File([contents[fullPath] ?? ''], child) }
       }),
     } as unknown as FileSystemDirectoryHandle
   }
@@ -149,6 +155,15 @@ describe('ls tool', () => {
     getActiveConversationMock.mockResolvedValue(undefined)
     getCurrentHandleMock.mockReturnValue(null)
     findProjectRootsMock.mockResolvedValue([])
+  })
+
+  it('filters ignored files from workspace glob results', async () => {
+    const root = createNestedDirectoryHandle(['.gitignore', 'src/keep.ts', 'src/debug.log'], 'root', { '.gitignore': '*.log\n' })
+    const result = await lsExecutor({ pattern: 'src/**/*' }, { directoryHandle: root } as unknown as ToolContext)
+    const envelope = parseEnvelope(result)
+    const paths = (envelope.data as Array<{ path: string }>).map((entry) => entry.path)
+    expect(paths).toContain('src/keep.ts')
+    expect(paths).not.toContain('src/debug.log')
   })
 
   it('falls back to folder-access current handle when context handle is missing', async () => {
@@ -481,6 +496,24 @@ describe('ls tool', () => {
     expect(envelope.ok).toBe(true)
     const paths = (envelope.data as Array<{ path: string }>).map(e => e.path).sort()
     expect(paths).toEqual(['README.md', 'notes-pending.md', 'src', 'src/app.ts'])
+  })
+
+  it('applies native-host ignore rules to pending files in the OPFS overlay', async () => {
+    const readFromDiskRoot = vi.fn(async () => ({ content: '*.log\n' }))
+    getWorkspaceManagerMock.mockResolvedValue({
+      getWorkspace: vi.fn().mockResolvedValue({
+        scanDiskTree: vi.fn().mockResolvedValue([]),
+        resolvePath: vi.fn().mockResolvedValue({ rootId: 'root-id', relativePath: '' }),
+        readFromDiskRoot,
+        getFilesDir: vi.fn().mockResolvedValue(createNestedDirectoryHandle(['native-root/debug.log', 'native-root/app.ts'])),
+      }),
+    })
+    findProjectRootsMock.mockResolvedValue([{ name: 'native-root', backend: 'native-host' }])
+    const result = await lsExecutor({ path: 'native-root' }, { workspaceId: 'ws_1', projectId: 'project_1', directoryHandle: null } as unknown as ToolContext)
+    const paths = (parseEnvelope(result).data as Array<{ path: string }>).map((entry) => entry.path)
+    expect(paths).toContain('app.ts')
+    expect(paths).not.toContain('debug.log')
+    expect(readFromDiskRoot).toHaveBeenCalledTimes(1)
   })
 
   it('merges OPFS pending changes into a native-host glob (disk precedence for duplicates)', async () => {
