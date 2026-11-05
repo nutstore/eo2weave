@@ -9,8 +9,10 @@ import Mention from '@tiptap/extension-mention'
 import { findAgentMentionCandidates } from '@/agent/agent-mention'
 import { FileMention, type FileMentionItem } from './FileMentionExtension'
 import { SlashCommandExtension, type SlashCommandItem } from './SlashCommandExtension'
+import { resolveSlashCommandDescription } from '@/skills/slash-command-registry'
 import { FileIcon, FolderIcon, Paperclip, X, Loader2, FileText, AtSign, Hash, SlashSquare, ArrowUp, Square } from 'lucide-react'
 import { useT } from '@/i18n'
+import { useI18nStore } from '@/i18n/store'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@creatorweave/ui'
 import { useAssetStore } from '@/store/asset.store'
 import { extractDroppedFiles } from '@/lib/dragdrop'
@@ -361,6 +363,9 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
   beforeSendAccessory,
 }: AgentRichInputProps, ref) {
   const t = useT()
+  // Subscribed directly (like WelcomeScreen) so a locale switch re-renders the
+  // slash-command descriptions; `useT` already re-subscribes for its own keys.
+  const locale = useI18nStore((state) => state.locale)
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   const [textPreviewFile, setTextPreviewFile] = useState<File | null>(null)
   const textPreviewTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -1507,7 +1512,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
               <span className="ml-2 text-neutral-500 dark:text-neutral-500">
                 {cmd.source === 'builtin'
                   ? t(`conversation.input.slashCommands.${cmd.label}.description`)
-                  : cmd.description}
+                  : resolveSlashCommandDescription(cmd, locale)}
               </span>
               {cmd.source === 'skill' && (
                 <span className="ml-2 shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-400 dark:bg-neutral-800 dark:text-neutral-400">

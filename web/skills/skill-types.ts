@@ -37,6 +37,13 @@ export interface SkillMetadata {
   name: string
   version: string
   description: string
+  /**
+   * Localized descriptions keyed by locale, from `description.<locale>:`
+   * frontmatter keys (e.g. `description.zh-CN`). The base `description`
+   * stays the agent-facing trigger text; this map only localizes UI text
+   * (slash-command dropdown, store cards).
+   */
+  description_i18n?: Record<string, string>
   author: string
   category: SkillCategory
   tags: string[]
