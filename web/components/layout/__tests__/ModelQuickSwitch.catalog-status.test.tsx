@@ -109,7 +109,7 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
     expect(state.switchProviderAndModel).not.toHaveBeenCalled()
   })
 
-  it('shows the retry state when the gateway catalog remains loading', async () => {
+  it('does NOT show the unavailable banner while the gateway catalog is loading (#188: loading is restoring, not an outage)', async () => {
     state.getAvailableProviders.mockResolvedValueOnce([{
       providerType: 'llm-gateway',
       displayName: 'Nutstore AI',
@@ -121,8 +121,11 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
     }])
     render(<ModelQuickSwitch />)
 
-    expect(await screen.findByText('Model list unavailable')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Retry model list' })).toBeInTheDocument()
+    // Loading = discovery still in flight: no outage banner, no retry action,
+    // NOT marked delisted (getStalePinnedModels treats loading as unknown).
+    expect(await screen.findByRole('button', { name: 'Other' })).toBeEnabled()
+    expect(screen.queryByText('Model list unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry model list' })).not.toBeInTheDocument()
     expect(screen.queryByText('Delisted')).not.toBeInTheDocument()
     expect(state.getStalePinnedModels).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'], 'loading')
   })

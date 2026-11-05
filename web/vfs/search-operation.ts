@@ -250,6 +250,7 @@ async function searchNativeHostRoots(
     deadlineMs: number
     maxFileSize: number
     excludeDirs: string[]
+    includeIgnored: boolean
   }
 ): Promise<SearchInDirectoryResult | null> {
   if (!context.workspaceId || !context.projectId) return null
@@ -292,6 +293,8 @@ async function searchNativeHostRoots(
       excludeDirs,
       maxEntries: 20_000,
       deadlineMs: Math.max(1000, deadlineAt - Date.now()),
+      respectGitignore: !options.includeIgnored,
+      includeIgnored: options.includeIgnored,
     })
     if (entries === null) return null
     if (entries.length >= 20_000) result.truncated = true
@@ -578,7 +581,7 @@ export const searchDefinition: ToolDefinition = {
         },
         include_ignored: {
           type: 'boolean',
-          description: 'Include ignored directories like node_modules/.git. Default false.',
+          description: 'Include paths ignored by .gitignore and directories like node_modules/.git. Default false.',
         },
         exclude_dirs: {
           type: 'array',
@@ -799,6 +802,7 @@ export const searchExecutor: ToolExecutor = async (args, context) => {
           contextLines,
           deadlineMs: typeof args.deadline_ms === 'number' ? args.deadline_ms : 60000,
           maxFileSize: Math.max(1, typeof args.max_file_size === 'number' ? args.max_file_size : 1024 * 1024),
+          includeIgnored: args.include_ignored === true,
           excludeDirs: Array.isArray(args.exclude_dirs)
             ? args.exclude_dirs.filter((v): v is string => typeof v === 'string')
             : [],
@@ -871,6 +875,7 @@ export const searchExecutor: ToolExecutor = async (args, context) => {
             contextLines,
             deadlineMs: typeof args.deadline_ms === 'number' ? args.deadline_ms : 60000,
             maxFileSize: Math.max(1, typeof args.max_file_size === 'number' ? args.max_file_size : 1024 * 1024),
+            includeIgnored: args.include_ignored === true,
             excludeDirs: Array.isArray(args.exclude_dirs)
               ? args.exclude_dirs.filter((v): v is string => typeof v === 'string')
               : [],

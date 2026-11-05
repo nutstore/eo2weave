@@ -11,6 +11,7 @@ import {
   KeyRound,
   Loader2,
   Package,
+  RefreshCw,
   Wallet,
   XCircle,
 } from 'lucide-react'
@@ -18,13 +19,16 @@ import { useLocale, useT } from '@/i18n'
 import {
   fetchSkillStoreManifest,
   installSkillFromUrl,
+  planSkillUpdate,
   selectLocalizedDescription,
   scanInstalledDirNames,
   type InstallProgress,
   type SkillStoreEntry,
+  type SkillUpdatePlan,
 } from '@/skills/skill-store'
 import { mergePrefillText } from '@/lib/skill-install-flow'
 import { getSkillManager } from '@/skills/skill-manager'
+import { useBundleUpdateConsent } from '@/components/skills/BundleUpdateConsent'
 import { useProjectStore } from '@/store/project.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
@@ -85,10 +89,6 @@ const MANIFEST_TIMEOUT_MS = 15_000
  */
 const LOGIN_REQUEST_TIMEOUT_MS = 15_000
 
-interface InstallOutcome {
-  alreadyInstalled: boolean
-}
-
 function SkillInstallView() {
   const t = useT()
   const [locale] = useLocale()
@@ -100,8 +100,19 @@ function SkillInstallView() {
   const [phase, setPhase] = useState<Phase>('loading')
   const [errorKind, setErrorKind] = useState<ErrorKind>('load-failed')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  // Non-fatal install notices (a bundle member removed mid-install, sibling
+  // updates the visitor declined). Kept apart from `errorMessage` so a later
+  // registration failure cannot replace them, and so `continueToConversation`
+  // clearing the error does not erase what actually happened (#197/#183).
+  const [installNotice, setInstallNotice] = useState<string | null>(null)
+  const bundleConsent = useBundleUpdateConsent()
+  const confirmBundleUpdates = bundleConsent.confirm
   const [entry, setEntry] = useState<SkillStoreEntry | null>(null)
   const [alreadyInstalled, setAlreadyInstalled] = useState(false)
+  // The store ships a newer version than the installed copy — the page
+  // offers the update path instead of silently keeping the stale copy
+  // (#154).
+  const [updateAvailable, setUpdateAvailable] = useState(false)
   const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null)
   const [creditExhausted, setCreditExhausted] = useState(false)
   const installStartedRef = useRef(false)
@@ -179,6 +190,9 @@ function SkillInstallView() {
     setErrorMessage(null)
     setEntry(null)
     setAlreadyInstalled(false)
+    // The notice belongs to the PREVIOUS skill's install (#197): leaving it
+    // set shows "a member was removed" on a page for a skill never installed.
+    setInstallNotice(null)
     // Stale UI flags from the PREVIOUS skill: the cached readiness verdict
     // and the zero-credit warning both belong to the old entry. Without
     // this reset, a changed `skill` query would (a) take runAiReadiness's
@@ -226,6 +240,19 @@ function SkillInstallView() {
         ),
       )
       setAlreadyInstalled(installedDirNames.has(found.dirName))
+      // Version-aware check: the store may ship a newer version than the
+      // installed copy (#154). The plan decides whether the page offers the
+      // update path — the install flow itself re-checks before writing.
+      let plan: SkillUpdatePlan = 'install'
+      try {
+        plan = await planSkillUpdate(found.dirName, found.version)
+      } catch (planErr) {
+        // A failed version read must not break the page: the install flow
+        // surfaces the error when the visitor actually installs.
+        console.warn('[SkillInstall] version check failed:', planErr)
+      }
+      if (isStale()) return
+      setUpdateAvailable(plan === 'update')
       setPhase('details')
     } catch (e) {
       if (isStale()) return
@@ -410,7 +437,9 @@ function SkillInstallView() {
   // install begins so a query change mid-install aborts the stale flow.
   const installGenerationRef = useRef(0)
 
-  // Step 2: install (user-clicked; idempotent).
+  // Step 2: install (user-clicked). The version-aware install flow decides
+  // fresh install vs. update vs. keep — the page never decides on its own
+  // (#154).
   const runInstall = useCallback(async () => {
     if (!entry || installStartedRef.current) return
     installStartedRef.current = true
@@ -418,58 +447,91 @@ function SkillInstallView() {
     const installGeneration = installGenerationRef.current
     const isStale = () => currentGeneration() !== installGeneration
     setPhase('installing')
+    setErrorMessage(null)
+    setInstallNotice(null)
     try {
-      let outcome: InstallOutcome = { alreadyInstalled }
-      if (!alreadyInstalled) {
-        await installSkillFromUrl(entry.zipUrl, setInstallProgress)
-        // The archive IS on disk from this point on — a retry after a
-        // failure in the steps below must refresh/verify registration
-        // instead of downloading and importing again (a re-import would
-        // replace any local changes the visitor made to the skill).
-        setAlreadyInstalled(true)
-        // A query change during the download abandons the old skill's flow:
-        // never verify or navigate for it. The skill IS on disk though, so
-        // the manager cache must still be refreshed — otherwise the
-        // installed skill stays absent from the slash-command registry
-        // until some unrelated refresh happens to rescan OPFS.
-        if (isStale()) {
-          try {
-            await getSkillManager().refreshUserSkills()
-          } catch (refreshErr) {
-            console.warn('[SkillInstall] post-install refresh failed:', refreshErr)
-          }
-          return
-        }
-        // Register the slash command immediately — refreshUserSkills()
-        // rescans OPFS and re-syncs the slash-command registry.
-        await getSkillManager().refreshUserSkills()
-        if (isStale()) return
-        // The skill must be REGISTERED and ENABLED after the refresh — a
-        // directory alone is not enough: refreshUserSkills() swallows scan
-        // failures, and a dir-only check would let the page navigate with
-        // a slash command that has nothing behind it. A registered-but-
-        // disabled skill (installed, then disabled before this install)
-        // must be re-enabled for the promoted flow to work.
-        const freshInstallManager = getSkillManager()
-        const registeredSkill = freshInstallManager
-          .getSkills()
-          .find((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
-        if (!registeredSkill) {
-          // Throwing here previously left `alreadyInstalled` false, so a
-          // retry re-downloaded and re-imported the archive. Now the flag
-          // is already set (above), so handleStart's installed-path retry
-          // just refreshes/verifies registration instead.
-          throw new Error(t('skillInstall.registerFailed'))
-        }
-        if (!registeredSkill.enabled) {
-          freshInstallManager.setUserSkillEnabled(`user:${entry.dirName}`, true)
-        }
-        outcome = { alreadyInstalled: false }
+      // Fresh install, update of an older copy, or a no-op — the flow
+      // compares the store's version with the installed one.
+      const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress, {
+        focusDirName: entry.dirName,
+        // #183: every sibling this archive would overwrite is consented to in
+        // one aggregated prompt; unchecked members keep their installed copy.
+        confirmBundleUpdates,
+      })
+      if (result.outcome === 'updated') setUpdateAvailable(false)
+      // Partial member drops ride ANY successful outcome (#185 review round
+      // N): the visitor must know a bundle member was omitted, not just see
+      // "installed". Sibling updates the visitor declined are named too
+      // (#183). Both are NOTICES, not errors: a later registration failure
+      // must not replace them, and proceeding must not clear them.
+      const targetDropped = result.droppedMembers?.includes(entry.dirName) ?? false
+      const notices: string[] = []
+      if ((result.droppedMembers?.length ?? 0) > 0) {
+        notices.push(t('skillInstall.memberRemovedDuringInstall'))
       }
-      setAlreadyInstalled(true)
+      if ((result.bundleUpdates?.skipped.length ?? 0) > 0) {
+        notices.push(
+          t('skills.discover.bundleUpdatesSkipped', {
+            names: result.bundleUpdates!.skipped.join(', '),
+          }),
+        )
+      }
+      setInstallNotice(notices.length > 0 ? notices.join(' ') : null)
+      // The archive IS on disk from this point on — a retry after a
+      // failure in the steps below must refresh/verify registration
+      // instead of downloading and importing again (a re-import would
+      // replace any local changes the visitor made to the skill). A dropped
+      // target is the exception: nothing was created, so the page must keep
+      // offering installation (#197).
+      if (!targetDropped) setAlreadyInstalled(true)
+      // A query change during the download abandons the old skill's flow:
+      // never verify or navigate for it. The skill IS on disk though, so
+      // the manager cache must still be refreshed — otherwise the
+      // installed skill stays absent from the slash-command registry
+      // until some unrelated refresh happens to rescan OPFS.
+      if (isStale()) {
+        try {
+          await getSkillManager().refreshUserSkills()
+        } catch (refreshErr) {
+          console.warn('[SkillInstall] post-install refresh failed:', refreshErr)
+        }
+        return
+      }
+      // Register the slash command immediately — refreshUserSkills()
+      // rescans OPFS and re-syncs the slash-command registry.
+      await getSkillManager().refreshUserSkills()
+      if (isStale()) return
+      // The requested skill was dropped by the locked re-check: nothing was
+      // created, so there is nothing to register and no conversation to open.
+      // The omission notice (set above) is the explanation; a
+      // "registration failed" error here would be misleading (#197).
+      if (targetDropped) {
+        setInstallProgress(null)
+        setPhase('details')
+        return
+      }
+      // The skill must be REGISTERED and ENABLED after the refresh — a
+      // directory alone is not enough: refreshUserSkills() swallows scan
+      // failures, and a dir-only check would let the page navigate with
+      // a slash command that has nothing behind it. A registered-but-
+      // disabled skill (installed, then disabled before this install)
+      // must be re-enabled for the promoted flow to work.
+      const freshInstallManager = getSkillManager()
+      const registeredSkill = freshInstallManager
+        .getSkills()
+        .find((s) => s.source === 'user' && s.id === `user:${entry.dirName}`)
+      if (!registeredSkill) {
+        // Throwing here previously left `alreadyInstalled` false, so a
+        // retry re-downloaded and re-imported the archive. Now the flag
+        // is already set (above), so handleStart's installed-path retry
+        // just refreshes/verifies registration instead.
+        throw new Error(t('skillInstall.registerFailed'))
+      }
+      if (!registeredSkill.enabled) {
+        freshInstallManager.setUserSkillEnabled(`user:${entry.dirName}`, true)
+      }
       setInstallProgress(null)
       await runAiReadiness()
-      void outcome
     } catch (e) {
       if (isStale()) return
       console.error('[SkillInstall] install failed:', e)
@@ -478,7 +540,7 @@ function SkillInstallView() {
     } finally {
       installStartedRef.current = false
     }
-  }, [alreadyInstalled, entry, runAiReadiness, t])
+  }, [entry, runAiReadiness, t, confirmBundleUpdates])
 
   // Guard against overlapping Start attempts: while a readiness check /
   // navigation is in flight, a second click (or double-click) must be a
@@ -519,6 +581,8 @@ function SkillInstallView() {
   // "Already installed" path skips straight past install + login checks
   // (the acceptance criteria: returning users are done in 2 clicks) — but
   // still runs readiness so a since-logged-out visitor gets the login step.
+  // An update available in the store is handled by the UPDATE button, not
+  // by this path (#154).
   const handleStart = useCallback(async () => {
     if (!entry || startingRef.current) return
     startingRef.current = true
@@ -558,6 +622,70 @@ function SkillInstallView() {
       startingRef.current = false
     }
   }, [alreadyInstalled, ensureRegistered, entry, runAiReadiness, runInstall, t])
+
+  /**
+   * Update an installed skill to the store's newer version (#154). The
+   * version-aware install flow re-checks the versions and decides whether an
+   * overwrite happens — the page never writes by itself.
+   */
+  const handleUpdate = useCallback(async () => {
+    if (!entry || installStartedRef.current) return
+    installStartedRef.current = true
+    installGenerationRef.current = currentGeneration()
+    const installGeneration = installGenerationRef.current
+    const isStale = () => currentGeneration() !== installGeneration
+    setPhase('installing')
+    setErrorMessage(null)
+    setInstallNotice(null)
+    try {
+      const result = await installSkillFromUrl(entry.zipUrl, setInstallProgress, {
+        focusDirName: entry.dirName,
+        // #183: sibling members this archive would overwrite are consented to
+        // in one aggregated prompt; declined members keep their installed copy.
+        confirmBundleUpdates,
+      })
+      if (result.outcome !== 'current' && result.outcome !== 'installed-newer') {
+        setUpdateAvailable(false)
+        // The copy on disk changed — an update request can also land as a
+        // FRESH install (another actor uninstalled the skill mid-flight), so
+        // re-register for every write outcome, not just `updated`.
+        await getSkillManager().refreshUserSkills()
+        if (isStale()) return
+      }
+      // Partial member drops ride ANY successful outcome (#185 review round
+      // N): surface the omission instead of a clean "already installed".
+      // Declined sibling updates are named too (#183) — as a NOTICE, so
+      // proceeding does not erase them.
+      const notices: string[] = []
+      if ((result.droppedMembers?.length ?? 0) > 0) {
+        notices.push(
+          t('skillInstall.memberRemovedDuringInstall') ||
+            'Install finished, but a skill removed during the install was not re-created.',
+        )
+      }
+      if ((result.bundleUpdates?.skipped.length ?? 0) > 0) {
+        notices.push(
+          t('skills.discover.bundleUpdatesSkipped', {
+            names: result.bundleUpdates!.skipped.join(', '),
+          }),
+        )
+      }
+      setInstallNotice(notices.length > 0 ? notices.join(' ') : null)
+      // A dropped target never landed on disk (#197): clear the flag so the
+      // details view offers Install again instead of "Start using" a skill
+      // that is not there.
+      if (result.droppedMembers?.includes(entry.dirName)) setAlreadyInstalled(false)
+      setInstallProgress(null)
+      setPhase('details')
+    } catch (e) {
+      if (isStale()) return
+      console.error('[SkillInstall] update failed:', e)
+      setErrorMessage((e as Error).message || t('skillInstall.installFailed'))
+      setPhase('details')
+    } finally {
+      installStartedRef.current = false
+    }
+  }, [entry, t, confirmBundleUpdates])
 
   const handleLoginSuccess = useCallback(async () => {
     setCreditExhausted(false)
@@ -714,6 +842,15 @@ function SkillInstallView() {
             <p className="min-w-0 flex-1 break-words">{errorMessage}</p>
           </div>
         )}
+        {installNotice && (
+          <div
+            role="status"
+            className="flex max-w-md items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200"
+          >
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+            <p className="min-w-0 flex-1 break-words">{installNotice}</p>
+          </div>
+        )}
         {creditExhausted && (
           <div className="flex max-w-md items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
             <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
@@ -739,15 +876,30 @@ function SkillInstallView() {
             </div>
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={() => void handleStart()}
-            className="flex h-10 items-center gap-2 rounded-md bg-primary-600 px-6 text-sm font-medium text-white transition-colors hover:bg-primary-700"
-          >
-            <Package className="h-4 w-4" />
-            {alreadyInstalled ? t('skillInstall.startUsing') : t('skillInstall.installButton')}
-          </button>
+          <div className="flex flex-col items-center gap-3">
+            {updateAvailable && (
+              // The store ships a newer version than the installed copy
+              // (#154) — offer the update explicitly.
+              <button
+                type="button"
+                onClick={() => void handleUpdate()}
+                className="flex h-10 items-center gap-2 rounded-md border border-primary-600 bg-white px-6 text-sm font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:bg-card dark:text-primary-400 dark:hover:bg-primary-950/30"
+              >
+                <RefreshCw className="h-4 w-4" />
+                {t('skillInstall.updateButton', { version: entry.version || '—' })}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleStart()}
+              className="flex h-10 items-center gap-2 rounded-md bg-primary-600 px-6 text-sm font-medium text-white transition-colors hover:bg-primary-700"
+            >
+              <Package className="h-4 w-4" />
+              {alreadyInstalled ? t('skillInstall.startUsing') : t('skillInstall.installButton')}
+            </button>
+          </div>
         )}
+        {bundleConsent.element}
       </Centered>
     )
   }

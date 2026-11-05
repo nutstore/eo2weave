@@ -45,9 +45,11 @@ function mapInternalToPiMessage(
   model: Model<Api>,
   compressedMemoryPrefix: string
 ): PiMessage[] {
-  if (msg.kind === 'run_changes') {
-    // A pure UI card ("what this run changed") — no model-facing content.
-    // Drop it so it never enters the LLM context budget.
+  if (
+    msg.kind === 'run_changes' ||
+    (msg.role === 'assistant' && (msg.kind === 'empty' || msg.kind === 'error' || msg.kind === 'aborted'))
+  ) {
+    // UI-only cards and incomplete assistant turns do not belong in model history.
     return []
   }
   if (msg.kind === 'context_summary') {
@@ -166,6 +168,7 @@ function mapInternalToPiMessage(
     const content: Array<
       | { type: 'text'; text: string }
       | { type: 'thinking'; thinking: string }
+      | { type: 'image'; data: string; mimeType: string }
       | { type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> }
     > = []
 
@@ -174,6 +177,31 @@ function mapInternalToPiMessage(
     }
     if (msg.reasoning) {
       content.push({ type: 'thinking', thinking: msg.reasoning })
+    }
+    // Round-trip assistant-generated images back into provider history
+    // (issue #165, item 4): without this, the turn after an image-only reply
+    // sends an EMPTY assistant message — the model loses the context of what
+    // it just produced. Text stays first; images follow it. Only
+    // vision-capable models can accept image blocks on any turn (mirrors the
+    // user-branch `model.input.includes('image')` guard above); a
+    // text-only model gets an OCR-style text placeholder instead so the
+    // message is never emitted with fully empty content.
+    const hasVision = model.input?.includes('image') ?? false
+    let imageCount = 0
+    for (const image of msg.images ?? []) {
+      if (image.data && image.mimeType) {
+        if (!hasVision) {
+          imageCount += 1
+          continue
+        }
+        content.push({ type: 'image', data: image.data, mimeType: image.mimeType })
+      }
+    }
+    if (imageCount > 0) {
+      content.push({
+        type: 'text',
+        text: imageCount === 1 ? '[generated an image]' : `[generated ${imageCount} images]`,
+      })
     }
     for (const toolCall of msg.toolCalls || []) {
       content.push({
@@ -187,7 +215,10 @@ function mapInternalToPiMessage(
     return [
       {
         role: 'assistant',
-        content,
+        // AssistantMessage's static type does not express image blocks on
+        // assistant turns (same limitation pi-core-runner documents for its
+        // empty-turn check); the cast is the established pattern there.
+        content: content as import('@earendil-works/pi-ai').AssistantMessage['content'],
         api: model.api,
         provider: model.provider,
         model: model.id,
@@ -199,7 +230,7 @@ function mapInternalToPiMessage(
           totalTokens: msg.usage?.totalTokens ?? 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
-        stopReason: 'stop',
+        stopReason: msg.stopReason ?? 'stop',
         timestamp: msg.timestamp || Date.now(),
       },
     ]
@@ -226,10 +257,46 @@ function mapInternalToPiMessage(
 /** Keep internal provenance through pi-agent's conversion without putting it in provider payloads. */
 const internalMessages = new WeakMap<object, Message>()
 
+/**
+ * The provider-history view of the canonical transcript: incomplete assistant
+ * turns (empty/error/aborted — issue #158) are excluded, ALONG WITH the tool
+ * results that only those turns' calls requested. Without removing the orphan
+ * results, strict providers reject the whole request (issue #165, item 3).
+ * The filtering happens HERE, never on the canonical transcript — see
+ * `ensureToolCallResults`.
+ */
+function toProviderHistory(messages: Message[]): Message[] {
+  const droppedAssistantIds = new Set(
+    messages
+      .filter(
+        (message) =>
+          message.role === 'assistant' &&
+          (message.kind === 'empty' || message.kind === 'error' || message.kind === 'aborted')
+      )
+      .map((message) => message.id)
+  )
+  // No early return when there are no incomplete turns: a history repaired by
+  // an earlier version of this filter (which removed the failed assistant turn
+  // but left its tool result) still carries a truly orphaned tool result, and
+  // strict providers reject the whole request even with zero incomplete turns
+  // remaining.
+  const keptCallIds = new Set<string>()
+  for (const message of messages) {
+    if (message.role === 'assistant' && !droppedAssistantIds.has(message.id)) {
+      for (const toolCall of message.toolCalls ?? []) keptCallIds.add(toolCall.id)
+    }
+  }
+  return messages.filter(
+    (message) =>
+      !(message.role === 'assistant' && droppedAssistantIds.has(message.id)) &&
+      !(message.role === 'tool' && message.toolCallId && !keptCallIds.has(message.toolCallId))
+  )
+}
+
 export function internalToPiMessages(messages: Message[], model: Model<Api>, prefix: string): PiMessage[] {
   const lastSummary = messages.map(message => message.kind).lastIndexOf('context_summary')
   const visible = lastSummary < 0 ? messages : messages.slice(lastSummary)
-  return ensureToolCallResults(visible).flatMap(message => {
+  return ensureToolCallResults(toProviderHistory(visible)).flatMap(message => {
     const mapped = mapInternalToPiMessage(message, model, prefix)
     for (const item of mapped) {
       internalMessages.set(item, message)
@@ -271,6 +338,18 @@ function mapPiToInternalMessage(message: PiAgentMessage): Message | null {
       .filter((item) => item.type === 'text')
       .map((item) => ('text' in item ? item.text || '' : ''))
       .join('')
+    // Image-capable providers can return image blocks without any text or
+    // tool calls. Preserve them on the internal message (the same shape the
+    // /image command uses) so an image-only assistant turn is neither
+    // classified as empty nor dropped from the conversation.
+    const imageBlocks = (message.content as unknown[]).filter(
+      (item): item is { type: 'image'; data: string; mimeType: string } =>
+        !!item &&
+        typeof item === 'object' &&
+        (item as { type?: unknown }).type === 'image' &&
+        typeof (item as { data?: unknown }).data === 'string' &&
+        typeof (item as { mimeType?: unknown }).mimeType === 'string'
+    )
     const reasoning = message.content
       .filter((item) => !!item)
       .filter((item) => item.type === 'thinking')
@@ -318,6 +397,20 @@ function mapPiToInternalMessage(message: PiAgentMessage): Message | null {
       reasoning || null
     )
     assistant.timestamp = message.timestamp || assistant.timestamp || now
+    assistant.stopReason = message.stopReason
+    if (imageBlocks.length > 0) {
+      // GeneratedImage shape — the same inline representation the /image
+      // command uses, rendered by AssistantTurnBubble/MessageBubble.
+      assistant.images = imageBlocks.map((block) => ({ data: block.data, mimeType: block.mimeType }))
+    }
+    if (message.stopReason === 'error' && typeof message.errorMessage === 'string' && message.errorMessage.trim()) {
+      assistant.errorMessage = message.errorMessage
+    }
+    if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+      assistant.kind = message.stopReason
+    } else if (!text.trim() && toolCalls.length === 0 && imageBlocks.length === 0) {
+      assistant.kind = 'empty'
+    }
     return assistant
   }
 

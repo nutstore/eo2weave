@@ -82,6 +82,24 @@ export const discover = {
     progressUninstallFailed: "アンインストール失敗",
     progressDownloadPercent: "ダウンロード進捗 {percent}%",
     loadMore: "もっと読み込む（残り {remaining}）",
+    progressDownloadingBytes: "ダウンロード中…（{loaded}）",
+    alreadyInstalled: "インストール済み",
+    installedFiles: "{count} 個のファイルをインストールしました",
+    alreadyInstalledVersion: "インストール済み（v{version}）",
+    skippedUpdate: "更新をスキップしました：ローカル版 v{installed} はストア版 v{store} より新しいためです",
+    memberRemovedDuringInstall: "インストールは完了しましたが、インストール中に削除されたスキルは再作成されていません",
+    updatedVersion: "v{from} → v{to} に更新しました（{count} 個のファイル）",
+    update: "更新",
+    updating: "更新中",
+    updateDone: "更新完了",
+    bundleUpdateTitle: "このバンドルの他のスキルも更新しますか？",
+    bundleUpdateBody:
+      "このバンドルには、すでにインストール済みの {count} 個のスキルの新しいバージョンが含まれています。更新すると、ローカルでの編集を含めてインストール済みのコピーが置き換わります。保持したいスキルのチェックを外してください。",
+    bundleUpdateVersion: "インストール済み v{from} → ストア v{to}",
+    bundleUpdateAccept: "選択したものを更新（{count}）",
+    bundleUpdateSkip: "インストール済みのコピーを保持",
+    bundleUpdatesSkipped: "{names} のインストール済みコピーを保持しました。",
+    siblingUpdatesApplied: "バンドル内のスキルを更新しました: {names}。",
 } as const
 
 export const skillCard = {
@@ -162,6 +180,8 @@ export const skillEditor = {
     nameRequired: "スキル名を入力してください",
     descriptionRequired: "説明を入力してください",
     saveFailed: "保存に失敗しました",
+    renameCleanupFailed:
+      "新しい名前は保存されましたが、旧スキル \"{name}\" の削除に失敗しました（{error}）。両方のスキルが残っています。スキル一覧から一方を削除してください。",
     // Category labels
     categories: {
       codeReview: "コードレビュー",

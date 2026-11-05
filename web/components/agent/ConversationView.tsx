@@ -143,6 +143,13 @@ export function ConversationView({
     sendMessage, handleSend, handleCancel,
     handleDeleteAgentLoop, handleEditAndResend, handleRegenerate,
   } = logic
+  const lastActiveMessage = activeMessages.at(-1)
+  const hasPersistedRetryError =
+    !isProcessing && (lastActiveMessage?.kind === 'empty' || lastActiveMessage?.kind === 'error')
+  const persistedRetryError =
+    lastActiveMessage?.kind === 'error'
+      ? lastActiveMessage.errorMessage || t('conversation.error.failed')
+      : t('conversation.error.emptyTurn')
 
   // ── Retry handler for error banner: send "继续" to start a new loop ──
   const handleRetry = useCallback(() => {
@@ -444,8 +451,8 @@ export function ConversationView({
 
       </div>
 
-        {conversationError && (
-          <ConversationErrorBanner error={conversationError} onRetry={handleRetry} />
+        {(conversationError || hasPersistedRetryError) && (
+          <ConversationErrorBanner error={conversationError || persistedRetryError} onRetry={handleRetry} />
         )}
 
         {/* Flow canvas panel — overlay, opened from the TopBar workflow button */}
@@ -705,6 +712,13 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
   // automatic refresh definitively expired — transient refresh failures
   // keep the generic presentation below.
   const isGatewayCredentialsExpired = errorCode === 'GATEWAY_CREDENTIALS_EXPIRED'
+  // Gateway credential confirmed ABSENT (#172 finding 3): stamped by the
+  // fetch layer (401 + refresh ended 'missing') and the dispatch gate (run
+  // stopped before network). Same recovery as the expired card — the only
+  // correct action is logging in — so reuse the identical card with a
+  // not-logged-in title/message.
+  const isGatewayCredentialsMissing = errorCode === 'GATEWAY_CREDENTIALS_MISSING'
+  const isGatewayCredentialsCard = isGatewayCredentialsExpired || isGatewayCredentialsMissing
   // Gateway credit exhausted (429 + code "insufficient_credit", stamped by
   // the fetch layer): retrying can never succeed (retriable: false) — the
   // only recovery is topping up, so offer the Recharge entry instead of the
@@ -741,7 +755,7 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
       </div>
     )
   }
-  if (isGatewayCredentialsExpired) {
+  if (isGatewayCredentialsCard) {
     return (
       <div className="border-t border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">
         <div className="mx-auto max-w-3xl">
@@ -749,10 +763,12 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
             <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-red-500 dark:text-red-400" />
             <div className="min-w-0 flex-1">
               <p className="font-medium">
-                {t('conversation.error.gatewayReloginTitle')}
+                {isGatewayCredentialsMissing
+                  ? t('conversation.error.gatewayLoginRequiredTitle')
+                  : t('conversation.error.gatewayReloginTitle')}
               </p>
               <p className="mt-0.5 text-red-600 dark:text-red-400">
-                {error.replace(/^\[GATEWAY_CREDENTIALS_EXPIRED\]\s*/, '')}
+                {error.replace(/^\[GATEWAY_CREDENTIALS_(?:EXPIRED|MISSING)\]\s*/, '')}
               </p>
               <button
                 type="button"

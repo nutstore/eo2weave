@@ -162,4 +162,14 @@ export const agent = {
         denyAll: "모두 거부",
         denyAllHint: "이 명령과 대기 중인 모든 명령을 거부",
     },
+    // Tool renderer status labels
+    toolStatus: {
+        running: "실행 중…",
+        reading: "읽는 중…",
+        loadingLargeResultSet: "큰 결과 집합 불러오는 중…",
+        stateRunning: "실행 중",
+        stateStarting: "시작 중(포트 준비 안 됨)",
+        stateExited: "종료됨",
+        stateStopped: "중지됨",
+    },
 } as const

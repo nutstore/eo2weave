@@ -13,6 +13,7 @@ import type {
   SkillResource,
 } from '../../skills/skill-types'
 import { parseJSON, toJSON, boolToInt, intToBool } from '../sqlite-database'
+import { parseDescriptionI18nFromSkillMd } from '../../skills/skill-parser'
 
 // Database row type (snake_case for SQLite)
 interface SkillRow {
@@ -100,6 +101,10 @@ export class SkillRepository {
   async findAllMetadata(): Promise<SkillMetadata[]> {
     const db = getSQLiteDB()
     const rows = await db.queryAll<SkillRow>(
+      // Deliberately WITHOUT raw_content: this is the lightweight metadata
+      // list, and parsing every SKILL.md just for the display-only
+      // `description.<locale>` map is not worth the cost here. Callers that
+      // need localized descriptions use findAll()/StoredSkill.
       'SELECT id, name, version, description, author, category, tags, source, triggers, enabled, created_at, updated_at FROM skills ORDER BY category, name'
     )
     return rows.map((row) => this.rowToMetadata(row))
@@ -248,6 +253,10 @@ export class SkillRepository {
       name: row.name,
       version: row.version,
       description: row.description || '',
+      // Display-only translations live in the SKILL.md frontmatter, which the
+      // row keeps verbatim as raw_content — re-read them so a reload keeps the
+      // localized dropdown text (#206 review).
+      description_i18n: parseDescriptionI18nFromSkillMd(row.raw_content || ''),
       author: row.author || '',
       category: row.category as SkillCategory,
       tags: parseJSON<string[]>(row.tags, []),
@@ -272,6 +281,9 @@ export class SkillRepository {
       name: row.name,
       version: row.version,
       description: row.description || '',
+      // Only present when the caller selected raw_content (findAll); the
+      // metadata query intentionally does not.
+      description_i18n: parseDescriptionI18nFromSkillMd(row.raw_content || ''),
       author: row.author || '',
       category: row.category as SkillCategory,
       tags: parseJSON<string[]>(row.tags, []),

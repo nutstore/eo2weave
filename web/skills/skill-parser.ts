@@ -97,6 +97,7 @@ export function parseSkillMd(content: string, source: SkillSource = 'import'): P
     name,
     version: meta.version ? String(meta.version) : '1.0.0',
     description: meta.description ? String(meta.description) : '',
+    description_i18n: parseDescriptionI18n(meta),
     author: meta.author ? String(meta.author) : 'Unknown',
     category: validateCategory(meta.category),
     tags: parseStringArray(meta.tags),
@@ -115,6 +116,65 @@ export function parseSkillMd(content: string, source: SkillSource = 'import'): P
 }
 
 /**
+ * Collect `description.<locale>:` frontmatter values — display-only
+ * translations of the skill description. The base `description` stays the
+ * agent-facing trigger text.
+ *
+ * A locale is a BCP-47-ish tag with any number of subtags (`ja`, `zh-CN`,
+ * `zh-Hant-TW`); anything else under a `description.` prefix is ignored rather
+ * than surfaced as a locale.
+ */
+export function parseDescriptionI18n(
+  meta: Record<string, unknown>,
+): Record<string, string> | undefined {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(meta)) {
+    const match = /^description\.([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)$/.exec(key)
+    if (!match || typeof value !== 'string') continue
+    const text = value.trim()
+    if (text) out[match[1]] = text
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/**
+ * Extract only the `description.<locale>` map from raw SKILL.md text.
+ *
+ * The cheap path for callers that already store the raw file (SQLite rows) and
+ * need the translations without a full parse. Unreadable frontmatter yields
+ * undefined — translations are display-only, never load-blocking.
+ */
+export function parseDescriptionI18nFromSkillMd(
+  content: string,
+): Record<string, string> | undefined {
+  const trimmed = content.trim()
+  if (!trimmed.startsWith('---')) return undefined
+  const end = trimmed.indexOf('---', 3)
+  if (end === -1) return undefined
+  const yamlBlock = trimmed.substring(3, end).trim()
+  const read = (block: string): Record<string, unknown> | null => {
+    const meta = yaml.load(block)
+    return meta && typeof meta === 'object' ? (meta as Record<string, unknown>) : null
+  }
+  try {
+    const meta = read(yamlBlock)
+    return meta ? parseDescriptionI18n(meta) : undefined
+  } catch {
+    // Hand-written frontmatter routinely trips strict YAML (`description: Use
+    // when: X`). parseSkillMd repairs and retries, so this path must too —
+    // otherwise those files simply lose their translations.
+    try {
+      const repaired = repairFrontmatter(yamlBlock)
+      if (repaired === yamlBlock) return undefined
+      const meta = read(repaired)
+      return meta ? parseDescriptionI18n(meta) : undefined
+    } catch {
+      return undefined
+    }
+  }
+}
+
+/**
  * Serialize a Skill back to SKILL.md format.
  */
 export function serializeSkillMd(skill: Skill): string {
@@ -124,6 +184,14 @@ export function serializeSkillMd(skill: Skill): string {
   lines.push(`version: "${skill.version}"`)
   if (skill.description) {
     lines.push(`description: "${escapeYamlString(skill.description)}"`)
+  }
+  // Localized descriptions round-trip, so editing a skill does not silently
+  // drop the translations that ship in its SKILL.md.
+  if (skill.description_i18n) {
+    for (const [locale, text] of Object.entries(skill.description_i18n)) {
+      if (!text) continue
+      lines.push(`description.${locale}: "${escapeYamlString(text)}"`)
+    }
   }
   lines.push(`author: "${escapeYamlString(skill.author)}"`)
   lines.push(`category: ${skill.category}`)

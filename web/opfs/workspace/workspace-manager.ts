@@ -178,14 +178,18 @@ export class WorkspaceManager {
   async createWorkspace(
     rootDirectory: string,
     workspaceId?: string,
-    name?: string
+    name?: string,
+    targetProjectId?: string
   ): Promise<WorkspaceRuntime> {
     if (!this.initialized) await this.initialize()
 
     const id = workspaceId || generateId('workspace')
 
     const existingProjectId = await this.resolveWorkspaceProjectId(id)
-    const projectId = existingProjectId || (await this.getActiveProjectId())
+    if (existingProjectId && targetProjectId && existingProjectId !== targetProjectId) {
+      throw new Error(`Workspace ${id} already belongs to project ${existingProjectId}`)
+    }
+    const projectId = existingProjectId || targetProjectId || (await this.getActiveProjectId())
     if (!projectId) {
       throw new Error('No active project selected for workspace creation')
     }

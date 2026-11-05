@@ -7,7 +7,7 @@
 // ============================================================
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, Download, Check, AlertCircle, Trash2 } from 'lucide-react'
+import { Loader2, Download, Check, AlertCircle, RefreshCw, Trash2 } from 'lucide-react'
 import { BrandButton } from '@creatorweave/ui'
 import { useT, useLocale } from '@/i18n'
 import { useSkillsStore } from '@/store/skills.store'
@@ -22,6 +22,7 @@ import {
   type InstallProgress,
 } from '@/skills/skill-store'
 import { SkillSearchInput, SkillSegmentFilter, SkillRefreshButton } from './SkillToolbar'
+import { useBundleUpdateConsent } from './BundleUpdateConsent'
 import type { SkillFilterOption } from './SkillToolbar'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -52,6 +53,8 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
   const t = useT()
   const [locale] = useLocale()
   const bumpScanVersion = useSkillsStore((s) => s.bumpSkillsScanVersion)
+  // Aggregated consent for sibling bundle updates (#183).
+  const bundleConsent = useBundleUpdateConsent()
 
   const [manifest, setManifest] = useState<SkillStoreEntry[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -94,12 +97,17 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
     await runOperation(entry, 'install')
   }
 
+  const handleUpdate = async (entry: SkillStoreEntry) => {
+    await runOperation(entry, 'update')
+  }
+
   const handleUninstall = async (entry: SkillStoreEntry) => {
     await runOperation(entry, 'uninstall')
   }
 
   /**
-   * Shared driver for install / uninstall. Both ops follow the same shape:
+   * Shared driver for install / update / uninstall. All ops follow the same
+   * shape:
    *   1. Show progress (operation-specific message)
    *   2. Run the op (network or store)
    *   3. Re-annotate from OPFS and patch manifest
@@ -107,35 +115,116 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
    */
   async function runOperation(
     entry: SkillStoreEntry,
-    op: 'install' | 'uninstall',
+    op: 'install' | 'update' | 'uninstall',
   ): Promise<void> {
     if (installing) return
     setInstalling(entry.dirName)
-    const phasePreparing = op === 'install' ? 'progressPreparing' : 'progressUninstalling'
-    const phaseDone = op === 'install' ? 'progressInstallDone' : 'progressUninstallDone'
-    const phaseFailed = op === 'install' ? 'progressInstallFailed' : 'progressUninstallFailed'
+    const phasePreparing =
+      op === 'uninstall' ? 'progressUninstalling' : 'progressPreparing'
+    const phaseFailed =
+      op === 'uninstall' ? 'progressUninstallFailed' : 'progressInstallFailed'
     setProgress({ phase: 'fetching', message: t(`skills.discover.${phasePreparing}`) })
     try {
-      if (op === 'install') {
-        await installSkillFromUrl(entry.zipUrl, setProgress)
+      let result: Awaited<ReturnType<typeof installSkillFromUrl>> | null = null
+      if (op === 'install' || op === 'update') {
+        // The version-aware install flow decides whether this is a fresh
+        // install, an update of an older copy, or a no-op (#154) — the card
+        // must not overwrite a newer local copy itself.
+        result = await installSkillFromUrl(entry.zipUrl, setProgress, {
+          focusDirName: entry.dirName,
+          // #183: bundle siblings this archive would overwrite are consented
+          // to in ONE aggregated prompt; unchecked members are kept.
+          confirmBundleUpdates: bundleConsent.confirm,
+        })
       } else {
         // Store keys user skills by `user:<dirName>`. deleteSkill handles the
         // OPFS removal and bumps the scan version automatically.
         const skillsStore = useSkillsStore.getState()
         await skillsStore.deleteSkill(`user:${entry.dirName}`)
       }
-      // Re-annotate from OPFS (the source of truth).
-      const installed = await scanInstalledDirNames()
+      // Re-annotate from OPFS (the source of truth). The operation itself
+      // already succeeded — a rescan failure must NOT mark it failed (#185):
+      // the skill IS installed/uninstalled on disk, and skipping
+      // bumpScanVersion/onInstalled would leave caches stale while the UI
+      // reports failure. Keep the success path, fall back to the manifest's
+      // previous annotation, and still refresh caches.
+      let installed: Set<string>
+      let rescanFailed = false
+      try {
+        installed = await scanInstalledDirNames()
+      } catch (scanErr) {
+        console.warn('[SkillDiscover] post-operation rescan failed:', scanErr)
+        rescanFailed = true
+        installed = new Set(
+          (manifest ?? []).filter((e) => e.installed).map((e) => e.dirName),
+        )
+      }
       setManifest((prev) =>
         prev
-          ? prev.map((e) =>
-              e.dirName === entry.dirName ? { ...e, installed: installed.has(e.dirName) } : e,
-            )
+          ? prev.map((e) => {
+              if (e.dirName !== entry.dirName) return e
+              // The rescan failed but the OPERATION succeeded — reusing the
+              // card's pre-operation annotation would show the OPPOSITE of
+              // what just happened on disk until a later manifest refresh
+              // (#185 review round N). Patch the changed card from the
+              // operation itself; the fallback set still covers the others.
+              // EXCEPT when the selected member itself was dropped mid-install
+              // (#197): it is NOT on disk, so the card must not claim it is.
+              if (rescanFailed) {
+                const targetDropped =
+                  result?.droppedMembers?.includes(entry.dirName) ?? false
+                return {
+                  ...e,
+                  installed: op === 'uninstall' ? false : !targetDropped,
+                }
+              }
+              return { ...e, installed: installed.has(e.dirName) }
+            })
           : null,
       )
       bumpScanVersion()
       onInstalled?.()
-      setProgress({ phase: 'done', message: t(`skills.discover.${phaseDone}`) })
+      // The install outcome decides the done message (#154 round 8): a
+      // store-driven op can land as a no-op ("Already installed") even when
+      // the button said Install/Update — reporting "Updated" for a no-op
+      // misrepresents what happened on disk. The rich per-version messages
+      // already ride the progress callback from installSkillFromUrl; this
+      // toast only restates the outcome class.
+      let doneMessage: string
+      if (result === null) {
+        doneMessage = t(
+          `skills.discover.${op === 'uninstall' ? 'progressUninstallDone' : 'progressInstallDone'}`,
+        )
+      } else if (result.outcome === 'updated') {
+        doneMessage = t('skills.discover.updateDone')
+      } else if (result.outcome === 'installed') {
+        doneMessage =
+          result.count > 0
+            ? t('skills.discover.installedFiles', { count: result.count })
+            : t('skills.discover.progressInstallDone')
+      } else if (result.outcome === 'member-deleted') {
+        // A member present at install start was uninstalled mid-download and
+        // dropped by the locked re-check (#185 req. 3) — never report this
+        // as a plain success.
+        doneMessage = t('skills.discover.memberRemovedDuringInstall')
+      } else {
+        // 'current' and 'installed-newer': the installed copy was kept as is.
+        doneMessage = t('skills.discover.alreadyInstalled')
+      }
+      if (result !== null && (result.droppedMembers?.length ?? 0) > 0) {
+        // Partial drops ride ANY successful outcome (#185 req. 3): surface the
+        // dropped members on top of the install/update result instead of a
+        // clean success.
+        doneMessage = t('skills.discover.memberRemovedDuringInstall')
+      }
+      if ((result?.bundleUpdates?.skipped.length ?? 0) > 0) {
+        // #183: sibling skills the user declined to update must be named, not
+        // silently left behind while the toast reads like a full success.
+        doneMessage = `${doneMessage} ${t('skills.discover.bundleUpdatesSkipped', {
+          names: result!.bundleUpdates!.skipped.join(', '),
+        })}`
+      }
+      setProgress({ phase: 'done', message: doneMessage })
     } catch (err) {
       setProgress({
         phase: 'error',
@@ -295,6 +384,7 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
                         entry={entry}
                         installing={installing === entry.dirName}
                         onInstall={() => void handleInstall(entry)}
+                        onUpdate={() => void handleUpdate(entry)}
                         onUninstall={() => void handleUninstall(entry)}
                       />
                     </li>
@@ -331,6 +421,7 @@ export function SkillDiscover({ onInstalled }: SkillDiscoverProps) {
         </div>
       )}
       </div>
+      {bundleConsent.element}
     </>
   )
 }
@@ -339,6 +430,7 @@ interface DiscoverCardProps {
   entry: SkillStoreEntry
   installing: boolean
   onInstall: () => void
+  onUpdate?: () => void
   onUninstall?: () => void
 }
 
@@ -372,7 +464,7 @@ function StatusBanner({ tone, icon, busy, children }: StatusBannerProps) {
   )
 }
 
-function DiscoverCard({ entry, installing, onInstall, onUninstall }: DiscoverCardProps) {
+function DiscoverCard({ entry, installing, onInstall, onUpdate, onUninstall }: DiscoverCardProps) {
   const t = useT()
   const [locale] = useLocale()
   // Render the translation for the active locale when one is packaged
@@ -451,28 +543,50 @@ function DiscoverCard({ entry, installing, onInstall, onUninstall }: DiscoverCar
           </div>
         )}
       </div>
-      <BrandButton
-        variant="outline"
-        onClick={handleClick}
-        disabled={installing}
-        aria-label={buttonLabel}
-        aria-busy={installing}
-        className="shrink-0"
-      >
-        {installing ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-        ) : entry.installed ? (
-          <>
-            <Trash2 className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
-            {t('skills.discover.uninstall')}
-          </>
-        ) : (
-          <>
-            <Download className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
-            {t('skills.discover.install')}
-          </>
+      <div className="flex shrink-0 items-center gap-2">
+        {/* An installed skill can be updated in place when the store ships a
+            newer version (#154) — the update path goes through the same
+            version-aware install flow. */}
+        {entry.installed && onUpdate && (
+          <BrandButton
+            variant="outline"
+            onClick={() => onUpdate()}
+            disabled={installing}
+            aria-label={t('skills.discover.update')}
+            aria-busy={installing}
+            className="shrink-0"
+          >
+            {installing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <RefreshCw className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            {installing ? t('skills.discover.updating') : t('skills.discover.update')}
+          </BrandButton>
         )}
-      </BrandButton>
+        <BrandButton
+          variant="outline"
+          onClick={handleClick}
+          disabled={installing}
+          aria-label={buttonLabel}
+          aria-busy={installing}
+          className="shrink-0"
+        >
+          {installing ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          ) : entry.installed ? (
+            <>
+              <Trash2 className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+              {t('skills.discover.uninstall')}
+            </>
+          ) : (
+            <>
+              <Download className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+              {t('skills.discover.install')}
+            </>
+          )}
+        </BrandButton>
+      </div>
     </article>
   )
 }

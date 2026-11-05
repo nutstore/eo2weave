@@ -24,6 +24,8 @@ export interface AgentFiles {
 }
 
 interface AgentsState {
+  /** Project whose Agent catalog is currently loaded. */
+  loadedProjectId: string | null
   // 当前活跃的 agent
   activeAgentId: string | null
   activeAgent: AgentInfo | null
@@ -79,7 +81,51 @@ interface AgentsState {
   deleteSkill: (agentId: string, skillName: string) => Promise<boolean>
 }
 
+let initializationRevision = 0
+let selectionRevision = 0
+let agentInitialization: { projectId: string; promise: Promise<void> } | null = null
+
+/**
+ * Bound on a single initialization attempt. Every step inside awaits the
+ * project manager or an agent-manager read; if any of them never settles
+ * (a wedged OPFS bridge, an extension that swallowed a message), the
+ * promise must fail and release the in-flight slot so a rerun can retry,
+ * instead of keeping the catalog stuck loading forever.
+ */
+const INITIALIZATION_TIMEOUT_MS = 15_000
+
+function initializeWithTimeout(
+  projectManager: NonNullable<ReturnType<typeof useAgentsStore.getState>['projectManager']>,
+  projectId: string
+): Promise<{ agents: AgentInfo[]; activeAgent: AgentInfo | null }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Agent catalog initialization timed out for project ${projectId}`)),
+      INITIALIZATION_TIMEOUT_MS
+    )
+    const finish = <T,>(settle: (value: T) => void, value: T) => {
+      clearTimeout(timer)
+      settle(value)
+    }
+    void (async () => {
+      try {
+        const project = await projectManager.getProject(projectId)
+        if (!project) throw new Error('Project not found')
+        const agents = (await project.agentManager.listAgents()) as unknown as AgentInfo[]
+        const defaultAgent = agents.find((a) => a.id === 'default') || agents[0]
+        const activeAgent = defaultAgent
+          ? ((await project.agentManager.getAgent(defaultAgent.id)) as unknown as AgentInfo | null)
+          : null
+        finish(resolve, { agents, activeAgent })
+      } catch (e) {
+        finish(reject, e)
+      }
+    })()
+  })
+}
+
 export const useAgentsStore = create<AgentsState>()((set, get) => ({
+    loadedProjectId: null,
     activeAgentId: null,
     activeAgent: null,
     agents: [],
@@ -94,53 +140,59 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
     },
 
     initialize: async (projectId) => {
-      const { projectManager, isInitialized } = get()
-      if (!projectManager) {
-        set({ error: 'ProjectManager not set', isInitialized: true })
+      if (!projectId) {
+        initializationRevision += 1
+        selectionRevision += 1
+        agentInitialization = null
+        set({
+          loadedProjectId: null, agents: [], activeAgentId: null, activeAgent: null,
+          isLoading: false, isInitialized: false, error: null,
+        })
         return
       }
-      // Already initialized — skip to avoid creating new array references
-      // that trigger cascade re-renders. On project switch, reset first:
-      //   useAgentsStore.setState({ isInitialized: false, agents: [] })
-      if (isInitialized) return
+      if (useProjectStore.getState().activeProjectId !== projectId) return
+      const { projectManager, isInitialized, loadedProjectId } = get()
+      if (!projectManager) {
+        set({ error: 'ProjectManager not set', isInitialized: false })
+        return
+      }
+      if (isInitialized && loadedProjectId === projectId) return
+      if (agentInitialization?.projectId === projectId) return agentInitialization.promise
 
-      set({ isLoading: true, error: null })
-
+      const revision = ++initializationRevision
+      selectionRevision += 1
+      set({
+        isLoading: true, error: null, isInitialized: false, loadedProjectId: null,
+        agents: [], activeAgentId: null, activeAgent: null,
+      })
+      const promise = (async () => {
+        try {
+          const { agents, activeAgent } = await initializeWithTimeout(projectManager, projectId)
+          // A slow old project must never replace the new project's catalog.
+          if (revision !== initializationRevision || useProjectStore.getState().activeProjectId !== projectId) return
+          set({
+            agents: agents as unknown as AgentMeta[], activeAgent, activeAgentId: activeAgent?.id ?? null,
+            loadedProjectId: projectId, isLoading: false, isInitialized: true,
+          })
+        } catch (e) {
+          if (revision !== initializationRevision) return
+          const message = e instanceof Error ? e.message : 'Failed to initialize agents'
+          set({ error: message, isLoading: false, isInitialized: false })
+          console.error('[AgentsStore] initialize failed:', e)
+        }
+      })()
+      agentInitialization = { projectId, promise }
       try {
-        const project = await projectManager.getProject(projectId)
-        if (!project) {
-          set({ error: 'Project not found', isLoading: false, isInitialized: true })
-          return
-        }
-
-        const agents = await project.agentManager.listAgents()
-
-        // 默认选中 default agent
-        const defaultAgent = agents.find((a) => a.id === 'default') || agents[0]
-        let activeAgent: AgentInfo | null = null
-        let activeAgentId: string | null = null
-
-        if (defaultAgent) {
-          activeAgent = await project.agentManager.getAgent(defaultAgent.id)
-          activeAgentId = defaultAgent.id
-        }
-
-        set({
-          agents,
-          activeAgent,
-          activeAgentId,
-          isLoading: false,
-          isInitialized: true,
-        })
-      } catch (e) {
-        const message = e instanceof Error ? e.message : 'Failed to initialize agents'
-        set({ error: message, isLoading: false, isInitialized: true })
-        console.error('[AgentsStore] initialize failed:', e)
+        await promise
+      } finally {
+        if (agentInitialization?.promise === promise) agentInitialization = null
       }
     },
 
     setActiveAgent: async (agentId) => {
       const { projectManager, agents } = get()
+      const currentProjectId = useProjectStore.getState().activeProjectId
+      if (get().loadedProjectId !== currentProjectId) return
 
       if (!projectManager) {
         toast.error('Project not initialized. Please try again.')
@@ -153,22 +205,24 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
         return
       }
 
+      const selection = ++selectionRevision
       set({ isLoading: true })
 
       try {
-        const currentProjectId = useProjectStore.getState().activeProjectId
         if (!currentProjectId) {
           set({ isLoading: false })
           return
         }
 
         const project = await projectManager.getProject(currentProjectId)
+        if (selection !== selectionRevision || currentProjectId !== useProjectStore.getState().activeProjectId) return
         if (!project) {
           set({ isLoading: false })
           return
         }
 
         const agentInfo = await project.agentManager.getAgent(agentId)
+        if (selection !== selectionRevision || currentProjectId !== useProjectStore.getState().activeProjectId) return
         if (agentInfo) {
           set({
             activeAgentId: agentId,
@@ -180,6 +234,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
           set({ isLoading: false })
         }
       } catch (e) {
+        if (selection !== selectionRevision || currentProjectId !== useProjectStore.getState().activeProjectId) return
         console.error('[AgentsStore] setActiveAgent failed:', e)
         set({ isLoading: false })
       }
@@ -197,7 +252,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
         if (!project) return
 
         const agents = await project.agentManager.listAgents()
-        set({ agents })
+        if (currentProjectId === get().loadedProjectId) set({ agents })
       } catch (e) {
         console.error('[AgentsStore] refreshAgents failed:', e)
       }
@@ -242,10 +297,20 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
         // 创建 agent
         const agentInfo = await project.agentManager.createAgent(id)
 
-        // 刷新列表
+        // 刷新列表 — but only while the user is still on the project this
+        // agent belongs to. A create that settles after a project switch must
+        // not overwrite the new project's freshly loaded catalog (the composer
+        // would offer stale Agents it cannot select).
+        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
+          set({ isLoading: false })
+          return agentInfo
+        }
         const agents = await project.agentManager.listAgents()
+        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
+          set({ isLoading: false })
+          return agentInfo
+        }
         set({ agents, isLoading: false })
-
         toast.success(`Agent "${id}" created`)
         return agentInfo
       } catch (e) {
@@ -283,6 +348,14 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
 
         await project.agentManager.deleteAgent(id)
 
+        // Staleness check FIRST: a delete that settles after a project
+        // switch must neither reset the new project's active Agent selection
+        // (the fallback below) nor overwrite its catalog (the refresh below).
+        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
+          set({ isLoading: false })
+          return true
+        }
+
         // 如果删除的是当前活跃的，切换到 default
         if (activeAgentId === id) {
           const defaultAgent = await project.agentManager.getAgent('default')
@@ -292,8 +365,13 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
           })
         }
 
-        // 刷新列表
+        // 刷新列表 — but only while the user is still on the project the
+        // deletion belongs to (same staleness rule as createAgent).
         const agents = await project.agentManager.listAgents()
+        if (useProjectStore.getState().activeProjectId !== currentProjectId) {
+          set({ isLoading: false })
+          return true
+        }
         set({ agents, isLoading: false })
 
         toast.success(`Agent "${id}" deleted`)

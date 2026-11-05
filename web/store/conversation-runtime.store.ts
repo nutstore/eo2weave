@@ -38,6 +38,21 @@ export interface QueuedMessage {
   contentParts?: Message['contentParts']
   /** Provenance for a user-role message created by an agent tool handoff. */
   readImageHandoff?: Message['readImageHandoff']
+  /**
+   * Re-run trigger from an overlapping dispatch: the caller already appended
+   * its user message to the conversation, so the end-of-run consumer must
+   * start a follow-up turn WITHOUT creating another user message.
+   */
+  rerunOnly?: boolean
+  /**
+   * Identity of the run this trigger is parked on (the dispatch that was
+   * holding the start claim or owned the active run when the trigger was
+   * enqueued). The queue-full drain uses it to tell ACCEPTED triggers —
+   * their owning dispatch is still live and will consume them — apart from
+   * stale residue whose owning dispatch already died (#170 review round 2).
+   * Untagged triggers predate the stamping and are treated as stale.
+   */
+  ownerToken?: string | null
 }
 
 /** Maximum queued messages per conversation */

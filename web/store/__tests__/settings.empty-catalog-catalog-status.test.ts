@@ -325,40 +325,40 @@ describe('getAvailableProviders: round-6 catalog-status precedence & generation 
     expect(results.find((r) => r.providerType === P)?.catalogStatus).toBe('failed')
   })
 
-  it('marks every result current:false when a newer run supersedes this one (High: stale discovery changes selection)', async () => {
-    // A caller-side reconciliation (WorkspaceLayout) must skip a superseded
-    // snapshot. Assert the contract the caller reads, and that a CURRENT
-    // run reports current:true.
+  it('joins concurrent public calls into one run so they cannot supersede each other (#188)', async () => {
+    // Single-flight (issue #188 fix 2): two overlapping PUBLIC calls share
+    // one discovery run — the second caller must not bump the generation
+    // while the first is awaiting, which is what used to land every startup
+    // run superseded (current:false) and blank the quick switcher. The
+    // callers get the SAME promise (one generation bump, one sweep/flush).
     mocks.getModelsForProvider.mockReturnValue([{ id: 'm-dyn', name: 'Dyn' }])
     mocks.getCachedModelsResult.mockReturnValue({ models: [{ id: 'm-dyn' }], source: 'dynamic', fetchedAt: Date.now() } as never)
 
-    // The first await inside the run is the built-in loadApiKey batch. Gate
-    // BOTH runs behind manual control so run 1 provably starts before run 2
-    // (generation bump), and run 2's bump lands while run 1 is awaiting.
-    let releaseFirstBatch: (() => void) | null = null
-    const firstBatchGate = new Promise<void>((resolve) => { releaseFirstBatch = resolve })
+    // Gate the built-in loadApiKey batch so run 1 is provably still in
+    // flight when the second call arrives (the exact startup overlap).
+    let releaseBatch: (() => void) | null = null
+    const batchGate = new Promise<void>((resolve) => { releaseBatch = resolve })
     let batchCall = 0
     mocks.loadApiKey.mockImplementation(async () => {
       batchCall += 1
-      if (batchCall === 1) await firstBatchGate // run 1: hold until run 2 started
+      if (batchCall === 1) await batchGate
       return 'key'
     })
 
     const first = useSettingsStore.getState().getAvailableProviders()
-    // Let run 1 reach its first await: several dynamic imports, the gateway
-    // import and the gated loadApiKey batch all yield. A macrotask turn
-    // (setTimeout 0) guarantees the queued microtasks have drained before
-    // run 2's generation bump lands.
     await new Promise((resolve) => setTimeout(resolve, 0))
     const second = useSettingsStore.getState().getAvailableProviders()
-    // Give run 2 its own turn to bump the generation BEFORE run 1 resumes.
     await new Promise((resolve) => setTimeout(resolve, 0))
-    releaseFirstBatch!()
-    const [, firstResults] = await Promise.all([second, first])
+    releaseBatch!()
+    const [firstResults, secondResults] = await Promise.all([first, second])
 
+    // One shared run: identical results, CURRENT for every caller.
+    expect(secondResults).toBe(firstResults)
     expect(firstResults.length).toBeGreaterThan(0)
-    expect(firstResults.every((r) => r.current === false)).toBe(true)
+    expect(firstResults.every((r) => r.current === true)).toBe(true)
 
+    // The in-flight slot cleared: a follow-up call starts a fresh run that
+    // is also current (no stale supersede chain).
     const fresh = await useSettingsStore.getState().getAvailableProviders()
     expect(fresh.length).toBeGreaterThan(0)
     expect(fresh.every((r) => r.current === true)).toBe(true)

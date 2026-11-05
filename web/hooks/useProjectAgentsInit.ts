@@ -13,56 +13,68 @@
  *   effect lets both screens call it.
  *
  * Behaviour:
- * - Skips bare-URL state (no `activeProjectId`).
- * - Re-runs only if the project changes, init is not in flight, and either
- *   the store is not yet initialised or the agent list is empty. The
- *   re-run guard matches the original ConversationView guard exactly so
- *   swapping callers does not change the trigger conditions.
+ * - Loads when the route's project changes and clears on project exit.
+ * - The store coalesces concurrent callers and rejects stale results; a
+ *   legitimately empty catalog does not trigger an initialization loop.
  */
 
 import { useEffect } from 'react'
-import { useShallow } from 'zustand/react/shallow'
 import { useProjectStore } from '@/store/project.store'
 import { useAgentsStore } from '@/store/agents.store'
 
-const EMPTY_MENTION_AGENTS: { id: string; name: string }[] = []
-
 export function useProjectAgentsInit(): void {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
-  const isAgentsLoading = useAgentsStore((s) => s.isLoading)
-  const isAgentsInitialized = useAgentsStore((s) => s.isInitialized)
-  const mentionAgents = useAgentsStore(
-    useShallow((s) => {
-      const filtered = s.agents
-        .filter((agent) => agent.id !== 'default')
-        .map((agent) => ({ id: agent.id, name: agent.name }))
-      return filtered.length === 0 ? EMPTY_MENTION_AGENTS : filtered
-    })
-  )
 
   useEffect(() => {
-    if (!activeProjectId) return
-    if (isAgentsLoading) return
-    if (mentionAgents.length > 0 && isAgentsInitialized) return
+    if (!activeProjectId) {
+      void useAgentsStore.getState().initialize('')
+      return
+    }
+    const state = useAgentsStore.getState()
+    if (state.isInitialized && state.loadedProjectId === activeProjectId) return
 
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
     ;(async () => {
-      try {
-        const { ProjectManager } = await import('@/opfs')
-        const pm = await ProjectManager.create()
-        if (cancelled) return
-        const store = useAgentsStore.getState()
-        store.setProjectManager(pm)
-        await store.initialize(activeProjectId)
-      } catch (error) {
-        if (!cancelled) {
+      const MAX_RETRIES = 3
+      const RETRY_DELAY_MS = 5_000
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const { ProjectManager } = await import('@/opfs')
+          const pm = await ProjectManager.create()
+          if (cancelled) return
+          const store = useAgentsStore.getState()
+          store.setProjectManager(pm)
+          await store.initialize(activeProjectId)
+          // initialize records failures in store state instead of rejecting
+          // (timeout included), so success must be verified from the state:
+          // without this check a transient failure would end the loop as a
+          // "success" and never be retried.
+          const after = useAgentsStore.getState()
+          if (!after.isInitialized || after.loadedProjectId !== activeProjectId) {
+            throw new Error(after.error || 'Agent catalog initialization failed')
+          }
+          return
+        } catch (error) {
+          if (cancelled) return
           console.warn('[useProjectAgentsInit] Failed to initialize agents:', error)
+          // Initialization failures are usually transient (OPFS bridge hiccup,
+          // extension restart). The effect only re-runs on a project change,
+          // so without a retry the catalog would stay unavailable until the
+          // user switches projects or reloads. The store's initialize is
+          // idempotent, so a retry after success is a cheap no-op.
+          if (attempt >= MAX_RETRIES) return
+          await new Promise<void>((resolve) => {
+            retryTimer = setTimeout(resolve, RETRY_DELAY_MS)
+          })
+          if (cancelled) return
         }
       }
     })()
 
     return () => {
       cancelled = true
+      clearTimeout(retryTimer)
     }
-  }, [activeProjectId, isAgentsLoading, isAgentsInitialized, mentionAgents])
+  }, [activeProjectId])
 }

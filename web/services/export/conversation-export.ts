@@ -92,6 +92,8 @@ export interface ConversationExportData {
     role: string
     recordType: MessageRecordType
     kind?: Message['kind']
+    stopReason?: Message['stopReason']
+    errorMessage?: Message['errorMessage']
     delegationNote?: Message['delegationNote']
     readImageHandoff?: Message['readImageHandoff']
     content: string | null
@@ -468,13 +470,29 @@ function inlineArtifact(
   mimeType: string,
   base64: string,
 ): ExportArtifact {
+  // The payload is provider-controlled and may be malformed; a decode failure
+  // here must not abort the whole export — mark the artifact missing instead
+  // (the HTML renderer already renders a "skipped" placeholder for those).
+  let bytes: Uint8Array | undefined
+  try {
+    bytes = base64ToBytes(base64)
+  } catch {
+    return {
+      bundlePath,
+      displayName,
+      mimeType: mimeType || 'image/png',
+      isImage: true,
+      base64: '',
+      missing: true,
+    }
+  }
   return {
     bundlePath,
     displayName,
     mimeType: mimeType || 'image/png',
     isImage: true,
     base64,
-    bytes: base64ToBytes(base64),
+    bytes,
     missing: false,
   }
 }
@@ -596,7 +614,24 @@ function renderArtifactsHtml(artifacts: ExportArtifact[] | undefined): string {
         return `<div class="attachment attachment-missing">⚠️ ${escapeHtml(a.displayName)} (file not available)</div>`
       }
       if (a.isImage) {
-        return `<img class="export-image" src="data:${a.mimeType};base64,${a.base64}" alt="${escapeHtml(a.displayName)}" />`
+        // The MIME type is provider-controlled (assistant.images rides in from
+        // the model response) — an unescaped value could break out of the src
+        // attribute and inject markup into the exported HTML. Allowlist safe
+        // image MIME types and escape what little survives the filter.
+        const mime = sanitizeImageMime(a.mimeType)
+        if (!mime) {
+          return `<div class="attachment attachment-missing">⚠️ ${escapeHtml(a.displayName)} (unsupported image type — skipped)</div>`
+        }
+        // The base64 payload is also provider-controlled — a double quote in
+        // it could break out of the src attribute and inject markup into the
+        // exported HTML. Require the standard base64 alphabet; anything else
+        // falls back to the "skipped" placeholder (same policy as the MIME
+        // filter above). escapeHtml is defense in depth.
+        const payload = sanitizeBase64Payload(a.base64)
+        if (!payload) {
+          return `<div class="attachment attachment-missing">⚠️ ${escapeHtml(a.displayName)} (unsupported image type — skipped)</div>`
+        }
+        return `<img class="export-image" src="data:${escapeHtml(mime)};base64,${escapeHtml(payload)}" alt="${escapeHtml(a.displayName)}" />`
       }
       const size = a.bytes ? formatByteSize(a.bytes.length) : ''
       return `<div class="attachment">📎 ${escapeHtml(a.displayName)}${size ? ` (${size})` : ''}</div>`
@@ -608,6 +643,34 @@ function formatByteSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function getAssistantTurnStatus(message: Message): string | null {
+  if (message.role !== 'assistant') return null
+  const status =
+    message.kind === 'empty' || message.kind === 'error' || message.kind === 'aborted'
+      ? message.kind
+      : message.stopReason === 'length'
+        ? 'incomplete'
+        : null
+  if (!status) return null
+  return message.stopReason ? status + ' (stop reason: ' + message.stopReason + ')' : status
+}
+
+function renderAssistantTurnStatusMarkdown(message: Message): string[] {
+  const status = getAssistantTurnStatus(message)
+  if (!status) return []
+  // errorMessage is provider-controlled text; escape HTML-significant
+  // characters so it cannot inject markup when the Markdown export is
+  // rendered by a renderer that permits raw HTML (same policy as the
+  // HTML export path, which escapes every untrusted field).
+  const lines = ['> Turn status: ' + escapeHtml(status)]
+  if (message.errorMessage) {
+    const [firstLine, ...remainingLines] = message.errorMessage.split(/\r?\n/)
+    lines.push('> Provider error: ' + escapeHtml(firstLine))
+    lines.push(...remainingLines.map((line) => '> ' + escapeHtml(line)))
+  }
+  return lines
 }
 
 // ============================================================================
@@ -641,6 +704,8 @@ function buildJSONString(
       role: msg.role,
       recordType: getMessageRecordType(msg),
       kind: msg.kind,
+      stopReason: msg.stopReason,
+      errorMessage: msg.errorMessage,
       delegationNote: msg.delegationNote,
       readImageHandoff: msg.readImageHandoff ? {
         ...msg.readImageHandoff,
@@ -703,6 +768,12 @@ function buildMarkdown(
       case 'assistant': {
         lines.push(`### 🤖 ${messageLabel(msg)} — ${time}`)
         lines.push('')
+
+        const statusLines = renderAssistantTurnStatusMarkdown(msg)
+        if (statusLines.length > 0) {
+          lines.push(...statusLines)
+          lines.push('')
+        }
 
         // Reasoning
         if (options.includeReasoning && msg.reasoning) {
@@ -802,6 +873,16 @@ function buildHTML(
 
     let body = ''
 
+    if (msg.role === 'assistant') {
+      const status = getAssistantTurnStatus(msg)
+      if (status) {
+        body += '<div class="message-status"><strong>Turn status:</strong> ' + escapeHtml(status) + '</div>'
+      }
+      if (msg.errorMessage) {
+        body += '<div class="message-error-detail">' + escapeHtml(msg.errorMessage) + '</div>'
+      }
+    }
+
     // Reasoning section
     if (options.includeReasoning && msg.role === 'assistant' && msg.reasoning) {
       body += `
@@ -900,6 +981,19 @@ function buildHTML(
       word-break: break-word;
       font-size: 0.9rem;
     }
+    .message-status {
+      margin-bottom: 0.5rem;
+      color: #b45309;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .message-error-detail {
+      margin-bottom: 0.5rem;
+      color: #b91c1c;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     .message-user { border-left: 3px solid #3b82f6; }
     .message-assistant { border-left: 3px solid #8b5cf6; }
     .message-tool { border-left: 3px solid #f59e0b; background: #fffbeb; }
@@ -984,6 +1078,33 @@ function buildFilename(base: string, extension: string, addTimestamp: boolean): 
   const safeName = base.replace(/[^a-zA-Z0-9\u4e00-\u9fff._-]/g, '_')
   const timestamp = addTimestamp ? `_${Date.now()}` : ''
   return `${safeName}${timestamp}.${extension}`
+}
+
+/**
+ * Image MIME allowlist for the HTML export. The value is provider-controlled
+ * (assistant.images), so anything outside the safe image set is rejected —
+ * the caller renders a "skipped" placeholder instead of the image.
+ */
+const SAFE_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
+
+function sanitizeImageMime(raw: string | undefined): string | null {
+  const value = (raw ?? '').trim().toLowerCase()
+  return SAFE_IMAGE_MIME_TYPES.has(value) ? value : null
+}
+
+/**
+ * Base64 allowlist for the HTML export. The payload is provider-controlled
+ * (assistant.images), so anything outside the standard base64 alphabet is
+ * rejected — the caller renders a "skipped" placeholder instead of the image.
+ */
+function sanitizeBase64Payload(raw: string): string | null {
+  const value = raw.replace(/\s+/g, '')
+  return /^[A-Za-z0-9+/]*={0,2}$/.test(value) && value.length > 0 ? value : null
 }
 
 function escapeHtml(text: string): string {

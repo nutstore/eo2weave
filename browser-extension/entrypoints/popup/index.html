@@ -443,20 +443,12 @@
   <main class="main">
     <button id="openWorkbenchBtn" class="cta" data-i18n="openSidePanel">打开侧边栏</button>
     <div class="cta-hint" data-i18n="openWorkbenchHint">在侧边栏中与 AI 对话、搜索网页、操作页面</div>
-    <button id="supportedSitesBtn" class="sites-entry" type="button">
-      <span class="sites-icon">🌐</span>
-      <span class="sites-text">
-        <span class="sites-title" data-i18n="supportedSites">Supported Sites</span>
-        <span class="sites-subtitle" id="sitesSubtitle">—</span>
-      </span>
-      <span class="sites-chevron">›</span>
-    </button>
-    <!-- Site packages (registry) entry → the extension's package registry
-         management page (add a registry, browse, install, remove). -->
+    <!-- WebMCP packages entry → the merged packages management page
+         (built-in / registry / mine, issue #193). -->
     <button id="sitePackagesBtn" class="sites-entry" type="button">
       <span class="sites-icon">📦</span>
       <span class="sites-text">
-        <span class="sites-title" data-i18n="webmcpPackagesTitle">Site packages</span>
+        <span class="sites-title" data-i18n="webmcpPackagesManagement">WebMCP packages</span>
         <span class="sites-subtitle" id="sitePackagesSubtitle">—</span>
       </span>
       <span class="sites-chevron">›</span>

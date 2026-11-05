@@ -3,131 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Site packages — EO2Weave</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    ::-webkit-scrollbar { width: 8px; }
-    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #fafaf8;
-      color: #171717;
-      max-width: 720px;
-      margin: 0 auto;
-      padding: 32px 24px 48px;
-    }
-    .header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
-    .header .logo {
-      width: 34px; height: 34px; border-radius: 8px;
-      background: linear-gradient(135deg, #14B8A6, #0d7377);
-      display: flex; align-items: center; justify-content: center;
-      color: #fff; font-weight: 700; font-size: 16px;
-    }
-    h1 { font-size: 20px; font-weight: 700; }
-    .subtitle { color: #585858; font-size: 13px; margin-bottom: 24px; line-height: 1.5; }
-    .section-title {
-      font-size: 12px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: 0.6px; color: #737373; margin: 22px 0 10px;
-      display: flex; align-items: center; gap: 10px;
-    }
-    .section-title .refresh {
-      margin-left: auto; text-transform: none; letter-spacing: 0;
-      font-size: 11px; color: #0f766e; cursor: pointer; background: none;
-      border: none; padding: 2px 4px;
-    }
-    .section-title .refresh:hover { text-decoration: underline; }
-    .section-title .refresh:disabled { color: #a3a3a3; cursor: default; text-decoration: none; }
-    .card {
-      background: #fff; border: 1px solid #e5e5e5; border-radius: 10px;
-      padding: 14px 16px; margin-bottom: 10px;
-      display: flex; align-items: flex-start; gap: 12px;
-    }
-    .card .body { flex: 1; min-width: 0; }
-    .card .name { font-size: 14px; font-weight: 600; }
-    .card .host { font-size: 11px; color: #737373; font-family: ui-monospace, monospace; margin-top: 1px; }
-    .card .desc { font-size: 12px; color: #585858; margin-top: 4px; line-height: 1.45; }
-    .card .tools { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
-    .card .tool-chip {
-      font-size: 10.5px; font-family: ui-monospace, monospace;
-      background: #f4f8f7; border: 1px solid #d5e8e5; color: #0d9488;
-      border-radius: 5px; padding: 2px 7px;
-    }
-    .actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex: 0 0 auto; }
-    .btn {
-      border: 1px solid #d4d4d4; background: #fafaf8; color: #171717;
-      border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer;
-      white-space: nowrap;
-    }
-    .btn:hover:not(:disabled) { background: #efefec; }
-    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
-    .btn.primary { background: #0d9488; border-color: #0d9488; color: #fff; font-weight: 600; }
-    .btn.primary:hover:not(:disabled) { background: #0b7a7a; }
-    .btn.danger { background: #fff; color: #b91c1c; border-color: #fecaca; }
-    .btn.danger:hover:not(:disabled) { background: #fef2f2; }
-    .btn:focus-visible { outline: 2px solid #0d9488; outline-offset: 2px; }
-    .state {
-      font-size: 10.5px; font-weight: 600; border-radius: 999px; padding: 1px 8px;
-      border: 1px solid #d5e8e5; background: #f4f8f7; color: #0d9488;
-    }
-    .state.inactive { border-color: #e5e5e5; background: #f8f7f5; color: #737373; }
-    .add-box {
-      background: #fff; border: 1px solid #e5e5e5; border-radius: 10px;
-      padding: 14px 16px; margin-bottom: 10px;
-    }
-    .add-row { display: flex; gap: 8px; }
-    .add-row input {
-      flex: 1; min-width: 0; border: 1px solid #d4d4d4; border-radius: 6px;
-      padding: 8px 10px; font-size: 13px; font-family: inherit;
-    }
-    .add-row input:focus-visible { outline: 2px solid #0d9488; outline-offset: 1px; }
-    .hint { font-size: 11px; color: #737373; margin-top: 8px; line-height: 1.55; }
-    .empty { color: #737373; font-size: 13px; padding: 12px 0; }
-    .error {
-      color: #b91c1c; font-size: 12px; margin: 10px 0; overflow-wrap: anywhere;
-      background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 8px 10px;
-      display: flex; align-items: flex-start; gap: 8px;
-    }
-    /* `display: flex` above overrides the browser's default `[hidden]
-       { display: none }` (the alert starts `hidden` and is dismissed via
-       the same attribute), leaving an EMPTY BOX on the page — restore the
-       hidden behaviour explicitly (finding: "Dismissed error box stays
-       visible"). */
-    .error[hidden] { display: none; }
-    .error .dismiss { margin-left: auto; cursor: pointer; color: #b91c1c; font-weight: 700; }
-    .note {
-      font-size: 11px; color: #737373; margin-top: 20px; line-height: 1.6;
-      border-top: 1px solid #e5e5e5; padding-top: 14px;
-    }
-  </style>
+  <title>WebMCP packages — EO2Weave</title>
+  <!--
+    Redirect shell kept for ONE release (issue #193): registry.html and
+    recipes.html merged into packages.html. Old bookmarks and links still land
+    on the merged page. Delete this entrypoint in the next release.
+  -->
+  <meta http-equiv="refresh" content="0; url=packages.html" />
+  <script>location.replace('/packages.html')</script>
 </head>
 <body>
-  <div class="header">
-    <div class="logo">e</div>
-    <h1 id="pageTitle">Site packages</h1>
-  </div>
-  <p class="subtitle" id="pageSubtitle"></p>
-
-  <p id="pageError" class="error" role="alert" hidden>
-    <span id="pageErrorText"></span>
-    <span class="dismiss" id="pageErrorDismiss" role="button" tabindex="0">✕</span>
-  </p>
-
-  <div class="section-title" id="registryTitle">Package registry</div>
-  <div id="registryList"></div>
-
-  <div class="add-box">
-    <div class="add-row">
-      <input id="registryInput" type="text" spellcheck="false" autocomplete="off" />
-      <button id="registryAdd" class="btn primary" type="button">Add</button>
-    </div>
-    <div class="hint" id="registryHint"></div>
-  </div>
-
-  <div class="section-title" id="installedTitle">Installed packages</div>
-  <div id="installedList"></div>
-
-  <p class="note" id="pageNote"></p>
-
-  <script type="module" src="./main.ts"></script>
+  <p><a href="/packages.html">WebMCP packages</a></p>
 </body>
 </html>

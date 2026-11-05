@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic'
 import { useSidePanelSettle } from '@/hooks/useSidePanelSettle'
+import { StorageLoading } from '@/components/StorageLoading'
 
 // The real workspace UI lives in the LAYOUT, not the leaf pages: Next.js
 // preserves a layout across navigations between its child pages, including
@@ -13,6 +14,7 @@ import { useSidePanelSettle } from '@/hooks/useSidePanelSettle'
 // The leaf page.tsx files render null; they exist only for URL matching.
 const WorkspaceRouteView = dynamic(() => import('@/components/workspace/WorkspaceRouteView'), {
   ssr: false,
+  loading: () => <StorageLoading />,
 })
 
 /**

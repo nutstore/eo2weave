@@ -39,6 +39,21 @@ import {
   uninstallRegistryPackage,
 } from '@/webmcp/package-registry-store'
 import { ADAPTER_PAGE_MARKER } from '@creatorweave/shared/webmcp-adapter-protocol'
+import {
+  boundToolIndex,
+  indexedTools,
+  MAX_PREVIEW_TOOLS,
+  packageMatchesFilter,
+  reconcileToolIndex,
+  runPreviewPass,
+  SEARCH_MIN_PACKAGES,
+  toolIndexKey,
+  toolIndexPrefix,
+  toolMatchCount,
+  toolWindow,
+  type PreviewTool,
+  type ToolIndex,
+} from '@/webmcp/registry-filter'
 import type { PackageRegistry, RegistryManifest, RegistryManifestPackage } from '@/webmcp/package-registry-client'
 
 interface WebMCPPackageRegistrySectionProps {
@@ -47,12 +62,6 @@ interface WebMCPPackageRegistrySectionProps {
 
 /** Bound for the section's own manifest.json preview fetches. */
 const REGISTRY_PREVIEW_TIMEOUT_MS = 30_000
-/**
- * Concurrent manifest-preview fetch cap (finding: "Large catalogs overload
- * settings"): the section reads one manifest per package to verify tool
- * counts — a huge catalog must not launch every request at once.
- */
-const PREVIEW_CONCURRENCY = 6
 
 /**
  * Read a preview response under a byte cap (finding: "Registry bodies hang
@@ -145,12 +154,31 @@ interface RegistryCardProps {
   /** Activation state per installed id (read from the package config). */
   activations: Map<string, 'enabled' | 'disabled'>
   busyId: string | null
+  /** Cached tool lists per (registry, pkg) from the section (filled by readToolCount). */
+  toolIndex: ToolIndex
+  /** Section-level filter query; empty string shows everything. */
+  filter: string
+  /**
+   * Cache a package's validated tool list in the section-level index
+   * (issue #187). `generation` is the catalog-load epoch the read ran
+   * against — the section drops writes from older generations so a stale
+   * in-flight response can never overwrite newer tools (round-6: "Older
+   * previews overwrite current tools"). `null` removes a stale entry
+   * (failed re-preview).
+   */
+  onTools: (registryUrl: string, pkgId: string, version: string, generation: number, tools: PreviewTool[] | null) => void
+  /**
+   * Report this registry's current catalog (gates the search input and
+   * lets the section reconcile its index against packages that were
+   * removed or bumped to another version).
+   */
+  onCatalog: (registryUrl: string, packages: ReadonlyArray<{ id: string; version: string }>) => void
   onInstall: (registry: PackageRegistry, pkg: RegistryManifestPackage, verifiedToolCount: number) => Promise<boolean>
   onUninstall: (pkgId: string) => Promise<boolean>
   onRemoveRegistry: (registry: PackageRegistry) => void
 }
 
-function RegistryCard({ t, registry, installedIds, activations, busyId, onInstall, onUninstall, onRemoveRegistry }: RegistryCardProps) {
+function RegistryCard({ t, registry, installedIds, activations, busyId, toolIndex, filter, onTools, onCatalog, onInstall, onUninstall, onRemoveRegistry }: RegistryCardProps) {
   const [manifest, setManifest] = useState<RegistryManifest | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -172,6 +200,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
     setError(null)
     try {
       setManifest(await loadRegistryCatalog(registry, { force }))
+      catalogGeneration.current += 1
     } catch (err) {
       setError(localizedError(t, err))
     } finally {
@@ -179,12 +208,28 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
     }
   }, [registry])
 
+  /**
+   * Catalog-load epoch. Every completed `loadRegistryCatalog` bumps it; the
+   * generated `onTools` closure stamps writes with the value live when the
+   * preview REQUEST started, so a manifest read that races a refresh (starts
+   * before, resolves after the newer generation's write) is dropped by the
+   * section instead of overwriting fresh tools (round-6: "Older previews
+   * overwrite current tools").
+   */
+  const catalogGeneration = useRef(0)
+
   useEffect(() => {
     void load(false)
   }, [load])
 
+  // Report the catalog so the section can gate the search input (issue #187)
+  // and reconcile its tool index against the current packages.
+  useEffect(() => {
+    if (manifest) onCatalog(registry.manifestUrl, manifest.packages)
+  }, [manifest, registry.manifestUrl, onCatalog])
+
   /** Read one package's manifest.json and record its real tool count. */
-  const readToolCount = useCallback(async (pkgId: string, version: string) => {
+  const readToolCount = useCallback(async (pkgId: string, version: string, generation: number) => {
     try {
       const { registryFileUrl, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES } = await import('@/webmcp/package-registry-client')
       const response = await fetch(registryFileUrl(registry, `packages/${pkgId}/manifest.json`), {
@@ -206,7 +251,22 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
       if (data.id !== pkgId || data.version !== version) {
         throw new Error('The preview manifest does not match the catalog entry')
       }
-      const count = (data.tools as unknown[]).length
+      const tools = (data.tools as unknown[]).filter(isPreviewTool)
+      // Same tool-count bound as the package validator (round-7: "Expanded
+      // previews render unbounded tool rows"): the 512 KiB byte cap bounds
+      // the manifest BODY, not the row count — a catalog carrying thousands
+      // of minimal tool entries is an invalid package, and its extra rows
+      // must not reach the DOM or the search index.
+      if (tools.length > MAX_PREVIEW_TOOLS) throw new Error('The package manifest lists too many tools')
+      const count = tools.length
+      // Cache the tool list for the section-level search (issue #187): the
+      // same manifest pass that verifies the count also feeds the tool-name
+      // filter — the data was fetched and thrown away before. The request's
+      // catalog-generation stamp lets the section drop a manifest read that
+      // raced a refresh, so an older response can never overwrite the tools
+      // the newer catalog recorded (round-6: "Older previews overwrite
+      // current tools").
+      onTools(registry.manifestUrl, pkgId, version, generation, tools)
       // Record the count TOGETHER with the catalog version it was verified
       // for (round-3 finding: "Refresh shows stale tool count"): a catalog
       // refresh that bumps the version drops the stale entry immediately,
@@ -239,23 +299,31 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
         next.delete(pkgId)
         return next
       })
+      // Drop any tool-index entry the earlier version recorded (round-6:
+      // "Removed tool lists consume memory") — keeping it would both leak
+      // the array and keep matching searches against stale tools.
+      // A null write only clears a SAME-generation entry (round-7: "Failed
+      // count read deletes tools"): if the expanded card preview already
+      // stored a valid list for this generation, this failure must not
+      // delete it — pass generation - 1 so the staleness gate rejects the
+      // removal while an equal-or-newer write exists.
+      onTools(registry.manifestUrl, pkgId, version, Math.max(0, generation - 1), null)
     }
-  }, [registry])
+  }, [registry, onTools])
 
   useEffect(() => {
     // Bound concurrent preview fetches (finding: "Large catalogs overwhelm
-    // settings"): at most PREVIEW_CONCURRENCY manifest requests run at
-    // once; the rest queue behind them.
-    const packages = manifest?.packages ?? []
-    let cursor = 0
-    const workers = Array.from({ length: Math.min(PREVIEW_CONCURRENCY, packages.length) }, async () => {
-      while (cursor < packages.length) {
-        const pkg = packages[cursor]
-        cursor += 1
-        await readToolCount(pkg.id, pkg.version)
-      }
-    })
-    void Promise.all(workers)
+    // settings"): at most PREVIEW_CONCURRENCY manifest requests run at once;
+    // the rest queue behind them. The catalog generation is captured HERE,
+    // when the work is scheduled, and travels with every queued read: a
+    // preview that waited through a refresh keeps its older stamp, so the
+    // section rejects its response instead of letting it overwrite the
+    // refreshed tools (finding: "Old previews overwrite refreshed results").
+    void runPreviewPass(
+      manifest?.packages ?? [],
+      catalogGeneration.current,
+      (pkg, generation) => readToolCount(pkg.id, pkg.version, generation),
+    )
   }, [manifest, readToolCount])
 
   /** Verified count for the CURRENT catalog version, else null (unverified). */
@@ -303,7 +371,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
       )}
 
       <div className="mt-2 space-y-2">
-        {manifest?.packages.map((pkg) => {
+        {manifest?.packages.filter(pkg => packageMatchesFilter(pkg, toolIndex.get(toolIndexKey(registry.manifestUrl, pkg.id)), filter)).map((pkg) => {
           const installed = installedIds.has(pkg.id)
           const busy = busyId === pkg.id
           const expanded = expandedId === pkg.id
@@ -318,6 +386,9 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
           const toolCount = verifiedCount ?? pkg.toolCount
           const countUnverified = verifiedCount === null
           const active = installed && activations.get(pkg.id) === 'enabled'
+          // "matches N tools" hint (issue #187): shown only when the query
+          // hit this package's TOOLS rather than its id/description.
+          const toolMatches = toolMatchCount(pkg, indexedTools(toolIndex, registry.manifestUrl, pkg), filter)
           return (
             <div key={pkg.id} className="rounded-md border border-neutral-200 p-2.5 dark:border-neutral-700">
               <div className="flex items-start gap-2">
@@ -340,6 +411,11 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
                     <span>·</span>
                     <span>{format(t('settings.webmcpPackages.version'), { version: pkg.version })}</span>
                   </div>
+                  {toolMatches > 0 && (
+                    <div className="mt-0.5 text-xs text-tertiary">
+                      {format(t('settings.webmcpPackages.matchesTools'), { count: toolMatches })}
+                    </div>
+                  )}
                   {installed && (
                     <div className="mt-1.5">
                       <span className="inline-flex items-center gap-1 rounded-full border border-neutral-300 px-2 py-0.5 text-xs text-tertiary dark:border-neutral-600">
@@ -378,7 +454,7 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
               </div>
               {expanded && manifest && (
                 <div className="mt-2 border-t border-neutral-200 pt-2 dark:border-neutral-700">
-                  <ToolCatalogPreview registry={registry} pkg={pkg} />
+                  <ToolCatalogPreview registry={registry} pkg={pkg} tools={indexedTools(toolIndex, registry.manifestUrl, pkg) ?? null} onTools={onTools} generation={catalogGeneration.current} t={t} />
                 </div>
               )}
             </div>
@@ -401,10 +477,6 @@ function RegistryCard({ t, registry, installedIds, activations, busyId, onInstal
  * without well-formed tool entries renders the unavailable-preview
  * fallback instead.
  */
-interface PreviewTool {
-  name: string
-  description: string
-}
 
 function isPreviewTool(value: unknown): value is PreviewTool {
   return (
@@ -414,10 +486,17 @@ function isPreviewTool(value: unknown): value is PreviewTool {
   )
 }
 
-function ToolCatalogPreview({ registry, pkg }: { registry: PackageRegistry; pkg: RegistryManifestPackage }) {
-  const [tools, setTools] = useState<PreviewTool[] | null>(null)
+function ToolCatalogPreview({ registry, pkg, tools, onTools, generation, t }: { registry: PackageRegistry; pkg: RegistryManifestPackage; tools: PreviewTool[] | null; onTools: (registryUrl: string, pkgId: string, version: string, generation: number, tools: PreviewTool[] | null) => void; generation: number; t: (key: string) => string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [fetched, setFetched] = useState<PreviewTool[] | null>(null)
 
   useEffect(() => {
+    // Section-level cache hit (issue #187): the readToolCount pass already
+    // fetched this manifest — reuse its tools instead of a second request.
+    if (tools !== null) {
+      setFetched(null)
+      return
+    }
     let disposed = false
     void (async () => {
       try {
@@ -427,34 +506,73 @@ function ToolCatalogPreview({ registry, pkg }: { registry: PackageRegistry; pkg:
           signal: AbortSignal.timeout(REGISTRY_PREVIEW_TIMEOUT_MS),
         })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const data = await readJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES) as { tools?: unknown }
+        const data = await readJsonCapped(response, MAX_PACKAGE_MANIFEST_PREVIEW_BYTES) as { id?: unknown; version?: unknown; tools?: unknown }
         // Keep only well-formed entries; anything else (null, a number, a
         // nameless object) makes the preview unavailable rather than crash.
         const validated = Array.isArray(data.tools) ? data.tools.filter(isPreviewTool) : []
-        if (!disposed) setTools(validated)
+        // Same tool-count bound as `readToolCount` (round-7: "Expanded
+        // previews render unbounded tool rows") — the expanded branch
+        // renders the whole list, so an oversized array must fail the
+        // preview instead of stalling the settings page.
+        if (validated.length > MAX_PREVIEW_TOOLS) throw new Error('The package manifest lists too many tools')
+        // The entry is only recorded for the catalog entry the preview was
+        // requested for — same identity rule as `readToolCount` (a proxy
+        // serving a different package's manifest must not poison the index).
+        if (data.id !== pkg.id || data.version !== pkg.version) throw new Error('The preview manifest does not match the catalog entry')
+        if (!disposed) {
+          // A successful fallback fetch feeds the SECTION-level index too
+          // (round-6: "Fetched preview remains unsearchable") — a tool the
+          // expanded card can show must also be findable by the filter, and
+          // this reuses the same single write path (no second cache). The
+          // fetch started under the CURRENT catalog generation, which is
+          // exactly the stamp the section's staleness gate expects here.
+          onTools(registry.manifestUrl, pkg.id, pkg.version, generation, validated)
+          setFetched(validated)
+        }
       } catch {
-        if (!disposed) setTools([])
+        if (!disposed) setFetched([])
       }
     })()
     return () => { disposed = true }
-  }, [registry, pkg.id])
+  }, [registry, pkg.id, pkg.version, tools, onTools, generation])
 
-  if (tools === null) return <div className="text-xs text-tertiary">…</div>
-  if (tools.length === 0) return <div className="text-xs text-tertiary">—</div>
+  const catalog = tools ?? fetched
+  if (catalog === null) return <div className="text-xs text-tertiary">…</div>
+  if (catalog.length === 0) return <div className="text-xs text-tertiary">—</div>
+  // The window only applies to the COLLAPSED preview (round-6 High:
+  // "More tools stay hidden") — once the user expands, they asked for the
+  // whole catalog; windowing again behind the "More" button would make the
+  // hidden entries unreachable.
+  const { visible, hiddenCount } = expanded
+    ? { visible: catalog, hiddenCount: 0 }
+    : toolWindow(catalog)
   return (
-    <ul className="space-y-1">
-      {tools.map(tool => (
-        <li key={tool.name} className="flex items-baseline gap-2 text-xs">
-          <span className="shrink-0 font-mono text-tertiary">{tool.name}</span>
-          <span className="truncate text-tertiary">{tool.description}</span>
-        </li>
-      ))}
-    </ul>
+    <div>
+      <ul className={`space-y-1 ${expanded ? 'max-h-56 overflow-y-auto' : ''}`}>
+        {visible.map(tool => (
+          <li key={tool.name} className="flex items-baseline gap-2 text-xs">
+            <span className="shrink-0 font-mono text-tertiary">{tool.name}</span>
+            <span className="truncate text-tertiary">{tool.description}</span>
+          </li>
+        ))}
+      </ul>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          className="mt-1 text-xs text-tertiary hover:text-primary"
+          onClick={() => setExpanded(true)}
+        >
+          {format(t('settings.webmcpPackages.moreTools'), { count: catalog.length })}
+        </button>
+      )}
+    </div>
   )
 }
 
 export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySectionProps) {
   const [registries, setRegistries] = useState<PackageRegistry[]>([])
+  /** Live mirror of `registries` for listeners that must not re-subscribe. */
+  const registriesRef = useRef<PackageRegistry[]>([])
   const [installedIds, setInstalledIds] = useState<Set<string>>(new Set())
   /** Activation state per installed id, read from the package config. */
   const [activations, setActivations] = useState<Map<string, 'enabled' | 'disabled'>>(new Map())
@@ -476,6 +594,145 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
    * would appear uninstalled and could be installed a second time.
    */
   const refreshGeneration = useRef(0)
+  /** Section-level search (issue #187): filter text shared by all cards. */
+  const [filter, setFilter] = useState('')
+  /**
+   * Validated tool lists, keyed by registry + package (round-6:
+   * "Registries share tool results" — two registries may publish the same
+   * package ID; keying by ID alone let one registry's list overwrite the
+   * other's). Filled by each card's preview pass; entries are removed when
+   * the version goes stale or the registry goes away.
+   */
+  const [toolIndex, setToolIndex] = useState<ToolIndex>(new Map())
+  /**
+   * Latest accepted request generation per index key (round-6: "Older
+   * previews overwrite current tools"). Overlapping requests resolve out of
+   * order — a manifest read started before a catalog refresh must never
+   * overwrite the entry the newer generation recorded, so writes from an
+   * older generation (and stale removals) are dropped here.
+   */
+  const toolGenerations = useRef<Map<string, number>>(new Map())
+
+  /**
+   * Registries that were removed while this section was mounted. Their
+   * in-flight manifest reads must not recreate the deleted tool-index
+   * entries (round-7: "Removed previews repopulate cache"); the tombstone
+   * is dropped when the registry is added again.
+   */
+  const removedRegistries = useRef<Set<string>>(new Set())
+
+  const handleTools = useCallback((registryUrl: string, pkgId: string, version: string, generation: number, tools: PreviewTool[] | null) => {
+    const key = toolIndexKey(registryUrl, pkgId)
+    // A write for a REMOVED registry is dropped outright (round-7: "Removed
+    // previews repopulate cache"): the manifest read was still in flight
+    // when the registry was removed and must not recreate its entries.
+    if (removedRegistries.current.has(registryUrl)) return
+    const seen = toolGenerations.current.get(key) ?? 0
+    if (generation < seen) return
+    toolGenerations.current.set(key, generation)
+    setToolIndex(previous => {
+      const cached = previous.get(key)
+      if (tools === null) {
+        if (!cached) return previous
+        const next = new Map(previous)
+        next.delete(key)
+        return next
+      }
+      // Same version and same content → same state: keeps the Map identity
+      // stable so the cards' memo/effect chains do not re-run for repeated
+      // previews. Content equality, not length equality — a refresh can
+      // change tool names/descriptions without changing the count (round-6:
+      // "Updated tools stay stale").
+      if (
+        cached &&
+        cached.version === version &&
+        cached.tools.length === tools.length &&
+        cached.tools.every((tool, i) => tool.name === tools[i]!.name && tool.description === tools[i]!.description)
+      ) {
+        return previous
+      }
+      const next = new Map(previous)
+      next.set(key, { version, tools })
+      // Aggregate bound (finding: "Search metadata grows without bound"):
+      // whole registries are evicted oldest-first once the retained tool
+      // metadata exceeds the cap. Their generation marks go with them.
+      const bounded = boundToolIndex(next)
+      if (bounded !== next) {
+        for (const mark of toolGenerations.current.keys()) {
+          if (!bounded.has(mark)) toolGenerations.current.delete(mark)
+        }
+      }
+      return bounded
+    })
+  }, [])
+
+  /** Total catalog size across registries — gates the search input. */
+  const packageCounts = useRef<Map<string, number>>(new Map())
+
+  const recalcTotalPackages = () => {
+    setTotalPackages([...packageCounts.current.values()].reduce((sum, count) => sum + count, 0))
+  }
+
+  /**
+   * Report one registry's catalog: its size gates the search input, and the
+   * package list reconciles the tool index so packages that were removed or
+   * bumped to another version stop matching searches (finding: "Obsolete
+   * tools remain searchable").
+   */
+  const handleCatalog = useCallback((registryUrl: string, packages: ReadonlyArray<{ id: string; version: string }>) => {
+    packageCounts.current.set(registryUrl, packages.length)
+    recalcTotalPackages()
+    setToolIndex(previous => reconcileToolIndex(previous, registryUrl, packages))
+  }, [])
+
+  /**
+   * Forget everything one registry contributed to the search state
+   * (round-6: "Removed catalogs inflate totals" + "Removed tool lists
+   * consume memory"; round-7: "Removed catalogs stay counted") — a
+   * retained package count keeps the search input visible for a catalog
+   * that no longer exists, and retained tool arrays keep leaking memory
+   * while every search keeps scanning them.
+   */
+  const forgetRegistrySearchState = useCallback((registryUrl: string) => {
+    packageCounts.current.delete(registryUrl)
+    recalcTotalPackages()
+    const prefix = toolIndexPrefix(registryUrl)
+    // The generation high-water marks go WITH the index entries (round-7:
+    // "Re-added tools stay unsearchable"): a registry removed and re-added
+    // at the same URL gets a fresh RegistryCard whose generation starts at
+    // 0 — retained marks would make `handleTools` reject its preview
+    // writes until the new card caught up, leaving it unsearchable.
+    for (const key of toolGenerations.current.keys()) {
+      if (key.startsWith(prefix)) toolGenerations.current.delete(key)
+    }
+    // The registry itself is tombstoned (round-7: "Removed previews
+    // repopulate cache"): a manifest read that was still in flight when
+    // the registry was removed must not recreate the deleted entries. The
+    // tombstone is dropped as soon as the registry is present again.
+    removedRegistries.current.add(registryUrl)
+    setToolIndex(previous => {
+      let changed = false
+      const next = new Map(previous)
+      for (const key of next.keys()) {
+        if (key.startsWith(prefix)) {
+          next.delete(key)
+          changed = true
+        }
+      }
+      return changed ? next : previous
+    })
+  }, [])
+
+  const [totalPackages, setTotalPackages] = useState(0)
+
+  // The search input only renders while the total exceeds the threshold;
+  // with the input hidden there is no way to clear an active query, and it
+  // would keep silently filtering the cards (round-6: "Hidden search keeps
+  // filtering") — drop the filter as soon as the input unmounts.
+  const showSearch = totalPackages > SEARCH_MIN_PACKAGES
+  useEffect(() => {
+    if (!showSearch && filter !== '') setFilter('')
+  }, [showSearch, filter])
 
   const refreshInstalled = useCallback(async () => {
     const generation = refreshGeneration.current + 1
@@ -494,6 +751,10 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   }, [refreshInstalled])
 
   useEffect(() => {
+    registriesRef.current = registries
+  }, [registries])
+
+  useEffect(() => {
     // Another settings tab may add or remove a registry while this section
     // stays mounted (finding: "Registry list stays stale across tabs"): the
     // store's reconciliation state updates on the storage event, but this
@@ -503,13 +764,28 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
     // writer updates its own state through its action handlers.
     const listener = (event: StorageEvent) => {
       if (event.storageArea === localStorage && event.key === 'webmcp_package_registries') {
-        setRegistries(listRegistries())
+        const previousUrls = new Set(registriesRef.current.map(r => r.manifestUrl))
+        const nextRegistries = listRegistries()
+        setRegistries(nextRegistries)
         void refreshInstalled()
+        // The writer tab's removal handler does not run HERE, so this
+        // section's search state must be reconciled against the updated
+        // list (round-7: "Removed catalogs stay counted"): drop the
+        // removed registries' package counts (the search-input gate) and
+        // tool-index/generation entries (memory + stale matches), exactly
+        // as the local removal handler does.
+        const nextUrls = new Set(nextRegistries.map(r => r.manifestUrl))
+        for (const url of previousUrls) {
+          if (!nextUrls.has(url)) forgetRegistrySearchState(url)
+        }
+        // A registry that is present again is no longer tombstoned — its
+        // previews must be able to write to the index again.
+        for (const url of nextUrls) removedRegistries.current.delete(url)
       }
     }
     window.addEventListener('storage', listener)
     return () => window.removeEventListener('storage', listener)
-  }, [refreshInstalled])
+  }, [refreshInstalled, forgetRegistrySearchState])
 
   useEffect(() => {
     // The side-panel opt-in flow enables packages OUTSIDE this section. The
@@ -539,7 +815,12 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
     setAddError(null)
     try {
       const registry = addRegistry(input)
-      setRegistries(listRegistries())
+      const added = listRegistries()
+      // A registry that is added again is no longer tombstoned — its
+      // previews must be able to write to the index again (round-7: "Re-added
+      // tools stay unsearchable").
+      for (const entry of added) removedRegistries.current.delete(entry.manifestUrl)
+      setRegistries(added)
       if (!registriesPersisted()) {
         // Private mode / storage failure: the registry lives in the session
         // mirror only — keep the form open and say so instead of letting the
@@ -602,6 +883,11 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   const handleRemoveRegistry = (registry: PackageRegistry) => {
     removeRegistry(registry.manifestUrl)
     setRegistries(listRegistries())
+    // Forget everything only this registry contributed (round-6: "Removed
+    // catalogs inflate totals" + "Removed tool lists consume memory";
+    // round-7: "Re-added tools stay unsearchable" / "Removed previews
+    // repopulate cache").
+    forgetRegistrySearchState(registry.manifestUrl)
   }
 
   const hasRegistries = useMemo(() => registries.length > 0, [registries.length])
@@ -624,6 +910,16 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
         )}
       </div>
 
+      {showSearch && (
+        <input
+          type="search"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder={t('settings.webmcpPackages.searchPlaceholder')}
+          className="w-full rounded-md border border-neutral-300 bg-transparent px-2.5 py-1.5 text-xs focus:border-blue-500 focus:outline-none dark:border-neutral-600"
+        />
+      )}
+
       {!hasRegistries && (
         <div className="rounded-lg border border-dashed border-neutral-300 p-4 text-xs text-tertiary dark:border-neutral-700">
           {t('settings.webmcpPackages.noRegistries')}
@@ -638,6 +934,10 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
           installedIds={installedIds}
           activations={activations}
           busyId={busyId}
+          toolIndex={toolIndex}
+          filter={filter}
+          onTools={handleTools}
+          onCatalog={handleCatalog}
           onInstall={(reg, pkg, verifiedCount) => {
             // The confirmation discloses the count VERIFIED from the package
             // manifest (finding: "Confirmation shows wrong tool count") — an

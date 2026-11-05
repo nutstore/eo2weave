@@ -97,6 +97,48 @@ describe('conversation-export', () => {
   })
 
   describe('basic export (no attachments)', () => {
+    it('exports incomplete turn metadata in JSON', async () => {
+      const conv = makeConversation([makeMessage({ role: 'assistant', kind: 'empty', stopReason: 'length', content: null })])
+      await exportConversation(conv, { format: 'json', includeImages: false })
+      const data = JSON.parse(await lastSave().blob.text())
+      expect(data.messages[0]).toMatchObject({ kind: 'empty', stopReason: 'length' })
+    })
+    it.each(['markdown', 'html'] as const)('renders failed turn details in %s', async (format) => {
+      const conv = makeConversation([
+        makeMessage({
+          role: 'assistant',
+          content: null,
+          kind: 'error',
+          stopReason: 'error',
+          errorMessage: 'provider diagnostic',
+        }),
+      ])
+      await exportConversation(conv, { format, includeImages: false })
+      const output = await lastSave().blob.text()
+      const status = format === 'html'
+        ? '<strong>Turn status:</strong> error (stop reason: error)'
+        : 'Turn status: error (stop reason: error)'
+      expect(output).toContain(status)
+      expect(output).toContain('provider diagnostic')
+    })
+    it.each(['markdown', 'html'] as const)('escapes hostile provider error text in %s', async (format) => {
+      const hostile = '<img src=x onerror="alert(1)">'
+      const conv = makeConversation([
+        makeMessage({
+          role: 'assistant',
+          content: null,
+          kind: 'error',
+          stopReason: 'error',
+          errorMessage: hostile,
+        }),
+      ])
+      await exportConversation(conv, { format, includeImages: false })
+      const output = await lastSave().blob.text()
+      // The raw markup must never survive into either export format.
+      expect(output).not.toContain('<img src=x')
+      expect(output).not.toContain('onerror="alert(1)"')
+      expect(output).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;')
+    })
     it.each(['json', 'markdown', 'html'] as const)('excludes runtime patches and labels synthetic records in %s', async (format) => {
       const conv = makeConversation([
         makeMessage({ role: 'user', content: 'Real question' }),
@@ -324,6 +366,50 @@ describe('conversation-export', () => {
 
       const html = await lastSave().blob.text()
       expect(html).toContain(`<img class="export-image" src="data:image/png;base64,${TINY_PNG_BASE64}"`)
+    })
+
+    it('renders the fallback div when base64 contains a double quote, with no raw quote in an attribute', async () => {
+      mockGetWorkspace.mockResolvedValue(mockAssetsDir({}))
+
+      const malicious = `${TINY_PNG_BASE64}" onerror="alert(1)`
+      const conv = makeConversation([
+        makeMessage({
+          role: 'user',
+          content: 'look',
+          images: [{ data: malicious, mimeType: 'image/png' }],
+        }),
+      ])
+
+      const result = await exportConversation(conv, { format: 'html' })
+      expect(result.success).toBe(true)
+
+      const html = await lastSave().blob.text()
+      // The payload fails both the base64 allowlist and the atob decode, so
+      // the image renders as a fallback div — never as an <img> tag.
+      expect(html).not.toContain('<img')
+      expect(html).toContain('attachment-missing')
+      // No raw quote may land in an attribute position — every `"` in the
+      // output must be escaped or structural.
+      expect(html).not.toMatch(/base64,[^"]*"/)
+    })
+
+    it('renders the fallback div when base64 is empty', async () => {
+      mockGetWorkspace.mockResolvedValue(mockAssetsDir({}))
+
+      const conv = makeConversation([
+        makeMessage({
+          role: 'user',
+          content: 'look',
+          images: [{ data: '', mimeType: 'image/png' }],
+        }),
+      ])
+
+      const result = await exportConversation(conv, { format: 'html' })
+      expect(result.success).toBe(true)
+
+      const html = await lastSave().blob.text()
+      expect(html).not.toContain('<img')
+      expect(html).toContain('attachment-missing')
     })
   })
 

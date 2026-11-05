@@ -69,6 +69,19 @@ export function UserSkillDropZone({ onImported, onClose }: UserSkillDropZoneProp
   const [pending, setPending] = useState<PendingSkill | null>(null)
   const [pendingOverwrite, setPendingOverwrite] = useState(false)
 
+  // Overwrite-sensitive existence check (#185): a storage failure must NOT
+  // read as "not installed" — the next import would silently replace an
+  // existing skill without the overwrite warning. An unknown state is
+  // treated as a possible overwrite so the user is asked.
+  const checkOverwrite = async (dirName: string): Promise<boolean> => {
+    try {
+      return await userSkillDirExists(dirName)
+    } catch (err) {
+      console.warn('[UserSkillDropZone] existence check failed for', dirName, err)
+      return true
+    }
+  }
+
   // ── Stage 1a: validate folder & prepare preview ───────────────────────
 
   async function handleFolder(dirHandle: FileSystemDirectoryHandle) {
@@ -80,7 +93,7 @@ export function UserSkillDropZone({ onImported, onClose }: UserSkillDropZoneProp
     }
 
     const { entries, count } = await readFileTree(dirHandle)
-    const overwrite = await userSkillDirExists(dirHandle.name).catch(() => false)
+    const overwrite = await checkOverwrite(dirHandle.name)
 
     setPending({
       dirName: dirHandle.name,
@@ -105,7 +118,7 @@ export function UserSkillDropZone({ onImported, onClose }: UserSkillDropZoneProp
         const skills = preview.skills
         // Check overwrite for each skill
         const overwriteChecks = await Promise.all(
-          skills.map((s) => userSkillDirExists(s.dirName).catch(() => false)),
+          skills.map((s) => checkOverwrite(s.dirName)),
         )
         const overwrite = overwriteChecks.some(Boolean)
 
@@ -122,7 +135,7 @@ export function UserSkillDropZone({ onImported, onClose }: UserSkillDropZoneProp
       } else if (preview.skill) {
         // Single skill
         const skill = preview.skill
-        const overwrite = await userSkillDirExists(skill.dirName).catch(() => false)
+        const overwrite = await checkOverwrite(skill.dirName)
         setPending({
           dirName: skill.dirName,
           fileTree: skill.entries,

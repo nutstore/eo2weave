@@ -164,6 +164,7 @@ export function WorkspaceLayout({
     .map((r) => `${r.name}:${r.status}:${r.handle ? 'y' : 'n'}`)
     .join('|')
   const skillsScanVersion = useSkillsStore((s) => s.skillsScanVersion)
+  const providerRefreshVersion = useSettingsStore((s) => s._providerRefreshVersion)
   const providerType = useSettingsStore((s) => s.providerType)
   const modelName = useSettingsStore((s) => s.modelName)
   const syncModelForWorkspace = useSettingsStore((s) => s.syncModelForWorkspace)
@@ -418,6 +419,9 @@ export function WorkspaceLayout({
   // overrides are ignored by the store so they cannot erase a valid choice.
   useEffect(() => {
     syncModelForWorkspace(activeConversationId ?? null)
+  }, [activeConversationId, syncModelForWorkspace])
+
+  useEffect(() => {
     void useSettingsStore.getState().getAvailableProviders().then((providers) => {
       // A SUPERSEDED run must not reconcile: when a newer
       // getAvailableProviders() started while this one was awaiting, this
@@ -426,12 +430,12 @@ export function WorkspaceLayout({
       // selection"). Feeding it into ensureValidModelSelection here would
       // let the stale catalog switch the active model after the newer run
       // began. The newer run re-derives everything from fresher state.
-      if (!providers.every((p) => p.current)) return
+      if (providers.runCurrent === false || !providers.every((p) => p.current)) return
       ensureValidModelSelection(providers, { preserveExpiredCredential: true })
     }).catch((error) => {
       console.warn('[WorkspaceLayout] model reconciliation deferred:', error)
     })
-  }, [activeConversationId, ensureValidModelSelection, syncModelForWorkspace])
+  }, [activeConversationId, ensureValidModelSelection, providerRefreshVersion])
 
   // Persist current model selection for active workspace
   useEffect(() => {
@@ -682,6 +686,8 @@ export function WorkspaceLayout({
           setShowShortcutsHelp(false)
         } else if (showWorkspaceSettings) {
           setShowWorkspaceSettings(false)
+          // Same reset as the dialog's onOpenChange close path.
+          setSettingsInitialTab('workspace-layout')
         } else if (quickActionsOpen) {
           setQuickActionsOpen(false)
         } else if (toolsPanelOpen) {
@@ -1192,7 +1198,13 @@ export function WorkspaceLayout({
           Workspace settings (layout/editor/shortcuts/data) are now tabs inside. */}
       <SettingsDialog
         open={showWorkspaceSettings}
-        onOpenChange={() => setShowWorkspaceSettings(false)}
+        onOpenChange={(next) => {
+          setShowWorkspaceSettings(next)
+          // Reset the requested tab on close: a one-shot request from another
+          // surface (e.g. the model switcher) must not leak into later opens
+          // from entry points that name no tab (⌘-, command palette).
+          if (!next) setSettingsInitialTab('workspace-layout')
+        }}
         initialTab={settingsInitialTab}
       />
 

@@ -36,13 +36,37 @@ export function parseGitIgnore(content: string, baseDir = ''): GitIgnoreRule[] {
 /**
  * Apply Git ignore rules in declaration order. Later rules (including `!`
  * negations) override earlier rules, matching Git's last-rule-wins behavior.
+ *
+ * `kind` controls directory-only pattern matching (a trailing-slash rule such
+ * as `build/` matches directories only). Callers that know the entry kind must
+ * pass it; a regular file named `build` must not be classified ignored by a
+ * `build/` rule. Like Git, a path beneath an excluded directory cannot be
+ * re-included: each ancestor directory is evaluated on its own, and once an
+ * ancestor ends up excluded no negation may rescue the path. A negation can
+ * still re-include paths inside a non-excluded tree, and a negated directory
+ * rule can re-include a directory before exclusion is reached.
  */
-export function isGitIgnored(path: string, rules: readonly GitIgnoreRule[]): boolean {
+export function isGitIgnored(
+  path: string,
+  rules: readonly GitIgnoreRule[],
+  kind: 'file' | 'directory' = 'directory'
+): boolean {
   const normalizedPath = normalizePath(path)
+
+  // Git: "It is not possible to re-include a file if a parent directory of
+  // that file is excluded." Each ancestor directory is evaluated on its own;
+  // if one is excluded by a directory-only rule, the path is ignored
+  // regardless of the rules matching the path itself.
+  const segments = normalizedPath.split('/')
+  for (let i = 1; i < segments.length; i++) {
+    const ancestor = segments.slice(0, i).join('/')
+    if (isDirectoryExcluded(ancestor, rules)) return true
+  }
+
   let ignored = false
 
   for (const rule of rules) {
-    if (matchesRule(normalizedPath, rule)) {
+    if (matchesRule(normalizedPath, rule, kind)) {
       ignored = !rule.negated
     }
   }
@@ -50,7 +74,28 @@ export function isGitIgnored(path: string, rules: readonly GitIgnoreRule[]): boo
   return ignored
 }
 
-function matchesRule(path: string, rule: GitIgnoreRule): boolean {
+/**
+ * Last-rule-wins evaluation of one ancestor directory. A `dir/**` pattern
+ * covers the directory's contents but not the directory itself (Git
+ * semantics), so it must not mark the directory excluded here.
+ */
+function isDirectoryExcluded(dirPath: string, rules: readonly GitIgnoreRule[]): boolean {
+  let excluded = false
+
+  for (const rule of rules) {
+    if (matchesRule(dirPath, rule, 'directory')) {
+      excluded = !rule.negated
+    }
+  }
+
+  return excluded
+}
+
+function matchesRule(
+  path: string,
+  rule: GitIgnoreRule,
+  kind: 'file' | 'directory'
+): boolean {
   const basePrefix = rule.baseDir ? `${rule.baseDir}/` : ''
   if (rule.baseDir && path !== rule.baseDir && !path.startsWith(basePrefix)) return false
 
@@ -65,14 +110,36 @@ function matchesRule(path: string, rule: GitIgnoreRule): boolean {
   const anchored = pattern.startsWith('/')
   if (anchored) pattern = pattern.slice(1)
   if (!pattern) return false
+  // A directory-only rule never matches a file path directly; it governs the
+  // files below the directories it matches, which isGitIgnored reaches through
+  // the excluded-ancestor check.
+  if (directoryPattern && kind === 'file') return false
 
   const hasSlash = pattern.includes('/')
   const prefixes = anchored || hasSlash ? [''] : ['', '**/']
   const candidates = prefixes.flatMap((prefix) => {
     const target = `${prefix}${pattern}`
-    return directoryPattern
-      ? [target, `${target}/**`]
-      : [target, `${target}/**`]
+    if (target.endsWith('/**')) {
+      // Git semantics: a `dir/**` pattern covers the directory's contents but
+      // not the directory itself, while micromatch's `a/**` also matches the
+      // bare `a` (and `**/a/**` matches a path ending at `a`). Requiring at
+      // least one segment beyond the rule's base keeps the contents ignored
+      // without ever matching the base itself (which let deleteDirPending
+      // silently wipe an ignored tree, and a same-named REGULAR file bypass
+      // review, #186). The trailing `*` also stays glob-aware for qualified
+      // bases (`**/dist/**/*` matches `dist/x` but not `dist`), so
+      // isDirectoryExcluded recognizes excluded ancestors that a literal
+      // startsWith prefix check missed (#184).
+      return [`${target}/*`]
+    }
+    // A pattern names the paths it matches at the depth it names them:
+    // `logs/*` matches `logs/keep` but NOT `logs/keep/audit.txt`. Git
+    // reaches the entries below a matched directory through the excluded
+    // ancestor check in isGitIgnored, not by letting the pattern match
+    // deeper. Matching deeper here ignored files that a later negation had
+    // re-included (`logs/*` + `!logs/keep/`), so deleteFile deleted them
+    // from disk instead of sending them for review (#189).
+    return [target]
   })
 
   return micromatch.isMatch(relativePath, candidates, {

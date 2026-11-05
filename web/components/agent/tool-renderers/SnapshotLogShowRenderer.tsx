@@ -11,6 +11,7 @@ import { GitBranch, GitCommitHorizontal, MoreHorizontal } from 'lucide-react'
 import { CopyIconButton } from '../CopyIconButton'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
+import { useT } from '@/i18n'
 
 // ── Shared Types (mirrors opfs/git/index.ts) ──
 
@@ -173,6 +174,7 @@ registerRenderer({
   icon: <GitBranch className="h-3.5 w-3.5 text-neutral-400" />,
 
   Summary(ctx) {
+    const t = useT()
     const path = typeof ctx.args.path === 'string' ? ctx.args.path : undefined
     const log = extractLogData(ctx)
 
@@ -181,7 +183,7 @@ registerRenderer({
         <>
           <code className="font-medium text-neutral-700 dark:text-foreground">snapshot_log</code>
           {path && <span className="max-w-[200px] truncate font-mono text-[11px] text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500">{path}</span>}
-          {ctx.isExecuting && <span className="ml-auto text-xs text-blue-500 shrink-0">loading...</span>}
+          {ctx.isExecuting && <span className="ml-auto text-xs text-blue-500 shrink-0">{t('common.loading')}</span>}
         </>
       )
     }
@@ -276,6 +278,7 @@ registerRenderer({
   icon: <GitCommitHorizontal className="h-3.5 w-3.5 text-neutral-400" />,
 
   Summary(ctx) {
+    const t = useT()
     const snapshotId = typeof ctx.args.snapshot_id === 'string' ? ctx.args.snapshot_id : undefined
     const show = extractShowData(ctx)
 
@@ -288,7 +291,7 @@ registerRenderer({
               {shortId(snapshotId)}
             </span>
           )}
-          {ctx.isExecuting && <span className="ml-auto text-xs text-blue-500 shrink-0">loading...</span>}
+          {ctx.isExecuting && <span className="ml-auto text-xs text-blue-500 shrink-0">{t('common.loading')}</span>}
         </>
       )
     }

@@ -160,4 +160,14 @@ export const agent = {
             resetTitle: "Reset view",
         },
     },
+    // Tool renderer status labels
+    toolStatus: {
+        running: "Running...",
+        reading: "Reading...",
+        loadingLargeResultSet: "Loading large result set...",
+        stateRunning: "running",
+        stateStarting: "starting (port not ready yet)",
+        stateExited: "exited",
+        stateStopped: "stopped",
+    },
 } as const

@@ -5,6 +5,8 @@
  */
 
 import micromatch from 'micromatch'
+import { isGitIgnored, parseGitIgnore, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
+import { readHandleAncestorRules, readHandleIgnoreRules } from '@/vfs/gitignore-discovery'
 
 interface PendingFileOverlay {
   content?: string
@@ -279,10 +281,16 @@ async function handleSearch(payload: SearchMessage['payload']): Promise<void> {
 
     // Build a set of disk-seen paths to identify new files (pending create, not on disk)
     const diskSeenPaths = new Set<string>()
+    const rulesByDirectory = new Map<string, GitIgnoreRule[]>()
+    const ignoredDirectories: string[] = []
     // Collect overlay paths that are within the search sub-path
     const relevantOverlayPaths: string[] = []
 
-    const dirStack: Array<{ dir: FileSystemDirectoryHandle; relPath: string }> = [{ dir: root, relPath: '' }]
+    const inheritedRules = !includeIgnored && normalizedPath
+      ? await readHandleAncestorRules(directoryHandle, normalizedPath)
+      : []
+    if (normalizedPath) rulesByDirectory.set(normalizedPath, inheritedRules)
+    const dirStack: Array<{ dir: FileSystemDirectoryHandle; relPath: string; rules: GitIgnoreRule[] }> = [{ dir: root, relPath: '', rules: inheritedRules }]
 
     if (pendingOverlays && Object.keys(pendingOverlays).length > 0) {
       for (const overlayPath of Object.keys(pendingOverlays)) {
@@ -316,6 +324,15 @@ async function handleSearch(payload: SearchMessage['payload']): Promise<void> {
         }
         throw error
       }
+      const directoryPath = [normalizedPath, current.relPath].filter(Boolean).join('/')
+      const ignorePath = directoryPath ? `${directoryPath}/.gitignore` : '.gitignore'
+      const pendingIgnore = pendingOverlays?.[ignorePath]
+      const rules = !includeIgnored && pendingIgnore
+        ? pendingIgnore.deleted || pendingIgnore.content === undefined
+          ? current.rules
+          : [...current.rules, ...parseGitIgnore(pendingIgnore.content, directoryPath)]
+        : await readHandleIgnoreRules(entries, directoryPath, current.rules, includeIgnored)
+      rulesByDirectory.set(directoryPath, rules)
       for (const entry of entries) {
         if (signal.aborted) break
         if (Date.now() > deadlineAt) {
@@ -324,10 +341,16 @@ async function handleSearch(payload: SearchMessage['payload']): Promise<void> {
         }
 
         const rel = current.relPath ? `${current.relPath}/${entry.name}` : entry.name
+        const rootRelativePath = normalizedPath ? `${normalizedPath}/${rel}` : rel
+        if (!includeIgnored && isGitIgnored(rootRelativePath, rules, entry.kind)) {
+          if (entry.kind === 'directory') ignoredDirectories.push(rootRelativePath)
+          else diskSeenPaths.add(rootRelativePath)
+          continue
+        }
 
         if (entry.kind === 'directory') {
           if (shouldSkipDir(entry.name, includeIgnored, excludeDirs)) continue
-          dirStack.push({ dir: entry as FileSystemDirectoryHandle, relPath: rel })
+          dirStack.push({ dir: entry as FileSystemDirectoryHandle, relPath: rel, rules })
           continue
         }
 
@@ -407,6 +430,17 @@ async function handleSearch(payload: SearchMessage['payload']): Promise<void> {
         }
         // Skip files already scanned from disk (or skipped as deleted)
         if (diskSeenPaths.has(overlayPath)) continue
+        if (!includeIgnored) {
+          if (ignoredDirectories.some((dir) => overlayPath.startsWith(`${dir}/`))) continue
+          const parents = overlayPath.split('/')
+          parents.pop()
+          let rules: GitIgnoreRule[] = []
+          for (let depth = parents.length; depth >= 0; depth--) {
+            const found = rulesByDirectory.get(parents.slice(0, depth).join('/'))
+            if (found) { rules = found; break }
+          }
+          if (isGitIgnored(overlayPath, rules, 'file')) continue
+        }
 
         const overlay = pendingOverlays![overlayPath]
         // Skip deleted files or overlays without content

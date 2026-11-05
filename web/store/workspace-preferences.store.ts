@@ -65,6 +65,8 @@ export interface WorkspacePreferences {
   agentMode: 'plan' | 'act'
   /** Persisted mode map keyed by workspace ID */
   agentModeByWorkspace: Record<string, 'plan' | 'act'>
+  /** Agent identity selected for each conversation, independent of the open tab. */
+  agentIdByWorkspace: Record<string, string>
   /** Whether a normally completed run should apply its eligible changes to disk. */
   autoApplyOnRunComplete: boolean
   /** Persisted auto-apply policy keyed by workspace ID. */
@@ -103,6 +105,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferences = {
   onboardingCompleted: false,
   agentMode: 'act',
   agentModeByWorkspace: {},
+  agentIdByWorkspace: {},
   autoApplyOnRunComplete: false,
   autoApplyOnRunCompleteByWorkspace: {},
   pinnedWorkspaceIds: [],
@@ -114,6 +117,9 @@ const DEFAULT_PREFERENCES: WorkspacePreferences = {
  * Workspace preferences store state
  */
 interface WorkspacePreferencesState extends WorkspacePreferences {
+  setWorkspaceAgentId: (workspaceId: string, agentId: string) => void
+  /** Forget the conversation-scoped Agent selection (conversation deleted). */
+  clearWorkspaceAgentId: (workspaceId: string) => void
   // Panel sizes actions
   setSidebarWidth: (width: number) => void
   setConversationRatio: (ratio: number) => void
@@ -163,6 +169,15 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
   persist(
     immer((set) => ({
       ...DEFAULT_PREFERENCES,
+      setWorkspaceAgentId: (workspaceId, agentId) =>
+        set((state) => { state.agentIdByWorkspace[workspaceId] = agentId }),
+
+      // Deleted conversations have no reopening path — their persisted Agent
+      // selection would otherwise stay in local storage forever and re-apply
+      // if a new conversation ever reuses the id (same lifecycle rule as the
+      // session-allow/yolo grants cleared in deleteConversation).
+      clearWorkspaceAgentId: (workspaceId) =>
+        set((state) => { delete state.agentIdByWorkspace[workspaceId] }),
 
       // Panel sizes actions (rounded to integers — drag gestures produce floats)
       setSidebarWidth: (width) =>
@@ -323,11 +338,15 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
       version: 7, // Bump version for completion auto-apply policy; v7: round panel sizes to integers
       partialize: (state) => ({
         panelSizes: state.panelSizes,
-        panelState: state.panelState,
+        // A pending one-shot open request must not outlive the page: persisting it
+        // would reopen Settings on the next mount if the tab closes before the
+        // consumer clears it.
+        panelState: { ...state.panelState, settingsOpenRequest: false },
         display: state.display,
         onboardingCompleted: state.onboardingCompleted,
         agentMode: state.agentMode,
         agentModeByWorkspace: state.agentModeByWorkspace,
+        agentIdByWorkspace: state.agentIdByWorkspace,
         autoApplyOnRunComplete: state.autoApplyOnRunComplete,
         autoApplyOnRunCompleteByWorkspace: state.autoApplyOnRunCompleteByWorkspace,
         pinnedWorkspaceIds: state.pinnedWorkspaceIds,
@@ -344,11 +363,18 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
               previewRatio: Math.round(state.panelSizes.previewRatio),
             }
           : DEFAULT_PREFERENCES.panelSizes
+        // A one-shot open request from an older build must not survive hydration.
+        const panelState = {
+          ...(state.panelState || DEFAULT_PREFERENCES.panelState),
+          settingsOpenRequest: false,
+        }
         return {
           ...DEFAULT_PREFERENCES,
           ...state,
           panelSizes,
+          panelState,
           agentModeByWorkspace: state.agentModeByWorkspace || {},
+          agentIdByWorkspace: state.agentIdByWorkspace || {},
           autoApplyOnRunCompleteByWorkspace: state.autoApplyOnRunCompleteByWorkspace || {},
           autoApplyOnRunComplete: state.autoApplyOnRunComplete ?? DEFAULT_PREFERENCES.autoApplyOnRunComplete,
           pinnedWorkspaceIds: (state as Record<string, unknown>).pinnedWorkspaceIds as string[] || [],

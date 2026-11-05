@@ -219,10 +219,52 @@ async function isImportRunUnfinished(runId: string): Promise<boolean> {
 }
 
 /** True when the error is an OPFS "not found" (absence — not a failure). */
-function isNotFoundError(e: unknown): boolean {
+export function isNotFoundError(e: unknown): boolean {
   if (e instanceof DOMException && e.name === 'NotFoundError') return true
   // Test doubles and polyfills may not produce real DOMExceptions.
   return e instanceof Error && e.message.includes('NotFoundError')
+}
+
+/**
+ * True when the error means "no OPFS at all": a browser without File System
+ * Access support throws a TypeError from `navigator.storage.getDirectory()`.
+ * Callers treat it like absence (#185) — nothing is installed per OPFS and
+ * the documented store-cache fallback applies, instead of the scan rejecting
+ * and every installed-status flow failing.
+ *
+ * Only an error from the SUPPORT CHECK itself qualifies (#185 review round
+ * N): a TypeError thrown later — during directory enumeration or a read —
+ * is an operational failure inside an OPFS that exists, and misclassifying
+ * it as "OPFS unavailable" would send callers to a stale store cache.
+ */
+export function isOpfsUnavailableError(e: unknown): boolean {
+  return e instanceof TypeError
+}
+
+/**
+ * True when the environment has no File System Access API at all.
+ *
+ * A capability check, not message matching (#197): the caller's fallback to
+ * cached data is only valid when the platform cannot scan OPFS in the first
+ * place. A TypeError raised mid-scan carries no reliable signal (the old
+ * `Cannot read properties of undefined` match also caught generic operational
+ * TypeErrors) and must propagate instead of degrading to the cache.
+ */
+export function hasFileSystemAccess(): boolean {
+  return (
+    typeof navigator !== 'undefined' &&
+    typeof navigator.storage?.getDirectory === 'function'
+  )
+}
+
+/**
+ * Same contract as {@link isOpfsUnavailableError} for an OPFS-absence
+ * fallback: true only when the File System Access API is missing. The error is
+ * accepted for call-site symmetry but is NOT inspected — see
+ * {@link hasFileSystemAccess}.
+ */
+export function isOpfsSupportMissing(_e?: unknown): boolean {
+  return !hasFileSystemAccess()
 }
 
 /** Concatenate streamed decoder chunks into a single buffer. */
@@ -394,15 +436,20 @@ async function unzipWithLimits(data: Uint8Array): Promise<Record<string, Uint8Ar
 
 /**
  * Get the user skills directory handle from OPFS root.
- * Returns null if `.skills/user/` does not exist (not an error).
+ * Returns null if `.skills/user/` does not exist (NotFoundError — no user
+ * skills yet, not a failure) or when the browser has no File System Access
+ * API at all (#197: a no-OPFS browser still has to reach the SQLite-only
+ * deletion path for legacy skills). Any other storage error propagates so
+ * callers can surface it instead of mistaking it for "empty".
  */
 async function getUserSkillsDir(): Promise<FileSystemDirectoryHandle | null> {
   try {
     const opfsRoot = await navigator.storage.getDirectory()
     const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: false })
     return await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: false })
-  } catch {
-    // .skills/user/ doesn't exist yet — no user skills
+  } catch (e) {
+    if (!isNotFoundError(e) && !isOpfsSupportMissing(e)) throw e
+    // .skills/user/ doesn't exist yet (or OPFS is unsupported) — no user skills
     return null
   }
 }
@@ -1148,18 +1195,41 @@ export async function migrateUserSkillsFromSQLite(): Promise<{
  * Write a user skill SKILL.md to OPFS `.skills/user/<dirName>/SKILL.md`.
  * Creates intermediate directories as needed.
  *
+ * The write runs under the SAME per-directory cross-tab lock the import
+ * pipeline holds (#154 round 4): an editor save racing a concurrent
+ * install/update of the same skill must not land inside that import's
+ * remove/backup/write phases — otherwise the save can be written into a
+ * directory the import is about to replace (and be silently lost with the
+ * old copy's backup), or interleave its writable with the import's writes.
+ * Holding the import lock here makes the save strictly precede or follow
+ * the whole import.
+ *
  * @param dirName  Skill directory name (slug-safe)
  * @param content  SKILL.md file content
  */
 export async function writeUserSkillMd(dirName: string, content: string): Promise<void> {
- const opfsRoot = await navigator.storage.getDirectory()
- const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
- const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
- const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
- const mdHandle = await skillDir.getFileHandle('SKILL.md', { create: true })
- const writable = await mdHandle.createWritable()
- await writable.write(content)
- await writable.close()
+  return withSkillImportSerialization([dirName], () => writeUserSkillMdLocked(dirName, content))
+}
+
+/**
+ * The raw OPFS write, WITHOUT acquiring the per-directory import lock.
+ *
+ * Only for callers that already hold the lock (#185 review): re-entering
+ * `withSkillImportSerialization` from inside its own critical section
+ * deadlocks — the inner call queues behind the outer hold in the in-tab
+ * mutex chain while the outer waits for the inner to finish.
+ * `createSkillSkeleton` is such a caller (its existence check and write
+ * share one serialized section).
+ */
+export async function writeUserSkillMdLocked(dirName: string, content: string): Promise<void> {
+  const opfsRoot = await navigator.storage.getDirectory()
+  const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: true })
+  const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: true })
+  const skillDir = await userDir.getDirectoryHandle(dirName, { create: true })
+  const mdHandle = await skillDir.getFileHandle('SKILL.md', { create: true })
+  const writable = await mdHandle.createWritable()
+  await writable.write(content)
+  await writable.close()
 }
 
 /**
@@ -1384,6 +1454,14 @@ async function writeZipSkillToOpfs(
     // Split into path segments and navigate/create intermediate dirs
     const parts = relPath.split('/').filter(Boolean)
     if (parts.length === 0) continue
+    // The archive may ship the entry as `skill.md` (the preview matches it
+    // case-insensitively), but the scanner registers installed skills by
+    // EXACT `SKILL.md` — a case-variant filename would make an updated
+    // skill invisible after the next scan. Normalize the entry filename to
+    // `SKILL.md` (#154 round 8).
+    if (parts.length === 1 && /^skill\.md$/i.test(parts[0])) {
+      parts[0] = 'SKILL.md'
+    }
     if (parts.length === 1 && parts[0] === IMPORT_OWNER_FILE) {
       throw new Error(`ZIP archive contains reserved import file ${IMPORT_OWNER_FILE}.`)
     }
@@ -1506,7 +1584,52 @@ export async function importUserSkillZip(
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const dirNames = [...seenDirNames].sort()
-  return withImportSerialization(runId, dirNames, async () => {
+  return withImportSerialization(runId, dirNames, () =>
+    importUserSkillZipLocked(preview, skills, dirNames, runId, options),
+  )
+}
+
+/**
+ * Import previewed skills WITHOUT acquiring the per-directory import lock —
+ * for callers that ALREADY hold it (#154): the store install flow must read
+ * the installed version and decide update-vs-skip under the SAME
+ * serialization as the write, or a concurrent install/delete (this tab or
+ * another) can slip between the decision and the import. Calling the
+ * locking `importUserSkillZip` from inside that critical section would
+ * deadlock on the same per-directory lock.
+ */
+export async function importUserSkillZipPrelocked(
+  preview: ZipSkillPreview,
+  options: { ifAbsent?: boolean } = {},
+): Promise<number> {
+  const skills = preview.isBundle ? (preview.skills ?? []) : preview.skill ? [preview.skill] : []
+  if (skills.length === 0) return 0
+
+  const seenDirNames = new Set<string>()
+  for (const s of skills) {
+    if (seenDirNames.has(s.dirName)) {
+      throw new Error(
+        `ZIP bundle contains duplicate skill folders ("${s.dirName}") — each skill must live in its own folder.`,
+      )
+    }
+    seenDirNames.add(s.dirName)
+  }
+
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  const dirNames = [...seenDirNames].sort()
+  return importUserSkillZipLocked(preview, skills, dirNames, runId, options)
+}
+
+/** The `ifAbsent` check + import body, run by both entry points INSIDE the
+ * per-directory import serialization. */
+async function importUserSkillZipLocked(
+  preview: ZipSkillPreview,
+  skills: ZipSkillEntry[],
+  dirNames: string[],
+  runId: string,
+  options: { ifAbsent?: boolean },
+): Promise<number> {
+  {
     if (options.ifAbsent) {
       // This check must happen AFTER acquiring the cross-tab locks. A second
       // landing page may have observed "not installed" before the first one
@@ -1524,7 +1647,24 @@ export async function importUserSkillZip(
       }
     }
     return importUserSkillZipInner(preview, skills, runId)
-  })
+  }
+}
+
+/**
+ * Run `fn` while holding the per-directory cross-tab import locks for
+ * `dirNames` — the same serialization `importUserSkillZip` uses. Install
+ * flows that must make a version-aware decision call this so the decision
+ * and the subsequent (prelocked) import cannot interleave with a concurrent
+ * install or delete of the same skill (#154).
+ */
+export async function withSkillImportSerialization<T>(
+  dirNames: string[],
+  fn: () => Promise<T>,
+): Promise<T> {
+  const unique = [...new Set(dirNames)].sort()
+  if (unique.length === 0) return fn()
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  return withImportSerialization(runId, unique, fn)
 }
 
 async function importUserSkillZipInner(
@@ -2018,26 +2158,41 @@ function buildFileTreeFromPaths(
 /**
  * Delete a user skill directory from OPFS `.skills/user/<dirName>/`.
  *
+ * The removal runs under the SAME per-directory cross-tab lock the import
+ * pipeline holds (#154): an uninstall racing a concurrent install/update of
+ * the same skill must not interleave with that import's remove/write phases
+ * (otherwise a delete between the import's version-read and its write makes
+ * the older install reappear as if freshly installed).
+ *
  * @param dirName  Skill directory name (slug-safe)
  */
 export async function deleteUserSkillDir(dirName: string): Promise<void> {
- const opfsRoot = await navigator.storage.getDirectory()
- const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: false })
- const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: false })
- await userDir.removeEntry(dirName, { recursive: true })
+  return withSkillImportSerialization([dirName], async () => {
+    const opfsRoot = await navigator.storage.getDirectory()
+    const skillsDir = await opfsRoot.getDirectoryHandle(SKILLS_ROOT, { create: false })
+    const userDir = await skillsDir.getDirectoryHandle(USER_SKILLS_DIR, { create: false })
+    await userDir.removeEntry(dirName, { recursive: true })
+  })
 }
 
 /**
  * Check if a user skill directory exists in OPFS.
  * Used for validation before write operations.
+ *
+ * Throws on storage failures other than NotFoundError — a transient OPFS
+ * error must not read as "not installed" (issue #185), which would make
+ * callers silently skip updates or misroute deletions. Callers that only
+ * need a best-effort UI hint can catch.
  */
 export async function userSkillDirExists(skillDirName: string): Promise<boolean> {
+  const userDir = await getUserSkillsDir()
+  if (!userDir) return false
   try {
-    const userDir = await getUserSkillsDir()
-    if (!userDir) return false
     await userDir.getDirectoryHandle(skillDirName)
     return true
-  } catch {
+  } catch (e) {
+    // Absence is a valid answer; any other storage failure must surface.
+    if (!isNotFoundError(e)) throw e
     return false
   }
 }

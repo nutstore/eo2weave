@@ -88,6 +88,11 @@ export function SkillEditor({ skill, open, onClose, readOnly = false }: SkillEdi
     lines.push(`name: "${yamlEscape(name)}"`)
     lines.push(`version: "${skill?.version || '1.0.0'}"`)
     lines.push(`description: "${yamlEscape(description)}"`)
+    // Localized descriptions are not edited in this form, but dropping them on
+    // save would silently remove the translations shipped in SKILL.md.
+    for (const [locale, text] of Object.entries(skill?.description_i18n ?? {})) {
+      if (text) lines.push(`description.${locale}: "${yamlEscape(text)}"`)
+    }
     lines.push(`author: "${skill?.author || 'User'}"`)
     lines.push(`category: ${skill?.category || 'general'}`)
     // Preserve existing tags/triggers (UI doesn't edit them)
@@ -146,7 +151,16 @@ export function SkillEditor({ skill, open, onClose, readOnly = false }: SkillEdi
         // If IDs match, importSkillMd already performed an in-place update, so
         // deleting would wipe the just-saved skill.
         if (skill && result.skillId && skill.id !== result.skillId) {
-          await skillsStore.deleteSkill(skill.id)
+          try {
+            await skillsStore.deleteSkill(skill.id)
+          } catch (deleteErr) {
+            // The rename already wrote the new directory — only removing the
+            // OLD one failed, so both skills now exist. Report it instead of
+            // closing the editor on a silent, half-done rename (#197).
+            const msg = deleteErr instanceof Error ? deleteErr.message : String(deleteErr)
+            setError(t('skillEditor.renameCleanupFailed', { name: skill.name, error: msg }))
+            return
+          }
         }
         onClose()
       } else {

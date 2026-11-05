@@ -394,13 +394,55 @@
     }
   },
   "webmcpPackagesPageTitle": {
-    "message": "WebMCP Packages"
+    "message": "WebMCP packages"
   },
   "webmcpPackagesPageSubtitle": {
-    "message": "Manage built-in and custom WebMCP workflow packages. Enable a package to expose its tools on matching pages."
+    "message": "Manage WebMCP packages from every source in one place: built into the extension, installed from a registry, and authored by you or your agent. Enable a package to expose its tools on matching pages."
   },
   "webmcpPackagesPageNote": {
-    "message": "Both sources use manifest.json, config.json and workflow files. Built-in packages are mounted read-only at vfs://external/builtin-webmcp/. Custom packages are writable at vfs://external/webmcp/. Missing activation defaults to disabled. Enabled workflows execute in the extension and do not require CreatorWeave or a workspace host."
+    "message": "Sources are derived, not declared: builtin-webmcp → built-in; webmcp with an install record → registry; webmcp without one → mine. All packages use manifest.json, config.json and workflow files. The built-in mount is read-only, the writable mount lives at vfs://external/webmcp/. Registry-installed packages do not reappear under “My packages”."
+  },
+  "webmcpPackagesManagement": {
+    "message": "WebMCP packages"
+  },
+  "webmcpPackagesSectionBuiltin": {
+    "message": "Built-in packages"
+  },
+  "webmcpPackagesSectionBuiltinHint": {
+    "message": "Shipped with the extension · read-only"
+  },
+  "webmcpPackagesSectionRegistry": {
+    "message": "Registries"
+  },
+  "webmcpPackagesSectionRegistryHint": {
+    "message": "Installed from a package registry"
+  },
+  "webmcpPackagesSectionMine": {
+    "message": "My packages"
+  },
+  "webmcpPackagesSectionMineHint": {
+    "message": "Authored by you or your agent"
+  },
+  "webmcpSourceChipBuiltin": {
+    "message": "Built-in"
+  },
+  "webmcpSourceChipRegistry": {
+    "message": "Registry"
+  },
+  "webmcpSourceChipMine": {
+    "message": "Mine"
+  },
+  "webmcpPackagesEmptyBuiltin": {
+    "message": "This build ships no built-in packages."
+  },
+  "webmcpPackagesEmptyRegistry": {
+    "message": "No package registry added yet. Add one above to browse installable packages."
+  },
+  "webmcpPackagesEmptyMine": {
+    "message": "No packages of your own yet — ask the cw-webmcp-creator skill to build one."
+  },
+  "webmcpPackagesOrphanHint": {
+    "message": "Installed from a registry you removed. Re-add that registry or remove the package here."
   },
   "webmcpSourceBuiltin": {
     "message": "Built-in · read-only"
@@ -448,6 +490,9 @@
   },
   "webmcpPackagesRepair": {
     "message": "Repair"
+  },
+  "webmcpPackagesNotInstalled": {
+    "message": "Not installed"
   },
   "webmcpPackagesInstalling": {
     "message": "Installing…"
@@ -500,7 +545,13 @@
     "message": "Installed · inactive"
   },
   "webmcpPackagesInstalledInactiveHint": {
-    "message": "Open the side panel on a matching site to enable it."
+    "message": "Switch it on here, then use it from the side panel on a matching site."
+  },
+  "webmcpPackagesActivationUnknown": {
+    "message": "Installed · activation unavailable"
+  },
+  "webmcpPackagesMineUnavailable": {
+    "message": "Your packages could not be read right now — reload the page to try again."
   },
   "webmcpPackagesInstalledActive": {
     "message": "Installed · active"
@@ -666,5 +717,9 @@
   "webmcpPackagesNotPersisted": {
     "message": "The registry list could not be saved to browser storage — changes are only kept for this browser session.",
     "description": "Shown when the registry list could not be written to chrome.storage.local."
+  },
+  "webmcpPackagesCatalogStale": {
+    "message": "The last refresh failed — the package list below is the cached catalog, not a live connection.",
+    "description": "Shown on a registry card whose forced catalog refresh failed while a cached catalog was still displayed."
   }
 }

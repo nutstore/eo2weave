@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Search } from 'lucide-react'
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Eye, Loader2, Search, Settings2 } from 'lucide-react'
 import { useSettingsStore } from '@/store/settings.store'
-import { isPotentiallyDynamicProviderType, getProviderConfig, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
+import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
+import { isPotentiallyDynamicProviderType, getProviderConfig, getProviderCatalogStatus, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
 import type { LLMProviderType } from '@/agent/providers/types'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
@@ -31,8 +32,36 @@ interface FlatModel {
 }
 
 function isUnverifiedGateway(provider: AvailableProvider): boolean {
+  // 'loading' is excluded (Sourcery: "Loading gateway appears unavailable"):
+  // a gateway whose catalog is still restoring is NOT an outage — the amber
+  // unavailable banner must not fire before the /v1/models fetch finished.
+  // Only positively-negative outcomes ('empty' / 'failed') banner + retry.
   return provider.providerType === 'llm-gateway' &&
-    (provider.catalogStatus === 'loading' || provider.catalogStatus === 'empty' || provider.catalogStatus === 'failed')
+    (provider.catalogStatus === 'empty' || provider.catalogStatus === 'failed')
+}
+
+/**
+ * Issue #188 fix 1 (soft-land superseded snapshots): decide whether a
+ * finished run's snapshot may replace the rendered list. A superseded run
+ * (the run started while a newer one was already in flight) is still a
+ * valid read-only catalog — dropping it blanked the popover until the
+ * newest run landed and was the visible "skeleton refresh". Only apply it
+ * when we have nothing yet; otherwise keep the last accepted snapshot
+ * (stale-while-revalidate) until a CURRENT run replaces it.
+ *
+ * The run's currency comes from the top-level `runCurrent` flag, NOT the
+ * per-entry `current` mapping (Sourcery: "Empty stale snapshots erase
+ * providers"): a superseded run that found ZERO providers maps to `[]`
+ * with no current:false marker, and `[].every(...)` is true — reading the
+ * entries let an empty superseded result erase a non-empty accepted
+ * snapshot and blank the switcher.
+ */
+export function shouldApplyProviderSnapshot(
+  result: { length: number; runCurrent?: boolean },
+  hasAcceptedSnapshot: boolean,
+): boolean {
+  if (!hasAcceptedSnapshot) return true
+  return result.runCurrent !== false
 }
 
 interface ModelQuickSwitchProps {
@@ -58,9 +87,13 @@ export function ModelQuickSwitch({
   const getAvailableProviders = useSettingsStore((s) => s.getAvailableProviders)
   const switchProviderAndModel = useSettingsStore((s) => s.switchProviderAndModel)
   const providerRefreshVersion = useSettingsStore((s) => s._providerRefreshVersion)
+  const requestSettingsOpen = useWorkspacePreferencesStore((s) => s.setSettingsOpenRequest)
 
   const [open, setOpen] = useState(false)
   const [providers, setProviders] = useState<AvailableProvider[]>([])
+  // Last snapshot the render gate accepted — tracks "do we have anything on
+  // screen" across registry-triggered reloads without extra state churn.
+  const acceptedSnapshotRef = useRef<AvailableProvider[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [retryingGatewayCatalog, setRetryingGatewayCatalog] = useState(false)
@@ -108,6 +141,13 @@ export function ModelQuickSwitch({
   // the live warning until the refresh resolves.
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
 
+  // Stale-while-revalidate (#188): a refresh that started while an accepted
+  // snapshot is already rendered must NOT swap the list for the skeleton —
+  // the last accepted list stays visible (with the refresh indicator)
+  // until the fresh run lands. Only the FIRST load (nothing accepted yet)
+  // shows the skeleton.
+  const refreshingExistingList = loading && (acceptedSnapshotRef.current?.length ?? 0) > 0
+
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -116,13 +156,17 @@ export function ModelQuickSwitch({
       try {
         const result = await getAvailableProviders()
         // A superseded run (a newer getAvailableProviders() started while
-        // this one was awaiting) reports current:false on every entry — its
-        // snapshot is stale. Applying it would let an older overlapping run
-        // that resolves late overwrite the newer run's provider data, so
-        // models absent from the current catalog stayed selectable. Same
-        // gate WorkspaceLayout uses for its reconciliation
-        // (Sourcery: "Superseded model lists remain selectable").
-        if (!cancelled && result.every((p) => p.current)) {
+        // this one was awaiting) reports runCurrent:false — applying it
+        // over a newer run's data would let an older overlapping
+        // run that resolves late overwrite the newer run's provider data
+        // (Sourcery: "Superseded model lists remain selectable"). But
+        // DROPPING it outright blanked the popover until the newest run
+        // landed (#188 fix 1): a superseded snapshot is still a valid
+        // read-only catalog, so soft-land it when nothing is rendered yet
+        // and otherwise keep the last accepted snapshot until the CURRENT
+        // run replaces it.
+        if (!cancelled && shouldApplyProviderSnapshot(result, acceptedSnapshotRef.current !== null)) {
+          acceptedSnapshotRef.current = result
           setProviders(result)
         }
       } catch (err) {
@@ -289,6 +333,20 @@ export function ModelQuickSwitch({
     return !getProviderConfig(providerType)
   }, [hasLoadedOnce, providerType, modelName, providerRegistryVersion])
 
+  // Registered but its catalog discovery is still in flight (#188 fix 4):
+  // a gateway between registration and its first successful /v1/models
+  // fetch is RESTORING, not unregistered — the re-login warning must
+  // not fire for it (selectedProviderUnregistered stays false above) and
+  // neither does the amber no-usable-model state. A neutral "restoring
+  // session" label renders instead until the catalog lands.
+  const selectedProviderRestoring = useMemo(() => {
+    void providerRegistryVersion
+    if (!providerType || !modelName) return false
+    if (!isPotentiallyDynamicProviderType(providerType)) return false
+    if (!getProviderConfig(providerType)) return false
+    return getProviderCatalogStatus(providerType) === 'loading'
+  }, [providerType, modelName, providerRegistryVersion])
+
   // Warning copy must name the provider the user must re-login to
   // (Sourcery round 5): codex-oauth gets the Codex-specific recovery text;
   // llm-gateway and custom-* would otherwise see guidance for the wrong
@@ -300,6 +358,7 @@ export function ModelQuickSwitch({
 
   const currentModelLabel = useMemo(() => {
     // No API key configured → always show "unavailable" regardless of persisted values
+    if (loading && selectedProviderRestoring) return `${modelName} · ${t('topbar.modelSwitcher.sessionRestoring')}`
     if (loading) return t('topbar.modelSwitcher.loading')
     if (modelCredentialStatus === 'expired' && modelName && !selectedProviderUnregistered) {
       return `${modelName} · ${t('topbar.modelSwitcher.credentialExpired')}`
@@ -311,14 +370,17 @@ export function ModelQuickSwitch({
     // state, not "no models" (#84 review round 2) — keep showing the model
     // name so the chip's amber warning reads as re-credentials, not re-pick.
     // An unregistered dynamic provider (#87) appends the provider-specific
-    // re-login warning instead of the bare model name.
+    // re-login warning instead of the bare model name. A registered gateway
+    // whose catalog is still restoring (#188 fix 4) shows a neutral
+    // "restoring session" note — NOT the re-login warning.
     const currentProvider = providers.find((p) => p.providerType === providerType)
     const model = currentProvider?.models.find((m) => m.id === modelName)
     const base = model?.name || modelName
+    if (selectedProviderRestoring) return `${base} · ${t('topbar.modelSwitcher.sessionRestoring')}`
     return selectedProviderUnregistered
       ? `${base} · ${t(unregisteredWarningKey)}`
       : base
-  }, [loading, selectedProviderUnregistered, modelCredentialStatus, providerType, providers, modelName, t, unregisteredWarningKey])
+  }, [loading, selectedProviderUnregistered, selectedProviderRestoring, modelCredentialStatus, providerType, providers, modelName, t, unregisteredWarningKey])
 
   // No usable model (#82): nothing selectable — the composer's input is
   // disabled and this chip carries the amber warning state pointing at
@@ -371,9 +433,23 @@ export function ModelQuickSwitch({
   useEffect(() => () => cancelThinkingClose(), [])
 
   const handleSelect = (provider: AvailableProvider, nextModelName: string) => {
-    if (isUnverifiedGateway(provider)) return
+    if (isUnverifiedGateway(provider) || (isPotentiallyDynamicProviderType(provider.providerType) && !getProviderConfig(provider.providerType))) return
     switchProviderAndModel(provider.providerType, nextModelName)
     setOpen(false)
+  }
+
+  /**
+   * Cross-component entry point into LLM provider management.
+   *
+   * `ModelQuickSwitch` is mounted inside `WorkspaceLayout`, which owns the
+   * SettingsDialog, so this goes through the one-shot
+   * `settingsOpenRequest` channel (the same one `/skill-install`'s
+   * gateway-disabled view uses): WorkspaceLayout consumes it and opens the
+   * dialog on the `llm` tab, where ProviderManager lives.
+   */
+  const openProviderSettings = () => {
+    setOpen(false)
+    requestSettingsOpen(true)
   }
 
   const retryGatewayCatalog = async () => {
@@ -485,7 +561,7 @@ export function ModelQuickSwitch({
         className="flex max-h-[420px] w-[300px] flex-col overflow-hidden rounded-lg border border-border/80 bg-white p-0 shadow-md shadow-black/5 dark:bg-neutral-900"
       >
         {/* Search input — always visible when providers exist */}
-        {!loading && enrichedProviders.length > 0 && (
+        {(!loading || refreshingExistingList) && enrichedProviders.length > 0 && (
           <div className="border-b border-border/70 px-3 py-2">
             <div className="flex items-center gap-1.5">
             <div className="relative flex-1">
@@ -520,27 +596,49 @@ export function ModelQuickSwitch({
           </div>
         )}
 
-        {!loading && gatewayCatalogUnavailable && (
+        {!loading && !refreshingExistingList && gatewayCatalogUnavailable && (
           <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-2 text-xs text-tertiary">
             <span>{t('topbar.modelSwitcher.catalogUnavailable')}</span>
-            <button
-              type="button"
-              onClick={() => void retryGatewayCatalog()}
-              disabled={retryingGatewayCatalog}
-              className="shrink-0 text-primary hover:underline disabled:opacity-50"
-            >
-              {retryingGatewayCatalog ? t('topbar.modelSwitcher.loading') : t('topbar.modelSwitcher.retryCatalog')}
-            </button>
+            <span className="flex shrink-0 items-center gap-2">
+              {/* The catalog failure is often a missing/expired provider
+                  credential — offer the management entry right where the user
+                  is stuck, not only in the footer. */}
+              <button
+                type="button"
+                onClick={openProviderSettings}
+                className="text-primary hover:underline"
+              >
+                {t('topbar.modelSwitcher.configureProviders')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void retryGatewayCatalog()}
+                disabled={retryingGatewayCatalog}
+                className="text-primary hover:underline disabled:opacity-50"
+              >
+                {retryingGatewayCatalog ? t('topbar.modelSwitcher.loading') : t('topbar.modelSwitcher.retryCatalog')}
+              </button>
+            </span>
           </div>
         )}
 
-        {loading ? (
+        {/* Refreshing indicator (stale-while-revalidate #188): the last accepted list stays
+            visible below, dimmed, with a small spinner in the header while a reload is in
+            flight — instead of hiding it behind the first-load skeleton. */}
+        {refreshingExistingList && (
+          <div className="flex items-center gap-2 border-b border-border/70 px-3 py-1.5 text-xs text-tertiary">
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
+            <span>{t('topbar.modelSwitcher.refreshing')}</span>
+          </div>
+        )}
+
+        {!refreshingExistingList && loading ? (
                       <div className="space-y-1.5 py-1.5">
             <div className="h-9 animate-pulse rounded-lg border border-border/60 bg-muted/40" />
             <div className="h-7 animate-pulse rounded-md bg-muted/30" />
             <div className="h-7 animate-pulse rounded-md bg-muted/30" />
           </div>
-        ) : enrichedProviders.length === 0 ? (
+        ) : !refreshingExistingList && enrichedProviders.length === 0 ? (
                       <div className="flex flex-col items-center gap-2 px-2 py-4 text-center">
             <span className="text-xs text-tertiary">{loadError ? t('topbar.modelSwitcher.temporarilyUnavailable') : t('topbar.modelSwitcher.noModels')}</span>
           </div>
@@ -561,7 +659,7 @@ export function ModelQuickSwitch({
                     key={`${provider.providerKey}:${model.id}`}
                     type="button"
                     onClick={() => handleSelect(provider, model.id)}
-                    disabled={unverifiedGateway}
+                    disabled={unverifiedGateway || (isPotentiallyDynamicProviderType(provider.providerType) && !getProviderConfig(provider.providerType))}
                     aria-selected={selected}
                     className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50 ${
                       selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : isActive ? 'bg-primary/10 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'
@@ -593,7 +691,10 @@ export function ModelQuickSwitch({
             </div>
           )
         ) : (
-          <div className="min-h-0 max-h-[240px] flex-1 space-y-0.5 overflow-auto px-1.5 py-1.5" aria-label={t('topbar.modelSwitcher.title')}>
+          <div
+            className={`min-h-0 max-h-[240px] flex-1 space-y-0.5 overflow-auto px-1.5 py-1.5 transition-opacity ${refreshingExistingList ? 'opacity-60' : ''}`}
+            aria-label={t('topbar.modelSwitcher.title')}
+          >
             {enrichedProviders
               .filter((p) => !visionOnly || p.models.some((m) => m.hasVision))
               .map((provider) => {
@@ -632,7 +733,7 @@ export function ModelQuickSwitch({
                             key={`${provider.providerKey}:${model.id}`}
                             type="button"
                             onClick={() => handleSelect(provider, model.id)}
-                            disabled={unverifiedGateway}
+                            disabled={unverifiedGateway || (isPotentiallyDynamicProviderType(provider.providerType) && !getProviderConfig(provider.providerType))}
                             aria-selected={selected}
                             className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50 ${selected ? 'bg-primary/15 text-primary-800 dark:text-primary-200' : 'hover:bg-primary/10 hover:text-primary-800 dark:hover:text-primary-200'}`}
                           >
@@ -716,6 +817,35 @@ export function ModelQuickSwitch({
             </Popover>
           </section>
         )}
+
+        {/* Provider management entry (owner request): the switcher lists what
+            is configured but offered no way to configure anything. Rendered
+            last so it reads as a footer action; promoted to a primary button
+            when nothing is available, because that is exactly when the user
+            needs it. */}
+        <section className="border-t border-border/70 bg-muted/25 px-3 py-2">
+          {/* Gate on the same list the popover renders (`visibleProviders`):
+              providers whose catalog is empty contribute no selectable model,
+              so they must not demote the setup entry to the secondary row. */}
+          {!loading && visibleProviders.length === 0 ? (
+            <BrandButton variant="primary" className="w-full" onClick={openProviderSettings}>
+              <Settings2 className="h-4 w-4" />
+              {t('topbar.modelSwitcher.manageProviders')}
+            </BrandButton>
+          ) : (
+            <button
+              type="button"
+              onClick={openProviderSettings}
+              className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left outline-none transition-colors hover:bg-primary/10 hover:text-primary-800 focus-visible:ring-2 focus-visible:ring-primary dark:hover:text-primary-200"
+            >
+              <Settings2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="flex-1 truncate text-xs font-semibold text-secondary">
+                {t('topbar.modelSwitcher.manageProviders')}
+              </span>
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-tertiary" />
+            </button>
+          )}
+        </section>
 
       </PopoverContent>
     </Popover>

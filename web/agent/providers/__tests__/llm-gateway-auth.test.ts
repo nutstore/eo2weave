@@ -42,11 +42,15 @@ vi.mock('@/security/api-key-store', () => ({
 const settingsStoreState = vi.hoisted(() => ({
   modelCredentialStatus: 'unknown' as string,
   modelCredentialStatusError: null as string | null,
+  // Ordered log of status writes the auth layer actually LANDED. Proves a
+  // verdict was dropped instead of merely overwritten by a later one.
+  statusWrites: [] as string[],
 }))
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
     getState: () => ({
       setModelCredentialStatus: (status: string) => {
+        settingsStoreState.statusWrites.push(status)
         settingsStoreState.modelCredentialStatus = status
       },
       setModelCredentialStatusError: (message: string | null) => {
@@ -67,6 +71,12 @@ import {
   invalidateGatewayAccessToken,
   performDeviceCodeFlow,
   persistDeviceLoginTokens,
+  resolveGatewayDispatchCredential,
+  subscribeToGatewaySessionEvents,
+  getGatewayAuthSessionGeneration,
+  isCredentialStatusCurrent,
+  isGatewayAccessTokenCurrent,
+  type GatewaySessionEvent,
 } from '@/agent/providers/llm-gateway-auth'
 import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
@@ -1188,5 +1198,459 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(pendingKeyStoreOpIsFenced(opA)).toBe(true)
       expect(pendingKeyStoreOpIsFenced(opB)).toBe(true)
     }, 20_000)
+  })
+})
+
+// ── Dispatch-time credential resolution + session events (#171/#172) ──
+
+describe('resolveGatewayDispatchCredential (#172 findings 3+4+5)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    deleteApiKeyMock.mockReset()
+    deleteApiKeyMock.mockResolvedValue(undefined)
+    loadApiKeyMock.mockReset()
+    loadApiKeyMock.mockResolvedValue(null)
+    saveApiKeyMock.mockReset()
+    saveApiKeyMock.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+    unregisterDynamicProvider('llm-gateway')
+    vi.unstubAllGlobals()
+  })
+
+  function seed(overrides: Partial<{ access_expires_at: number; refresh_expires_at: number }> = {}) {
+    const now = Date.now()
+    localStorage.setItem(TOKENS_KEY, JSON.stringify({
+      access_token: 'access-token-1',
+      refresh_token: 'refresh-token',
+      access_expires_at: overrides.access_expires_at ?? now + 10 * 60 * 1000,
+      refresh_expires_at: overrides.refresh_expires_at ?? now + 30 * 24 * 60 * 60 * 1000,
+      client_id: CLIENT_ID,
+      base_url: BASE_URL,
+    }))
+  }
+
+  it('returns the current access token from the shared token pair WITHOUT the SQLite shadow (#172.5)', async () => {
+    // Shadow missing/stale: refresh's shadow write failed. The resolver must
+    // NOT depend on it.
+    seed()
+    loadApiKeyMock.mockResolvedValue(null)
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved).toEqual({ ok: true, accessToken: 'access-token-1' })
+    expect(getGatewayCredentialStatus()).toBe('valid')
+  })
+
+  it('refreshes an expired access token and returns the new token', async () => {
+    seed({ access_expires_at: Date.now() - 1000 })
+    let refreshCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes('/v1/auth/refresh')) {
+        refreshCalls++
+        return new Response(JSON.stringify({ access_token: 'brand-new-access', expires_in: 600, token_type: 'Bearer' }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved).toEqual({ ok: true, accessToken: 'brand-new-access' })
+    expect(refreshCalls).toBe(1)
+  })
+
+  it('reports confirmed missing when no token pair and no shadow exist', async () => {
+    localStorage.clear()
+    loadApiKeyMock.mockResolvedValue(null)
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('missing')
+    expect(getGatewayCredentialStatus()).toBe('missing')
+  })
+
+  it('reports expired (not missing) when the access shadow of a dead session survives', async () => {
+    localStorage.clear()
+    loadApiKeyMock.mockImplementation(async (provider: string) =>
+      provider === '__llm_gateway_token__' ? 'dead-shadow' : null)
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('expired')
+    expect(getGatewayCredentialStatus()).toBe('expired')
+  })
+
+  it('reports temporary — NOT missing — when the token-PAIR read fails (#175)', async () => {
+    localStorage.clear()
+    // The refresh-token BACKUP read itself fails: a storage outage must not
+    // present as a logged-out session (previously collapsed to null →
+    // 'missing' login card).
+    loadApiKeyMock.mockImplementation(async (provider: string) => {
+      if (provider === '__llm_gateway_refresh_token__') throw new Error('sqlite worker hung')
+      return null
+    })
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
+  })
+
+  it('reports temporary — NOT missing — when storage fails during the absence check (#172.3)', async () => {
+    localStorage.clear()
+    // The shadow read itself fails: storage error ≠ proof of logout.
+    loadApiKeyMock.mockRejectedValue(new Error('sqlite worker hung'))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
+  })
+
+  it('reports temporary on a transient refresh failure and keeps the stored tokens', async () => {
+    seed({ access_expires_at: Date.now() - 1000 })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('network down')
+    }))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
+    // A possibly valid session is NOT cleared by a transient failure.
+    expect(localStorage.getItem(TOKENS_KEY)).not.toBeNull()
+    expect(getGatewayCredentialStatus()).not.toBe('missing')
+  })
+
+  it('does NOT pass a malformed record (future expiry, empty access token) as valid (#175)', async () => {
+    // A future access expiry with an EMPTY token previously passed the
+    // fresh-token branch and dispatched without Authorization.
+    const now = Date.now()
+    localStorage.setItem(TOKENS_KEY, JSON.stringify({
+      access_token: '',
+      refresh_token: 'refresh-token',
+      access_expires_at: now + 10 * 60 * 1000,
+      refresh_expires_at: now + 30 * 24 * 60 * 60 * 1000,
+      client_id: CLIENT_ID,
+      base_url: BASE_URL,
+    }))
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('network down')
+    }))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
+  })
+
+  it('does NOT pass a whitespace-only access token as valid (#175)', async () => {
+    const now = Date.now()
+    localStorage.setItem(TOKENS_KEY, JSON.stringify({
+      access_token: '   ',
+      refresh_token: 'refresh-token',
+      access_expires_at: now + 10 * 60 * 1000,
+      refresh_expires_at: now + 30 * 24 * 60 * 60 * 1000,
+      client_id: CLIENT_ID,
+      base_url: BASE_URL,
+    }))
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('network down')
+    }))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('temporary')
+  })
+
+  it('reports expired when the refresh token is definitively invalid', async () => {
+    seed({ access_expires_at: Date.now() - 1000 })
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ code: 'invalid_grant', message: 'revoked' }), { status: 400 })
+    ))
+
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved.ok).toBe(false)
+    expect(resolved.ok ? null : resolved.kind).toBe('expired')
+    await vi.waitFor(() => {
+      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
+    })
+  })
+})
+
+describe('cross-tab session events (#171 observer subscription)', () => {
+  const tokensValue = (refresh: string, access: string, accessExpired: boolean) =>
+    JSON.stringify({
+      access_token: access,
+      refresh_token: refresh,
+      access_expires_at: accessExpired ? Date.now() - 1000 : Date.now() + 10 * 60 * 1000,
+      refresh_expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000,
+      client_id: CLIENT_ID,
+      base_url: BASE_URL,
+    })
+
+  const emit = (oldValue: string | null, newValue: string | null) => {
+    window.dispatchEvent(new StorageEvent('storage', { key: TOKENS_KEY, oldValue, newValue }))
+  }
+
+  it('emits identity-change (with generation bump) when the refresh token changes', () => {
+    const events: GatewaySessionEvent[] = []
+    const off = subscribeToGatewaySessionEvents((e) => events.push(e))
+    try {
+      // #175 review: the bump itself is part of the contract (observers fence
+      // async work against the generation) — assert it actually moved.
+      const generationBefore = getGatewayAuthSessionGeneration()
+      emit(tokensValue('old-refresh', 'a', false), tokensValue('new-refresh', 'b', false))
+
+      expect(events).toHaveLength(1)
+      expect(events[0].type).toBe('identity-change')
+      expect(events[0].oldRefreshToken).toBe('old-refresh')
+      expect(events[0].newRefreshToken).toBe('new-refresh')
+      expect(getGatewayAuthSessionGeneration()).toBe(generationBefore + 1)
+      expect(events[0].generation).toBe(generationBefore + 1)
+    } finally {
+      off()
+    }
+  })
+
+  it('emits access-refresh WITHOUT a generation bump for a same-refresh-token rewrite (#172.1)', () => {
+    const events: GatewaySessionEvent[] = []
+    const off = subscribeToGatewaySessionEvents((e) => events.push(e))
+    try {
+      const generationBefore = getGatewayAuthSessionGeneration()
+      // Same refresh identity, new access token: another tab's refresh.
+      emit(tokensValue('same-refresh', 'old-access', true), tokensValue('same-refresh', 'new-access', false))
+
+      expect(events).toHaveLength(1)
+      expect(events[0].type).toBe('access-refresh')
+      expect(getGatewayAuthSessionGeneration()).toBe(generationBefore)
+    } finally {
+      off()
+    }
+  })
+
+  it('emits identity-change with null newRefreshToken on logout (value removed)', () => {
+    const events: GatewaySessionEvent[] = []
+    const off = subscribeToGatewaySessionEvents((e) => events.push(e))
+    try {
+      // #175 review: the logout path bumps the generation too — assert it.
+      const generationBefore = getGatewayAuthSessionGeneration()
+      emit(tokensValue('old-refresh', 'a', false), null)
+      expect(events).toHaveLength(1)
+      expect(events[0].type).toBe('identity-change')
+      expect(events[0].newRefreshToken).toBeNull()
+      expect(getGatewayAuthSessionGeneration()).toBe(generationBefore + 1)
+    } finally {
+      off()
+    }
+  })
+
+  it('unsubscribed listeners stop receiving events', () => {
+    const events: GatewaySessionEvent[] = []
+    const off = subscribeToGatewaySessionEvents((e) => events.push(e))
+    off()
+    emit(tokensValue('a', 'x', false), tokensValue('b', 'y', false))
+    expect(events).toHaveLength(0)
+  })
+})
+
+describe('gateway follow-up review regressions', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    loadApiKeyMock.mockReset().mockResolvedValue(null)
+    deleteApiKeyMock.mockReset().mockResolvedValue(undefined)
+    saveApiKeyMock.mockReset().mockResolvedValue(undefined)
+  })
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear() })
+
+  it('treats an unreadable local token store as temporary when no backup exists', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => {
+        if (key === TOKENS_KEY) throw new Error('localStorage unavailable')
+        return null
+      },
+    })
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved).toMatchObject({ ok: false, kind: 'temporary' })
+  })
+
+  it('treats an unreadable local token store and unusable backup as temporary', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('localStorage unavailable') } })
+    loadApiKeyMock.mockResolvedValue('{invalid')
+    const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(resolved).toMatchObject({ ok: false, kind: 'temporary' })
+  })
+
+  it('rejects a whitespace-only access token returned by refresh', async () => {
+    seedStoredTokens()
+    vi.stubGlobal('fetch', vi.fn(async () => refreshResponse('   ', 600)))
+    const result = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+    expect(result).toMatchObject({ ok: false, kind: 'temporary' })
+    expect(JSON.parse(localStorage.getItem(TOKENS_KEY)!).access_token).toBe('stale-access-token')
+  })
+
+  it('does not rerun a refresh when the acquired lock callback rejects', async () => {
+    seedStoredTokens()
+    const fetchMock = vi.fn(async () => refreshResponse('new-access', 600))
+    vi.stubGlobal('fetch', fetchMock)
+    const existingLocks = navigator.locks
+    vi.stubGlobal('navigator', { locks: { request: async (name: string, callback: () => Promise<unknown>) => {
+      if (name !== 'eo2weave-gateway-refresh') return existingLocks.request(name, callback)
+      await callback()
+      throw new Error('callback failed')
+    } } })
+    await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).rejects.toThrow('callback failed')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('cross-tab refresh coalescing', () => {
+  afterEach(() => { vi.unstubAllGlobals(); localStorage.clear() })
+  it('adopts a token refreshed while waiting for the cross-tab lock', async () => {
+    seedStoredTokens()
+    const initial = JSON.parse(localStorage.getItem(TOKENS_KEY)!)
+    const fetchMock = vi.fn(async () => refreshResponse('unnecessary', 600))
+    vi.stubGlobal('fetch', fetchMock)
+    const existingLocks = navigator.locks
+    vi.stubGlobal('navigator', { locks: { request: async (name: string, callback: () => Promise<unknown>) => {
+      if (name !== 'eo2weave-gateway-refresh') return existingLocks.request(name, callback)
+      localStorage.setItem(TOKENS_KEY, JSON.stringify({ ...initial, access_token: 'peer-token', access_expires_at: Date.now() + 600_000 }))
+      return callback()
+    } } })
+    await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'success', accessToken: 'peer-token' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('credential status generation fence (#180)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    settingsStoreState.modelCredentialStatus = 'unknown'
+    settingsStoreState.statusWrites.length = 0
+    loadApiKeyMock.mockReset()
+    loadApiKeyMock.mockResolvedValue(null)
+  })
+
+  it('treats a verdict as current only while the credential set it saw is unchanged', async () => {
+    seedStoredTokens()
+    const generation = getGatewayAuthSessionGeneration()
+    expect(isCredentialStatusCurrent(generation)).toBe(true)
+
+    await logoutGateway()
+
+    expect(getGatewayAuthSessionGeneration()).not.toBe(generation)
+    expect(isCredentialStatusCurrent(generation)).toBe(false)
+  })
+
+  it('drops a stale "missing" verdict that lands after a new login', async () => {
+    // The storage read that produced the verdict is still in flight when a
+    // login commits, so the verdict describes a session that no longer exists.
+    let releaseLoad!: (value: string | null) => void
+    loadApiKeyMock.mockImplementation((provider) =>
+      provider === '__llm_gateway_refresh_token__'
+        ? new Promise<string | null>((resolve) => { releaseLoad = resolve })
+        : Promise.resolve(null),
+    )
+
+    const pending = getValidAccessToken(BASE_URL, CLIENT_ID)
+    await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalled())
+
+    persistDeviceLoginTokens(
+      {
+        access_token: 'new-session-access',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        refresh_token: 'new-session-refresh',
+        refresh_expires_in: 3600,
+      },
+      CLIENT_ID,
+      BASE_URL,
+    )
+    expect(localStorage.getItem(TOKENS_KEY)).toContain('new-session-refresh')
+    // The login flow reports 'valid' through its own settings write; the stale
+    // verdict must not overwrite that known status.
+    settingsStoreState.modelCredentialStatus = 'valid'
+
+    releaseLoad(null)
+    await pending
+
+    // Synchronize on the WRITE PATH, not on a timer. A verdict produced under
+    // the CURRENT session travels the same dynamic import + `.then` chain and
+    // is registered behind the stale one, so once the current verdict has
+    // landed the stale chain has already settled — if it were going to write,
+    // it would be in the log first.
+    expect(await getValidAccessToken(BASE_URL, CLIENT_ID)).toBeTruthy()
+    await vi.waitFor(() => expect(settingsStoreState.statusWrites).toEqual(['valid']))
+
+    // Without the fence the stale verdict lands as an extra 'missing' write.
+    expect(settingsStoreState.modelCredentialStatus).toBe('valid')
+  })
+
+  it('still applies a verdict produced under the current session', async () => {
+    seedStoredTokens({ access_expires_at: Date.now() + 3_600_000 })
+
+    expect(await getValidAccessToken(BASE_URL, CLIENT_ID)).toBeTruthy()
+
+    // The verdict lands through a dynamic settings-store import: wait for the
+    // write instead of racing a zero-delay timer.
+    await vi.waitFor(() => expect(settingsStoreState.modelCredentialStatus).toBe('valid'))
+  })
+
+  it('reports valid after a successful refresh commit', async () => {
+    seedStoredTokens()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(refreshResponse('refreshed-token', 60))))
+
+    const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+    expect(result.status).toBe('success')
+
+    // The refresh's own commit advances the generation; the verdict must be
+    // attributed to that commit, not to the pre-refresh snapshot.
+    await vi.waitFor(() => expect(settingsStoreState.modelCredentialStatus).toBe('valid'))
+  })
+
+  it('treats the refreshed token as current and a replaced one as stale (#214)', async () => {
+    seedStoredTokens()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(refreshResponse('refreshed-token', 60))))
+
+    const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+    expect(result.status).toBe('success')
+
+    // The refresh committed a NEW pair: the token it returned is the stored
+    // one. Dispatch gates compare tokens for exactly this reason — the
+    // generation bump here is the refresh's own work, not a session change.
+    expect(await isGatewayAccessTokenCurrent('refreshed-token')).toBe(true)
+    expect(await isGatewayAccessTokenCurrent('stale-token')).toBe(false)
+  })
+
+  it('counts a SQLite-recovered credential as current (#214 Sourcery round 3)', async () => {
+    // localStorage unreadable → the resolver recovers the pair from the
+    // SQLite api-key-store backup. The helper must vouch for THAT token.
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(refreshResponse('recovered-token', 600))))
+    const recovered = JSON.stringify({
+      access_token: 'recovered-token',
+      refresh_token: 'recovered-refresh',
+      access_expires_at: Date.now() + 600_000,
+      refresh_expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    })
+    const brokenGetItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    loadApiKeyMock.mockImplementation(async (provider: string) =>
+      provider === '__llm_gateway_refresh_token__' ? recovered : null,
+    )
+
+    try {
+      expect(await isGatewayAccessTokenCurrent('recovered-token')).toBe(true)
+      expect(await isGatewayAccessTokenCurrent('replaced-token')).toBe(false)
+    } finally {
+      brokenGetItem.mockRestore()
+    }
+  })
+
+  it('propagates storage read failures instead of calling the token stale (#214 Sourcery round 4)', async () => {
+    // No localStorage record and the SQLite read throws: that is a
+    // retryable storage problem, not proof of a stale credential.
+    loadApiKeyMock.mockRejectedValue(new Error('sqlite down'))
+
+    await expect(isGatewayAccessTokenCurrent('any-token')).rejects.toMatchObject({
+      name: 'GatewayTokenStoreUnavailableError',
+      cause: expect.objectContaining({ message: 'sqlite down' }),
+    })
   })
 })

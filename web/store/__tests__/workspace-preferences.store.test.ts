@@ -32,6 +32,18 @@ describe('workspace-preferences.store agent mode isolation', () => {
     expect(getCurrentWorkspaceAgentMode()).toBe('plan')
   })
 
+  it('persists independent Agent identities across rehydration', async () => {
+    const store = useWorkspacePreferencesStore.getState()
+    store.setWorkspaceAgentId('chat-a', 'resource-loop')
+    store.setWorkspaceAgentId('chat-b', 'default')
+    const persisted = localStorage.getItem('bfosa-workspace-preferences')!
+    expect(JSON.parse(persisted).state.agentIdByWorkspace).toMatchObject({ 'chat-a': 'resource-loop', 'chat-b': 'default' })
+    useWorkspacePreferencesStore.setState({ agentIdByWorkspace: {} })
+    localStorage.setItem('bfosa-workspace-preferences', persisted)
+    await useWorkspacePreferencesStore.persist.rehydrate()
+    expect(useWorkspacePreferencesStore.getState().agentIdByWorkspace).toMatchObject({ 'chat-a': 'resource-loop', 'chat-b': 'default' })
+  })
+
   it('isolates completion auto-apply by workspace', () => {
     useWorkspaceStore.setState({ activeWorkspaceId: 'ws-a' })
     useWorkspacePreferencesStore.getState().setAutoApplyOnRunComplete(true)
@@ -96,5 +108,33 @@ describe('workspace-preferences.store panel sizes rounding', () => {
     expect(panelSizes.sidebarWidth).toBe(277)
     expect(panelSizes.conversationRatio).toBe(52)
     expect(panelSizes.previewRatio).toBe(40)
+  })
+})
+
+describe('workspace-preferences.store one-shot open requests', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('does not persist a pending settings open request', () => {
+    useWorkspacePreferencesStore.getState().setSettingsOpenRequest(true)
+    expect(useWorkspacePreferencesStore.getState().panelState.settingsOpenRequest).toBe(true)
+
+    const persisted = JSON.parse(localStorage.getItem('bfosa-workspace-preferences')!)
+    expect(persisted.state.panelState.settingsOpenRequest).toBe(false)
+  })
+
+  it('drops a pending settings open request persisted by an older build', async () => {
+    localStorage.setItem(
+      'bfosa-workspace-preferences',
+      JSON.stringify({
+        state: { panelState: { settingsOpenRequest: true, sidebarCollapsed: false } },
+        version: 6,
+      })
+    )
+    vi.resetModules()
+    const { useWorkspacePreferencesStore: fresh } = await import('../workspace-preferences.store')
+    expect(fresh.getState().panelState.settingsOpenRequest).toBe(false)
+    expect(fresh.getState().panelState.sidebarCollapsed).toBe(false)
   })
 })

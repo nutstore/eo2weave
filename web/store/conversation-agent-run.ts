@@ -17,7 +17,7 @@
 
 import { toast } from 'sonner'
 import { isHumanUserMessage, isConversationUserMessage, type Conversation, type Message, type ToolCall, type ConversationStatus, type ContextWindowUsage, createRunChangesMessage, createUserMessage } from '@/agent/message-types'
-import { extractFirstMentionedAgentId } from '@/agent/agent-mention'
+import { resolveConversationAgentId } from '@/agent/conversation-agent-routing'
 import { emitThinkingStart, emitThinkingDelta, emitCompressionEvent, emitToolStart, emitComplete, emitError } from '@/streaming-bus'
 import { useConversationContextStore } from './conversation-context.store'
 import { useConversationRuntimeStore, createEmptyRuntime } from './conversation-runtime.store'
@@ -72,7 +72,7 @@ type StoreGet = () => {
     maxTokens: number,
     directoryHandle: FileSystemDirectoryHandle | null,
     agentOverrideId?: string | null,
-    options?: { background?: boolean }
+    options?: { background?: boolean; transient?: boolean }
   ): Promise<void>
   generateTitle(
     id: string,
@@ -85,6 +85,14 @@ type StoreGet = () => {
 }
 
 type StoreSet = (updater: (state: AgentRunStoreDraft) => void) => void
+
+/**
+ * Per-conversation run-start claims. Set synchronously at dispatch and
+ * released once the run lock (activeRunId) is acquired — or on any
+ * early-return before that point. Single-browser-tab app: JS is single
+ * threaded, so a synchronous map insert IS the atomic claim.
+ */
+const runClaimSlots = new Map<string, { claimed: boolean; owner: string }>()
 
 /**
  * Bridge onto the facade-module symbols runAgent touches. The delegate casts
@@ -126,21 +134,206 @@ export async function runAgentImpl(
       maxTokens: number,
       directoryHandle: FileSystemDirectoryHandle | null,
       agentOverrideId?: string | null,
-      options?: { background?: boolean }
+      options?: { background?: boolean; transient?: boolean }
 ): Promise<void> {
   const { handleSubagentStepNotification, bumpTranscriptVersion } = store
   // Background runs (external agents driving EO2Weave) must NOT steal the
   // user's active workspace — they only ensure the workspace exists.
   const background = options?.background === true
+  // Transient runs (delegated handoffs) resolve the override persona for THIS
+  // run only — it must not be persisted as the conversation's saved Agent.
+  const transientAgent = options?.transient === true
 
       const state = get()
       const conv = state.conversations.find((c) => c.id === conversationId)
       if (!conv) return
 
+      // Stale rerun triggers must die with THIS dispatch's failure — not
+      // linger for the next successful run to burn a turn on (#166 item 5,
+      // extended). The `isConversationRunning` guard below runs before the
+      // claim is created, so a queue drain here can never remove a trigger
+      // queued by another dispatch for a live owner. Real queued user
+      // messages are kept — they still carry undelivered content the user
+      // can resend/retry through the normal send path.
+      //
+      // Accepted triggers are preserved (#170 review round 2): when THIS
+      // dispatch is rejected on a full queue, at least one slot is held by
+      // an ACCEPTED trigger whose dispatch already succeeded and whose owner
+      // run will consume it. Only triggers whose owning dispatch is gone
+      // (untagged legacy residue, or one stamped with a dead token) are
+      // genuinely stale and reclaimable — draining accepted triggers and
+      // then rejecting the caller would strand its persisted message with
+      // no responder at all.
+      const claimToken = `claim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      const drainStaleRerunTriggers = () => {
+        const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conversationId)
+        if (!queue) return
+        // An owner is live while it holds the start claim OR while it is the
+        // conversation's active run (the claim is released once the run lock
+        // is acquired, but the run keeps consuming its queue until it ends).
+        const liveOwner =
+          runClaimSlots.get(conversationId)?.owner ??
+          get().conversations.find((c) => c.id === conversationId)?.activeRunId ??
+          null
+        for (let i = queue.length - 1; i >= 0; i--) {
+          const entry = queue[i]
+          if (!entry.rerunOnly) continue
+          const owner = entry.ownerToken ?? null
+          if (owner !== null && owner === liveOwner) continue
+          useConversationRuntimeStore.getState().removeQueuedMessage(conversationId, i)
+        }
+      }
+      const failDispatchEarly = (message: string) => {
+        drainStaleRerunTriggers()
+        set((state) => {
+          const c = state.conversations.find((c) => c.id === conversationId)
+          if (c) {
+            c.status = 'error'
+            c.error = message
+            c.activeRunId = null
+          }
+        })
+        useConversationRuntimeStore.setState((state) => {
+          const r = ensureRuntime(state, conversationId)
+          r.status = 'error'
+          r.error = message
+          r.activeRunId = null
+          r.draftAssistant = null
+          r.currentToolCall = null
+          r.activeToolCalls = []
+          r.streamingToolArgs = ''
+          r.streamingToolArgsByCallId = {}
+          r.streamingContent = ''
+          r.streamingReasoning = ''
+        })
+        const errorConv = get().conversations.find((c) => c.id === conversationId)
+        if (errorConv) {
+          persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
+            console.error('[conversation.store] Failed to persist pre-run dispatch failure:', err)
+          })
+        }
+      }
+
+      // A dispatch arriving while a run is already pending/running (e.g. from
+      // QuickActionsPanel, which — unlike useConversationLogic / FilePreview /
+      // SyncPreviewPanel — has no running-state precheck) used to be silently
+      // dropped here (#166 item 1). The caller has already persisted its user
+      // message, so route it through the same rerun-queue path the claim
+      // window below uses: the owner's end-of-run "Consume queued messages"
+      // block dequeues the trigger and starts a follow-up turn, and
+      // `rerunOnly: true` tells the consumer NOT to create a duplicate user
+      // message. The result is checked so a queue-full overlap surfaces a
+      // rejection to the caller (#166 item 3) instead of resolving silently.
+      //
+      // A queue-full rejection here must also drain stale rerun triggers
+      // (#166 item 5, extended): the queue was almost certainly filled by
+      // leftover triggers from an earlier failed dispatch of THIS run path,
+      // and leaving them would burn the active owner's next follow-up turn.
+      // No trigger queued at this moment can belong to a live dispatch — the
+      // conversation is running, so every overlap in flight goes through
+      // this same guard or the claim-overlap branch below.
       if (state.isConversationRunning(conversationId)) {
-        console.warn('[conversation.store] Conversation is already running:', conversationId)
+        // Stamp the trigger with the identity of the run that will consume it
+        // (#170 review round 2): the pending claim's owner while setup is
+        // still in flight, otherwise the active run itself. A later queue-full
+        // rejection uses this to spare ACCEPTED triggers from the drain.
+        const enqueued = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+          text: '',
+          enqueuedAt: Date.now(),
+          rerunOnly: true,
+          ownerToken:
+            runClaimSlots.get(conversationId)?.owner ??
+            get().conversations.find((c) => c.id === conversationId)?.activeRunId ??
+            null,
+        })
+        if (!enqueued.enqueued) {
+          // Queue full: drain only genuinely stale triggers (untagged residue
+          // or triggers whose owning dispatch died) — accepted triggers are
+          // preserved — then retry once on any reclaimed slot.
+          drainStaleRerunTriggers()
+          const retried = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+            text: '',
+            enqueuedAt: Date.now(),
+            rerunOnly: true,
+            ownerToken:
+              runClaimSlots.get(conversationId)?.owner ??
+              get().conversations.find((c) => c.id === conversationId)?.activeRunId ??
+              null,
+          })
+          if (!retried.enqueued) {
+            throw new Error(
+              `Conversation is running and its message queue is full (${conversationId})`
+            )
+          }
+        }
+        console.info(
+          '[conversation.store] Conversation is already running — queued a re-run trigger:',
+          conversationId
+        )
         return
       }
+      // Claim the per-conversation run slot SYNCHRONOUSLY, before any await.
+      // The status-based guard above only observes state this call set later;
+      // two concurrent dispatches for the same conversation could otherwise
+      // both pass it while racing each other's workspace/ensure awaits, and
+      // the later lock acquisition would orphan the loser's loop mid-flight.
+      // The slot holds the claim; ownership is confirmed (and the real
+      // activeRunId published) by the claim block further down, and released
+      // on every early-return before that block.
+      //
+      // A conversation that already holds a claim is NOT stolen and NOT
+      // silently dropped: this dispatch has already appended its user message
+      // to the conversation, so a bare return would leave the newer message
+      // unanswered forever. Instead, enqueue a re-run trigger into the same
+      // per-conversation queue the UI send path uses — the owner's end-of-run
+      // "Consume queued messages" block dequeues it and starts a follow-up
+      // turn. `rerunOnly: true` tells the consumer the user message is already
+      // persisted, so it must NOT create a duplicate one.
+      if (runClaimSlots.has(conversationId)) {
+        console.warn(
+          '[conversation.store] Dispatch overlaps a pending run claim — queued a re-run trigger:',
+          conversationId
+        )
+        // #166 item 3: a queue-full overlap must NOT silently drop the rerun
+        // trigger — surface the failure so the caller (e.g. the WebMCP
+        // send_message handler) gets an error instead of a false success.
+        // Drain stale rerun triggers first (#166 item 5, extended): at least
+        // one leftover trigger from an earlier failed dispatch is what filled
+        // the queue, and freeing it lets this trigger — which carries a real
+        // user message — take its place.
+        // Stamp the trigger with the pending claim's owner — that run is
+        // live and will consume this trigger at its end-of-run consumer
+        // (#170 review round 2), so a later queue-full drain must NOT
+        // reclaim its slot.
+        const overlapOwnerToken = runClaimSlots.get(conversationId)?.owner ?? null
+        const enqueued = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+          text: '',
+          enqueuedAt: Date.now(),
+          rerunOnly: true,
+          ownerToken: overlapOwnerToken,
+        })
+        if (!enqueued.enqueued) {
+          drainStaleRerunTriggers()
+          const retried = useConversationRuntimeStore.getState().enqueueMessage(conversationId, {
+            text: '',
+            enqueuedAt: Date.now(),
+            rerunOnly: true,
+            ownerToken: overlapOwnerToken,
+          })
+          if (!retried.enqueued) {
+            throw new Error(
+              `Conversation is starting and its message queue is full (${conversationId})`
+            )
+          }
+        }
+        return
+      }
+      const claimSlot = { claimed: true, owner: claimToken }
+      runClaimSlots.set(conversationId, claimSlot)
+      const releaseClaim = () => {
+        if (runClaimSlots.get(conversationId) === claimSlot) runClaimSlots.delete(conversationId)
+      }
+      const claimIsOurs = () => runClaimSlots.get(conversationId) === claimSlot
 
       // ── Unregistered dynamic provider guard (#87, Sourcery rounds 2+3) ──
       // runAgent is the shared dispatch boundary for every AI action —
@@ -158,7 +351,7 @@ export async function runAgentImpl(
       // conversation with no result to roll back.
       const providerMissing = (type: LLMProviderType | string): boolean =>
         !!type && isPotentiallyDynamicProviderType(type) && !getProviderConfig(type as LLMProviderType)
-      if (providerMissing(providerType)) {
+      if (providerMissing(providerType) && providerType !== 'llm-gateway') {
         const unavailableMessage = i18nText(
           'conversation.toast.providerReauthRequired',
           'The selected provider is unavailable — sign in again to use it.'
@@ -171,6 +364,7 @@ export async function runAgentImpl(
         // disappears after a page reload). No run lock has been acquired
         // yet at this point, so the isCurrentRun gating inside failRunEarly
         // would no-op — hence the inline mirror here.
+        releaseClaim()
         set((state) => {
           const c = state.conversations.find((c) => c.id === conversationId)
           if (c) {
@@ -222,19 +416,56 @@ export async function runAgentImpl(
         // records exist, then drive the loop against the per-conversation
         // runtime. Tool routing is unaffected either way: ToolContext carries
         // the conversationId as its workspaceId explicitly.
+        //
+        // The dispatch claim is held across this await; the ensureWorkspace /
+        // switchWorkspace in-flight promises themselves are timeout-guarded at
+        // the source (WORKSPACE_ENSURE_TIMEOUT_MS in workspace.store.ts,
+        // #166 item 2), so a stalled setup can no longer hold the claim
+        // forever — the awaited promise rejects on expiry, this try/catch
+        // releases the claim, and the outer handler keeps its normal
+        // rollback/failure behavior.
         const workspaceStore = useConversationContextStore.getState()
-        if (background) {
-          // Ensure the workspace record/OPFS dirs exist without switching.
-          const manager = await (async () => {
-            const m = await import('@/opfs')
-            return m.getWorkspaceManager()
-          })()
-          const existing = manager.getWorkspaceByRoot(`workspaces/${conversationId}`)
-          if (!existing || existing.workspaceId !== conversationId) {
-            await manager.getOrCreateWorkspace(`workspaces/${conversationId}`)
+        try {
+          if (background) {
+            await workspaceStore.ensureWorkspace(conversationId, conv.title)
+          } else if (workspaceStore.activeWorkspaceId !== conversationId) {
+            await workspaceStore.switchWorkspace(conversationId)
           }
-        } else if (workspaceStore.activeWorkspaceId !== conversationId) {
-          await workspaceStore.switchWorkspace(conversationId)
+        } catch (setupError) {
+          // FIX: this await window exits through the OUTER error handler when
+          // setup/switch rejects — which never touches runClaimSlots, so the
+          // conversation stayed claimed forever and every later dispatch was
+          // rejected as already-claimed. Release the claim here and rethrow so
+          // the outer handler keeps its normal rollback/failure behavior.
+          releaseClaim()
+          if (setupError instanceof Error && setupError.message === 'WORKSPACE_ENSURE_TIMEOUT') {
+            // Timeout: the conversation must be recoverable, so surface the
+            // failure instead of relying on the generic catch (which would
+            // leave no error banner while the claim is already gone). Mirror
+            // the providerMissing failure shape below.
+            failDispatchEarly(
+              i18nText(
+                'conversation.toast.workspaceSetupTimeout',
+                'Preparing the workspace timed out — the run was stopped. Try again.'
+              )
+            )
+            toast.error(
+              i18nText(
+                'conversation.toast.workspaceSetupTimeout',
+                'Preparing the workspace timed out — the run was stopped. Try again.'
+              )
+            )
+            return
+          }
+          throw setupError
+        }
+
+        // The await above is the one window where a competing dispatch could
+        // have taken over this conversation (had we not held the claim).
+        // Bail out if the claim was lost or another run started meanwhile.
+        if (!claimIsOurs() || get().isConversationRunning(conversationId)) {
+          releaseClaim()
+          return
         }
 
         // FIX (parallel isolation): Resolve directoryHandle from THIS run's
@@ -260,6 +491,33 @@ export async function runAgentImpl(
 
         const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
         let runEpoch = 0
+        // The synchronous start claim guaranteed no concurrent dispatch raced
+        // us to this point; convert it into the real run lock now.
+        if (!claimIsOurs()) {
+          releaseClaim()
+          return
+        }
+        releaseClaim()
+        // Re-stamp queued rerun triggers from the claim phase to THIS run's
+        // id (#170 review round 2): they were parked with the claim token as
+        // ownerToken, but the drain's liveness check reads the live
+        // claim-owner-or-activeRunId — without the re-stamp they would look
+        // stale (claim released, runId not yet visible to the stamp) even
+        // though this very run is about to consume them.
+        const restampQueuedTriggers = () => {
+          const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conversationId)
+          if (!queue) return
+          useConversationRuntimeStore.setState((state) => {
+            const q = state.pendingMessageQueues.get(conversationId)
+            if (!q) return
+            for (const entry of q) {
+              if (entry.rerunOnly && entry.ownerToken === claimToken) {
+                entry.ownerToken = runId
+              }
+            }
+          })
+        }
+        restampQueuedTriggers()
         // Ownership is deliberately in-memory and run scoped. The overlay has
         // one pending row per path, so paths already pending when this run
         // begins are never eligible for automatic application.
@@ -402,18 +660,17 @@ export async function runAgentImpl(
           if (!isCurrentRun()) return
           set((state) => {
             const c = state.conversations.find((c) => c.id === conversationId)
-            if (c && c.activeRunId === runId) {
-              c.status = 'error'
-              c.error = message
-              c.activeRunId = null
-              c.draftAssistant = null
-              c.currentToolCall = null
-              c.activeToolCalls = []
-              c.streamingToolArgs = ''
-              c.streamingToolArgsByCallId = {}
-              c.streamingContent = ''
-              c.streamingReasoning = ''
-            }
+            if (!c || c.activeRunId !== runId) return
+            c.status = 'error'
+            c.error = message
+            c.activeRunId = null
+            c.draftAssistant = null
+            c.currentToolCall = null
+            c.activeToolCalls = []
+            c.streamingToolArgs = ''
+            c.streamingToolArgsByCallId = {}
+            c.streamingContent = ''
+            c.streamingReasoning = ''
           })
           useConversationRuntimeStore.setState((state) => {
             const r = ensureRuntime(state, conversationId)
@@ -429,12 +686,11 @@ export async function runAgentImpl(
             r.streamingContent = ''
             r.streamingReasoning = ''
           })
-
-          // Persist messages on early failure so that historical messages
-          // (including the user message that triggered this run) are not lost
-          // if the user refreshes the page.
+          void import('@/services/favicon-indicator')
+            .then(({ setFaviconState }) => setFaviconState('idle'))
+            .catch(() => {})
           const errorConv = get().conversations.find((c) => c.id === conversationId)
-          if (errorConv) {
+          if (errorConv && errorConv.messagesLoaded !== false) {
             persistMessageReplace(conversationId, errorConv.messages).catch((err) => {
               console.error('[conversation.store] Failed to persist on failRunEarly:', err)
             })
@@ -460,13 +716,110 @@ export async function runAgentImpl(
         // that window; resolving provider configuration from the stale
         // selection would start the agent on a dead route instead of
         // showing the reauthentication guidance.
+        // Gateway exception (#175 review): a LOGGED-OUT gateway is also an
+        // unregistered dynamic provider (clearStoredTokens unregisters it).
+        // The generic "provider unavailable" message would hide the
+        // actionable login card, so an unregistered gateway resolves its
+        // credential here: confirmed missing/expired → the re-login card,
+        // transient failure → retryable error, and a session that has come
+        // back (another tab re-registered / reconciliation adopted it) →
+        // continue into the normal dispatch path.
+        if (providerMissing(providerType) && providerType === 'llm-gateway') {
+          const { resolveGatewayDispatchCredential, isGatewayAccessTokenCurrent } =
+            await import('@/agent/providers/llm-gateway-auth')
+          const { getLLMGatewayBaseURL, getLLMGatewayClientId, registerLLMGatewayProvider } =
+            await import('@/agent/providers/llm-gateway-provider')
+          const baseURL = getLLMGatewayBaseURL()
+          const clientId = getLLMGatewayClientId()
+          // A usable session with an unregistered provider is a per-tab
+          // registry gap, not a credential problem (#180): this tab's
+          // reconciler may not have run yet, and nothing else on the dispatch
+          // path registers the provider. Mirror reconcileLoggedIn and register
+          // it here rather than telling a logged-in user to sign in again.
+          //
+          // Resolve, then check the token this resolution validated is still
+          // the stored one — a logout or a newer login during the await
+          // replaced it, and re-registering would leave the tab pointing at a
+          // dead session (#180 review rounds 2-3). The session generation is
+          // NOT the right signal here: a resolution that refreshed an expired
+          // token advanced it itself.
+          //
+          // Re-resolve ONCE when the token is no longer current (#215): another
+          // tab's refresh replaces the stored token as soon as the old one
+          // enters its expiry buffer, which makes a live session look
+          // superseded. The second resolution continues with the newer pair on
+          // a rotation, and yields the correct missing/expired verdict on a
+          // logout or newer login — instead of offering a re-login card to a
+          // user who is still signed in.
+          //
+          // A storage read failure inside the currentness check is NOT a
+          // stale credential: surface it as the retryable temporary error
+          // (same classification the resolver itself uses) instead of the
+          // re-login guidance (#214 Sourcery round 4).
+          let tokenCurrent = false
+          for (let attempt = 0; attempt < 2 && !tokenCurrent; attempt++) {
+            const resolved = await resolveGatewayDispatchCredential(baseURL, clientId)
+            if (!resolved.ok) {
+              if (resolved.kind === 'temporary') {
+                failRunEarly(
+                  i18nText(
+                    'conversation.error.gatewayCredentialTemporary',
+                    'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+                  )
+                )
+              } else {
+                const code = resolved.kind === 'missing'
+                  ? '[GATEWAY_CREDENTIALS_MISSING]'
+                  : '[GATEWAY_CREDENTIALS_EXPIRED]'
+                const fallback = resolved.kind === 'missing'
+                  ? i18nText('conversation.error.gatewayCredentialMissing', 'Not logged in to Nutstore AI. Please log in first.')
+                  : i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
+                failRunEarly(`${code} ${fallback}`)
+              }
+              releaseClaim()
+              return
+            }
+            try {
+              tokenCurrent = await isGatewayAccessTokenCurrent(resolved.accessToken)
+            } catch (error) {
+              console.warn('[conversation.store] Gateway credential re-read failed:', error)
+              failRunEarly(
+                i18nText(
+                  'conversation.error.gatewayCredentialTemporary',
+                  'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+                )
+              )
+              releaseClaim()
+              return
+            }
+          }
+          if (providerMissing(providerType)) {
+            if (tokenCurrent) {
+              registerLLMGatewayProvider()
+            }
+            if (providerMissing(providerType)) {
+              failRunEarly(
+                i18nText(
+                  'conversation.toast.providerReauthRequired',
+                  'The selected provider is unavailable — sign in again to use it.'
+                )
+              )
+              // This branch fails before the dispatch try/finally that owns the
+              // claim; leaving it set makes later sends believe a run is still
+              // starting (#180 review).
+              releaseClaim()
+              return
+            }
+          }
+        }
         if (providerMissing(providerType)) {
-          failRunEarly(
+          failDispatchEarly(
             i18nText(
               'conversation.toast.providerReauthRequired',
               'The selected provider is unavailable — sign in again to use it.'
             )
           )
+          releaseClaim()
           return
         }
 
@@ -483,24 +836,76 @@ export async function runAgentImpl(
               }
 
         if (!providerConfig?.baseUrl || !providerConfig.modelName) {
-          failRunEarly('请先配置自定义服务商和模型')
+          failDispatchEarly('请先配置自定义服务商和模型')
+          releaseClaim()
           return
         }
 
         // Custom providers may run keyless (e.g. Ollama at localhost:11434/v1):
         // no Authorization header is sent and Ollama ignores Bearer tokens, so
         // a missing key is not a hard error for them.
-        const apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
+        //
+        // EXCEPTION (issues #172 findings 3+4+5): the dynamically-registered
+        // llm-gateway provider is NOT keyless. The generic custom-provider
+        // exception in `isCustomProviderType` used to let an empty key pass
+        // this gate and reach the request layer, which then sent WITHOUT the
+        // Authorization header. It also relied on the api-key-store shadow —
+        // a best-effort SQLite cache a failed refresh write can leave stale
+        // or empty even though the shared session is valid. For the gateway,
+        // resolve the credential AUTHORITATIVELY from the shared token pair
+        // instead: refresh where possible, stop before network dispatch on
+        // confirmed absence/expiry (offering login), and surface transient
+        // storage/refresh failures as retryable errors without clearing a
+        // possibly valid session.
+        let apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
+        if (providerType === 'llm-gateway') {
+          const { resolveGatewayDispatchCredential } =
+            await import('@/agent/providers/llm-gateway-auth')
+          const { getLLMGatewayBaseURL, getLLMGatewayClientId } =
+            await import('@/agent/providers/llm-gateway-provider')
+          const resolved = await resolveGatewayDispatchCredential(
+            getLLMGatewayBaseURL(),
+            getLLMGatewayClientId(),
+          )
+          if (!resolved.ok) {
+            if (resolved.kind === 'temporary') {
+              // Retryable — do NOT clear a possibly valid session, and do
+              // not offer login (the session may be perfectly fine).
+              failRunEarly(
+                i18nText(
+                  'conversation.error.gatewayCredentialTemporary',
+                  'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+                )
+              )
+              return
+            }
+            // Confirmed absence/expiry: stop before dispatch and offer the
+            // re-login entry. A structured [CODE] prefix drives the error
+            // card's login button (same mechanism as
+            // GATEWAY_CREDENTIALS_EXPIRED from the fetch layer).
+            const code = resolved.kind === 'missing'
+              ? '[GATEWAY_CREDENTIALS_MISSING]'
+              : '[GATEWAY_CREDENTIALS_EXPIRED]'
+            // #175 review: the payload after the [CODE] prefix is rendered
+            // verbatim by the login card — localize it instead of the
+            // English-only literal (keys in all four locales).
+            const fallback = resolved.kind === 'missing'
+              ? i18nText('conversation.error.gatewayCredentialMissing', 'Not logged in to Nutstore AI. Please log in first.')
+              : i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
+            failRunEarly(`${code} ${fallback}`)
+            return
+          }
+          apiKey = resolved.accessToken
+        }
         if (!apiKey && !isCustomProviderType(providerType)) {
-          failRunEarly('API Key 未设置，请先在设置中配置')
+          failDispatchEarly('API Key 未设置，请先在设置中配置')
+          releaseClaim()
           return
         }
 
         // Resolve runtime routing context from the current conversation/workspace.
         // Do not depend on global active-project pointer for agent prompt injection.
         let resolvedProjectId: string | null = null
-        let activeAgentId: string | null = null
-        let knownAgentIds: Set<string> | null = null
 
         try {
           const { getWorkspaceRepository } =
@@ -511,30 +916,27 @@ export async function runAgentImpl(
           // Ignore workspace lookup failures; agent prompt injection will be skipped without projectId.
         }
 
-        try {
-          const { useAgentsStore } = await import('./agents.store')
-          const agentsState = useAgentsStore.getState()
-          activeAgentId = agentsState.activeAgentId || null
-          knownAgentIds = new Set(agentsState.agents.map((agent) => agent.id.toLowerCase()))
-        } catch {
-          // Ignore agents-store read failures and fallback to default.
-        }
+        let activeAgentId = await resolveConversationAgentId(
+          resolvedProjectId, conversationId, agentOverrideId, lastUserMessage?.content,
+          transientAgent ? { transient: true } : undefined,
+        )
 
         // ── Final registry recheck immediately before provider construction
         // (#87, Sourcery round 4) ── The round-3 recheck above runs BEFORE
-        // the API-key load, workspace repo and agents-store awaits. If the
+        // the API-key load, workspace lookup and Agent identity resolution. If the
         // dynamic provider unregisters inside THAT window, the stale
         // provider config captured before the awaits would still dispatch
         // the run onto a dead route. Recheck once more after all awaits
         // settle; a provider that vanished mid-setup routes through
-        // failRunEarly like every other pre-dispatch failure.
+        // failDispatchEarly like every other pre-dispatch failure.
         if (providerMissing(providerType)) {
-          failRunEarly(
+          failDispatchEarly(
             i18nText(
               'conversation.toast.providerReauthRequired',
               'The selected provider is unavailable — sign in again to use it.'
             )
           )
+          releaseClaim()
           return
         }
 
@@ -556,25 +958,6 @@ export async function runAgentImpl(
 
         const toolRegistry = getToolRegistry()
         const toolPolicyHooks = createToolPolicyHooks()
-
-        const normalizedOverride = agentOverrideId?.trim() || null
-        const overrideFromLatestMessage = extractFirstMentionedAgentId(lastUserMessage?.content)
-        const resolvedOverride = normalizedOverride || overrideFromLatestMessage
-
-        if (resolvedOverride) {
-          const normalizedResolvedOverride = resolvedOverride.toLowerCase()
-          if (!knownAgentIds || knownAgentIds.has(normalizedResolvedOverride)) {
-            activeAgentId = resolvedOverride
-          } else {
-            console.warn(
-              '[conversation.store] Ignoring unknown @agent override from latest message:',
-              resolvedOverride
-            )
-          }
-        }
-        if (!activeAgentId) {
-          activeAgentId = 'default'
-        }
 
         try {
           const { getWorkspaceManager } = await import('@/opfs')
@@ -1996,14 +2379,17 @@ export async function runAgentImpl(
           })
 
           // Restart with the target agent persona. agentOverrideId forces the
-          // persona even if the latest message @mentions someone else.
+          // persona even if the latest message @mentions someone else. The
+          // handoff is transient: the delegate must NOT become the
+          // conversation's saved Agent selection.
           await get().runAgent(
             conversationId,
             providerType,
             modelName,
             maxTokens,
             directoryHandle,
-            targetAgentId
+            targetAgentId,
+            { transient: true }
           )
           return
         }
@@ -2096,6 +2482,13 @@ export async function runAgentImpl(
               r.draftAssistant = null
             }
           })
+          // #166 item 5 (extended): every pre-run failure exit and this run
+          // error path share `drainStaleRerunTriggers` (defined next to the
+          // dispatch guards), so a rerunOnly trigger queued while this run
+          // was active never survives to burn the NEXT successful run's turn.
+          // Real queued user messages are kept — they still carry undelivered
+          // content the user can resend/retry through the normal send path.
+          drainStaleRerunTriggers()
           // Persist messages on generic error to prevent data loss on page refresh
           const catchConv = get().conversations.find((c) => c.id === conversationId)
           if (catchConv) {
@@ -2113,17 +2506,10 @@ export async function runAgentImpl(
       if (finalStatus === 'idle') {
         const nextMsg = useConversationRuntimeStore.getState().dequeueMessage(conversationId)
         if (nextMsg) {
-          const userMsg = createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
-            contentParts: nextMsg.contentParts,
-            readImageHandoff: nextMsg.readImageHandoff,
-          })
-          const currentConv = get().conversations.find((c) => c.id === conversationId)
-          if (currentConv) {
-            get().updateMessages(conversationId, [...currentConv.messages, userMsg])
-            // Schedule the next run on the next microtask to avoid re-entrancy.
-            // FIX (parallel isolation): Pass null — runAgent now resolves the
-            // directoryHandle from conversationId internally, so the global
-            // active-project pointer can no longer cross-contaminate this run.
+          if (nextMsg.rerunOnly) {
+            // Re-run trigger from an overlapping dispatch: its user message is
+            // ALREADY in conv.messages, so start the follow-up turn directly —
+            // creating another user message would duplicate it.
             queueMicrotask(() => {
               get().runAgent(
                 conversationId,
@@ -2135,6 +2521,30 @@ export async function runAgentImpl(
                 nextMsg.background ? { background: true } : undefined,
               )
             })
+          } else {
+            const userMsg = createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
+              contentParts: nextMsg.contentParts,
+              readImageHandoff: nextMsg.readImageHandoff,
+            })
+            const currentConv = get().conversations.find((c) => c.id === conversationId)
+            if (currentConv) {
+              get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+              // Schedule the next run on the next microtask to avoid re-entrancy.
+              // FIX (parallel isolation): Pass null — runAgent now resolves the
+              // directoryHandle from conversationId internally, so the global
+              // active-project pointer can no longer cross-contaminate this run.
+              queueMicrotask(() => {
+                get().runAgent(
+                  conversationId,
+                  providerType,
+                  modelName,
+                  maxTokens,
+                  null,
+                  nextMsg.agentOverrideId ?? null,
+                  nextMsg.background ? { background: true } : undefined,
+                )
+              })
+            }
           }
         }
       }

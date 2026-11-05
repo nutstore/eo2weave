@@ -14,6 +14,7 @@
 import type { FileContent, FileMetadata } from '../types/opfs-types'
 import { getRuntimeDirectoryHandle, getRuntimeHandlesForProject, buildHandleKey } from '@/native-fs'
 import type { DiskExecutor } from '../native-disk/executor'
+import { isGitIgnored, parseGitIgnore, type GitIgnoreRule } from '@/opfs/native-disk/gitignore-policy'
 
 /**
  * Result of resolving a workspace-relative path to a specific root.
@@ -352,7 +353,7 @@ export async function scanDiskTreeImpl(
   path: string,
   maxDepth: number,
   projectId?: string | null,
-  options?: { includeSizes?: boolean; excludeDirs?: string[]; maxEntries?: number; deadlineMs?: number }
+  options?: { includeSizes?: boolean; excludeDirs?: string[]; maxEntries?: number; deadlineMs?: number; respectGitignore?: boolean; includeIgnored?: boolean }
 ): Promise<Array<{ path: string; type: 'file' | 'directory'; size: number; depth: number }> | null> {
   if (!rt.initialized) await rt.initialize()
   try {
@@ -363,15 +364,26 @@ export async function scanDiskTreeImpl(
 
     const rootId = resolved.rootId
     const basePath = resolved.relativePath || ''
-    const excludeSet = new Set(options?.excludeDirs ?? [])
+    const excludeSet = new Set(options?.includeIgnored ? [] : options?.excludeDirs ?? [])
     const maxEntries = options?.maxEntries
     const deadlineAt = Date.now() + (options?.deadlineMs ?? 25000)
     const includeSizes = options?.includeSizes ?? false
 
     const entries: Array<{ path: string; type: 'file' | 'directory'; size: number; depth: number }> = []
 
-    const queue: Array<{ dirPath: string; displayPath: string; depth: number }> = [
-      { dirPath: basePath, displayPath: '', depth: 0 },
+    const initialRules: GitIgnoreRule[] = []
+    if (options?.respectGitignore && basePath) {
+      let parent = ''
+      for (const segment of basePath.split('/').filter(Boolean)) {
+        try {
+          const result = await rt.diskExec.read(rootId, parent ? `${parent}/.gitignore` : '.gitignore')
+          if (typeof result.content === 'string') initialRules.push(...parseGitIgnore(result.content, parent))
+        } catch { /* Optional ignore file. */ }
+        parent = parent ? `${parent}/${segment}` : segment
+      }
+    }
+    const queue: Array<{ dirPath: string; displayPath: string; depth: number; rules: GitIgnoreRule[] }> = [
+      { dirPath: basePath, displayPath: '', depth: 0, rules: initialRules },
     ]
 
     while (queue.length > 0) {
@@ -385,6 +397,15 @@ export async function scanDiskTreeImpl(
         continue
       }
 
+      let rules = current.rules
+      if (options?.respectGitignore && dirEntries.some((entry) => entry.name === '.gitignore' && entry.kind === 'file')) {
+        try {
+          const ignorePath = current.dirPath ? `${current.dirPath}/.gitignore` : '.gitignore'
+          const result = await rt.diskExec.read(rootId, ignorePath)
+          if (typeof result.content === 'string') rules = [...rules, ...parseGitIgnore(result.content, current.dirPath)]
+        } catch { /* Optional ignore file. */ }
+      }
+
       for (const entry of dirEntries) {
         if (Date.now() > deadlineAt) break
 
@@ -392,6 +413,8 @@ export async function scanDiskTreeImpl(
         if (childDepth > maxDepth) continue
 
         const relPath = current.displayPath ? `${current.displayPath}/${entry.name}` : entry.name
+        const rootPath = current.dirPath ? `${current.dirPath}/${entry.name}` : entry.name
+        if (options?.respectGitignore && isGitIgnored(rootPath, rules, entry.kind)) continue
 
         if (entry.kind === 'directory') {
           // Skip excluded dirs (from caller's excludeDirs parameter)
@@ -400,7 +423,7 @@ export async function scanDiskTreeImpl(
           // Don't recurse into known heavy dirs to avoid massive scans.
           // The ls tool's default maxDepth (2) usually keeps these shallow,
           // but we skip recursion into them regardless of depth.
-          if (lowerName === 'node_modules' || lowerName === '.git' || lowerName === 'target' || lowerName === '.next' || lowerName === 'dist') {
+          if (!options?.includeIgnored && (lowerName === 'node_modules' || lowerName === '.git' || lowerName === 'target' || lowerName === '.next' || lowerName === 'dist')) {
             entries.push({ path: relPath, type: 'directory', size: 0, depth: childDepth })
             continue // list the dir itself, but don't recurse into it
           }
@@ -410,6 +433,7 @@ export async function scanDiskTreeImpl(
             dirPath: current.dirPath ? `${current.dirPath}/${entry.name}` : entry.name,
             displayPath: relPath,
             depth: childDepth,
+            rules,
           })
         } else {
           entries.push({

@@ -8,18 +8,24 @@
  *   3. install_skill("cw-code-review-expert") → installs → returns success
  *   4. read_skill("cw-code-review-expert") → loads and uses the skill
  *
- * This tool does NOT ask the user — that's the agent's job via ask_user_question.
- * The agent must get explicit user consent before calling this tool.
+ * This tool does NOT ask the user before a FRESH install — that's the
+ * agent's job via ask_user_question. UPDATING an already-installed skill,
+ * however, is consent-gated IN CODE below: the executor asks via the same
+ * question channel before any overwrite happens (#154 round 2).
  */
 
-import type { ToolDefinition } from './tool-types'
+import type { ToolDefinition, ToolContext } from './tool-types'
 import type { ToolPromptDoc } from './tool-types'
 import { toolOkJson, toolErrorJson } from './tool-envelope'
 import {
   fetchSkillStoreManifest,
   installSkillFromUrl,
+  planSkillUpdate,
   scanInstalledDirNames,
 } from '@/skills/skill-store'
+import { plainSkillLabel } from '@/skills/bundle-update-consent'
+import type { SkillStoreEntry } from '@/skills/skill-store'
+import { skillUpdateNeedsConsent } from '@/skills/skill-version'
 import { getSkillManager } from '@/skills/skill-manager'
 import { useSkillsStore } from '@/store/skills.store'
 
@@ -36,6 +42,7 @@ export const installSkillDefinition: ToolDefinition = {
       '',
       'IMPORTANT: You MUST get explicit user consent via ask_user_question BEFORE calling this tool.',
       'Do not install skills without asking the user first.',
+      'If the skill is already installed at an OLDER version, this tool asks the user to confirm the update itself (in code) — if the user declines, the installed copy is kept and no update happens.',
       '',
       'After installation, the skill becomes available via read_skill on the next turn.',
     ].join('\n'),
@@ -58,6 +65,7 @@ export const installSkillDefinition: ToolDefinition = {
 
 export async function installSkillExecutor(
   args: Record<string, unknown>,
+  context?: Pick<ToolContext, 'askUserQuestion' | 'abortSignal' | 'currentToolCallId'>,
 ): Promise<string> {
   const dirName = typeof args.dirName === 'string' ? args.dirName : ''
 
@@ -70,20 +78,26 @@ export async function installSkillExecutor(
   }
 
   try {
-    // Check if already installed
-    const installed = await scanInstalledDirNames()
-    if (installed.has(dirName)) {
+    // Offline fallback (#154 round 6): when the store manifest is
+    // unreachable, an already-installed skill is still usable locally —
+    // only a fresh install genuinely needs the network. Restore the old
+    // "already installed" fast path for that failure case so an offline
+    // call for an installed skill does not regress to install_failed.
+    let entry: SkillStoreEntry | null
+    try {
+      const manifest = await fetchSkillStoreManifest()
+      entry = manifest.skills.find((s) => s.dirName === dirName) ?? null
+    } catch (err) {
+      const installed = await scanInstalledDirNames()
+      if (!installed.has(dirName)) throw err
       return toolOkJson('install_skill', {
         dirName,
         alreadyInstalled: true,
-        message: `Skill "${dirName}" is already installed. You can use it via read_skill now.`,
+        updated: false,
+        message: `Skill "${dirName}" is already installed locally; the Skill Store could not be reached to check for updates, so the installed copy was kept. You can use it via read_skill now.`,
       })
     }
-
-    // Find the zipUrl from manifest
-    const manifest = await fetchSkillStoreManifest()
-    const entry = manifest.skills.find((s) => s.dirName === dirName)
-    if (!entry) {
+    if (entry === null) {
       return toolErrorJson(
         'install_skill',
         'not_found',
@@ -91,8 +105,103 @@ export async function installSkillExecutor(
       )
     }
 
-    // Install
-    const result = await installSkillFromUrl(entry.zipUrl)
+    // Update-consent gate (#154 round 2): when the store would OVERWRITE an
+    // already-installed skill, the call must not proceed on prompt
+    // instructions alone — `install_skill` is policy-level `auto`, so the
+    // gate is enforced here in code. `planSkillUpdate` compares versions
+    // exactly like the install flow (a fresh install, a no-op, or a
+    // newer-installed keep stays consent-free). The question rides the SAME
+    // ask_user_question UI channel the install opt-in already uses.
+    const plan = await planSkillUpdate(entry.dirName, entry.version)
+    if (plan !== 'install' && skillUpdateNeedsConsent(plan)) {
+      if (!context?.askUserQuestion) {
+        // No UI channel (e.g. a subagent context) — the overwrite cannot be
+        // consented to, so it must not happen.
+        return toolErrorJson(
+          'install_skill',
+          'update_consent_required',
+          `"${entry.name}" is already installed at an older version (v${entry.version} would overwrite it). Updating an installed skill requires explicit user confirmation, but no user-interaction channel is available in this context. Ask the main agent to have the user confirm, or skip the update.`,
+        )
+      }
+      const answer = await context.askUserQuestion({
+        question: `The skill "${plainSkillLabel(entry.name)}" is already installed and the Skill Store ships a newer version (would overwrite your installed copy). Install the update?`,
+        type: 'yes_no',
+        defaultAnswer: 'no',
+        context: {
+          preview: `Updating "${plainSkillLabel(entry.name)}" to store v${entry.version}`,
+        },
+        signal: context.abortSignal,
+        toolCallId: context.currentToolCallId,
+      })
+      // `confirmed` is true for ANY submitted answer (ToolCallDisplay resolves
+      // every click — Yes AND No — with confirmed:true), so consent must be
+      // the answer text itself: only an explicit "yes" agrees to the
+      // overwrite. Everything else (a "no" click, free text, an abort
+      // resolving confirmed:false with the default answer) declines.
+      const said = answer.answer.trim().toLowerCase()
+      if (said !== 'yes' || !answer.confirmed) {
+        return toolOkJson('install_skill', {
+          dirName,
+          name: entry.name,
+          version: entry.version,
+          updated: false,
+          declined: true,
+          message: `Update declined — the installed copy of "${entry.name}" was kept unchanged.`,
+        })
+      }
+    }
+
+    // Install — the version-aware install flow decides whether this is a
+    // fresh install, an update of an older installed copy, or a no-op
+    // (#154). An already-installed skill is NOT short-circuited here: the
+    // store may ship a newer version, and only the install flow can tell.
+    //
+    // Bundle consent (#183): the archive may ALSO carry other installed
+    // skills at an older version, which the install flow would overwrite.
+    // They are consented to in ONE aggregated question naming every affected
+    // skill; a "no" (or no user channel) keeps the installed copies and the
+    // result names what was skipped.
+    const askUserQuestion = context?.askUserQuestion
+    const result = await installSkillFromUrl(entry.zipUrl, undefined, {
+      focusDirName: entry.dirName,
+      confirmBundleUpdates: askUserQuestion
+        ? async (candidates) => {
+            const list = candidates
+              .map(
+                (candidate) =>
+                  `- ${plainSkillLabel(candidate.dirName)}: installed v${candidate.installedVersion}, store v${candidate.storeVersion}`,
+              )
+              .join('\n')
+            const answer = await askUserQuestion({
+              question: `Installing "${plainSkillLabel(entry.name)}" also ships newer versions of ${candidates.length} other skill(s) already installed from the same bundle:\n${list}\n\nUpdating them replaces your installed copies (including any local edits). Update them too?`,
+              type: 'yes_no',
+              defaultAnswer: 'no',
+              context: {
+                preview: `Bundle members that would be updated: ${candidates
+                  .map((candidate) => plainSkillLabel(candidate.dirName))
+                  .join(', ')}`,
+              },
+              signal: context.abortSignal,
+              toolCallId: context.currentToolCallId,
+            })
+            const said = answer.answer.trim().toLowerCase()
+            return answer.confirmed && said === 'yes'
+              ? candidates.map((candidate) => candidate.dirName)
+              : []
+          }
+        : undefined,
+    })
+
+    // Structured bundle-update outcome the model can present (#183), plus a
+    // sentence naming what was kept so no summary claims a full update.
+    const bundleFields = result.bundleUpdates
+      ? { bundleUpdates: result.bundleUpdates }
+      : {}
+    const skippedBundleMembers = result.bundleUpdates?.skipped ?? []
+    const skippedNote =
+      skippedBundleMembers.length > 0
+        ? ` Kept your installed copies of ${skippedBundleMembers.join(', ')} (sibling bundle updates were declined).`
+        : ''
 
     // Refresh skill caches so the new skill is immediately available
     // — both the SkillManager (for read_skill) and the store (for UI).
@@ -109,12 +218,66 @@ export async function installSkillExecutor(
     // on the next turn (or even the same turn if read_skill follows).
     useSkillsStore.getState().bumpSkillsScanVersion()
 
+    // Partial member drops ride ANY successful outcome (#185 req. 3 /
+    // review round N): checked BEFORE the per-outcome early returns below,
+    // otherwise an updated/current/installed-newer result would report a
+    // clean install while a member was silently omitted.
+    if ((result.droppedMembers?.length ?? 0) > 0) {
+      return toolOkJson('install_skill', {
+        dirName,
+        name: entry.name,
+        version: entry.version,
+        filesInstalled: result.count,
+        outcome: result.outcome,
+        missingMembers: result.droppedMembers ?? [],
+        ...bundleFields,
+        message: `Install finished (${result.outcome}), but ${result.droppedMembers?.join(', ')} ${result.droppedMembers?.length === 1 ? 'was' : 'were'} removed during the install and ${result.droppedMembers?.length === 1 ? 'was' : 'were'} NOT re-created.${skippedNote}`,
+      })
+    }
+
+    if (result.outcome === 'updated') {
+      return toolOkJson('install_skill', {
+        dirName,
+        name: entry.name,
+        version: entry.version,
+        filesInstalled: result.count,
+        updated: true,
+        ...bundleFields,
+        message: `Skill "${entry.name}" updated to v${entry.version} (${result.count} files). You can now use it via read_skill("${entry.name}").${skippedNote}`,
+      })
+    }
+    if (result.outcome === 'current') {
+      return toolOkJson('install_skill', {
+        dirName,
+        name: entry.name,
+        version: entry.version,
+        filesInstalled: result.count,
+        alreadyInstalled: true,
+        ...bundleFields,
+        message: `Skill "${entry.name}" is already installed (v${entry.version}). You can use it via read_skill now.${skippedNote}`,
+      })
+    }
+    if (result.outcome === 'installed-newer') {
+      return toolOkJson('install_skill', {
+        dirName,
+        name: entry.name,
+        version: entry.version,
+        filesInstalled: result.count,
+        alreadyInstalled: true,
+        ...bundleFields,
+        // The unknown-version fallback also lands here (decideSkillUpdateAction
+        // keeps an unparseable installed version as "installed-newer"), so the
+        // message must not claim a verified newer version.
+        message: `Skill "${entry.name}" is already installed — the installed copy was kept (it is newer than the store version, or its version could not be compared with the store's). You can use it via read_skill now.${skippedNote}`,
+      })
+    }
     return toolOkJson('install_skill', {
       dirName,
       name: entry.name,
       version: entry.version,
       filesInstalled: result.count,
-      message: `Skill "${entry.name}" installed successfully (${result.count} files). You can now use it via read_skill("${entry.name}").`,
+      ...bundleFields,
+      message: `Skill "${entry.name}" installed successfully (${result.count} files). You can now use it via read_skill("${entry.name}").${skippedNote}`,
     })
   } catch (err) {
     return toolErrorJson(
@@ -133,6 +296,6 @@ export const installSkillPromptDoc: ToolPromptDoc = {
   category: 'skills',
   section: '### Skill Tools',
   lines: [
-    '- `install_skill(dirName)` — Install a skill from the Skill Store. MUST get user consent via ask_user_question FIRST. After install, call read_skill immediately to use it.',
+    '- `install_skill(dirName)` — Install a skill from the Skill Store. MUST get user consent via ask_user_question FIRST. Updating an ALREADY-INSTALLED older skill triggers an in-tool user confirmation; a declined update keeps the installed copy. When the same archive is a bundle that would also update OTHER installed skills, ONE aggregated confirmation lists every affected skill; declined members are skipped and named in `bundleUpdates.skipped`. After install, call read_skill immediately to use it.',
   ],
 }

@@ -30,6 +30,7 @@ vi.mock('@/i18n', () => ({
 const fetchSkillStoreManifestMock = vi.fn()
 const installSkillFromUrlMock = vi.fn()
 const scanInstalledDirNamesMock = vi.fn()
+const planSkillUpdateMock = vi.fn()
 
 vi.mock('@/skills/skill-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/skills/skill-store')>()
@@ -40,6 +41,7 @@ vi.mock('@/skills/skill-store', async (importOriginal) => {
     fetchSkillStoreManifest: (...args: unknown[]) => fetchSkillStoreManifestMock(...(args as [])),
     installSkillFromUrl: (...args: unknown[]) => installSkillFromUrlMock(...(args as [])),
     scanInstalledDirNames: (...args: unknown[]) => scanInstalledDirNamesMock(...(args as [])),
+    planSkillUpdate: (...args: unknown[]) => planSkillUpdateMock(...(args as [])),
   }
 })
 
@@ -198,6 +200,8 @@ describe('SkillInstallPage (issue #126)', () => {
     // The installed-dir scan runs at load (not installed yet).
     scanInstalledDirNamesMock.mockResolvedValue(new Set<string>())
     installSkillFromUrlMock.mockResolvedValue({ count: 4, manifest: ENTRY })
+    // Version plan: by default the skill is NOT installed yet.
+    planSkillUpdateMock.mockResolvedValue('install')
     // Deferred registration: refreshUserSkills must return a PENDING promise
     // first and only then resolve — so call-ORDER assertions below verify
     // the page awaits completion (a missing `await` would navigate before
@@ -295,7 +299,11 @@ describe('SkillInstallPage (issue #126)', () => {
     fireEvent.click(installButton)
 
     await waitFor(() => {
-      expect(installSkillFromUrlMock).toHaveBeenCalledWith('/skills/cw-legal-evidence-chain.zip', expect.any(Function))
+      expect(installSkillFromUrlMock).toHaveBeenCalledWith(
+        '/skills/cw-legal-evidence-chain.zip',
+        expect.any(Function),
+        expect.objectContaining({ focusDirName: 'cw-legal-evidence-chain' }),
+      )
     })
     // While the download is pending, the page must neither register nor navigate.
     expect(refreshUserSkillsMock).not.toHaveBeenCalled()
@@ -422,6 +430,8 @@ describe('SkillInstallPage (issue #126)', () => {
 
   it('idempotent for installed skills: no re-install, "already installed" badge, registration verified', async () => {
     scanInstalledDirNamesMock.mockResolvedValue(new Set([ENTRY.dirName]))
+    // The installed copy matches the store — no update to offer.
+    planSkillUpdateMock.mockResolvedValue('current')
     render(<SkillInstallPage />)
     await waitFor(() => expect(screen.getByText('skillInstall.installedBadge')).toBeInTheDocument())
 
@@ -436,6 +446,48 @@ describe('SkillInstallPage (issue #126)', () => {
     })
     await waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith('/projects/proj-1/workspaces/recent-conv')
+    })
+  })
+
+  it('offers the update path when the store ships a newer version (#154)', async () => {
+    // The installed copy is older than the store's — the page must offer
+    // the update instead of silently keeping the stale copy.
+    scanInstalledDirNamesMock.mockResolvedValue(new Set([ENTRY.dirName]))
+    planSkillUpdateMock.mockResolvedValue('update')
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('skillInstall.installedBadge')).toBeInTheDocument())
+    // The update button appears alongside the start button.
+    const updateButton = screen.getByText('skillInstall.updateButton')
+    expect(updateButton).toBeInTheDocument()
+
+    // Clicking it routes through the version-aware install flow.
+    installSkillFromUrlMock.mockResolvedValue({
+      count: 4,
+      manifest: ENTRY,
+      outcome: 'updated',
+    })
+    fireEvent.click(updateButton)
+    await waitFor(() => {
+      expect(installSkillFromUrlMock).toHaveBeenCalledWith(
+        '/skills/cw-legal-evidence-chain.zip',
+        expect.any(Function),
+        expect.objectContaining({ focusDirName: 'cw-legal-evidence-chain' }),
+      )
+    })
+  })
+
+  it('a fresh install goes through the version-aware install flow (#154)', async () => {
+    // Not installed yet: the install path must call the version-aware flow
+    // so the store's version is compared before writing.
+    render(<SkillInstallPage />)
+    await waitFor(() => expect(screen.getByText('cw-legal-evidence-chain')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('skillInstall.installButton'))
+    await waitFor(() => {
+      expect(installSkillFromUrlMock).toHaveBeenCalledWith(
+        '/skills/cw-legal-evidence-chain.zip',
+        expect.any(Function),
+        expect.objectContaining({ focusDirName: 'cw-legal-evidence-chain' }),
+      )
     })
   })
 

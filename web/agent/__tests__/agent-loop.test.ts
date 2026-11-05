@@ -349,7 +349,7 @@ describe('AgentLoop', () => {
       expect(result[result.length - 1].content).toBe('Hello')
     })
 
-    it('should handle empty assistant content', async () => {
+    it('reports an incomplete empty assistant response', async () => {
       mockAgentLoopContinue.mockImplementation(() => {
         return (async function* () {
           yield { type: 'message_end', message: assistantMessage('') }
@@ -363,8 +363,11 @@ describe('AgentLoop', () => {
         toolContext: createMockToolContext(),
       })
 
-      const result = await loop.run([createUserMessage('test')])
-      expect(result[1].content).toBeNull()
+      const callbacks = { onMessagesUpdated: vi.fn() }
+      await expect(loop.run([createUserMessage('test')], callbacks)).rejects.toThrow('empty response')
+      expect(callbacks.onMessagesUpdated).toHaveBeenCalledWith(expect.arrayContaining([
+        expect.objectContaining({ role: 'assistant', kind: 'empty', content: null }),
+      ]))
     })
 
     it('does not heuristically trim context in the convertToLlm bridge', async () => {
@@ -476,6 +479,11 @@ describe('AgentLoop', () => {
             { role: 'user', content: 'old user request', timestamp: now - 5000 },
             { ...assistantMessage('old assistant response'), timestamp: now - 4000 },
             { role: 'user', content: 'latest user request', timestamp: now - 1000 },
+            {
+              role: 'assistant',
+              content: [{ type: 'toolCall', id: 'call_1', name: 'read', arguments: '{}' }],
+              timestamp: now - 800,
+            },
             {
               ...toolResultMessage('call_1', 'read', 'fresh tool result'),
               timestamp: now - 500,
@@ -843,6 +851,11 @@ describe('AgentLoop', () => {
         return (async function* () {
           convertedMessages = await config.convertToLlm([
             createUserMessage('Please read big file'),
+            {
+              role: 'assistant',
+              content: [{ type: 'toolCall', id: 'call_read_1', name: 'read', arguments: '{}' }],
+              timestamp: Date.now(),
+            },
             toolResultMessage('call_read_1', 'read', 'x'.repeat(500)),
           ])
           yield { type: 'message_end', message: assistantMessage('ok') }

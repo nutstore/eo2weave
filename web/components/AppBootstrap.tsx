@@ -16,7 +16,7 @@ import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useProjectStore } from '@/store/project.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { initStorage, setupAutoSave, getRuntimeCapability } from '@/storage'
-import { useRouter } from 'next/navigation'
+import { useSidePanelStartupRoute } from '@/hooks/useSidePanelStartupRoute'
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { ExtensionInstallGuide } from '@/components/extension'
@@ -355,21 +355,42 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         console.error('[App] Failed to hydrate snapshot watermarks from DB:', err)
       }
 
-      // Register LLM Gateway provider + restore session from saved access_token
+      // Register custom-* providers from persisted settings BEFORE the
+      // gateway network block (#188 fix 3): this is a synchronous registry
+      // write with no dependency on gateway token refresh or model
+      // discovery — serializing it behind that block (up to the 15s
+      // discovery deadline) left the session with neither the gateway
+      // catalog nor the custom providers registered, so the quick switcher
+      // had nothing to render even when a discovery run completed.
       try {
-        const { registerLLMGatewayProvider, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId } = await import('@/agent/providers/llm-gateway-provider')
+        const { useSettingsStore } = await import('@/store/settings.store')
+        useSettingsStore.getState()._restoreDynamicProviders()
+      } catch (err) {
+        console.error('[App] Failed to restore dynamic providers:', err)
+      }
+
+      // Register LLM Gateway provider + restore session from saved access_token
+      let gatewayRestoreVersion: number | undefined
+      let gatewayRestoreGeneration: number | undefined
+      try {
+        const { registerLLMGatewayProvider, registerGatewayModels, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId } = await import('@/agent/providers/llm-gateway-provider')
         const { getValidAccessToken, getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
         registerLLMGatewayProvider()
         const clientId = getLLMGatewayClientId()
         const baseURL = getLLMGatewayBaseURL()
         if (clientId) {
+          gatewayRestoreGeneration = getGatewayAuthSessionGeneration()
+          gatewayRestoreVersion = beginGatewayCatalogRefresh()
           const token = await getValidAccessToken(baseURL, clientId)
           if (token) {
             const tokenGeneration = getGatewayAuthSessionGeneration()
+            gatewayRestoreGeneration = tokenGeneration
             // Persist refreshed access_token back so SQLite stays in sync
             const { saveApiKey } = await import('@/security/api-key-store')
             await saveApiKey(getLLMGatewayApiKeyProviderKey(), token)
             await updateGatewayModels(token, tokenGeneration)
+          } else if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
+            registerGatewayModels([], 'failed', gatewayRestoreVersion)
           }
         } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {
           // The gateway can never register here (region-gated off on global
@@ -385,6 +406,21 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         }
       } catch (err) {
         console.error('[App] Failed to register LLM Gateway provider:', err)
+        // Best-effort failure marking: a chunk/module-load failure while
+        // handling the original gateway error must not reject
+        // initializeApp before the checkHasApiKey recovery below runs
+        // (Sourcery: "Bootstrap recovery can escape").
+        if (gatewayRestoreVersion !== undefined) {
+          try {
+            const { registerGatewayModels } = await import('@/agent/providers/llm-gateway-provider')
+            const { getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
+            if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
+              registerGatewayModels([], 'failed', gatewayRestoreVersion)
+            }
+          } catch (statusErr) {
+            console.error('[App] Failed to mark gateway catalog failed:', statusErr)
+          }
+        }
         // Registration failed (e.g. network error, saved token invalid).
         // Flush the API-key cache so the UI doesn't stay stuck in a stale
         // "has API key" state from a previous session — re-evaluate with
@@ -397,21 +433,21 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         }
       }
 
-      // Restore custom-* providers from persisted settings and re-check the
-      // API key. Without this, `getProviderConfig('custom-xxx')` returns
-      // null on startup and the user would see a spurious "no API key"
-      // setup card for providers they've already configured.
+      // Restore custom-* providers (registered above) and re-check the API
+      // key now that both registration paths have settled. Without the
+      // restore, `getProviderConfig('custom-xxx')` returns null on startup
+      // and the user would see a spurious "no API key" setup card for
+      // providers they've already configured.
       //
-      // NOTE: deliberately NOT using `{ flush: true }` here. We only restored
-      // custom-* providers in this step; for extension-managed providers
-      // (codex-oauth), the registration happens asynchronously in
-      // extension.store.checkStatus() which runs on a 1s timer. Flushing
-      // here would force a false "no API key" conclusion for codex users
-      // before the extension has had a chance to register, causing the
-      // welcome screen to flash the setup card.
+      // NOTE: deliberately NOT using `{ flush: true }` here. This step only
+      // re-checks keys for providers that have registered by now; for
+      // extension-managed providers (codex-oauth), the registration happens
+      // asynchronously in extension.store.checkStatus() which runs on a 1s
+      // timer. Flushing here would force a false "no API key" conclusion
+      // for codex users before the extension has had a chance to register,
+      // causing the welcome screen to flash the setup card.
       try {
         const { useSettingsStore } = await import('@/store/settings.store')
-        useSettingsStore.getState()._restoreDynamicProviders()
         await useSettingsStore.getState().checkHasApiKey()
       } catch (err) {
         console.error('[App] Failed to restore dynamic providers:', err)
@@ -529,6 +565,45 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     })
   }, [])
 
+  // ── Gateway session reconciler (issues #171 + #172) ──
+  // A tab that only OBSERVES another tab's Nutstore AI login/logout/access-
+  // refresh gets invalidation from the auth layer's storage listener but no
+  // re-adoption: the provider stays unregistered and the tab can't send
+  // despite a valid shared session. The reconciler subscribes to the auth
+  // layer's session events (no static auth→provider import cycle — it lives
+  // in its own module) and re-adopts/reconciles. Dynamic import + dispose on
+  // unmount, same lifecycle pattern as the offline queue above.
+  useEffect(() => {
+    let dispose: (() => void) | null = null
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    // #175 review: a transient chunk-load failure used to leave the
+    // reconciler permanently uninstalled (no re-adoption until reload).
+    // Retry a bounded number of times with backoff; a still-failing import
+    // degrades to the pre-reconciler behavior (event-driven invalidation
+    // without re-adoption) instead of throwing during bootstrap.
+    const attempt = (remaining: number): void => {
+      if (cancelled) return
+      void import('@/agent/providers/gateway-session-reconciler').then(
+        ({ setupGatewaySessionReconciler }) => {
+          if (cancelled) return
+          dispose = setupGatewaySessionReconciler()
+        },
+        (error) => {
+          console.warn('[App] gateway-session-reconciler import failed:', error)
+          if (cancelled || remaining <= 0) return
+          retryTimer = setTimeout(() => attempt(remaining - 1), 2000 * (4 - remaining))
+        },
+      )
+    }
+    attempt(3)
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+      dispose?.()
+    }
+  }, [])
+
   // ── OpenRouter model reference auto-refresh ──
   // The bundled openrouter-models.json is a bootstrap fallback that lags
   // upstream (new DeepSeek/Qwen releases missing → wrong context window,
@@ -546,18 +621,8 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   //    enhancements.ts — no React-side hook needed. We only handle project
   //    routing here (was in AppReady; lives in the bootstrap so every
   //    storage-gated route gets it, not just `/`).
-  const router = useRouter()
   const initialized = useProjectStore((s) => s.initialized)
-  useEffect(() => {
-    // Project initialization completes before all storage gates finish. Wait
-    // until the app can render the target Next.js route, then consume the
-    // one-shot side-panel request; this also gives RootPage a deterministic
-    // pending marker to defer its ordinary / → /projects redirect.
-    if (!initialized || !isStorageReady) return
-    void import('@/agent/workspace-assistant-context').then(({ handleWorkspaceAssistantOnReady }) => {
-      return handleWorkspaceAssistantOnReady((path: string) => router.replace(path))
-    })
-  }, [initialized, isStorageReady, router])
+  const sidePanelStartupPending = useSidePanelStartupRoute(initialized && isStorageReady)
 
   // ── Side-panel package opt-in prompt (issue #100) ──
   // When the side panel opens on a site hosted by a builtin WebMCP package
@@ -708,7 +773,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     )
   }
 
-  if (!isStorageReady) {
+  if (!isStorageReady || sidePanelStartupPending) {
     // Storage-layer failure recorded in the project store: show the SAME
     // InitErrorBanner (single viewport, Retry re-runs initialize() which
     // re-opens the SQLite worker through getReadyWorkerClient) plus the

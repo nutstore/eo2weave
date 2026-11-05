@@ -52,6 +52,36 @@ function updateCheckpointToolRegistration(shouldRegister: boolean): void {
 // resolved immediately — zero CPU overhead compared to 100ms polling.
 // ---------------------------------------------------------------------------
 const switchWaiters = new Map<string, Array<() => void>>()
+const workspaceEnsures = new Map<string, Promise<Workspace>>()
+
+/**
+ * Upper bound for an in-flight `workspaceEnsures` entry (#166 item 2). A
+ * never-settling ensure promise would otherwise stay in the map forever:
+ * every later `ensureWorkspace` call for that workspace awaits the same
+ * wedged entry, blocking all future dispatches for the conversation. On
+ * expiry the shared entry rejects and is removed, so callers fail fast and
+ * the next attempt starts a fresh ensure.
+ *
+ * Same shape as META_PERSIST_WAIT_TIMEOUT_MS in webmcp/app-tools/workspace-setup.
+ */
+const WORKSPACE_ENSURE_TIMEOUT_MS = 15_000
+
+function withEnsureTimeout(pending: Promise<Workspace>): Promise<Workspace> {
+  return new Promise<Workspace>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error('WORKSPACE_ENSURE_TIMEOUT')),
+      WORKSPACE_ENSURE_TIMEOUT_MS
+    )
+    const settle = (fn: () => void) => {
+      clearTimeout(timer)
+      fn()
+    }
+    pending.then(
+      (record) => settle(() => resolve(record)),
+      (err) => settle(() => reject(err))
+    )
+  })
+}
 
 function notifySwitchComplete(workspaceId: string): void {
   const waiters = switchWaiters.get(workspaceId)
@@ -322,6 +352,9 @@ interface WorkspaceState {
 
   /** Create a new workspace (writes to both SQLite and OPFS) */
   createWorkspace: (id: string, rootDirectory: string, name?: string) => Promise<WorkspaceMetadata>
+
+  /** Ensure a conversation's workspace without changing the current view. */
+  ensureWorkspace: (id: string, name?: string, projectId?: string) => Promise<Workspace>
 
   /** Switch to a different workspace */
   switchWorkspace: (id: string) => Promise<void>
@@ -632,6 +665,68 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               isLoading: false,
               initialized: true,
             })
+          }
+        },
+
+        ensureWorkspace: async (id, name, targetProjectId) => {
+          const pending = workspaceEnsures.get(id)
+          if (pending) {
+            // #166 item 2: bound the shared wait. A never-settling entry would
+            // otherwise wedge every later ensure (and every later agent
+            // dispatch) for this workspace; on expiry the entry is deleted
+            // below so the next attempt starts fresh.
+            const record = await withEnsureTimeout(pending)
+            if (targetProjectId && record.projectId !== targetProjectId) {
+              throw new Error(`Workspace ${id} already belongs to project ${record.projectId}`)
+            }
+            return record
+          }
+
+          // Capture the open conversation before asynchronous work. An existing
+          // target keeps its own project; a new one inherits the open context.
+          const contextId = get().activeWorkspaceId
+          const ensure = (async () => {
+            const routeProjectId = await resolveActiveProjectId()
+            const repo = getWorkspaceRepository()
+            const existing = await repo.findWorkspaceById(id)
+            if (existing?.projectId && targetProjectId && existing.projectId !== targetProjectId) {
+              throw new Error(`Workspace ${id} already belongs to project ${existing.projectId}`)
+            }
+            const context = !existing?.projectId && contextId
+              ? await repo.findWorkspaceById(contextId)
+              : null
+            const projectId = existing?.projectId || targetProjectId || context?.projectId || routeProjectId
+            if (!projectId) throw new Error('No open project selected for workspace creation')
+
+            const manager = await getWorkspaceManager()
+            const runtime = (existing?.projectId ? await manager.getWorkspace(id) : undefined)
+              ?? await manager.createWorkspace(`workspaces/${id}`, id, name, projectId)
+            const record = await repo.findWorkspaceById(id)
+            if (!record || record.projectId !== projectId) {
+              throw new Error(`Workspace binding was not persisted for conversation ${id}`)
+            }
+
+            // Only the currently displayed project's rows belong in this list.
+            // Never call initialize()/refreshWorkspaces(): they reset active UI.
+            if (await resolveActiveProjectId() === projectId) {
+              set((state) => {
+                const entry = { ...sqliteWorkspaceToWorkspaceStats(record), pendingCount: runtime.pendingCount }
+                state.workspaces = sortWorkspacesForDisplay(
+                  [...state.workspaces.filter((w) => w.id !== id), entry],
+                  state.pinnedWorkspaceIds,
+                )
+              })
+            }
+            return record
+          })()
+          workspaceEnsures.set(id, ensure)
+          try {
+            // Same bound on the owner's own await (#166 item 2): if the
+            // underlying ensure never settles, the entry is deleted and a
+            // fresh ensure can be started instead of wedging the workspace.
+            return await withEnsureTimeout(ensure)
+          } finally {
+            workspaceEnsures.delete(id)
           }
         },
 

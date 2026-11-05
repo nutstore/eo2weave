@@ -6,11 +6,13 @@ import { Terminal } from 'lucide-react'
 import { CopyIconButton } from '../CopyIconButton'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
+import { useT } from '@/i18n'
 
 registerRenderer({
   name: 'run_python',
   icon: <Terminal className="h-3.5 w-3.5 text-neutral-400" />,
   Summary(ctx) {
+    const t = useT()
     const output = extractOutput(ctx)
     const code = typeof ctx.args.code === 'string' ? ctx.args.code : ''
     const codeLines = code ? code.split('\n').length : 0
@@ -19,7 +21,7 @@ registerRenderer({
       return (
         <>
           <code className="font-medium text-neutral-700 dark:text-foreground">python</code>
-          <span className="text-xs text-blue-500">running...</span>
+          <span className="text-xs text-blue-500">{t('agent.toolStatus.running')}</span>
         </>
       )
     }
@@ -209,13 +211,14 @@ function extractOutput(ctx: ToolRenderCtx): {
 }
 
 function RunningIndicator() {
+  const t = useT()
   return (
     <div className="flex items-center gap-2 text-xs text-blue-500">
       <span className="relative flex h-2 w-2">
         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" />
         <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
       </span>
-      <span>Running...</span>
+      <span>{t('agent.toolStatus.running')}</span>
     </div>
   )
 }

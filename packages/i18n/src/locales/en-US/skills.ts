@@ -83,6 +83,24 @@ export const discover = {
     progressUninstallFailed: "Uninstall failed",
     progressDownloadPercent: "Download progress {percent}%",
     loadMore: "Load more ({remaining} remaining)",
+    progressDownloadingBytes: "Downloading… ({loaded})",
+    alreadyInstalled: "Already installed",
+    installedFiles: "Installed {count} files",
+    alreadyInstalledVersion: "Already installed (v{version})",
+    skippedUpdate: "Skipped update: installed v{installed} is newer than store v{store}",
+    memberRemovedDuringInstall: "Install finished, but a skill removed during the install was not re-created",
+    updatedVersion: "Updated v{from} → v{to} ({count} files)",
+    update: "Update",
+    updating: "Updating",
+    updateDone: "Updated",
+    bundleUpdateTitle: "Also update other skills from this bundle?",
+    bundleUpdateBody:
+      "This bundle also ships newer versions of {count} skill(s) you already installed. Updating them replaces your installed copies, including local edits. Uncheck any skill you want to keep.",
+    bundleUpdateVersion: "installed v{from} → store v{to}",
+    bundleUpdateAccept: "Update selected ({count})",
+    bundleUpdateSkip: "Keep installed copies",
+    bundleUpdatesSkipped: "Kept your installed copies of {names}.",
+    siblingUpdatesApplied: "Updated bundled skills: {names}.",
 } as const
 
 export const skillCard = {
@@ -161,6 +179,8 @@ export const skillEditor = {
     nameRequired: "Skill name is required",
     descriptionRequired: "Description is required",
     saveFailed: "Failed to save",
+    renameCleanupFailed:
+      "Saved the new name, but removing the old skill \"{name}\" failed ({error}). Both skills now exist — delete one from the skill list.",
     // Category labels
     categories: {
       codeReview: "Code Review",

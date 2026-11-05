@@ -37,6 +37,7 @@ cd browser-extension/native-host && cargo build --release  # native host
 
 ### Test execution rules
 
+- Focus implementation and tests on normal usage and explicitly requested behavior. Do not add special-case logic or tests for rare edge cases unless the requirements explicitly call for them; keep code simple and avoid unnecessary branches and defensive state.
 - The **full** `pnpm test:run` suite can exceed command timeouts. Run by directory chunks instead:
   - `cd web && pnpm test:run agent`
   - `cd web && pnpm test:run components`

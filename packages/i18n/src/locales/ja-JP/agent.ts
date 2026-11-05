@@ -162,4 +162,14 @@ export const agent = {
         denyAll: "すべて拒否",
         denyAllHint: "このコマンドと待機中のすべてのコマンドを拒否",
     },
+    // Tool renderer status labels
+    toolStatus: {
+        running: "実行中…",
+        reading: "読み込み中…",
+        loadingLargeResultSet: "大量の結果を読み込み中…",
+        stateRunning: "実行中",
+        stateStarting: "起動中（ポート未応答）",
+        stateExited: "終了",
+        stateStopped: "停止済み",
+    },
 } as const

@@ -21,7 +21,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef, memo } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronRight, ChevronDown, Folder, FolderOpen, RefreshCw, Copy, MousePointer2, Cloud, Trash2 } from 'lucide-react'
-import micromatch from 'micromatch'
 import { BrandButton, BrandBadge } from '@creatorweave/ui'
 import { formatBytes } from '@/lib/utils'
 import { FileIcon } from '@/lib/file-icons'
@@ -30,6 +29,15 @@ import { useWorkspaceStore } from '@/store/workspace.store'
 import { useSkillsStore } from '@/store/skills.store'
 import { SidebarPanelHeader } from '@/components/layout/SidebarPanelHeader'
 import { useT } from '@/i18n'
+import {
+  isTreeEntryIgnored,
+  parseTreeIgnoreRules,
+  treeIgnoreRulesFor,
+  withDirectoryIgnoreRules,
+  type GitIgnoreRule,
+  type TreeIgnoreRules,
+} from '@/components/file-viewer/file-tree-ignore'
+import { readDirectoryIgnoreRules } from '@/vfs/gitignore-discovery'
 import type { PendingChange } from '@/opfs/types/opfs-types'
 import type { DiskExecutor } from '@/opfs/native-disk/executor'
 
@@ -54,68 +62,6 @@ interface TreeNode {
   loaded?: boolean
   /** File handle - null indicates OPFS-only file (not on disk) */
   handle: FileSystemDirectoryHandle | FileSystemFileHandle | null
-}
-
-interface GitIgnoreRule {
-  pattern: string
-  negative: boolean
-  directoryOnly: boolean
-}
-
-/** Parse the root .gitignore while preserving rule order and negations. */
-function parseGitIgnore(content: string): GitIgnoreRule[] {
-  const rules: GitIgnoreRule[] = []
-
-  for (const rawLine of content.split(/\r?\n/)) {
-    let line = rawLine.trim()
-    if (!line || line.startsWith('#')) continue
-
-    let negative = false
-    if (line.startsWith('!')) {
-      negative = true
-      line = line.slice(1)
-    } else if (line.startsWith('\\!')) {
-      line = line.slice(1)
-    }
-    if (line.startsWith('\\#')) line = line.slice(1)
-
-    const directoryOnly = line.endsWith('/')
-    if (directoryOnly) line = line.slice(0, -1)
-    if (line.startsWith('/')) line = line.slice(1)
-    if (!line) continue
-
-    rules.push({ pattern: line, negative, directoryOnly })
-  }
-
-  return rules
-}
-
-/** Evaluate a path with gitignore's ordered, last-match-wins behavior. */
-function matchesGitIgnore(
-  path: string,
-  kind: TreeNode['kind'],
-  rules: GitIgnoreRule[]
-): boolean {
-  const segments = path.split('/').filter(Boolean)
-  const candidates = segments.map((_, index) => ({
-    path: segments.slice(0, index + 1).join('/'),
-    isDirectory: index < segments.length - 1 || kind === 'directory',
-  }))
-  let ignored = false
-
-  for (const rule of rules) {
-    const basenamePattern = !rule.pattern.includes('/')
-    const matched = candidates.some((candidate) => {
-      if (rule.directoryOnly && !candidate.isDirectory) return false
-      return micromatch.isMatch(candidate.path, rule.pattern, {
-        basename: basenamePattern,
-        dot: true,
-      })
-    })
-    if (matched) ignored = !rule.negative
-  }
-
-  return ignored
 }
 
 interface FileTreePanelBaseProps {
@@ -511,7 +457,7 @@ export const FileTreePanel = memo(function FileTreePanel({
   const [loading, setLoading] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [gitIgnoreRules, setGitIgnoreRules] = useState<GitIgnoreRule[]>([])
+  const [gitIgnoreRulesByDir, setGitIgnoreRulesByDir] = useState<TreeIgnoreRules>(() => new Map())
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId)
   const bumpSkillsScanVersion = useSkillsStore((s) => s.bumpSkillsScanVersion)
 
@@ -687,6 +633,32 @@ export const FileTreePanel = memo(function FileTreePanel({
     []
   )
 
+  /**
+   * Read this directory's own .gitignore — its rules govern that directory's
+   * entries only. Both load paths behave the same: the disk executor read and
+   * the OPFS handle reuse the helpers web/vfs/gitignore-discovery.ts gives the
+   * discovery walk, so tree rows dim exactly the entries the delete flow
+   * treats as ignored (#189).
+   */
+  const readDirectoryRules = useCallback(
+    async (dirHandle: FileSystemDirectoryHandle | null, dirPath: string): Promise<GitIgnoreRule[]> => {
+      if (diskRootId && diskExecutor?.read) {
+        try {
+          const result = await diskExecutor.read(diskRootId, dirPath ? `${dirPath}/.gitignore` : '.gitignore')
+          return typeof result.content === 'string' ? parseTreeIgnoreRules(result.content, dirPath) : []
+        } catch {
+          return [] // A missing or unreadable .gitignore must not block the tree.
+        }
+      }
+      if (dirHandle) {
+        // Own rules only; withDirectoryIgnoreRules below prepends the inherited set.
+        return readDirectoryIgnoreRules(dirHandle, dirPath, [])
+      }
+      return []
+    },
+    [diskExecutor, diskRootId]
+  )
+
   /** Load children from a browser handle, a routed disk executor, or OPFS. */
   const loadChildren = useCallback(
     async (dirHandle: FileSystemDirectoryHandle | null, parentPath: string): Promise<TreeNode[]> => {
@@ -819,6 +791,11 @@ export const FileTreePanel = memo(function FileTreePanel({
       const existingNames = new Set(children.map((c) => c.name))
       addCachedFilesAtLevel(children, rootCachedPaths, parentPath, existingNames, pendingCreates)
 
+      // Keep this directory's .gitignore with the rules inherited above it so
+      // entries below it are checked against root + ancestor rules.
+      const ownRules = await readDirectoryRules(dirHandle, parentPath)
+      setGitIgnoreRulesByDir((prev) => withDirectoryIgnoreRules(prev, parentPath, ownRules))
+
       return children
     },
     [
@@ -832,43 +809,27 @@ export const FileTreePanel = memo(function FileTreePanel({
       rootPendingChanges,
       addCachedFilesAtLevel,
       addCachedSubdirsAtLevel,
+      readDirectoryRules,
     ]
   )
 
-  /** Load ignore rules from the selected disk root, if it has a .gitignore. */
-  const loadGitIgnoreRules = useCallback(async (): Promise<GitIgnoreRule[]> => {
-    try {
-      let content: string | null = null
-      if (diskRootId && diskExecutor?.read) {
-        const result = await diskExecutor.read(diskRootId, '.gitignore')
-        content = typeof result.content === 'string' ? result.content : null
-      } else if (directoryHandle) {
-        const handle = await directoryHandle.getFileHandle('.gitignore')
-        content = await (await handle.getFile()).text()
-      }
-      return content === null ? [] : parseGitIgnore(content)
-    } catch {
-      // A missing or unreadable .gitignore should not block the file tree.
-      return []
-    }
-  }, [directoryHandle, diskRootId, diskExecutor])
-
   const isGitIgnored = useCallback(
-    (node: TreeNode) => matchesGitIgnore(node.path, node.kind, gitIgnoreRules),
-    [gitIgnoreRules]
+    (node: TreeNode) =>
+      isTreeEntryIgnored({ path: node.path, kind: node.kind }, treeIgnoreRulesFor(node.path, gitIgnoreRulesByDir)),
+    [gitIgnoreRulesByDir]
   )
 
-  /** Load root directory and optionally reload expanded paths */
+  /**
+   * Load root directory and optionally reload expanded paths.
+   *
+   * loadChildren also re-reads each directory's .gitignore, so the dimmed rows
+   * track .gitignore edits on every refresh.
+   */
   const loadRoot = useCallback(
     async (preserveExpanded: boolean = false) => {
       setLoading(true)
       try {
-        // Read ignore rules on every refresh so visual state tracks .gitignore edits.
-        const [children, nextGitIgnoreRules] = await Promise.all([
-          loadChildren(directoryHandle ?? null, ''),
-          loadGitIgnoreRules(),
-        ])
-        setGitIgnoreRules(nextGitIgnoreRules)
+        const children = await loadChildren(directoryHandle ?? null, '')
         setRootNodes(children)
         setLoaded(true)
         setLoadError(null)
@@ -910,7 +871,7 @@ export const FileTreePanel = memo(function FileTreePanel({
         setLoading(false)
       }
     },
-    [directoryHandle, loadChildren, loadGitIgnoreRules, expandedPaths]
+    [directoryHandle, loadChildren, expandedPaths]
   )
 
   const handleRefresh = useCallback(() => {
@@ -1095,7 +1056,7 @@ export const FileTreePanel = memo(function FileTreePanel({
     setLoaded(false)
     setLoading(false)
     setLoadError(null)
-    setGitIgnoreRules([])
+    setGitIgnoreRulesByDir(new Map())
     setExpandedPaths(new Set())
     setRootNodes([])
   }, [directoryHandle, diskRootId, diskExecutor, activeWorkspaceId])

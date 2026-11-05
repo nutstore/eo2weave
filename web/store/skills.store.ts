@@ -11,9 +11,11 @@ import { parseSkillMd, serializeSkillMd, slugify } from '@/skills/skill-parser'
 import { getSkillManager } from '@/skills/skill-manager'
 import { useProjectStore } from '@/store/project.store'
 import {
-  writeUserSkillMd,
   deleteUserSkillDir,
   userSkillDirExists,
+  writeUserSkillMd,
+  writeUserSkillMdLocked,
+  withSkillImportSerialization,
 } from '@/skills/user-skills-scanner'
 import { deleteProjectSkillFromNativeFs } from '@/skills/project-skill-live-reader'
 
@@ -152,12 +154,6 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
     },
 
     createSkillSkeleton: async (dirName, name, description) => {
-      // Guard: a directory with this name already exists.
-      const exists = await userSkillDirExists(dirName).catch(() => false)
-      if (exists) {
-        return { success: false, error: 'A skill with this directory name already exists' }
-      }
-
       // Build a SKILL.md template. Frontmatter aligns with the builtin
       // skill style (see socratic-brainstorm/SKILL.md). The instruction
       // body is an HTML comment guide + a placeholder line so the user has
@@ -192,11 +188,37 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
         '',
       ].join('\n')
 
+      // Existence guard + write run under the SAME per-directory lock the
+      // import pipeline uses (#185 review): two overlapping creates could
+      // otherwise both pass a lock-free check and the later writeUserSkillMd
+      // would silently replace the earlier skeleton. A storage failure in
+      // the check must NOT read as "not exists" — that would overwrite an
+      // existing skill — so it surfaces as a failed create. This is a
+      // single-user local OPFS; cross-tab duplicate creates are the only
+      // realistic overlap, and the Web Locks-based serializer covers those.
       try {
-        await writeUserSkillMd(dirName, content)
+        await withSkillImportSerialization([dirName], async () => {
+          let exists: boolean
+          try {
+            exists = await userSkillDirExists(dirName)
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error)
+            throw new Error(`Failed to check skill existence: ${msg}`)
+          }
+          if (exists) {
+            throw new Error('A skill with this directory name already exists')
+          }
+          // Already inside the per-directory serializer — call the locked
+          // write directly. Re-acquiring via writeUserSkillMd() would wait
+          // on the lock this call holds and hang the create forever
+          // (#185 review round N).
+          await writeUserSkillMdLocked(dirName, content)
+        })
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        return { success: false, error: `Failed to create skill: ${msg}` }
+        // The serialized section throws ready-to-show messages; anything
+        // unexpected is still a create failure, not a silent overwrite.
+        return { success: false, error: msg }
       }
 
       const manager = getSkillManager()
@@ -217,9 +239,27 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
           // Check if the directory exists before attempting deletion.
           // If it doesn't exist, it may be a legacy SQLite-only skill that
           // wasn't migrated yet — fall through to SQLite deletion.
-          const existsInOpfs = await userSkillDirExists(dirName).catch(() => false)
+          // The existence check runs UNDER the same per-directory import
+          // lock as the removal (#154 review): a concurrent update holds
+          // that lock and its staging phase temporarily REMOVES the
+          // directory — a lock-free check would see it absent, take the
+          // SQLite-only path, and let the update recreate the skill the
+          // user just uninstalled.
+          const existsInOpfs = await withSkillImportSerialization(
+            [dirName],
+            () => userSkillDirExists(dirName),
+          )
+          // A storage failure here must NOT read as "absent" (#185): taking
+          // the SQLite-only path on a transient OPFS error would leave the
+          // OPFS directory orphaned and the skill would reappear on the next
+          // rescan. Let the error surface instead.
           if (existsInOpfs) {
             await deleteUserSkillDir(dirName)
+            // Reconcile the runtime cache with the COMPLETED delete before
+            // the rescan below: when that rescan fails, the manager keeps its
+            // previous cache wholesale, which would leave the deleted skill in
+            // the UI and agent context (#197).
+            getSkillManager().forgetUserSkill(dirName)
           } else {
             await storage.deleteSkill(id)
           }
@@ -238,8 +278,13 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
           await storage.deleteSkill(id)
         }
       } catch (error) {
+        // Storage failed — the skill may still exist on disk, so removing it
+        // from store state would report a deletion that never happened and
+        // the next rescan would resurrect it (#185 review round N). Stop
+        // here and surface the failure instead.
         console.error('[SkillsStore] deleteSkill failed for', id, error)
-        // Still remove from store so UI reflects intent even if storage fails
+        const msg = error instanceof Error ? error.message : String(error)
+        throw new Error(`Failed to delete skill: ${msg}`)
       }
       set((state) => {
         state.skills = state.skills.filter((s) => s.id !== id)

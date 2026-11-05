@@ -23,12 +23,38 @@ export interface SlashCommandItem {
   label: string
   /** 下拉菜单中的简短描述（builtin 命令存 i18n key，UI 层翻译） */
   description: string
+  /**
+   * Optional localized descriptions keyed by locale (from
+   * `description.<locale>:` in the skill's SKILL.md). Resolved at RENDER time
+   * by {@link resolveSlashCommandDescription}, so switching the UI language
+   * does not require re-registering commands.
+   */
+  descriptionI18n?: Record<string, string>
   /** 命令来源 — builtin 与 skill 在菜单中分组展示 */
   source: 'builtin' | 'skill' | 'plugin' | 'user'
   /** 可选的图标名（Lucide icon） */
   icon?: string
   /** builtin 命令是否接受参数（如 /translate <lang>），UI 用于占位提示 */
   takesArg?: boolean
+}
+
+/**
+ * Description to show for a command in the active locale.
+ *
+ * Exact locale (`zh-CN`) wins, then its language prefix (`zh-CN` → `zh`),
+ * then the base description. Builtin commands keep their i18n-key behaviour —
+ * callers translate those with `t()` instead.
+ */
+export function resolveSlashCommandDescription(
+  item: Pick<SlashCommandItem, 'description' | 'descriptionI18n'>,
+  locale: string,
+): string {
+  const i18n = item.descriptionI18n
+  if (!i18n || locale === 'en-US') return item.description
+  const exact = i18n[locale]
+  if (exact) return exact
+  const language = locale.split('-')[0]
+  return (language && i18n[language]) || item.description
 }
 
 // ============================================================================

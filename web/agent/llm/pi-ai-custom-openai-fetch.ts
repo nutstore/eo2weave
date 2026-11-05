@@ -143,9 +143,12 @@ function streamCwOpenAIChatCompletions(
       // Set only when a 401 triggered a force-refresh attempt that ended in
       // status === 'expired' — i.e. the gateway session is unrecoverable and
       // the user must re-login (drives the GATEWAY_CREDENTIALS_EXPIRED error
-      // card below). A transient refresh failure (network / 5xx) keeps the
-      // original gateway error and the generic retry UI.
+      // card below). 'missing' drives the GATEWAY_CREDENTIALS_MISSING card
+      // (confirmed absence — never logged in / fully purged; #172 finding 3).
+      // A transient refresh failure (network / 5xx) keeps the original
+      // gateway error and the generic retry UI.
       let gatewayCredentialsExpired = false
+      let gatewayCredentialsMissing = false
 
       // 401 + LLM Gateway provider → force-refresh token then retry once.
       // Gateway access tokens are short-lived; this transparently refreshes
@@ -173,11 +176,21 @@ function streamCwOpenAIChatCompletions(
           } else if (refreshResult.status === 'expired') {
             gatewayCredentialsExpired = true
             console.warn('[llm-gateway] refresh reported dead credentials')
+          } else if (refreshResult.status === 'missing') {
+            // Defensive fallback (#172 finding 3): the failed request may not
+            // have carried a token at all (the keyless exception let an empty
+            // key through, or the credential was purged mid-flight). A
+            // CONFIRMED absence on a gateway 401 maps to an actionable login
+            // entry; temporary failures keep the raw 401 below.
+            gatewayCredentialsMissing = true
+            console.warn('[llm-gateway] refresh reported missing credentials')
           } else {
-            // 'missing' (never logged in) and 'temporary_error' (network/5xx)
-            // keep the original gateway error — only a definitively expired
-            // credential gets the re-login card.
-            console.warn('[llm-gateway] refresh failed temporarily or missing; preserving original gateway error')
+            // 'temporary_error' — including a FAILED access-shadow inspection
+            // (#175 review: the refresh path reports a transient storage
+            // failure as temporary_error, never 'missing') — keeps the raw
+            // 401 below: only a definitively dead/absent credential gets the
+            // re-login card.
+            console.warn('[llm-gateway] refresh failed temporarily; preserving original gateway error')
           }
         } catch (e) {
           console.warn('[llm-gateway] force-refresh threw temporarily:', e)
@@ -187,6 +200,27 @@ function streamCwOpenAIChatCompletions(
 
       if (!response.ok) {
         const errorBody = await safeReadText(response)
+        // LLM Gateway with a CONFIRMED absent credential (401 + refresh ended
+        // in 'missing' — never logged in / fully purged; #172 finding 3) →
+        // throw with a structured [CODE] prefix so the error card can offer a
+        // "Log in" action instead of a raw 401.
+        if (
+          response.status === 401 &&
+          String(model.provider) === 'llm-gateway' &&
+          gatewayCredentialsMissing
+        ) {
+          const { t: translateStatic } = await import('@creatorweave/i18n')
+          const { useI18nStore } = await import('@/i18n/store')
+          const locale = useI18nStore.getState().locale
+          const msg = translateStatic(locale, 'settings.gateway.notLoggedInError')
+          throw new Error(
+            `[GATEWAY_CREDENTIALS_MISSING] ${
+              msg !== 'settings.gateway.notLoggedInError'
+                ? msg
+                : 'Not logged in to Nutstore AI. Please log in first.'
+            }`
+          )
+        }
         // LLM Gateway with an unrecoverable dead credential (401 + refresh
         // ended in 'expired') → throw with a structured [CODE] prefix so the
         // error card can offer a "Re-login" action instead of a generic
@@ -876,6 +910,29 @@ function convertContextMessages(context: Context, model: Model<Api>): unknown[] 
       // the content blocks directly.
       if (thinkingContent) {
         assistantMessage.reasoning_content = thinkingContent
+      }
+
+      // OpenAI chat-completions assistant messages cannot carry image parts
+      // (image_url blocks are only defined for user/tool messages), so an
+      // image-only assistant turn — pi-ai surfaces generated images as
+      // {type:'image'} blocks on assistant turns — would serialize to
+      // `content: null` with no tool_calls and be dropped entirely, erasing
+      // the turn and breaking tool-call ordering for subsequent turns.
+      // Keep the message alive with a short text placeholder instead
+      // (issue #165).
+      if (assistantMessage.content === null && toolCalls.length === 0) {
+        // pi-ai's AssistantMessage type does not declare image blocks on
+        // assistant turns (same limitation message-mappers.ts documents);
+        // detect them through a structural cast.
+        const imageBlocks = message.content.filter(
+          (part) => (part as { type: string }).type === 'image'
+        )
+        if (imageBlocks.length > 0) {
+          assistantMessage.content =
+            imageBlocks.length === 1
+              ? '[generated an image]'
+              : `[generated ${imageBlocks.length} images]`
+        }
       }
 
       if (assistantMessage.content !== null || toolCalls.length > 0) {

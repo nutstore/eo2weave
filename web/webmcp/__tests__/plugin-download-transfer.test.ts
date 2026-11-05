@@ -2,8 +2,23 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   assertPublicHttpsDownloadUrl,
   assertValidMcpEndpointUrl,
+  isForbiddenIpLiteral,
   streamPluginDownload,
 } from '../../../browser-extension/entrypoints/webmcp/plugin-download-transfer'
+
+/**
+ * The privileged download path is restricted to a host allowlist (browser
+ * fetch cannot pin the connected IP, so DNS control by the download plan must
+ * not be exploitable). Tests therefore use the canonical GitHub raw host —
+ * the transport every real registry install goes through — instead of
+ * arbitrary public hostnames, which the validator now refuses.
+ */
+const RAW_BASE = 'https://raw.githubusercontent.com/nutstore/eo2weave/main/registry/packages'
+const rawAsset = (name: string) => `${RAW_BASE}/${name}`
+
+/** Hostname exactly as the validator derives it (lowercased, no brackets). */
+const hostOf = (url: string) =>
+  new URL(url).hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '').replace(/\.$/, '')
 
 // The plugin-download plan's URL comes from an untrusted page tool result and
 // is fetched by the extension with background privileges. The contract: only
@@ -30,10 +45,20 @@ describe('plugin download URL validation', () => {
     ]) {
       expect(() => assertPublicHttpsDownloadUrl(url)).toThrow()
     }
-    // Public hosts still pass.
-    expect(() => assertPublicHttpsDownloadUrl('https://cdn.example.com/a.pdf')).not.toThrow()
+    // A public host that is NOT on the download allowlist is refused: the
+    // privileged fetch must never follow a download plan onto a host whose DNS
+    // the plan's author controls.
+    expect(() => assertPublicHttpsDownloadUrl('https://cdn.example.com/a.pdf')).toThrow(/host is not allowed/)
+    // The canonical GitHub raw host is the transport every real registry
+    // install uses, so it must pass.
+    expect(() => assertPublicHttpsDownloadUrl(rawAsset('asset.zip'))).not.toThrow()
+    // jsDelivr remains allowlisted as the CN mirror transport.
+    expect(() => assertPublicHttpsDownloadUrl('https://cdn.jsdelivr.net/gh/nutstore/eo2weave@main/asset.zip')).not.toThrow()
   })
 
+  // Driven through the predicate directly: at the URL level every non-listed
+  // host is refused first, which would mask a per-family regression. The same
+  // predicate guards the plugin-download and MCP-endpoint paths.
   it('rejects the full IPv6 private/reserved families and IPv4 oddities (#148 round 7: some link-local addresses pass validation)', () => {
     const blocked = [
       // IPv6 loopback / unspecified, expanded and mapped forms.
@@ -79,13 +104,11 @@ describe('plugin download URL validation', () => {
       'https://224.0.0.1/a.pdf',          // multicast 224/4
       'https://240.0.0.1/a.pdf',          // reserved 240/4
       'https://255.255.255.255/a.pdf',    // broadcast
-      // Single-label / bare hostname (resolves via local search domains).
-      'https://intranet/a.pdf',
-      // Malformed IPv6-ish literal.
-      'https://[gg::1]/a.pdf',
+      // Bare-hostname and malformed-literal refusals are URL-shape checks and
+      // stay in the validator test above; this loop is only about IP families.
     ]
     for (const url of blocked) {
-      expect(() => assertPublicHttpsDownloadUrl(url), url).toThrow()
+      expect(isForbiddenIpLiteral(hostOf(url)), url).toBe(true)
     }
     // Public addresses still pass.
     for (const ok of [
@@ -97,7 +120,7 @@ describe('plugin download URL validation', () => {
       'https://[64:ff9b::8.8.8.8]/a.pdf',
       'https://[64:ff9b:1::8.8.8.8]/a.pdf',
     ]) {
-      expect(() => assertPublicHttpsDownloadUrl(ok), ok).not.toThrow()
+      expect(isForbiddenIpLiteral(hostOf(ok)), ok).toBe(false)
     }
   })
 
@@ -121,15 +144,18 @@ describe('plugin download URL validation', () => {
       await streamPluginDownload(
         {
           transferId: 't1',
-          downloadUrl: 'https://cdn.example.com/a.pdf',
+          downloadUrl: rawAsset('a.pdf'),
           savePath: '/',
           fileName: 'a.pdf',
         } as never,
         (frame) => { frames.push(frame as { type?: string; message?: string }) },
       )
-      // Exactly ONE privileged request: the opaque-redirect is refused, and
-      // no second hop is attempted against any URL.
-      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      // The opaque-redirect is refused on the canonical host, then retried
+      // once on the jsDelivr mirror — exactly one request per candidate and
+      // NEVER a hop against the (unreadable) redirect target.
+      const targets = fetchSpy.mock.calls.map(call => String(call[0]))
+      expect(targets).toHaveLength(2)
+      expect(targets.every(target => target.startsWith('https://raw.githubusercontent.com/') || target.startsWith('https://cdn.jsdelivr.net/'))).toBe(true)
       expect(frames[0]!.type).toBe('error')
       expect(frames[0]!.message).toContain('redirect')
     } finally {
@@ -152,16 +178,17 @@ describe('plugin download URL validation', () => {
       await streamPluginDownload(
         {
           transferId: 't1',
-          downloadUrl: 'https://cdn.example.com/asset.pdf',
+          downloadUrl: rawAsset('asset.pdf'),
           savePath: '/',
           fileName: 'asset.pdf',
         } as never,
         (frame) => { frames.push(frame as { type?: string; errorCode?: string; message?: string }) },
       )
-      // Only ONE privileged request goes out — to the public URL. The private
-      // redirect target is validated and refused BEFORE the second fetch.
-      expect(fetchSpy).toHaveBeenCalledTimes(1)
-      expect(String(fetchSpy.mock.calls[0]![0])).toBe('https://cdn.example.com/asset.pdf')
+      // The first request goes to the public canonical URL only; the private
+      // redirect target is validated and refused BEFORE any request reaches
+      // it. (The mirror candidate is retried separately, never the redirect.)
+      expect(String(fetchSpy.mock.calls[0]![0])).toBe(rawAsset('asset.pdf'))
+      expect(fetchSpy.mock.calls.some(call => String(call[0]).includes('169.254.169.254'))).toBe(false)
       expect(frames[0]!.type).toBe('error')
       expect(frames[0]!.errorCode).toBe('WEBMCP_PLUGIN_DOWNLOAD_STREAM_FAILED')
     } finally {
@@ -179,7 +206,10 @@ describe('plugin download URL validation', () => {
           ok: true,
           status: 302,
           url: String(url),
-          headers: new Headers({ location: `https://mirror${hop}.example.com/a.pdf` }),
+          // Every hop stays on the allowlisted host: an off-list redirect
+          // target is refused before the next request, so a chain can only
+          // be followed between allowlisted hosts.
+          headers: new Headers({ location: rawAsset(`hop-${hop}.zip`) }),
           arrayBuffer: async () => new ArrayBuffer(0),
         }
       }
@@ -198,18 +228,14 @@ describe('plugin download URL validation', () => {
       await streamPluginDownload(
         {
           transferId: 't1',
-          downloadUrl: 'https://cdn.example.com/a.pdf',
+          downloadUrl: rawAsset('a.pdf'),
           savePath: '/',
           fileName: 'a.pdf',
         } as never,
         (frame) => { frames.push(frame as { type?: string }) },
       )
       // 2 redirects followed (each Location validated first), then the 200.
-      expect(fetched).toEqual([
-        'https://cdn.example.com/a.pdf',
-        'https://mirror1.example.com/a.pdf',
-        'https://mirror2.example.com/a.pdf',
-      ])
+      expect(fetched).toEqual([rawAsset('a.pdf'), rawAsset('hop-1.zip'), rawAsset('hop-2.zip')])
       expect(frames.map((f) => f.type)).toEqual(['start', 'chunk', 'end'])
     } finally {
       globalThis.fetch = originalFetch
@@ -221,7 +247,7 @@ describe('plugin download URL validation', () => {
       ok: true,
       status: 302,
       url: String(url),
-      headers: new Headers({ location: `https://hop.example.com/${Math.random()}` }),
+      headers: new Headers({ location: rawAsset(`hop-${Math.random()}.zip`) }),
       arrayBuffer: async () => new ArrayBuffer(0),
     }))
     const originalFetch = globalThis.fetch
@@ -231,13 +257,15 @@ describe('plugin download URL validation', () => {
       await streamPluginDownload(
         {
           transferId: 't1',
-          downloadUrl: 'https://cdn.example.com/a.pdf',
+          downloadUrl: rawAsset('a.pdf'),
           savePath: '/',
           fileName: 'a.pdf',
         } as never,
         (frame) => { frames.push(frame as { type?: string; message?: string }) },
       )
-      expect(fetchSpy).toHaveBeenCalledTimes(6) // initial + 5 hops, then refused
+      // 6 requests per candidate (initial + 5 hops, then refused) × 2
+      // candidates (raw.githubusercontent.com + jsDelivr mirror).
+      expect(fetchSpy).toHaveBeenCalledTimes(12)
       expect(frames[0]!.type).toBe('error')
       expect(frames[0]!.message).toContain('redirect')
     } finally {

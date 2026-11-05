@@ -18,11 +18,14 @@ import Text from '@tiptap/extension-text'
 import HardBreak from '@tiptap/extension-hard-break'
 import History from '@tiptap/extension-history'
 import Mention from '@tiptap/extension-mention'
+import { findAgentMentionCandidates } from '@/agent/agent-mention'
 import { FileMention, type FileMentionItem } from './FileMentionExtension'
 import { SlashCommandExtension, type SlashCommandItem } from './SlashCommandExtension'
 import { Paperclip, X, ImageIcon, FileIcon, FolderIcon, Loader2 } from 'lucide-react'
 import { extractDroppedFiles } from '@/lib/dragdrop'
 import { useT } from '@/i18n'
+import { useI18nStore } from '@/i18n/store'
+import { resolveSlashCommandDescription } from '@/skills/slash-command-registry'
 import { formatBytes as formatFileSize } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
@@ -216,6 +219,9 @@ export function InlineMessageEditor({
   submitLabel,
 }: InlineMessageEditorProps) {
   const t = useT()
+  // Subscribed directly so switching the UI language re-renders the
+  // slash-command descriptions (same pattern as AgentRichInput).
+  const locale = useI18nStore((state) => state.locale)
   const [isDragOver, setIsDragOver] = useState(false)
   /** True while dropped folders are being expanded into files. */
   const [isExtractingDropped, setIsExtractingDropped] = useState(false)
@@ -229,6 +235,7 @@ export function InlineMessageEditor({
     ((item: { id: string }) => void) | null
   >(null)
   const suggestionDropdownRef = useRef<SuggestionDropdownHandle>(null)
+  const agentSuggestionQueryRef = useRef<string | null>(null)
 
   // File suggestion state – # file mention
   const [fileSuggestionItems, setFileSuggestionItems] = useState<FileMentionItem[]>([])
@@ -275,6 +282,9 @@ export function InlineMessageEditor({
   const agentsRef = useRef(agents)
   useEffect(() => {
     agentsRef.current = agents
+    if (agentSuggestionQueryRef.current !== null) {
+      setSuggestionItems(findAgentMentionCandidates(agents, agentSuggestionQueryRef.current))
+    }
   }, [agents])
 
   const handleFiles = useCallback((fileList: FileList | File[]) => {
@@ -351,28 +361,22 @@ export function InlineMessageEditor({
         },
         suggestion: {
           char: '@',
-          items: ({ query }) => {
-            const q = query.toLowerCase().trim()
-            return agentsRef.current
-              .filter((a) => a.id !== 'default')
-              .filter((a) => {
-                if (!q) return true
-                const haystack = `${a.id} ${a.name || ''}`.toLowerCase()
-                return haystack.includes(q)
-              })
-              .slice(0, 8)
-          },
+          decorationClass: 'rounded bg-primary-100 text-primary-800 dark:bg-primary-100/60 dark:text-primary-700',
+          items: ({ query }) => findAgentMentionCandidates(agentsRef.current, query),
           render: () => ({
             onStart: (props) => {
+              agentSuggestionQueryRef.current = props.query
               setSuggestionItems(props.items as AgentMentionCandidate[])
               setSuggestionCommand(() => props.command)
             },
             onUpdate: (props) => {
+              agentSuggestionQueryRef.current = props.query
               setSuggestionItems(props.items as AgentMentionCandidate[])
               setSuggestionCommand(() => props.command)
             },
             onKeyDown: (props) => {
               if (props.event.key === 'Escape') {
+                agentSuggestionQueryRef.current = null
                 setSuggestionItems([])
                 setSuggestionCommand(null)
                 return true
@@ -380,6 +384,7 @@ export function InlineMessageEditor({
               return suggestionDropdownRef.current?.onKeyDown(props.event) ?? false
             },
             onExit: () => {
+              agentSuggestionQueryRef.current = null
               setSuggestionItems([])
               setSuggestionCommand(null)
             },
@@ -812,7 +817,11 @@ export function InlineMessageEditor({
           renderItem={(cmd) => (
             <span className="text-neutral-700 dark:text-neutral-300">
               /{cmd.id}
-              <span className="ml-2 text-neutral-500 dark:text-neutral-500">{cmd.description}</span>
+              <span className="ml-2 text-neutral-500 dark:text-neutral-500">
+                {cmd.source === 'builtin'
+                  ? t(`conversation.input.slashCommands.${cmd.label}.description`)
+                  : resolveSlashCommandDescription(cmd, locale)}
+              </span>
             </span>
           )}
         />
