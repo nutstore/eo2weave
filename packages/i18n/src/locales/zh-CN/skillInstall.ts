@@ -11,6 +11,7 @@ export const skillInstall = {
     versionLabel: "版本",
     filesLabel: "{count} 个文件",
     installButton: "安装技能",
+    updateButton: "更新到 v{version}",
     installing: "安装中…",
     installDone: "安装完成！",
     installFailed: "安装失败",
