@@ -129,10 +129,21 @@ describe('SQLiteDatabaseManager transaction serialization', () => {
   })
 
   it('waits for initialization instead of creating a second worker', async () => {
-    const initResponders: Array<() => void> = []
+    // Init is answered only after the gate opens, so the assertions below run
+    // while initialization is genuinely still in flight.
+    let openInitGate!: () => void
+    const initGate = new Promise<void>((resolve) => {
+      openInitGate = resolve
+    })
+    let initDispatched!: () => void
+    const initRequestSeen = new Promise<void>((resolve) => {
+      initDispatched = resolve
+    })
+    let queryResolved = false
     FakeWorker.handleRequest = (request, respond) => {
       if (request.type === 'init') {
-        initResponders.push(() =>
+        initDispatched()
+        void initGate.then(() =>
           respond({ type: 'init', id: request.id, success: true, mode: 'opfs' })
         )
         return
@@ -146,14 +157,24 @@ describe('SQLiteDatabaseManager transaction serialization', () => {
 
     const db = SQLiteDatabaseManager.getInstance()
     const initialization = db.initialize()
-    const query = db.queryFirst<{ value: number }>('SELECT 1')
+    const query = db.queryFirst<{ value: number }>('SELECT 1').finally(() => {
+      queryResolved = true
+    })
 
-    await Promise.resolve()
-    await Promise.resolve()
+    // initialize() takes the cross-tab init lock BEFORE constructing the
+    // worker, so waiting a fixed number of microtasks is not a reliable
+    // signal (#203). Wait for the init request itself.
+    await initRequestSeen
+    // ONE worker while initialization is pending — the concurrent query
+    // queues on the init promise instead of spawning a second worker…
     expect(FakeWorker.instanceCount).toBe(1)
+    // …and it has not been answered yet.
+    expect(queryResolved).toBe(false)
 
-    initResponders.forEach((respond) => respond())
+    openInitGate()
     await expect(Promise.all([initialization, query])).resolves.toEqual([undefined, { value: 1 }])
+    // Still a single worker after initialization completed.
+    expect(FakeWorker.instanceCount).toBe(1)
   })
 
   it('runs unrelated writes only after the active transaction commits', async () => {
@@ -184,13 +205,32 @@ describe('SQLiteDatabaseManager transaction serialization', () => {
     releaseTransaction()
     await expect(Promise.all([transaction, outsideWrite])).resolves.toEqual([undefined, undefined])
 
-    expect(FakeWorker.requests.map((request) => request.type)).toEqual([
-      'init',
-      'beginTransaction',
-      'execute',
-      'commit',
-      'execute',
+    // Assert the ORDERING CONTRACT, not the whole request log: the
+    // initialization handshake legitimately emits an init + `SELECT 1` probe +
+    // a second init (#203), which used to make a fixed-sequence expectation
+    // fail even though nothing was mis-ordered.
+    const types = FakeWorker.requests.map((request) => request.type)
+    const beginAt = types.indexOf('beginTransaction')
+    const commitAt = types.indexOf('commit')
+    expect(beginAt).toBeGreaterThan(-1)
+    expect(commitAt).toBeGreaterThan(beginAt)
+    // Exactly two writes: the transaction's own, then the outside one. The
+    // POSITIONS alone are not enough — a swapped pair (outside write before
+    // COMMIT, transaction write after) would satisfy them — so identify each
+    // write by its SQL.
+    const writes = FakeWorker.requests
+      .map((request, index) => ({ request, index }))
+      .filter(({ request }) => request.type === 'execute')
+    expect(writes).toHaveLength(2)
+    expect(writes.map(({ request }) => request.sql)).toEqual([
+      'INSERT INTO test VALUES (1)', // the transaction's write
+      'INSERT INTO test VALUES (2)', // the outside write
     ])
+    // …the transaction's write before the commit…
+    expect(writes[0].index).toBeLessThan(commitAt)
+    // …and the outside write AFTER it, as the last request of the run.
+    expect(writes[1].index).toBeGreaterThan(commitAt)
+    expect(types[types.length - 1]).toBe('execute')
   })
 
   it('retries a sync-handle error after recovery without losing the original request', async () => {
