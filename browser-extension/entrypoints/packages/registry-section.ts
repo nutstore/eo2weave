@@ -14,6 +14,7 @@ import {
   loadRegistryCatalog,
   previewRegistryPackage,
   removeRegistry,
+  setRegistryPackageActivation,
   uninstallRegistryPackage,
   type RegistryListResult,
 } from '../webmcp/registry-client-page'
@@ -305,6 +306,35 @@ export function createRegistrySection(
 
     const actions = document.createElement('div')
     actions.className = 'actions row'
+    // Activation is part of the INSTALL, so the registry row owns the switch:
+    // "mine" excludes registry installs and an install records the disabled
+    // default, so without this toggle a freshly installed registry package
+    // could never be turned on from the merged page.
+    if (isInstalled) {
+      const toggle = document.createElement('input')
+      toggle.type = 'checkbox'
+      toggle.className = 'toggle'
+      toggle.checked = isEnabled
+      toggle.setAttribute('aria-label', `${t('webmcpPackageActivation')}: ${pkg.id}`)
+      toggle.addEventListener('change', async () => {
+        toggle.disabled = true
+        shell.error.clear()
+        const token = nextFeedbackToken(pkg.id)
+        try {
+          const activation = toggle.checked ? 'enabled' : 'disabled'
+          await setRegistryPackageActivation(pkg.id, activation)
+          activations[pkg.id] = activation
+        } catch (error) {
+          // The write did not land: the switch must show the real state again.
+          toggle.checked = isEnabled
+          if (isFeedbackCurrent(token)) shell.error.show(error)
+        } finally {
+          toggle.disabled = false
+          refresh()
+        }
+      })
+      actions.append(toggle)
+    }
     // Repair (re-install over an existing package) is a recovery action, not a
     // primary one: it sits beside Remove as a quiet ghost button.
     const reinstall = async (btn: HTMLButtonElement): Promise<void> => {

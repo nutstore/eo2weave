@@ -545,7 +545,7 @@
     "message": "Installed · inactive"
   },
   "webmcpPackagesInstalledInactiveHint": {
-    "message": "Open the side panel on a matching site to enable it."
+    "message": "Switch it on here, then use it from the side panel on a matching site."
   },
   "webmcpPackagesInstalledActive": {
     "message": "Installed · active"

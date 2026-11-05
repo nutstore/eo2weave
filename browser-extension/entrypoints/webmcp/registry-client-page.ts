@@ -72,3 +72,17 @@ export async function installRegistryPackage(registry: PackageRegistry, pkg: Reg
 export async function uninstallRegistryPackage(packageId: string): Promise<void> {
   await send({ type: 'webmcp_registry_uninstall', packageId })
 }
+
+/**
+ * Toggle one INSTALLED registry package's activation.
+ *
+ * An installed registry package is a package directory on the same `webmcp`
+ * mount the "mine" section manages, and its `config.json` is the only
+ * activation state, so this reuses the package-config message instead of
+ * adding a registry operation: the install records the disabled default, and
+ * the merged page has no other place to turn a registry package on (the
+ * "mine" section excludes registry installs).
+ */
+export async function setRegistryPackageActivation(packageId: string, activation: 'enabled' | 'disabled'): Promise<void> {
+  await send({ type: 'webmcp_packages_set_config', mount: 'webmcp', directory: packageId, config: { activation } })
+}

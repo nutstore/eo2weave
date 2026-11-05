@@ -38,6 +38,8 @@ type SendHandler = (message: { type: string; [key: string]: unknown }) => unknow
 
 interface Harness {
   document: Document
+  /** The happy-dom window the section was built in (event constructors). */
+  window: Window
   send: ReturnType<typeof vi.fn>
   /** The section's own re-render trigger (main.ts reloads both sources). */
   refresh: ReturnType<typeof vi.fn>
@@ -84,6 +86,7 @@ async function setup({ state, handlers = {} }: SetupOptions): Promise<Harness> {
   await settle()
   return {
     document: win.document as unknown as Document,
+    window: win,
     send,
     refresh,
     sectionError: () => win.document.querySelector('.error') as unknown as HTMLElement,
@@ -301,6 +304,33 @@ describe('registry section feedback', () => {
     releaseB()
     await settle()
     expect(toastVisible(h.document)).toBe(true)
+  })
+
+  it('enables an installed registry package from its own row', async () => {
+    // Installs record the disabled default and "mine" excludes registry
+    // installs, so this row's toggle is the ONLY activation path on the page.
+    const h = await setup({
+      state: () => ({ registries: [registry], installed: [pkgA.id], activations: { [pkgA.id]: 'disabled' }, persisted: true }),
+      handlers: {
+        webmcp_registry_catalog: { manifest: { manifestUrl: registry.manifestUrl, name: 'Example', packages: [pkgA] } },
+      },
+    })
+    const row = [...h.document.querySelectorAll('.pkg-row')]
+      .find(element => element.querySelector('.name')?.textContent === pkgA.id)
+    const toggle = row?.querySelector<HTMLInputElement>('input.toggle')
+    expect(toggle).toBeTruthy()
+    expect(toggle!.checked).toBe(false)
+
+    toggle!.checked = true
+    toggle!.dispatchEvent(new h.window.Event('change') as unknown as Event)
+    await settle()
+
+    expect(h.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'webmcp_packages_set_config',
+      mount: 'webmcp',
+      directory: pkgA.id,
+      config: { activation: 'enabled' },
+    }))
   })
 
   it('removing package B keeps the toast announcing package A', async () => {
