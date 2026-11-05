@@ -1084,7 +1084,7 @@ export function FilePreview({ filePath, fileHandle, onClose, blob: externalBlob 
 
       {/* Content */}
       <div className="flex-1 overflow-auto">
-        {loading && <div className="p-4 text-center text-xs text-neutral-400">Loading...</div>}
+        {loading && <div className="p-4 text-center text-xs text-neutral-400">{t('common.loading')}</div>}
 
         {error && <div className="p-4 text-center text-xs text-red-500">{error}</div>}
 
@@ -1111,7 +1111,7 @@ export function FilePreview({ filePath, fileHandle, onClose, blob: externalBlob 
             re-mounted on every view-mode toggle. Hidden via CSS instead. */}
         {fileType === 'format' && formatBlob && formatUI?.PreviewComponent && !loading && !error && (
           <div className={formatViewMode === 'preview' ? 'h-full' : 'hidden'}>
-            <Suspense fallback={<div className="flex h-full items-center justify-center"><p className="text-xs text-neutral-400">Loading...</p></div>}>
+            <Suspense fallback={<div className="flex h-full items-center justify-center"><p className="text-xs text-neutral-400">{t('common.loading')}</p></div>}>
               <formatUI.PreviewComponent blob={formatBlob} fileName={fileName} fileSize={fileSize} filePath={filePath ?? undefined} />
             </Suspense>
           </div>

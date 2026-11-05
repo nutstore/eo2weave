@@ -190,7 +190,7 @@ export function InlineModelSelector() {
           {t('settings.defaultModel.selectModel')}
         </div>
         {loading && (
-          <div className="py-4 text-center text-xs text-tertiary">Loading...</div>
+          <div className="py-4 text-center text-xs text-tertiary">{t('common.loading')}</div>
         )}
         {providers.map((provider) => {
           const isCurrentProvider = provider.providerType === providerType

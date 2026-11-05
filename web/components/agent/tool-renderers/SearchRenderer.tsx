@@ -6,6 +6,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
+import { useT } from '@/i18n'
 import { Search } from 'lucide-react'
 import { CopyIconButton } from '../CopyIconButton'
 import type { ToolEnvelopeError } from '@/agent/tools/tool-envelope'
@@ -217,6 +218,7 @@ interface FileExpandState {
  * - On click "N more lines", calls the search worker to load all hits for this single file.
  */
 function FileResultItem({ file, searchCtx, query }: { file: FileResult; searchCtx: ToolRenderCtx; query: string }) {
+  const t = useT()
   const [expandState, setExpandState] = useState<FileExpandState>({ loaded: false, loading: false, expanded: false, extraHits: [] })
 
   const loadMore = useCallback(async () => {
@@ -338,7 +340,7 @@ function FileResultItem({ file, searchCtx, query }: { file: FileResult; searchCt
 
         {/* Loading indicator */}
         {expandState.loading && (
-          <span className="text-[10px] text-neutral-400 animate-pulse">Loading...</span>
+          <span className="text-[10px] text-neutral-400 animate-pulse">{t('common.loading')}</span>
         )}
 
         {/* Error */}
