@@ -112,6 +112,14 @@ function isForbiddenIPv6(groups: number[]): boolean {
   // variant routes through a LOCAL NAT64 gateway, so an attacker embedding a
   // private IPv4 there reaches intranet endpoints exactly like the
   // well-known prefix.
+  //
+  // Only the /96 embeddings are decoded. RFC 8215 assigns the local-use prefix
+  // as a /48, and RFC 6052's /48 layout puts the IPv4 target in bits 48-79
+  // (64:ff9b:1:a00:0:100:: for 10.0.0.1), which does not match the /96 shape
+  // below. That stays a documented limitation: such a literal only routes when
+  // the host itself runs a NAT64 gateway for the prefix — the same
+  // host-local-routing class as the DNS-rebinding limitation in the file
+  // header, and not detectable from URL text alone.
   if (
     (groups[0] === 0x64 && groups[1] === 0xff9b && (groups[2] === 0 || groups[2] === 1)) &&
     groups.slice(3, 6).every(isZero)
