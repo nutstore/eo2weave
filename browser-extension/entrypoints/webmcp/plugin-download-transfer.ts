@@ -145,7 +145,7 @@ function isForbiddenIPv6(groups: number[]): boolean {
   return false
 }
 
-function isForbiddenIpLiteral(hostname: string, opts: { allowLoopback: boolean } = { allowLoopback: false }): boolean {
+export function isForbiddenIpLiteral(hostname: string, opts: { allowLoopback: boolean } = { allowLoopback: false }): boolean {
   // hostname: URL.hostname lowercased, trailing dot stripped, NO brackets.
   if (hostname.includes(':')) {
     const groups = parseIPv6Groups(hostname)
