@@ -101,13 +101,27 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
         case 'webmcp_registry_list': {
           const registries = await getRegistries()
           const installed = await listInstalledPackageIds()
+          // PER-PACKAGE: an unreadable config for ONE package must not reject
+          // the whole list — that failure reached `renderAll` and blanked the
+          // registry AND mine sections over a single package's storage hiccup.
+          // The package is still INSTALLED (the directory says so), so it stays
+          // in `installed` and its id is reported in `activationErrors`; the row
+          // then shows an unknown state rather than a wrong "inactive".
+          const activationErrors: string[] = []
           const activations: Record<string, 'enabled' | 'disabled'> = {}
-          for (const id of installed) activations[id] = await readInstalledPackageActivation(id)
+          for (const id of installed) {
+            try {
+              activations[id] = await readInstalledPackageActivation(id)
+            } catch {
+              activationErrors.push(id)
+            }
+          }
           return {
             ok: true,
             registries,
             installed: [...installed],
             activations,
+            activationErrors,
             persisted: registriesPersisted(),
           }
         }

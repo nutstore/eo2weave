@@ -588,9 +588,16 @@ export async function uninstallRegistryPackage(packageId: string): Promise<void>
  * that was present while `findPackageIdCollision` refused that install —
  * the user could neither see nor manage it. The directory NAME is a
  * package id by construction (the installer only ever creates id-named
- * directories), so the id is reported from the directory and the
- * background call FAILS instead — the page shows the error rather than a
- * lie about the installed set.
+ * directories), so the id is reported from the directory name.
+ *
+ * That report is per-PACKAGE, not per-call: a single unreadable manifest no
+ * longer rejects the whole list (finding: "Unreadable manifests block
+ * registry data"). Rejecting it did show the truth about the installed set,
+ * but it also took down the registry section AND "mine" for every other
+ * package — one bad local directory blanked the page. Callers that need to
+ * distinguish a possibly-misattributed id can compare the manifest id; the
+ * registry install record that would settle it durably is the planned
+ * storage work, not a read-path guess.
  */
 export async function listInstalledPackageIds(): Promise<Set<string>> {
   const provider = await getAdapterStorage()
@@ -599,10 +606,11 @@ export async function listInstalledPackageIds(): Promise<Set<string>> {
   for (const entry of entries) {
     if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
     const state = await readManifestId('webmcp', entry.name)
+    // Transient read failure: fall back to the directory identity (see above)
+    // instead of failing every other package's entry with it.
     if (state === 'UNREADABLE') {
-      throw new Error(
-        `The manifest of ${entry.name} could not be read; the installed-package list is unavailable right now`,
-      )
+      ids.add(entry.name)
+      continue
     }
     if (state === 'INVALID') continue
     if (state.id === entry.name) ids.add(state.id)

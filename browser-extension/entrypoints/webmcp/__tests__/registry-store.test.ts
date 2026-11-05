@@ -210,3 +210,27 @@ describe('installRegistryPackage (same-version reinstall fingerprint)', () => {
       .rejects.toThrow(/different contents/)
   })
 })
+
+describe('listInstalledPackageIds (one unreadable manifest)', () => {
+  it('falls back to the directory identity instead of rejecting the list', async () => {
+    const { listInstalledPackageIds } = await import('../registry-store')
+    const m = await mount
+    const encoder = new TextEncoder()
+    await m.writeFile('com.example.ok/manifest.json', encoder.encode(JSON.stringify({ id: 'com.example.ok' })))
+    await m.writeFile('com.example.broken/manifest.json', encoder.encode('{}'))
+
+    // A TRANSIENT read failure (not ENOENT): previously this rejected the
+    // whole list, which took the registry section and "mine" down with it.
+    const original = m.readFile.bind(m)
+    m.readFile = (async (path: string) => {
+      if (path === 'com.example.broken/manifest.json') throw Object.assign(new Error('I/O error'), { code: 'EIO' })
+      return original(path)
+    }) as typeof m.readFile
+    try {
+      const ids = await listInstalledPackageIds()
+      expect([...ids]).toEqual(expect.arrayContaining(['com.example.ok', 'com.example.broken']))
+    } finally {
+      m.readFile = original as typeof m.readFile
+    }
+  })
+})

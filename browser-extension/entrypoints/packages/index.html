@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebMCP packages — EO2Weave</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 999px; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', Roboto, sans-serif;
+      background: #fafaf9;
+      color: #1c1917;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 32px 24px 56px;
+    }
+    .header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+    .header .logo {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: linear-gradient(135deg, #14b8a6, #0f766e);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: 700; font-size: 15px;
+    }
+    h1 { font-size: 19px; font-weight: 700; letter-spacing: -0.2px; }
+    .subtitle { color: #78716c; font-size: 13px; margin-top: 4px; line-height: 1.55; }
+
+    /* Top summary strip: three sources at a glance, doubling as the page map. */
+    .summary { display: flex; gap: 8px; margin: 16px 0 4px; }
+    .summary a {
+      flex: 1; text-decoration: none; color: inherit;
+      background: #fff; border: 1px solid #e7e5e4; border-radius: 9px;
+      padding: 9px 12px; display: flex; align-items: baseline; gap: 7px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .summary a:hover { border-color: #99f6e4; background: #f7fdfa; }
+    .summary a:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+    .summary .n {
+      font-size: 17px; font-weight: 700; color: #0f766e;
+      font-variant-numeric: tabular-nums;
+    }
+    .summary .l { font-size: 11.5px; color: #78716c; }
+
+    .section { scroll-margin-top: 12px; }
+    .section-title {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.7px;
+      color: #78716c; margin: 26px 0 10px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .section-title .label { text-transform: uppercase; }
+    .section-title .count {
+      background: #f0efed; color: #78716c; border-radius: 999px;
+      padding: 1px 8px; font-size: 10.5px; letter-spacing: 0;
+    }
+    .section-title .hint {
+      text-transform: none; letter-spacing: 0; font-weight: 500;
+      color: #a8a29e; font-size: 11px;
+    }
+    .section-title .spacer { flex: 1; }
+
+    .card {
+      background: #fff; border: 1px solid #e7e5e4; border-radius: 10px;
+      margin-bottom: 10px; overflow: hidden;
+    }
+    /* A managed package card (built-in / mine) is a flat row. */
+    .card.pkg { display: flex; align-items: flex-start; gap: 12px; padding: 13px 15px; }
+    .card.disabled { opacity: 0.74; }
+    .card .body { flex: 1; min-width: 0; }
+    .title-line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .card .name { font-size: 13.5px; font-weight: 600; }
+    .card .host {
+      font-size: 11px; color: #78716c;
+      font-family: ui-monospace, Menlo, monospace; margin-top: 2px;
+    }
+    .card .desc { font-size: 12px; color: #57534e; margin-top: 4px; line-height: 1.45; }
+    .card .tools { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+    .tool-chip {
+      font-size: 10.5px; font-family: ui-monospace, Menlo, monospace;
+      background: #f5f5f4; border: 1px solid #e7e5e4; color: #44403c;
+      border-radius: 5px; padding: 2px 7px;
+    }
+    .tool-more { background: #fff; border-style: dashed; color: #78716c; }
+    .source-path {
+      font-size: 11px; color: #a8a29e; overflow-wrap: anywhere; margin-top: 8px;
+      font-family: ui-monospace, Menlo, monospace;
+    }
+
+    /* Source chip — the one new visual element the merge introduces. */
+    .src {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+      border-radius: 4px; padding: 1.5px 6px; flex: 0 0 auto;
+    }
+    .src-builtin { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+    .src-registry { background: #f5f3ff; color: #6d28d9; border: 1px solid #ddd6fe; }
+    .src-mine { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+
+    .actions {
+      display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding-top: 2px;
+    }
+    .actions.row { align-items: center; }
+
+    .toggle {
+      position: relative; width: 38px; height: 21px; flex: 0 0 auto;
+      appearance: none; -webkit-appearance: none;
+      background: #cbd5e1; border-radius: 999px; cursor: pointer;
+      transition: background 0.15s; border: none;
+    }
+    .toggle:checked { background: #0d9488; }
+    .toggle::after {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 17px; height: 17px; border-radius: 999px; background: #fff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: transform 0.15s;
+    }
+    .toggle:checked::after { transform: translateX(17px); }
+    .toggle:focus-visible { outline: 2px solid #0d9488; outline-offset: 2px; }
+    .toggle:disabled { cursor: not-allowed; }
+
+    .btn {
+      border: 1px solid #e7e5e4; background: #fff; color: #1c1917;
+      border-radius: 6px; padding: 4px 10px; font-size: 11.5px; cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn:hover:not(:disabled) { background: #fafaf9; border-color: #d6d3d1; }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .btn.primary { background: #0d9488; border-color: #0d9488; color: #fff; font-weight: 600; }
+    .btn.primary:hover:not(:disabled) { background: #0f766e; }
+    .btn.danger { color: #b91c1c; border-color: #fecaca; }
+    .btn.danger:hover:not(:disabled) { background: #fef2f2; }
+    /* Recovery action (Repair): quieter than a normal button — a rare recovery
+       path must not compete with Remove. */
+    .btn.ghost { background: none; border-color: transparent; color: #78716c; }
+    .btn.ghost:hover:not(:disabled) { background: #f5f5f4; color: #1c1917; }
+    .btn:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+    /* Compact text controls for the registry header (Refresh / Remove). */
+    .iconbtn {
+      border: none; background: none; color: #78716c; cursor: pointer;
+      padding: 3px 7px; border-radius: 5px; font-size: 11.5px; white-space: nowrap;
+    }
+    .iconbtn:hover:not(:disabled) { background: #f0efed; color: #1c1917; }
+    .iconbtn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    /* Registry section: connection header + divided package rows. */
+    .reg-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 11px 15px; background: #fcfcfb; border-bottom: 1px solid #f0efed;
+    }
+    .reg-head .dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; flex: 0 0 auto; }
+    /* The dot reflects real connection state, not a decorative always-green. */
+    .reg-head .dot-loading { background: #f59e0b; animation: dot-pulse 1.2s ease-in-out infinite; }
+    .reg-head .dot-failed { background: #ef4444; }
+    @keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    @media (prefers-reduced-motion: reduce) { .reg-head .dot-loading { animation: none; } }
+    .reg-head .name { font-size: 12.5px; font-weight: 600; }
+    .reg-head .host {
+      font-size: 11px; color: #78716c; font-family: ui-monospace, monospace;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .reg-head .spacer { flex: 1; min-width: 8px; }
+    .card .reg-head .actions { padding-top: 0; }
+    .pkg-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 15px 11px 19px; border-top: 1px solid #f5f5f4;
+      background: #fdfdfc; box-shadow: inset 2px 0 0 #ecfdf5;
+    }
+    .pkg-row .body { flex: 1; min-width: 0; }
+    .pkg-row:first-of-type { border-top: none; }
+
+    /* Compact status pill — inline on the id line, never a full-width block. */
+    .state {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10.5px; font-weight: 600; border-radius: 999px; padding: 2px 9px;
+      background: #f5f5f4; color: #8a8a86; white-space: nowrap;
+    }
+    .state.active { background: #ecfdf5; color: #15803d; }
+    .state.inactive { background: #f5f5f4; color: #78716c; }
+    .state .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: currentColor; display: inline-block;
+    }
+
+    .add-box {
+      background: #fff; border: 1px solid #e7e5e4; border-radius: 10px;
+      padding: 12px 15px; margin-bottom: 12px;
+    }
+    .add-row { display: flex; gap: 8px; }
+    .add-row input {
+      flex: 1; min-width: 0; border: 1px solid #e7e5e4; border-radius: 7px;
+      padding: 7px 10px; font-size: 12px; font-family: ui-monospace, Menlo, monospace;
+      background: #fff; color: #1c1917;
+    }
+    .add-row input::placeholder { color: #a8a29e; }
+    .add-row input:focus-visible { outline: 2px solid #0f766e; outline-offset: 1px; }
+    .hint { font-size: 11px; color: #a8a29e; margin-top: 8px; line-height: 1.55; }
+
+    .empty {
+      border: 1px dashed #e0dedb; border-radius: 10px; background: #fdfdfc;
+      padding: 20px 16px; text-align: center; color: #a8a29e;
+      font-size: 12px; line-height: 1.6;
+    }
+
+    .error {
+      color: #b91c1c; font-size: 12px; margin: 8px 0 10px; overflow-wrap: anywhere;
+      background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;
+      padding: 8px 10px; display: flex; align-items: flex-start; gap: 8px;
+    }
+    /* `display: flex` overrides the default `[hidden] { display: none }` —
+       restore it or a dismissed box stays on screen as an empty bar. */
+    .error[hidden] { display: none; }
+    .error .dismiss { margin-left: auto; cursor: pointer; color: #b91c1c; font-weight: 700; }
+
+    .diagnostic {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 11px; color: #b45309; background: #fffbeb;
+      border: 1px solid #fde68a; border-radius: 6px; padding: 3px 8px; margin-top: 8px;
+      overflow-wrap: anywhere; line-height: 1.5; max-width: 100%;
+    }
+
+    /* Success toast: fixed so it never pushes content down, green because a
+       failure is announced by the section's red box instead. */
+    .success-toast {
+      position: fixed; top: 16px; left: 50%; transform: translate(-50%, -12px);
+      background: #f0fdf4; border: 1px solid #bbf7d0; color: #1a7f37;
+      font-size: 12.5px; border-radius: 8px; padding: 9px 14px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+      opacity: 0; pointer-events: none; transition: opacity 0.25s ease, transform 0.25s ease;
+      z-index: 100; max-width: 90%; overflow-wrap: anywhere;
+    }
+    .success-toast.visible { opacity: 1; transform: translate(-50%, 0); }
+
+    .note {
+      font-size: 11px; color: #a8a29e; margin-top: 26px; line-height: 1.65;
+      border-top: 1px solid #e7e5e4; padding-top: 14px;
+    }
+    .note code {
+      font-family: ui-monospace, Menlo, monospace; background: #f5f5f4;
+      border-radius: 4px; padding: 1px 5px; font-size: 10.5px; color: #57534e;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">e</div>
+    <h1 id="pageTitle">WebMCP packages</h1>
+  </div>
+  <p class="subtitle" id="pageSubtitle"></p>
+
+  <nav class="summary">
+    <a href="#builtin"><span class="n" id="summaryBuiltin">0</span><span class="l" id="summaryBuiltinLabel"></span></a>
+    <a href="#registry"><span class="n" id="summaryRegistry">0</span><span class="l" id="summaryRegistryLabel"></span></a>
+    <a href="#mine"><span class="n" id="summaryMine">0</span><span class="l" id="summaryMineLabel"></span></a>
+  </nav>
+
+  <div id="builtinSection"></div>
+  <div id="registrySection"></div>
+  <div id="mineSection"></div>
+
+  <p class="note" id="pageNote"></p>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

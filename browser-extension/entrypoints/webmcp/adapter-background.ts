@@ -244,15 +244,17 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       //   - `webmcp_registry_list` is a READ: the popup shows the summary,
       //     so it is allowed there too;
       //   - every mutation (add / remove / catalog / install / uninstall)
-      //     is restricted to the registry management page.
+      //     is restricted to the packages management page.
       if (sender.id !== chrome.runtime.id) { respond({ ok: false, code: 'EACCES', error: 'Untrusted registry caller' }); return false }
       const senderUrl = (sender.url || '').split(/[?#]/)[0]
-      const registryPage = chrome.runtime.getURL('/registry.html')
+      // packages.html (issue #193) merged the old registry.html + recipes.html
+      // pages; the senders are that page and the popup.
+      const packagesPage = chrome.runtime.getURL('/packages.html')
       const allowed = message.type === 'webmcp_registry_list'
-        ? [registryPage, chrome.runtime.getURL('/popup.html')]
-        : [registryPage]
+        ? [packagesPage, chrome.runtime.getURL('/popup.html')]
+        : [packagesPage]
       if (!allowed.includes(senderUrl)) {
-        respond({ ok: false, code: 'EACCES', error: 'Registry management requires the extension registry page' })
+        respond({ ok: false, code: 'EACCES', error: 'Registry management requires the extension packages page' })
         return false
       }
       void registry(message).then(respond)
@@ -260,7 +262,7 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
     }
     if (message.type.startsWith('webmcp_packages_')) {
       if (message.type === 'webmcp_packages_changed') return false
-      const allowed = [chrome.runtime.getURL('/recipes.html'), chrome.runtime.getURL('/popup.html')]
+      const allowed = [chrome.runtime.getURL('/packages.html'), chrome.runtime.getURL('/popup.html')]
       const senderUrl = (sender.url || '').split(/[?#]/)[0]
       if (sender.id !== chrome.runtime.id || !allowed.includes(senderUrl) ||
         (message.type !== 'webmcp_packages_list' && senderUrl !== allowed[0])) {

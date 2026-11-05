@@ -313,7 +313,7 @@ function renderCapline(): void {
     // flag entry on chrome://flags (new tab; popup closes — standard).
     // OFF (152+) → official docs explain the Origin Trial path. Else → README.
     var targetUrl = det.on
-      ? chrome.runtime.getURL('/recipes.html')
+      ? chrome.runtime.getURL('/packages.html')
       : flagAvailable
         ? 'chrome://flags/#enable-webmcp-testing'
         : flagRemoved
@@ -1170,40 +1170,12 @@ document.getElementById('openGithub')!.addEventListener('click', function () {
   chrome.tabs.create({ url: 'https://github.com/nutstore/creatorweave' });
 });
 
-// ── Supported Sites entry → recipes management page ──
-// Shows "N/M enabled" and opens the full-page manager in a tab
-// (the manager needs space for tool chips + descriptions).
-(function () {
-  var btn = document.getElementById('supportedSitesBtn');
-  var sub = document.getElementById('sitesSubtitle');
-  if (!btn || !sub) return;
-
-  import('../webmcp/package-client').then(function (client) {
-    async function refresh() {
-      try {
-        var entries = await client.listManagedPackages();
-        var count = entries.filter(entry => entry.activation === 'enabled' && !entry.diagnostics.length).length;
-        sub!.textContent = chrome.i18n.getMessage('recipesCount', [String(count), String(entries.length)])
-          || (count + ' / ' + entries.length + ' enabled');
-      } catch { sub!.textContent = '—'; }
-    }
-    void refresh();
-    chrome.runtime.onMessage.addListener(function (message) {
-      if (message?.type === 'webmcp_packages_changed') void refresh();
-    });
-  }).catch(function () {});
-
-  btn.addEventListener('click', function () {
-    chrome.tabs.create({ url: chrome.runtime.getURL('/recipes.html') });
-    window.close();
-  });
-})();
-
-// ── Site packages entry → the extension's package registry page ──
-// Lists the user's registries + installed packages (issue #143). The
-// management lives in the EXTENSION (the packages are in the extension's
-// own OPFS mount), so the entry opens the extension page, not a web app
-// route.
+// ── WebMCP packages entry → the merged packages management page ──
+// One page manages every source (issue #193): built-in packages, registry
+// installs, and user/agent-authored packages. The summary shows the registry
+// side; the page itself owns the per-section counts. Management lives in the
+// EXTENSION (the packages are in the extension's own OPFS mount), so the entry
+// opens the extension page, not a web app route.
 (function () {
   var btn = document.getElementById('sitePackagesBtn');
   var sub = document.getElementById('sitePackagesSubtitle');
@@ -1228,7 +1200,7 @@ document.getElementById('openGithub')!.addEventListener('click', function () {
   }).catch(function () {});
 
   btn.addEventListener('click', function () {
-    chrome.tabs.create({ url: chrome.runtime.getURL('/registry.html') });
+    chrome.tabs.create({ url: chrome.runtime.getURL('/packages.html') });
     window.close();
   });
 })();
