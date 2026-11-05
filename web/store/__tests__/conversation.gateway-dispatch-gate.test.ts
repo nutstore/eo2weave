@@ -116,12 +116,15 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
   }
 })
 
+const isTokenCurrentMock = vi.hoisted(() =>
+  vi.fn(async (accessToken: string) => accessToken === storedAccessToken.value),
+)
+
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   resolveGatewayDispatchCredential: resolveCredentialMock,
   // Mirrors the real helper: the validated token counts as current while the
   // store still holds it. A logout or newer login replaces/clears it (#180).
-  isGatewayAccessTokenCurrent: async (accessToken: string) =>
-    accessToken === storedAccessToken.value,
+  isGatewayAccessTokenCurrent: isTokenCurrentMock,
 }))
 const registerProviderMock = vi.hoisted(() =>
   vi.fn(() => {
@@ -324,6 +327,29 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     expect(registerProviderMock).not.toHaveBeenCalled()
     const conv = useConversationStore.getState().conversations[0]
     expect(conv.status).toBe('error')
+    // The run must stop with the re-login guidance, not a generic failure and
+    // not the retryable temporary message.
+    expect(conv.error).toContain('sign in again')
+    expect(conv.error).not.toContain('temporarily unavailable')
+  })
+
+  it('reports the retryable temporary error when the currentness check hits a storage failure (#214 Sourcery round 4)', async () => {
+    gatewayRegistered.value = false
+    resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+    // The currentness re-read fails transiently: NOT evidence of logout.
+    storedAccessToken.value = null
+    isTokenCurrentMock.mockRejectedValueOnce(new Error('storage hiccup'))
+
+    await startRun()
+
+    expect(registerProviderMock).not.toHaveBeenCalled()
+    const conv = useConversationStore.getState().conversations[0]
+    expect(conv.status).toBe('error')
+    expect(conv.error).not.toContain('[GATEWAY_CREDENTIALS_MISSING]')
+    expect(conv.error).not.toContain('[GATEWAY_CREDENTIALS_EXPIRED]')
+    // A storage hiccup is retryable — it must NOT read as "sign in again".
+    expect(conv.error).toContain('temporarily unavailable')
+    expect(conv.error).not.toContain('sign in again')
   })
 
   it('dispatches with the validated current token when a usable session exists', async () => {

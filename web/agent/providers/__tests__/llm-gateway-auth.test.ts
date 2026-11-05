@@ -42,11 +42,15 @@ vi.mock('@/security/api-key-store', () => ({
 const settingsStoreState = vi.hoisted(() => ({
   modelCredentialStatus: 'unknown' as string,
   modelCredentialStatusError: null as string | null,
+  // Ordered log of status writes the auth layer actually LANDED. Proves a
+  // verdict was dropped instead of merely overwritten by a later one.
+  statusWrites: [] as string[],
 }))
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
     getState: () => ({
       setModelCredentialStatus: (status: string) => {
+        settingsStoreState.statusWrites.push(status)
         settingsStoreState.modelCredentialStatus = status
       },
       setModelCredentialStatusError: (message: string | null) => {
@@ -1518,6 +1522,7 @@ describe('credential status generation fence (#180)', () => {
   beforeEach(() => {
     localStorage.clear()
     settingsStoreState.modelCredentialStatus = 'unknown'
+    settingsStoreState.statusWrites.length = 0
     loadApiKeyMock.mockReset()
     loadApiKeyMock.mockResolvedValue(null)
   })
@@ -1550,7 +1555,7 @@ describe('credential status generation fence (#180)', () => {
       {
         access_token: 'new-session-access',
         token_type: 'Bearer',
-        expires_in: 60,
+        expires_in: 3600,
         refresh_token: 'new-session-refresh',
         refresh_expires_in: 3600,
       },
@@ -1564,10 +1569,16 @@ describe('credential status generation fence (#180)', () => {
 
     releaseLoad(null)
     await pending
-    // Let the settings-store dynamic import settle.
-    await new Promise((resolve) => setTimeout(resolve, 0))
 
-    // Without the fence this write lands as 'missing' after the login.
+    // Synchronize on the WRITE PATH, not on a timer. A verdict produced under
+    // the CURRENT session travels the same dynamic import + `.then` chain and
+    // is registered behind the stale one, so once the current verdict has
+    // landed the stale chain has already settled — if it were going to write,
+    // it would be in the log first.
+    expect(await getValidAccessToken(BASE_URL, CLIENT_ID)).toBeTruthy()
+    await vi.waitFor(() => expect(settingsStoreState.statusWrites).toEqual(['valid']))
+
+    // Without the fence the stale verdict lands as an extra 'missing' write.
     expect(settingsStoreState.modelCredentialStatus).toBe('valid')
   })
 
@@ -1632,11 +1643,14 @@ describe('credential status generation fence (#180)', () => {
     }
   })
 
-  it('fails closed when the credential store cannot be read at all (#214 Sourcery round 3)', async () => {
-    // No localStorage record and the SQLite read throws: nothing vouches for
-    // the token — currentness must not silently pass.
+  it('propagates storage read failures instead of calling the token stale (#214 Sourcery round 4)', async () => {
+    // No localStorage record and the SQLite read throws: that is a
+    // retryable storage problem, not proof of a stale credential.
     loadApiKeyMock.mockRejectedValue(new Error('sqlite down'))
 
-    expect(await isGatewayAccessTokenCurrent('any-token')).toBe(false)
+    await expect(isGatewayAccessTokenCurrent('any-token')).rejects.toMatchObject({
+      name: 'GatewayTokenStoreUnavailableError',
+      cause: expect.objectContaining({ message: 'sqlite down' }),
+    })
   })
 })
