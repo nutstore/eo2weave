@@ -971,7 +971,8 @@ export function invalidateProviderDiscovery(): void {
   providerDiscoveryInFlight = null
 }
 
-subscribeToProviderRegistry(() => useSettingsStore.getState().triggerProviderRefresh())
+let notifyRegistryDiscoveryChange = invalidateProviderDiscovery
+subscribeToProviderRegistry(() => notifyRegistryDiscoveryChange())
 
 export const useSettingsStore = create<SettingsState, [['zustand/persist', unknown]]>(
   persist<SettingsState, [], [], PersistedSettingsState>(
@@ -1807,6 +1808,15 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
   )
 )
 
+notifyRegistryDiscoveryChange = () => {
+  suppressPersistWrites++
+  try {
+    useSettingsStore.getState().triggerProviderRefresh()
+  } finally {
+    suppressPersistWrites--
+  }
+}
+
 // ── Cross-tab settings sync ─────────────────────────────────────────────────
 // Without this, a STALE tab persists its full settings snapshot over another
 // tab's newer write: two tabs open, tab A turns thinking off, tab B (still
@@ -2069,9 +2079,13 @@ function setupCrossTabSettingsSync(): void {
         providerType: useSettingsStore.getState().providerType,
         modelName: useSettingsStore.getState().modelName,
       }
+      const pinsChanged = applied.pinnedModelsByProvider !== undefined &&
+        JSON.stringify(applied.pinnedModelsByProvider) !== JSON.stringify(current.pinnedModelsByProvider)
+      if (pinsChanged) invalidateProviderDiscovery()
       suppressPersistWrites++
       try {
         useSettingsStore.setState(applied as Partial<SettingsState>)
+        if (pinsChanged) useSettingsStore.getState().triggerProviderRefresh()
       } finally {
         suppressPersistWrites--
       }

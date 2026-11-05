@@ -544,7 +544,7 @@ export function ModelQuickSwitch({
         className="flex max-h-[420px] w-[300px] flex-col overflow-hidden rounded-lg border border-border/80 bg-white p-0 shadow-md shadow-black/5 dark:bg-neutral-900"
       >
         {/* Search input — always visible when providers exist */}
-        {!loading && enrichedProviders.length > 0 && (
+        {(!loading || refreshingExistingList) && enrichedProviders.length > 0 && (
           <div className="border-b border-border/70 px-3 py-2">
             <div className="flex items-center gap-1.5">
             <div className="relative flex-1">
