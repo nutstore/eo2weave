@@ -30,6 +30,11 @@ const { mockUserSkillsScanner } = vi.hoisted(() => ({
     writeUserSkillMd: vi.fn(() => Promise.resolve()),
     deleteUserSkillDir: vi.fn(() => Promise.resolve()),
     userSkillDirExists: vi.fn(() => Promise.resolve(false)),
+    // Real per-directory Web Locks serializer (no-op in tests — vitest runs
+    // the callback immediately when no lock contention exists).
+    withSkillImportSerialization: vi.fn(
+      (_dirNames: unknown, fn: () => Promise<unknown>) => fn(),
+    ),
   },
 }))
 

@@ -153,20 +153,6 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
     },
 
     createSkillSkeleton: async (dirName, name, description) => {
-      // Guard: a directory with this name already exists. A storage failure
-      // here must NOT read as "not exists" — that would overwrite an
-      // existing skill — so the error surfaces as a failed create (#185).
-      let exists: boolean
-      try {
-        exists = await userSkillDirExists(dirName)
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error)
-        return { success: false, error: `Failed to check skill existence: ${msg}` }
-      }
-      if (exists) {
-        return { success: false, error: 'A skill with this directory name already exists' }
-      }
-
       // Build a SKILL.md template. Frontmatter aligns with the builtin
       // skill style (see socratic-brainstorm/SKILL.md). The instruction
       // body is an HTML comment guide + a placeholder line so the user has
@@ -201,11 +187,33 @@ export const useSkillsStore = create<SkillsStateWithImmer>()(
         '',
       ].join('\n')
 
+      // Existence guard + write run under the SAME per-directory lock the
+      // import pipeline uses (#185 review): two overlapping creates could
+      // otherwise both pass a lock-free check and the later writeUserSkillMd
+      // would silently replace the earlier skeleton. A storage failure in
+      // the check must NOT read as "not exists" — that would overwrite an
+      // existing skill — so it surfaces as a failed create. This is a
+      // single-user local OPFS; cross-tab duplicate creates are the only
+      // realistic overlap, and the Web Locks-based serializer covers those.
       try {
-        await writeUserSkillMd(dirName, content)
+        await withSkillImportSerialization([dirName], async () => {
+          let exists: boolean
+          try {
+            exists = await userSkillDirExists(dirName)
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error)
+            throw new Error(`Failed to check skill existence: ${msg}`)
+          }
+          if (exists) {
+            throw new Error('A skill with this directory name already exists')
+          }
+          await writeUserSkillMd(dirName, content)
+        })
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        return { success: false, error: `Failed to create skill: ${msg}` }
+        // The serialized section throws ready-to-show messages; anything
+        // unexpected is still a create failure, not a silent overwrite.
+        return { success: false, error: msg }
       }
 
       const manager = getSkillManager()
