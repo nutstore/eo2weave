@@ -16,7 +16,7 @@ import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useProjectStore } from '@/store/project.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { initStorage, setupAutoSave, getRuntimeCapability } from '@/storage'
-import { useRouter } from 'next/navigation'
+import { useSidePanelStartupRoute } from '@/hooks/useSidePanelStartupRoute'
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { ExtensionInstallGuide } from '@/components/extension'
@@ -621,18 +621,8 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
   //    enhancements.ts — no React-side hook needed. We only handle project
   //    routing here (was in AppReady; lives in the bootstrap so every
   //    storage-gated route gets it, not just `/`).
-  const router = useRouter()
   const initialized = useProjectStore((s) => s.initialized)
-  useEffect(() => {
-    // Project initialization completes before all storage gates finish. Wait
-    // until the app can render the target Next.js route, then consume the
-    // one-shot side-panel request; this also gives RootPage a deterministic
-    // pending marker to defer its ordinary / → /projects redirect.
-    if (!initialized || !isStorageReady) return
-    void import('@/agent/workspace-assistant-context').then(({ handleWorkspaceAssistantOnReady }) => {
-      return handleWorkspaceAssistantOnReady((path: string) => router.replace(path))
-    })
-  }, [initialized, isStorageReady, router])
+  const sidePanelStartupPending = useSidePanelStartupRoute(initialized && isStorageReady)
 
   // ── Side-panel package opt-in prompt (issue #100) ──
   // When the side panel opens on a site hosted by a builtin WebMCP package
@@ -783,7 +773,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     )
   }
 
-  if (!isStorageReady) {
+  if (!isStorageReady || sidePanelStartupPending) {
     // Storage-layer failure recorded in the project store: show the SAME
     // InitErrorBanner (single viewport, Retry re-runs initialize() which
     // re-opens the SQLite worker through getReadyWorkerClient) plus the
