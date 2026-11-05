@@ -115,9 +115,16 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   resolveGatewayDispatchCredential: resolveCredentialMock,
 }))
+const registerProviderMock = vi.hoisted(() =>
+  vi.fn(() => {
+    gatewayRegistered.value = true
+  }),
+)
+
 vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   getLLMGatewayBaseURL: vi.fn(() => 'https://ai.jianguoyun.com'),
   getLLMGatewayClientId: vi.fn(() => 'test-client-id'),
+  registerLLMGatewayProvider: registerProviderMock,
 }))
 
 const agentLoopConstructed = vi.hoisted(() => vi.fn())
@@ -258,6 +265,20 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     expect(conv.status).toBe('error')
     expect(conv.error).not.toContain('[GATEWAY_CREDENTIALS_MISSING]')
     expect(conv.error).not.toContain('[GATEWAY_CREDENTIALS_EXPIRED]')
+  })
+
+  it('registers the gateway and dispatches when the session is usable but this tab has no registry entry (#180)', async () => {
+    // Tab B whose reconciler has not run yet: the shared token pair resolves,
+    // but this tab's DYNAMIC_PROVIDER_CONFIGS has no llm-gateway entry.
+    gatewayRegistered.value = false
+    resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+
+    await startRun()
+
+    expect(registerProviderMock).toHaveBeenCalledTimes(1)
+    expect(agentLoopConstructed).toHaveBeenCalledTimes(1)
+    const conv = useConversationStore.getState().conversations[0]
+    expect(conv.error ?? '').not.toContain('provider is unavailable')
   })
 
   it('dispatches with the validated current token when a usable session exists', async () => {
