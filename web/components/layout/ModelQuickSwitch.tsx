@@ -143,7 +143,7 @@ export function ModelQuickSwitch({
   // snapshot is already rendered must NOT swap the list for the skeleton —
   // the last accepted list stays visible (dimmed) until the fresh run
   // lands. Only the FIRST load (nothing accepted yet) shows the skeleton.
-  const refreshingExistingList = loading && acceptedSnapshotRef.current !== null
+  const refreshingExistingList = loading && (acceptedSnapshotRef.current?.length ?? 0) > 0
 
   useEffect(() => {
     let cancelled = false
