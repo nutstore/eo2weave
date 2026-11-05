@@ -7,9 +7,10 @@
  *    instead of silently degrading to the stale store cache. Before the fix
  *    `isOpfsUnavailableError` classified EVERY TypeError as unavailable.
  * 2. A cache-only name (store-cache fallback) is NOT confirmed OPFS
- *    presence: `lastInstalledDirNamesScanWasOpfsBacked()` reports which kind
- *    of snapshot the caller got, so the install-time drop guard can skip the
- *    mid-download-drop path for names that never existed on disk.
+ *    presence: `scanInstalledDirNamesSnapshot()` returns the provenance
+ *    WITH the names, so the install-time drop guard can skip the
+ *    mid-download-drop path for names that never existed on disk — a shared
+ *    flag would be overwritten by any concurrent scan (#185 review round N).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -27,8 +28,7 @@ import {
   isOpfsUnavailableError,
 } from '@/skills/user-skills-scanner'
 import {
-  lastInstalledDirNamesScanWasOpfsBacked,
-  scanInstalledDirNames,
+  scanInstalledDirNamesSnapshot,
 } from '@/skills/skill-store'
 
 type DirStub = {
@@ -98,14 +98,16 @@ describe('scanInstalledDirNames provenance (#185 review round N)', () => {
         }),
       }),
     )
-    await scanInstalledDirNames()
-    expect(lastInstalledDirNamesScanWasOpfsBacked()).toBe(true)
+    const snapshot = await scanInstalledDirNamesSnapshot()
+    expect(snapshot.opfsBacked).toBe(true)
+    expect([...snapshot.names]).toEqual(['alpha'])
   })
 
   it('marks the store-cache fallback as NOT OPFS-backed', async () => {
     // `.skills` absent → NotFoundError → store-cache fallback.
-    await scanInstalledDirNames()
-    expect(lastInstalledDirNamesScanWasOpfsBacked()).toBe(false)
+    const snapshot = await scanInstalledDirNamesSnapshot()
+    expect(snapshot.opfsBacked).toBe(false)
+    expect([...snapshot.names]).toEqual(['cached-skill'])
   })
 
   it('propagates a mid-walk TypeError instead of falling back to the cache', async () => {
@@ -126,6 +128,6 @@ describe('scanInstalledDirNames provenance (#185 review round N)', () => {
     )
     // Before the fix this resolved to the stale store cache; now the
     // operational failure must surface.
-    await expect(scanInstalledDirNames()).rejects.toThrow('failed to enumerate')
+    await expect(scanInstalledDirNamesSnapshot()).rejects.toThrow('failed to enumerate')
   })
 })

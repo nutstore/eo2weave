@@ -186,6 +186,24 @@ export function annotateInstalled(
  * installed skills look missing or vice versa.
  */
 export async function scanInstalledDirNames(): Promise<Set<string>> {
+  return (await scanInstalledDirNamesSnapshot()).names
+}
+
+/**
+ * {@link scanInstalledDirNames} returning the snapshot's provenance alongside
+ * the names: `opfsBacked` is false when the names came from the store-cache
+ * fallback (no `.skills/user/` directory or no File System Access support),
+ * in which case they are NOT confirmed OPFS presence.
+ *
+ * Provenance travels WITH the result (#185 review round N): callers that
+ * await this scan and then act on the names must not read a shared flag, which
+ * any other concurrent scan (manifest refresh, UI rescan) can overwrite in
+ * between.
+ */
+export async function scanInstalledDirNamesSnapshot(): Promise<{
+  names: Set<string>
+  opfsBacked: boolean
+}> {
   try {
     const root = await navigator.storage.getDirectory()
     const skillsDir = await (root as any).getDirectoryHandle('.skills', { create: false })
@@ -194,8 +212,7 @@ export async function scanInstalledDirNames(): Promise<Set<string>> {
     for await (const entry of (userDir as any).values()) {
       if (entry.kind === 'directory') names.push(entry.name)
     }
-    lastScanWasOpfsBacked = true
-    return new Set(names)
+    return { names: new Set(names), opfsBacked: true }
   } catch (e) {
     // A browser without File System Access support throws TypeError from
     // getDirectory() — same documented fallback as a missing directory
@@ -210,12 +227,14 @@ export async function scanInstalledDirNames(): Promise<Set<string>> {
     // directory names — strip the prefix so membership checks still match
     // when OPFS is unavailable (#154 round 8).
     const state = useSkillsStore.getState()
-    lastScanWasOpfsBacked = false
-    return new Set(
-      state.skills
-        .filter((s) => s.source === 'user')
-        .map((s) => s.id.replace(/^user:/, '')),
-    )
+    return {
+      names: new Set(
+        state.skills
+          .filter((s) => s.source === 'user')
+          .map((s) => s.id.replace(/^user:/, '')),
+      ),
+      opfsBacked: false,
+    }
   }
 }
 
@@ -228,19 +247,6 @@ export function getInstalledDirNames(): Set<string> {
       .filter((s) => s.source === 'user')
       .map((s) => s.id),
   )
-}
-
-/**
- * Whether the most recent {@link scanInstalledDirNames} call returned names
- * read from OPFS itself (true) or from the store-cache fallback (false).
- * Callers that compare the snapshot against a second OPFS check — the
- * uninstall-resurrect guard — must know whether "present" means a confirmed
- * directory or a possibly stale cache entry (#185 review round N).
- */
-let lastScanWasOpfsBacked = false
-
-export function lastInstalledDirNamesScanWasOpfsBacked(): boolean {
-  return lastScanWasOpfsBacked
 }
 
 // ---------- URL install ----------
@@ -495,8 +501,10 @@ export async function installSkillFromUrl(
   // presence, so the locked re-check below must not treat a cache-only
   // name's absence as a mid-download drop (#185 review round N) — it is
   // just a legacy SQLite-era entry that was never a directory on disk.
-  const presentAtCall = await scanInstalledDirNames()
-  const presentAtCallIsOpfsScan = lastInstalledDirNamesScanWasOpfsBacked()
+  const {
+    names: presentAtCall,
+    opfsBacked: presentAtCallIsOpfsScan,
+  } = await scanInstalledDirNamesSnapshot()
   let resp: Response
   try {
     resp = await fetch(zipUrl, { credentials: 'omit', signal: controller.signal })
