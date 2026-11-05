@@ -164,5 +164,9 @@ export const agent = {
         running: "실행 중…",
         reading: "읽는 중…",
         loadingLargeResultSet: "큰 결과 집합 불러오는 중…",
+        stateRunning: "실행 중",
+        stateStarting: "시작 중(포트 준비 안 됨)",
+        stateExited: "종료됨",
+        stateStopped: "중지됨",
     },
 } as const

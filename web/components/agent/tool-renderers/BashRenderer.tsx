@@ -15,6 +15,7 @@ registerRenderer({
   name: 'bash',
   icon: <Terminal className="h-3.5 w-3.5 text-neutral-400" />,
   Summary(ctx) {
+    const t = useT()
     const cmd = extractCommand(ctx)
     const output = extractOutput(ctx)
 
@@ -46,7 +47,7 @@ registerRenderer({
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
             </span>
-            <span className="text-xs text-blue-500">running</span>
+            <span className="text-xs text-blue-500">{t('agent.toolStatus.stateRunning')}</span>
           </span>
         </>
       )
