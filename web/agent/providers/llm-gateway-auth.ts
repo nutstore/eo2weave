@@ -305,16 +305,12 @@ export function isCredentialStatusCurrent(generation: number): boolean {
  * Reads through `loadStoredTokensWithFallback` so a credential recovered
  * from the SQLite backup (localStorage unavailable or gapped) counts as
  * current — the resolver may have validated exactly that recovered pair
- * (#214 Sourcery round 3). A storage layer that cannot be read at all
- * vouches for nothing: fail closed.
+ * (#214 Sourcery round 3). Storage READ FAILURES propagate: the caller
+ * classifies them (same philosophy as the resolver — a storage error is
+ * retryable, never proof of a stale credential).
  */
 export async function isGatewayAccessTokenCurrent(accessToken: string): Promise<boolean> {
-  let stored: StoredTokens | null
-  try {
-    stored = await loadStoredTokensWithFallback()
-  } catch {
-    return false
-  }
+  const stored = await loadStoredTokensWithFallback()
   return typeof stored?.access_token === 'string' && stored.access_token === accessToken
 }
 

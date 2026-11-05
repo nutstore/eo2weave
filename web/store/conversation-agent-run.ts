@@ -765,10 +765,25 @@ export async function runAgentImpl(
           // (#180 review rounds 2-3). The session generation is NOT the right
           // signal here — a resolution that refreshed an expired token
           // advanced it itself.
-          if (
-            providerMissing(providerType) &&
-            (await isGatewayAccessTokenCurrent(resolvedMissing.accessToken))
-          ) {
+          // A storage read failure inside the currentness check is NOT a
+          // stale credential: surface it as the retryable temporary error
+          // (same classification the resolver itself uses) instead of the
+          // re-login guidance (#214 Sourcery round 4).
+          let tokenCurrent: boolean
+          try {
+            tokenCurrent = await isGatewayAccessTokenCurrent(resolvedMissing.accessToken)
+          } catch (error) {
+            console.warn('[conversation.store] Gateway credential re-read failed:', error)
+            failRunEarly(
+              i18nText(
+                'conversation.error.gatewayCredentialTemporary',
+                'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+              )
+            )
+            releaseClaim()
+            return
+          }
+          if (providerMissing(providerType) && tokenCurrent) {
             registerLLMGatewayProvider()
           }
           if (providerMissing(providerType)) {
