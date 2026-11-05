@@ -11,7 +11,7 @@
  * in the pure `@/skills/bundle-update-consent` module.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BrandButton,
   BrandCheckbox,
@@ -47,12 +47,27 @@ export function useBundleUpdateConsent(): BundleUpdateConsentApi {
 
   const confirm = useCallback((candidates: BundleUpdateCandidate[]) => {
     if (candidates.length === 0) return Promise.resolve<string[]>([])
+    // One prompt at a time: a second install takes the dialog over, so the
+    // first request must settle (declined) instead of being dropped — an
+    // orphaned resolver suspends that install before it writes anything.
+    resolverRef.current?.([])
     return new Promise<string[]>((resolve) => {
       resolverRef.current = resolve
       setSelected(new Set(candidates.map((candidate) => candidate.dirName)))
       setPending(candidates)
     })
   }, [])
+
+  // Unmount is a decline, not a pause: the promise the install flow is
+  // awaiting has to settle or the install never completes.
+  useEffect(
+    () => () => {
+      const resolve = resolverRef.current
+      resolverRef.current = null
+      resolve?.([])
+    },
+    [],
+  )
 
   const toggle = useCallback((dirName: string, checked: boolean) => {
     setSelected((prev) => {
