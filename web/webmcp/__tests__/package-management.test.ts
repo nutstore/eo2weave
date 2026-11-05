@@ -53,12 +53,17 @@ it('lists invalid packages and diagnostics without loading source into the page 
   const manage = createPackageManagement(vi.fn(), vi.fn())
   const result = await manage({ type: 'webmcp_packages_list' })
   expect(result).toMatchObject({ ok: true, entries: [{ manifest: pkg.manifest }, { directory: 'broken', diagnostics: ['Missing manifest.json'] }] })
+  // A complete user mount must be reported as complete — the incomplete flag
+  // is only meaningful if a healthy catalog says true.
+  expect(result).toMatchObject({ userMountComplete: true })
   expect(JSON.stringify(result)).not.toContain('sources')
 })
 it('tells the page when the user mount could not be listed instead of reporting an empty one', async () => {
-  vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[], { userMountComplete: false }])
+  // A failed user mount must not drop the packages that DID load: keep one
+  // healthy builtin entry in the fixture so "entries: []" cannot pass here.
+  vi.mocked(readWebMCPCatalogDetailed).mockResolvedValue([[{ ...entry, mount: 'builtin-webmcp', access: 'read-only' }], { userMountComplete: false }])
   const manage = createPackageManagement(vi.fn(), vi.fn())
-  expect(await manage({ type: 'webmcp_packages_list' })).toMatchObject({ ok: true, entries: [], userMountComplete: false })
+  expect(await manage({ type: 'webmcp_packages_list' })).toMatchObject({ ok: true, entries: [{ manifest: pkg.manifest }], userMountComplete: false })
 })
 it('rejects traversal, booleans, missing packages and invalid enables without committing', async () => {
   const write = vi.fn(), refresh = vi.fn()
