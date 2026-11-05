@@ -360,6 +360,14 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     expect(gateResolutions).toBe(2)
     expect(registerProviderMock).toHaveBeenCalledTimes(1)
     expect(agentLoopConstructed).toHaveBeenCalledTimes(1)
+    // The rerun must actually dispatch WITH the rotated credential: the
+    // custom-provider path tolerates a missing api-key and would still build
+    // an AgentLoop, so construction alone cannot prove the token was used.
+    const providerCall = createLLMProviderMock.mock.calls.find(
+      (call) => (call[0] as { providerType?: string })?.providerType === 'llm-gateway',
+    )
+    expect(providerCall).toBeDefined()
+    expect(providerCall![0]).toMatchObject({ apiKey: 'rotated-token' })
     const conv = useConversationStore.getState().conversations[0]
     expect(conv.error ?? '').not.toContain('sign in again')
   })
