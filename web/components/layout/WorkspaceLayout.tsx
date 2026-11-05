@@ -403,7 +403,7 @@ export function WorkspaceLayout({
       // selection"). Feeding it into ensureValidModelSelection here would
       // let the stale catalog switch the active model after the newer run
       // began. The newer run re-derives everything from fresher state.
-      if (!providers.every((p) => p.current)) return
+      if (providers.runCurrent === false || !providers.every((p) => p.current)) return
       ensureValidModelSelection(providers, { preserveExpiredCredential: true })
     }).catch((error) => {
       console.warn('[WorkspaceLayout] model reconciliation deferred:', error)

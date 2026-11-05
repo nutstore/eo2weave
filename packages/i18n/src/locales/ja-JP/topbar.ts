@@ -12,6 +12,7 @@ export const topbar = {
       title: "クイックモデル切替",
       unavailable: "利用可能なモデルがありません",
       loading: "モデルを読み込み中…",
+      refreshing: "更新中…",
       noModels: "利用可能なモデルがありません",
       credentialExpired: "再ログインが必要です",
             noUsableModelWarning: "利用可能なモデルが未選択です。クリックして選択してください",

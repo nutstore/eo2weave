@@ -16,6 +16,7 @@ import {
   unregisterDynamicProvider,
   getProviderConfig,
   getDynamicProviderIds,
+  subscribeToProviderRegistry,
 } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
@@ -278,7 +279,7 @@ interface SettingsState {
      * accepted snapshot and blanks the switcher.
      */
     runCurrent: boolean
-  }>>
+  }> & { runCurrent?: boolean }>
 
   /**
    * Restore dynamic providers from persisted customProviders on app load
@@ -529,12 +530,13 @@ function persistWritesSuppressed(): boolean {
   return suppressPersistWrites > 0
 }
 
-/**
- * Monotonic generation counter for `getAvailableProviders` discovery runs.
- * A module-level (not per-call) counter so concurrent runs are ordered
- * regardless of store instance; see the superseded-guard at the end of each
- * run.
- */
+/** Attach run currency even when the provider list is empty. */
+function discoveryResult<T extends object>(results: T[], current: boolean) {
+  const entries = results.map((result) => ({ ...result, current, runCurrent: current }))
+  return Object.defineProperty(entries, 'runCurrent', { value: current }) as typeof entries & { runCurrent: boolean }
+}
+
+// Invalidating a discovery also retires any pending run.
 let getAvailableProvidersGeneration = 0
 
 /**
@@ -808,7 +810,7 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
       const gwKey = await loadApiKey(gwMod.getLLMGatewayApiKeyProviderKey())
       // A registered gateway WITHOUT its saved access-token shadow yet
       // (startup: registration lands before AppBootstrap persists the
-      // restored token) must still appear in discovery as a LOADING entry
+      // restored token) must still appear in discovery with its registry status
       // (Sourcery: "Gateway selection is lost during restore"). Omitting it
       // made ensureValidModelSelection see no pending gateway and switch the
       // persisted gateway selection to another available provider before
@@ -823,7 +825,7 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
           displayName: localizedProviderDisplayName(llmGatewayProviderKey, gwMeta?.displayName || 'Nutstore AI'),
           models: [],
           providerKey: llmGatewayProviderKey,
-          catalogStatus: 'loading',
+          catalogStatus: getDynCatalogStatus(llmGatewayProviderKey) ?? 'failed',
           authoritativeIds: [],
         })
       }
@@ -879,16 +881,8 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
   // and reconciliation, and return the (still valid, read-only) results
   // to the caller. The newer run re-derives everything from fresher
   // state (Sourcery: "Older refresh overrides newer catalog").
-  // Single-flight note: with `getAvailableProviders` coalescing concurrent
-  // callers into one run and `invalidateProviderDiscovery` clearing the slot
-  // on mutations, no second run can start while this one is awaiting, so the
-  // `superseded()` gates below are CURRENTLY unreachable. They stay as the
-  // correctness gate for any future caller that starts non-coalesced runs.
-  // runIsCurrent feeds the per-result `current` flag the callers read;
-  // latch it at the same gate so the UI-side reconciliation skip
-  // (WorkspaceLayout) agrees with the store-side skip below.
   runIsCurrent = !superseded()
-  if (!runIsCurrent) return results.map((r) => ({ ...r, current: false, runCurrent: false }))
+  if (!runIsCurrent) return discoveryResult(results, false)
 
   // Seen-bookkeeping flush: only a CURRENT run may confirm pins. Every
   // mark was collected against this run's snapshot; had a newer run
@@ -929,7 +923,7 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
   // so any future edit that adds awaits to the sweep cannot reopen the
   // stale-run window.
   runIsCurrent = !superseded()
-  if (!runIsCurrent) return results.map((r) => ({ ...r, current: false, runCurrent: false }))
+  if (!runIsCurrent) return discoveryResult(results, false)
 
   // Reconcile only after every provider source has been collected. This
   // prevents an early provider from winning while a later provider is
@@ -949,7 +943,7 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
     preserveExpiredCredential: get().modelCredentialStatus === 'expired',
   })
 
-  return results.map((r) => ({ ...r, current: runIsCurrent, runCurrent: runIsCurrent }))
+  return discoveryResult(results, runIsCurrent)
 }
 
 /**
@@ -973,8 +967,11 @@ let providerDiscoveryInFlight: Promise<Awaited<ReturnType<SettingsState['getAvai
  * invalidate on every provider/registry/pin mutation it announces.
  */
 export function invalidateProviderDiscovery(): void {
+  getAvailableProvidersGeneration++
   providerDiscoveryInFlight = null
 }
+
+subscribeToProviderRegistry(invalidateProviderDiscovery)
 
 export const useSettingsStore = create<SettingsState, [['zustand/persist', unknown]]>(
   persist<SettingsState, [], [], PersistedSettingsState>(
@@ -1559,6 +1556,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const state = get()
         const current = state.pinnedModelsByProvider[providerType] || []
         if (current.includes(modelId)) return
+        invalidateProviderDiscovery()
         set({
           pinnedModelsByProvider: {
             ...state.pinnedModelsByProvider,
@@ -1572,6 +1570,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const state = get()
         const current = state.pinnedModelsByProvider[providerType] || []
         if (!current.includes(modelId)) return
+        invalidateProviderDiscovery()
         set({
           pinnedModelsByProvider: {
             ...state.pinnedModelsByProvider,
@@ -1583,6 +1582,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
 
       setPinnedModels: (providerType, modelIds) => {
         const state = get()
+        invalidateProviderDiscovery()
         set({
           pinnedModelsByProvider: {
             ...state.pinnedModelsByProvider,

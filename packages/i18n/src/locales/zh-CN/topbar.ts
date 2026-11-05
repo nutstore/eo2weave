@@ -12,6 +12,7 @@ export const topbar = {
       title: "快速切换模型",
       unavailable: "暂无可用模型",
       loading: "正在加载模型…",
+      refreshing: "刷新中…",
       noModels: "暂无可用模型",
       credentialExpired: "请重新登录",
             noUsableModelWarning: "尚未选择可用模型，点击选择模型",

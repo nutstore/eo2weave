@@ -12,6 +12,7 @@ export const topbar = {
       title: "빠른 모델 전환",
       unavailable: "사용 가능한 모델 없음",
       loading: "모델을 불러오는 중…",
+      refreshing: "새로고침 중…",
       noModels: "사용 가능한 모델 없음",
       credentialExpired: "다시 로그인해야 합니다",
             noUsableModelWarning: "사용 가능한 모델이 선택되지 않았습니다. 클릭하여 선택하세요",

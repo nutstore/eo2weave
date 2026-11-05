@@ -59,7 +59,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
 }))
 
 import { useSettingsStore } from '@/store/settings.store'
-import type { LLMProviderType } from '@/agent/providers/types'
+import { registerDynamicProvider, unregisterDynamicProvider, type LLMProviderType } from '@/agent/providers/types'
 
 const P = 'openai' as LLMProviderType
 
@@ -82,6 +82,43 @@ describe('getAvailableProviders single-flight coalescing (#188)', () => {
   afterEach(async () => {
     // Drain the in-flight slot so later suites start a fresh generation.
     await Promise.resolve()
+  })
+
+  it('uses the gateway catalog failure state when no token is available', async () => {
+    mocks.isLLMGatewayConfigured.mockReturnValue(true)
+    mocks.loadApiKey.mockResolvedValue(null)
+    registerDynamicProvider('llm-gateway',
+      { baseURL: 'https://gateway.example/v1', modelName: '', headers: {} },
+      { category: 'chinese', displayName: 'Nutstore AI', models: [], catalogStatus: 'failed' },
+    )
+    try {
+      const result = await useSettingsStore.getState().getAvailableProviders()
+      expect(result.find((provider) => provider.providerType === 'llm-gateway')?.catalogStatus).toBe('failed')
+    } finally {
+      unregisterDynamicProvider('llm-gateway')
+    }
+  })
+
+  it('invalidates an in-flight discovery when the provider registry changes', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let calls = 0
+    mocks.loadApiKey.mockImplementation(async () => {
+      if (++calls === 1) await gate
+      return null
+    })
+    const pending = useSettingsStore.getState().getAvailableProviders()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    registerDynamicProvider('custom-test',
+      { baseURL: 'https://example.com/v1', modelName: '', headers: {} },
+      { category: 'custom', displayName: 'Test', models: [] },
+    )
+    release()
+    try {
+      expect((await pending).runCurrent).toBe(false)
+    } finally {
+      unregisterDynamicProvider('custom-test')
+    }
   })
 
   it('joins concurrent callers into ONE run sharing the same generation', async () => {
@@ -121,6 +158,7 @@ describe('getAvailableProviders single-flight coalescing (#188)', () => {
     // Exactly one generation was consumed: a follow-up call starts fresh
     // (slot cleared) and is also current — no stale supersede chain.
     const fresh = await useSettingsStore.getState().getAvailableProviders()
+    expect(fresh.find((p) => p.providerType === P)?.models.map((m) => m.id)).toContain('m1')
     expect(fresh.every((p) => p.current)).toBe(true)
   })
 
@@ -214,6 +252,7 @@ describe('getAvailableProviders single-flight coalescing (#188)', () => {
     // completes while run 1 is still awaiting, making run 1 superseded.
     const p1 = useSettingsStore.getState().getAvailableProviders()
     await new Promise((resolve) => setTimeout(resolve, 0))
+    useSettingsStore.getState().triggerProviderRefresh()
     const p2 = useSettingsStore.getState().getAvailableProviders()
     releaseFirst!()
     const stale = await p1
@@ -222,8 +261,37 @@ describe('getAvailableProviders single-flight coalescing (#188)', () => {
     expect(stale.length).toBe(0)
     expect(fresh.length).toBe(0)
     // The empty result is still flagged as coming from a SUPERSEDED run.
-    expect(stale.every((r) => r.current === false)).toBe(true)
-    expect(stale.every((r) => r.runCurrent === false)).toBe(true)
-    expect(fresh.every((r) => r.runCurrent === true)).toBe(true)
+    expect(stale.runCurrent).toBe(false)
+    expect(fresh.runCurrent).toBe(true)
+  })
+
+  it('marks an in-flight discovery stale when its provider state is refreshed', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    mocks.loadApiKey.mockImplementation(async (id: string) => { await gate; return id === P ? 'key' : null })
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm1', name: 'M1' }])
+    const pending = useSettingsStore.getState().getAvailableProviders()
+    await vi.waitFor(() => expect(mocks.loadApiKey).toHaveBeenCalled())
+    useSettingsStore.getState().triggerProviderRefresh()
+    release()
+    expect((await pending).runCurrent).toBe(false)
+  })
+
+  it('discovers newly pinned models when a pin changes during discovery', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let first = true
+    mocks.loadApiKey.mockImplementation(async (id: string) => {
+      if (first) { first = false; await gate }
+      return id === P ? 'key' : null
+    })
+    mocks.getModelsForProvider.mockReturnValue([{ id: 'm1', name: 'M1' }, { id: 'm2', name: 'M2' }])
+    const pending = useSettingsStore.getState().getAvailableProviders()
+    await vi.waitFor(() => expect(mocks.loadApiKey).toHaveBeenCalled())
+    useSettingsStore.getState().pinModel(P, 'm2')
+    const fresh = useSettingsStore.getState().getAvailableProviders()
+    release()
+    expect((await fresh).find((provider) => provider.providerType === P)?.models.map((model) => model.id)).toEqual(['m2'])
+    expect((await pending).runCurrent).toBe(false)
   })
 })

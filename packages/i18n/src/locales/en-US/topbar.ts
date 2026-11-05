@@ -11,6 +11,7 @@ export const topbar = {
       title: "Quick Model Switch",
       unavailable: "No models available",
       loading: "Loading models…",
+      refreshing: "Refreshing…",
       noModels: "No models available",
       credentialExpired: "Re-login required",
             noUsableModelWarning: "No usable model selected — click to pick one",
