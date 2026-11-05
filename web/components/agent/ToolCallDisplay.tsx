@@ -497,7 +497,7 @@ function SubagentCard({
             const allAgentIds = Array.from(new Set([...liveAgentIds, ...resultAgentIds]))
             if (allAgentIds.length === 0) return null
             return allAgentIds.map((agentId) => (
-              <Suspense key={agentId} fallback={<div className="py-2 text-xs text-neutral-400">Loading...</div>}>
+              <Suspense key={agentId} fallback={<div className="py-2 text-xs text-neutral-400">{t('common.loading')}</div>}>
                 <SubagentDetailPanel agentId={agentId} conversationId={conversationId} />
               </Suspense>
             ))

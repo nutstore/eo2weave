@@ -157,4 +157,10 @@ export const agent = {
             resetTitle: "Reset view",
         },
     },
+    // Tool renderer status labels
+    toolStatus: {
+        running: "Running...",
+        reading: "Reading...",
+        loadingLargeResultSet: "Loading large result set...",
+    },
 } as const
