@@ -72,7 +72,15 @@ async function setup({ state, handlers = {} }: SetupOptions): Promise<Harness> {
   vi.stubGlobal('document', win.document)
   vi.stubGlobal('window', win)
   vi.stubGlobal('chrome', {
-    i18n: { getMessage: (key: string) => key },
+    // Keep substitutions: a stub that only echoes the key cannot tell WHICH
+    // package a message announces (finding: "Wrong package toast still passes").
+    i18n: {
+      getMessage: (key: string, substitutions?: string | string[]) => {
+        if (substitutions === undefined) return key
+        const values = Array.isArray(substitutions) ? substitutions : [substitutions]
+        return `${key}|${values.join(',')}`
+      },
+    },
     runtime: { sendMessage: send, onMessage: { addListener: vi.fn() } },
   })
   vi.stubGlobal('HTMLElement', win.HTMLElement)
@@ -390,9 +398,12 @@ describe('registry section feedback', () => {
           installed = ['com.example.alpha', 'com.example.beta']
           return { filesWritten: 1 }
         },
+        // `uninstallRegistryPackage` sends `packageId` (not `package`): reading
+        // the wrong field made B's uninstall throw, and the toast assertion
+        // then passed because the operation had failed (finding: "B uninstall
+        // never succeeds in test").
         webmcp_registry_uninstall: (message) => {
-          const pkg = message.package as { id: string }
-          installed = installed.filter(id => id !== pkg.id)
+          installed = installed.filter(id => id !== message.packageId)
           return {}
         },
       },
@@ -413,7 +424,33 @@ describe('registry section feedback', () => {
     expect(betaRow).toBeTruthy()
     betaRow!.click()
     await settle()
+
+    // B's uninstall must really have landed, otherwise "A's toast is still up"
+    // is just the shape of a failed request.
+    expect(h.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'webmcp_registry_uninstall',
+      packageId: pkgB.id,
+    }))
+    expect(h.sectionError().hidden).toBe(true)
+    expect(installed).toEqual([pkgA.id])
+
+    // …and the visible toast is still the one announcing A.
     expect(toastVisible(h.document)).toBe(true)
+    expect(h.document.getElementById('successToast')!.textContent).toContain(pkgA.id)
+
+    // Removing B must not have COST A its ownership of the toast: removing A
+    // (which the toast still claims is installed) has to take it down.
+    const alphaRow = [...h.document.querySelectorAll('button')]
+      .find(b => b.textContent === 'webmcpPackagesUninstall' &&
+        b.closest('.pkg-row')?.querySelector('.name')?.textContent === pkgA.id) as HTMLButtonElement | undefined
+    expect(alphaRow).toBeTruthy()
+    alphaRow!.click()
+    await settle()
+    expect(h.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'webmcp_registry_uninstall',
+      packageId: pkgA.id,
+    }))
+    expect(toastVisible(h.document)).toBe(false)
   })
 
   it('the expired toast leaves the accessibility tree', async () => {
