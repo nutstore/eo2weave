@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   packageMatchesFilter,
   SEARCH_MIN_PACKAGES,
+  toolIndexKey,
   toolMatchCount,
   toolWindow,
   TOOL_PREVIEW_WINDOW,
   type PreviewTool,
-} from '../registry-filter'
+} from '@/webmcp/registry-filter'
 
 const TOOLS: PreviewTool[] = [
   { name: 'create_issue', description: 'Create a GitHub issue' },
@@ -73,6 +74,11 @@ describe('toolWindow', () => {
     expect(visible.length).toBe(TOOL_PREVIEW_WINDOW)
     expect(visible[0]!.name).toBe('tool_0')
     expect(hiddenCount).toBe(51)
+    // Exact window content, not just the shape — a buggy `toolWindow` that
+    // returns eight copies of tool_0 (or skips entries) must fail here
+    // (round-6 finding: "Duplicate tools pass preview test").
+    expect(visible).toEqual(many.slice(0, TOOL_PREVIEW_WINDOW))
+    expect(new Set(visible.map(tool => tool.name)).size).toBe(TOOL_PREVIEW_WINDOW)
   })
 
   it('keeps a short list intact with nothing hidden', () => {
@@ -92,5 +98,24 @@ describe('toolWindow', () => {
 describe('SEARCH_MIN_PACKAGES', () => {
   it('shows search only when the catalog exceeds 5 packages', () => {
     expect(SEARCH_MIN_PACKAGES).toBe(5)
+  })
+})
+
+describe('toolIndexKey', () => {
+  it('separates registries that publish the same package ID', () => {
+    // Round-6 finding "Registries share tool results": two user-added
+    // registries can carry the same pkg id with different tool lists — the
+    // key must keep their entries distinct.
+    expect(toolIndexKey('https://a.example/manifest.json', 'com.example.pkg'))
+      .not.toBe(toolIndexKey('https://b.example/manifest.json', 'com.example.pkg'))
+    expect(toolIndexKey('https://a.example/manifest.json', 'com.example.pkg'))
+      .toBe('https://a.example/manifest.json\u0000com.example.pkg')
+  })
+
+  it('cannot be spoofed by a pkg id containing a separator', () => {
+    // A crafted pkg id cannot make (registry A, "x\u0000y") collide with
+    // (registry B, "x") + ("x", ...) style splits.
+    const spoofed = toolIndexKey('https://a.example/', 'x\u0000y')
+    expect(spoofed).not.toBe(toolIndexKey('https://a.example/x', 'y'))
   })
 })

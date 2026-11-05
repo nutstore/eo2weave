@@ -207,3 +207,305 @@ describe('WebMCPPackageRegistrySection', () => {
     expect(screen.queryByText(/3 tools/)).toBeNull()
   })
 })
+
+/**
+ * Round-6 Sourcery findings on the #187 registry-search feature. Shared
+ * helpers: a fetch stub that serves per-URL manifest bodies (real-shaped:
+ * read through `response.text()` + JSON.parse, with id/version identity
+ * fields), and gated promises for out-of-order previews.
+ */
+const REG_A = {
+  rawBase: 'https://raw.githubusercontent.com/owner/repo-a/main',
+  manifestUrl: 'https://raw.githubusercontent.com/owner/repo-a/main/manifest.json',
+  label: 'owner/repo-a',
+}
+const REG_B = {
+  rawBase: 'https://raw.githubusercontent.com/owner/repo-b/main',
+  manifestUrl: 'https://raw.githubusercontent.com/owner/repo-b/main/manifest.json',
+  label: 'owner/repo-b',
+}
+
+function manifestOf(pkgId: string, version: string, tools: Array<{ name: string; description: string }>) {
+  return { id: pkgId, version, tools }
+}
+
+function gate<T>() {
+  let release: (value: T) => void = () => {}
+  const promise = new Promise<T>(resolve => { release = resolve })
+  return { promise, release }
+}
+
+/** Serve per-rawBase manifest bodies; a handler returning null = HTTP 500. */
+function stubFetchByHandler(handler: (url: string) => unknown) {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const body = await handler(String(input))
+    if (body === null) return { ok: false, status: 500 }
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) }
+  }))
+}
+
+function catalogOf(registry: typeof REG_A, count: number, version: string, _toolName?: string) {
+  return {
+    packages: Array.from({ length: count }, (_, i) => ({
+      id: `${registry.label}.pkg${i}`,
+      version,
+      description: `Package ${i} of ${registry.label}.`,
+      toolCount: 1,
+      files: [],
+    })),
+  }
+}
+
+function previewUrlFor(registry: typeof REG_A, pkgId: string) {
+  return `${registry.rawBase}/packages/${pkgId}/manifest.json`
+}
+
+describe('WebMCPPackageRegistrySection round-6 findings', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    store.listInstalledPackageIds.mockResolvedValue(new Set())
+    store.readInstalledPackageActivation.mockResolvedValue('disabled')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('renders the FULL tool catalog once the preview is EXPANDED (High: more tools stay hidden)', async () => {
+    store.listRegistries.mockReturnValue([REG_A])
+    store.loadRegistryCatalog.mockResolvedValue(catalogOf(REG_A, 1, '1.0.0', 'tool_0'))
+    const pkgId = `${REG_A.label}.pkg0`
+    const tools = Array.from({ length: 59 }, (_, i) => ({ name: `tool_${i}`, description: `Tool ${i}` }))
+    stubFetchByHandler(url => (url === previewUrlFor(REG_A, pkgId) ? manifestOf(pkgId, '1.0.0', tools) : null))
+    const { container } = render(<WebMCPPackageRegistrySection t={t} />)
+
+    await waitFor(() => expect(screen.getByText(pkgId)).toBeTruthy())
+    // Collapsed: the window hides everything past tool_7.
+    expect(screen.queryByText('tool_58')).toBeNull()
+    // Expand the card, then the tool list itself (the "More (N total)"
+    // expander — the exact control the finding says loses the tail).
+    fireEvent.click(container.querySelector('button[aria-expanded="false"]')!)
+    const more = await waitFor(() => screen.getByText('settings.webmcpPackages.moreTools'))
+    fireEvent.click(more)
+    // Expanded: the whole catalog is reachable — last tool included, and no
+    // second "More" expander (the window must not re-apply behind it).
+    await waitFor(() => expect(screen.getByText('tool_58')).toBeTruthy())
+    expect(screen.queryByText('settings.webmcpPackages.moreTools')).toBeNull()
+  })
+
+  it('keys the tool index per REGISTRY so same-id packages do not share results', async () => {
+    // Round-6: "Registries share tool results" — two registries may publish
+    // the same package ID with different tool lists.
+    const pkgId = 'com.example.shared'
+    store.listRegistries.mockReturnValue([REG_A, REG_B])
+    // The search input only renders above SEARCH_MIN_PACKAGES total packages
+    // — give each registry enough siblings for the filter to appear.
+    const siblings = (label: string) =>
+      Array.from({ length: 4 }, (_, i) => ({
+        id: `${label}.filler${i}`,
+        version: '1.0.0',
+        description: `Filler package ${i} of ${label}.`,
+        toolCount: 1,
+        files: [],
+      }))
+    store.loadRegistryCatalog.mockImplementation((async (registry: { label: string }) => ({
+      packages: [
+        { id: pkgId, version: '1.0.0', description: 'Shared id.', toolCount: 1, files: [] },
+        ...siblings(registry.label),
+      ],
+    })) as unknown as typeof store.loadRegistryCatalog)
+    stubFetchByHandler(url => {
+      if (url === previewUrlFor(REG_A, pkgId)) return manifestOf(pkgId, '1.0.0', [{ name: 'alpha_tool', description: 'Alpha' }])
+      if (url === previewUrlFor(REG_B, pkgId)) return manifestOf(pkgId, '1.0.0', [{ name: 'beta_tool', description: 'Beta' }])
+      return null
+    })
+    const { container } = render(<WebMCPPackageRegistrySection t={t} />)
+
+    await waitFor(() => expect(screen.getAllByText('1 tools').length).toBe(2))
+    // Search 'alpha' must match ONLY registry A's card; 'beta' only B's.
+    const searchbox = screen.getByRole('searchbox')
+    fireEvent.change(searchbox, { target: { value: 'alpha_tool' } })
+    await waitFor(() => expect(container.textContent!.match(/com\.example\.shared/g)!.length).toBe(1))
+    expect(container.textContent).toContain('settings.webmcpPackages.matchesTools')
+    fireEvent.change(searchbox, { target: { value: 'beta_tool' } })
+    await waitFor(() => expect(container.textContent!.match(/com\.example\.shared/g)!.length).toBe(1))
+    fireEvent.change(searchbox, { target: { value: 'alpha_tool' } })
+    await waitFor(() => expect(container.textContent!.match(/com\.example\.shared/g)!.length).toBe(1))
+    expect(container.textContent).toContain('settings.webmcpPackages.matchesTools')
+  })
+
+  it('updates stale tool CONTENT even when the count stays the same', async () => {
+    // Round-6: "Updated tools stay stale" — equal-length lists must still be
+    // compared by content.
+    store.listRegistries.mockReturnValue([REG_A])
+    const catalog = catalogOf(REG_A, 20, '1.0.0', 'unused')
+    store.loadRegistryCatalog.mockResolvedValue(catalog)
+    let renamed = false
+    stubFetchByHandler(url => {
+      const match = url.match(/packages\/(.+)\/manifest\.json/)
+      if (!match) return null
+      const name = renamed ? `shared_new_${match[1]}` : `shared_old_${match[1]}`
+      return manifestOf(match[1]!, '1.0.0', [{ name, description: 'Shared tool' }])
+    })
+    const { container } = render(<WebMCPPackageRegistrySection t={t} />)
+    await waitFor(() => expect(screen.getByRole('searchbox')).toBeTruthy())
+    // Each manifest carries exactly 1 tool → the verified count is "1 tools"
+    // on all 20 cards once the preview pass finishes.
+    await waitFor(() => expect(screen.getAllByText('1 tools').length).toBe(20))
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'shared_old' } })
+    await waitFor(() => expect(screen.getAllByText('settings.webmcpPackages.matchesTools').length).toBe(20))
+
+    // Same count, same version — only the tool NAMES change.
+    renamed = true
+    // A fresh catalog OBJECT on refresh: the card's manifest state must
+    // change identity for the preview effect to re-run (same-object resolves
+    // bail out in React).
+    store.loadRegistryCatalog.mockResolvedValue({
+      packages: catalog.packages.map(p => ({ ...p })),
+    })
+    fireEvent.click(screen.getByTitle('settings.webmcpPackages.refresh'))
+    await waitFor(() => expect(screen.getAllByText('1 tools').length).toBe(20))
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'shared_old' } })
+    // The old names are gone from the index — no card reports a tool hit.
+    await waitFor(() => expect(screen.queryByText('settings.webmcpPackages.matchesTools')).toBeNull())
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'shared_new' } })
+    await waitFor(() => expect(screen.getAllByText('settings.webmcpPackages.matchesTools').length).toBe(20))
+    expect(container).toBeTruthy()
+  })
+
+  it('hides a package again once its cached tool index entry is dropped by a FAILED re-preview', async () => {
+    store.listRegistries.mockReturnValue([REG_A])
+    store.loadRegistryCatalog.mockResolvedValue(catalogOf(REG_A, 1, '1.0.0', 'tool_0'))
+    const pkgId = `${REG_A.label}.pkg0`
+    stubFetchByHandler(url => (url === previewUrlFor(REG_A, pkgId)
+      ? manifestOf(pkgId, '1.0.0', [{ name: 'tool_0', description: 'Tool zero' }])
+      : null))
+    render(<WebMCPPackageRegistrySection t={t} />)
+    await waitFor(() => expect(screen.getByText('1 tools')).toBeTruthy())
+
+    // Expand: the index entry is live, tool_0 renders from the cache.
+    fireEvent.click(screen.getByRole('button', { name: '' }))
+    await waitFor(() => expect(screen.getByText('tool_0')).toBeTruthy())
+
+    // The re-preview after refresh fails → the index entry must be dropped
+    // (round-6: "Removed tool lists consume memory"), so the expanded
+    // preview falls back to its own fetch, which fails too → empty.
+    stubFetchByHandler(() => null)
+    // A fresh catalog OBJECT for the refresh (identity change re-runs the
+    // preview pass — same-object resolves bail out in React).
+    store.loadRegistryCatalog.mockResolvedValue({
+      packages: [{ id: pkgId, version: '1.0.0', description: 'D.', toolCount: 1, files: [] }],
+    })
+    fireEvent.click(screen.getByTitle('settings.webmcpPackages.refresh'))
+    // The count flips to the UNVERIFIED claim (marked as such) once the
+    // re-preview has failed.
+    await waitFor(() => expect(screen.getByText(/toolsCountUnverified/)).toBeTruthy())
+    // And the cached tool list is gone from the index — the expanded preview
+    // no longer renders the stale tool_0.
+    await waitFor(() => expect(screen.queryByText('tool_0')).toBeNull())
+  })
+
+  it('recomputes totals and clears the filter when a registry removal hides the search input', async () => {
+    // Round-6: "Removed catalogs inflate totals" + "Hidden search keeps
+    // filtering" — removal must forget the count, and the hidden input must
+    // not keep an invisible filter applied.
+    store.listRegistries.mockReturnValue([REG_A])
+    store.loadRegistryCatalog.mockResolvedValue(catalogOf(REG_A, 20, '1.0.0', 'tool_0'))
+    stubFetchByHandler(url => {
+      const match = url.match(/packages\/(.+)\/manifest\.json/)
+      return match ? manifestOf(match[1]!, '1.0.0', [{ name: 'tool_0', description: 'Tool zero' }]) : null
+    })
+    store.removeRegistry.mockImplementation(() => store.listRegistries.mockReturnValue([]))
+    const { container } = render(<WebMCPPackageRegistrySection t={t} />)
+    await waitFor(() => expect(screen.getByRole('searchbox')).toBeTruthy())
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'owner/repo-a.pkg15' } })
+    await waitFor(() => expect(screen.queryByText('owner/repo-a.pkg0')).toBeNull())
+
+    fireEvent.click(screen.getByTitle('settings.webmcpPackages.removeRegistry'))
+    // Input gone with only 0 packages left…
+    await waitFor(() => expect(screen.queryByRole('searchbox')).toBeNull())
+    // …and the filter was cleared WITH it: with no registries there are no
+    // cards, but the totals must not stay inflated either — the inventory
+    // path below proves the section still renders sanely. Re-add a small
+    // catalog: if the stale count (20) were retained, the input would
+    // reappear for a 1-package catalog.
+    store.listRegistries.mockReturnValue([REG_A])
+    store.loadRegistryCatalog.mockResolvedValue(catalogOf(REG_A, 1, '1.0.0', 'tool_0'))
+    fireEvent.click(screen.getByText('settings.webmcpPackages.addRegistryTitle'))
+    fireEvent.change(screen.getByPlaceholderText('settings.webmcpPackages.addRegistryInputPlaceholder'), { target: { value: REG_A.manifestUrl } })
+    fireEvent.click(screen.getByText('settings.webmcpPackages.addRegistryButton'))
+    await waitFor(() => expect(screen.getByText('owner/repo-a.pkg0')).toBeTruthy())
+    expect(screen.queryByRole('searchbox')).toBeNull()
+    expect(container.textContent).toContain('owner/repo-a.pkg0')
+  })
+
+  it('keeps a search visible-clearable filter and drops it when the catalog shrinks', async () => {
+    // Round-6: "Hidden search keeps filtering" — catalog shrink below the
+    // threshold hides the input; the active query must go with it.
+    store.listRegistries.mockReturnValue([REG_A])
+    store.loadRegistryCatalog.mockResolvedValue(catalogOf(REG_A, 20, '1.0.0', 'tool_0'))
+    stubFetchByHandler(url => {
+      const match = url.match(/packages\/(.+)\/manifest\.json/)
+      return match ? manifestOf(match[1]!, '1.0.0', [{ name: 'tool_0', description: 'Tool zero' }]) : null
+    })
+    render(<WebMCPPackageRegistrySection t={t} />)
+    await waitFor(() => expect(screen.getByRole('searchbox')).toBeTruthy())
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'owner/repo-a.pkg15' } })
+    await waitFor(() => expect(screen.queryByText('owner/repo-a.pkg0')).toBeNull())
+
+    // Refresh against a shrunken catalog (3 packages, same versions).
+    store.loadRegistryCatalog.mockResolvedValue(catalogOf(REG_A, 3, '1.0.0', 'tool_0'))
+    fireEvent.click(screen.getByTitle('settings.webmcpPackages.refresh'))
+    await waitFor(() => expect(screen.queryByRole('searchbox')).toBeNull())
+    // Filter cleared: the previously hidden pkg0 is visible again.
+    await waitFor(() => expect(screen.getByText('owner/repo-a.pkg0')).toBeTruthy())
+    expect(screen.getByText('owner/repo-a.pkg2')).toBeTruthy()
+  })
+
+  it('drops a STALE preview response that resolves after a newer catalog load', async () => {
+    // Round-6: "Older previews overwrite current tools" — the generation
+    // guard must keep an older generation's late response out of the index.
+    store.listRegistries.mockReturnValue([REG_A])
+    const catalogV1 = catalogOf(REG_A, 20, '1.0.0', 'tool_0')
+    store.loadRegistryCatalog.mockResolvedValue(catalogV1)
+    const stale = gate<{ id: string; version: string; tools: Array<{ name: string; description: string }> }>()
+    const pkg0 = `${REG_A.label}.pkg0`
+    let refreshed = false
+    stubFetchByHandler(url => {
+      const match = url.match(/packages\/(.+)\/manifest\.json/)
+      if (!match) return null
+      if (match[1] === pkg0 && !refreshed) return stale.promise
+      if (match[1] === pkg0 && refreshed) {
+        return manifestOf(pkg0, '2.0.0', [{ name: 'fresh_tool', description: 'Fresh tool' }])
+      }
+      return manifestOf(match[1]!, '1.0.0', [{ name: `tool_${match[1]}`, description: 'Tool' }])
+    })
+    render(<WebMCPPackageRegistrySection t={t} />)
+    await waitFor(() => expect(screen.getByRole('searchbox')).toBeTruthy())
+
+    // Refresh: catalog v2 for pkg0 (only its version changes). The new
+    // preview (fresh generation) resolves quickly; the OLD generation's
+    // preview for pkg0 is still parked on the gate.
+    refreshed = true
+    const catalogV2 = {
+      packages: catalogV1.packages.map((p, i) => (i === 0 ? { ...p, version: '2.0.0' } : p)),
+    }
+    store.loadRegistryCatalog.mockResolvedValue(catalogV2)
+    fireEvent.click(screen.getByTitle('settings.webmcpPackages.refresh'))
+    // The refresh re-ran the preview pass: pkg0's version bump drops its
+    // verified count (verified for 1.0.0) — the OTHER 19 stay verified while
+    // pkg0's second preview is in flight.
+    await waitFor(() => expect(screen.getAllByText('1 tools').length).toBe(19))
+    // Release the stale response AFTER the fresh generation landed.
+    stale.release(manifestOf(pkg0, '1.0.0', [{ name: 'stale_tool', description: 'Stale tool' }]))
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    // The fresh tool is searchable; the stale tool must NOT match.
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'fresh_tool' } })
+    await waitFor(() => expect(screen.getByText('settings.webmcpPackages.matchesTools')).toBeTruthy())
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'stale_tool' } })
+    await waitFor(() => expect(screen.queryByText('settings.webmcpPackages.matchesTools')).toBeNull())
+  })
+})
