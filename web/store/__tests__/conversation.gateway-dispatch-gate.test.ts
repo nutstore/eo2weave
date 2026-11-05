@@ -18,6 +18,10 @@ import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 const resolveCredentialMock = vi.hoisted(() => vi.fn())
 const setFaviconStateMock = vi.hoisted(() => vi.fn())
 const gatewayRegistered = vi.hoisted(() => ({ value: true }))
+// Access token the credential store currently holds ('validated-token' by
+// default). A test simulating a logout / newer login during resolution
+// mutates this.
+const storedAccessToken = vi.hoisted(() => ({ value: 'validated-token' as string | null }))
 const replaceAllMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 
 vi.mock('@/services/favicon-indicator', () => ({ setFaviconState: setFaviconStateMock }))
@@ -112,8 +116,15 @@ vi.mock('@/agent/providers/types', async (importOriginal) => {
   }
 })
 
+const isTokenCurrentMock = vi.hoisted(() =>
+  vi.fn(async (accessToken: string) => accessToken === storedAccessToken.value),
+)
+
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   resolveGatewayDispatchCredential: resolveCredentialMock,
+  // Mirrors the real helper: the validated token counts as current while the
+  // store still holds it. A logout or newer login replaces/clears it (#180).
+  isGatewayAccessTokenCurrent: isTokenCurrentMock,
 }))
 const registerProviderMock = vi.hoisted(() =>
   vi.fn(() => {
@@ -188,6 +199,7 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     gatewayRegistered.value = true
+    storedAccessToken.value = 'validated-token'
     useConversationRuntimeStore.setState({ runtimes: new Map() })
     useConversationStore.setState({
       conversations: [],
@@ -279,6 +291,65 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     expect(agentLoopConstructed).toHaveBeenCalledTimes(1)
     const conv = useConversationStore.getState().conversations[0]
     expect(conv.error ?? '').not.toContain('provider is unavailable')
+  })
+
+  it('registers the gateway when the resolution refreshed an expired token itself (#214 review)', async () => {
+    // Provider missing + expired access token with a live refresh token: the
+    // resolver refreshes and commits the new pair, which advances the auth
+    // generation. That bump is the resolution's OWN work — it must not read
+    // as "the session moved", or a healthy session is told to sign in again.
+    gatewayRegistered.value = false
+    resolveCredentialMock.mockImplementation(async () => {
+      storedAccessToken.value = 'refreshed-token'
+      return { ok: true, accessToken: 'refreshed-token' }
+    })
+
+    await startRun()
+
+    expect(registerProviderMock).toHaveBeenCalledTimes(1)
+    expect(agentLoopConstructed).toHaveBeenCalledTimes(1)
+    expect(useConversationStore.getState().conversations[0].error ?? '').not.toContain(
+      'unavailable',
+    )
+  })
+
+  it('does not re-register the gateway when a logout lands during resolution (#180 review)', async () => {
+    gatewayRegistered.value = false
+    resolveCredentialMock.mockImplementation(async () => {
+      // The session ended while the credential read was in flight, so the
+      // resolver's verdict describes a credential set that no longer exists.
+      storedAccessToken.value = null
+      return { ok: true, accessToken: 'token-from-a-dead-session' }
+    })
+
+    await startRun()
+
+    expect(registerProviderMock).not.toHaveBeenCalled()
+    const conv = useConversationStore.getState().conversations[0]
+    expect(conv.status).toBe('error')
+    // The run must stop with the re-login guidance, not a generic failure and
+    // not the retryable temporary message.
+    expect(conv.error).toContain('sign in again')
+    expect(conv.error).not.toContain('temporarily unavailable')
+  })
+
+  it('reports the retryable temporary error when the currentness check hits a storage failure (#214 Sourcery round 4)', async () => {
+    gatewayRegistered.value = false
+    resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+    // The currentness re-read fails transiently: NOT evidence of logout.
+    storedAccessToken.value = null
+    isTokenCurrentMock.mockRejectedValueOnce(new Error('storage hiccup'))
+
+    await startRun()
+
+    expect(registerProviderMock).not.toHaveBeenCalled()
+    const conv = useConversationStore.getState().conversations[0]
+    expect(conv.status).toBe('error')
+    expect(conv.error).not.toContain('[GATEWAY_CREDENTIALS_MISSING]')
+    expect(conv.error).not.toContain('[GATEWAY_CREDENTIALS_EXPIRED]')
+    // A storage hiccup is retryable — it must NOT read as "sign in again".
+    expect(conv.error).toContain('temporarily unavailable')
+    expect(conv.error).not.toContain('sign in again')
   })
 
   it('dispatches with the validated current token when a usable session exists', async () => {

@@ -725,7 +725,7 @@ export async function runAgentImpl(
         // back (another tab re-registered / reconciliation adopted it) →
         // continue into the normal dispatch path.
         if (providerMissing(providerType) && providerType === 'llm-gateway') {
-          const { resolveGatewayDispatchCredential } =
+          const { resolveGatewayDispatchCredential, isGatewayAccessTokenCurrent } =
             await import('@/agent/providers/llm-gateway-auth')
           const { getLLMGatewayBaseURL, getLLMGatewayClientId, registerLLMGatewayProvider } =
             await import('@/agent/providers/llm-gateway-provider')
@@ -759,7 +759,31 @@ export async function runAgentImpl(
           // reconciler may not have run yet, and nothing else on the dispatch
           // path registers the provider. Mirror reconcileLoggedIn and register
           // it here rather than telling a logged-in user to sign in again.
-          if (providerMissing(providerType)) {
+          // Only while the token this resolution validated is still the stored
+          // one: a logout or a newer login during the await replaced it, and
+          // re-registering would leave the tab pointing at a dead session
+          // (#180 review rounds 2-3). The session generation is NOT the right
+          // signal here — a resolution that refreshed an expired token
+          // advanced it itself.
+          // A storage read failure inside the currentness check is NOT a
+          // stale credential: surface it as the retryable temporary error
+          // (same classification the resolver itself uses) instead of the
+          // re-login guidance (#214 Sourcery round 4).
+          let tokenCurrent: boolean
+          try {
+            tokenCurrent = await isGatewayAccessTokenCurrent(resolvedMissing.accessToken)
+          } catch (error) {
+            console.warn('[conversation.store] Gateway credential re-read failed:', error)
+            failRunEarly(
+              i18nText(
+                'conversation.error.gatewayCredentialTemporary',
+                'Nutstore AI is temporarily unavailable (credential check failed) — please retry.'
+              )
+            )
+            releaseClaim()
+            return
+          }
+          if (providerMissing(providerType) && tokenCurrent) {
             registerLLMGatewayProvider()
           }
           if (providerMissing(providerType)) {

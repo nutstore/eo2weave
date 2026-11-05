@@ -293,6 +293,27 @@ export function isCredentialStatusCurrent(generation: number): boolean {
   return generation === authSessionGeneration
 }
 
+/**
+ * Whether an access token a caller just validated is still the stored one.
+ *
+ * Dispatch gates use this instead of the coarse session generation: a
+ * resolution that refreshed an expired token advances the generation itself
+ * (saveStoredTokens), which is not a session change. What must block a
+ * follow-up action is the stored credential being replaced or cleared by a
+ * logout or a newer login (#180 review round 3).
+ *
+ * Reads through `loadStoredTokensWithFallback` so a credential recovered
+ * from the SQLite backup (localStorage unavailable or gapped) counts as
+ * current — the resolver may have validated exactly that recovered pair
+ * (#214 Sourcery round 3). Storage READ FAILURES propagate: the caller
+ * classifies them (same philosophy as the resolver — a storage error is
+ * retryable, never proof of a stale credential).
+ */
+export async function isGatewayAccessTokenCurrent(accessToken: string): Promise<boolean> {
+  const stored = await loadStoredTokensWithFallback()
+  return typeof stored?.access_token === 'string' && stored.access_token === accessToken
+}
+
 /** Keep the settings UI's credential state aligned with background auth checks. */
 function setCredentialStatus(
   status: 'valid' | 'expired' | 'missing',
@@ -1603,7 +1624,11 @@ async function refreshAccessTokenWithStatusImpl(
       } catch (error) {
         console.warn('[llm-gateway] persist refreshed access token shadow failed:', error)
       }
-      setCredentialStatus('valid', generation)
+      // The verdict belongs to the session this refresh just committed, and
+      // that commit advanced the generation itself — declaring it under the
+      // pre-commit snapshot would fence it out and leave the mirror stale
+      // (#180 review round 2).
+      setCredentialStatus('valid', getGatewayAuthSessionGeneration())
       return { status: 'success', accessToken: tokens.access_token }
     })
   } catch (e) {

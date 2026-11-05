@@ -42,11 +42,15 @@ vi.mock('@/security/api-key-store', () => ({
 const settingsStoreState = vi.hoisted(() => ({
   modelCredentialStatus: 'unknown' as string,
   modelCredentialStatusError: null as string | null,
+  // Ordered log of status writes the auth layer actually LANDED. Proves a
+  // verdict was dropped instead of merely overwritten by a later one.
+  statusWrites: [] as string[],
 }))
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
     getState: () => ({
       setModelCredentialStatus: (status: string) => {
+        settingsStoreState.statusWrites.push(status)
         settingsStoreState.modelCredentialStatus = status
       },
       setModelCredentialStatusError: (message: string | null) => {
@@ -71,6 +75,7 @@ import {
   subscribeToGatewaySessionEvents,
   getGatewayAuthSessionGeneration,
   isCredentialStatusCurrent,
+  isGatewayAccessTokenCurrent,
   type GatewaySessionEvent,
 } from '@/agent/providers/llm-gateway-auth'
 import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
@@ -1517,6 +1522,7 @@ describe('credential status generation fence (#180)', () => {
   beforeEach(() => {
     localStorage.clear()
     settingsStoreState.modelCredentialStatus = 'unknown'
+    settingsStoreState.statusWrites.length = 0
     loadApiKeyMock.mockReset()
     loadApiKeyMock.mockResolvedValue(null)
   })
@@ -1549,7 +1555,7 @@ describe('credential status generation fence (#180)', () => {
       {
         access_token: 'new-session-access',
         token_type: 'Bearer',
-        expires_in: 60,
+        expires_in: 3600,
         refresh_token: 'new-session-refresh',
         refresh_expires_in: 3600,
       },
@@ -1557,13 +1563,94 @@ describe('credential status generation fence (#180)', () => {
       BASE_URL,
     )
     expect(localStorage.getItem(TOKENS_KEY)).toContain('new-session-refresh')
+    // The login flow reports 'valid' through its own settings write; the stale
+    // verdict must not overwrite that known status.
+    settingsStoreState.modelCredentialStatus = 'valid'
 
     releaseLoad(null)
     await pending
-    // Let the settings-store dynamic import settle.
-    await new Promise((resolve) => setTimeout(resolve, 0))
 
-    // Without the fence this write lands as 'missing' after the login.
-    expect(settingsStoreState.modelCredentialStatus).not.toBe('missing')
+    // Synchronize on the WRITE PATH, not on a timer. A verdict produced under
+    // the CURRENT session travels the same dynamic import + `.then` chain and
+    // is registered behind the stale one, so once the current verdict has
+    // landed the stale chain has already settled — if it were going to write,
+    // it would be in the log first.
+    expect(await getValidAccessToken(BASE_URL, CLIENT_ID)).toBeTruthy()
+    await vi.waitFor(() => expect(settingsStoreState.statusWrites).toEqual(['valid']))
+
+    // Without the fence the stale verdict lands as an extra 'missing' write.
+    expect(settingsStoreState.modelCredentialStatus).toBe('valid')
+  })
+
+  it('still applies a verdict produced under the current session', async () => {
+    seedStoredTokens({ access_expires_at: Date.now() + 3_600_000 })
+
+    expect(await getValidAccessToken(BASE_URL, CLIENT_ID)).toBeTruthy()
+
+    // The verdict lands through a dynamic settings-store import: wait for the
+    // write instead of racing a zero-delay timer.
+    await vi.waitFor(() => expect(settingsStoreState.modelCredentialStatus).toBe('valid'))
+  })
+
+  it('reports valid after a successful refresh commit', async () => {
+    seedStoredTokens()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(refreshResponse('refreshed-token', 60))))
+
+    const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+    expect(result.status).toBe('success')
+
+    // The refresh's own commit advances the generation; the verdict must be
+    // attributed to that commit, not to the pre-refresh snapshot.
+    await vi.waitFor(() => expect(settingsStoreState.modelCredentialStatus).toBe('valid'))
+  })
+
+  it('treats the refreshed token as current and a replaced one as stale (#214)', async () => {
+    seedStoredTokens()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(refreshResponse('refreshed-token', 60))))
+
+    const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+    expect(result.status).toBe('success')
+
+    // The refresh committed a NEW pair: the token it returned is the stored
+    // one. Dispatch gates compare tokens for exactly this reason — the
+    // generation bump here is the refresh's own work, not a session change.
+    expect(await isGatewayAccessTokenCurrent('refreshed-token')).toBe(true)
+    expect(await isGatewayAccessTokenCurrent('stale-token')).toBe(false)
+  })
+
+  it('counts a SQLite-recovered credential as current (#214 Sourcery round 3)', async () => {
+    // localStorage unreadable → the resolver recovers the pair from the
+    // SQLite api-key-store backup. The helper must vouch for THAT token.
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(refreshResponse('recovered-token', 600))))
+    const recovered = JSON.stringify({
+      access_token: 'recovered-token',
+      refresh_token: 'recovered-refresh',
+      access_expires_at: Date.now() + 600_000,
+      refresh_expires_at: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    })
+    const brokenGetItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    loadApiKeyMock.mockImplementation(async (provider: string) =>
+      provider === '__llm_gateway_refresh_token__' ? recovered : null,
+    )
+
+    try {
+      expect(await isGatewayAccessTokenCurrent('recovered-token')).toBe(true)
+      expect(await isGatewayAccessTokenCurrent('replaced-token')).toBe(false)
+    } finally {
+      brokenGetItem.mockRestore()
+    }
+  })
+
+  it('propagates storage read failures instead of calling the token stale (#214 Sourcery round 4)', async () => {
+    // No localStorage record and the SQLite read throws: that is a
+    // retryable storage problem, not proof of a stale credential.
+    loadApiKeyMock.mockRejectedValue(new Error('sqlite down'))
+
+    await expect(isGatewayAccessTokenCurrent('any-token')).rejects.toMatchObject({
+      name: 'GatewayTokenStoreUnavailableError',
+      cause: expect.objectContaining({ message: 'sqlite down' }),
+    })
   })
 })
