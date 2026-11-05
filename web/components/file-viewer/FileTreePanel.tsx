@@ -107,6 +107,14 @@ function matchesGitIgnore(
     const basenamePattern = !rule.pattern.includes('/')
     const matched = candidates.some((candidate) => {
       if (rule.directoryOnly && !candidate.isDirectory) return false
+      // Git semantics: a `dir/**` rule covers the directory's contents but
+      // not the directory itself, while micromatch's `a/**` also matches the
+      // bare `a` — keep the tree's ignored marking consistent with the
+      // backend delete policy (#186): contents ignored, same-named regular
+      // file not.
+      if (candidate.path === path && !candidate.isDirectory && rule.pattern.endsWith('/**')) {
+        return false
+      }
       return micromatch.isMatch(candidate.path, rule.pattern, {
         basename: basenamePattern,
         dot: true,
