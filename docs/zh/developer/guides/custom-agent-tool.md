@@ -176,7 +176,7 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
 - `prompt` —— 弹出统一的 `ToolAuthModal`
 - `forbidden` —— 模型永远不可调用
 
-只读工具不用登记，自动继承 `auto`。只有当工具会改动 OPFS 之外的东西、或访问网络时才需要加：
+只读工具不用登记，自动继承 `auto`。当工具会改动 OPFS 之外的东西、访问网络，或者做**不可逆的破坏性操作（即使发生在 OPFS 内部）**时才需要加——回滚和批量删除同样该弹确认（`snapshot_restore` 就登记成 `prompt`）：
 
 ```ts
 set('word_count', { level: 'auto' })

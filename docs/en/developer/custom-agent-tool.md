@@ -176,7 +176,7 @@ Add:
 - `prompt` — show the unified `ToolAuthModal`
 - `forbidden` — never callable by the model
 
-A read-only tool needs no entry: it inherits `auto`. Add an entry only if the tool mutates something outside OPFS or reaches the network:
+A read-only tool needs no entry: it inherits `auto`. Add an entry when the tool mutates something outside OPFS, reaches the network, or performs a destructive/irreversible operation *even inside OPFS* — rollbacks and bulk deletes deserve a prompt too (`snapshot_restore` is registered as `prompt` for exactly that reason):
 
 ```ts
 set('word_count', { level: 'auto' })
