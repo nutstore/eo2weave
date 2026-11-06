@@ -53,7 +53,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   updateGatewayModels: refreshModels,
 }))
 vi.mock('@/i18n', () => ({ useT: () => (key: string) => ({
-  'topbar.modelSwitcher.catalogUnavailable': 'Model list unavailable',
+  'topbar.modelSwitcher.catalogUnavailableFor': 'Model list unavailable',
   'topbar.modelSwitcher.retryCatalog': 'Retry model list',
   'topbar.modelSwitcher.delisted': 'Delisted',
   'topbar.modelSwitcher.loading': 'Loading models…',
