@@ -1,7 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useSidePanelSettle } from '@/hooks/useSidePanelSettle'
+import { useSidePanelSessionRecovery } from '@/hooks/useSidePanelSessionRecovery'
 
 // Mirrors /projects/[projectId]/layout.tsx: the real view lives in the LAYOUT
 // so navigating chats/A → chats/B never remounts the workspace UI (no replayed
@@ -17,15 +17,16 @@ const ChatsRouteView = dynamic(() => import('@/components/chats/ChatsRouteView')
  * Matches the bare and canonical standalone-chat URL shapes; the view reads
  * the full route params via useParams() and keeps the stores in sync.
  *
- * useSidePanelSettle re-arms the Edge side-panel URL settle on every route
- * change — covering every navigation this app performs.
+ * Mirrors the /projects layout: recover side-panel bindings after a reload.
+ * Route changes stay inside the web app and do not reconfigure the browser's
+ * side-panel entry URL.
  */
 export default function ChatLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
-  useSidePanelSettle()
+  useSidePanelSessionRecovery()
   return (
     <>
       <ChatsRouteView />
