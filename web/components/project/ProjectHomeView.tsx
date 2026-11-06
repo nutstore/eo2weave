@@ -50,12 +50,14 @@ export default function ProjectHomeView() {
   // Cold visit to /projects (fresh tab): the global conversation store has not
   // loaded yet, so the recent-chat preview would render empty. Trigger the
   // load on mount — same gate + inflight guard as the other routes use.
+  // loadError is deliberately NOT a dependency: a failed load keeps
+  // loaded=false + loadError and waits for the user's explicit retry (the
+  // sidebar banner), so re-running on the error itself would retry on its own.
   const conversationsLoaded = useConversationStore((s) => s.loaded)
   const loadFromDB = useConversationStore((s) => s.loadFromDB)
-  const loadError = useConversationStore((s) => s.loadError)
   useEffect(() => {
     if (!conversationsLoaded && projectLoading === false) loadFromDB()
-  }, [conversationsLoaded, loadError, loadFromDB, projectLoading])
+  }, [conversationsLoaded, loadFromDB, projectLoading])
 
   const [isClearingLocalData, setIsClearingLocalData] = useState(false)
 
