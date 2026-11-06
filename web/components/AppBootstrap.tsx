@@ -373,24 +373,42 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       let gatewayRestoreVersion: number | undefined
       let gatewayRestoreGeneration: number | undefined
       try {
-        const { registerLLMGatewayProvider, registerGatewayModels, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId } = await import('@/agent/providers/llm-gateway-provider')
-        const { getValidAccessToken, getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
+        const { registerLLMGatewayProvider, registerGatewayModels, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, unregisterLLMGatewayProvider } = await import('@/agent/providers/llm-gateway-provider')
+        const { resolveGatewayDispatchCredential, getGatewayAuthSessionGeneration, hasStoredTokens } = await import('@/agent/providers/llm-gateway-auth')
         registerLLMGatewayProvider()
         const clientId = getLLMGatewayClientId()
         const baseURL = getLLMGatewayBaseURL()
         if (clientId) {
           gatewayRestoreGeneration = getGatewayAuthSessionGeneration()
           gatewayRestoreVersion = beginGatewayCatalogRefresh()
-          const token = await getValidAccessToken(baseURL, clientId)
-          if (token) {
+          // resolveGatewayDispatchCredential() distinguishes the four states
+          // getValidAccessToken() collapsed into `null` — and each needs a
+          // different write. A bootstrap that never fetched must NOT declare
+          // the catalog failed: another context (the page, a previous load)
+          // may have a perfectly healthy catalog, and overwriting it with a
+          // newer 'failed' version is what made opening the side panel
+          // resurrect the "catalog unavailable" banner for a logged-in user.
+          const resolved = await resolveGatewayDispatchCredential(baseURL, clientId)
+          if (resolved.ok) {
             const tokenGeneration = getGatewayAuthSessionGeneration()
             gatewayRestoreGeneration = tokenGeneration
             // Persist refreshed access_token back so SQLite stays in sync
             const { saveApiKey } = await import('@/security/api-key-store')
-            await saveApiKey(getLLMGatewayApiKeyProviderKey(), token)
-            await updateGatewayModels(token, tokenGeneration)
+            await saveApiKey(getLLMGatewayApiKeyProviderKey(), resolved.accessToken)
+            await updateGatewayModels(resolved.accessToken, tokenGeneration)
           } else if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
-            registerGatewayModels([], 'failed', gatewayRestoreVersion)
+            if (resolved.kind === 'temporary') {
+              // Transient (refresh in flight, network blip, storage hiccup):
+              // leave whatever catalog state already exists untouched.
+            } else if (hasStoredTokens()) {
+              // Session expired: the catalog genuinely cannot be fetched and
+              // re-authenticating (or a retry) is the fix.
+              registerGatewayModels([], 'failed', gatewayRestoreVersion)
+            } else {
+              // Never signed in: registering anyway leaves a provider whose
+              // catalog can never load in every future app context.
+              unregisterLLMGatewayProvider()
+            }
           }
         } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {
           // The gateway can never register here (region-gated off on global
