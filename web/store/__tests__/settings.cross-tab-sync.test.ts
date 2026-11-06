@@ -151,6 +151,28 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     expect(getProviderConfig(added.id)?.baseURL).toBe(added.baseUrl)
   })
 
+  it('keeps the provider registry unchanged when a credential check republishes the same settings', async () => {
+    const custom = {
+      id: 'custom-local', name: 'Local', baseUrl: 'https://local.example/v1',
+      models: ['local-model'], apiMode: 'chat-completions', createdAt: 1, updatedAt: 1,
+    }
+    seedStorage({ providerType: custom.id, modelName: 'local-model', customProviders: [custom] })
+    const { useSettingsStore } = await importStore()
+    const { getProviderRegistryVersion, getProviderConfig } = await import('@/agent/providers/types')
+    const version = getProviderRegistryVersion()
+    const config = getProviderConfig(custom.id)
+
+    await useSettingsStore.getState().checkHasApiKey({ flush: true })
+    const snapshot = JSON.parse(localStorage.getItem(STORAGE_KEY)!)
+    dispatchStorageEvent(performance.now() + 10, revSnapshot(
+      snapshot.state, snapshot.state.__settingsWriteRevision + 1,
+    ))
+
+    expect(useSettingsStore.getState().hasApiKey).toBe(true)
+    expect(getProviderRegistryVersion()).toBe(version)
+    expect(getProviderConfig(custom.id)).toBe(config)
+  })
+
   it('invalidates provider discovery when another tab changes pinned models', async () => {
     const { useSettingsStore } = await importStore()
     let release!: () => void

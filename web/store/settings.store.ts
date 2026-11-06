@@ -2095,7 +2095,8 @@ function setupCrossTabSettingsSync(): void {
       // Keep the dynamic provider registry in step with the APPLIED snapshot
       // (a merge may have dropped peer provider fields this writer never
       // touched) so cross-tab custom-provider edits are usable here.
-      if (Array.isArray(applied.customProviders)) {
+      if (Array.isArray(applied.customProviders) &&
+          JSON.stringify(applied.customProviders) !== JSON.stringify(current.customProviders)) {
         syncDynamicRegistryWithSnapshot(
           applied.customProviders as CustomProviderConfig[],
           current.customProviders as CustomProviderConfig[],

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -94,6 +94,25 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry model list' }))
     await waitFor(() => expect(refreshModels).toHaveBeenCalledWith('token', 0))
     expect(state.triggerProviderRefresh).toHaveBeenCalled()
+  })
+
+  it('keeps the selected model name visible during a background refresh', async () => {
+    const snapshot = await state.getAvailableProviders()
+    const { rerender } = render(<ModelQuickSwitch />)
+    const chipLabel = (await screen.findAllByTitle('GLM'))[0]
+    let finish!: (result: typeof snapshot) => void
+    const pending = new Promise<typeof snapshot>((resolve) => { finish = resolve })
+    state.getAvailableProviders.mockReturnValueOnce(pending)
+    state._providerRefreshVersion += 1
+
+    rerender(<ModelQuickSwitch />)
+
+    try {
+      expect(await screen.findByText('topbar.modelSwitcher.refreshing')).toBeInTheDocument()
+      expect(chipLabel).toHaveTextContent('GLM')
+    } finally {
+      await act(async () => { finish(snapshot); await pending })
+    }
   })
 
   it('shows the same retry state for a successful empty gateway response', async () => {
