@@ -12,7 +12,7 @@ interface SidebarPanelHeaderProps {
  */
 export function SidebarPanelHeader({ title, leftExtra, right }: SidebarPanelHeaderProps) {
   return (
-    <div className="border-subtle flex h-9 items-center justify-between border-b bg-elevated px-2">
+    <div className="border-subtle flex h-9 items-center justify-between gap-2 border-b bg-elevated px-2">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate text-xs font-semibold uppercase tracking-wider text-secondary">{title}</span>
         {leftExtra}

@@ -323,7 +323,10 @@ describe('gateway session reconciler', () => {
     expect(settingsStoreState.modelCredentialStatus).toBe('unknown')
     // Provider re-registered for retry.
     expect(registerCalls.count).toBeGreaterThan(0)
-    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+    // 'loading', not 'failed': this job never fetched, which is not evidence
+    // of an outage (writing 'failed' here is what the switcher banner read as
+    // "the catalog is unavailable").
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('loading')
     // Tokens NOT wiped.
     expect(localStorage.getItem(TOKENS_KEY)).not.toBeNull()
   })

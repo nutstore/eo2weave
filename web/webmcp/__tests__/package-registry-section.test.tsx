@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const store = vi.hoisted(() => ({
   listRegistries: vi.fn(() => [] as unknown[]),
-  listInstalledPackageIds: vi.fn(async () => new Set<string>()),
+  listInstalledPackageProvenance: vi.fn(async () => ({ installed: new Set<string>(), indeterminate: new Set<string>() })),
   readInstalledPackageActivation: vi.fn(async (_id: string) => 'disabled' as 'enabled' | 'disabled'),
   loadRegistryCatalog: vi.fn(async () => ({ packages: [] as unknown[] })),
   addRegistry: vi.fn(),
@@ -66,7 +66,7 @@ function serveManifest(toolCount = 1) {
 beforeEach(() => {
   vi.resetAllMocks()
   store.listRegistries.mockReturnValue([REGISTRY])
-  store.listInstalledPackageIds.mockResolvedValue(new Set())
+  store.listInstalledPackageProvenance.mockResolvedValue({ installed: new Set(), indeterminate: new Set() })
   store.readInstalledPackageActivation.mockResolvedValue('disabled')
   store.loadRegistryCatalog.mockResolvedValue({ packages: [PKG] })
 })
@@ -88,7 +88,7 @@ describe('WebMCPPackageRegistrySection', () => {
 
   it('labels an ENABLED installed package as active and drops the enable hint', async () => {
     serveManifest(1)
-    store.listInstalledPackageIds.mockResolvedValue(new Set([PKG.id]))
+    store.listInstalledPackageProvenance.mockResolvedValue({ installed: new Set([PKG.id]), indeterminate: new Set() })
     store.readInstalledPackageActivation.mockResolvedValue('enabled')
     render(<WebMCPPackageRegistrySection t={t} />)
 
@@ -102,7 +102,7 @@ describe('WebMCPPackageRegistrySection', () => {
 
   it('labels a DISABLED installed package as inactive and keeps the enable hint', async () => {
     serveManifest(1)
-    store.listInstalledPackageIds.mockResolvedValue(new Set([PKG.id]))
+    store.listInstalledPackageProvenance.mockResolvedValue({ installed: new Set([PKG.id]), indeterminate: new Set() })
     store.readInstalledPackageActivation.mockResolvedValue('disabled')
     render(<WebMCPPackageRegistrySection t={t} />)
 
@@ -117,14 +117,14 @@ describe('WebMCPPackageRegistrySection', () => {
     // the SECOND read (triggered by the install below) resolves first with
     // the new set. The stale result must be dropped, otherwise the package
     // would appear uninstalled and could be installed again.
-    let resolveFirst: (value: Set<string>) => void = () => {}
+    let resolveFirst: (value: { installed: Set<string>; indeterminate: Set<string> }) => void = () => {}
     let call = 0
-    store.listInstalledPackageIds.mockImplementation(() => {
+    store.listInstalledPackageProvenance.mockImplementation(() => {
       call += 1
       if (call === 1) {
-        return new Promise<Set<string>>(resolve => { resolveFirst = resolve })
+        return new Promise<{ installed: Set<string>; indeterminate: Set<string> }>(resolve => { resolveFirst = resolve })
       }
-      return Promise.resolve(new Set([PKG.id]))
+      return Promise.resolve({ installed: new Set([PKG.id]), indeterminate: new Set() })
     })
     render(<WebMCPPackageRegistrySection t={t} />)
     await waitFor(() => expect(screen.getByText('com.example.pkg')).toBeTruthy())
@@ -139,7 +139,7 @@ describe('WebMCPPackageRegistrySection', () => {
     // inventory).
     await waitFor(() => expect(screen.getAllByText('settings.webmcpPackages.installedInactive').length).toBeGreaterThan(0))
     // The stale read finishes now — it must NOT wipe the installed state.
-    resolveFirst(new Set())
+    resolveFirst({ installed: new Set(), indeterminate: new Set() })
     await new Promise(resolve => setTimeout(resolve, 30))
     expect(screen.getAllByText('settings.webmcpPackages.installedInactive').length).toBeGreaterThan(0)
   })
@@ -170,7 +170,7 @@ describe('WebMCPPackageRegistrySection', () => {
     // registry, so removing the registry cannot strand its installed
     // packages without an uninstall button.
     serveManifest(1)
-    store.listInstalledPackageIds.mockResolvedValue(new Set([PKG.id]))
+    store.listInstalledPackageProvenance.mockResolvedValue({ installed: new Set([PKG.id]), indeterminate: new Set() })
     // removeRegistry must actually drop the registry from the catalog list —
     // the real store does, and the inventory below must survive it.
     store.removeRegistry.mockImplementation(() => store.listRegistries.mockReturnValue([]))
@@ -186,6 +186,28 @@ describe('WebMCPPackageRegistrySection', () => {
     expect(uninstallButtons.length).toBeGreaterThan(0)
     fireEvent.click(uninstallButtons[0]!)
     await waitFor(() => expect(store.uninstallRegistryPackage).toHaveBeenCalledWith(PKG.id))
+  })
+
+  it('offers NO remove action for an INDETERMINATE directory (issue #231)', async () => {
+    // A directory whose install marker is unreadable, malformed or foreign
+    // is not proven to be a registry install: it renders as an ownership-
+    // unknown row without a Remove button, so an authored package can never
+    // lose its files through a registry row's uninstall action.
+    serveManifest(1)
+    store.listInstalledPackageProvenance.mockResolvedValue({
+      installed: new Set(),
+      indeterminate: new Set([PKG.id]),
+    })
+    render(<WebMCPPackageRegistrySection t={t} />)
+
+    // The indeterminate directory uses the CATALOG id on purpose: a row that
+    // matched a catalog package must be the one proven to offer no Remove —
+    // an unrelated id would let a matching row keep its button unnoticed.
+    await waitFor(() => expect(screen.getAllByText(PKG.id).length).toBeGreaterThan(1))
+    expect(screen.getByText('settings.webmcpPackages.provenanceIndeterminate')).toBeTruthy()
+    // The catalog row for PKG (not installed) offers Install only; the
+    // indeterminate row offers no uninstall anywhere.
+    expect(screen.queryByText('settings.webmcpPackages.uninstall')).toBeNull()
   })
 
   it('drops a cached tool count whose version no longer matches the refreshed catalog (round 3)', async () => {
@@ -264,7 +286,7 @@ function previewUrlFor(registry: typeof REG_A, pkgId: string) {
 describe('WebMCPPackageRegistrySection round-6 findings', () => {
   beforeEach(() => {
     vi.resetAllMocks()
-    store.listInstalledPackageIds.mockResolvedValue(new Set())
+    store.listInstalledPackageProvenance.mockResolvedValue({ installed: new Set(), indeterminate: new Set() })
     store.readInstalledPackageActivation.mockResolvedValue('disabled')
   })
 

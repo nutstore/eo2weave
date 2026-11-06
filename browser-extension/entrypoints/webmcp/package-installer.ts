@@ -48,6 +48,7 @@ import {
 } from './registry-client'
 import { fetchWithMirrorFallback, isNotFoundError } from './registry-client'
 import { mirrorCandidates, resolveMirrorPreference, type MirrorPreference } from './registry-mirrors'
+import { encodeInstallMarker, INSTALL_MARKER_FILE, readInstallMarker, type InstallMarker } from './install-marker'
 import { withPackageLock } from './package-lock'
 
 export class PackageInstallError extends Error {
@@ -479,7 +480,13 @@ export async function installPackage(
         )
       }
       if (underLock) await underLock(lockSignal)
-      await swapPackageIntoPlace(id, staged, provider, lockSignal)
+      await swapPackageIntoPlace(id, staged, provider, lockSignal, {
+        schemaVersion: 1,
+        registryId: registry.manifestUrl,
+        packageId: id,
+        version: pkg.version,
+        installedAt: new Date().toISOString(),
+      })
       return { filesWritten: staged.length }
     })
   } finally {
@@ -497,6 +504,7 @@ async function swapPackageIntoPlace(
   staged: Array<{ path: string; bytes: Uint8Array }>,
   provider: FsProvider,
   lockSignal: AbortSignal,
+  marker: InstallMarker,
 ): Promise<void> {
   // The replacement is written into a staging directory FIRST and only
   // swapped into place after EVERY write succeeded, so a failed write
@@ -597,6 +605,15 @@ async function swapPackageIntoPlace(
     try {
       await provider.mkdir(staging, { recursive: true })
       for (const file of staged) {
+        // The provenance marker owns this path (issue #228): a package that
+        // ships one would have its bytes replaced by ours — or, worse, be read
+        // as an install of its own. Reject at install instead of shadowing it.
+        if (file.path === INSTALL_MARKER_FILE) {
+          throw new PackageInstallError(
+            `Package ${id} ships a reserved file: ${INSTALL_MARKER_FILE}`,
+            'INVALID_PACKAGE',
+          )
+        }
         if (lockSignal.aborted) {
           throw new PackageInstallError(
             `The install of ${id} was aborted: the package lock was lost mid-transaction`,
@@ -613,6 +630,20 @@ async function swapPackageIntoPlace(
     } catch (error) {
       if (error instanceof PackageInstallError) throw error
       throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
+    }
+    // Provenance marker (issue #228): written INSIDE the staged tree so it is
+    // swapped in atomically with the package and never survives an aborted
+    // install. An authored package has no marker, which is what makes the
+    // two kinds distinguishable at all.
+    try {
+      await provider.writeFile(
+        `${staging}/${INSTALL_MARKER_FILE}`,
+        encodeInstallMarker(marker),
+      )
+      assertLeaseHeld()
+    } catch (error) {
+      if (error instanceof PackageInstallError) throw error
+      throw new PackageInstallError(`Failed to record install provenance for ${id}: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
     }
     // All writes landed — swap the new tree in. FENCE the swap commit
     // itself: a lease lost while the last staged write was pending must not
@@ -866,6 +897,21 @@ export async function liveTreeIsComplete(provider: FsProvider, directory: string
   } catch {
     return false
   }
+  // Provenance is part of the installed state too: a copy/recovery that
+  // stopped before the marker landed must read as INCOMPLETE, else the
+  // backup holding the only marker-complete copy is discarded and the
+  // package silently becomes "authored" (finding: "Recovery can discard
+  // provenance").
+  //
+  // The marker is PARSED, not merely present: a readable-but-foreign marker
+  // would pass a presence check while the listing rejects it, which clears the
+  // backup and then shows the package as authored.
+  //
+  // A transient read error (anything but a confirmed absence) is rethrown on
+  // purpose: treating it as "incomplete" replaces a complete live tree with an
+  // older backup, and a later failure would leave only that older copy.
+  const marker = await readInstallMarker(provider, directory)
+  if (!marker || marker.packageId !== expectedId) return false
   const sources: Record<string, string> = Object.create(null)
   for (const tool of manifest.tools) {
     let bytes: Uint8Array

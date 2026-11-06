@@ -28,7 +28,6 @@ export const welcome = {
     setupGuideTooltip: "설정 가이드 열기：공급자 Key, 고정 모델 및 기본 모델",
     setupGuideLinkTitle: "설정 방법은?",
     setupGuideLinkDesc: "3 단계：공급자 Key → 고정 모델 → 기본 모델",
-    setupLocalFirstHint: "모든 데이터는 브라우저에 로컬 저장되며 서버에 업로드되지 않습니다",
     // Conditional onboarding labels (these are not a linear progress count)
     apiKeyLabel: "AI 연결",
     welcomeHeading: "EO2Weave 에 오신 것을 환영합니다",

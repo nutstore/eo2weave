@@ -81,11 +81,42 @@ describe('installPackage', () => {
 
     const result = await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
 
-    expect(result.filesWritten).toBe(3)
+    // The 3 package files plus the install-provenance marker (issue #231).
+    expect(result.filesWritten).toBe(4)
     expect(await provider.readFile('com.example.pkg/manifest.json'))
       .toEqual(new TextEncoder().encode(files['manifest.json']))
     expect(await provider.readFile('com.example.pkg/workflows/read.js'))
       .toEqual(new TextEncoder().encode(files['workflows/read.js']))
+  })
+
+  it('records the install-provenance marker in the package directory (issue #231)', async () => {
+    const files = fixtureFiles()
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+
+    await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
+
+    const parsed = JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/.webmcp-install.json'))) as Record<string, unknown>
+    expect(parsed.schemaVersion).toBe(1)
+    expect(parsed.registryId).toBe(`${RAW}/manifest.json`)
+    expect(parsed.packageId).toBe('com.example.pkg')
+    expect(parsed.version).toBe('1.0.0')
+    expect(typeof parsed.installedAt).toBe('string')
+    // The contract is an ISO timestamp: a non-ISO string must not pass.
+    expect(new Date(parsed.installedAt as string).toISOString()).toBe(parsed.installedAt)
+  })
+
+  it('rejects a package that ships the reserved marker file', async () => {
+    const files = { ...fixtureFiles(), '.webmcp-install.json': '{"schemaVersion":1}' }
+    const pkg = await pkgWithFiles(files)
+    const provider = memoryProvider()
+    const registry = registryFromManifestUrl(`${RAW}/manifest.json`)
+
+    await expect(installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) }))
+      .rejects.toMatchObject({ code: 'INVALID_PACKAGE' })
+    // Nothing was written.
+    await expect(provider.stat('com.example.pkg')).rejects.toThrow()
   })
 
   it('leaves NOTHING on the mount when one file fails verification', async () => {
@@ -164,8 +195,9 @@ describe('installPackage', () => {
 
     await expect(provider.stat('com.example.pkg/extra.js')).resolves.toMatchObject({ kind: 'file' })
     const listed = await provider.readdir('com.example.pkg')
-    // The installer always appends the disabled-default config.json.
-    expect(listed.map(entry => entry.name).sort()).toEqual(['config.json', 'extra.js', 'manifest.json', 'workflows'])
+    // The installer always appends the disabled-default config.json and the
+    // install-provenance marker (issue #231).
+    expect(listed.map(entry => entry.name).sort()).toEqual(['.webmcp-install.json', 'config.json', 'extra.js', 'manifest.json', 'workflows'])
     // No staging/backup leftovers.
     await expect(provider.stat('.com.example.pkg.installing')).rejects.toThrow()
     await expect(provider.stat('.com.example.pkg.previous')).rejects.toThrow()
@@ -534,7 +566,7 @@ describe('installPackage — overlapping operations', () => {
     expect(JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/config.json'))))
       .toEqual({ activation: 'disabled' })
     const listed = (await provider.readdir('com.example.pkg')).map(entry => entry.name).sort()
-    expect(listed).toEqual(['config.json', 'manifest.json', 'workflows'])
+    expect(listed).toEqual(['.webmcp-install.json', 'config.json', 'manifest.json', 'workflows'])
     return manifest.version as '1.0.0' | '2.0.0'
   }
 

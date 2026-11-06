@@ -192,7 +192,6 @@ vi.mock('@/i18n', () => ({
     'agent.vision.unsupported': 'Vision unavailable',
     'agent.vision.screenshotUnavailable': 'Screenshot unavailable',
     'agent.pageScreenshot.captureFailed': 'Could not capture screenshot',
-    'welcome.setupLocalFirstHint': 'Your data stays in this browser.',
     'welcome.skipButton': 'Skip for now',
     'welcome.placeholder': 'Type a message to start...',
     'conversation.input.placeholderNoModel': 'Pick a usable model in the model selector below first',

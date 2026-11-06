@@ -1,5 +1,5 @@
 import { failure, jsonText, type ExecutionResult, type JsonValue } from '@creatorweave/quickjs-runtime'
-import { parseWorkflow, validatePackageSnapshot, type WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
+import { parseWorkflow, validatePackageSnapshotWithDiagnostics, type WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
 import { ADAPTER_TIMEOUT_MS, ADAPTER_TRANSFER_BYTES, isRecord, type AdapterDescriptor } from '@creatorweave/shared/webmcp-adapter-protocol'
 import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
 import type { BrowserRequest } from '../../lib/bash-commands/browser/command'
@@ -47,6 +47,8 @@ function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
 export function createAdapterService(deps: Dependencies) {
   let routes: Route[] = []
   let routeSnapshot = ''
+  /** Packages dropped by validation, kept so the failure is not silent. */
+  let rejectedPackages: Array<{ id: string; reason: string }> = []
   const executions = new Map<string, Execution>()
 
   const withdraw = (retained: Set<Route>) => {
@@ -102,11 +104,27 @@ export function createAdapterService(deps: Dependencies) {
   }
 
   return {
+    /** Packages this catalog dropped, with the reason (empty when healthy). */
+    diagnostics(): Array<{ id: string; reason: string }> {
+      return rejectedPackages
+    },
+
     refresh(): Promise<void> {
       return catalogTask(async () => {
         try {
           const mounted = await deps.readPackages()
-          const packages = validatePackageSnapshot(mounted.map(({ manifest, sources }) => ({ manifest, sources })))
+          // Per-package isolation (issue #237): one bad package must not take
+          // the whole adapter catalog down. Symptom that motivated it: a
+          // 35-tool package pushed the aggregate size cap over the limit, the
+          // snapshot threw, `withdraw(new Set())` removed every route, and
+          // every site silently lost its WebMCP tools.
+          const { packages, rejected } = validatePackageSnapshotWithDiagnostics(
+            mounted.map(({ manifest, sources }) => ({ manifest, sources })),
+          )
+          rejectedPackages = rejected
+          for (const entry of rejected) {
+            console.warn(`[WebMCP adapters] Package ${entry.id} rejected: ${entry.reason}`)
+          }
           const next = buildRoutes(packages)
           if (JSON.stringify(next) === routeSnapshot) return
           const retained = new Set(next)
@@ -116,6 +134,10 @@ export function createAdapterService(deps: Dependencies) {
           deps.changed()
         } catch (error) {
           withdraw(new Set())
+          // The previous catalog is gone, so its per-package rejections are no
+          // longer meaningful: leaving them would report reasons for packages
+          // the current (empty) catalog never looked at.
+          rejectedPackages = []
           if (routes.length !== 0 || routeSnapshot !== '[]') {
             routes = []
             routeSnapshot = '[]'

@@ -151,57 +151,13 @@ recoverFromSessionStorage()
 const CONTEXT_FETCH_TIMEOUT_MS = 3000
 
 /**
- * Last path successfully settled with the extension (or in-flight). Guards
- * against re-settling the same URL repeatedly (the route-sync effect and this
- * hook can both observe the same navigation) and lets callers ignore the echo
- * of the settle that itself caused the current navigation.
- */
-let _settledPanelPath: string | null = null
-
-/**
- * Report the app's current path to the extension so it re-registers the panel
- * URL via setOptions (Edge #222: live URL must equal registered URL). Deduped:
- * only actual path changes reach the bridge. Returns true when a settle was
- * sent and acknowledged.
- */
-export async function settleSidePanelPath(path: string): Promise<boolean> {
-  if (!isSidePanelMode()) return false
-  if (path === _settledPanelPath) return false
-  _settledPanelPath = path
-  const agentWeb = (
-    globalThis as {
-      __agentWeb?: {
-        settleSidePanelPath?: (path: string) => Promise<{ ok: boolean }>
-      }
-    }
-  ).__agentWeb
-  if (!agentWeb?.settleSidePanelPath) {
-    _settledPanelPath = null
-    return false
-  }
-  try {
-    const response = await agentWeb.settleSidePanelPath(path)
-    if (!response?.ok) {
-      // Not the panel document (plain tab) or no active session — allow a
-      // later retry if that ever changes.
-      _settledPanelPath = null
-    }
-    return response?.ok === true
-  } catch (err) {
-    _settledPanelPath = null
-    console.warn('[Workspace Assistant] settle failed:', err)
-    return false
-  }
-}
-
-/**
  * Ensure the injected bridge (window.__agentWeb) is available. Content
  * scripts inject at document_idle — AFTER this app's modules evaluate — so
  * an immediate read usually finds nothing. Poll briefly instead of failing.
  */
-async function waitForAgentWebBridge(timeoutMs = 3000): Promise<AgentWebSettleBridge | null> {
-  const read = (): AgentWebSettleBridge | null =>
-    (globalThis as { __agentWeb?: AgentWebSettleBridge }).__agentWeb ?? null
+async function waitForAgentWebBridge(timeoutMs = 3000): Promise<AgentWebPanelBridge | null> {
+  const read = (): AgentWebPanelBridge | null =>
+    (globalThis as { __agentWeb?: AgentWebPanelBridge }).__agentWeb ?? null
   const deadline = Date.now() + timeoutMs
   let bridge = read()
   while (bridge === null && Date.now() < deadline) {
@@ -211,19 +167,18 @@ async function waitForAgentWebBridge(timeoutMs = 3000): Promise<AgentWebSettleBr
   return bridge
 }
 
-type AgentWebSettleBridge = {
+type AgentWebPanelBridge = {
   getSidePanelLaunchMetadata?: () => Promise<{
     ok: boolean
     binding?: string
     hostname?: string | null
   }>
-  settleSidePanelPath?: (path: string) => Promise<{ ok: boolean }>
 }
 
 /**
  * Restore the side-panel session (binding + hostname) from the extension
- * after a clean-URL reload. Called from useSidePanelSettle's first run — NOT
- * at module load, because the injected bridge is not on the window yet then.
+ * after a clean-URL reload. Called when the project layout mounts rather
+ * than at module load, because the injected bridge may not be available yet.
  * Returns true when a session was recovered (or already live).
  */
 export async function recoverSidePanelSession(): Promise<boolean> {
@@ -251,18 +206,6 @@ export async function recoverSidePanelSession(): Promise<boolean> {
   }
 }
 
-/**
- * Edge settle protocol (extension-side counterpart: `cw_side_panel_settle` /
- * `cw_side_panel_get_launch_metadata` handlers in background.ts).
- *
- * Edge reloads the side-panel document whenever its live URL differs from the
- * path registered via sidePanel.setOptions (microsoft/MicrosoftEdge-Extensions
- * #222). The app must still land on /projects/:projectId, so we settle:
- *   1. resolve the per-hostname project route as usual (router.replace),
- *   2. tell the extension the final path; it re-registers it via setOptions.
- * From then on the live URL matches the registered path byte-for-byte and
- * Edge stops reloading the panel on tab switches.
- */
 export async function fetchSidePanelContext(): Promise<unknown | null> {
   if (_sidePanelBindingId === null) return null
 
@@ -431,10 +374,8 @@ export async function handleWorkspaceAssistantOnReady(
       localStorage.setItem(HOSTNAME_TO_PROJECT_KEY, JSON.stringify(map))
     } catch { /* ignore: best-effort persistence, routing still proceeds */ }
 
-    // Resolve the canonical route before mounting the project layout. Opening
-    // the bare project first lets the side-panel settle hook register it,
-    // then register the workspace URL after route sync. Each path change can
-    // reload the whole panel in Edge, even after the conversation is visible.
+    // Resolve the canonical route before mounting the project layout so
+    // startup does not navigate through an intermediate project URL.
     const { projectWorkspacePath } = await import('@/lib/route-paths')
     let workspaceId: string | undefined
     try {

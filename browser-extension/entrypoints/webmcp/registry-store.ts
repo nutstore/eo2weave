@@ -15,6 +15,7 @@
 
 import type { FsProvider } from '@creatorweave/fs-provider'
 import { getAdapterStorage } from './provider-storage'
+import { readInstallMarkerState } from './install-marker'
 import { getBuiltinStorage } from './builtin-storage'
 import {
   fetchRegistryManifest,
@@ -599,23 +600,64 @@ export async function uninstallRegistryPackage(packageId: string): Promise<void>
  * registry install record that would settle it durably is the planned
  * storage work, not a read-path guess.
  */
-export async function listInstalledPackageIds(): Promise<Set<string>> {
-  const provider = await getAdapterStorage()
-  const entries = await provider.readdir('')
+/**
+ * Installed packages on the `webmcp` mount, derived from install markers only
+ * (issue #228). One mount listing answers both questions the page needs:
+ *
+ * - `ids` — packages the registry section may act on (activation, repair,
+ *   remove) and match against a catalog entry
+ * - `directories` — the directories that carry provenance; `classifyPackage`
+ *   sends everything else to "mine"
+ *
+ * A package installed before markers existed carries none and reads as
+ * authored. That direction is deliberate: the page must never offer an
+ * uninstall action for something it cannot prove it installed (finding:
+ * "Authored packages get uninstall controls").
+ *
+ * A marker names its own directory or it is a copy that cannot be trusted for
+ * targeting — a `packageId` that differs from the directory is skipped rather
+ * than letting Remove point at a different package (finding: "Uninstall
+ * targets another directory").
+ *
+ * An UNREADABLE marker keeps the directory on the installed side: storage
+ * cannot prove it was authored, and hiding an install exposes it to reinstall
+ * collisions. Its id falls back to the directory name.
+ */
+export interface InstalledPackages {
+  ids: Set<string>
+  directories: Set<string>
+}
+
+export async function listInstalledPackages(provider?: FsProvider): Promise<InstalledPackages> {
+  const mount = provider ?? await getAdapterStorage()
+  const entries = await mount.readdir('')
   const ids = new Set<string>()
+  const directories = new Set<string>()
   for (const entry of entries) {
     if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
-    const state = await readManifestId('webmcp', entry.name)
-    // Transient read failure: fall back to the directory identity (see above)
-    // instead of failing every other package's entry with it.
-    if (state === 'UNREADABLE') {
-      ids.add(entry.name)
+    let state: Awaited<ReturnType<typeof readInstallMarkerState>>
+    try {
+      state = await readInstallMarkerState(mount, entry.name)
+    } catch {
+      // Ownership is INDETERMINATE. Keep the directory out of `ids` (the
+      // registry row must not offer Remove) and out of "mine" (which offers a
+      // delete) — an unreadable marker is no proof of authorship, and a wrong
+      // delete is unrecoverable.
+      directories.add(entry.name)
       continue
     }
-    if (state === 'INVALID') continue
-    if (state.id === entry.name) ids.add(state.id)
+    // No marker at all: authored (or installed before markers existed).
+    if (state.kind === 'absent') continue
+    if (state.kind === 'invalid' || state.marker.packageId !== entry.name) {
+      // Malformed, foreign or copied markers get the same indeterminate
+      // treatment: no Remove from the registry row, no delete from "mine".
+      directories.add(entry.name)
+      continue
+    }
+    directories.add(entry.name)
+    ids.add(state.marker.packageId)
   }
-  return ids
+  return { ids, directories }
 }
 
 /**

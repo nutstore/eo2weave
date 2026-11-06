@@ -45,6 +45,20 @@ const settingsStoreState = vi.hoisted(() => ({
   // Ordered log of status writes the auth layer actually LANDED. Proves a
   // verdict was dropped instead of merely overwritten by a later one.
   statusWrites: [] as string[],
+  // A purge must invalidate the cached api-key verdict, or checkHasApiKey()
+  // keeps answering `true` for a session whose key was just deleted.
+  invalidatedKeyCaches: [] as string[],
+  apiKeyChecks: [] as Array<{ flush: boolean }>,
+  // Which provider the app has selected. `checkHasApiKey()` answers for THAT
+  // provider, so the purge resync must not run it on someone else's behalf.
+  providerType: 'llm-gateway' as string,
+  // Stateful stand-in for the real store's cached verdict: `hasApiKey` is what
+  // the UI reads, and it is only re-derived from the key store when a check
+  // runs. Asserting on this (instead of the call log) is what catches a purge
+  // that leaves the UI still believing the gateway is configured.
+  gatewayKeyPresent: true,
+  hasApiKey: true,
+  hasApiKeyLoaded: true,
 }))
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
@@ -56,6 +70,19 @@ vi.mock('@/store/settings.store', () => ({
       setModelCredentialStatusError: (message: string | null) => {
         settingsStoreState.modelCredentialStatusError = message
       },
+      invalidateApiKeyCache: (provider: string) => {
+        settingsStoreState.invalidatedKeyCaches.push(provider)
+        settingsStoreState.hasApiKeyLoaded = false
+      },
+      checkHasApiKey: async (options?: { flush?: boolean }) => {
+        settingsStoreState.apiKeyChecks.push({ flush: options?.flush === true })
+        settingsStoreState.hasApiKey = settingsStoreState.gatewayKeyPresent
+        settingsStoreState.hasApiKeyLoaded = true
+        return settingsStoreState.hasApiKey
+      },
+      providerType: settingsStoreState.providerType,
+      hasApiKey: settingsStoreState.hasApiKey,
+      hasApiKeyLoaded: settingsStoreState.hasApiKeyLoaded,
       modelCredentialStatus: settingsStoreState.modelCredentialStatus,
       modelCredentialStatusError: settingsStoreState.modelCredentialStatusError,
     }),
@@ -78,7 +105,15 @@ import {
   isGatewayAccessTokenCurrent,
   type GatewaySessionEvent,
 } from '@/agent/providers/llm-gateway-auth'
-import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+import { getModelsForProvider, getProviderCatalogStatus, getProviderConfig, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+// The catalog module registers the token-purge listener at import time; the
+// expired-purge cases below only observe a 'failed' status when it is loaded
+// (in the app it always is — AppBootstrap imports it before any auth path).
+import {
+  beginGatewayCatalogRefresh,
+  isGatewayCatalogRefreshCurrent,
+  registerGatewayModels,
+} from '@/agent/providers/llm-gateway-provider'
 
 const BASE_URL = 'https://ai.jianguoyun.com'
 const CLIENT_ID = 'test-client-id'
@@ -168,6 +203,12 @@ describe('llm-gateway-auth token refresh hardening', () => {
     loadApiKeyMock.mockResolvedValue(null)
     saveApiKeyMock.mockReset()
     saveApiKeyMock.mockResolvedValue(undefined)
+    settingsStoreState.invalidatedKeyCaches.length = 0
+    settingsStoreState.apiKeyChecks.length = 0
+    settingsStoreState.providerType = 'llm-gateway'
+    settingsStoreState.gatewayKeyPresent = true
+    settingsStoreState.hasApiKey = true
+    settingsStoreState.hasApiKeyLoaded = true
   })
 
   afterEach(() => {
@@ -801,7 +842,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       }
     })
 
-    it('clears the prior gateway catalog when the refresh token expires', async () => {
+    it('keeps the prior gateway catalog with a failed status when the refresh token expires', async () => {
       seedStoredTokens({ refresh_expires_at: Date.now() - 1000 })
       registerDynamicProvider('llm-gateway',
         { baseURL: `${BASE_URL}/v1`, modelName: 'old-model', headers: {} },
@@ -809,10 +850,94 @@ describe('llm-gateway-auth token refresh hardening', () => {
       )
       try {
         await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'expired' })
-        expect(getModelsForProvider('llm-gateway')).toEqual([])
+        // An expired session is NOT a logout (#224): the provider stays
+        // registered so Retry / re-login remain reachable, and the last usable
+        // list stays visible instead of disappearing with the purge.
+        expect(getProviderConfig('llm-gateway')).toBeTruthy()
+        expect(getProviderCatalogStatus('llm-gateway')).toBe('failed')
+        expect(getModelsForProvider('llm-gateway')).toEqual([
+          { id: 'old-model', name: 'Old', capabilities: ['code'] },
+        ])
       } finally {
         unregisterDynamicProvider('llm-gateway')
       }
+    })
+
+    it('re-resolves hasApiKey after an expired purge so the UI stops treating it as configured', async () => {
+      seedStoredTokens({ refresh_expires_at: Date.now() - 1000 })
+      // The key store really loses the gateway's credential on purge; the
+      // cached verdict only follows if the resync actually runs.
+      deleteApiKeyMock.mockImplementation(async (key: string) => {
+        if (key === '__llm_gateway_token__') settingsStoreState.gatewayKeyPresent = false
+      })
+      expect(settingsStoreState.hasApiKey).toBe(true)
+
+      await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'expired' })
+
+      // checkHasApiKey() answers from a module-level cache that only the
+      // login / logout / reconcile paths invalidate. Without this, a cached
+      // `true` outlives the purge and the welcome screen keeps the gateway
+      // "configured" instead of offering setup / re-login (review: "Expired
+      // credentials leave a stale key result").
+      expect(settingsStoreState.invalidatedKeyCaches).toContain('__llm_gateway_token__')
+      expect(settingsStoreState.apiKeyChecks).toEqual([{ flush: true }])
+      // The state the UI actually reads. Asserting only the calls above would
+      // pass even if the re-check never landed (review: "Stale key state goes
+      // undetected").
+      expect(settingsStoreState.hasApiKeyLoaded).toBe(true)
+      expect(settingsStoreState.hasApiKey).toBe(false)
+    })
+
+    it('does not force a key check while another provider is selected', async () => {
+      // A different dynamic provider is selected and still registering, so its
+      // loading state has not resolved yet.
+      settingsStoreState.providerType = 'codex-oauth'
+      settingsStoreState.hasApiKeyLoaded = false
+      seedStoredTokens({ refresh_expires_at: Date.now() - 1000 })
+      deleteApiKeyMock.mockImplementation(async (key: string) => {
+        if (key === '__llm_gateway_token__') settingsStoreState.gatewayKeyPresent = false
+      })
+
+      await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'expired' })
+
+      // checkHasApiKey() answers for the SELECTED provider: forcing it here
+      // would resolve that provider's status and end its loading state before
+      // its own registration completes (review: "Other provider shows false
+      // setup state"). Dropping the gateway's cache entry is enough.
+      expect(settingsStoreState.invalidatedKeyCaches).toContain('__llm_gateway_token__')
+      expect(settingsStoreState.apiKeyChecks).toEqual([])
+      expect(settingsStoreState.hasApiKeyLoaded).toBe(false)
+    })
+
+    it('records the outage before the purge awaits the key store, so an in-flight refresh can still commit', async () => {
+      seedStoredTokens({ refresh_expires_at: Date.now() - 1000 })
+      registerDynamicProvider('llm-gateway',
+        { baseURL: `${BASE_URL}/v1`, modelName: 'old-model', headers: {} },
+        { category: 'chinese', displayName: 'Nutstore AI', models: [{ id: 'old-model', name: 'Old', capabilities: ['code'] }], catalogStatus: 'ready' },
+      )
+      // Catalog work that started BEFORE the purge and is still in flight.
+      const inFlightRefresh = beginGatewayCatalogRefresh()
+      let releaseDelete!: () => void
+      deleteApiKeyMock.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseDelete = resolve }))
+
+      const purging = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+      await vi.waitFor(() => expect(deleteApiKeyMock).toHaveBeenCalled())
+
+      // The outage is already recorded while the purge is still waiting on
+      // the key store: the notification must run inside the purge's critical
+      // section, before any await, or a refresh that commits in the meantime
+      // gets demoted afterwards over a working catalog (review: "Purge race
+      // escapes regression test").
+      expect(getProviderCatalogStatus('llm-gateway')).toBe('failed')
+
+      releaseDelete()
+      await expect(purging).resolves.toMatchObject({ status: 'expired' })
+
+      // ...and it claimed no catalog version of its own, so the work that
+      // started before it can still commit.
+      expect(isGatewayCatalogRefreshCurrent(inFlightRefresh)).toBe(true)
+      registerGatewayModels([{ id: 'new-model', name: 'New', capabilities: ['code'] }], 'ready', inFlightRefresh)
+      expect(getProviderCatalogStatus('llm-gateway')).toBe('ready')
     })
 
     it('credential status reports "expired" after invalid_grant and "missing" after logout', async () => {

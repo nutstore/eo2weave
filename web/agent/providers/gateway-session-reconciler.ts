@@ -53,6 +53,7 @@ import {
   subscribeToGatewaySessionEvents,
   type GatewaySessionEvent,
 } from '@/agent/providers/llm-gateway-auth'
+import { getProviderConfig } from '@/agent/providers/types'
 import {
   getLLMGatewayApiKeyProviderKey,
   getLLMGatewayBaseURL,
@@ -73,6 +74,11 @@ let newestJobId = 0
 
 /** Whether a reconciler instance is currently installed. */
 let installed = false
+
+/** Whether this tab has a reconciler that owns provider/catalog state. */
+export function isGatewayReconcilerInstalled(): boolean {
+  return installed
+}
 let unsubscribe: (() => void) | null = null
 
 /** Test/diagnostic hook: last terminal reconciliation outcome. */
@@ -167,14 +173,24 @@ async function reconcileLoggedIn(job: ReconcileJob, event: GatewaySessionEvent):
       // cannot retain a previous account's model IDs.
       if (event.type === 'identity-change') unregisterLLMGatewayProvider()
       registerLLMGatewayProvider()
-      registerGatewayModels([], 'failed')
+      // 'loading', never 'failed': this job did not manage to fetch, which is
+      // not evidence that the catalog is unavailable. 'failed' here is what
+      // made the switcher warn about a perfectly healthy account.
+      if (event.type === 'identity-change') registerGatewayModels([], 'loading')
       return 'transient'
     }
-    // Confirmed absent ('missing' = never logged in / fully purged) or
-    // irrecoverably expired: reconcile logged-out. The provider was already
-    // unregistered by the invalidation path — remove any catalog remnants
-    // and reconcile BOTH status representations.
-    unregisterLLMGatewayProvider()
+    // Logged out for real (the other tab removed the token pair) → removing
+    // the provider is correct. A 'missing' verdict with a token key still in
+    // place is more likely a read that raced another context's write (a side
+    // panel booting, a second tab refreshing) — removing the provider then
+    // reads as "provider unavailable, sign in again" for a selection that
+    // still exists, which is exactly the reported symptom. Keep it registered
+    // and let the switcher report the truth instead.
+    if (event.type === 'identity-change' && event.newRefreshToken === null) {
+      unregisterLLMGatewayProvider()
+    } else {
+      registerGatewayModels([], 'failed')
+    }
     const statusOk = await reconcileCredentialStatus(resolved.kind, { clearError: false }, job)
     if (!statusOk) return 'superseded'
     return 'logged-out'
@@ -258,10 +274,16 @@ async function reconcileAccessRefresh(job: ReconcileJob): Promise<GatewayReconci
     }
     return 'adopted'
   }
-  if (resolved.kind === 'temporary') return 'transient'
+  if (resolved.kind === 'temporary') {
+    // A transient failure must leave the provider usable: the tab that owns
+    // the selection cannot tell "missing" from "not yet readable" either.
+    if (!getProviderConfig('llm-gateway')) registerLLMGatewayProvider()
+    return 'transient'
+  }
   // The shared session is genuinely gone/expired despite the refresh event
-  // (e.g. a logout raced the event delivery): reconcile logged-out.
-  unregisterLLMGatewayProvider()
+  // (e.g. a logout raced the event delivery): reconcile logged-out — again
+  // without removing the provider, which only explicit logout may do.
+  registerGatewayModels([], 'failed')
   const statusOk = await reconcileCredentialStatus(resolved.kind, { clearError: false }, job)
   return statusOk ? 'logged-out' : 'superseded'
 }

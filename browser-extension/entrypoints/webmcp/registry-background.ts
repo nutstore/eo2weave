@@ -20,7 +20,7 @@
 import {
   addRegistry,
   installRegistryPackage,
-  listInstalledPackageIds,
+  listInstalledPackages,
   listRegistries,
   loadRegistryCatalog,
   readInstalledPackageActivation,
@@ -100,7 +100,8 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
       switch (message.type) {
         case 'webmcp_registry_list': {
           const registries = await getRegistries()
-          const installed = await listInstalledPackageIds()
+          const installedPackages = await listInstalledPackages()
+          const installed = installedPackages.ids
           // PER-PACKAGE: an unreadable config for ONE package must not reject
           // the whole list — that failure reached `renderAll` and blanked the
           // registry AND mine sections over a single package's storage hiccup.
@@ -120,6 +121,7 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
             ok: true,
             registries,
             installed: [...installed],
+            installedDirectories: [...installedPackages.directories],
             activations,
             activationErrors,
             persisted: registriesPersisted(),

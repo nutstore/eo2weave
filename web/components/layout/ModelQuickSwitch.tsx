@@ -402,9 +402,9 @@ export function ModelQuickSwitch({
       : 'topbar.modelSwitcher.providerUnavailableWarning'
 
   const currentModelLabel = useMemo(() => {
-    // No API key configured → always show "unavailable" regardless of persisted values
+    // Keep the selected model visible during background provider refreshes.
     if (loading && selectedProviderRestoring) return `${modelName} · ${t('topbar.modelSwitcher.sessionRestoring')}`
-    if (loading) return t('topbar.modelSwitcher.loading')
+    if (loading && !hasLoadedOnce) return t('topbar.modelSwitcher.loading')
     if (modelCredentialStatus === 'expired' && modelName && !selectedProviderUnregistered) {
       return `${modelName} · ${t('topbar.modelSwitcher.credentialExpired')}`
     }
@@ -425,7 +425,7 @@ export function ModelQuickSwitch({
     return selectedProviderUnregistered
       ? `${base} · ${t(unregisteredWarningKey)}`
       : base
-  }, [loading, selectedProviderUnregistered, selectedProviderRestoring, modelCredentialStatus, providerType, providers, modelName, t, unregisteredWarningKey])
+  }, [loading, hasLoadedOnce, selectedProviderUnregistered, selectedProviderRestoring, modelCredentialStatus, providerType, providers, modelName, t, unregisteredWarningKey])
 
   // No usable model (#82): nothing selectable — the composer's input is
   // disabled and this chip carries the amber warning state pointing at
@@ -663,7 +663,7 @@ export function ModelQuickSwitch({
           </div>
         )}
 
-        {!loading && unavailableCatalogProviders.length > 0 ? (
+        {unavailableCatalogProviders.length > 0 ? (
           <div className="border-b border-border/70">
             {unavailableCatalogProviders.map((provider) => (
               <div key={provider.providerKey} className="flex items-center justify-between gap-2 bg-amber-500/5 px-3 py-1.5 text-[11px] text-tertiary">

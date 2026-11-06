@@ -141,6 +141,18 @@ describe('installRegistryPackage (same-version reinstall fingerprint)', () => {
     if (damage === 'invalid manifest') {
       await m.writeFile('com.example.pkg/manifest.json', new TextEncoder().encode('{broken'))
     }
+    // Provenance is part of a complete install (issue #228): a tree the
+    // installer would restore must carry the marker, or recovery would hand
+    // back a package that reads as authored.
+    const markerBytes = new TextEncoder().encode(JSON.stringify({
+      schemaVersion: 1,
+      registryId: `${RAW}/manifest.json`,
+      packageId: 'com.example.pkg',
+      version: '1.0.0',
+      installedAt: '2026-11-06T00:00:00.000Z',
+    }))
+    await m.writeFile('.com.example.pkg.previous/.webmcp-install.json', markerBytes)
+    await m.writeFile('com.example.pkg/.webmcp-install.json', markerBytes)
     await expect(installRegistryPackage(registry, pkg)).resolves.toBeTruthy()
     expect(await m.readFile('com.example.pkg/workflows/read.js')).toEqual(new TextEncoder().encode(WORKFLOW_SOURCE))
   })
@@ -211,24 +223,67 @@ describe('installRegistryPackage (same-version reinstall fingerprint)', () => {
   })
 })
 
-describe('listInstalledPackageIds (one unreadable manifest)', () => {
-  it('falls back to the directory identity instead of rejecting the list', async () => {
-    const { listInstalledPackageIds } = await import('../registry-store')
+describe('listInstalledPackages (install markers are the only evidence)', () => {
+  const marker = (packageId: string): string => JSON.stringify({
+    schemaVersion: 1,
+    registryId: 'https://example.com/registry.json',
+    packageId,
+    version: '1.0.0',
+    installedAt: '2026-11-06T00:00:00.000Z',
+  })
+
+  it('reads an authored package as authored even when its manifest id matches its directory', async () => {
+    const { listInstalledPackages } = await import('../registry-store')
     const m = await mount
     const encoder = new TextEncoder()
-    await m.writeFile('com.example.ok/manifest.json', encoder.encode(JSON.stringify({ id: 'com.example.ok' })))
-    await m.writeFile('com.example.broken/manifest.json', encoder.encode('{}'))
+    await m.writeFile('com.example.authored/manifest.json', encoder.encode(JSON.stringify({ id: 'com.example.authored' })))
 
-    // A TRANSIENT read failure (not ENOENT): previously this rejected the
-    // whole list, which took the registry section and "mine" down with it.
+    const result = await listInstalledPackages(m)
+    expect(result.ids.has('com.example.authored')).toBe(false)
+    expect(result.directories.has('com.example.authored')).toBe(false)
+  })
+
+  it('counts a marked directory as installed', async () => {
+    const { listInstalledPackages } = await import('../registry-store')
+    const m = await mount
+    await m.writeFile('com.example.installed/.webmcp-install.json', new TextEncoder().encode(marker('com.example.installed')))
+
+    const result = await listInstalledPackages(m)
+    expect([...result.ids]).toContain('com.example.installed')
+    expect([...result.directories]).toContain('com.example.installed')
+  })
+
+  it('ignores a marker that names a different directory', async () => {
+    const { listInstalledPackages } = await import('../registry-store')
+    const m = await mount
+    await m.writeFile('com.example.copy/.webmcp-install.json', new TextEncoder().encode(marker('com.example.other')))
+
+    const result = await listInstalledPackages(m)
+    // Neither listed as installed (no Remove) nor treated as authored (no
+    // delete): ownership is indeterminate.
+    expect([...result.ids]).not.toContain('com.example.other')
+    expect([...result.ids]).not.toContain('com.example.copy')
+    expect([...result.directories]).toContain('com.example.copy')
+  })
+
+  it('keeps a directory whose marker cannot be read on the installed side', async () => {
+    const { listInstalledPackages } = await import('../registry-store')
+    const m = await mount
+    await m.writeFile('com.example.broken/.webmcp-install.json', new TextEncoder().encode(marker('com.example.broken')))
+
+    // A TRANSIENT read failure (not ENOENT) must not demote the package to
+    // "authored": that would offer a delete for something we cannot prove.
     const original = m.readFile.bind(m)
     m.readFile = (async (path: string) => {
-      if (path === 'com.example.broken/manifest.json') throw Object.assign(new Error('I/O error'), { code: 'EIO' })
+      if (path === 'com.example.broken/.webmcp-install.json') throw Object.assign(new Error('I/O error'), { code: 'EIO' })
       return original(path)
     }) as typeof m.readFile
     try {
-      const ids = await listInstalledPackageIds()
-      expect([...ids]).toEqual(expect.arrayContaining(['com.example.ok', 'com.example.broken']))
+      const result = await listInstalledPackages(m)
+      // Not actionable as an install (no Remove) and not offered as authored
+      // (no delete) — the directory is simply not classified destructively.
+      expect([...result.ids]).not.toContain('com.example.broken')
+      expect([...result.directories]).toContain('com.example.broken')
     } finally {
       m.readFile = original as typeof m.readFile
     }

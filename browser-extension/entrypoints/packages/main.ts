@@ -68,7 +68,7 @@ async function renderAll(): Promise<void> {
       userMountComplete = catalog.userMountComplete
       if (current !== generation) return
       builtin.render(catalog.entries)
-      if (registries) mine.render(catalog.entries, new Set(registries.installed), { userMountComplete })
+      if (registries) mine.render(catalog.entries, new Set(registries.installedDirectories ?? []), { userMountComplete })
     },
     error => {
       if (current !== generation) return
@@ -82,7 +82,7 @@ async function renderAll(): Promise<void> {
       registries = result
       if (current !== generation) return
       registry.render(result)
-      if (packages) mine.render(packages, new Set(result.installed), { userMountComplete })
+      if (packages) mine.render(packages, new Set(result.installedDirectories ?? []), { userMountComplete })
     },
     error => {
       if (current !== generation) return
