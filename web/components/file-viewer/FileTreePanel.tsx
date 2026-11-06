@@ -29,7 +29,7 @@ import { useWorkspaceStore } from '@/store/workspace.store'
 import { useSkillsStore } from '@/store/skills.store'
 import { SidebarPanelHeader } from '@/components/layout/SidebarPanelHeader'
 import { useGitBranch } from '@/hooks/useGitBranch'
-import { GitBranch as GitBranchIcon } from 'lucide-react'
+import { GitBranchBadge } from './GitBranchBadge'
 import { useT } from '@/i18n'
 import {
   isTreeEntryIgnored,
@@ -454,7 +454,7 @@ export const FileTreePanel = memo(function FileTreePanel({
   onRevealComplete,
 }: FileTreePanelProps) {
   const t = useT()
-  const gitBranch = useGitBranch(directoryHandle)
+  const gitBranch = useGitBranch({ handle: directoryHandle, executor: diskExecutor, rootId: diskRootId })
   const [rootNodes, setRootNodes] = useState<TreeNode[]>([])
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -1133,21 +1133,7 @@ export const FileTreePanel = memo(function FileTreePanel({
       {showHeader && (
         <SidebarPanelHeader
           title={rootName || directoryHandle?.name || t('fileTree.draftFiles')}
-          leftExtra={
-            gitBranch ? (
-              <span
-                className="flex min-w-0 items-center gap-1 font-mono text-[10px] font-normal normal-case text-tertiary"
-                title={
-                  gitBranch.kind === 'detached' ? t('fileTree.detachedHead') : t('fileTree.gitBranch')
-                }
-              >
-                <GitBranchIcon className="h-3 w-3 shrink-0" />
-                <span className="truncate">
-                  {gitBranch.kind === 'branch' ? gitBranch.name : gitBranch.sha}
-                </span>
-              </span>
-            ) : null
-          }
+          leftExtra={<GitBranchBadge info={gitBranch} />}
           right={
             <BrandButton
               iconButton
