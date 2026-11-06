@@ -796,7 +796,7 @@ async function clearStoredTokens(
   expectedRefreshToken?: string,
   finalStatus?: 'expired' | 'missing',
 ): Promise<boolean> {
-  return withGatewayCredentialLock(async () => {
+  const cleared = await withGatewayCredentialLock(async () => {
     const current = loadStoredTokens()
     if (expectedRefreshToken && current?.refresh_token !== expectedRefreshToken) return false
     bumpAuthSessionGeneration()
@@ -885,6 +885,37 @@ async function clearStoredTokens(
     if (finalStatus) await setCredentialStatusLocked(finalStatus)
     return true
   })
+  // Outside the credential lock: the re-read hits the key store, and later
+  // logins/refreshes must not queue behind it.
+  if (cleared) await resyncGatewayApiKeyAvailability()
+  return cleared
+}
+
+/**
+ * Re-resolve the gateway's API-key availability after its credentials were
+ * purged.
+ *
+ * `checkHasApiKey()` answers from a module-level cache that outlives store
+ * resets; only the login / logout / reconcile paths invalidate it. A purge
+ * that leaves the entry in place keeps answering `true` for a dead session,
+ * so a later check (the welcome screen reads it on every mount) still treats
+ * the gateway as configured and never offers setup / re-login — the same
+ * "logged-in badge on a dead session" class this purge exists to prevent
+ * (review: "Expired credentials leave a stale key result").
+ */
+async function resyncGatewayApiKeyAvailability(): Promise<void> {
+  try {
+    const { useSettingsStore } = await import('@/store/settings.store')
+    const settings = useSettingsStore.getState()
+    settings.invalidateApiKeyCache(LLM_GATEWAY_API_KEY_ID)
+    // flush: an explicit logout has unregistered the provider by now, and a
+    // deferred call would return without writing — leaving the stale `true`
+    // (and its "configured" welcome screen) on display.
+    await settings.checkHasApiKey({ flush: true })
+  } catch (e) {
+    // Auth must remain usable even when the settings store is unavailable.
+    console.warn('[llm-gateway] failed to refresh the api-key status after a purge:', e)
+  }
 }
 
 /**
