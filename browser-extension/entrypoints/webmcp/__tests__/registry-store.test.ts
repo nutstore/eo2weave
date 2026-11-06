@@ -259,8 +259,11 @@ describe('listInstalledPackages (install markers are the only evidence)', () => 
     await m.writeFile('com.example.copy/.webmcp-install.json', new TextEncoder().encode(marker('com.example.other')))
 
     const result = await listInstalledPackages(m)
+    // Neither listed as installed (no Remove) nor treated as authored (no
+    // delete): ownership is indeterminate.
     expect([...result.ids]).not.toContain('com.example.other')
-    expect([...result.directories]).not.toContain('com.example.copy')
+    expect([...result.ids]).not.toContain('com.example.copy')
+    expect([...result.directories]).toContain('com.example.copy')
   })
 
   it('keeps a directory whose marker cannot be read on the installed side', async () => {
@@ -277,7 +280,10 @@ describe('listInstalledPackages (install markers are the only evidence)', () => 
     }) as typeof m.readFile
     try {
       const result = await listInstalledPackages(m)
-      expect([...result.ids]).toContain('com.example.broken')
+      // Not actionable as an install (no Remove) and not offered as authored
+      // (no delete) — the directory is simply not classified destructively.
+      expect([...result.ids]).not.toContain('com.example.broken')
+      expect([...result.directories]).toContain('com.example.broken')
     } finally {
       m.readFile = original as typeof m.readFile
     }

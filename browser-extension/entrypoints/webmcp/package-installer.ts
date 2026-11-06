@@ -48,7 +48,7 @@ import {
 } from './registry-client'
 import { fetchWithMirrorFallback, isNotFoundError } from './registry-client'
 import { mirrorCandidates, resolveMirrorPreference, type MirrorPreference } from './registry-mirrors'
-import { encodeInstallMarker, INSTALL_MARKER_FILE, type InstallMarker } from './install-marker'
+import { encodeInstallMarker, INSTALL_MARKER_FILE, readInstallMarker, type InstallMarker } from './install-marker'
 import { withPackageLock } from './package-lock'
 
 export class PackageInstallError extends Error {
@@ -902,11 +902,16 @@ export async function liveTreeIsComplete(provider: FsProvider, directory: string
   // backup holding the only marker-complete copy is discarded and the
   // package silently becomes "authored" (finding: "Recovery can discard
   // provenance").
-  try {
-    await provider.readFile(`${directory}/${INSTALL_MARKER_FILE}`)
-  } catch {
-    return false
-  }
+  //
+  // The marker is PARSED, not merely present: a readable-but-foreign marker
+  // would pass a presence check while the listing rejects it, which clears the
+  // backup and then shows the package as authored.
+  //
+  // A transient read error (anything but a confirmed absence) is rethrown on
+  // purpose: treating it as "incomplete" replaces a complete live tree with an
+  // older backup, and a later failure would leave only that older copy.
+  const marker = await readInstallMarker(provider, directory)
+  if (!marker || marker.packageId !== expectedId) return false
   const sources: Record<string, string> = Object.create(null)
   for (const tool of manifest.tools) {
     let bytes: Uint8Array

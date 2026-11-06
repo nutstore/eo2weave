@@ -15,7 +15,7 @@
 
 import type { FsProvider } from '@creatorweave/fs-provider'
 import { getAdapterStorage } from './provider-storage'
-import { readInstallMarker, type InstallMarker } from './install-marker'
+import { readInstallMarkerState, type InstallMarker } from './install-marker'
 import { getBuiltinStorage } from './builtin-storage'
 import {
   fetchRegistryManifest,
@@ -635,17 +635,27 @@ export async function listInstalledPackages(provider?: FsProvider): Promise<Inst
   const directories = new Set<string>()
   for (const entry of entries) {
     if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
-    let marker: InstallMarker | null
+    let state: Awaited<ReturnType<typeof readInstallMarkerState>>
     try {
-      marker = await readInstallMarker(mount, entry.name)
+      state = await readInstallMarkerState(mount, entry.name)
     } catch {
+      // Ownership is INDETERMINATE. Keep the directory out of `ids` (the
+      // registry row must not offer Remove) and out of "mine" (which offers a
+      // delete) — an unreadable marker is no proof of authorship, and a wrong
+      // delete is unrecoverable.
       directories.add(entry.name)
-      ids.add(entry.name)
       continue
     }
-    if (!marker || marker.packageId !== entry.name) continue
+    // No marker at all: authored (or installed before markers existed).
+    if (state.kind === 'absent') continue
+    if (state.kind === 'invalid' || state.marker.packageId !== entry.name) {
+      // Malformed, foreign or copied markers get the same indeterminate
+      // treatment: no Remove from the registry row, no delete from "mine".
+      directories.add(entry.name)
+      continue
+    }
     directories.add(entry.name)
-    ids.add(marker.packageId)
+    ids.add(state.marker.packageId)
   }
   return { ids, directories }
 }
