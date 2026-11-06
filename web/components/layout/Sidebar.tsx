@@ -59,6 +59,7 @@ import { useGitBranch } from '@/hooks/useGitBranch'
 import { PendingSyncPanel } from '@/components/sync/PendingSyncPanel'
 import { SnapshotList } from '@/components/sync/SnapshotList'
 import { useT } from '@/i18n'
+import { useSkillsStore } from '@/store/skills.store'
 import { ExportConversationDialog } from '@/components/conversation/ExportConversationDialog'
 import { BatchExportDialog } from '@/components/conversation/BatchExportDialog'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
@@ -416,6 +417,9 @@ const RootFileTreePanel = memo(function RootFileTreePanel({
   // Per-root external refresh signal: the tree's built-in header (with its
   // refresh button) is hidden in multi-root mode, so expose refresh here.
   const [refreshSignal, setRefreshSignal] = useState(0)
+  // The panel's own refresh used to bump this; the root row is the only
+  // refresh affordance now, so it must rescan project skills too (issue #234).
+  const bumpSkillsScanVersion = useSkillsStore((s) => s.bumpSkillsScanVersion)
   const handleFileSelect = useCallback(
     (path: string, handle: FileSystemFileHandle | null) => {
       // Virtual OPFS root: paths in cachedPaths are already workspace-relative
@@ -464,34 +468,43 @@ const RootFileTreePanel = memo(function RootFileTreePanel({
 
   return (
     <div className="flex-shrink-0">
-      {rootsLength > 1 ? (
-        <div className="flex w-full items-center gap-1">
-          <button
-            type="button"
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold text-secondary hover:bg-hover"
-            onClick={() => onToggleCollapse(root.name)}
-          >
-            {collapsed && !shouldReveal ? (
-              <ChevronRight className="h-3 w-3 shrink-0 text-tertiary" />
-            ) : (
-              <ChevronDown className="h-3 w-3 shrink-0 text-tertiary" />
-            )}
-            <FolderTree className="h-3 w-3 shrink-0 text-warning" />
-            <span className="truncate">{root.name}</span>
-          </button>
-          <GitBranchBadge info={gitBranch} className="mr-1 shrink-0" />
-          <button
-            type="button"
-            className="mr-1 shrink-0 rounded-md p-1 text-tertiary transition-colors hover:bg-hover hover:text-secondary"
-            title={t('common.refresh')}
-            aria-label={t('common.refresh')}
-            onClick={() => setRefreshSignal((s) => s + 1)}
-          >
-            <RefreshCw className="h-3 w-3" />
-          </button>
-        </div>
-      ) : null}
-      {rootsLength <= 1 || !collapsed || shouldReveal ? (
+      {/* ONE root row shape for every case: a single mounted root used to
+          render a different header (uppercase title + branch + refresh), so
+          the panel changed appearance purely because a second root was
+          mounted. The list now always renders root rows. */}
+      <div className="flex w-full items-center gap-1">
+        <button
+          type="button"
+          className="flex min-w-0 max-w-full shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold text-secondary hover:bg-hover"
+          onClick={() => onToggleCollapse(root.name)}
+        >
+          {collapsed && !shouldReveal ? (
+            <ChevronRight className="h-3 w-3 shrink-0 text-tertiary" />
+          ) : (
+            <ChevronDown className="h-3 w-3 shrink-0 text-tertiary" />
+          )}
+          <FolderTree className="h-3 w-3 shrink-0 text-warning" />
+          <span className="truncate">{root.name}</span>
+        </button>
+        {/* The folder name keeps its space; the branch label takes only the
+            remainder and is what truncates (same priority as the old header). */}
+        <GitBranchBadge info={gitBranch} className="mr-1 min-w-0 flex-1 justify-end overflow-hidden" />
+        <button
+          type="button"
+          className="mr-1 shrink-0 rounded-md p-1 text-tertiary transition-colors hover:bg-hover hover:text-secondary"
+          title={t('common.refresh')}
+          aria-label={t('common.refresh')}
+          onClick={() => {
+            // The tree panel's own refresh used to rescan project skills; the
+            // root row is now the only refresh affordance (issue #234 review).
+            setRefreshSignal((s) => s + 1)
+            bumpSkillsScanVersion()
+          }}
+        >
+          <RefreshCw className="h-3 w-3" />
+        </button>
+      </div>
+      <div hidden={collapsed && !shouldReveal}>
         <FileTreePanel
           directoryHandle={root.handle}
           diskRootId={root.backend === 'native-host' ? root.scopeId : null}
@@ -506,11 +519,11 @@ const RootFileTreePanel = memo(function RootFileTreePanel({
           onDelete={handleDelete}
           revealTarget={rootRevealTarget}
           onRevealComplete={onRevealComplete}
-          showHeader={rootsLength <= 1}
+          showHeader={false}
           gitBranch={gitBranch}
           refreshSignal={refreshSignal}
         />
-      ) : null}
+      </div>
     </div>
   )
 })
