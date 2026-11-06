@@ -757,13 +757,6 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
           </>
         )}
 
-        {/* Local-first privacy hint */}
-        {!isLoading && step !== 'welcome' && (
-          <p className="mt-7 text-center text-[11px] text-neutral-400 dark:text-neutral-500">
-            {t('welcome.setupLocalFirstHint')}
-          </p>
-        )}
-
         {screenshotDataUrl && (
           <PageScreenshotCropDialog
             imageDataUrl={screenshotDataUrl}

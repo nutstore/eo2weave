@@ -28,7 +28,6 @@ export const welcome = {
     setupGuideTooltip: "設定ガイドを開く：プロバイダー Key、ピン留めモデルとデフォルトモデル",
     setupGuideLinkTitle: "設定方法は？",
     setupGuideLinkDesc: "3 ステップ：プロバイダー Key → ピン留めモデル → デフォルトモデル",
-    setupLocalFirstHint: "すべてのデータはブラウザにローカル保存され、サーバーにアップロードされません",
     // Conditional onboarding labels (these are not a linear progress count)
     apiKeyLabel: "AI に接続",
     welcomeHeading: "EO2Weave へようこそ",

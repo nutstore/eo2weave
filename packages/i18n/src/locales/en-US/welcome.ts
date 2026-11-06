@@ -28,7 +28,6 @@ export const welcome = {
     setupGuideTooltip: "Open the setup guide: provider key, pinned models & default model",
     setupGuideLinkTitle: "How do I set this up?",
     setupGuideLinkDesc: "Three steps: provider key → pinned models → default model",
-    setupLocalFirstHint: "All data is stored locally in your browser, never uploaded",
     // Conditional onboarding labels (these are not a linear progress count)
     apiKeyLabel: "Connect AI",
     welcomeHeading: "Welcome to eo2weave",
