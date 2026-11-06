@@ -605,6 +605,15 @@ async function swapPackageIntoPlace(
     try {
       await provider.mkdir(staging, { recursive: true })
       for (const file of staged) {
+        // The provenance marker owns this path (issue #228): a package that
+        // ships one would have its bytes replaced by ours — or, worse, be read
+        // as an install of its own. Reject at install instead of shadowing it.
+        if (file.path === INSTALL_MARKER_FILE) {
+          throw new PackageInstallError(
+            `Package ${id} ships a reserved file: ${INSTALL_MARKER_FILE}`,
+            'INVALID_PACKAGE',
+          )
+        }
         if (lockSignal.aborted) {
           throw new PackageInstallError(
             `The install of ${id} was aborted: the package lock was lost mid-transaction`,
@@ -885,6 +894,16 @@ export async function liveTreeIsComplete(provider: FsProvider, directory: string
   // legitimately enabled package over a config the opt-in flow can rewrite.
   try {
     await provider.readFile(`${directory}/config.json`)
+  } catch {
+    return false
+  }
+  // Provenance is part of the installed state too: a copy/recovery that
+  // stopped before the marker landed must read as INCOMPLETE, else the
+  // backup holding the only marker-complete copy is discarded and the
+  // package silently becomes "authored" (finding: "Recovery can discard
+  // provenance").
+  try {
+    await provider.readFile(`${directory}/${INSTALL_MARKER_FILE}`)
   } catch {
     return false
   }
