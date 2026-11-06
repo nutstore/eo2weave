@@ -48,6 +48,7 @@ import {
 } from './registry-client'
 import { fetchWithMirrorFallback, isNotFoundError } from './registry-client'
 import { mirrorCandidates, resolveMirrorPreference, type MirrorPreference } from './registry-mirrors'
+import { encodeInstallMarker, INSTALL_MARKER_FILE, type InstallMarker } from './install-marker'
 import { withPackageLock } from './package-lock'
 
 export class PackageInstallError extends Error {
@@ -479,7 +480,13 @@ export async function installPackage(
         )
       }
       if (underLock) await underLock(lockSignal)
-      await swapPackageIntoPlace(id, staged, provider, lockSignal)
+      await swapPackageIntoPlace(id, staged, provider, lockSignal, {
+        schemaVersion: 1,
+        registryId: registry.manifestUrl,
+        packageId: id,
+        version: pkg.version,
+        installedAt: new Date().toISOString(),
+      })
       return { filesWritten: staged.length }
     })
   } finally {
@@ -497,6 +504,7 @@ async function swapPackageIntoPlace(
   staged: Array<{ path: string; bytes: Uint8Array }>,
   provider: FsProvider,
   lockSignal: AbortSignal,
+  marker: InstallMarker,
 ): Promise<void> {
   // The replacement is written into a staging directory FIRST and only
   // swapped into place after EVERY write succeeded, so a failed write
@@ -613,6 +621,20 @@ async function swapPackageIntoPlace(
     } catch (error) {
       if (error instanceof PackageInstallError) throw error
       throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
+    }
+    // Provenance marker (issue #228): written INSIDE the staged tree so it is
+    // swapped in atomically with the package and never survives an aborted
+    // install. An authored package has no marker, which is what makes the
+    // two kinds distinguishable at all.
+    try {
+      await provider.writeFile(
+        `${staging}/${INSTALL_MARKER_FILE}`,
+        encodeInstallMarker(marker),
+      )
+      assertLeaseHeld()
+    } catch (error) {
+      if (error instanceof PackageInstallError) throw error
+      throw new PackageInstallError(`Failed to record install provenance for ${id}: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
     }
     // All writes landed — swap the new tree in. FENCE the swap commit
     // itself: a lease lost while the last staged write was pending must not
