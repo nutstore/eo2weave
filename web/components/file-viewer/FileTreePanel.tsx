@@ -28,6 +28,8 @@ import { useOPFSStore } from '@/store/opfs.store'
 import { useWorkspaceStore } from '@/store/workspace.store'
 import { useSkillsStore } from '@/store/skills.store'
 import { SidebarPanelHeader } from '@/components/layout/SidebarPanelHeader'
+import { GitBranchBadge } from '@/components/file-viewer/GitBranchBadge'
+import type { GitBranchInfo } from '@/lib/git-branch'
 import { useT } from '@/i18n'
 import {
   isTreeEntryIgnored,
@@ -78,6 +80,11 @@ interface FileTreePanelBaseProps {
   pathPrefix?: string | null
   selectedPath?: string | null
   showHeader?: boolean
+  /**
+   * Git branch of this root, resolved by the caller so one root polls once.
+   * Rendered in the header; null when the folder is not a work tree.
+   */
+  gitBranch?: GitBranchInfo | null
   /**
    * Increment to trigger a tree refresh from outside (used in multi-root mode
    * where showHeader=false hides the built-in refresh button).
@@ -447,6 +454,7 @@ export const FileTreePanel = memo(function FileTreePanel({
   selectedPath,
   mode = 'all',
   showHeader = true,
+  gitBranch = null,
   refreshSignal = 0,
   revealTarget,
   onRevealComplete,
@@ -1130,6 +1138,7 @@ export const FileTreePanel = memo(function FileTreePanel({
       {showHeader && (
         <SidebarPanelHeader
           title={rootName || directoryHandle?.name || t('fileTree.draftFiles')}
+          leftExtra={<GitBranchBadge info={gitBranch} />}
           right={
             <BrandButton
               iconButton

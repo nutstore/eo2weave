@@ -54,6 +54,8 @@ import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { createAttemptTokenSource } from '@/components/layout/sidebar-retry-guard'
 import { FileTreePanel } from '@/components/file-viewer/FileTreePanel'
+import { GitBranchBadge } from '@/components/file-viewer/GitBranchBadge'
+import { useGitBranch } from '@/hooks/useGitBranch'
 import { PendingSyncPanel } from '@/components/sync/PendingSyncPanel'
 import { SnapshotList } from '@/components/sync/SnapshotList'
 import { useT } from '@/i18n'
@@ -368,6 +370,9 @@ interface SidebarProps {
   onCreateConversation?: () => void
 }
 
+/** Shared read-only executor used by Native Host-backed file trees. */
+const nativeHostTreeExecutor = new NativeHostExecutor()
+
 /** Memoized wrapper for FileTreePanel with stable callbacks per root */
 const RootFileTreePanel = memo(function RootFileTreePanel({
   root,
@@ -399,6 +404,15 @@ const RootFileTreePanel = memo(function RootFileTreePanel({
   onToggleCollapse: (rootName: string) => void
 }) {
   const t = useT()
+  // Multi-root mode hides the tree's own header, so the branch badge has to
+  // live in this heading — the hook also covers Native Host roots, which have
+  // no directory handle and read through the executor instead.
+  const nativeHostBacked = root.backend === 'native-host'
+  const gitBranch = useGitBranch({
+    handle: root.handle,
+    executor: nativeHostBacked ? nativeHostTreeExecutor : null,
+    rootId: nativeHostBacked ? root.scopeId : null,
+  })
   // Per-root external refresh signal: the tree's built-in header (with its
   // refresh button) is hidden in multi-root mode, so expose refresh here.
   const [refreshSignal, setRefreshSignal] = useState(0)
@@ -465,6 +479,7 @@ const RootFileTreePanel = memo(function RootFileTreePanel({
             <FolderTree className="h-3 w-3 shrink-0 text-warning" />
             <span className="truncate">{root.name}</span>
           </button>
+          <GitBranchBadge info={gitBranch} className="mr-1 shrink-0" />
           <button
             type="button"
             className="mr-1 shrink-0 rounded-md p-1 text-tertiary transition-colors hover:bg-hover hover:text-secondary"
@@ -492,15 +507,13 @@ const RootFileTreePanel = memo(function RootFileTreePanel({
           revealTarget={rootRevealTarget}
           onRevealComplete={onRevealComplete}
           showHeader={rootsLength <= 1}
+          gitBranch={gitBranch}
           refreshSignal={refreshSignal}
         />
       ) : null}
     </div>
   )
 })
-
-/** Shared read-only executor used by Native Host-backed file trees. */
-const nativeHostTreeExecutor = new NativeHostExecutor()
 
 /**
  * ResourceTabPanel — isolated from conversation state to avoid re-rendering

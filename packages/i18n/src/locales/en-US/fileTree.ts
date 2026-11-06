@@ -14,6 +14,8 @@ export const fileTree = {
     emptyStateDescription:
       "AI file changes are stored here temporarily. Confirm to save them to your local files",
     draftFiles: "Unconfirmed Changes",
+    gitBranch: "Git branch",
+    detachedHead: "detached HEAD",
     approvedNotSynced: "Confirmed, waiting to be written to disk",
     loadFailed: "Directory inaccessible",
     opfsDraftRoot: "OPFS Drafts",
