@@ -196,11 +196,14 @@ describe('WebMCPPackageRegistrySection', () => {
     serveManifest(1)
     store.listInstalledPackageProvenance.mockResolvedValue({
       installed: new Set(),
-      indeterminate: new Set(['com.example.mystery']),
+      indeterminate: new Set([PKG.id]),
     })
     render(<WebMCPPackageRegistrySection t={t} />)
 
-    await waitFor(() => expect(screen.getByText('com.example.mystery')).toBeTruthy())
+    // The indeterminate directory uses the CATALOG id on purpose: a row that
+    // matched a catalog package must be the one proven to offer no Remove —
+    // an unrelated id would let a matching row keep its button unnoticed.
+    await waitFor(() => expect(screen.getAllByText(PKG.id).length).toBeGreaterThan(1))
     expect(screen.getByText('settings.webmcpPackages.provenanceIndeterminate')).toBeTruthy()
     // The catalog row for PKG (not installed) offers Install only; the
     // indeterminate row offers no uninstall anywhere.

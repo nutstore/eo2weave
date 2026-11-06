@@ -20,6 +20,13 @@ import type { FsProvider } from '@creatorweave/fs-provider'
 /** Dot-prefixed so package tooling and file listings ignore it. */
 export const INSTALL_MARKER_FILE = '.webmcp-install.json'
 
+/**
+ * Upper bound for a marker file. The real marker is a few hundred bytes; a
+ * multi-megabyte `.webmcp-install.json` cannot be one, and reading it whole on
+ * every inventory/collision pass would stall the settings tab.
+ */
+export const MAX_INSTALL_MARKER_BYTES = 4 * 1024
+
 export interface InstallMarker {
   schemaVersion: 1
   /** Registry manifest URL the package came from. */
@@ -92,6 +99,7 @@ export async function readInstallMarkerState(
     if (isAbsent(error)) return { kind: 'absent' }
     throw error
   }
+  if (bytes.byteLength > MAX_INSTALL_MARKER_BYTES) return { kind: 'invalid' }
   const marker = parseInstallMarker(bytes)
   return marker ? { kind: 'ok', marker } : { kind: 'invalid' }
 }

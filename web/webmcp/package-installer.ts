@@ -743,16 +743,23 @@ export async function uninstallPackage(
     // Stop before mutating once the lease is gone (finding: "Lost lease
     // does not stop mutations") — a removal executed under the NEW owner's
     // lease would delete the package it just installed.
-    if (lockSignal.aborted) {
-      throw new PackageInstallError(
-        `The removal of ${packageId} was aborted: the package lock was lost mid-transaction`,
-        'LOCK_LOST',
-      )
+    const throwIfLeaseLost = (): void => {
+      if (lockSignal.aborted) {
+        throw new PackageInstallError(
+          `The removal of ${packageId} was aborted: the package lock was lost mid-transaction`,
+          'LOCK_LOST',
+        )
+      }
     }
+    throwIfLeaseLost()
     // Provenance hook: runs while the per-package lock is held, so the
     // decision cannot be invalidated by a concurrent install/uninstall. Its
     // error is NOT a storage failure — let it through unwrapped.
     if (underLock) await underLock(lockSignal)
+    // The hook awaits storage, so the lease can expire while it runs: re-fence
+    // before the destructive call or a stale owner deletes the tree the new
+    // owner just took over (finding: "Expired leases still delete packages").
+    throwIfLeaseLost()
     try {
       await removeMissingOk(provider, packageId)
     } catch (error) {

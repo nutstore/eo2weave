@@ -28,6 +28,7 @@ import {
 import { installPackage, uninstallPackage } from '@/webmcp/package-installer'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
 import { readInstallMarkerState } from '@/webmcp/install-provenance'
+import { compareVersions } from '@/skills/skill-version'
 
 const REGISTRIES_STORAGE_KEY = 'webmcp_package_registries'
 
@@ -259,6 +260,24 @@ async function readManifestId(mount: string, directory: string): Promise<{ id: s
 }
 
 /**
+ * True when the installer preserved a backup of this id (`.<id>.previous`).
+ * Only OUR interrupted replacement leaves that artifact next to the live
+ * directory, which is what separates a half-written install from authored
+ * data under the same id.
+ */
+async function hasPreservedBackup(
+  provider: Awaited<ReturnType<typeof providerRegistry.get>>,
+  packageId: string,
+): Promise<boolean> {
+  try {
+    await provider.stat(`.${packageId}.previous`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Reject an install whose package id collides with an EXISTING package.
  *
  * A registry package id doubles as the directory name on the mount, so a
@@ -342,6 +361,12 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
           return `The install provenance of ${entry.name} on ${mount} could not be read; try again later`
         }
         if (ownership.kind !== 'ok' || ownership.marker.packageId !== packageId) {
+          // A markerless live tree beside OUR preserved backup is the wreck of
+          // an interrupted replacement (no-rename providers copy the staged
+          // tree in place): the installer restores that backup during the next
+          // swap, so blocking the retry here would strand both trees
+          // (finding: "Interrupted install becomes unrecoverable").
+          if (ownership.kind === 'absent' && await hasPreservedBackup(provider, packageId)) continue
           return `${entry.name} on ${mount} already exists and is not a registry-installed package`
         }
         continue
@@ -352,6 +377,25 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
     }
   }
   return null
+}
+
+/**
+ * Refuse an install that would DOWNGRADE a newer install of the same id.
+ *
+ * Two tabs can hold different catalog versions: the stale one may acquire the
+ * per-package lock after the newer install landed, and the swap would replace
+ * newer files (and reset the generated config). The marker records what is
+ * really installed, so compare against it — an unreadable marker is not a
+ * downgrade evidence and is left to the collision check, which fails closed.
+ */
+async function findNewerInstalledVersion(
+  provider: Awaited<ReturnType<typeof providerRegistry.get>>,
+  packageId: string,
+  requestedVersion: string,
+): Promise<string | null> {
+  const state = await readInstallMarkerState(provider, packageId)
+  if (state.kind !== 'ok' || state.marker.packageId !== packageId) return null
+  return compareVersions(state.marker.version, requestedVersion) > 0 ? state.marker.version : null
 }
 
 /**
@@ -406,6 +450,13 @@ export async function installRegistryPackage(
     )
   }
   const provider = await providerRegistry.get('webmcp')
+  // Fast refusal for the common case; re-checked under the lock below.
+  const newerUnlocked = await findNewerInstalledVersion(provider, pkg.id, pkg.version)
+  if (newerUnlocked) {
+    throw new Error(
+      `Cannot install ${pkg.id} ${pkg.version}: version ${newerUnlocked} is already installed. Remove it first to downgrade.`,
+    )
+  }
   const result = await installPackage(registry, pkg, provider, undefined, async lockSignal => {
     // Runs while the installer holds the per-package cross-context lock.
     // `findPackageIdCollision` already allows the one legitimate shape
@@ -421,6 +472,12 @@ export async function installRegistryPackage(
     if (underLock) {
       throw new Error(
         `Cannot install ${pkg.id}: ${underLock}. Remove or rename it first — installing would replace it.`,
+      )
+    }
+    const newerUnderLock = await findNewerInstalledVersion(provider, pkg.id, pkg.version)
+    if (newerUnderLock) {
+      throw new Error(
+        `Cannot install ${pkg.id} ${pkg.version}: version ${newerUnderLock} is already installed. Remove it first to downgrade.`,
       )
     }
   })

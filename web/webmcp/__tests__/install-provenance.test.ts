@@ -3,10 +3,11 @@ import { memoryProvider } from '@creatorweave/fs-provider/memory'
 import {
   encodeInstallMarker,
   INSTALL_MARKER_FILE,
+  MAX_INSTALL_MARKER_BYTES,
   parseInstallMarker,
   readInstallMarker,
   readInstallMarkerState,
-} from '../install-provenance'
+} from '@/webmcp/install-provenance'
 
 /**
  * The web side's install provenance marker (issue #231) — the same contract
@@ -59,6 +60,16 @@ describe('readInstallMarkerState', () => {
     const state = await readInstallMarkerState(provider, 'com.example.pkg')
     expect(state).toEqual({ kind: 'ok', marker: MARKER })
     expect(INSTALL_MARKER_FILE).toBe('.webmcp-install.json')
+  })
+
+  it('treats an oversized marker as invalid instead of reading it whole', async () => {
+    // A marker is a few hundred bytes; anything multi-megabyte is not one, and
+    // decoding it on every inventory/collision pass would stall the tab.
+    const provider = memoryProvider()
+    await provider.mkdir('com.example.pkg', { recursive: true })
+    const huge = JSON.stringify({ ...MARKER, registryId: 'x'.repeat(MAX_INSTALL_MARKER_BYTES) })
+    await provider.writeFile('com.example.pkg/.webmcp-install.json', bytes(huge))
+    expect((await readInstallMarkerState(provider, 'com.example.pkg')).kind).toBe('invalid')
   })
 
   it('reads an absent marker as authored', async () => {

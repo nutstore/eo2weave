@@ -28,12 +28,12 @@ import { findPackageIdCollision, installRegistryPackage } from '@/webmcp/package
 
 const MANIFEST = (id: string) => new TextEncoder().encode(JSON.stringify({ id, version: '1.0.0', description: '', tools: [] }))
 
-const MARKER = (packageId: string) =>
+const MARKER = (packageId: string, version = '1.0.0') =>
   new TextEncoder().encode(JSON.stringify({
     schemaVersion: 1,
     registryId: 'https://raw.githubusercontent.com/o/r/main/manifest.json',
     packageId,
-    version: '1.0.0',
+    version,
     installedAt: '2026-11-06T00:00:00.000Z',
   }))
 
@@ -74,6 +74,17 @@ describe('findPackageIdCollision', () => {
     await seed(providers.webmcp.current as ReturnType<typeof memoryProvider>, 'com.example.pkg', 'com.example.pkg')
     expect(await findPackageIdCollision('com.example.pkg'))
       .toMatch(/already exists and is not a registry-installed package/)
+  })
+
+  it('allows the retry of an INTERRUPTED install (markerless tree + our backup)', async () => {
+    // A no-rename provider copies the staged tree into the live directory; if
+    // the page stops mid-copy, the live tree is partial and markerless while
+    // the previous version sits in `.<id>.previous`. Blocking that as authored
+    // data would strand both trees, so the retry is allowed through.
+    const provider = providers.webmcp.current as ReturnType<typeof memoryProvider>
+    await seed(provider, 'com.example.pkg', 'com.example.pkg')
+    await provider.mkdir('.com.example.pkg.previous', { recursive: true })
+    expect(await findPackageIdCollision('com.example.pkg')).toBeNull()
   })
 
   it('refuses to install over a directory whose provenance cannot be read (fail closed)', async () => {
@@ -163,5 +174,17 @@ describe('installRegistryPackage', () => {
     // the contents before rejecting — the manifest must be BYTE-identical
     // to the seeded one.
     expect(await provider.readFile('com.example.pkg/manifest.json')).toEqual(seededBytes)
+  })
+
+  it('refuses a stale DOWNGRADE over a newer install (cross-tab version skew)', async () => {
+    const provider = providers.webmcp.current as ReturnType<typeof memoryProvider>
+    await seed(provider, 'com.example.pkg', 'com.example.pkg')
+    await provider.writeFile('com.example.pkg/.webmcp-install.json', MARKER('com.example.pkg', '2.0.0'))
+    const registry = { rawBase: 'https://raw.githubusercontent.com/o/r/main', manifestUrl: 'https://raw.githubusercontent.com/o/r/main/manifest.json', label: 'o/r' }
+    const pkg = { id: 'com.example.pkg', version: '1.0.0', description: '', toolCount: 0, files: [] }
+
+    // A tab holding an older catalog must not replace the newer install.
+    await expect(installRegistryPackage(registry, pkg)).rejects.toThrow(/version 2\.0\.0 is already installed/)
+    expect(await provider.readFile('com.example.pkg/.webmcp-install.json')).toEqual(MARKER('com.example.pkg', '2.0.0'))
   })
 })
