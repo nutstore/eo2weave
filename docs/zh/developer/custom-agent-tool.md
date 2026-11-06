@@ -66,7 +66,7 @@ export const wordCountDefinition: ToolDefinition = {
 
 - **`name`** 是模型输出的标识符，也是执行器查找的键。用 snake_case，且在整个注册表内唯一（历史别名放在 `tool-registry.ts` 的 `TOOL_ALIASES` 里，只有重命名旧工具时才需要动）。
 - **`description`** 是模型判断「什么时候该调它」的唯一依据。既写清做什么，也写清**不该**用它的场景。
-- **`parameters`** 用的是本地 `JSONSchema` 子集（`web/agent/tools/tool-types.ts`）：`string | number | boolean | array | object`，外加 `enum`、`items`、`required`、`default`、`minimum`、`maximum`、`minLength`、`oneOf`。子集之外的写法不会渲染给模型。
+- **`parameters`** 用的是本地 `JSONSchema` 子集（`web/agent/tools/tool-types.ts`）：每个属性的类型是 `string | number | boolean | array | object`，另外支持 `description`、`properties`（嵌套对象）、`enum`、`items`、`required`、`default`、`minimum`、`maximum`、`minLength`、`oneOf`。这个子集是 **TypeScript 约束，不是运行时过滤器**：`parameters` 会原样传给 provider，类型里没建模的字段不会被剥掉，会一路传下去并可能让请求失败。
 
 ## 3. 写 executor
 
@@ -218,7 +218,7 @@ set('my_disk_writer', {
 还有两个行为来自 `authorize()` 本身，而不是你的表记录：
 
 - 开启 YOLO 模式时，`prompt` 级别会直接返回 `allow`，不弹窗。YOLO 是**按会话**的开关、由用户控制（按会话持久化；LLM 无法自己开启——`switch_agent_mode` 会强制清掉），所以这是用户自己的选择，不是你的工具引入的绕过。`forbidden` 在 YOLO 下依然拒绝——这条检查在 YOLO 之前。
-- `memoryKey` 才是让「本对话内总是允许」跳过后续提示的原因。不可逆操作建议返回 `null`（不给 `memoryKey`），这样每次调用都会再问一次——`snapshot_restore` 就是这么做的。
+- `memoryKey` 才是让「本对话内总是允许」跳过后续提示的原因。不可逆操作建议返回 `null`（或不给 `memoryKey`），这样每次调用都会再问一次。
 
 ## 7. 测试
 
@@ -287,7 +287,7 @@ order: 107
 - [ ] `executor` 返回字符串，预期失败用 `{ error }` 表达，逐字段窄化入参
 - [ ] 已加入 `web/agent/tool-registry.ts` 的 `BUILTIN_TOOLS` **和** `ALL_PROMPT_DOCS`
 - [ ] 已在 `web/agent/agent-mode.ts` 的 `TOOL_MODE_CLASSIFICATION` 归类（除非会写文件，否则用 `read`）
-- [ ] 仅当工具具破坏性、访问网络或需要用户确认时，才在 `policy-engine.ts` 加条目
+- [ ] 仅当工具具破坏性、访问网络或需要用户确认时，才在 `policy-engine.ts` 加条目。条目本身不构成拦截：执行器必须自己调用 `authorize()` 并处理拒绝
 - [ ] 单测覆盖正常路径与错误形状
 - [ ] `pnpm test:run agent/tools/__tests__/<tool>.test.ts` 与 `make typecheck` 通过
 - [ ] 英文 **和** 中文文档页都带 frontmatter

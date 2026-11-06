@@ -66,7 +66,7 @@ Rules that matter:
 
 - **`name`** is the identifier the model emits and the executor is looked up by. Keep it snake_case, unique across the registry (aliases live in `TOOL_ALIASES` in `tool-registry.ts` — don't add one unless you rename an existing tool).
 - **`description`** is the only thing the model uses to decide *when* to call the tool. Say what it does **and** when not to use it.
-- **`parameters`** uses the local `JSONSchema` subset (`web/agent/tools/tool-types.ts`): `string | number | boolean | array | object`, plus `enum`, `items`, `required`, `default`, `minimum`, `maximum`, `minLength`, `oneOf`. Anything outside that subset is not rendered to the model.
+- **`parameters`** uses the local `JSONSchema` subset (`web/agent/tools/tool-types.ts`): `string | number | boolean | array | object` per property, plus `description`, `properties` (nested objects), `enum`, `items`, `required`, `default`, `minimum`, `maximum`, `minLength`, `oneOf`. This is a **TypeScript constraint, not a runtime filter** — `parameters` is forwarded to the provider as-is, so a field the type doesn't model is not stripped; it reaches the provider and can make the request fail.
 
 ## 3. Write the executor
 
@@ -218,7 +218,7 @@ set('my_disk_writer', {
 Two behaviours come from `authorize()` itself, not from your table entry:
 
 - With YOLO mode on, `prompt` returns `allow` without prompting. YOLO is a per-conversation switch the user controls (persisted per conversation; the LLM cannot enable it — `switch_agent_mode` force-clears it), so this is the user's own choice, not a bypass your tool introduces. `forbidden` stays denied even under YOLO — that check runs first.
-- `memoryKey` is what makes "always allow this conversation" skip later prompts. Omit it (return `null`) for irreversible operations so every call asks again — that is what `snapshot_restore` does.
+- `memoryKey` is what makes "always allow this conversation" skip later prompts. Omit it (or return `null`) for irreversible operations so every call asks again.
 
 ## 7. Test it
 
@@ -287,7 +287,7 @@ If the tool is user-facing (configured in the UI, or visible in settings), also 
 - [ ] `executor` returns a string, reports expected failures as `{ error }`, and narrows each arg
 - [ ] Entry added to `BUILTIN_TOOLS` **and** `ALL_PROMPT_DOCS` in `web/agent/tool-registry.ts`
 - [ ] `TOOL_MODE_CLASSIFICATION` entry in `web/agent/agent-mode.ts` (`read` unless it writes)
-- [ ] `policy-engine.ts` entry only if the tool is destructive, network-facing, or asks for approval
+- [ ] `policy-engine.ts` entry only if the tool is destructive, network-facing, or asks for approval — and remember the entry alone gates nothing: the executor must call `authorize()` and honour the denial
 - [ ] Unit test covers the happy path and the error shape
 - [ ] `pnpm test:run agent/tools/__tests__/<tool>.test.ts` and `make typecheck` pass
 - [ ] English **and** Chinese docs page with frontmatter
