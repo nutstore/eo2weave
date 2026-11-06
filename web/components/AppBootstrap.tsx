@@ -9,6 +9,7 @@ import { BrandButton } from '@creatorweave/ui'
 import { UnsupportedBrowser } from '@/components/UnsupportedBrowser'
 import { applyServiceWorkerUpdate } from '@/pwa/register-service-worker'
 import { StorageLoading } from '@/components/StorageLoading'
+import { AppStartupGate } from '@/components/AppStartupGate'
 import { MemoryModeBanner } from '@/components/MemoryModeBanner'
 import { InitErrorBanner } from '@/components/project/InitErrorBanner'
 import { DatabaseRefreshDialog } from '@/components/DatabaseRefreshDialog'
@@ -17,6 +18,7 @@ import { useProjectStore } from '@/store/project.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { initStorage, setupAutoSave, getRuntimeCapability } from '@/storage'
 import { useSidePanelStartupRoute } from '@/hooks/useSidePanelStartupRoute'
+import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
 import { ExtensionInstallGuide } from '@/components/extension'
@@ -44,6 +46,13 @@ import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
  * `window` at module scope.
  */
 export function AppBootstrap({ children }: { children?: React.ReactNode }) {
+  useEffect(() => {
+    if (isSidePanelMode()) {
+      void import('@/components/workspace/WorkspaceRouteView').catch((error) => {
+        console.warn('[App] Workspace preload deferred:', error)
+      })
+    }
+  }, [])
   useEffect(() => { installBashCommandAPI() }, [])
   // Suppress unhandled rejections that carry our own agent-cancelled AbortError
   // reasons (raw "signal is aborted without reason" would hit the dev overlay).
@@ -803,25 +812,24 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       // one failure screen (Sourcery: "Diagnostics controls appear twice").
       return <InitErrorBanner />
     }
-    return (
-      <>
-        <StorageLoading
-          progress={loadingProgress}
-          error={storageError}
-          canReset={canResetDatabase}
-          onReset={handleResetDatabase}
-          onExport={handleExportDatabase}
-        />
-        {/* Ordinary storage-error screen also needs diagnostics access
-            (Sourcery: "Startup errors lack diagnostics"). */}
-        <StorageInitDiagnosticsActions />
-      </>
-    )
   }
 
-  // Storage ready — render the app tree plus global chrome.
-  return (
+  const loadingScreen = (
     <>
+      <StorageLoading
+        progress={loadingProgress}
+        error={storageError}
+        canReset={canResetDatabase}
+        onReset={handleResetDatabase}
+        onExport={handleExportDatabase}
+      />
+      <StorageInitDiagnosticsActions />
+    </>
+  )
+
+  // Keep the startup screen mounted while the destination prepares behind it.
+  return (
+    <AppStartupGate ready={isStorageReady && !sidePanelStartupPending} loadingScreen={loadingScreen}>
       {isMemoryMode && <MemoryModeBanner />}
       {children}
       <ServiceWorkerBridge />
@@ -847,7 +855,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
           loading/error gates; dismissal state is owned by pwa/install-prompt. */}
       <PwaInstallCard />
       <Toaster position="bottom-right" />
-    </>
+    </AppStartupGate>
   )
 }
 

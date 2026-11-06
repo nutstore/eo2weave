@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
 import { useProjectStore } from '@/store/project.store'
 import { InitErrorBanner } from '@/components/project/InitErrorBanner'
+import { useStartupReady } from '@/components/AppStartupGate'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useOPFSStore } from '@/store/opfs.store'
 import { useConversationStore } from '@/store/conversation.store'
@@ -23,6 +24,7 @@ import { projectWorkspacePath, projectsPath, docsPath } from '@/lib/route-paths'
  * to live in AppReady.
  */
 export default function ProjectHomeView() {
+  useStartupReady(true)
   const router = useRouter()
   const t = useT()
   const [locale] = useLocale()
