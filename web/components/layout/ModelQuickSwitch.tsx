@@ -31,13 +31,51 @@ interface FlatModel {
   model: { id: string; name: string; hasVision?: boolean; stale?: boolean }
 }
 
-function isUnverifiedGateway(provider: AvailableProvider): boolean {
-  // 'loading' is excluded (Sourcery: "Loading gateway appears unavailable"):
-  // a gateway whose catalog is still restoring is NOT an outage — the amber
-  // unavailable banner must not fire before the /v1/models fetch finished.
-  // Only positively-negative outcomes ('empty' / 'failed') banner + retry.
-  return provider.providerType === 'llm-gateway' &&
+/** Only catalog-backed providers carry a refresher in `CATALOG_REFRESHERS`;
+ *  built-in providers ship a static model list and can never be in an
+ *  unavailable-catalog state. */
+function hasRefreshableCatalog(provider: AvailableProvider): boolean {
+  return Object.prototype.hasOwnProperty.call(CATALOG_REFRESHERS, provider.providerType)
+}
+
+function isCatalogUnavailable(provider: AvailableProvider): boolean {
+  // 'loading' is excluded: a catalog still restoring is not an outage — only
+  // positively-negative outcomes ('empty' / 'failed') offer a retry.
+  return hasRefreshableCatalog(provider) &&
     (provider.catalogStatus === 'empty' || provider.catalogStatus === 'failed')
+}
+
+/** The resolved credential is gone and only signing in can help. */
+class MissingCatalogCredentialError extends Error {}
+/** The refresh ran but the catalog is still 'failed' (network / non-2xx). */
+class CatalogRefreshFailedError extends Error {}
+
+/**
+ * Refresh implementations, keyed by provider type: the UI decides *whether* a
+ * catalog can be refreshed from its metadata, and *how* from this table, so a
+ * second catalog-backed provider is one entry rather than another branch.
+ */
+const CATALOG_REFRESHERS: Record<string, () => Promise<void>> = {
+  'llm-gateway': async () => {
+    const gateway = await import('@/agent/providers/llm-gateway-provider')
+    const auth = await import('@/agent/providers/llm-gateway-auth')
+    const resolved = await auth.resolveGatewayDispatchCredential(
+      gateway.getLLMGatewayBaseURL(), gateway.getLLMGatewayClientId(),
+    )
+    if (!resolved.ok) {
+      // A temporary outage is retryable; missing/expired needs sign-in.
+      if (resolved.kind === 'temporary') throw new CatalogRefreshFailedError()
+      throw new MissingCatalogCredentialError()
+    }
+    await gateway.updateGatewayModels(
+      resolved.accessToken, auth.getGatewayAuthSessionGeneration(),
+    )
+    // A rejected token unregisters the provider — re-auth is the only fix.
+    if (!getProviderConfig('llm-gateway')) throw new MissingCatalogCredentialError()
+    // Authoritative outcome: 'empty' is a successful refresh that found no
+    // models (the banner already says so); 'failed' is a real failure.
+    if (getProviderCatalogStatus('llm-gateway') === 'failed') throw new CatalogRefreshFailedError()
+  },
 }
 
 /**
@@ -96,7 +134,10 @@ export function ModelQuickSwitch({
   const acceptedSnapshotRef = useRef<AvailableProvider[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
-  const [retryingGatewayCatalog, setRetryingGatewayCatalog] = useState(false)
+  /** providerKeys of catalogs being retried (concurrent retries are possible). */
+  const [retryingCatalogKeys, setRetryingCatalogKeys] = useState<Set<string>>(new Set())
+  /** providerKeys whose last retry failed. */
+  const [catalogRetryFailedKeys, setCatalogRetryFailedKeys] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({})
   const [visionOnly, setVisionOnly] = useState(false)
@@ -195,13 +236,17 @@ export function ModelQuickSwitch({
     setSearchResultIdx(0)
   }, [open])
 
-  // Filter out providers with no models available
+  // Filter out providers with no models available — but keep a provider whose
+  // catalog is unavailable ('empty' / 'failed'): with zero models it would
+  // otherwise be dropped entirely and its per-provider notice + Retry could
+  // never render.
   const visibleProviders = useMemo(() =>
-    providers.filter((p) => p.models.length > 0),
+    providers.filter((p) => p.models.length > 0 || isCatalogUnavailable(p)),
     [providers]
   )
-  const gatewayCatalogUnavailable = providers.some(
-    isUnverifiedGateway,
+  const unavailableCatalogProviders = useMemo(
+    () => providers.filter(isCatalogUnavailable),
+    [providers]
   )
 
   // Enrich each model with hasVision and stale:
@@ -433,7 +478,7 @@ export function ModelQuickSwitch({
   useEffect(() => () => cancelThinkingClose(), [])
 
   const handleSelect = (provider: AvailableProvider, nextModelName: string) => {
-    if (isUnverifiedGateway(provider) || (isPotentiallyDynamicProviderType(provider.providerType) && !getProviderConfig(provider.providerType))) return
+    if (isCatalogUnavailable(provider) || (isPotentiallyDynamicProviderType(provider.providerType) && !getProviderConfig(provider.providerType))) return
     switchProviderAndModel(provider.providerType, nextModelName)
     setOpen(false)
   }
@@ -447,23 +492,45 @@ export function ModelQuickSwitch({
    * gateway-disabled view uses): WorkspaceLayout consumes it and opens the
    * dialog on the `llm` tab, where ProviderManager lives.
    */
+  // A retry failure must not outlive the outage it reported: when the catalog
+  // comes back through any other refresh, drop the message so a later outage
+  // does not resurrect a stale error.
+  // A failure message must not outlive the outage it reported: `empty` and
+  // `failed` both keep the banner, so clear whenever the authoritative status
+  // is no longer 'failed'.
+  useEffect(() => {
+    if (getProviderCatalogStatus('llm-gateway') !== 'failed') setCatalogRetryFailedKeys(new Set())
+  }, [providers])
+
   const openProviderSettings = () => {
     setOpen(false)
     requestSettingsOpen(true)
   }
 
-  const retryGatewayCatalog = async () => {
-    setRetryingGatewayCatalog(true)
+  const retryProviderCatalog = async (provider: AvailableProvider) => {
+    const refresh = CATALOG_REFRESHERS[provider.providerType]
+    if (!refresh) return
+    setRetryingCatalogKeys((keys) => new Set(keys).add(provider.providerKey))
+    setCatalogRetryFailedKeys((keys) => {
+      const next = new Set(keys)
+      next.delete(provider.providerKey)
+      return next
+    })
     try {
-      const gateway = await import('@/agent/providers/llm-gateway-provider')
-      const token = await gateway.getValidAccessToken(
-        gateway.getLLMGatewayBaseURL(), gateway.getLLMGatewayClientId(),
-      )
-      if (token) await gateway.updateGatewayModels(token, gateway.getGatewayAuthSessionGeneration())
+      await refresh()
     } catch (error) {
-      console.error('[ModelQuickSwitch] Failed to refresh gateway models:', error)
+      if (error instanceof MissingCatalogCredentialError) {
+        openProviderSettings()
+        return
+      }
+      console.error('[ModelQuickSwitch] Failed to refresh provider catalog:', error)
+      setCatalogRetryFailedKeys((keys) => new Set(keys).add(provider.providerKey))
     } finally {
-      setRetryingGatewayCatalog(false)
+      setRetryingCatalogKeys((keys) => {
+        const next = new Set(keys)
+        next.delete(provider.providerKey)
+        return next
+      })
       useSettingsStore.getState().triggerProviderRefresh()
     }
   }
@@ -596,35 +663,36 @@ export function ModelQuickSwitch({
           </div>
         )}
 
-        {!loading && !refreshingExistingList && gatewayCatalogUnavailable && (
-          <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-2 text-xs text-tertiary">
-            <span>{t('topbar.modelSwitcher.catalogUnavailable')}</span>
-            <span className="flex shrink-0 items-center gap-2">
-              {/* The catalog failure is often a missing/expired provider
-                  credential — offer the management entry right where the user
-                  is stuck, not only in the footer. */}
-              <button
-                type="button"
-                onClick={openProviderSettings}
-                className="text-primary hover:underline"
-              >
-                {t('topbar.modelSwitcher.configureProviders')}
-              </button>
-              <button
-                type="button"
-                onClick={() => void retryGatewayCatalog()}
-                disabled={retryingGatewayCatalog}
-                className="text-primary hover:underline disabled:opacity-50"
-              >
-                {retryingGatewayCatalog ? t('topbar.modelSwitcher.loading') : t('topbar.modelSwitcher.retryCatalog')}
-              </button>
-            </span>
+        {!loading && unavailableCatalogProviders.length > 0 ? (
+          <div className="border-b border-border/70">
+            {unavailableCatalogProviders.map((provider) => (
+              <div key={provider.providerKey} className="flex items-center justify-between gap-2 bg-amber-500/5 px-3 py-1.5 text-[11px] text-tertiary">
+                <span className="min-w-0 truncate">
+                  {t('topbar.modelSwitcher.catalogUnavailableFor', { provider: provider.displayName })}
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <button type="button" onClick={openProviderSettings} className="text-primary hover:underline">
+                    {t('topbar.modelSwitcher.configureProviders')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void retryProviderCatalog(provider)}
+                    disabled={retryingCatalogKeys.has(provider.providerKey)}
+                    className="text-primary hover:underline disabled:opacity-50"
+                  >
+                    {retryingCatalogKeys.has(provider.providerKey)
+                      ? t('topbar.modelSwitcher.loading')
+                      : t('topbar.modelSwitcher.retryCatalog')}
+                  </button>
+                </span>
+              </div>
+            ))}
+            {[...catalogRetryFailedKeys].length > 0 ? (
+              <p className="px-3 pb-1.5 text-[11px] text-danger">{t('topbar.modelSwitcher.retryFailed')}</p>
+            ) : null}
           </div>
-        )}
+        ) : null}
 
-        {/* Refreshing indicator (stale-while-revalidate #188): the last accepted list stays
-            visible below, dimmed, with a small spinner in the header while a reload is in
-            flight — instead of hiding it behind the first-load skeleton. */}
         {refreshingExistingList && (
           <div className="flex items-center gap-2 border-b border-border/70 px-3 py-1.5 text-xs text-tertiary">
             <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
@@ -653,7 +721,7 @@ export function ModelQuickSwitch({
                 const selected =
                   provider.providerType === providerType && model.id === modelName
                 const isActive = idx === searchResultIdx
-                const unverifiedGateway = isUnverifiedGateway(provider)
+                const unverifiedGateway = isCatalogUnavailable(provider)
                 return (
                   <button
                     key={`${provider.providerKey}:${model.id}`}
@@ -727,7 +795,7 @@ export function ModelQuickSwitch({
                     <div className="space-y-0.5 border-t border-border/40 px-1.5 py-1.5">
                       {visibleModels.map((model) => {
                         const selected = isCurrentProvider && model.id === modelName
-                        const unverifiedGateway = isUnverifiedGateway(provider)
+                        const unverifiedGateway = isCatalogUnavailable(provider)
                         return (
                           <button
                             key={`${provider.providerKey}:${model.id}`}
