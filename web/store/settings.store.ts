@@ -15,7 +15,6 @@ import {
   registerDynamicProvider,
   unregisterDynamicProvider,
   getProviderConfig,
-  getDynamicProviderIds,
   subscribeToProviderRegistry,
 } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
@@ -1898,17 +1897,16 @@ function isSyncMetadataKey(key: string): boolean {
 }
 
 /**
- * Sync the dynamic provider registry with an incoming customProviders list:
- * register (or re-register) every provider present in the snapshot and
- * unregister ones that disappeared. Uses the same registration path as the
- * local add/update/remove actions.
+ * Sync settings-owned custom providers with an incoming snapshot.
+ * Only remove providers from the previous customProviders list; session
+ * providers such as llm-gateway and codex-oauth have separate lifecycle owners.
  */
-function syncDynamicRegistryWithSnapshot(incoming: CustomProviderConfig[]): void {
+function syncDynamicRegistryWithSnapshot(incoming: CustomProviderConfig[], previous: CustomProviderConfig[]): void {
   const incomingIds = new Set(incoming.map((cp) => cp.id))
   for (const cp of incoming) {
     registerCustomAsDynamic(cp)
   }
-  for (const id of getDynamicProviderIds()) {
+  for (const { id } of previous) {
     if (!incomingIds.has(id)) {
       unregisterDynamicProvider(id)
     }
@@ -2094,13 +2092,14 @@ function setupCrossTabSettingsSync(): void {
       if (incomingWriterId != null && incomingWriterId !== TAB_WRITER_ID) {
         peerBaseSnapshots.set(incomingWriterId, { ...incoming })
       }
-      // Keep the dynamic provider registry in step with the incoming
-      // snapshot so cross-tab custom-provider edits are usable here.
       // Keep the dynamic provider registry in step with the APPLIED snapshot
       // (a merge may have dropped peer provider fields this writer never
       // touched) so cross-tab custom-provider edits are usable here.
       if (Array.isArray(applied.customProviders)) {
-        syncDynamicRegistryWithSnapshot(applied.customProviders as CustomProviderConfig[])
+        syncDynamicRegistryWithSnapshot(
+          applied.customProviders as CustomProviderConfig[],
+          current.customProviders as CustomProviderConfig[],
+        )
       }
       // Runtime-only credential state is NOT part of the persisted snapshot,
       // so applying a peer's provider/model switch leaves this tab holding
