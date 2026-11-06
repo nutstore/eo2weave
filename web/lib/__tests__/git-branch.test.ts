@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { parseGitHead, readGitBranch, readGitBranchViaExecutor } from '@/lib/git-branch'
+import { isSameGitBranch, parseGitHead, readGitBranch, readGitBranchViaExecutor } from '@/lib/git-branch'
 import type { GitHeadReader } from '@/lib/git-branch'
 
 /** 40-char and 64-char object ids, as git writes them into `.git/HEAD`. */
@@ -31,6 +31,25 @@ describe('parseGitHead', () => {
     expect(parseGitHead('not a ref')).toBeNull()
     expect(parseGitHead('ref: refs/heads/')).toBeNull()
     expect(parseGitHead('a1b2c3d4')).toBeNull()
+  })
+})
+
+describe('isSameGitBranch', () => {
+  const main = { kind: 'branch', name: 'main' } as const
+  const dev = { kind: 'branch', name: 'dev' } as const
+  const sha = { kind: 'detached', sha: 'a1b2c3d' } as const
+
+  it('matches equal results across separate reads', () => {
+    expect(isSameGitBranch({ kind: 'branch', name: 'main' }, main)).toBe(true)
+    expect(isSameGitBranch(sha, { kind: 'detached', sha: 'a1b2c3d' })).toBe(true)
+    expect(isSameGitBranch(null, null)).toBe(true)
+  })
+
+  it('distinguishes kind and value changes', () => {
+    expect(isSameGitBranch(main, dev)).toBe(false)
+    expect(isSameGitBranch(main, sha)).toBe(false)
+    expect(isSameGitBranch(null, main)).toBe(false)
+    expect(isSameGitBranch(main, null)).toBe(false)
   })
 })
 

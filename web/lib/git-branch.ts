@@ -53,6 +53,18 @@ export function parseGitHead(content: string): GitBranchInfo | null {
   return null
 }
 
+/** Same branch in both reads? Callers keep their previous object when this is
+ *  true, so polling does not hand a fresh object to memoized consumers. */
+export function isSameGitBranch(
+  a: GitBranchInfo | null,
+  b: GitBranchInfo | null
+): boolean {
+  if (!a || !b) return a === b
+  return a.kind === 'branch'
+    ? b.kind === 'branch' && a.name === b.name
+    : b.kind === 'detached' && a.sha === b.sha
+}
+
 /**
  * Read `.git/HEAD` under a directory handle.
  *

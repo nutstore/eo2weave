@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  isSameGitBranch,
   readGitBranch,
   readGitBranchViaExecutor,
   type GitBranchInfo,
@@ -9,9 +10,6 @@ import {
 /** Branch switches happen in external terminals, so there is nothing to
  *  subscribe to: poll the tiny `.git/HEAD` file, and re-read on focus. */
 const DEFAULT_INTERVAL_MS = 7000
-
-/** A read pending longer than this is treated as lost (Native Host stalled). */
-const STALLED_READ_MS = 2000
 
 export interface GitBranchSource {
   /** File System Access handle, when the root has one. */
@@ -30,31 +28,31 @@ export function useGitBranch(
 
   useEffect(() => {
     let cancelled = false
-    // One read at a time: a focus read must not stack on a slow poll read
-    // (Native Host reads are IPC). A read that has been pending far too long
-    // is treated as lost, so a stalled host cannot freeze polling; `rerun`
-    // remembers a read skipped while another was in flight, and the request
-    // id drops results that a newer read has already superseded.
-    let inFlight = false
-    let inFlightSince = 0
+    // At most one read in flight: Native Host reads are IPC calls and the
+    // executor API has no cancellation, so a stalled host must not be able to
+    // fan out polling calls. A read skipped because another was pending is
+    // remembered and re-run when it settles, and the request id drops a result
+    // that a newer read has already superseded.
+    let pending = false
     let rerun = false
     let request = 0
 
     const read = async () => {
-      if (inFlight && Date.now() - inFlightSince < STALLED_READ_MS) {
+      if (pending) {
         rerun = true
         return
       }
-      inFlight = true
-      inFlightSince = Date.now()
+      pending = true
       const current = ++request
       try {
         const next = executor
           ? await readGitBranchViaExecutor(executor, rootId)
           : await readGitBranch(handle)
-        if (!cancelled && current === request) setInfo(next)
+        if (!cancelled && current === request) {
+          setInfo((prev) => (isSameGitBranch(prev, next) ? prev : next))
+        }
       } finally {
-        inFlight = false
+        pending = false
         if (!cancelled && rerun) {
           rerun = false
           void read()
