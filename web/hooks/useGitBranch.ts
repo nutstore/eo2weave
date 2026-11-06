@@ -11,6 +11,12 @@ import {
  *  subscribe to: poll the tiny `.git/HEAD` file, and re-read on focus. */
 const DEFAULT_INTERVAL_MS = 7000
 
+/** Executor polls are slower: each read is a stat_file + read_file round
+ *  trip that spawns a Native Host process, so 2 launches per poll per root
+ *  add up at 7s pacing. 30s keeps the same freshness contract at a third of
+ *  the process churn. */
+const EXECUTOR_INTERVAL_MS = 30000
+
 export interface GitBranchSource {
   /** File System Access handle, when the root has one. */
   handle?: FileSystemDirectoryHandle | null
@@ -22,7 +28,7 @@ export interface GitBranchSource {
 
 export function useGitBranch(
   { handle, executor, rootId }: GitBranchSource,
-  intervalMs: number = DEFAULT_INTERVAL_MS
+  intervalMs: number = executor ? EXECUTOR_INTERVAL_MS : DEFAULT_INTERVAL_MS
 ): GitBranchInfo | null {
   const [info, setInfo] = useState<GitBranchInfo | null>(null)
 

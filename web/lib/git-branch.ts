@@ -28,6 +28,13 @@ const SHORT_SHA_LENGTH = 7
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i
 
 /**
+ * A real `.git/HEAD` is one short line, so anything larger than this cannot
+ * be a HEAD file (a pathological file would otherwise be read in full on
+ * every poll). Oversized reads return null; callers render nothing then.
+ */
+const MAX_GIT_HEAD_BYTES = 512
+
+/**
  * Parse the contents of `.git/HEAD`.
  *
  * - `ref: refs/heads/<branch>` → branch checkout
@@ -80,7 +87,8 @@ export async function readGitBranch(
     const gitDir = await handle.getDirectoryHandle('.git')
     const headFile = await gitDir.getFileHandle('HEAD')
     const file = await headFile.getFile()
-    return parseGitHead(await file.text())
+    if (file.size > MAX_GIT_HEAD_BYTES) return null
+    return parseGitHead(await file.slice(0, MAX_GIT_HEAD_BYTES).text())
   } catch {
     return null
   }
@@ -97,7 +105,13 @@ export async function readGitBranchViaExecutor(
   if (!executor?.read || !rootId) return null
   try {
     const { content } = await executor.read(rootId, '.git/HEAD')
-    return parseGitHead(typeof content === 'string' ? content : new TextDecoder().decode(content))
+    if (typeof content === 'string') {
+      if (content.length > MAX_GIT_HEAD_BYTES) return null
+      return parseGitHead(content)
+    }
+    // Bound the byte count before decoding an oversized payload.
+    if (content.byteLength > MAX_GIT_HEAD_BYTES) return null
+    return parseGitHead(new TextDecoder().decode(content))
   } catch {
     return null
   }

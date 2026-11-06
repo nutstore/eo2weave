@@ -114,6 +114,22 @@ describe('readGitBranch', () => {
   it('returns null when there is no handle at all', async () => {
     await expect(readGitBranch(null)).resolves.toBeNull()
   })
+
+  it('returns null for an oversized HEAD without reading its text', async () => {
+    const longHead = `ref: refs/heads/${'x'.repeat(1024)}\n`
+    const file = new File([longHead], 'HEAD')
+    const getText = vi.spyOn(file, 'text')
+    const handle = {
+      getDirectoryHandle: vi.fn(async () => ({
+        getFileHandle: vi.fn(async () => ({
+          getFile: vi.fn(async () => file),
+        })),
+      })),
+    } as unknown as FileSystemDirectoryHandle
+    await expect(readGitBranch(handle)).resolves.toBeNull()
+    expect(file.size).toBeGreaterThan(512)
+    expect(getText).not.toHaveBeenCalled()
+  })
 })
 
 /** Native Host roots expose no handle — reads go through the executor. */
@@ -138,6 +154,11 @@ describe('readGitBranchViaExecutor', () => {
     await expect(
       readGitBranchViaExecutor(executorReturning(bytes.buffer as ArrayBuffer), 'scope-1')
     ).resolves.toEqual({ kind: 'branch', name: 'dev' })
+  })
+
+  it('returns null for an over-long string payload', async () => {
+    const executor = executorReturning(`ref: refs/heads/${'y'.repeat(1024)}\n`)
+    await expect(readGitBranchViaExecutor(executor, 'scope-1')).resolves.toBeNull()
   })
 
   it('returns null instead of throwing when the read fails', async () => {
