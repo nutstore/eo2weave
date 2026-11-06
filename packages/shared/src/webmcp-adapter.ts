@@ -208,18 +208,25 @@ export function parseWorkflow(source: string): { expression: string; contract: W
 export const MAX_PACKAGE_SOURCE_CHARS = 2_000_000
 
 export function validatePackage(manifest: unknown, sources: unknown, directoryId: string): WebMCPPackage {
-  const parsed = validateManifest(manifest, directoryId)
   if (!record(sources)) throw new Error('Package sources must be an object')
+  // Charge the size budget BEFORE any parsing: an oversized package must not
+  // pay for thousands of ASTs only to be rejected afterwards. The manifest
+  // counts too — a huge description travels with the routes just like source.
+  let budget = JSON.stringify(manifest ?? null).length
+  for (const value of Object.values(sources)) {
+    if (typeof value === 'string') budget += value.length
+  }
+  if (budget > MAX_PACKAGE_SOURCE_CHARS) {
+    const id = record(manifest) && typeof manifest.id === 'string' ? manifest.id : directoryId
+    throw new Error(`Package ${id} exceeds the per-package source limit (${MAX_PACKAGE_SOURCE_CHARS} characters)`)
+  }
+  const parsed = validateManifest(manifest, directoryId)
   const files: Record<string, string> = Object.create(null)
   for (const tool of parsed.tools) {
     const source = sources[tool.path]
     if (typeof source !== 'string') throw new Error(`Missing tool source: ${tool.path}`)
     try { parseWorkflow(source) } catch (error) { throw new Error(`${tool.path}: ${error instanceof Error ? error.message : String(error)}`) }
     files[tool.path] = source
-  }
-  const total = Object.values(files).reduce((sum, source) => sum + source.length, 0)
-  if (total > MAX_PACKAGE_SOURCE_CHARS) {
-    throw new Error(`Package ${parsed.id} exceeds the per-package source limit (${MAX_PACKAGE_SOURCE_CHARS} characters)`)
   }
   return { manifest: parsed, sources: files }
 }

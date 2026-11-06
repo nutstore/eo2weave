@@ -134,6 +134,10 @@ export function createAdapterService(deps: Dependencies) {
           deps.changed()
         } catch (error) {
           withdraw(new Set())
+          // The previous catalog is gone, so its per-package rejections are no
+          // longer meaningful: leaving them would report reasons for packages
+          // the current (empty) catalog never looked at.
+          rejectedPackages = []
           if (routes.length !== 0 || routeSnapshot !== '[]') {
             routes = []
             routeSnapshot = '[]'
