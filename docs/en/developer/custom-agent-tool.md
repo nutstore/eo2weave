@@ -208,11 +208,12 @@ Then register the level in `createPolicyTable()`:
 set('my_disk_writer', {
   level: 'prompt',
   describe: () => ({ key: 'describeMyDiskWriter' }),
-  memoryKey: () => 'my-disk-writer',
+  // No memoryKey here: this tool is irreversible, so it must ask every time.
+  // Add one only for repeatable operations the user may "always allow".
 })
 ```
 
-`describe` names a key under `agent.toolAuth.*`; add it to all four locales (`packages/i18n/src/locales/{en-US,zh-CN,ja-JP,ko-KR}`) or the modal renders the raw key. `memoryKey` lets "always allow this conversation" apply per tool family.
+`describe` names a key under `agent.toolAuth.*`; add it to all four locales (`packages/i18n/src/locales/{en-US,zh-CN,ja-JP,ko-KR}`) or the modal renders the raw key. An optional `memoryKey` returning a stable string lets "always allow this conversation" apply per tool family.
 
 Two behaviours come from `authorize()` itself, not from your table entry:
 

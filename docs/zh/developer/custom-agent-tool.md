@@ -187,14 +187,16 @@ const auth = await authorize({
   toolName: 'my_disk_writer',
   args: { ... },
   conversationId: context.workspaceId,
-  // Plan 模式下抑制「本对话内总是允许」：探索阶段的授权不能预先放行之后的 act 调用
+  // Plan mode suppresses the "always allow" memory: an approval granted while
+  // exploring must not pre-authorize a later act-mode call.
   mode: context.agentMode,
   signal: context.abortSignal,
 })
 if (auth.decision === 'deny') {
   return JSON.stringify({ error: 'AUTH_DENIED_BY_USER', reason: auth.reason })
 }
-// 用户确认之后、真正动手之前仍可能被中断 —— 不可逆操作前再查一次
+// The run can be aborted between the approval and this line, so check again
+// before the irreversible part.
 if (context.abortSignal?.aborted) {
   return JSON.stringify({ error: 'ABORTED' })
 }
@@ -206,11 +208,12 @@ if (context.abortSignal?.aborted) {
 set('my_disk_writer', {
   level: 'prompt',
   describe: () => ({ key: 'describeMyDiskWriter' }),
-  memoryKey: () => 'my-disk-writer',
+  // No memoryKey here: this tool is irreversible, so it must ask every time.
+  // Add one only for repeatable operations the user may "always allow".
 })
 ```
 
-`describe` 指向 `agent.toolAuth.*` 下的 key，必须补进四个语言（`packages/i18n/src/locales/{en-US,zh-CN,ja-JP,ko-KR}`），否则弹窗会直接显示 key 原文。`memoryKey` 让「本对话内总是允许」按工具族生效。
+`describe` 指向 `agent.toolAuth.*` 下的 key，必须补进四个语言（`packages/i18n/src/locales/{en-US,zh-CN,ja-JP,ko-KR}`），否则弹窗会直接显示 key 原文。`memoryKey` 是可选项：返回稳定字符串才会让「本对话内总是允许」按工具族生效。
 
 还有两个行为来自 `authorize()` 本身，而不是你的表记录：
 
