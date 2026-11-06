@@ -41,6 +41,10 @@ vi.mock('@/store/settings.store', async (importOriginal) => {
   return { useSettingsStore }
 })
 
+vi.mock('@/agent/providers/llm-gateway-auth', () => ({
+  resolveGatewayDispatchCredential: async () => ({ ok: true, accessToken: 'token' }),
+  getGatewayAuthSessionGeneration: () => 0,
+}))
 vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   getLLMGatewayBaseURL: () => 'https://gateway.example',
   getLLMGatewayClientId: () => 'client',

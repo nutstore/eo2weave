@@ -452,6 +452,13 @@ export function ModelQuickSwitch({
    * gateway-disabled view uses): WorkspaceLayout consumes it and opens the
    * dialog on the `llm` tab, where ProviderManager lives.
    */
+  // A retry failure must not outlive the outage it reported: when the catalog
+  // comes back through any other refresh, drop the message so a later outage
+  // does not resurrect a stale error.
+  useEffect(() => {
+    if (!gatewayCatalogUnavailable) setCatalogRetryFailed(false)
+  }, [gatewayCatalogUnavailable])
+
   const openProviderSettings = () => {
     setOpen(false)
     requestSettingsOpen(true)
@@ -462,17 +469,34 @@ export function ModelQuickSwitch({
     setCatalogRetryFailed(false)
     try {
       const gateway = await import('@/agent/providers/llm-gateway-provider')
-      const token = await gateway.getValidAccessToken(
+      const auth = await import('@/agent/providers/llm-gateway-auth')
+      // Distinguish "no session" from "temporary outage": only the former is
+      // fixed by signing in. getValidAccessToken() collapses both into null.
+      const resolved = await auth.resolveGatewayDispatchCredential(
         gateway.getLLMGatewayBaseURL(), gateway.getLLMGatewayClientId(),
       )
-      // No usable Nutstore AI session: there is nothing to fetch, so the
-      // click would otherwise look dead. Send the user to the sign-in surface
-      // that can actually change the outcome.
-      if (!token) {
+      if (!resolved.ok) {
+        if (resolved.kind === 'temporary') {
+          setCatalogRetryFailed(true)
+          return
+        }
         openProviderSettings()
         return
       }
-      await gateway.updateGatewayModels(token, gateway.getGatewayAuthSessionGeneration())
+      const models = await gateway.updateGatewayModels(
+        resolved.accessToken, gateway.getGatewayAuthSessionGeneration(),
+      )
+      // updateGatewayModels swallows network/non-2xx failures into an empty
+      // list instead of throwing, so the return value is the only signal.
+      if (!models.length) {
+        // A rejected token unregisters the provider (re-auth required); an
+        // unregistered gateway cannot be retried from here.
+        if (!getProviderConfig('llm-gateway')) {
+          openProviderSettings()
+          return
+        }
+        setCatalogRetryFailed(true)
+      }
     } catch (error) {
       console.error('[ModelQuickSwitch] Failed to refresh gateway models:', error)
       setCatalogRetryFailed(true)
