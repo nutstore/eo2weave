@@ -14,7 +14,6 @@ import { conversation, toolCallDisplay, questionCard, runChanges, session } from
 import { fileViewer, standalonePreview, filePreview, officePreview } from './fileViewer'
 import { storageStatusBanner, pendingSync } from './storage'
 import { themeToggle } from './themeToggle'
-import { mobile, offlineQueue } from './mobile'
 import { activityHeatmap } from './activityHeatmap'
 import { errorBoundary } from './errorBoundary'
 import { pluginDialog } from './pluginDialog'
@@ -69,8 +68,6 @@ export const zhCN = {
   themeToggle,
   conversation,
   toolCallDisplay,
-  mobile,
-  offlineQueue,
   activityHeatmap,
   errorBoundary,
   pluginDialog,
