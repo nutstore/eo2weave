@@ -464,34 +464,36 @@ const RootFileTreePanel = memo(function RootFileTreePanel({
 
   return (
     <div className="flex-shrink-0">
-      {rootsLength > 1 ? (
-        <div className="flex w-full items-center gap-1">
-          <button
-            type="button"
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold text-secondary hover:bg-hover"
-            onClick={() => onToggleCollapse(root.name)}
-          >
-            {collapsed && !shouldReveal ? (
-              <ChevronRight className="h-3 w-3 shrink-0 text-tertiary" />
-            ) : (
-              <ChevronDown className="h-3 w-3 shrink-0 text-tertiary" />
-            )}
-            <FolderTree className="h-3 w-3 shrink-0 text-warning" />
-            <span className="truncate">{root.name}</span>
-          </button>
-          <GitBranchBadge info={gitBranch} className="mr-1 shrink-0" />
-          <button
-            type="button"
-            className="mr-1 shrink-0 rounded-md p-1 text-tertiary transition-colors hover:bg-hover hover:text-secondary"
-            title={t('common.refresh')}
-            aria-label={t('common.refresh')}
-            onClick={() => setRefreshSignal((s) => s + 1)}
-          >
-            <RefreshCw className="h-3 w-3" />
-          </button>
-        </div>
-      ) : null}
-      {rootsLength <= 1 || !collapsed || shouldReveal ? (
+      {/* ONE root row shape for every case: a single mounted root used to
+          render a different header (uppercase title + branch + refresh), so
+          the panel changed appearance purely because a second root was
+          mounted. The list now always renders root rows. */}
+      <div className="flex w-full items-center gap-1">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold text-secondary hover:bg-hover"
+          onClick={() => onToggleCollapse(root.name)}
+        >
+          {collapsed && !shouldReveal ? (
+            <ChevronRight className="h-3 w-3 shrink-0 text-tertiary" />
+          ) : (
+            <ChevronDown className="h-3 w-3 shrink-0 text-tertiary" />
+          )}
+          <FolderTree className="h-3 w-3 shrink-0 text-warning" />
+          <span className="truncate">{root.name}</span>
+        </button>
+        <GitBranchBadge info={gitBranch} className="mr-1 shrink-0" />
+        <button
+          type="button"
+          className="mr-1 shrink-0 rounded-md p-1 text-tertiary transition-colors hover:bg-hover hover:text-secondary"
+          title={t('common.refresh')}
+          aria-label={t('common.refresh')}
+          onClick={() => setRefreshSignal((s) => s + 1)}
+        >
+          <RefreshCw className="h-3 w-3" />
+        </button>
+      </div>
+      {!collapsed || shouldReveal ? (
         <FileTreePanel
           directoryHandle={root.handle}
           diskRootId={root.backend === 'native-host' ? root.scopeId : null}
@@ -506,7 +508,7 @@ const RootFileTreePanel = memo(function RootFileTreePanel({
           onDelete={handleDelete}
           revealTarget={rootRevealTarget}
           onRevealComplete={onRevealComplete}
-          showHeader={rootsLength <= 1}
+          showHeader={false}
           gitBranch={gitBranch}
           refreshSignal={refreshSignal}
         />

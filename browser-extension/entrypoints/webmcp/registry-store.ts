@@ -15,7 +15,7 @@
 
 import type { FsProvider } from '@creatorweave/fs-provider'
 import { getAdapterStorage } from './provider-storage'
-import { readInstallMarkerState, type InstallMarker } from './install-marker'
+import { readInstallMarkerState } from './install-marker'
 import { getBuiltinStorage } from './builtin-storage'
 import {
   fetchRegistryManifest,
