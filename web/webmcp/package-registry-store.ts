@@ -27,6 +27,8 @@ import {
 } from '@/webmcp/package-registry-client'
 import { installPackage, uninstallPackage } from '@/webmcp/package-installer'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
+import { readInstallMarkerState } from '@/webmcp/install-provenance'
+import { compareVersions } from '@/skills/skill-version'
 
 const REGISTRIES_STORAGE_KEY = 'webmcp_package_registries'
 
@@ -257,10 +259,22 @@ async function readManifestId(mount: string, directory: string): Promise<{ id: s
   }
 }
 
-/** True when the directory holds a readable manifest with a string id. */
-async function directoryHasValidManifest(mount: string, directory: string): Promise<boolean> {
-  const state = await readManifestId(mount, directory)
-  return state !== 'INVALID' && state !== 'UNREADABLE'
+/**
+ * True when the installer preserved a backup of this id (`.<id>.previous`).
+ * Only OUR interrupted replacement leaves that artifact next to the live
+ * directory, which is what separates a half-written install from authored
+ * data under the same id.
+ */
+async function hasPreservedBackup(
+  provider: Awaited<ReturnType<typeof providerRegistry.get>>,
+  packageId: string,
+): Promise<boolean> {
+  try {
+    await provider.stat(`.${packageId}.previous`)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -335,8 +349,26 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
           // BOTH packages.
           return `${entry.name} on ${mount} already publishes the package id ${manifestId}`
         }
-        // Same directory on the target mount with the same id — a
-        // re-install of the very same package, which is allowed.
+        // Same directory on the target mount with the same id. Only a
+        // RE-install of an install this app made may replace it: a matching
+        // manifest shape is not ownership proof. Without a marker naming the
+        // directory the data may be authored (or a pre-marker install), and
+        // the swap would delete it (issue #231).
+        let ownership: Awaited<ReturnType<typeof readInstallMarkerState>>
+        try {
+          ownership = await readInstallMarkerState(provider, entry.name)
+        } catch {
+          return `The install provenance of ${entry.name} on ${mount} could not be read; try again later`
+        }
+        if (ownership.kind !== 'ok' || ownership.marker.packageId !== packageId) {
+          // A markerless live tree beside OUR preserved backup is the wreck of
+          // an interrupted replacement (no-rename providers copy the staged
+          // tree in place): the installer restores that backup during the next
+          // swap, so blocking the retry here would strand both trees
+          // (finding: "Interrupted install becomes unrecoverable").
+          if (ownership.kind === 'absent' && await hasPreservedBackup(provider, packageId)) continue
+          return `${entry.name} on ${mount} already exists and is not a registry-installed package`
+        }
         continue
       }
       if (manifestId === packageId) {
@@ -345,6 +377,25 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
     }
   }
   return null
+}
+
+/**
+ * Refuse an install that would DOWNGRADE a newer install of the same id.
+ *
+ * Two tabs can hold different catalog versions: the stale one may acquire the
+ * per-package lock after the newer install landed, and the swap would replace
+ * newer files (and reset the generated config). The marker records what is
+ * really installed, so compare against it — an unreadable marker is not a
+ * downgrade evidence and is left to the collision check, which fails closed.
+ */
+async function findNewerInstalledVersion(
+  provider: Awaited<ReturnType<typeof providerRegistry.get>>,
+  packageId: string,
+  requestedVersion: string,
+): Promise<string | null> {
+  const state = await readInstallMarkerState(provider, packageId)
+  if (state.kind !== 'ok' || state.marker.packageId !== packageId) return null
+  return compareVersions(state.marker.version, requestedVersion) > 0 ? state.marker.version : null
 }
 
 /**
@@ -399,6 +450,13 @@ export async function installRegistryPackage(
     )
   }
   const provider = await providerRegistry.get('webmcp')
+  // Fast refusal for the common case; re-checked under the lock below.
+  const newerUnlocked = await findNewerInstalledVersion(provider, pkg.id, pkg.version)
+  if (newerUnlocked) {
+    throw new Error(
+      `Cannot install ${pkg.id} ${pkg.version}: version ${newerUnlocked} is already installed. Remove it first to downgrade.`,
+    )
+  }
   const result = await installPackage(registry, pkg, provider, undefined, async lockSignal => {
     // Runs while the installer holds the per-package cross-context lock.
     // `findPackageIdCollision` already allows the one legitimate shape
@@ -416,6 +474,12 @@ export async function installRegistryPackage(
         `Cannot install ${pkg.id}: ${underLock}. Remove or rename it first — installing would replace it.`,
       )
     }
+    const newerUnderLock = await findNewerInstalledVersion(provider, pkg.id, pkg.version)
+    if (newerUnderLock) {
+      throw new Error(
+        `Cannot install ${pkg.id} ${pkg.version}: version ${newerUnderLock} is already installed. Remove it first to downgrade.`,
+      )
+    }
   })
   // A rejected/failed refresh is SURFACED, not swallowed (finding: "Refresh
   // failure leaves stale tools"): the files are committed, but the
@@ -429,33 +493,90 @@ export async function installRegistryPackage(
 /** Uninstall: remove the package directory from the `webmcp` mount. */
 export async function uninstallRegistryPackage(packageId: string): Promise<{ catalogRefreshed: boolean }> {
   const provider = await providerRegistry.get('webmcp')
-  await uninstallPackage(packageId, provider)
+  // The Remove button is the only uninstall surface, and it renders only for
+  // marker-proven ids — but an `uninstallRegistryPackage` call could still
+  // name a foreign directory (a stale row from a registry the user swapped
+  // under a live UI), or the directory could be REPLACED between the check
+  // and the removal. The provenance is therefore re-read INSIDE the
+  // per-package lock, so the tree that gets deleted is the tree whose marker
+  // was verified (issues #230/#231): an authored package keeps its files
+  // even if a stale caller asks for their removal.
+  await uninstallPackage(packageId, provider, async () => {
+    const state = await readInstallMarkerState(provider, packageId)
+    if (state.kind !== 'ok' || state.marker.packageId !== packageId) {
+      throw new Error(`${packageId} is not a registry-installed package; nothing was removed`)
+    }
+  })
   const refreshed = await notifyBackgroundCatalogChanged()
   return { catalogRefreshed: refreshed }
 }
 
 /**
- * Directories currently present on the `webmcp` mount (= installed ids).
- * Dot-prefixed directories are internal installer state (staging/backup),
- * not packages, and are skipped. A directory WITHOUT a valid manifest is
- * also skipped: the settings UI must not offer install/uninstall actions
- * for data it cannot interpret (finding: "Existing data is overwritten" —
- * the actions half).
+ * Provenance of every package directory on the `webmcp` mount, decided by
+ * each directory's install marker ONLY (issue #231 — the web mirror of the
+ * extension's `listInstalledPackages`, issues #228/#230):
+ *
+ * - `installed` — a current-schema marker whose `packageId` equals its
+ *   directory name. These are the ids the registry section may act on
+ *   (activation state, Remove) and match against a catalog entry.
+ * - everything else is NOT listed here: an authored package whose manifest
+ *   id happens to match a catalog entry must never read as installed.
+ *
+ * Indeterminate directories (an unreadable or malformed marker, or one that
+ * names a DIFFERENT directory) are reported separately: the page must offer
+ * NO destructive action for them — no Remove from the registry row (it may
+ * not be an install at all), and `uninstallRegistryPackage` refuses them at
+ * the destructive edge too. A confirmed-absent marker is simply an authored
+ * package and is not reported at all.
+ *
+ * A mount that cannot be listed throws — answering "nothing installed" on a
+ * transient read failure would hand the Install button to a package that may
+ * already be on the mount (the collision check fails closed the same way).
+ */
+export interface InstalledPackageProvenance {
+  installed: Set<string>
+  indeterminate: Set<string>
+}
+
+export async function listInstalledPackageProvenance(): Promise<InstalledPackageProvenance> {
+  const provider = await providerRegistry.get('webmcp')
+  const entries = await provider.readdir('')
+  const installed = new Set<string>()
+  const indeterminate = new Set<string>()
+  for (const entry of entries) {
+    if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
+    let state: Awaited<ReturnType<typeof readInstallMarkerState>>
+    try {
+      state = await readInstallMarkerState(provider, entry.name)
+    } catch {
+      // Ownership is INDETERMINATE — not authored (a transient failure is no
+      // proof of authorship) and not actionable as an install.
+      indeterminate.add(entry.name)
+      continue
+    }
+    if (state.kind !== 'ok' || state.marker.packageId !== entry.name) {
+      // 'absent' is the authored case and lands in NEITHER set. 'invalid'
+      // (malformed marker) and a marker naming another directory (a copy)
+      // are indeterminate: no Remove, no delete.
+      if (state.kind !== 'absent') indeterminate.add(entry.name)
+      continue
+    }
+    installed.add(state.marker.packageId)
+  }
+  return { installed, indeterminate }
+}
+
+/**
+ * Ids of the registry-installed packages on the `webmcp` mount, proven by
+ * install markers (issue #231). Catalog rows match against this set; an
+ * authored package whose manifest id matches a catalog entry is NOT here,
+ * so it keeps its Install button instead of a foreign Remove. Indeterminate
+ * directories are intentionally excluded — they render as indeterminate
+ * rows (no destructive action), not as installed.
  */
 export async function listInstalledPackageIds(): Promise<Set<string>> {
-  try {
-    const provider = await providerRegistry.get('webmcp')
-    const entries = await provider.readdir('')
-    const ids = new Set<string>()
-    for (const entry of entries) {
-      if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
-      if (await directoryHasValidManifest('webmcp', entry.name)) ids.add(entry.name)
-    }
-    return ids
-  } catch {
-    // Extension bridge unavailable / mount not announced — nothing installed.
-    return new Set()
-  }
+  const provenance = await listInstalledPackageProvenance()
+  return provenance.installed
 }
 
 /**

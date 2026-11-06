@@ -37,6 +37,7 @@ import type {
 } from '@/webmcp/package-registry-client'
 import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES, MAX_REGISTRY_MANIFEST_BYTES, REGISTRY_FETCH_TIMEOUT_MS, registryFileUrl } from '@/webmcp/package-registry-client'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
+import { encodeInstallMarker, INSTALL_MARKER_FILE, type InstallMarker } from '@/webmcp/install-provenance'
 
 export class PackageInstallError extends Error {
   constructor(message: string, readonly code: 'SHA256_MISMATCH' | 'DOWNLOAD_FAILED' | 'INVALID_PACKAGE' | 'STORAGE_FAILED' | 'BUSY' | 'LOCK_LOST') {
@@ -244,6 +245,30 @@ export async function installPackage(
   const configBytes = new TextEncoder().encode(JSON.stringify(INSTALLER_DEFAULT_CONFIG) + '\n')
   if (configIndex >= 0) staged[configIndex] = { path: 'config.json', bytes: configBytes }
   else staged.push({ path: 'config.json', bytes: configBytes })
+
+  // Install provenance (issue #231, mirroring the extension's #228 contract):
+  // staged INSIDE the tree so it swaps in atomically with the package and
+  // never survives an aborted install. Without it the settings section would
+  // infer ownership from the manifest shape and offer a registry row's
+  // uninstall action for an authored package.
+  // A package that SHIPS the reserved path is rejected instead of shadowed
+  // (the same rule the extension applies): drop our marker out of the
+  // staged list to check the downloaded files alone.
+  const shippedMarker = staged.find(file => file.path === INSTALL_MARKER_FILE)
+  if (shippedMarker) {
+    throw new PackageInstallError(
+      `Package ${id} ships a reserved file: ${INSTALL_MARKER_FILE}`,
+      'INVALID_PACKAGE',
+    )
+  }
+  const marker: InstallMarker = {
+    schemaVersion: 1,
+    registryId: registry.manifestUrl,
+    packageId: id,
+    version: pkg.version,
+    installedAt: new Date().toISOString(),
+  }
+  staged.push({ path: INSTALL_MARKER_FILE, bytes: encodeInstallMarker(marker) })
 
   // Serialize all mutations of one package id ACROSS CONTEXTS (settings tab,
   // management page, background): an install racing an uninstall/opt-in
@@ -704,7 +729,11 @@ async function removeMissingOk(provider: FsProvider, path: string): Promise<void
  * cleared by the same removal. Serialized with the SAME cross-context lock
  * as install (finding: "Concurrent package operations corrupt installs").
  */
-export async function uninstallPackage(packageId: string, provider: FsProvider): Promise<void> {
+export async function uninstallPackage(
+  packageId: string,
+  provider: FsProvider,
+  underLock?: (lockSignal: AbortSignal) => Promise<void>,
+): Promise<void> {
   try {
     normalizeProviderPath(packageId)
   } catch {
@@ -714,12 +743,23 @@ export async function uninstallPackage(packageId: string, provider: FsProvider):
     // Stop before mutating once the lease is gone (finding: "Lost lease
     // does not stop mutations") — a removal executed under the NEW owner's
     // lease would delete the package it just installed.
-    if (lockSignal.aborted) {
-      throw new PackageInstallError(
-        `The removal of ${packageId} was aborted: the package lock was lost mid-transaction`,
-        'LOCK_LOST',
-      )
+    const throwIfLeaseLost = (): void => {
+      if (lockSignal.aborted) {
+        throw new PackageInstallError(
+          `The removal of ${packageId} was aborted: the package lock was lost mid-transaction`,
+          'LOCK_LOST',
+        )
+      }
     }
+    throwIfLeaseLost()
+    // Provenance hook: runs while the per-package lock is held, so the
+    // decision cannot be invalidated by a concurrent install/uninstall. Its
+    // error is NOT a storage failure — let it through unwrapped.
+    if (underLock) await underLock(lockSignal)
+    // The hook awaits storage, so the lease can expire while it runs: re-fence
+    // before the destructive call or a stale owner deletes the tree the new
+    // owner just took over (finding: "Expired leases still delete packages").
+    throwIfLeaseLost()
     try {
       await removeMissingOk(provider, packageId)
     } catch (error) {
