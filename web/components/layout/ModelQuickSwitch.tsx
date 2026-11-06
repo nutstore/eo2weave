@@ -202,9 +202,12 @@ export function ModelQuickSwitch({
     providers.filter((p) => p.models.length > 0),
     [providers]
   )
-  const gatewayCatalogUnavailable = providers.some(
-    isUnverifiedGateway,
-  )
+  // Only warn about the gateway catalog when the gateway is the provider the
+  // user is actually on. Everyone else sees this banner for a provider they
+  // never call, with a Retry that cannot help them (report: MiniMax selected,
+  // amber "model list cannot be refreshed" + dead Retry).
+  const gatewayCatalogUnavailable =
+    providerType === 'llm-gateway' && providers.some(isUnverifiedGateway)
 
   // Enrich each model with hasVision and stale:
   // - hasVision: OpenRouter snapshot first (authoritative modality metadata);
