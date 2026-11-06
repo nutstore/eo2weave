@@ -28,7 +28,6 @@ export const welcome = {
     setupGuideTooltip: "查看配置教程：服务商 Key、常用模型与默认模型",
     setupGuideLinkTitle: "如何配置？",
     setupGuideLinkDesc: "三步完成：服务商 Key → 常用模型 → 默认模型",
-    setupLocalFirstHint: "所有数据存储在本地浏览器中，不会上传到服务器",
     // Conditional onboarding labels (these are not a linear progress count)
     apiKeyLabel: "连接 AI",
     welcomeHeading: "欢迎使用 怡氧知知",
