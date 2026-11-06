@@ -908,6 +908,13 @@ async function resyncGatewayApiKeyAvailability(): Promise<void> {
     const { useSettingsStore } = await import('@/store/settings.store')
     const settings = useSettingsStore.getState()
     settings.invalidateApiKeyCache(LLM_GATEWAY_API_KEY_ID)
+    // `checkHasApiKey()` answers for the SELECTED provider. Forcing a lookup
+    // while another provider is selected would resolve ITS status — ending a
+    // still-registering provider's loading state with a false "not
+    // configured". Dropping the gateway's cache entry is enough on its own:
+    // the verdict is re-resolved the next time the gateway is checked or
+    // selected.
+    if (settings.providerType !== 'llm-gateway') return
     // flush: an explicit logout has unregistered the provider by now, and a
     // deferred call would return without writing — leaving the stale `true`
     // (and its "configured" welcome screen) on display.
