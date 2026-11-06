@@ -11,8 +11,10 @@
  * - a 'temporary' failure is not evidence of an outage: demoting a catalog
  *   that already answered puts the switcher's "catalog unavailable" banner
  *   over a working model list, and it returns on every boot;
- * - a 'missing' session that stays registered leaves a provider whose catalog
- *   can never load in every future app context.
+ * - a 'missing' verdict must NOT remove the provider either: a token-less boot
+ *   that unregisters it renders as "provider unavailable, sign in again" and
+ *   takes the sign-in entry point with it (#224 — only explicit logout
+ *   removes the provider).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -27,7 +29,10 @@ vi.hoisted(() => {
 import {
   applyGatewayCredentialOutcome,
   beginGatewayCatalogRefresh,
+  isGatewayCatalogRefreshCurrent,
   isGatewayCredentialOutcomeCurrent,
+  markGatewayCatalogFailed,
+  registerGatewayModels,
   unregisterLLMGatewayProvider,
   LLM_GATEWAY_PROVIDER_TYPE,
 } from '@/agent/providers/llm-gateway-provider'
@@ -54,13 +59,16 @@ describe('applyGatewayCredentialOutcome', () => {
     unregisterLLMGatewayProvider()
   })
 
-  it('unregisters the provider for a never-signed-in session', () => {
+  it('keeps a never-signed-in session registered with a failed catalog (#224)', () => {
     seedCatalog([model], 'ready')
 
     applyGatewayCredentialOutcome('missing')
 
-    expect(getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)).toBeFalsy()
-    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+    // Removing the provider is reserved for explicit logout: a token-less
+    // boot that removes it renders as "provider unavailable, sign in again"
+    // and takes the sign-in entry point with it.
+    expect(getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)).toBeTruthy()
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
   })
 
   it("keeps an expired session's provider with a failed catalog so Retry/re-login stay reachable", () => {
@@ -137,14 +145,33 @@ describe('applyGatewayCredentialOutcome', () => {
     expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([model])
   })
 
-  it('re-registers an absent provider on a superseded non-missing verdict', () => {
+  it('re-registers an absent provider as failed on a superseded verdict, never as loading', () => {
     const currentVersion = beginGatewayCatalogRefresh()
 
     applyGatewayCredentialOutcome('expired', currentVersion - 1)
 
     // Without this the purge would leave the gateway invisible with no
-    // recovery entry at all.
+    // recovery entry at all; 'loading' would be just as invisible, because
+    // the switcher hides a pending provider and offers no Retry for it.
     expect(getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)).toBeTruthy()
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+  })
+
+  it('does not invalidate a newer refresh when the purge records the outage', () => {
+    // clearStoredTokens() marks the catalog failed as part of the purge. That
+    // write must not claim a catalog refresh version of its own — otherwise a
+    // refresh that newer work already started gets superseded and its
+    // successful result is dropped (review: "Newer catalog is erased by
+    // purge").
+    seedCatalog([model], 'ready')
+    const newerRefresh = beginGatewayCatalogRefresh()
+
+    markGatewayCatalogFailed()
+
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+    expect(isGatewayCatalogRefreshCurrent(newerRefresh)).toBe(true)
+    registerGatewayModels([model], 'ready', newerRefresh)
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('ready')
   })
 })
 

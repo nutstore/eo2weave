@@ -800,9 +800,25 @@ async function clearStoredTokens(
     const current = loadStoredTokens()
     if (expectedRefreshToken && current?.refresh_token !== expectedRefreshToken) return false
     bumpAuthSessionGeneration()
-    // The session is no longer trusted from this point onward. Drop its
-    // model catalog before key-store purging, which can fail or time out.
-    unregisterDynamicProvider('llm-gateway')
+    // An explicit logout removes the provider: a signed-out user must not keep
+    // a dead entry in the switcher. An EXPIRED session is NOT a logout — the
+    // provider stays registered with a 'failed' catalog so the last usable
+    // model list remains visible and the switcher keeps its Retry / re-login
+    // route (#224). Dropping the registration here is also what made a newer
+    // catalog disappear (review: "Newer catalog is erased by purge") and left
+    // the re-registration with no model list at all. A dynamic import keeps
+    // the auth → provider direction out of the module graph.
+    if (finalStatus === 'missing') {
+      unregisterDynamicProvider('llm-gateway')
+    } else {
+      try {
+        const { markGatewayCatalogFailed } = await import('@/agent/providers/llm-gateway-provider')
+        markGatewayCatalogFailed()
+      } catch {
+        // Best-effort: the credential purge must never fail because the
+        // provider module could not load.
+      }
+    }
     localStorage.removeItem(TOKEN_STORAGE_KEY)
     // Record the logout timestamp so a login attempt that was pending
     // (device-code approval / model preparation) in another tab cannot

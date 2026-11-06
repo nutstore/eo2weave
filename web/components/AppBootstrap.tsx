@@ -399,21 +399,12 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
             await saveApiKey(getLLMGatewayApiKeyProviderKey(), resolved.accessToken)
             await updateGatewayModels(resolved.accessToken, tokenGeneration)
           } else if (isGatewayCredentialOutcomeCurrent(resolvedGeneration, getGatewayAuthSessionGeneration(), resolved.kind)) {
+            // Each verdict owns a different write (see
+            // applyGatewayCredentialOutcome). None of them REMOVES the
+            // provider: an expired or never-signed-in session stays visible
+            // with a 'failed' catalog so Retry / re-login remain reachable
+            // (#224) — removal is reserved for explicit logout.
             applyGatewayCredentialOutcome(resolved.kind, gatewayRestoreVersion)
-            if (resolved.kind === 'missing') {
-              // The provider is now unregistered, so a non-flushing
-              // checkHasApiKey() would answer "dynamic provider still
-              // registering" and leave `hasApiKeyLoaded` false — the welcome
-              // screen would stay on its loading state forever. Only flush
-              // when the gateway is the SELECTED provider: flushing would
-              // otherwise bypass another asynchronously registering provider's
-              // (e.g. codex-oauth) wait and show it a false "no key" setup card.
-              const { useSettingsStore } = await import('@/store/settings.store')
-              const settings = useSettingsStore.getState()
-              if (settings.providerType === 'llm-gateway') {
-                await settings.checkHasApiKey({ flush: true })
-              }
-            }
           }
         } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {
           // The gateway can never register here (region-gated off on global

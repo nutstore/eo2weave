@@ -186,28 +186,50 @@ export function applyGatewayCredentialOutcome(
   refreshVersion?: number,
 ): void {
   if (refreshVersion !== undefined && !isGatewayCatalogRefreshCurrent(refreshVersion)) {
-    // Newer catalog work owns the registry. Never remove ITS registration —
-    // unregistering on a stale 'missing' verdict is the destructive case —
-    // but a purged session must not leave the gateway invisible either, so
-    // re-register an absent provider without touching the newer catalog.
-    if (kind !== 'missing' && !getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)) {
-      registerLLMGatewayProvider()
-    }
+    // Newer catalog work owns the registry: never write over ITS catalog.
+    // A token-less boot still owes the user a recovery route, so an absent
+    // provider is registered as 'failed' (never the default 'loading', which
+    // the switcher hides) — without claiming a refresh version of its own.
+    if (!getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)) ensureGatewayCatalogFailed()
     return
   }
-  if (kind === 'missing') {
-    unregisterLLMGatewayProvider()
+  if (kind === 'temporary') {
+    // Transient (refresh in flight, network blip, storage hiccup): no
+    // evidence of an outage, so a catalog that already answered ('ready' or
+    // an authoritative 'empty') must NOT be demoted. 'loading' with nothing
+    // behind it carries no information, and there 'failed' is the only state
+    // that puts the switcher's Retry on screen.
+    const status = getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)
+    if (status === 'ready' || status === 'empty') return
+    ensureGatewayCatalogFailed()
     return
   }
-  // A transient failure is no evidence of an outage: a catalog that already
-  // answered ('ready' or an authoritative 'empty') must not be demoted to
-  // 'failed'. 'loading' with no models carries no information, and there
-  // 'failed' is the only state that puts the switcher's Retry on screen.
-  const status = getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)
-  if (kind === 'temporary' && (status === 'ready' || status === 'empty')) return
-  // 'expired' always records the outage (Retry / re-login is the recovery
-  // route) while registerGatewayModels retains whatever model list survives.
-  registerGatewayModels([], 'failed', refreshVersion)
+  // 'expired' AND 'missing': the catalog cannot load until the user acts
+  // (re-login, or a first sign-in). Registering the outage is what surfaces
+  // Retry / re-login; REMOVING the provider is reserved for explicit logout
+  // (#224) — an expired or never-signed-in session must stay visible.
+  ensureGatewayCatalogFailed()
+}
+
+/** Register the provider if this context has none, then record the outage. */
+function ensureGatewayCatalogFailed(): void {
+  if (!getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)) registerLLMGatewayProvider()
+  markGatewayCatalogFailed()
+}
+
+/**
+ * Record that the gateway catalog cannot load until the user acts again,
+ * keeping whatever model list is already registered for display.
+ *
+ * Deliberately does NOT claim a new catalog refresh version: this is not a
+ * fetch outcome, and a refresh owned by newer work must not be invalidated by
+ * a purge that happened before it (review: "Newer catalog is erased by
+ * purge"). Also the one write the credential purge can use — it must not
+ * resurrect a provider that was never registered.
+ */
+export function markGatewayCatalogFailed(): void {
+  if (!getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)) return
+  commitGatewayCatalog(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE), 'failed')
 }
 
 /**

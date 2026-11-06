@@ -78,7 +78,7 @@ import {
   isGatewayAccessTokenCurrent,
   type GatewaySessionEvent,
 } from '@/agent/providers/llm-gateway-auth'
-import { getModelsForProvider, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+import { getModelsForProvider, getProviderCatalogStatus, getProviderConfig, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 
 const BASE_URL = 'https://ai.jianguoyun.com'
 const CLIENT_ID = 'test-client-id'
@@ -801,7 +801,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       }
     })
 
-    it('clears the prior gateway catalog when the refresh token expires', async () => {
+    it('keeps the prior gateway catalog with a failed status when the refresh token expires', async () => {
       seedStoredTokens({ refresh_expires_at: Date.now() - 1000 })
       registerDynamicProvider('llm-gateway',
         { baseURL: `${BASE_URL}/v1`, modelName: 'old-model', headers: {} },
@@ -809,7 +809,14 @@ describe('llm-gateway-auth token refresh hardening', () => {
       )
       try {
         await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'expired' })
-        expect(getModelsForProvider('llm-gateway')).toEqual([])
+        // An expired session is NOT a logout (#224): the provider stays
+        // registered so Retry / re-login remain reachable, and the last usable
+        // list stays visible instead of disappearing with the purge.
+        expect(getProviderConfig('llm-gateway')).toBeTruthy()
+        expect(getProviderCatalogStatus('llm-gateway')).toBe('failed')
+        expect(getModelsForProvider('llm-gateway')).toEqual([
+          { id: 'old-model', name: 'Old', capabilities: ['code'] },
+        ])
       } finally {
         unregisterDynamicProvider('llm-gateway')
       }
