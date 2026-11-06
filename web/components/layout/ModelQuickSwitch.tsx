@@ -134,10 +134,10 @@ export function ModelQuickSwitch({
   const acceptedSnapshotRef = useRef<AvailableProvider[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
-  /** providerKey of the catalog being retried, if any. */
-  const [retryingCatalogKey, setRetryingCatalogKey] = useState<string | null>(null)
-  /** providerKey whose last retry failed. */
-  const [catalogRetryFailedKey, setCatalogRetryFailedKey] = useState<string | null>(null)
+  /** providerKeys of catalogs being retried (concurrent retries are possible). */
+  const [retryingCatalogKeys, setRetryingCatalogKeys] = useState<Set<string>>(new Set())
+  /** providerKeys whose last retry failed. */
+  const [catalogRetryFailedKeys, setCatalogRetryFailedKeys] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({})
   const [visionOnly, setVisionOnly] = useState(false)
@@ -244,10 +244,10 @@ export function ModelQuickSwitch({
     providers.filter((p) => p.models.length > 0 || isCatalogUnavailable(p)),
     [providers]
   )
-  // Only warn about the gateway catalog when the gateway is the provider the
-  // user is actually on. Everyone else sees this banner for a provider they
-  // never call, with a Retry that cannot help them (report: MiniMax selected,
-  // amber "model list cannot be refreshed" + dead Retry).
+  const unavailableCatalogProviders = useMemo(
+    () => providers.filter(isCatalogUnavailable),
+    [providers]
+  )
 
   // Enrich each model with hasVision and stale:
   // - hasVision: OpenRouter snapshot first (authoritative modality metadata);
@@ -499,7 +499,7 @@ export function ModelQuickSwitch({
   // `failed` both keep the banner, so clear whenever the authoritative status
   // is no longer 'failed'.
   useEffect(() => {
-    if (getProviderCatalogStatus('llm-gateway') !== 'failed') setCatalogRetryFailedKey(null)
+    if (getProviderCatalogStatus('llm-gateway') !== 'failed') setCatalogRetryFailedKeys(new Set())
   }, [providers])
 
   const openProviderSettings = () => {
@@ -510,8 +510,12 @@ export function ModelQuickSwitch({
   const retryProviderCatalog = async (provider: AvailableProvider) => {
     const refresh = CATALOG_REFRESHERS[provider.providerType]
     if (!refresh) return
-    setRetryingCatalogKey(provider.providerKey)
-    setCatalogRetryFailedKey(null)
+    setRetryingCatalogKeys((keys) => new Set(keys).add(provider.providerKey))
+    setCatalogRetryFailedKeys((keys) => {
+      const next = new Set(keys)
+      next.delete(provider.providerKey)
+      return next
+    })
     try {
       await refresh()
     } catch (error) {
@@ -520,9 +524,13 @@ export function ModelQuickSwitch({
         return
       }
       console.error('[ModelQuickSwitch] Failed to refresh provider catalog:', error)
-      setCatalogRetryFailedKey(provider.providerKey)
+      setCatalogRetryFailedKeys((keys) => new Set(keys).add(provider.providerKey))
     } finally {
-      setRetryingCatalogKey(null)
+      setRetryingCatalogKeys((keys) => {
+        const next = new Set(keys)
+        next.delete(provider.providerKey)
+        return next
+      })
       useSettingsStore.getState().triggerProviderRefresh()
     }
   }
@@ -655,6 +663,36 @@ export function ModelQuickSwitch({
           </div>
         )}
 
+        {!loading && unavailableCatalogProviders.length > 0 ? (
+          <div className="border-b border-border/70">
+            {unavailableCatalogProviders.map((provider) => (
+              <div key={provider.providerKey} className="flex items-center justify-between gap-2 bg-amber-500/5 px-3 py-1.5 text-[11px] text-tertiary">
+                <span className="min-w-0 truncate">
+                  {t('topbar.modelSwitcher.catalogUnavailableFor', { provider: provider.displayName })}
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <button type="button" onClick={openProviderSettings} className="text-primary hover:underline">
+                    {t('topbar.modelSwitcher.configureProviders')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void retryProviderCatalog(provider)}
+                    disabled={retryingCatalogKeys.has(provider.providerKey)}
+                    className="text-primary hover:underline disabled:opacity-50"
+                  >
+                    {retryingCatalogKeys.has(provider.providerKey)
+                      ? t('topbar.modelSwitcher.loading')
+                      : t('topbar.modelSwitcher.retryCatalog')}
+                  </button>
+                </span>
+              </div>
+            ))}
+            {[...catalogRetryFailedKeys].length > 0 ? (
+              <p className="px-3 pb-1.5 text-[11px] text-danger">{t('topbar.modelSwitcher.retryFailed')}</p>
+            ) : null}
+          </div>
+        ) : null}
+
         {refreshingExistingList && (
           <div className="flex items-center gap-2 border-b border-border/70 px-3 py-1.5 text-xs text-tertiary">
             <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
@@ -753,33 +791,6 @@ export function ModelQuickSwitch({
                       </span>
                     </span>
                   </button>
-                  {!isCollapsed && isCatalogUnavailable(provider) ? (
-                    <div className="border-t border-border/40 bg-amber-500/5 px-2 py-1.5 text-[11px] text-tertiary">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0 truncate">
-                          {t('topbar.modelSwitcher.catalogUnavailableFor', { provider: provider.displayName })}
-                        </span>
-                        <span className="flex shrink-0 items-center gap-2">
-                          <button type="button" onClick={openProviderSettings} className="text-primary hover:underline">
-                            {t('topbar.modelSwitcher.configureProviders')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void retryProviderCatalog(provider)}
-                            disabled={retryingCatalogKey === provider.providerKey}
-                            className="text-primary hover:underline disabled:opacity-50"
-                          >
-                            {retryingCatalogKey === provider.providerKey
-                              ? t('topbar.modelSwitcher.loading')
-                              : t('topbar.modelSwitcher.retryCatalog')}
-                          </button>
-                        </span>
-                      </div>
-                      {catalogRetryFailedKey === provider.providerKey ? (
-                        <p className="mt-1 text-danger">{t('topbar.modelSwitcher.retryFailed')}</p>
-                      ) : null}
-                    </div>
-                  ) : null}
                   {!isCollapsed ? (
                     <div className="space-y-0.5 border-t border-border/40 px-1.5 py-1.5">
                       {visibleModels.map((model) => {
