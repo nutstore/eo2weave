@@ -22,6 +22,7 @@ export const topbar = {
       temporarilyUnavailable: "Temporarily unable to verify",
       catalogUnavailable: "Model list temporarily unavailable",
       retryCatalog: "Retry",
+      retryFailed: "Could not refresh the model list. Check your connection and try again.",
       noPinnedModels: "No models pinned yet. Add models in Settings.",
       searchPlaceholder: "Search models…",
       noResults: "No matching models",

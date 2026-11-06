@@ -97,6 +97,8 @@ export function ModelQuickSwitch({
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [retryingGatewayCatalog, setRetryingGatewayCatalog] = useState(false)
+  /** Outcome of the last catalog retry: null until the user asks for one. */
+  const [catalogRetryFailed, setCatalogRetryFailed] = useState(false)
   const [query, setQuery] = useState('')
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({})
   const [visionOnly, setVisionOnly] = useState(false)
@@ -200,9 +202,12 @@ export function ModelQuickSwitch({
     providers.filter((p) => p.models.length > 0),
     [providers]
   )
-  const gatewayCatalogUnavailable = providers.some(
-    isUnverifiedGateway,
-  )
+  // Only warn about the gateway catalog when the gateway is the provider the
+  // user is actually on. Everyone else sees this banner for a provider they
+  // never call, with a Retry that cannot help them (report: MiniMax selected,
+  // amber "model list cannot be refreshed" + dead Retry).
+  const gatewayCatalogUnavailable =
+    providerType === 'llm-gateway' && providers.some(isUnverifiedGateway)
 
   // Enrich each model with hasVision and stale:
   // - hasVision: OpenRouter snapshot first (authoritative modality metadata);
@@ -447,6 +452,16 @@ export function ModelQuickSwitch({
    * gateway-disabled view uses): WorkspaceLayout consumes it and opens the
    * dialog on the `llm` tab, where ProviderManager lives.
    */
+  // A retry failure must not outlive the outage it reported: when the catalog
+  // comes back through any other refresh, drop the message so a later outage
+  // does not resurrect a stale error.
+  useEffect(() => {
+    if (!gatewayCatalogUnavailable) setCatalogRetryFailed(false)
+    // `empty` is a successful refresh that legitimately found no models: the
+    // banner stays, but the previous failure must not describe it.
+    if (getProviderCatalogStatus('llm-gateway') !== 'failed') setCatalogRetryFailed(false)
+  }, [gatewayCatalogUnavailable])
+
   const openProviderSettings = () => {
     setOpen(false)
     requestSettingsOpen(true)
@@ -454,14 +469,40 @@ export function ModelQuickSwitch({
 
   const retryGatewayCatalog = async () => {
     setRetryingGatewayCatalog(true)
+    setCatalogRetryFailed(false)
     try {
       const gateway = await import('@/agent/providers/llm-gateway-provider')
-      const token = await gateway.getValidAccessToken(
+      const auth = await import('@/agent/providers/llm-gateway-auth')
+      // Distinguish "no session" from "temporary outage": only the former is
+      // fixed by signing in. getValidAccessToken() collapses both into null.
+      const resolved = await auth.resolveGatewayDispatchCredential(
         gateway.getLLMGatewayBaseURL(), gateway.getLLMGatewayClientId(),
       )
-      if (token) await gateway.updateGatewayModels(token, gateway.getGatewayAuthSessionGeneration())
+      if (!resolved.ok) {
+        if (resolved.kind === 'temporary') {
+          setCatalogRetryFailed(true)
+          return
+        }
+        openProviderSettings()
+        return
+      }
+      await gateway.updateGatewayModels(
+        resolved.accessToken, gateway.getGatewayAuthSessionGeneration(),
+      )
+      // A rejected token unregisters the provider; re-auth is the only fix.
+      if (!getProviderConfig('llm-gateway')) {
+        openProviderSettings()
+        return
+      }
+      // Read the authoritative outcome: an empty list is 'empty' (the banner
+      // already says so) while a network/non-2xx failure is 'failed'. List
+      // length cannot tell them apart, and updateGatewayModels never throws.
+      if (getProviderCatalogStatus('llm-gateway') === 'failed') {
+        setCatalogRetryFailed(true)
+      }
     } catch (error) {
       console.error('[ModelQuickSwitch] Failed to refresh gateway models:', error)
+      setCatalogRetryFailed(true)
     } finally {
       setRetryingGatewayCatalog(false)
       useSettingsStore.getState().triggerProviderRefresh()
@@ -619,6 +660,12 @@ export function ModelQuickSwitch({
                 {retryingGatewayCatalog ? t('topbar.modelSwitcher.loading') : t('topbar.modelSwitcher.retryCatalog')}
               </button>
             </span>
+          </div>
+        )}
+
+        {!loading && !refreshingExistingList && gatewayCatalogUnavailable && catalogRetryFailed && (
+          <div className="border-b border-border/70 px-3 py-1.5 text-[11px] text-danger">
+            {t('topbar.modelSwitcher.retryFailed')}
           </div>
         )}
 
