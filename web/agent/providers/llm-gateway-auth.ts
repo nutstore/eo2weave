@@ -197,7 +197,27 @@ if (typeof window !== 'undefined') {
     const newParsed = parse(event.newValue)
     if (oldParsed.refresh !== newParsed.refresh) {
       bumpAuthSessionGeneration()
-      unregisterDynamicProvider('llm-gateway')
+      // Do NOT unregister here: this event fires on ANY identity change,
+      // including a write that has not settled, and the provider then stays
+      // unregistered whenever the reconciler cannot resolve a session on its
+      // first try (observed as "provider unavailable, sign in again" right
+      // after the side panel opened). The reconciler owns that decision and
+      // unregisters only on a CONFIRMED missing/expired verdict.
+      //
+      // The previous account's models must still not survive the swap, so
+      // drop the catalog to 'loading' instead — a dynamic import keeps the
+      // auth → provider direction out of the module graph.
+      // Only when no reconciler owns the state in this tab: otherwise its
+      // in-flight reconcile would race this clear and could overwrite a
+      // freshly loaded catalog with 'loading'.
+      void import('@/agent/providers/gateway-session-reconciler')
+        .then(({ isGatewayReconcilerInstalled }) => {
+          if (isGatewayReconcilerInstalled()) return
+          return import('@/agent/providers/llm-gateway-provider').then(
+            ({ registerGatewayModels }) => registerGatewayModels([], 'loading'),
+          )
+        })
+        .catch(() => {})
       emitGatewaySessionEvent({
         type: 'identity-change',
         oldRefreshToken: oldParsed.refresh,
