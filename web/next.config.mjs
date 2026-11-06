@@ -53,7 +53,8 @@ const nextConfig = {
   // preserves the normal `.next` output used by the domestic EdgeOne build,
   // while adding `.next/standalone` for Docker/Kubernetes packaging.
   output: 'standalone',
-  reactStrictMode: true,
+  // Keep effect execution consistent with production while debugging startup.
+  reactStrictMode: false,
   // Linting remains an explicit repository check. The existing application has
   // a broader legacy ESLint baseline, so it must not prevent runtime builds.
   eslint: {

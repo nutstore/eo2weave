@@ -94,6 +94,7 @@ vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   logoutGateway: gatewayMock.logoutGateway,
   getValidAccessToken: gatewayMock.getValidAccessToken,
   getGatewayAuthSessionGeneration: () => gatewayMock.authGeneration,
+  onGatewayTokensPurged: vi.fn(() => () => {}),
   fetchGatewayModels: gatewayMock.fetchGatewayModels,
   getGatewayCredentialStatus: gatewayMock.getGatewayCredentialStatus,
   hasStoredTokens: gatewayMock.hasStoredTokens,

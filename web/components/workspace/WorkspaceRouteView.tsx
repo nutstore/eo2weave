@@ -6,6 +6,7 @@ import { useProjectStore } from '@/store/project.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { InitErrorBanner } from '@/components/project/InitErrorBanner'
 import { StorageLoading } from '@/components/StorageLoading'
+import { useStartupReady } from '@/components/AppStartupGate'
 import { useWorkspaceRouteSync } from '@/hooks/useWorkspaceRouteSync'
 import { projectWorkspacePath, projectsPath } from '@/lib/route-paths'
 
@@ -38,6 +39,7 @@ export default function WorkspaceRouteView() {
   const projects = useProjectStore((s) => s.projects)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const initError = useProjectStore((s) => s.initError)
+  useStartupReady(initialSyncComplete || Boolean(initError))
   const activeConversationTitle = useConversationStore((s) => {
     const { activeConversationId, conversations } = s
     if (!activeConversationId) return undefined
