@@ -62,23 +62,43 @@ function isAbsent(error: unknown): boolean {
 }
 
 /**
- * Read the marker of one package directory.
- *
- * `null` means "no marker" (absent, or not a valid marker). Storage errors
- * other than a confirmed absence are rethrown: silently answering "authored"
- * on a transient read failure would hand the registry row's uninstall action
- * to a package it does not own.
+ * Three-way answer for one directory. 'absent' is the only state that means
+ * "this package was not installed by us" — a present-but-unreadable marker is
+ * 'invalid', because it might belong to an install and the caller must not
+ * treat it as authored (which would offer a delete).
  */
-export async function readInstallMarker(
+export type InstallMarkerState =
+  | { kind: 'absent' }
+  | { kind: 'invalid' }
+  | { kind: 'ok'; marker: InstallMarker }
+
+/**
+ * Read the marker state of one package directory.
+ *
+ * Storage errors other than a confirmed absence are rethrown: answering
+ * "authored" on a transient read failure would hand the registry row's
+ * uninstall action to a package it does not own.
+ */
+export async function readInstallMarkerState(
   provider: FsProvider,
   directory: string,
-): Promise<InstallMarker | null> {
+): Promise<InstallMarkerState> {
   let bytes: Uint8Array
   try {
     bytes = await provider.readFile(`${directory}/${INSTALL_MARKER_FILE}`)
   } catch (error) {
-    if (isAbsent(error)) return null
+    if (isAbsent(error)) return { kind: 'absent' }
     throw error
   }
-  return parseInstallMarker(bytes)
+  const marker = parseInstallMarker(bytes)
+  return marker ? { kind: 'ok', marker } : { kind: 'invalid' }
+}
+
+/** The marker of one package directory, or `null` when absent or invalid. */
+export async function readInstallMarker(
+  provider: FsProvider,
+  directory: string,
+): Promise<InstallMarker | null> {
+  const state = await readInstallMarkerState(provider, directory)
+  return state.kind === 'ok' ? state.marker : null
 }
