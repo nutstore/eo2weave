@@ -28,6 +28,7 @@ import {
   showOperationSuccess,
   sourceChip,
   t,
+  toolChips,
 } from './shared'
 
 export interface RegistrySection {
@@ -299,40 +300,29 @@ export function createRegistrySection(
     const name = document.createElement('div')
     name.className = 'name'
     name.textContent = pkg.id
+    // Version and tool count sit INLINE on the id line, exactly like a
+    // built-in card — a registry row is the same kind of object and should not
+    // grow two extra block lines for metadata. The count is the VERIFIED one
+    // from the package's own manifest when the preview succeeded, otherwise
+    // the publisher's CLAIM (marked unverified); the install verifies for real.
+    const previewKey = `${registry.manifestUrl}::${pkg.id}`
+    const preview = toolPreviews.get(previewKey)
     const host = document.createElement('div')
     host.className = 'host'
-    host.textContent = t('webmcpPackagesVersion', pkg.version)
+    host.textContent = [
+      t('webmcpPackagesVersion', pkg.version),
+      preview
+        ? t('webmcpPackagesToolsCount', String(preview.length))
+        : `${t('webmcpPackagesToolsCount', String(pkg.toolCount))} ${t('webmcpPackagesToolsCountUnverified')}`,
+    ].join(' · ')
     const desc = document.createElement('div')
     desc.className = 'desc'
     desc.textContent = pkg.description
     const titleLine = document.createElement('div')
     titleLine.className = 'title-line'
-    titleLine.append(name, sourceChip('registry'))
-    body.append(titleLine, host, desc)
-
-    // The tool count: the VERIFIED count from the package's own manifest when
-    // the preview succeeded, otherwise the publisher's CLAIM (marked
-    // unverified). The install verifies the manifest for real.
-    const previewKey = `${registry.manifestUrl}::${pkg.id}`
-    const preview = toolPreviews.get(previewKey)
-    const count = document.createElement('div')
-    count.className = 'desc'
-    count.textContent = preview
-      ? t('webmcpPackagesToolsCount', String(preview.length))
-      : `${t('webmcpPackagesToolsCount', String(pkg.toolCount))} ${t('webmcpPackagesToolsCountUnverified')}`
-    body.append(count)
-    if (preview?.length) {
-      const chips = document.createElement('div')
-      chips.className = 'tools'
-      for (const tool of preview) {
-        const chip = document.createElement('span')
-        chip.className = 'tool-chip'
-        chip.textContent = tool.name
-        chip.title = tool.description
-        chips.append(chip)
-      }
-      body.append(chips)
-    }
+    titleLine.append(name, sourceChip('registry'), host)
+    body.append(titleLine, desc)
+    if (preview?.length) body.append(toolChips(preview))
 
     const isInstalled = installed.has(pkg.id)
     const stateUnknown = isInstalled && activationUnknown.has(pkg.id)

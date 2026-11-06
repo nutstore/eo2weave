@@ -186,7 +186,7 @@ export interface ManagedCardOptions {
   deletable?: boolean
 }
 
-function toolChips(tools: Array<{ name: string; description: string }>): HTMLElement {
+export function toolChips(tools: Array<{ name: string; description: string }>): HTMLElement {
   const chips = document.createElement('div')
   chips.className = 'tools'
   for (const tool of tools.slice(0, MAX_TOOL_CHIPS)) {
