@@ -187,10 +187,18 @@ const auth = await authorize({
   toolName: 'my_disk_writer',
   args: { ... },
   conversationId: context.workspaceId,
+  // Plan mode suppresses the "always allow" memory: an approval granted while
+  // exploring must not pre-authorize a later act-mode call.
+  mode: context.agentMode,
   signal: context.abortSignal,
 })
 if (auth.decision === 'deny') {
   return JSON.stringify({ error: 'AUTH_DENIED_BY_USER', reason: auth.reason })
+}
+// The run can be aborted between the approval and this line — check again
+// before doing the irreversible part.
+if (context.abortSignal?.aborted) {
+  return JSON.stringify({ error: 'ABORTED' })
 }
 ```
 
@@ -208,8 +216,8 @@ set('my_disk_writer', {
 
 Two behaviours come from `authorize()` itself, not from your table entry:
 
-- With YOLO mode on, it returns `allow` without prompting. That is the user's global choice, not a bypass your tool introduces.
-- `memoryKey` is what makes "always allow this conversation" skip later prompts. Omit it for irreversible operations so every call asks again.
+- With YOLO mode on, `prompt` returns `allow` without prompting. YOLO is a per-conversation switch the user controls (persisted per conversation; the LLM cannot enable it — `switch_agent_mode` force-clears it), so this is the user's own choice, not a bypass your tool introduces. `forbidden` stays denied even under YOLO — that check runs first.
+- `memoryKey` is what makes "always allow this conversation" skip later prompts. Omit it (return `null`) for irreversible operations so every call asks again — that is what `snapshot_restore` does.
 
 ## 7. Test it
 
@@ -259,9 +267,9 @@ cd .. && make typecheck
 Docs are bilingual and live under a single tree (`docs/`), rendered by `web/lib/docs-server.ts`:
 
 - English: `docs/en/developer/<slug>.md`
-- Chinese: `docs/zh/developer/guides/<slug>.md`
+- Chinese: `docs/zh/developer/<slug>.md`
 
-Both files need frontmatter, or they sort last in the sidebar:
+Both files need frontmatter, or they sort last in the sidebar. Give both locales the SAME path relative to `docs/<lang>/developer/` — the slug is derived from that relative path (`slugFromFile` in `docs-server.ts`), so `docs/en/developer/word-count-tool.md` and `docs/zh/developer/word-count-tool.md` share the slug `word-count-tool` and the language switcher keeps the reader on the page; nesting one locale under an extra subfolder changes its slug and breaks the pairing:
 
 ```markdown
 ---

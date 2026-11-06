@@ -187,10 +187,16 @@ const auth = await authorize({
   toolName: 'my_disk_writer',
   args: { ... },
   conversationId: context.workspaceId,
+  // Plan 模式下抑制「本对话内总是允许」：探索阶段的授权不能预先放行之后的 act 调用
+  mode: context.agentMode,
   signal: context.abortSignal,
 })
 if (auth.decision === 'deny') {
   return JSON.stringify({ error: 'AUTH_DENIED_BY_USER', reason: auth.reason })
+}
+// 用户确认之后、真正动手之前仍可能被中断 —— 不可逆操作前再查一次
+if (context.abortSignal?.aborted) {
+  return JSON.stringify({ error: 'ABORTED' })
 }
 ```
 
@@ -208,8 +214,8 @@ set('my_disk_writer', {
 
 还有两个行为来自 `authorize()` 本身，而不是你的表记录：
 
-- 开启 YOLO 模式时它直接返回 `allow`，不弹窗。这是用户的全局选择，不是你的工具引入的绕过。
-- `memoryKey` 才是让「本对话内总是允许」跳过后续提示的原因。不可逆操作建议不要给 `memoryKey`，这样每次调用都会再问一次。
+- 开启 YOLO 模式时，`prompt` 级别会直接返回 `allow`，不弹窗。YOLO 是**按会话**的开关、由用户控制（按会话持久化；LLM 无法自己开启——`switch_agent_mode` 会强制清掉），所以这是用户自己的选择，不是你的工具引入的绕过。`forbidden` 在 YOLO 下依然拒绝——这条检查在 YOLO 之前。
+- `memoryKey` 才是让「本对话内总是允许」跳过后续提示的原因。不可逆操作建议返回 `null`（不给 `memoryKey`），这样每次调用都会再问一次——`snapshot_restore` 就是这么做的。
 
 ## 7. 测试
 
@@ -259,9 +265,9 @@ cd .. && make typecheck
 文档是双语的，统一放在 `docs/` 下，由 `web/lib/docs-server.ts` 渲染：
 
 - 英文：`docs/en/developer/<slug>.md`
-- 中文：`docs/zh/developer/guides/<slug>.md`
+- 中文：`docs/zh/developer/<slug>.md`
 
-两个文件都必须带 frontmatter，否则会在侧边栏排到最后：
+两个文件都必须带 frontmatter，否则会在侧边栏排到最后。两个语言要放在相对 `docs/<lang>/developer/` 的**相同路径**——slug 是从相对路径推导的（`docs-server.ts` 的 `slugFromFile`），比如 `docs/en/developer/word-count-tool.md` 和 `docs/zh/developer/word-count-tool.md` 共享 slug `word-count-tool`，语言切换后仍停留在对应页面；某个语言多套一层子目录会改变它的 slug，破坏配对：
 
 ```markdown
 ---
