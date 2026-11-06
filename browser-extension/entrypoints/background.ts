@@ -2063,6 +2063,19 @@ export default defineBackground(() => {
             sendResponse(null)
             return
           }
+          // Extension pages and chrome:// targets cannot be scripted. Asking
+          // anyway logged an error on every side-panel open (finding on
+          // issue #237); answer "no context" instead.
+          try {
+            const targetUrl = (await chrome.tabs.get(targetTabId)).url ?? ''
+            if (!/^https?:/i.test(targetUrl)) {
+              sendResponse(null)
+              return
+            }
+          } catch {
+            sendResponse(null)
+            return
+          }
           try {
             const results = await chrome.scripting.executeScript({
               target: { tabId: targetTabId },

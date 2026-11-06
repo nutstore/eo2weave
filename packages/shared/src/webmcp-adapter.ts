@@ -198,9 +198,29 @@ export function parseWorkflow(source: string): { expression: string; contract: W
   return { expression: source.slice(definition.start!, definition.end!), contract, tree: structure }
 }
 
+/**
+ * Per-package cap on the workflow source it carries. The aggregate cap this
+ * replaced (2,000,000 chars across ALL packages) failed the whole snapshot, so
+ * one ordinary 35-tool package took every other adapter down with it. A size
+ * bound still belongs on the package itself: it is what keeps a malformed or
+ * hostile package from stalling the service worker's refresh.
+ */
+export const MAX_PACKAGE_SOURCE_CHARS = 2_000_000
+
 export function validatePackage(manifest: unknown, sources: unknown, directoryId: string): WebMCPPackage {
-  const parsed = validateManifest(manifest, directoryId)
   if (!record(sources)) throw new Error('Package sources must be an object')
+  // Charge the size budget BEFORE any parsing: an oversized package must not
+  // pay for thousands of ASTs only to be rejected afterwards. The manifest
+  // counts too — a huge description travels with the routes just like source.
+  let budget = JSON.stringify(manifest ?? null).length
+  for (const value of Object.values(sources)) {
+    if (typeof value === 'string') budget += value.length
+  }
+  if (budget > MAX_PACKAGE_SOURCE_CHARS) {
+    const id = record(manifest) && typeof manifest.id === 'string' ? manifest.id : directoryId
+    throw new Error(`Package ${id} exceeds the per-package source limit (${MAX_PACKAGE_SOURCE_CHARS} characters)`)
+  }
+  const parsed = validateManifest(manifest, directoryId)
   const files: Record<string, string> = Object.create(null)
   for (const tool of parsed.tools) {
     const source = sources[tool.path]
@@ -211,16 +231,48 @@ export function validatePackage(manifest: unknown, sources: unknown, directoryId
   return { manifest: parsed, sources: files }
 }
 
-export function validatePackageSnapshot(value: unknown): WebMCPPackage[] {
-  if (!Array.isArray(value) || value.length > 100 || JSON.stringify(value).length > 2_000_000)
-    throw new Error('Package snapshot exceeds limits (100 packages, 2000000 characters)')
+export interface PackageSnapshotResult {
+  packages: WebMCPPackage[]
+  /** Packages dropped without taking the snapshot down with them. */
+  rejected: Array<{ id: string; reason: string }>
+}
+
+/**
+ * Validate a mount snapshot, isolating failures PER PACKAGE. An invalid or
+ * oversized package is dropped with a reason; the rest keep working. Only a
+ * structurally wrong input (not an array, too many packages) is fatal —
+ * those say nothing about any individual package.
+ */
+export function validatePackageSnapshotWithDiagnostics(value: unknown): PackageSnapshotResult {
+  if (!Array.isArray(value)) throw new Error('Package snapshot must be an array')
+  // No package-count cap: a catalog can legitimately cover hundreds of sites
+  // (OpenTabs ships 122 today), and a count limit is a product ceiling, not a
+  // safety boundary. Cost is bounded by the per-package source limit and by
+  // per-package isolation instead — one package can neither blow up the
+  // snapshot nor take the others down.
+  const packages: WebMCPPackage[] = []
+  const rejected: PackageSnapshotResult['rejected'] = []
   const ids = new Set<string>()
-  return value.map(item => {
-    fields(item, ['manifest', 'sources'], 'Package snapshot')
-    if (!record(item.manifest) || typeof item.manifest.id !== 'string') throw new Error('Missing package id')
-    const pkg = validatePackage(item.manifest, item.sources, item.manifest.id)
-    if (ids.has(pkg.manifest.id)) throw new Error(`Duplicate package id: ${pkg.manifest.id}`)
-    ids.add(pkg.manifest.id)
-    return pkg
+  value.forEach((item, index) => {
+    const labeledId = record(item) && record(item.manifest) && typeof item.manifest.id === 'string'
+      ? item.manifest.id
+      : `#${index}`
+    try {
+      fields(item, ['manifest', 'sources'], 'Package snapshot')
+      if (!record(item.manifest) || typeof item.manifest.id !== 'string') throw new Error('Missing package id')
+      const pkg = validatePackage(item.manifest, item.sources, item.manifest.id)
+      if (ids.has(pkg.manifest.id)) throw new Error(`Duplicate package id: ${pkg.manifest.id}`)
+      ids.add(pkg.manifest.id)
+      packages.push(pkg)
+    } catch (error) {
+      rejected.push({ id: labeledId, reason: error instanceof Error ? error.message : String(error) })
+    }
   })
+  return { packages, rejected }
+}
+
+export function validatePackageSnapshot(value: unknown): WebMCPPackage[] {
+  const { packages, rejected } = validatePackageSnapshotWithDiagnostics(value)
+  if (rejected.length > 0) throw new Error(rejected[0].reason)
+  return packages
 }
