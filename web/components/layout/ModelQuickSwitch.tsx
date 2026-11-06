@@ -663,7 +663,7 @@ export function ModelQuickSwitch({
           </div>
         )}
 
-        {!loading && unavailableCatalogProviders.length > 0 ? (
+        {unavailableCatalogProviders.length > 0 ? (
           <div className="border-b border-border/70">
             {unavailableCatalogProviders.map((provider) => (
               <div key={provider.providerKey} className="flex items-center justify-between gap-2 bg-amber-500/5 px-3 py-1.5 text-[11px] text-tertiary">
