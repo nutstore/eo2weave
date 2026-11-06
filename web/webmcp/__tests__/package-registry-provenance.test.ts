@@ -139,6 +139,24 @@ describe('uninstallRegistryPackage', () => {
     expect(await provider.readFile('com.example.authored/manifest.json')).toEqual(manifest('com.example.authored'))
   })
 
+  it('re-verifies provenance at the destructive edge, not from a stale listing', async () => {
+    const provider = providers.webmcp.current as ReturnType<typeof memoryProvider>
+    await provider.mkdir('com.example.installed', { recursive: true })
+    await provider.writeFile('com.example.installed/manifest.json', manifest('com.example.installed'))
+    await provider.writeFile('com.example.installed/.webmcp-install.json', marker('com.example.installed'))
+
+    // The listing said "installed", but the directory is replaced by authored
+    // content before the removal runs. The check inside the package lock must
+    // see the CURRENT tree, or the removal deletes files nobody proved.
+    const provenance = await listInstalledPackageProvenance()
+    expect([...provenance.installed]).toEqual(['com.example.installed'])
+    await provider.remove('com.example.installed/.webmcp-install.json')
+
+    await expect(uninstallRegistryPackage('com.example.installed'))
+      .rejects.toThrow('is not a registry-installed package')
+    expect(await provider.readFile('com.example.installed/manifest.json')).toEqual(manifest('com.example.installed'))
+  })
+
   it('REFUSES to remove an indeterminate directory', async () => {
     const provider = providers.webmcp.current as ReturnType<typeof memoryProvider>
     await provider.mkdir('com.example.copy', { recursive: true })

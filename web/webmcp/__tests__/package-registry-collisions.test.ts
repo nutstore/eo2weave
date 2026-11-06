@@ -28,9 +28,24 @@ import { findPackageIdCollision, installRegistryPackage } from '@/webmcp/package
 
 const MANIFEST = (id: string) => new TextEncoder().encode(JSON.stringify({ id, version: '1.0.0', description: '', tools: [] }))
 
+const MARKER = (packageId: string) =>
+  new TextEncoder().encode(JSON.stringify({
+    schemaVersion: 1,
+    registryId: 'https://raw.githubusercontent.com/o/r/main/manifest.json',
+    packageId,
+    version: '1.0.0',
+    installedAt: '2026-11-06T00:00:00.000Z',
+  }))
+
 async function seed(provider: ReturnType<typeof memoryProvider>, directory: string, manifestId: string) {
   await provider.mkdir(directory, { recursive: true })
   await provider.writeFile(`${directory}/manifest.json`, MANIFEST(manifestId))
+}
+
+/** Seed a package this app INSTALLED (marker proves registry ownership). */
+async function seedInstall(provider: ReturnType<typeof memoryProvider>, directory: string) {
+  await seed(provider, directory, directory)
+  await provider.writeFile(`${directory}/.webmcp-install.json`, MARKER(directory))
 }
 
 beforeEach(() => {
@@ -47,9 +62,32 @@ describe('findPackageIdCollision', () => {
     expect(await findPackageIdCollision('com.example.new')).toBeNull()
   })
 
-  it('allows a RE-install of the same package (same directory, same manifest id)', async () => {
-    await seed(providers.webmcp.current as ReturnType<typeof memoryProvider>, 'com.example.pkg', 'com.example.pkg')
+  it('allows a RE-install of a package this app INSTALLED (marker proves ownership)', async () => {
+    await seedInstall(providers.webmcp.current as ReturnType<typeof memoryProvider>, 'com.example.pkg')
     expect(await findPackageIdCollision('com.example.pkg')).toBeNull()
+  })
+
+  it('refuses to install over an AUTHORED package that merely matches the id (issue #231)', async () => {
+    // A manifest whose id matches its directory is byte-identical in shape to
+    // an install; only the marker proves the registry owns it. Installing
+    // over it would delete the user's package and its local changes.
+    await seed(providers.webmcp.current as ReturnType<typeof memoryProvider>, 'com.example.pkg', 'com.example.pkg')
+    expect(await findPackageIdCollision('com.example.pkg'))
+      .toMatch(/already exists and is not a registry-installed package/)
+  })
+
+  it('refuses to install over a directory whose provenance cannot be read (fail closed)', async () => {
+    const full = providers.webmcp.current as ReturnType<typeof memoryProvider>
+    await seedInstall(full, 'com.example.pkg')
+    providers.webmcp.current = {
+      stat: (path: string) => full.stat(path),
+      readdir: (path: string) => full.readdir(path),
+      readFile: async (path: string) => {
+        if (path === 'com.example.pkg/.webmcp-install.json') throw Object.assign(new Error('I/O error'), { code: 'EIO' })
+        return full.readFile(path)
+      },
+    }
+    expect(await findPackageIdCollision('com.example.pkg')).toMatch(/provenance .* could not be read/)
   })
 
   it('detects a directory holding a DIFFERENT package (the id would replace it)', async () => {

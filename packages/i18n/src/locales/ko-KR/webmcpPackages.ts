@@ -19,6 +19,8 @@ export const webmcpPackages = {
   installedInactiveHint: "일치하는 사이트에서 사이드 패널을 열면 활성화할 수 있습니다.",
   installedActive: "설치됨 · 활성",
   provenanceIndeterminate: "소유 불명",
+  inventoryUnavailable: "설치된 패키지를 읽을 수 없습니다 — 아래 목록이 오래되었을 수 있습니다.",
+  inventoryRetry: "다시 시도",
   toolsCount: "도구 {count}개",
   toolsCountUnverified: "(검증되지 않음)",
   installedTitle: "설치된 패키지",

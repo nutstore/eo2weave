@@ -330,8 +330,20 @@ export async function findPackageIdCollision(packageId: string): Promise<string 
           // BOTH packages.
           return `${entry.name} on ${mount} already publishes the package id ${manifestId}`
         }
-        // Same directory on the target mount with the same id — a
-        // re-install of the very same package, which is allowed.
+        // Same directory on the target mount with the same id. Only a
+        // RE-install of an install this app made may replace it: a matching
+        // manifest shape is not ownership proof. Without a marker naming the
+        // directory the data may be authored (or a pre-marker install), and
+        // the swap would delete it (issue #231).
+        let ownership: Awaited<ReturnType<typeof readInstallMarkerState>>
+        try {
+          ownership = await readInstallMarkerState(provider, entry.name)
+        } catch {
+          return `The install provenance of ${entry.name} on ${mount} could not be read; try again later`
+        }
+        if (ownership.kind !== 'ok' || ownership.marker.packageId !== packageId) {
+          return `${entry.name} on ${mount} already exists and is not a registry-installed package`
+        }
         continue
       }
       if (manifestId === packageId) {
@@ -427,14 +439,17 @@ export async function uninstallRegistryPackage(packageId: string): Promise<{ cat
   // The Remove button is the only uninstall surface, and it renders only for
   // marker-proven ids — but an `uninstallRegistryPackage` call could still
   // name a foreign directory (a stale row from a registry the user swapped
-  // under a live UI). Verify the provenance AGAIN at the destructive edge
-  // (issue #230's contract): an authored package keeps its files even if a
-  // stale caller asks for their removal.
-  const state = await readInstallMarkerState(provider, packageId)
-  if (state.kind !== 'ok' || state.marker.packageId !== packageId) {
-    throw new Error(`${packageId} is not a registry-installed package; nothing was removed`)
-  }
-  await uninstallPackage(packageId, provider)
+  // under a live UI), or the directory could be REPLACED between the check
+  // and the removal. The provenance is therefore re-read INSIDE the
+  // per-package lock, so the tree that gets deleted is the tree whose marker
+  // was verified (issues #230/#231): an authored package keeps its files
+  // even if a stale caller asks for their removal.
+  await uninstallPackage(packageId, provider, async () => {
+    const state = await readInstallMarkerState(provider, packageId)
+    if (state.kind !== 'ok' || state.marker.packageId !== packageId) {
+      throw new Error(`${packageId} is not a registry-installed package; nothing was removed`)
+    }
+  })
   const refreshed = await notifyBackgroundCatalogChanged()
   return { catalogRefreshed: refreshed }
 }

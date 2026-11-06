@@ -19,6 +19,8 @@ export const webmcpPackages = {
   installedInactiveHint: "Open the side panel on a matching site to enable it.",
   installedActive: "Installed · active",
   provenanceIndeterminate: "Ownership unknown",
+  inventoryUnavailable: "The installed packages could not be read — the list below may be out of date.",
+  inventoryRetry: "Retry",
   toolsCount: "{count} tools",
   toolsCountUnverified: "(unverified)",
   installedTitle: "Installed packages",

@@ -103,6 +103,8 @@ describe('installPackage', () => {
     expect(parsed.packageId).toBe('com.example.pkg')
     expect(parsed.version).toBe('1.0.0')
     expect(typeof parsed.installedAt).toBe('string')
+    // The contract is an ISO timestamp: a non-ISO string must not pass.
+    expect(new Date(parsed.installedAt as string).toISOString()).toBe(parsed.installedAt)
   })
 
   it('rejects a package that ships the reserved marker file', async () => {

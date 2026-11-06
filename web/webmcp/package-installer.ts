@@ -729,7 +729,11 @@ async function removeMissingOk(provider: FsProvider, path: string): Promise<void
  * cleared by the same removal. Serialized with the SAME cross-context lock
  * as install (finding: "Concurrent package operations corrupt installs").
  */
-export async function uninstallPackage(packageId: string, provider: FsProvider): Promise<void> {
+export async function uninstallPackage(
+  packageId: string,
+  provider: FsProvider,
+  underLock?: (lockSignal: AbortSignal) => Promise<void>,
+): Promise<void> {
   try {
     normalizeProviderPath(packageId)
   } catch {
@@ -745,6 +749,10 @@ export async function uninstallPackage(packageId: string, provider: FsProvider):
         'LOCK_LOST',
       )
     }
+    // Provenance hook: runs while the per-package lock is held, so the
+    // decision cannot be invalidated by a concurrent install/uninstall. Its
+    // error is NOT a storage failure — let it through unwrapped.
+    if (underLock) await underLock(lockSignal)
     try {
       await removeMissingOk(provider, packageId)
     } catch (error) {

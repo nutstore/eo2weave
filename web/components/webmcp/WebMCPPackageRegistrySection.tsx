@@ -581,6 +581,12 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
    * them anywhere.
    */
   const [indeterminateIds, setIndeterminateIds] = useState<Set<string>>(new Set())
+  /**
+   * True when the installed-package inventory could not be read (issue #231).
+   * The sets above then hold the LAST known state, and the section says so
+   * instead of presenting an empty mount as fact.
+   */
+  const [inventoryUnavailable, setInventoryUnavailable] = useState(false)
   /** Activation state per installed id, read from the package config. */
   const [activations, setActivations] = useState<Map<string, 'enabled' | 'disabled'>>(new Map())
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -744,7 +750,16 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   const refreshInstalled = useCallback(async () => {
     const generation = refreshGeneration.current + 1
     refreshGeneration.current = generation
-    const provenance = await listInstalledPackageProvenance()
+    let provenance: Awaited<ReturnType<typeof listInstalledPackageProvenance>>
+    try {
+      provenance = await listInstalledPackageProvenance()
+    } catch {
+      // A mount that cannot be listed must not read as "nothing installed"
+      // (issue #231): keep the last known inventory and say it is stale,
+      // with a retry, instead of throwing into a fire-and-forget caller.
+      if (refreshGeneration.current === generation) setInventoryUnavailable(true)
+      return
+    }
     const states = await Promise.all(
       [...provenance.installed].map(async id => [id, await readInstalledPackageActivation(id)] as const),
     )
@@ -753,6 +768,7 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
     setInstalledIds(provenance.installed)
     setIndeterminateIds(provenance.indeterminate)
     setActivations(new Map(states))
+    setInventoryUnavailable(false)
   }, [])
 
   useEffect(() => {
@@ -960,6 +976,25 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
           onRemoveRegistry={handleRemoveRegistry}
         />
       ))}
+
+      {/*
+        Inventory read failure (issue #231): the mount could not be listed, so
+        the inventory below is the LAST known state rather than the truth.
+        Say so and offer a retry instead of leaving an empty list in place.
+      */}
+      {inventoryUnavailable && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{t('settings.webmcpPackages.inventoryUnavailable')}</span>
+          <button
+            type="button"
+            className="shrink-0 rounded-md border border-amber-400 px-2 py-0.5 hover:bg-amber-100 dark:border-amber-700 dark:hover:bg-amber-900"
+            onClick={() => void refreshInstalled()}
+          >
+            {t('settings.webmcpPackages.inventoryRetry')}
+          </button>
+        </div>
+      )}
 
       {/*
         Installed-packages inventory (round-3 finding: "Removing registry
