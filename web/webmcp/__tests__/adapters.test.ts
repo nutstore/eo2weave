@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { validateManifest, validatePackage, validatePackageSnapshot, parseWorkflow } from '@creatorweave/shared/webmcp-adapter'
+import { validateManifest, validatePackage, validatePackageSnapshot, validatePackageSnapshotWithDiagnostics, MAX_PACKAGE_SOURCE_CHARS, parseWorkflow } from '@creatorweave/shared/webmcp-adapter'
 import { matchesToolUrl, hasNestedQuantifier } from '@creatorweave/shared/webmcp-url'
 import { readPackage, readPackageCatalog } from '../adapters'
 import { manifest, source, pkg } from './fixtures'
@@ -220,5 +220,48 @@ describe('URL matching', () => {
     expect(long.length).toBeGreaterThan(4096)
     expect(matchesToolUrl(manifest.tools[0].urlRegex, 'https://example.com/articles/1')).toBe(true)
     expect(matchesToolUrl(manifest.tools[0].urlRegex, long)).toBe(false)
+  })
+})
+
+describe('package snapshot isolation (issue #237)', () => {
+  // Every tool may carry up to 256,000 characters, so an oversized PACKAGE is
+  // one with many near-maximum tools — exactly the shape of the 35-tool adapter
+  // that broke the aggregate cap in production.
+  const oversized = () => {
+    const tools = Array.from({ length: 9 }, (_, index) => ({
+      name: `tool-${index}`,
+      description: 'padded',
+      urlRegex: '^https://example\\.com/$',
+      path: `workflows/tool-${index}.js`,
+    }))
+    const perTool = Math.ceil((MAX_PACKAGE_SOURCE_CHARS + 1) / tools.length)
+    return {
+      manifest: { ...manifest, id: 'com.example.huge', tools },
+      sources: Object.fromEntries(tools.map(tool => [tool.path, `${source}\n//${'x'.repeat(perTool)}`])),
+    }
+  }
+
+  it('drops one oversized package without taking the others down', () => {
+    const result = validatePackageSnapshotWithDiagnostics([pkg, oversized()])
+    expect(result.packages.map(entry => entry.manifest.id)).toEqual([pkg.manifest.id])
+    expect(result.rejected).toHaveLength(1)
+    expect(result.rejected[0]).toMatchObject({ id: 'com.example.huge' })
+    expect(result.rejected[0].reason).toMatch(/per-package source limit/)
+  })
+
+  it('drops an invalid package by reason, keeping the valid ones', () => {
+    const broken = { manifest: { ...manifest, id: 'com.example.broken', version: undefined }, sources: pkg.sources }
+    const result = validatePackageSnapshotWithDiagnostics([pkg, broken])
+    expect(result.packages).toHaveLength(1)
+    expect(result.rejected[0].id).toBe('com.example.broken')
+  })
+
+  it('still throws for a structurally wrong snapshot', () => {
+    expect(() => validatePackageSnapshotWithDiagnostics('nope')).toThrow('must be an array')
+    expect(() => validatePackageSnapshotWithDiagnostics(Array.from({ length: 101 }, () => pkg))).toThrow('100 packages')
+  })
+
+  it('keeps the throwing helper for single-package callers', () => {
+    expect(() => validatePackageSnapshot([pkg, oversized()])).toThrow(/source limit/)
   })
 })

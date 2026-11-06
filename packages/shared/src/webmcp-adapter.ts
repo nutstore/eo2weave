@@ -198,6 +198,15 @@ export function parseWorkflow(source: string): { expression: string; contract: W
   return { expression: source.slice(definition.start!, definition.end!), contract, tree: structure }
 }
 
+/**
+ * Per-package cap on the workflow source it carries. The aggregate cap this
+ * replaced (2,000,000 chars across ALL packages) failed the whole snapshot, so
+ * one ordinary 35-tool package took every other adapter down with it. A size
+ * bound still belongs on the package itself: it is what keeps a malformed or
+ * hostile package from stalling the service worker's refresh.
+ */
+export const MAX_PACKAGE_SOURCE_CHARS = 2_000_000
+
 export function validatePackage(manifest: unknown, sources: unknown, directoryId: string): WebMCPPackage {
   const parsed = validateManifest(manifest, directoryId)
   if (!record(sources)) throw new Error('Package sources must be an object')
@@ -208,19 +217,53 @@ export function validatePackage(manifest: unknown, sources: unknown, directoryId
     try { parseWorkflow(source) } catch (error) { throw new Error(`${tool.path}: ${error instanceof Error ? error.message : String(error)}`) }
     files[tool.path] = source
   }
+  const total = Object.values(files).reduce((sum, source) => sum + source.length, 0)
+  if (total > MAX_PACKAGE_SOURCE_CHARS) {
+    throw new Error(`Package ${parsed.id} exceeds the per-package source limit (${MAX_PACKAGE_SOURCE_CHARS} characters)`)
+  }
   return { manifest: parsed, sources: files }
 }
 
-export function validatePackageSnapshot(value: unknown): WebMCPPackage[] {
-  if (!Array.isArray(value) || value.length > 100 || JSON.stringify(value).length > 2_000_000)
-    throw new Error('Package snapshot exceeds limits (100 packages, 2000000 characters)')
+export interface PackageSnapshotResult {
+  packages: WebMCPPackage[]
+  /** Packages dropped without taking the snapshot down with them. */
+  rejected: Array<{ id: string; reason: string }>
+}
+
+/**
+ * Validate a mount snapshot, isolating failures PER PACKAGE. An invalid or
+ * oversized package is dropped with a reason; the rest keep working. Only a
+ * structurally wrong input (not an array, too many packages) is fatal —
+ * those say nothing about any individual package.
+ */
+export function validatePackageSnapshotWithDiagnostics(value: unknown): PackageSnapshotResult {
+  if (!Array.isArray(value)) throw new Error('Package snapshot must be an array')
+  // A count cap stays aggregate: it bounds the refresh cost, and a mount with
+  // more than 100 packages is not a condition one package can recover from.
+  if (value.length > 100) throw new Error('Package snapshot exceeds limits (100 packages)')
+  const packages: WebMCPPackage[] = []
+  const rejected: PackageSnapshotResult['rejected'] = []
   const ids = new Set<string>()
-  return value.map(item => {
-    fields(item, ['manifest', 'sources'], 'Package snapshot')
-    if (!record(item.manifest) || typeof item.manifest.id !== 'string') throw new Error('Missing package id')
-    const pkg = validatePackage(item.manifest, item.sources, item.manifest.id)
-    if (ids.has(pkg.manifest.id)) throw new Error(`Duplicate package id: ${pkg.manifest.id}`)
-    ids.add(pkg.manifest.id)
-    return pkg
+  value.forEach((item, index) => {
+    const labeledId = record(item) && record(item.manifest) && typeof item.manifest.id === 'string'
+      ? item.manifest.id
+      : `#${index}`
+    try {
+      fields(item, ['manifest', 'sources'], 'Package snapshot')
+      if (!record(item.manifest) || typeof item.manifest.id !== 'string') throw new Error('Missing package id')
+      const pkg = validatePackage(item.manifest, item.sources, item.manifest.id)
+      if (ids.has(pkg.manifest.id)) throw new Error(`Duplicate package id: ${pkg.manifest.id}`)
+      ids.add(pkg.manifest.id)
+      packages.push(pkg)
+    } catch (error) {
+      rejected.push({ id: labeledId, reason: error instanceof Error ? error.message : String(error) })
+    }
   })
+  return { packages, rejected }
+}
+
+export function validatePackageSnapshot(value: unknown): WebMCPPackage[] {
+  const { packages, rejected } = validatePackageSnapshotWithDiagnostics(value)
+  if (rejected.length > 0) throw new Error(rejected[0].reason)
+  return packages
 }
