@@ -48,9 +48,12 @@ export default function ChatsHomeView() {
 
   // Load persisted conversations (the store is global; /chats may be the
   // first route the user lands on, so nothing else has triggered the load).
+  // loadError is deliberately NOT a dependency: a failed load keeps
+  // loaded=false + loadError and waits for the explicit Retry below, so
+  // re-running on the error itself would turn one failure into a retry storm.
   useEffect(() => {
     if (!loaded && workspaceInitialized && !projectLoading) loadFromDB()
-  }, [loaded, loadError, loadFromDB, workspaceInitialized, projectLoading])
+  }, [loaded, loadFromDB, workspaceInitialized, projectLoading])
 
   const chats = useMemo(
     () =>
@@ -65,9 +68,9 @@ export default function ChatsHomeView() {
     router.push(`/chats/${conv.id}`)
   }, [createNew, router, t])
 
-  // Retry re-runs loadFromDB explicitly: the load-failed path keeps
-  // loaded=false + loadError (so the WorkspaceLayout-style effect re-fires on
-  // the next store change), but a user-visible Retry must not wait for that.
+  // Retry re-runs loadFromDB explicitly. The load-failed path deliberately
+  // keeps loaded=false + loadError, so the effect above still re-fires on a
+  // later workspace change — but the user-visible Retry must not wait for one.
   const handleRetry = useCallback(() => {
     loadFromDB()
   }, [loadFromDB])
