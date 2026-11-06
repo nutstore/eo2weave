@@ -453,6 +453,9 @@
   "webmcpPackageInvalid": {
     "message": "Unavailable"
   },
+  "webmcpPackageRejected": {
+    "message": "Excluded from the tool catalog"
+  },
   "webmcpPackageActivation": {
     "message": "Enable package"
   },

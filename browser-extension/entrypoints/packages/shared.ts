@@ -245,6 +245,15 @@ export function buildManagedCard(entry: ManagedWebMCPPackage, options: ManagedCa
     diagnostic.textContent = `${t('webmcpPackageInvalid')}: ${entry.diagnostics.join('; ')}`
     body.append(diagnostic)
   }
+  // The package itself is valid enough to install and enable, but the adapter
+  // catalog dropped it, so none of its tools exist. Before this the page showed
+  // a healthy enabled card while every site silently had no tools (issue #237).
+  if (entry.catalogRejection) {
+    const rejected = document.createElement('div')
+    rejected.className = 'diagnostic rejection'
+    rejected.textContent = `${t('webmcpPackageRejected')}: ${entry.catalogRejection}`
+    body.append(rejected)
+  }
   body.append(path)
 
   const toggle = document.createElement('input')

@@ -224,3 +224,34 @@ describe('mine section', () => {
 
   })
 })
+
+describe('catalog rejection (issue #239)', () => {
+  it('shows why the adapter catalog dropped an otherwise valid package', () => {
+    const { doc } = setupDom()
+    const builtin = createBuiltinSection(host(doc, 'builtinHost'), () => {})
+    builtin.render([
+      entry({
+        id: 'org.opentabs.tools',
+        mount: 'builtin-webmcp',
+        access: 'read-only',
+        activation: 'enabled',
+        catalogRejection: 'Package source exceeds the size limit (1200000 characters)',
+      }),
+      entry({ id: 'com.example.healthy', mount: 'builtin-webmcp', access: 'read-only' }),
+    ])
+
+    const rejection = doc.querySelector('#builtinHost .diagnostic.rejection')!
+    expect(rejection).not.toBeNull()
+    expect(rejection.textContent).toContain('webmcpPackageRejected')
+    expect(rejection.textContent).toContain('Package source exceeds the size limit')
+    // Only the rejected card carries it.
+    expect(doc.querySelectorAll('#builtinHost .diagnostic.rejection')).toHaveLength(1)
+  })
+
+  it('leaves a healthy card without a rejection row', () => {
+    const { doc } = setupDom()
+    const builtin = createBuiltinSection(host(doc, 'builtinHost'), () => {})
+    builtin.render([entry({ id: 'com.example.healthy', mount: 'builtin-webmcp', access: 'read-only' })])
+    expect(doc.querySelector('#builtinHost .diagnostic.rejection')).toBeNull()
+  })
+})

@@ -216,6 +216,12 @@
       overflow-wrap: anywhere; line-height: 1.5; max-width: 100%;
     }
 
+    /* Catalog rejection: the package is valid but contributes no tools, so it
+       reads as a failure of the install rather than a fixable config warning. */
+    .diagnostic.rejection {
+      color: #b91c1c; background: #fef2f2; border-color: #fecaca;
+    }
+
     /* Success toast: fixed so it never pushes content down, green because a
        failure is announced by the section's red box instead. */
     .success-toast {

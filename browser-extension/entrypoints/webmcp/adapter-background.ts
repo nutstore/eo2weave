@@ -77,7 +77,7 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
   const providerCall = createProviderHandler(getAdapterStorage, refresh)
   const builtinCall = createProviderHandler(getBuiltinStorage, refresh)
   const skillCall = createProviderHandler(getExtensionSkillStorage, async () => {})
-  const manage = createPackageManagement(providerCall, refresh)
+  const manage = createPackageManagement(providerCall, refresh, () => service.diagnostics())
   const registry = createRegistryBackground({
     changed: refresh,
     notify: () => {

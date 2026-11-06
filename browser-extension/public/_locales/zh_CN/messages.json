@@ -178,6 +178,9 @@
   "webmcpPackageInvalid": {
     "message": "不可用"
   },
+  "webmcpPackageRejected": {
+    "message": "未纳入工具目录"
+  },
   "webmcpPackageActivation": {
     "message": "启用包"
   },

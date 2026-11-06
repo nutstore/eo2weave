@@ -9,6 +9,12 @@ import { recordUninstallIntent } from './package-installer'
 export function createPackageManagement(
   writeUser: (message: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; code?: string }>,
   changed: () => Promise<void>,
+  /**
+   * Packages the ADAPTER catalog rejected (issue #239). Read from the catalog
+   * service rather than re-validating here: the page must report what the
+   * running catalog actually dropped, not a second opinion.
+   */
+  readRejections: () => Array<{ id: string; reason: string }> = () => [],
 ) {
   return async (message: Record<string, unknown>) => {
     try {
@@ -22,6 +28,10 @@ export function createPackageManagement(
           ok: true,
           entries: entries.map(({ package: pkg, ...entry }) => ({ ...entry, manifest: pkg?.manifest ?? null })),
           userMountComplete: completeness.userMountComplete,
+          // A rejected package is installed and possibly enabled, yet contributes
+          // no tools. The page cannot re-derive that (validation happens on the
+          // adapter snapshot), so the reasons travel with the catalog.
+          rejected: readRejections(),
         }
       }
       if (!['webmcp_packages_set_config', 'webmcp_packages_delete'].includes(String(message.type))) throw new FsError('EINVAL', 'Unknown package operation')
