@@ -457,6 +457,9 @@ export function ModelQuickSwitch({
   // does not resurrect a stale error.
   useEffect(() => {
     if (!gatewayCatalogUnavailable) setCatalogRetryFailed(false)
+    // `empty` is a successful refresh that legitimately found no models: the
+    // banner stays, but the previous failure must not describe it.
+    if (getProviderCatalogStatus('llm-gateway') !== 'failed') setCatalogRetryFailed(false)
   }, [gatewayCatalogUnavailable])
 
   const openProviderSettings = () => {
