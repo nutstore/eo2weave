@@ -68,7 +68,18 @@ describe('readGitBranch', () => {
     await expect(readGitBranch(plainFolderHandle())).resolves.toBeNull()
   })
 
-  it('returns null when .git is not a directory', async () => {
+  it('returns null when .git is a file (worktree / submodule)', async () => {
+    const handle = {
+      getDirectoryHandle: vi.fn(async () => {
+        // A worktree or submodule stores `.git` as a file pointing at another
+        // gitdir we cannot resolve through a handle.
+        throw new DOMException('not a directory', 'TypeMismatchError')
+      }),
+    } as unknown as FileSystemDirectoryHandle
+    await expect(readGitBranch(handle)).resolves.toBeNull()
+  })
+
+  it('returns null when .git lacks a HEAD file', async () => {
     await expect(readGitBranch(dirHandle({}))).resolves.toBeNull()
   })
 
@@ -119,8 +130,13 @@ describe('readGitBranchViaExecutor', () => {
     await expect(readGitBranchViaExecutor(executor, 'scope-1')).resolves.toBeNull()
   })
 
-  it('returns null without an executor or root id', async () => {
+  it('returns null without an executor', async () => {
     await expect(readGitBranchViaExecutor(null, 'scope-1')).resolves.toBeNull()
-    await expect(readGitBranchViaExecutor(executorReturning(''), null)).resolves.toBeNull()
+  })
+
+  it('returns null without a root id, without reading', async () => {
+    const executor = executorReturning('ref: refs/heads/main\n')
+    await expect(readGitBranchViaExecutor(executor, null)).resolves.toBeNull()
+    expect(executor.read).not.toHaveBeenCalled()
   })
 })
