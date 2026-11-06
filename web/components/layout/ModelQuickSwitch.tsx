@@ -31,10 +31,11 @@ interface FlatModel {
   model: { id: string; name: string; hasVision?: boolean; stale?: boolean }
 }
 
-/** Only catalog-backed providers carry a `catalogStatus`; built-in providers
- *  ship a static model list and can never be in an unavailable-catalog state. */
+/** Only catalog-backed providers carry a refresher in `CATALOG_REFRESHERS`;
+ *  built-in providers ship a static model list and can never be in an
+ *  unavailable-catalog state. */
 function hasRefreshableCatalog(provider: AvailableProvider): boolean {
-  return provider.catalogStatus !== undefined
+  return Object.prototype.hasOwnProperty.call(CATALOG_REFRESHERS, provider.providerType)
 }
 
 function isCatalogUnavailable(provider: AvailableProvider): boolean {
@@ -235,9 +236,12 @@ export function ModelQuickSwitch({
     setSearchResultIdx(0)
   }, [open])
 
-  // Filter out providers with no models available
+  // Filter out providers with no models available — but keep a provider whose
+  // catalog is unavailable ('empty' / 'failed'): with zero models it would
+  // otherwise be dropped entirely and its per-provider notice + Retry could
+  // never render.
   const visibleProviders = useMemo(() =>
-    providers.filter((p) => p.models.length > 0),
+    providers.filter((p) => p.models.length > 0 || isCatalogUnavailable(p)),
     [providers]
   )
   // Only warn about the gateway catalog when the gateway is the provider the

@@ -52,12 +52,16 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   getGatewayAuthSessionGeneration: () => 0,
   updateGatewayModels: refreshModels,
 }))
-vi.mock('@/i18n', () => ({ useT: () => (key: string) => ({
-  'topbar.modelSwitcher.catalogUnavailableFor': 'Model list unavailable',
-  'topbar.modelSwitcher.retryCatalog': 'Retry model list',
-  'topbar.modelSwitcher.delisted': 'Delisted',
-  'topbar.modelSwitcher.loading': 'Loading models…',
-})[key] ?? key }))
+vi.mock('@/i18n', () => ({ useT: () => (key: string, params?: Record<string, string>) => {
+  const messages: Record<string, string> = {
+    'topbar.modelSwitcher.catalogUnavailableFor': "{provider} model list can't be refreshed",
+    'topbar.modelSwitcher.retryCatalog': 'Retry model list',
+    'topbar.modelSwitcher.delisted': 'Delisted',
+    'topbar.modelSwitcher.loading': 'Loading models…',
+  }
+  const template = messages[key] ?? key
+  return template.replace(/\{(\w+)\}/g, (_, name) => params?.[name] ?? `{${name}}`)
+} }))
 vi.mock('@creatorweave/ui', () => ({
   Popover: ({ children }: { children: ReactNode }) => <>{children}</>,
   PopoverTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -82,7 +86,7 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
   it('shows a retryable unavailable state without marking the selected model delisted', async () => {
     render(<ModelQuickSwitch />)
 
-    expect(await screen.findByText('Model list unavailable')).toBeInTheDocument()
+    expect(await screen.findByText("Nutstore AI model list can't be refreshed")).toBeInTheDocument()
     expect(screen.queryByText('Delisted')).not.toBeInTheDocument()
     expect(state.getStalePinnedModels).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'], 'failed')
     expect(state.switchProviderAndModel).not.toHaveBeenCalled()
@@ -104,7 +108,7 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
     }])
     render(<ModelQuickSwitch />)
 
-    expect(await screen.findByText('Model list unavailable')).toBeInTheDocument()
+    expect(await screen.findByText("Nutstore AI model list can't be refreshed")).toBeInTheDocument()
     expect(screen.queryByText('Delisted')).not.toBeInTheDocument()
     expect(state.getStalePinnedModels).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'], 'empty')
     const cachedModel = screen.getByRole('button', { name: 'Other' })
@@ -128,9 +132,25 @@ describe('ModelQuickSwitch gateway catalog failure', () => {
     // Loading = discovery still in flight: no outage banner, no retry action,
     // NOT marked delisted (getStalePinnedModels treats loading as unknown).
     expect(await screen.findByRole('button', { name: 'Other' })).toBeEnabled()
-    expect(screen.queryByText('Model list unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByText("Nutstore AI model list can't be refreshed")).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Retry model list' })).not.toBeInTheDocument()
     expect(screen.queryByText('Delisted')).not.toBeInTheDocument()
     expect(state.getStalePinnedModels).toHaveBeenCalledWith('llm-gateway', ['glm-5.2'], 'loading')
+  })
+
+  it('still renders the notice and Retry when an empty catalog leaves the provider with ZERO models', async () => {
+    state.getAvailableProviders.mockResolvedValueOnce([{
+      providerType: 'llm-gateway',
+      displayName: 'Nutstore AI',
+      providerKey: 'llm-gateway',
+      current: true,
+      models: [],
+      authoritativeIds: [],
+      catalogStatus: 'empty',
+    }])
+    render(<ModelQuickSwitch />)
+
+    expect(await screen.findByText("Nutstore AI model list can't be refreshed")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry model list' })).toBeInTheDocument()
   })
 })
