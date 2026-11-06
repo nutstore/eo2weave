@@ -18,6 +18,7 @@ export type GitBranchInfo =
  * exposes `listDir` plus an optional `read`).
  */
 export type GitHeadReader = {
+  stat?(rootId: string, relativePath: string): Promise<{ size: number } | null>
   read?(rootId: string, relativePath: string): Promise<{ content: string | ArrayBuffer }>
 }
 
@@ -35,6 +36,13 @@ const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i
 const MAX_GIT_HEAD_BYTES = 512
 
 /**
+ * Git forbids control characters in ref names, so a HEAD containing them was
+ * not written by git. Bidi overrides/isolates are also rejected: they are
+ * valid UTF-8 text but let a repository reorder the rendered badge.
+ */
+const UNSAFE_REF_CHARS_RE = /[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+
+/**
  * Parse the contents of `.git/HEAD`.
  *
  * - `ref: refs/heads/<branch>` → branch checkout
@@ -50,7 +58,8 @@ export function parseGitHead(content: string): GitBranchInfo | null {
     const prefix = 'refs/heads/'
     if (!ref.startsWith(prefix)) return null
     const name = ref.slice(prefix.length)
-    return name ? { kind: 'branch', name } : null
+    if (!name || UNSAFE_REF_CHARS_RE.test(name)) return null
+    return { kind: 'branch', name }
   }
 
   if (SHA_RE.test(value)) {
@@ -104,6 +113,12 @@ export async function readGitBranchViaExecutor(
 ): Promise<GitBranchInfo | null> {
   if (!executor?.read || !rootId) return null
   try {
+    // Stat first when the executor can: an oversized file must not be fetched
+    // (Native Host assembles the whole file in chunks before returning).
+    if (executor.stat) {
+      const stat = await executor.stat(rootId, '.git/HEAD')
+      if (!stat || stat.size > MAX_GIT_HEAD_BYTES) return null
+    }
     const { content } = await executor.read(rootId, '.git/HEAD')
     if (typeof content === 'string') {
       if (content.length > MAX_GIT_HEAD_BYTES) return null

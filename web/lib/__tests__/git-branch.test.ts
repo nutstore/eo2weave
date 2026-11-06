@@ -179,4 +179,18 @@ describe('readGitBranchViaExecutor', () => {
     await expect(readGitBranchViaExecutor(executor, null)).resolves.toBeNull()
     expect(executor.read).not.toHaveBeenCalled()
   })
+
+  it('checks the size before fetching the file when the executor can stat', async () => {
+    const executor = {
+      stat: vi.fn(async () => ({ size: 4096 })),
+      read: vi.fn(async () => ({ content: 'ref: refs/heads/main\n' })),
+    } as unknown as GitHeadReader
+    await expect(readGitBranchViaExecutor(executor, 'scope-1')).resolves.toBeNull()
+    expect(executor.read).not.toHaveBeenCalled()
+  })
+
+  it('rejects a branch name carrying bidi overrides', async () => {
+    const executor = executorReturning('ref: refs/heads/ma\u202ein\n')
+    await expect(readGitBranchViaExecutor(executor, 'scope-1')).resolves.toBeNull()
+  })
 })

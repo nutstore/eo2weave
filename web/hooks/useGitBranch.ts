@@ -17,6 +17,21 @@ const DEFAULT_INTERVAL_MS = 7000
  *  the process churn. */
 const EXECUTOR_INTERVAL_MS = 30000
 
+/** A read that never settles would leave `pending` set forever and freeze the
+ *  badge, so every read is bounded; null means "nothing to show". */
+const READ_TIMEOUT_MS = 15000
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(null), ms)
+    const settle = (value: T | null) => {
+      window.clearTimeout(timer)
+      resolve(value)
+    }
+    work.then(settle, () => settle(null))
+  })
+}
+
 export interface GitBranchSource {
   /** File System Access handle, when the root has one. */
   handle?: FileSystemDirectoryHandle | null
@@ -51,9 +66,12 @@ export function useGitBranch(
       pending = true
       const current = ++request
       try {
-        const next = executor
-          ? await readGitBranchViaExecutor(executor, rootId)
-          : await readGitBranch(handle)
+        const next = await withTimeout(
+          executor
+            ? readGitBranchViaExecutor(executor, rootId)
+            : readGitBranch(handle),
+          READ_TIMEOUT_MS
+        )
         if (!cancelled && current === request) {
           setInfo((prev) => (isSameGitBranch(prev, next) ? prev : next))
         }
