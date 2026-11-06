@@ -79,6 +79,10 @@ import {
   type GatewaySessionEvent,
 } from '@/agent/providers/llm-gateway-auth'
 import { getModelsForProvider, getProviderCatalogStatus, getProviderConfig, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+// The catalog module registers the token-purge listener at import time; the
+// expired-purge cases below only observe a 'failed' status when it is loaded
+// (in the app it always is — AppBootstrap imports it before any auth path).
+import '@/agent/providers/llm-gateway-provider'
 
 const BASE_URL = 'https://ai.jianguoyun.com'
 const CLIENT_ID = 'test-client-id'

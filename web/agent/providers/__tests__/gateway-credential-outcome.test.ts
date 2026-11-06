@@ -143,6 +143,10 @@ describe('applyGatewayCredentialOutcome', () => {
 
     expect(getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)).toBeTruthy()
     expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([model])
+    // The status matters too: a 'failed' write keeps both the config AND the
+    // list, so without this assertion a demotion of the newer catalog would
+    // pass unnoticed.
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('ready')
   })
 
   it('re-registers an absent provider as failed on a superseded verdict, never as loading', () => {

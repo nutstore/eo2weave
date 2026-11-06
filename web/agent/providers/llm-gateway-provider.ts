@@ -22,7 +22,7 @@
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from '@/agent/providers/types'
 import { getModelsForProvider, getProviderCatalogStatus, getProviderConfig, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
-import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, invalidateGatewayAccessToken, refreshAccessTokenWithStatus, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
+import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, invalidateGatewayAccessToken, onGatewayTokensPurged, refreshAccessTokenWithStatus, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -90,6 +90,18 @@ export function beginGatewayCatalogRefresh(): number {
 export function isGatewayCatalogRefreshCurrent(version: number): boolean {
   return version === catalogRefreshVersion
 }
+
+// The credential layer purges the token pair on an expiry without importing
+// this module (that would cycle auth → provider → auth). Listen for the purge
+// and record the outage here: the provider STAYS registered with a 'failed'
+// catalog, so the last usable model list remains on screen and Retry /
+// re-login stay reachable (#224 — only explicit logout removes it).
+// 'missing' is an explicit logout: the auth layer unregisters the provider
+// itself and this listener stays silent.
+onGatewayTokensPurged((finalStatus) => {
+  if (finalStatus === 'missing') return
+  markGatewayCatalogFailed()
+})
 
 /**
  * Register LLM Gateway as a dynamic provider.
@@ -224,8 +236,11 @@ function ensureGatewayCatalogFailed(): void {
  * Deliberately does NOT claim a new catalog refresh version: this is not a
  * fetch outcome, and a refresh owned by newer work must not be invalidated by
  * a purge that happened before it (review: "Newer catalog is erased by
- * purge"). Also the one write the credential purge can use — it must not
- * resurrect a provider that was never registered.
+ * purge"). It also never resurrects a provider that was never registered.
+ *
+ * Called from the token-purge listener, i.e. synchronously inside the purge's
+ * critical section — no catalog commit can interleave between the verdict and
+ * this write (review: "Working catalog shows outage").
  */
 export function markGatewayCatalogFailed(): void {
   if (!getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)) return
