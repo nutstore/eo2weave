@@ -21,6 +21,7 @@ export const topbar = {
       sessionRestoring: "Restoring session…",
       temporarilyUnavailable: "Temporarily unable to verify",
       catalogUnavailable: "Model list temporarily unavailable",
+      catalogUnavailableFor: "{provider} model list can't be refreshed",
       retryCatalog: "Retry",
       retryFailed: "Could not refresh the model list. Check your connection and try again.",
       noPinnedModels: "No models pinned yet. Add models in Settings.",
