@@ -796,13 +796,22 @@ async function clearStoredTokens(
   expectedRefreshToken?: string,
   finalStatus?: 'expired' | 'missing',
 ): Promise<boolean> {
-  return withGatewayCredentialLock(async () => {
+  const cleared = await withGatewayCredentialLock(async () => {
     const current = loadStoredTokens()
     if (expectedRefreshToken && current?.refresh_token !== expectedRefreshToken) return false
     bumpAuthSessionGeneration()
-    // The session is no longer trusted from this point onward. Drop its
-    // model catalog before key-store purging, which can fail or time out.
-    unregisterDynamicProvider('llm-gateway')
+    // An explicit logout removes the provider: a signed-out user must not keep
+    // a dead entry in the switcher. An EXPIRED session is NOT a logout — the
+    // catalog layer records the outage instead (it keeps the registration and
+    // the last usable model list, so Retry / re-login stay reachable, #224).
+    // The notification is synchronous and happens BEFORE any key-store await
+    // below: a later catalog write could demote a refresh that committed in
+    // the meantime (review: "Working catalog shows outage").
+    if (finalStatus === 'missing') {
+      unregisterDynamicProvider('llm-gateway')
+    } else {
+      notifyGatewayTokensPurged('expired')
+    }
     localStorage.removeItem(TOKEN_STORAGE_KEY)
     // Record the logout timestamp so a login attempt that was pending
     // (device-code approval / model preparation) in another tab cannot
@@ -876,6 +885,44 @@ async function clearStoredTokens(
     if (finalStatus) await setCredentialStatusLocked(finalStatus)
     return true
   })
+  // Outside the credential lock: the re-read hits the key store, and later
+  // logins/refreshes must not queue behind it.
+  if (cleared) await resyncGatewayApiKeyAvailability()
+  return cleared
+}
+
+/**
+ * Re-resolve the gateway's API-key availability after its credentials were
+ * purged.
+ *
+ * `checkHasApiKey()` answers from a module-level cache that outlives store
+ * resets; only the login / logout / reconcile paths invalidate it. A purge
+ * that leaves the entry in place keeps answering `true` for a dead session,
+ * so a later check (the welcome screen reads it on every mount) still treats
+ * the gateway as configured and never offers setup / re-login — the same
+ * "logged-in badge on a dead session" class this purge exists to prevent
+ * (review: "Expired credentials leave a stale key result").
+ */
+async function resyncGatewayApiKeyAvailability(): Promise<void> {
+  try {
+    const { useSettingsStore } = await import('@/store/settings.store')
+    const settings = useSettingsStore.getState()
+    settings.invalidateApiKeyCache(LLM_GATEWAY_API_KEY_ID)
+    // `checkHasApiKey()` answers for the SELECTED provider. Forcing a lookup
+    // while another provider is selected would resolve ITS status — ending a
+    // still-registering provider's loading state with a false "not
+    // configured". Dropping the gateway's cache entry is enough on its own:
+    // the verdict is re-resolved the next time the gateway is checked or
+    // selected.
+    if (settings.providerType !== 'llm-gateway') return
+    // flush: an explicit logout has unregistered the provider by now, and a
+    // deferred call would return without writing — leaving the stale `true`
+    // (and its "configured" welcome screen) on display.
+    await settings.checkHasApiKey({ flush: true })
+  } catch (e) {
+    // Auth must remain usable even when the settings store is unavailable.
+    console.warn('[llm-gateway] failed to refresh the api-key status after a purge:', e)
+  }
 }
 
 /**
@@ -1502,6 +1549,34 @@ export function getGatewayAuthSessionGeneration(): number {
 /** Invalidate async work belonging to the previous credential set. */
 function bumpAuthSessionGeneration(): void {
   authSessionGeneration++
+}
+
+type GatewayTokenPurgeListener = (finalStatus: 'expired' | 'missing') => void
+
+/**
+ * Listeners notified SYNCHRONOUSLY when the stored credential pair is purged.
+ *
+ * The catalog layer uses this to record that its catalog can no longer load.
+ * The notification is synchronous on purpose: the catalog write happens in the
+ * same tick as the purge verdict, so no catalog refresh that commits while the
+ * purge is still running key-store deletions can be demoted afterwards
+ * (review: "Working catalog shows outage"). A dynamic import from the purge
+ * path would open exactly that window.
+ */
+const gatewayTokenPurgeListeners: GatewayTokenPurgeListener[] = []
+
+export function onGatewayTokensPurged(listener: GatewayTokenPurgeListener): void {
+  gatewayTokenPurgeListeners.push(listener)
+}
+
+function notifyGatewayTokensPurged(finalStatus: 'expired' | 'missing'): void {
+  for (const listener of gatewayTokenPurgeListeners) {
+    try {
+      listener(finalStatus)
+    } catch {
+      // A failing listener must never abort the credential purge.
+    }
+  }
 }
 
 async function refreshAccessTokenWithStatusImpl(

@@ -21,8 +21,8 @@
 
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from '@/agent/providers/types'
-import { getModelsForProvider, getProviderCatalogStatus, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
-import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, invalidateGatewayAccessToken, refreshAccessTokenWithStatus, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
+import { getModelsForProvider, getProviderCatalogStatus, getProviderConfig, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, invalidateGatewayAccessToken, onGatewayTokensPurged, refreshAccessTokenWithStatus, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -90,6 +90,18 @@ export function beginGatewayCatalogRefresh(): number {
 export function isGatewayCatalogRefreshCurrent(version: number): boolean {
   return version === catalogRefreshVersion
 }
+
+// The credential layer purges the token pair on an expiry without importing
+// this module (that would cycle auth → provider → auth). Listen for the purge
+// and record the outage here: the provider STAYS registered with a 'failed'
+// catalog, so the last usable model list remains on screen and Retry /
+// re-login stay reachable (#224 — only explicit logout removes it).
+// 'missing' is an explicit logout: the auth layer unregisters the provider
+// itself and this listener stays silent.
+onGatewayTokensPurged((finalStatus) => {
+  if (finalStatus === 'missing') return
+  markGatewayCatalogFailed()
+})
 
 /**
  * Register LLM Gateway as a dynamic provider.
@@ -161,6 +173,95 @@ export async function prepareGatewayModels(
     status: result.status,
     authGeneration,
   }
+}
+
+/**
+ * Apply the outcome of a credential resolution that produced NO usable token.
+ *
+ * The three non-ok states are NOT interchangeable and each needs a different
+ * write (they all looked like `null` before `resolveGatewayDispatchCredential`):
+ *
+ * - `'temporary'` — transient (refresh in flight, network blip, storage
+ *   hiccup). No evidence of an outage: a catalog this context already has
+ *   must NOT be demoted, or the switcher warns over a working model list and
+ *   the banner comes back on every boot/reconcile.
+ * - `'expired'` — the catalog cannot load until the user re-authenticates, so
+ *   the provider must stay visible with a 'failed' catalog (the switcher's
+ *   Retry and the settings card's re-login are the recovery route). Note the
+ *   resolver has ALREADY purged the token pair, so `hasStoredTokens()` reads
+ *   false here — branch on the verdict, never on the stored state.
+ * - `'missing'` — never signed in: registering anyway leaves a provider whose
+ *   catalog can never load in every future app context.
+ */
+export function applyGatewayCredentialOutcome(
+  kind: 'temporary' | 'expired' | 'missing',
+  refreshVersion?: number,
+): void {
+  if (refreshVersion !== undefined && !isGatewayCatalogRefreshCurrent(refreshVersion)) {
+    // Newer catalog work owns the registry: never write over ITS catalog.
+    // A token-less boot still owes the user a recovery route, so an absent
+    // provider is registered as 'failed' (never the default 'loading', which
+    // the switcher hides) — without claiming a refresh version of its own.
+    if (!getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)) ensureGatewayCatalogFailed()
+    return
+  }
+  if (kind === 'temporary') {
+    // Transient (refresh in flight, network blip, storage hiccup): no
+    // evidence of an outage, so a catalog that already answered ('ready' or
+    // an authoritative 'empty') must NOT be demoted. 'loading' with nothing
+    // behind it carries no information, and there 'failed' is the only state
+    // that puts the switcher's Retry on screen.
+    const status = getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)
+    if (status === 'ready' || status === 'empty') return
+    ensureGatewayCatalogFailed()
+    return
+  }
+  // 'expired' AND 'missing': the catalog cannot load until the user acts
+  // (re-login, or a first sign-in). Registering the outage is what surfaces
+  // Retry / re-login; REMOVING the provider is reserved for explicit logout
+  // (#224) — an expired or never-signed-in session must stay visible.
+  ensureGatewayCatalogFailed()
+}
+
+/** Register the provider if this context has none, then record the outage. */
+function ensureGatewayCatalogFailed(): void {
+  if (!getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)) registerLLMGatewayProvider()
+  markGatewayCatalogFailed()
+}
+
+/**
+ * Record that the gateway catalog cannot load until the user acts again,
+ * keeping whatever model list is already registered for display.
+ *
+ * Deliberately does NOT claim a new catalog refresh version: this is not a
+ * fetch outcome, and a refresh owned by newer work must not be invalidated by
+ * a purge that happened before it (review: "Newer catalog is erased by
+ * purge"). It also never resurrects a provider that was never registered.
+ *
+ * Called from the token-purge listener, i.e. synchronously inside the purge's
+ * critical section — no catalog commit can interleave between the verdict and
+ * this write (review: "Working catalog shows outage").
+ */
+export function markGatewayCatalogFailed(): void {
+  if (!getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)) return
+  commitGatewayCatalog(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE), 'failed')
+}
+
+/**
+ * Whether an outcome resolved by a boot is still that boot's to write.
+ *
+ * `resolveGatewayDispatchCredential` PURGES the stored pair on an 'expired'
+ * verdict, and `clearStoredTokens` bumps the auth session generation itself —
+ * that bump belongs to this boot and must not swallow the write. Any other
+ * generation move (a login/logout in another context) supersedes it.
+ */
+export function isGatewayCredentialOutcomeCurrent(
+  resolvedGeneration: number,
+  currentGeneration: number,
+  kind: 'temporary' | 'expired' | 'missing',
+): boolean {
+  if (currentGeneration === resolvedGeneration) return true
+  return kind === 'expired' && currentGeneration === resolvedGeneration + 1
 }
 
 /** Register a previously fetched model list without another async boundary. */
