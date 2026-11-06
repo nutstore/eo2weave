@@ -9,17 +9,25 @@
  *   `hasStoredTokens()` treats a dead session as "never signed in" and makes
  *   the gateway (and its Retry / re-login route) disappear;
  * - a 'temporary' failure is not evidence of an outage: demoting a catalog
- *   that is already loaded puts the switcher's "catalog unavailable" banner
+ *   that already answered puts the switcher's "catalog unavailable" banner
  *   over a working model list, and it returns on every boot;
  * - a 'missing' session that stays registered leaves a provider whose catalog
  *   can never load in every future app context.
  */
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+// Region + client id must be set BEFORE the provider module is evaluated:
+// `ENABLE_LLM_GATEWAY` (deploy-region) is a module-load constant, and the
+// registration paths are no-ops on a build without the gateway.
+vi.hoisted(() => {
+  process.env.NEXT_PUBLIC_DEPLOY_REGION = 'cn'
+  process.env.NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID = 'test-client'
+})
 
 import {
   applyGatewayCredentialOutcome,
+  beginGatewayCatalogRefresh,
   isGatewayCredentialOutcomeCurrent,
-  registerGatewayModels,
   unregisterLLMGatewayProvider,
   LLM_GATEWAY_PROVIDER_TYPE,
 } from '@/agent/providers/llm-gateway-provider'
@@ -33,11 +41,11 @@ const model: ModelInfo = {
   contextWindow: 200_000,
 }
 
-function seedLoadedCatalog(): void {
+function seedCatalog(models: ModelInfo[], catalogStatus: 'ready' | 'empty'): void {
   registerDynamicProvider(
     LLM_GATEWAY_PROVIDER_TYPE,
-    { baseURL: 'https://gw.example/v1', modelName: model.id, headers: {}, apiMode: 'chat-completions' },
-    { models: [model], catalogStatus: 'ready', category: 'chinese', displayName: 'Nutstore AI' },
+    { baseURL: 'https://gw.example/v1', modelName: models[0]?.id || '', headers: {}, apiMode: 'chat-completions' },
+    { models, catalogStatus, category: 'chinese', displayName: 'Nutstore AI' },
   )
 }
 
@@ -47,7 +55,7 @@ describe('applyGatewayCredentialOutcome', () => {
   })
 
   it('unregisters the provider for a never-signed-in session', () => {
-    registerGatewayModels([model], 'ready')
+    seedCatalog([model], 'ready')
 
     applyGatewayCredentialOutcome('missing')
 
@@ -65,13 +73,32 @@ describe('applyGatewayCredentialOutcome', () => {
     expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
   })
 
-  it("does not demote a catalog that is already loaded when resolution is transient", () => {
-    seedLoadedCatalog()
+  it('records an outage for an expired verdict while keeping the model list for display', () => {
+    seedCatalog([model], 'ready')
+
+    applyGatewayCredentialOutcome('expired')
+
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([model])
+  })
+
+  it("does not demote a ready catalog when resolution is transient", () => {
+    seedCatalog([model], 'ready')
 
     applyGatewayCredentialOutcome('temporary')
 
     expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('ready')
     expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([model])
+  })
+
+  it("does not demote an authoritative empty catalog when resolution is transient", () => {
+    // 'empty' is a POSITIVE answer ("this account is served no models"); a
+    // transient credential failure says nothing about the catalog.
+    seedCatalog([], 'empty')
+
+    applyGatewayCredentialOutcome('temporary')
+
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('empty')
   })
 
   it('marks a transient failure with nothing to show as failed so the switcher offers Retry', () => {
@@ -83,12 +110,41 @@ describe('applyGatewayCredentialOutcome', () => {
     expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
   })
 
-  it('ignores a stale catalog refresh version', () => {
-    const staleVersion = -1
+  it('leaves a newer catalog alone when its refresh version superseded this outcome', () => {
+    seedCatalog([model], 'ready')
+    const currentVersion = beginGatewayCatalogRefresh()
 
-    applyGatewayCredentialOutcome('expired', staleVersion)
+    applyGatewayCredentialOutcome('expired', currentVersion - 1)
 
-    expect(getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)).toBeFalsy()
+    // The newer work owns the registry: neither its registration nor its
+    // catalog may be touched by a superseded boot.
+    expect(getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)).toBeTruthy()
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('ready')
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([model])
+
+    // ...and a current version does apply the outcome.
+    applyGatewayCredentialOutcome('expired', beginGatewayCatalogRefresh())
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('failed')
+  })
+
+  it('does not unregister a newer registration on a superseded missing verdict', () => {
+    const currentVersion = beginGatewayCatalogRefresh()
+    seedCatalog([model], 'ready')
+
+    applyGatewayCredentialOutcome('missing', currentVersion - 1)
+
+    expect(getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)).toBeTruthy()
+    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([model])
+  })
+
+  it('re-registers an absent provider on a superseded non-missing verdict', () => {
+    const currentVersion = beginGatewayCatalogRefresh()
+
+    applyGatewayCredentialOutcome('expired', currentVersion - 1)
+
+    // Without this the purge would leave the gateway invisible with no
+    // recovery entry at all.
+    expect(getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)).toBeTruthy()
   })
 })
 

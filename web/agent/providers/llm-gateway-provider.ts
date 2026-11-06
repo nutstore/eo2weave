@@ -21,7 +21,7 @@
 
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from '@/agent/providers/types'
-import { getModelsForProvider, getProviderCatalogStatus, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
+import { getModelsForProvider, getProviderCatalogStatus, getProviderConfig, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, invalidateGatewayAccessToken, refreshAccessTokenWithStatus, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'
@@ -185,14 +185,28 @@ export function applyGatewayCredentialOutcome(
   kind: 'temporary' | 'expired' | 'missing',
   refreshVersion?: number,
 ): void {
+  if (refreshVersion !== undefined && !isGatewayCatalogRefreshCurrent(refreshVersion)) {
+    // Newer catalog work owns the registry. Never remove ITS registration —
+    // unregistering on a stale 'missing' verdict is the destructive case —
+    // but a purged session must not leave the gateway invisible either, so
+    // re-register an absent provider without touching the newer catalog.
+    if (kind !== 'missing' && !getProviderConfig(LLM_GATEWAY_PROVIDER_TYPE)) {
+      registerLLMGatewayProvider()
+    }
+    return
+  }
   if (kind === 'missing') {
     unregisterLLMGatewayProvider()
     return
   }
-  // Nothing usable to show: 'failed' is the only state that offers Retry.
-  // A loaded list is left untouched (see registerGatewayModels' retain
-  // semantics for 'failed' — this guard keeps that retention meaningful).
-  if (getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).length > 0) return
+  // A transient failure is no evidence of an outage: a catalog that already
+  // answered ('ready' or an authoritative 'empty') must not be demoted to
+  // 'failed'. 'loading' with no models carries no information, and there
+  // 'failed' is the only state that puts the switcher's Retry on screen.
+  const status = getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)
+  if (kind === 'temporary' && (status === 'ready' || status === 'empty')) return
+  // 'expired' always records the outage (Retry / re-login is the recovery
+  // route) while registerGatewayModels retains whatever model list survives.
   registerGatewayModels([], 'failed', refreshVersion)
 }
 

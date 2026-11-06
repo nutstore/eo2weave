@@ -404,9 +404,15 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
               // The provider is now unregistered, so a non-flushing
               // checkHasApiKey() would answer "dynamic provider still
               // registering" and leave `hasApiKeyLoaded` false — the welcome
-              // screen would stay on its loading state forever.
+              // screen would stay on its loading state forever. Only flush
+              // when the gateway is the SELECTED provider: flushing would
+              // otherwise bypass another asynchronously registering provider's
+              // (e.g. codex-oauth) wait and show it a false "no key" setup card.
               const { useSettingsStore } = await import('@/store/settings.store')
-              await useSettingsStore.getState().checkHasApiKey({ flush: true })
+              const settings = useSettingsStore.getState()
+              if (settings.providerType === 'llm-gateway') {
+                await settings.checkHasApiKey({ flush: true })
+              }
             }
           }
         } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {
