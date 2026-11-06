@@ -18,6 +18,7 @@ export const webmcpPackages = {
   installedInactive: "インストール済み · 無効",
   installedInactiveHint: "対応サイトでサイドパネルを開くと有効化できます。",
   installedActive: "インストール済み · 有効",
+  provenanceIndeterminate: "所有者不明",
   toolsCount: "{count} ツール",
   toolsCountUnverified: "（未検証）",
   installedTitle: "インストール済みパッケージ",

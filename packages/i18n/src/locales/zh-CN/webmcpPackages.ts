@@ -18,6 +18,7 @@ export const webmcpPackages = {
   installedInactive: "已安装 · 未激活",
   installedInactiveHint: "到匹配站点打开侧边栏即可启用。",
   installedActive: "已安装 · 已激活",
+  provenanceIndeterminate: "来源未知",
   toolsCount: "{count} 个工具",
   toolsCountUnverified: "（未核验）",
   installedTitle: "已安装的包",

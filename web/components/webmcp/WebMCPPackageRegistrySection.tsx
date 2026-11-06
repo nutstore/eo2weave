@@ -31,7 +31,7 @@ import {
   addRegistry,
   registriesPersisted,
   installRegistryPackage,
-  listInstalledPackageIds,
+  listInstalledPackageProvenance,
   listRegistries,
   loadRegistryCatalog,
   readInstalledPackageActivation,
@@ -574,6 +574,13 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   /** Live mirror of `registries` for listeners that must not re-subscribe. */
   const registriesRef = useRef<PackageRegistry[]>([])
   const [installedIds, setInstalledIds] = useState<Set<string>>(new Set())
+  /**
+   * Directories whose install provenance is INDETERMINATE (issue #231): an
+   * unreadable or malformed marker, or one naming a different directory.
+   * They may or may not be registry installs — no Remove is offered for
+   * them anywhere.
+   */
+  const [indeterminateIds, setIndeterminateIds] = useState<Set<string>>(new Set())
   /** Activation state per installed id, read from the package config. */
   const [activations, setActivations] = useState<Map<string, 'enabled' | 'disabled'>>(new Map())
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -737,11 +744,14 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
   const refreshInstalled = useCallback(async () => {
     const generation = refreshGeneration.current + 1
     refreshGeneration.current = generation
-    const ids = await listInstalledPackageIds()
-    const states = await Promise.all([...ids].map(async id => [id, await readInstalledPackageActivation(id)] as const))
+    const provenance = await listInstalledPackageProvenance()
+    const states = await Promise.all(
+      [...provenance.installed].map(async id => [id, await readInstalledPackageActivation(id)] as const),
+    )
     // A stale read (an older generation that resolved last) is dropped.
     if (refreshGeneration.current !== generation) return
-    setInstalledIds(ids)
+    setInstalledIds(provenance.installed)
+    setIndeterminateIds(provenance.indeterminate)
     setActivations(new Map(states))
   }, [])
 
@@ -960,7 +970,7 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
         inventory lists every installed package directly from the mount,
         independent of any registry, so uninstall stays reachable.
       */}
-      {installedIds.size > 0 && (
+      {(installedIds.size > 0 || indeterminateIds.size > 0) && (
         <div className="rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-700 dark:bg-neutral-800">
           <div className="text-xs font-semibold">{t('settings.webmcpPackages.installedTitle')}</div>
           <div className="mt-2 space-y-1.5">
@@ -987,6 +997,21 @@ export function WebMCPPackageRegistrySection({ t }: WebMCPPackageRegistrySection
                 </div>
               )
             })}
+            {indeterminateIds.size > 0 && [...indeterminateIds].sort().map(pkgId => (
+              <div key={pkgId} className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono text-xs font-medium">{pkgId}</div>
+                  {/* No Remove here BY DESIGN (issue #231): the directory
+                      carries an unreadable, malformed or foreign install
+                      marker, so it is not proven to be a registry install.
+                      Offering Remove could delete an authored package. */}
+                  <span className="inline-flex items-center gap-1 rounded-full border border-neutral-300 px-2 py-0.5 text-xs text-tertiary dark:border-neutral-600">
+                    <AlertTriangle className="h-3 w-3" />
+                    {t('settings.webmcpPackages.provenanceIndeterminate')}
+                  </span>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
