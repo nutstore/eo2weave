@@ -238,9 +238,11 @@ export interface PackageSnapshotResult {
  */
 export function validatePackageSnapshotWithDiagnostics(value: unknown): PackageSnapshotResult {
   if (!Array.isArray(value)) throw new Error('Package snapshot must be an array')
-  // A count cap stays aggregate: it bounds the refresh cost, and a mount with
-  // more than 100 packages is not a condition one package can recover from.
-  if (value.length > 100) throw new Error('Package snapshot exceeds limits (100 packages)')
+  // No package-count cap: a catalog can legitimately cover hundreds of sites
+  // (OpenTabs ships 122 today), and a count limit is a product ceiling, not a
+  // safety boundary. Cost is bounded by the per-package source limit and by
+  // per-package isolation instead — one package can neither blow up the
+  // snapshot nor take the others down.
   const packages: WebMCPPackage[] = []
   const rejected: PackageSnapshotResult['rejected'] = []
   const ids = new Set<string>()

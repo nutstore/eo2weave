@@ -258,7 +258,16 @@ describe('package snapshot isolation (issue #237)', () => {
 
   it('still throws for a structurally wrong snapshot', () => {
     expect(() => validatePackageSnapshotWithDiagnostics('nope')).toThrow('must be an array')
-    expect(() => validatePackageSnapshotWithDiagnostics(Array.from({ length: 101 }, () => pkg))).toThrow('100 packages')
+  })
+
+  it('has no package-count ceiling — a large catalog is legitimate', () => {
+    const many = Array.from({ length: 150 }, (_, index) => ({
+      manifest: { ...manifest, id: `com.example.site${index}`, tools: [{ ...manifest.tools[0] }] },
+      sources: { [manifest.tools[0].path]: source },
+    }))
+    const result = validatePackageSnapshotWithDiagnostics(many)
+    expect(result.packages).toHaveLength(150)
+    expect(result.rejected).toHaveLength(0)
   })
 
   it('keeps the throwing helper for single-package callers', () => {
