@@ -23,6 +23,7 @@ export const topbar = {
       temporarilyUnavailable: "一時的に確認できません",
       catalogUnavailable: "モデル一覧を一時的に更新できません",
       retryCatalog: "再試行",
+      retryFailed: "モデル一覧を更新できませんでした。接続を確認して再試行してください。",
       noPinnedModels: "まだピン留めされたモデルはありません。設定で追加してください。",
       searchPlaceholder: "モデルを検索…",
       noResults: "一致するモデルはありません",

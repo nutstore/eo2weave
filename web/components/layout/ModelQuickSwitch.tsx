@@ -97,6 +97,8 @@ export function ModelQuickSwitch({
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [retryingGatewayCatalog, setRetryingGatewayCatalog] = useState(false)
+  /** Outcome of the last catalog retry: null until the user asks for one. */
+  const [catalogRetryFailed, setCatalogRetryFailed] = useState(false)
   const [query, setQuery] = useState('')
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({})
   const [visionOnly, setVisionOnly] = useState(false)
@@ -454,14 +456,23 @@ export function ModelQuickSwitch({
 
   const retryGatewayCatalog = async () => {
     setRetryingGatewayCatalog(true)
+    setCatalogRetryFailed(false)
     try {
       const gateway = await import('@/agent/providers/llm-gateway-provider')
       const token = await gateway.getValidAccessToken(
         gateway.getLLMGatewayBaseURL(), gateway.getLLMGatewayClientId(),
       )
-      if (token) await gateway.updateGatewayModels(token, gateway.getGatewayAuthSessionGeneration())
+      // No usable Nutstore AI session: there is nothing to fetch, so the
+      // click would otherwise look dead. Send the user to the sign-in surface
+      // that can actually change the outcome.
+      if (!token) {
+        openProviderSettings()
+        return
+      }
+      await gateway.updateGatewayModels(token, gateway.getGatewayAuthSessionGeneration())
     } catch (error) {
       console.error('[ModelQuickSwitch] Failed to refresh gateway models:', error)
+      setCatalogRetryFailed(true)
     } finally {
       setRetryingGatewayCatalog(false)
       useSettingsStore.getState().triggerProviderRefresh()
@@ -619,6 +630,12 @@ export function ModelQuickSwitch({
                 {retryingGatewayCatalog ? t('topbar.modelSwitcher.loading') : t('topbar.modelSwitcher.retryCatalog')}
               </button>
             </span>
+          </div>
+        )}
+
+        {!loading && !refreshingExistingList && gatewayCatalogUnavailable && catalogRetryFailed && (
+          <div className="border-b border-border/70 px-3 py-1.5 text-[11px] text-danger">
+            {t('topbar.modelSwitcher.retryFailed')}
           </div>
         )}
 

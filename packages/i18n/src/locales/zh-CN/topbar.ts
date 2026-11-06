@@ -23,6 +23,7 @@ export const topbar = {
       temporarilyUnavailable: "暂时无法验证",
       catalogUnavailable: "模型列表暂时无法更新",
       retryCatalog: "重试",
+      retryFailed: "刷新模型列表失败，请检查网络后重试。",
       noPinnedModels: "暂无常用模型，请在设置中添加",
       searchPlaceholder: "搜索模型…",
       noResults: "无匹配模型",
