@@ -507,6 +507,7 @@ const RootFileTreePanel = memo(function RootFileTreePanel({
           revealTarget={rootRevealTarget}
           onRevealComplete={onRevealComplete}
           showHeader={rootsLength <= 1}
+          gitBranch={gitBranch}
           refreshSignal={refreshSignal}
         />
       ) : null}

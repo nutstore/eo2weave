@@ -27,16 +27,22 @@ export function useGitBranch(
 
   useEffect(() => {
     let cancelled = false
-    // A focus read and a poll read can overlap; only the newest may land,
-    // otherwise a slower older read overwrites a newer branch.
-    let latestRequest = 0
+    // One read at a time: a focus read must not stack on a slow poll read
+    // (Native Host reads are IPC), and serialising also means an older read
+    // can never overwrite a newer result.
+    let inFlight = false
 
     const read = async () => {
-      const request = ++latestRequest
-      const next = executor
-        ? await readGitBranchViaExecutor(executor, rootId)
-        : await readGitBranch(handle)
-      if (!cancelled && request === latestRequest) setInfo(next)
+      if (inFlight) return
+      inFlight = true
+      try {
+        const next = executor
+          ? await readGitBranchViaExecutor(executor, rootId)
+          : await readGitBranch(handle)
+        if (!cancelled) setInfo(next)
+      } finally {
+        inFlight = false
+      }
     }
 
     setInfo(null)

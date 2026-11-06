@@ -28,8 +28,8 @@ import { useOPFSStore } from '@/store/opfs.store'
 import { useWorkspaceStore } from '@/store/workspace.store'
 import { useSkillsStore } from '@/store/skills.store'
 import { SidebarPanelHeader } from '@/components/layout/SidebarPanelHeader'
-import { useGitBranch } from '@/hooks/useGitBranch'
 import { GitBranchBadge } from './GitBranchBadge'
+import type { GitBranchInfo } from '@/lib/git-branch'
 import { useT } from '@/i18n'
 import {
   isTreeEntryIgnored,
@@ -80,6 +80,11 @@ interface FileTreePanelBaseProps {
   pathPrefix?: string | null
   selectedPath?: string | null
   showHeader?: boolean
+  /**
+   * Git branch of this root, resolved by the caller so one root polls once.
+   * Rendered in the header; null when the folder is not a work tree.
+   */
+  gitBranch?: GitBranchInfo | null
   /**
    * Increment to trigger a tree refresh from outside (used in multi-root mode
    * where showHeader=false hides the built-in refresh button).
@@ -449,12 +454,12 @@ export const FileTreePanel = memo(function FileTreePanel({
   selectedPath,
   mode = 'all',
   showHeader = true,
+  gitBranch = null,
   refreshSignal = 0,
   revealTarget,
   onRevealComplete,
 }: FileTreePanelProps) {
   const t = useT()
-  const gitBranch = useGitBranch({ handle: directoryHandle, executor: diskExecutor, rootId: diskRootId })
   const [rootNodes, setRootNodes] = useState<TreeNode[]>([])
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
