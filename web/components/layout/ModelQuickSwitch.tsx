@@ -483,18 +483,18 @@ export function ModelQuickSwitch({
         openProviderSettings()
         return
       }
-      const models = await gateway.updateGatewayModels(
+      await gateway.updateGatewayModels(
         resolved.accessToken, gateway.getGatewayAuthSessionGeneration(),
       )
-      // updateGatewayModels swallows network/non-2xx failures into an empty
-      // list instead of throwing, so the return value is the only signal.
-      if (!models.length) {
-        // A rejected token unregisters the provider (re-auth required); an
-        // unregistered gateway cannot be retried from here.
-        if (!getProviderConfig('llm-gateway')) {
-          openProviderSettings()
-          return
-        }
+      // A rejected token unregisters the provider; re-auth is the only fix.
+      if (!getProviderConfig('llm-gateway')) {
+        openProviderSettings()
+        return
+      }
+      // Read the authoritative outcome: an empty list is 'empty' (the banner
+      // already says so) while a network/non-2xx failure is 'failed'. List
+      // length cannot tell them apart, and updateGatewayModels never throws.
+      if (getProviderCatalogStatus('llm-gateway') === 'failed') {
         setCatalogRetryFailed(true)
       }
     } catch (error) {
