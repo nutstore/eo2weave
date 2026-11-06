@@ -179,11 +179,18 @@ async function reconcileLoggedIn(job: ReconcileJob, event: GatewaySessionEvent):
       if (event.type === 'identity-change') registerGatewayModels([], 'loading')
       return 'transient'
     }
-    // Confirmed absent ('missing' = never logged in / fully purged) or
-    // irrecoverably expired: reconcile logged-out. The provider was already
-    // unregistered by the invalidation path — remove any catalog remnants
-    // and reconcile BOTH status representations.
-    unregisterLLMGatewayProvider()
+    // Logged out for real (the other tab removed the token pair) → removing
+    // the provider is correct. A 'missing' verdict with a token key still in
+    // place is more likely a read that raced another context's write (a side
+    // panel booting, a second tab refreshing) — removing the provider then
+    // reads as "provider unavailable, sign in again" for a selection that
+    // still exists, which is exactly the reported symptom. Keep it registered
+    // and let the switcher report the truth instead.
+    if (event.type === 'identity-change' && event.newRefreshToken === null) {
+      unregisterLLMGatewayProvider()
+    } else {
+      registerGatewayModels([], 'failed')
+    }
     const statusOk = await reconcileCredentialStatus(resolved.kind, { clearError: false }, job)
     if (!statusOk) return 'superseded'
     return 'logged-out'
@@ -274,8 +281,9 @@ async function reconcileAccessRefresh(job: ReconcileJob): Promise<GatewayReconci
     return 'transient'
   }
   // The shared session is genuinely gone/expired despite the refresh event
-  // (e.g. a logout raced the event delivery): reconcile logged-out.
-  unregisterLLMGatewayProvider()
+  // (e.g. a logout raced the event delivery): reconcile logged-out — again
+  // without removing the provider, which only explicit logout may do.
+  registerGatewayModels([], 'failed')
   const statusOk = await reconcileCredentialStatus(resolved.kind, { clearError: false }, job)
   return statusOk ? 'logged-out' : 'superseded'
 }

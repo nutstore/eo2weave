@@ -373,7 +373,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       let gatewayRestoreVersion: number | undefined
       let gatewayRestoreGeneration: number | undefined
       try {
-        const { registerLLMGatewayProvider, registerGatewayModels, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, unregisterLLMGatewayProvider } = await import('@/agent/providers/llm-gateway-provider')
+        const { registerLLMGatewayProvider, registerGatewayModels, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId } = await import('@/agent/providers/llm-gateway-provider')
         const { resolveGatewayDispatchCredential, getGatewayAuthSessionGeneration, hasStoredTokens } = await import('@/agent/providers/llm-gateway-auth')
         registerLLMGatewayProvider()
         const clientId = getLLMGatewayClientId()
@@ -405,9 +405,12 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
               // re-authenticating (or a retry) is the fix.
               registerGatewayModels([], 'failed', gatewayRestoreVersion)
             } else {
-              // Never signed in: registering anyway leaves a provider whose
-              // catalog can never load in every future app context.
-              unregisterLLMGatewayProvider()
+              // Never signed in. Leave the provider registered with a failed
+              // catalog rather than removing it: removal is what surfaced as
+              // "provider unavailable" whenever a second context (side panel)
+              // was mid-write to the shared token key. Only explicit logout
+              // removes the provider.
+              registerGatewayModels([], 'failed', gatewayRestoreVersion)
             }
           }
         } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {
