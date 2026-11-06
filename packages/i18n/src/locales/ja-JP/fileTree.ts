@@ -14,6 +14,8 @@ export const fileTree = {
     emptyStateDescription:
       "AIが変更したファイルはここに一時保存されます。確認後にローカルファイルに保存されます",
     draftFiles: "未確認の変更",
+    gitBranch: "Git ブランチ",
+    detachedHead: "detached HEAD",
     approvedNotSynced: "確認済み、ディスクへの書き込み待ち",
     loadFailed: "ディレクトリにアクセスできません",
     opfsDraftRoot: "OPFS 下書き",
