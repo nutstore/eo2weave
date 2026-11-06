@@ -218,7 +218,7 @@ set('my_disk_writer', {
 Two behaviours come from `authorize()` itself, not from your table entry:
 
 - With YOLO mode on, `prompt` returns `allow` without prompting. YOLO is a per-conversation switch the user controls (persisted per conversation; the LLM cannot enable it — `switch_agent_mode` force-clears it), so this is the user's own choice, not a bypass your tool introduces. `forbidden` stays denied even under YOLO — that check runs first.
-- `memoryKey` is what makes "always allow this conversation" skip later prompts. Omit it (or return `null`) for irreversible operations so every call asks again.
+- `memoryKey` is what makes "always allow this conversation" skip later prompts. Omit it (or return `null`) for irreversible operations so every call asks again (YOLO mode aside — that switch skips prompt-level approval by design, see the bullet above).
 
 ## 7. Test it
 
