@@ -28,6 +28,7 @@
  * directory also removes any override — no extra cleanup exists to leak.
  */
 
+import { encodeInstallMarker, INSTALL_MARKER_FILE, type InstallMarker } from '@/webmcp/install-marker'
 import { normalizeProviderPath, type FsProvider } from '@creatorweave/fs-provider'
 import { validateManifest, validatePackage } from '@creatorweave/shared/webmcp-adapter'
 import type {
@@ -254,7 +255,13 @@ export async function installPackage(
   // fighting over the lease with retry backoff.
   return withInstallerLock(id, async lockSignal => {
     if (underLock) await underLock(lockSignal)
-    await swapPackageIntoPlace(id, staged, provider, lockSignal)
+    await swapPackageIntoPlace(id, staged, provider, lockSignal, {
+      schemaVersion: 1,
+      registryId: registry.manifestUrl,
+      packageId: id,
+      version: pkg.version,
+      installedAt: new Date().toISOString(),
+    })
     return { filesWritten: staged.length }
   })
 }
@@ -422,6 +429,7 @@ async function swapPackageIntoPlace(
   staged: Array<{ path: string; bytes: Uint8Array }>,
   provider: FsProvider,
   lockSignal: AbortSignal,
+  marker: InstallMarker,
 ): Promise<void> {
   // The replacement is written into a staging directory FIRST and only
   // swapped into place after EVERY write succeeded, so a failed write
@@ -507,6 +515,13 @@ async function swapPackageIntoPlace(
     try {
       await provider.mkdir(staging, { recursive: true })
       for (const file of staged) {
+        // Reserved: the provenance marker owns this path (issue #231).
+        if (file.path === INSTALL_MARKER_FILE) {
+          throw new PackageInstallError(
+            `Package ${id} ships a reserved file: ${INSTALL_MARKER_FILE}`,
+            'INVALID_PACKAGE',
+          )
+        }
         if (lockSignal.aborted) {
           throw new PackageInstallError(
             `The install of ${id} was aborted: the package lock was lost mid-transaction`,
@@ -518,6 +533,14 @@ async function swapPackageIntoPlace(
     } catch (error) {
       if (error instanceof PackageInstallError) throw error
       throw new PackageInstallError(`Failed to write package ${id} to storage: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
+    }
+    // Provenance marker: written inside the staged tree so it is swapped in
+    // atomically with the package and never survives an aborted install.
+    try {
+      await provider.writeFile(`${staging}/${INSTALL_MARKER_FILE}`, encodeInstallMarker(marker))
+    } catch (error) {
+      if (error instanceof PackageInstallError) throw error
+      throw new PackageInstallError(`Failed to record install provenance for ${id}: ${error instanceof Error ? error.message : String(error)}`, 'STORAGE_FAILED')
     }
     // All writes landed — swap the new tree in. FENCE the swap commit
     // itself (finding: "Lease-lost writes still execute"): a lease lost

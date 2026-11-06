@@ -26,6 +26,7 @@ import {
   type RegistryManifestPackage,
 } from '@/webmcp/package-registry-client'
 import { installPackage, uninstallPackage } from '@/webmcp/package-installer'
+import { readInstallMarkerState } from '@/webmcp/install-marker'
 import { getWebMCPBridge } from '@/webmcp/bridge-client'
 
 const REGISTRIES_STORAGE_KEY = 'webmcp_package_registries'
@@ -257,12 +258,6 @@ async function readManifestId(mount: string, directory: string): Promise<{ id: s
   }
 }
 
-/** True when the directory holds a readable manifest with a string id. */
-async function directoryHasValidManifest(mount: string, directory: string): Promise<boolean> {
-  const state = await readManifestId(mount, directory)
-  return state !== 'INVALID' && state !== 'UNREADABLE'
-}
-
 /**
  * Reject an install whose package id collides with an EXISTING package.
  *
@@ -435,12 +430,19 @@ export async function uninstallRegistryPackage(packageId: string): Promise<{ cat
 }
 
 /**
- * Directories currently present on the `webmcp` mount (= installed ids).
- * Dot-prefixed directories are internal installer state (staging/backup),
- * not packages, and are skipped. A directory WITHOUT a valid manifest is
- * also skipped: the settings UI must not offer install/uninstall actions
- * for data it cannot interpret (finding: "Existing data is overwritten" —
- * the actions half).
+ * Packages this extension INSTALLED on the `webmcp` mount (issue #231).
+ *
+ * Ownership comes from the install marker, never from the directory shape: an
+ * authored package whose manifest id matches its directory is shape-identical
+ * to an install, and inferring from that shape offered the registry row's
+ * uninstall action for data it does not own.
+ *
+ * - marker present, `packageId` == directory → installed
+ * - no marker → authored (or installed before markers existed)
+ * - marker unreadable / malformed / naming another directory → skipped, so no
+ *   uninstall action is offered for data whose ownership cannot be proven
+ *
+ * Dot-prefixed directories are internal installer state (staging/backup).
  */
 export async function listInstalledPackageIds(): Promise<Set<string>> {
   try {
@@ -449,7 +451,14 @@ export async function listInstalledPackageIds(): Promise<Set<string>> {
     const ids = new Set<string>()
     for (const entry of entries) {
       if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
-      if (await directoryHasValidManifest('webmcp', entry.name)) ids.add(entry.name)
+      let state: Awaited<ReturnType<typeof readInstallMarkerState>>
+      try {
+        state = await readInstallMarkerState(provider, entry.name)
+      } catch {
+        continue
+      }
+      if (state.kind !== 'ok' || state.marker.packageId !== entry.name) continue
+      ids.add(state.marker.packageId)
     }
     return ids
   } catch {

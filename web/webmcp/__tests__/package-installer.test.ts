@@ -165,7 +165,7 @@ describe('installPackage', () => {
     await expect(provider.stat('com.example.pkg/extra.js')).resolves.toMatchObject({ kind: 'file' })
     const listed = await provider.readdir('com.example.pkg')
     // The installer always appends the disabled-default config.json.
-    expect(listed.map(entry => entry.name).sort()).toEqual(['config.json', 'extra.js', 'manifest.json', 'workflows'])
+    expect(listed.map(entry => entry.name).sort()).toEqual(['.webmcp-install.json', 'config.json', 'extra.js', 'manifest.json', 'workflows'])
     // No staging/backup leftovers.
     await expect(provider.stat('.com.example.pkg.installing')).rejects.toThrow()
     await expect(provider.stat('.com.example.pkg.previous')).rejects.toThrow()
@@ -534,7 +534,7 @@ describe('installPackage — overlapping operations', () => {
     expect(JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/config.json'))))
       .toEqual({ activation: 'disabled' })
     const listed = (await provider.readdir('com.example.pkg')).map(entry => entry.name).sort()
-    expect(listed).toEqual(['config.json', 'manifest.json', 'workflows'])
+    expect(listed).toEqual(['.webmcp-install.json', 'config.json', 'manifest.json', 'workflows'])
     return manifest.version as '1.0.0' | '2.0.0'
   }
 
