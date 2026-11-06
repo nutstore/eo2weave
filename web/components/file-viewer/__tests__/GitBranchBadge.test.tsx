@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { GitBranchBadge } from '../GitBranchBadge'
+import { GitBranchBadge } from '@/components/file-viewer/GitBranchBadge'
 
 describe('GitBranchBadge', () => {
   it('shows the full branch ref as the tooltip', () => {
