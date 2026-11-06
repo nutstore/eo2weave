@@ -100,6 +100,57 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     expect(useSettingsStore.getState().temperature).toBe(0.42)
   })
 
+  it.each(['llm-gateway', 'codex-oauth'])(
+    'preserves the registered %s provider when a peer syncs custom provider settings',
+    async (providerType) => {
+      const modelName = 'deepseek-v4.1-flash'
+      seedStorage({ providerType, modelName, customProviders: [], temperature: 0.7 })
+      const { useSettingsStore } = await importStore()
+      const { registerDynamicProvider, getProviderConfig, getProviderCatalogStatus, getModelsForProvider } =
+        await import('@/agent/providers/types')
+      const config = { baseURL: 'https://gateway.example/v1', modelName, headers: {} }
+      registerDynamicProvider(providerType, config, {
+        category: 'custom',
+        displayName: 'Session provider',
+        models: [{ id: modelName, name: modelName, capabilities: ['code'] }],
+        catalogStatus: 'ready',
+      })
+
+      dispatchStorageEvent(performance.now() + 10, revSnapshot({
+        providerType, modelName, customProviders: [], temperature: 0.42,
+      }, 100))
+
+      expect(useSettingsStore.getState().temperature).toBe(0.42)
+      expect(useSettingsStore.getState().providerType).toBe(providerType)
+      expect(useSettingsStore.getState().modelName).toBe(modelName)
+      expect(getProviderConfig(providerType)).toEqual(config)
+      expect(getProviderCatalogStatus(providerType)).toBe('ready')
+      expect(getModelsForProvider(providerType).map((model) => model.id)).toEqual([modelName])
+    },
+  )
+
+  it('adds, updates and removes custom providers from a peer snapshot', async () => {
+    const removed = {
+      id: 'custom-removed', name: 'Removed', baseUrl: 'https://old.example/v1',
+      models: ['old-model'], apiMode: 'chat-completions', createdAt: 1, updatedAt: 1,
+    }
+    const retained = { ...removed, id: 'custom-retained', name: 'Retained' }
+    seedStorage({ customProviders: [removed, retained] })
+    await importStore()
+    const { getProviderConfig, getModelsForProvider } = await import('@/agent/providers/types')
+    expect(getProviderConfig(removed.id)).not.toBeNull()
+    expect(getProviderConfig(retained.id)?.baseURL).toBe(retained.baseUrl)
+    const updated = { ...retained, baseUrl: 'https://updated.example/v1', models: ['new-model'], updatedAt: 2 }
+    const added = { ...updated, id: 'custom-added', name: 'Added' }
+
+    dispatchStorageEvent(performance.now() + 10, revSnapshot({ customProviders: [updated, added] }, 100))
+
+    expect(getProviderConfig(removed.id)).toBeNull()
+    expect(getProviderConfig(retained.id)?.baseURL).toBe(updated.baseUrl)
+    expect(getModelsForProvider(retained.id).map((model) => model.id)).toEqual(['new-model'])
+    expect(getProviderConfig(added.id)?.baseURL).toBe(added.baseUrl)
+  })
+
   it('invalidates provider discovery when another tab changes pinned models', async () => {
     const { useSettingsStore } = await importStore()
     let release!: () => void
