@@ -133,7 +133,24 @@ describe('installPackage (extension side)', () => {
     const result = await installPackage(registry, pkg, provider, { fetchImpl: fetchServing(files) })
 
     expect(result.filesWritten).toBeGreaterThan(0)
-    expect(await listFiles(provider, 'com.example.pkg')).toEqual(['config.json', 'manifest.json', 'workflows'])
+    expect(await listFiles(provider, 'com.example.pkg')).toEqual([
+      '.webmcp-install.json',
+      'config.json',
+      'manifest.json',
+      'workflows',
+    ])
+    // Provenance marker: the installer is the only writer, and its presence is
+    // what tells an install apart from an authored package (issue #228).
+    const marker = JSON.parse(
+      new TextDecoder().decode(await provider.readFile('com.example.pkg/.webmcp-install.json')),
+    )
+    expect(marker).toMatchObject({
+      schemaVersion: 1,
+      packageId: 'com.example.pkg',
+      version: expect.any(String),
+      registryId: expect.any(String),
+      installedAt: expect.any(String),
+    })
     const manifest = JSON.parse(new TextDecoder().decode(await provider.readFile('com.example.pkg/manifest.json')))
     expect(manifest.id).toBe('com.example.pkg')
   })

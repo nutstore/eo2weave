@@ -15,6 +15,7 @@
 
 import type { FsProvider } from '@creatorweave/fs-provider'
 import { getAdapterStorage } from './provider-storage'
+import { readInstallMarker, type InstallMarker } from './install-marker'
 import { getBuiltinStorage } from './builtin-storage'
 import {
   fetchRegistryManifest,
@@ -599,12 +600,45 @@ export async function uninstallRegistryPackage(packageId: string): Promise<void>
  * registry install record that would settle it durably is the planned
  * storage work, not a read-path guess.
  */
+/**
+ * Directories on the `webmcp` mount that carry an install marker, keyed by
+ * directory name (issue #228). This is the AUTHORITATIVE registry-install
+ * signal: an authored package never has one, even when its directory name
+ * equals its manifest id.
+ *
+ * A package installed before markers existed has none and therefore reads as
+ * authored until it is installed or updated again.
+ */
+export async function listInstallMarkers(): Promise<Map<string, InstallMarker>> {
+  const provider = await getAdapterStorage()
+  const entries = await provider.readdir('')
+  const markers = new Map<string, InstallMarker>()
+  for (const entry of entries) {
+    if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
+    try {
+      const marker = await readInstallMarker(provider, entry.name)
+      if (marker) markers.set(entry.name, marker)
+    } catch {
+      // A storage error must not turn a known install into an authored one;
+      // the directory stays classified by the marker only when readable, and
+      // an unreadable marker is surfaced as "no evidence", not "authored".
+    }
+  }
+  return markers
+}
+
 export async function listInstalledPackageIds(): Promise<Set<string>> {
   const provider = await getAdapterStorage()
   const entries = await provider.readdir('')
   const ids = new Set<string>()
   for (const entry of entries) {
     if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue
+    // A marker names the id even when the manifest cannot be read.
+    const marker = await readInstallMarker(provider, entry.name).catch(() => null)
+    if (marker) {
+      ids.add(marker.packageId)
+      continue
+    }
     const state = await readManifestId('webmcp', entry.name)
     // Transient read failure: fall back to the directory identity (see above)
     // instead of failing every other package's entry with it.

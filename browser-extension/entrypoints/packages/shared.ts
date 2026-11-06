@@ -25,27 +25,30 @@ export function t(key: string, substitutions?: string | string[]): string {
  * Classify one package:
  *
  *   builtin-webmcp (read-only)              → builtin
- *   webmcp + install record (DIRECTORY)     → registry
- *   webmcp without an install record        → mine (user / agent authored)
+ *   webmcp + install marker                 → registry
+ *   webmcp without an install marker        → mine (user / agent authored)
  *
- * Ownership is decided by the INSTALL DIRECTORY, never by the manifest id: the
- * installer names a package directory after the id it installs, and
- * `listInstalledPackageIds` reports those directory names. A user- or
- * agent-authored package whose manifest merely DECLARES an id that an installed
- * registry package also uses therefore stays "mine" — it has its own directory
- * and its own delete action — instead of disappearing from "mine" and being
- * handed the registry row's uninstall action (which removes the registry
- * install, not the authored package, while the page claimed otherwise).
+ * Ownership is decided by the INSTALL MARKER the installer writes into the
+ * package directory (issue #228), never by the manifest id or the directory
+ * shape. The installer names a package directory after the id it installs, so
+ * a hand- or agent-authored package that follows the same natural layout
+ * (directory `<id>/`, manifest `id` == `<id>`) is shape-identical to an
+ * install — inferring from that shape gave the authored package the registry
+ * row's uninstall action, which removed something else while the page said
+ * otherwise.
+ *
+ * A package installed before markers existed carries none and reads as
+ * authored until it is installed or updated again.
  *
  * A registry install is deliberately NOT mirrored into "mine": two views
  * offering the same disable switch could disagree about the package's state.
  */
 export function classifyPackage(
   entry: Pick<ManagedWebMCPPackage, 'mount' | 'directory'>,
-  installedDirectories: ReadonlySet<string> = NO_INSTALLS,
+  registryDirectories: ReadonlySet<string> = NO_INSTALLS,
 ): PackageSource {
   if (entry.mount === 'builtin-webmcp') return 'builtin'
-  return installedDirectories.has(entry.directory) ? 'registry' : 'mine'
+  return registryDirectories.has(entry.directory) ? 'registry' : 'mine'
 }
 
 const SOURCE_LABEL: Record<PackageSource, string> = {

@@ -11,6 +11,11 @@ export interface RegistryListResult {
   registries: PackageRegistry[]
   /** Package ids currently installed on the `webmcp` mount. */
   installed: string[]
+  /**
+   * Directories carrying an install marker — the authoritative "installed
+   * from a registry" set the packages page classifies on (issue #228).
+   */
+  installedDirectories?: string[]
   /** Activation state per installed package id. */
   activations: Record<string, 'enabled' | 'disabled'>
   /**

@@ -20,6 +20,7 @@
 import {
   addRegistry,
   installRegistryPackage,
+  listInstallMarkers,
   listInstalledPackageIds,
   listRegistries,
   loadRegistryCatalog,
@@ -120,6 +121,7 @@ export function createRegistryBackground(options: RegistryBackgroundOptions) {
             ok: true,
             registries,
             installed: [...installed],
+            installedDirectories: [...(await listInstallMarkers()).keys()],
             activations,
             activationErrors,
             persisted: registriesPersisted(),
