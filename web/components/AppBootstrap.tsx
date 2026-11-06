@@ -373,21 +373,23 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       let gatewayRestoreVersion: number | undefined
       let gatewayRestoreGeneration: number | undefined
       try {
-        const { registerLLMGatewayProvider, registerGatewayModels, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId } = await import('@/agent/providers/llm-gateway-provider')
-        const { resolveGatewayDispatchCredential, getGatewayAuthSessionGeneration, hasStoredTokens } = await import('@/agent/providers/llm-gateway-auth')
+        const { registerLLMGatewayProvider, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, applyGatewayCredentialOutcome, isGatewayCredentialOutcomeCurrent } = await import('@/agent/providers/llm-gateway-provider')
+        const { resolveGatewayDispatchCredential, getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
         registerLLMGatewayProvider()
         const clientId = getLLMGatewayClientId()
         const baseURL = getLLMGatewayBaseURL()
         if (clientId) {
-          gatewayRestoreGeneration = getGatewayAuthSessionGeneration()
+          const resolvedGeneration = getGatewayAuthSessionGeneration()
+          gatewayRestoreGeneration = resolvedGeneration
           gatewayRestoreVersion = beginGatewayCatalogRefresh()
           // resolveGatewayDispatchCredential() distinguishes the four states
           // getValidAccessToken() collapsed into `null` — and each needs a
-          // different write. A bootstrap that never fetched must NOT declare
-          // the catalog failed: another context (the page, a previous load)
-          // may have a perfectly healthy catalog, and overwriting it with a
-          // newer 'failed' version is what made opening the side panel
-          // resurrect the "catalog unavailable" banner for a logged-in user.
+          // different write (see applyGatewayCredentialOutcome). A bootstrap
+          // that never fetched must NOT declare the catalog failed: another
+          // context (the page, a previous load) may have a perfectly healthy
+          // catalog, and overwriting it with a newer 'failed' version is what
+          // made opening the side panel resurrect the "catalog unavailable"
+          // banner for a logged-in user.
           const resolved = await resolveGatewayDispatchCredential(baseURL, clientId)
           if (resolved.ok) {
             const tokenGeneration = getGatewayAuthSessionGeneration()
@@ -396,21 +398,15 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
             const { saveApiKey } = await import('@/security/api-key-store')
             await saveApiKey(getLLMGatewayApiKeyProviderKey(), resolved.accessToken)
             await updateGatewayModels(resolved.accessToken, tokenGeneration)
-          } else if (gatewayRestoreGeneration === getGatewayAuthSessionGeneration()) {
-            if (resolved.kind === 'temporary') {
-              // Transient (refresh in flight, network blip, storage hiccup):
-              // leave whatever catalog state already exists untouched.
-            } else if (hasStoredTokens()) {
-              // Session expired: the catalog genuinely cannot be fetched and
-              // re-authenticating (or a retry) is the fix.
-              registerGatewayModels([], 'failed', gatewayRestoreVersion)
-            } else {
-              // Never signed in. Leave the provider registered with a failed
-              // catalog rather than removing it: removal is what surfaced as
-              // "provider unavailable" whenever a second context (side panel)
-              // was mid-write to the shared token key. Only explicit logout
-              // removes the provider.
-              registerGatewayModels([], 'failed', gatewayRestoreVersion)
+          } else if (isGatewayCredentialOutcomeCurrent(resolvedGeneration, getGatewayAuthSessionGeneration(), resolved.kind)) {
+            applyGatewayCredentialOutcome(resolved.kind, gatewayRestoreVersion)
+            if (resolved.kind === 'missing') {
+              // The provider is now unregistered, so a non-flushing
+              // checkHasApiKey() would answer "dynamic provider still
+              // registering" and leave `hasApiKeyLoaded` false — the welcome
+              // screen would stay on its loading state forever.
+              const { useSettingsStore } = await import('@/store/settings.store')
+              await useSettingsStore.getState().checkHasApiKey({ flush: true })
             }
           }
         } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {

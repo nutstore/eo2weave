@@ -163,6 +163,56 @@ export async function prepareGatewayModels(
   }
 }
 
+/**
+ * Apply the outcome of a credential resolution that produced NO usable token.
+ *
+ * The three non-ok states are NOT interchangeable and each needs a different
+ * write (they all looked like `null` before `resolveGatewayDispatchCredential`):
+ *
+ * - `'temporary'` — transient (refresh in flight, network blip, storage
+ *   hiccup). No evidence of an outage: a catalog this context already has
+ *   must NOT be demoted, or the switcher warns over a working model list and
+ *   the banner comes back on every boot/reconcile.
+ * - `'expired'` — the catalog cannot load until the user re-authenticates, so
+ *   the provider must stay visible with a 'failed' catalog (the switcher's
+ *   Retry and the settings card's re-login are the recovery route). Note the
+ *   resolver has ALREADY purged the token pair, so `hasStoredTokens()` reads
+ *   false here — branch on the verdict, never on the stored state.
+ * - `'missing'` — never signed in: registering anyway leaves a provider whose
+ *   catalog can never load in every future app context.
+ */
+export function applyGatewayCredentialOutcome(
+  kind: 'temporary' | 'expired' | 'missing',
+  refreshVersion?: number,
+): void {
+  if (kind === 'missing') {
+    unregisterLLMGatewayProvider()
+    return
+  }
+  // Nothing usable to show: 'failed' is the only state that offers Retry.
+  // A loaded list is left untouched (see registerGatewayModels' retain
+  // semantics for 'failed' — this guard keeps that retention meaningful).
+  if (getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).length > 0) return
+  registerGatewayModels([], 'failed', refreshVersion)
+}
+
+/**
+ * Whether an outcome resolved by a boot is still that boot's to write.
+ *
+ * `resolveGatewayDispatchCredential` PURGES the stored pair on an 'expired'
+ * verdict, and `clearStoredTokens` bumps the auth session generation itself —
+ * that bump belongs to this boot and must not swallow the write. Any other
+ * generation move (a login/logout in another context) supersedes it.
+ */
+export function isGatewayCredentialOutcomeCurrent(
+  resolvedGeneration: number,
+  currentGeneration: number,
+  kind: 'temporary' | 'expired' | 'missing',
+): boolean {
+  if (currentGeneration === resolvedGeneration) return true
+  return kind === 'expired' && currentGeneration === resolvedGeneration + 1
+}
+
 /** Register a previously fetched model list without another async boundary. */
 export function registerGatewayModels(
   modelInfos: ModelInfo[],
