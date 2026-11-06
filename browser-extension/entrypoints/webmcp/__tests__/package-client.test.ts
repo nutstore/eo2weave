@@ -60,6 +60,21 @@ describe('listManagedPackages catalog rejections', () => {
     expect(catalog.rejected).toEqual([{ id: 'com.example.gone', reason: 'Missing package id' }])
   })
 
+  it('does not mark an accepted package when a duplicate id is rejected', async () => {
+    // Two installed packages share a manifest id; the adapter keeps the first
+    // and rejects the second as a duplicate. The reason cannot be attributed to
+    // either directory, so neither card may claim to be excluded.
+    stubCatalog({
+      ok: true,
+      entries: [entry('com.example.dup'), entry('com.example.dup')],
+      rejected: [{ id: 'com.example.dup', reason: 'Duplicate package id: com.example.dup' }],
+    })
+
+    const catalog = await listManagedPackages()
+    expect(catalog.entries.every(item => item.catalogRejection === undefined)).toBe(true)
+    expect(catalog.rejected).toHaveLength(1)
+  })
+
   it('reads a missing rejection list as none', async () => {
     stubCatalog({ ok: true, entries: [entry('com.example.healthy')] })
 

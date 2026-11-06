@@ -44,16 +44,26 @@ export async function listManagedPackages(): Promise<ManagedPackageCatalog> {
   const response = await chrome.runtime.sendMessage({ type: 'webmcp_packages_list' })
   if (!response?.ok) throw new Error(response?.error ?? 'Package catalog unavailable')
   const rejected = readRejections(response.rejected)
+  const entries = response.entries as ManagedWebMCPPackage[]
   // Attach the reason to the entry it belongs to, so cards render it without
   // any section needing to know the catalog exists. Rejection ids are manifest
   // ids; a package whose manifest could not be read is reported as `#<index>`
   // and already carries its own diagnostics.
+  //
+  // A manifest id is NOT a unique package identity: two installed packages can
+  // share one (the second is then the one rejected as a duplicate), and the
+  // adapter snapshot has no directory to disambiguate them. Rather than mark an
+  // ACCEPTED package as broken, an ambiguous id gets no rejection attached.
+  const keyOf = (entry: ManagedWebMCPPackage): string => entry.manifest?.id ?? entry.directory
+  const occurrences = new Map<string, number>()
+  for (const entry of entries) occurrences.set(keyOf(entry), (occurrences.get(keyOf(entry)) ?? 0) + 1)
   const reasonById = new Map(rejected.map(item => [item.id, item.reason]))
-  const entries = (response.entries as ManagedWebMCPPackage[]).map(entry => {
-    const reason = reasonById.get(entry.manifest?.id ?? entry.directory)
-    return reason === undefined ? entry : { ...entry, catalogRejection: reason }
+  const joined = entries.map(entry => {
+    const reason = reasonById.get(keyOf(entry))
+    if (reason === undefined || occurrences.get(keyOf(entry)) !== 1) return entry
+    return { ...entry, catalogRejection: reason }
   })
-  return { entries, userMountComplete: response.userMountComplete !== false, rejected }
+  return { entries: joined, userMountComplete: response.userMountComplete !== false, rejected }
 }
 export async function setManagedPackageConfig(entry: ManagedWebMCPPackage, config: WebMCPConfig): Promise<void> {
   const response = await chrome.runtime.sendMessage({ type: 'webmcp_packages_set_config', mount: entry.mount, directory: entry.directory, config })
