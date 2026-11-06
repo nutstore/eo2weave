@@ -28,7 +28,7 @@ import { useOPFSStore } from '@/store/opfs.store'
 import { useWorkspaceStore } from '@/store/workspace.store'
 import { useSkillsStore } from '@/store/skills.store'
 import { SidebarPanelHeader } from '@/components/layout/SidebarPanelHeader'
-import { GitBranchBadge } from './GitBranchBadge'
+import { GitBranchBadge } from '@/components/file-viewer/GitBranchBadge'
 import type { GitBranchInfo } from '@/lib/git-branch'
 import { useT } from '@/i18n'
 import {
