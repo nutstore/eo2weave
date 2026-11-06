@@ -219,7 +219,7 @@ describe('gateway last known catalog', () => {
     expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('empty')
   })
 
-  it('clears cached models when another tab changes the credential pair', () => {
+  it('clears cached models when another tab changes the credential pair', async () => {
     registerGatewayModels([model], 'ready')
     const tokens = (refresh_token: string) => JSON.stringify({ refresh_token })
     window.dispatchEvent(new StorageEvent('storage', {
@@ -228,7 +228,11 @@ describe('gateway last known catalog', () => {
       newValue: tokens('new-account'),
     }))
 
-    expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
+    // The listener no longer unregisters (a transient write must not make the
+    // provider unavailable); it clears the catalog to 'loading' instead, via
+    // a dynamic import — hence the wait.
+    await vi.waitFor(() => expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([]))
+    expect(getProviderCatalogStatus(LLM_GATEWAY_PROVIDER_TYPE)).toBe('loading')
     registerGatewayModels([], 'failed')
     expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE)).toEqual([])
   })
