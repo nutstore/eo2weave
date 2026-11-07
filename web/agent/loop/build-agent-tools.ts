@@ -42,7 +42,7 @@ export interface BuildAgentToolsInput {
 }
 
 export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
-  return input.toolRegistry.getToolDefinitionsForMode(input.mode, { includeDynamicDescriptions: !input.stableDescriptions }).map((toolDef) => ({
+  return input.toolRegistry.getToolDefinitionsForMode(input.mode, { includeDynamicDescriptions: !input.stableDescriptions, directMode: input.getToolContext().directMode }).map((toolDef) => ({
     name: toolDef.function.name,
     label: toolDef.function.name,
     description: toolDef.function.description || '',
@@ -125,6 +125,10 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
 
         const outcome = await invokeTool({
           ...input,
+          // Direct-mode scoping must hold for NESTED invocations too (run_code
+          // builds its sub-tool list from these definitions) — the advertised
+          // filter above alone leaves a hole sandbox code could walk through.
+          directMode: originalToolContext.directMode === true ? true : undefined,
           onResult: async (call, result) => {
             // These observations belong to this Agent, not the shared executor or WebMCP.
             let parsed: Record<string, unknown>

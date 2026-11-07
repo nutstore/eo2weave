@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
@@ -13,7 +13,7 @@ import { useConversationStore } from '@/store/conversation.store'
 import { clearSQLiteAndProjectsDirectory, RESET_REQUIRES_TAB_CLOSURE } from '@/storage'
 import type { Project } from '@/sqlite/repositories/project.repository'
 import { ProjectHome } from '@/components/project/ProjectHome'
-import { projectWorkspacePath, projectsPath, docsPath } from '@/lib/route-paths'
+import { projectWorkspacePath, projectsPath, chatsPath, docsPath } from '@/lib/route-paths'
 
 /**
  * ProjectHomeView — store-connected ProjectHome for the /projects route.
@@ -39,6 +39,25 @@ export default function ProjectHomeView() {
   const renameProject = useProjectStore((s) => s.renameProject)
   const setProjectArchived = useProjectStore((s) => s.setProjectArchived)
   const deleteProject = useProjectStore((s) => s.deleteProject)
+
+  // Standalone chats preview (kind='direct') — the hero card + header button.
+  const standaloneChats = useConversationStore((s) =>
+    s.conversations
+      .filter((c) => c.kind === 'direct')
+      .map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt })),
+  )
+
+  // Cold visit to /projects (fresh tab): the global conversation store has not
+  // loaded yet, so the recent-chat preview would render empty. Trigger the
+  // load on mount — same gate + inflight guard as the other routes use.
+  // loadError is deliberately NOT a dependency: a failed load keeps
+  // loaded=false + loadError and waits for the user's explicit retry (the
+  // sidebar banner), so re-running on the error itself would retry on its own.
+  const conversationsLoaded = useConversationStore((s) => s.loaded)
+  const loadFromDB = useConversationStore((s) => s.loadFromDB)
+  useEffect(() => {
+    if (!conversationsLoaded && projectLoading === false) loadFromDB()
+  }, [conversationsLoaded, loadFromDB, projectLoading])
 
   const [isClearingLocalData, setIsClearingLocalData] = useState(false)
 
@@ -207,6 +226,8 @@ export default function ProjectHomeView() {
       onExportProjectUsage={handleExportProjectUsage}
       onClearLocalData={handleClearLocalData}
       onOpenDocs={() => router.push(docsPath(docsLanguage))}
+      onOpenStandaloneChats={() => router.push(chatsPath())}
+      standaloneChats={standaloneChats}
       isClearingLocalData={isClearingLocalData}
     />
   )

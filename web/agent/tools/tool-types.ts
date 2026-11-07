@@ -268,6 +268,11 @@ export interface ToolContext {
   workspaceId?: string | null
   /** Active project ID for cross-namespace VFS routing */
   projectId?: string | null
+  /**
+   * Folder-less conversation (kind='direct'): folder-dependent tools are
+   * never registered and name-based execution of them is rejected.
+   */
+  directMode?: boolean
   /** Current acting agent ID for VFS ACL checks */
   currentAgentId?: string | null
   /** Abort signal for cancellation */

@@ -41,6 +41,8 @@ export interface ConversationRow {
   compressed_context_summary?: string | null
   compressed_context_cutoff_ts?: number | null
   flow_instance_json?: string | null
+  /** 'project' | 'direct' — direct conversations are folder-less (no file tools). */
+  kind?: 'project' | 'direct'
   created_at: number
   updated_at: number
 }

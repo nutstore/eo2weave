@@ -304,12 +304,22 @@ async function buildRuntimeDeps(schedule: NonNullable<Awaited<ReturnType<typeof 
     }
   }
 
+  // Direct conversations (kind='direct') have no folder authorization: derive
+  // the flag from the authoritative conversation kind via the single selector
+  // (never from the caller) and withhold the folder handle, so the registry
+  // guard rejects folder-dependent tools on headless runs too. Dynamic import:
+  // the selector lives in the big conversation store chunk (static import
+  // would create a store ↔ services cycle).
+  const { isDirectConversation } = await import('@/store/conversation.store.sqlite')
+  const directMode = isDirectConversation(schedule.workspaceId)
+
   const toolContext: ToolContext = {
-    directoryHandle,
+    directoryHandle: directMode ? null : directoryHandle,
     workspaceId: schedule.workspaceId,
     projectId: schedule.projectId,
     currentAgentId: 'default',
     agentMode: 'act',
+    directMode: directMode || undefined,
     readFileState: new Map(),
   }
 

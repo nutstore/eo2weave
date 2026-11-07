@@ -20,6 +20,7 @@ import {
   ExternalLink,
   SquarePen,
   MoreHorizontal,
+  MessageCircle,
 } from 'lucide-react'
 import { ProjectSwitcher } from './ProjectSwitcher'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
@@ -40,6 +41,7 @@ import {
 } from '@creatorweave/ui'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useFlowStore } from '@/store/flow.store'
+import { useConversationStore } from '@/store/conversation.store'
 
 /** Stable tooltip wrapper — defined at module level to avoid recreating on every render. */
 const ActionTooltip = ({
@@ -55,6 +57,35 @@ const ActionTooltip = ({
   </Tooltip>
 )
 
+/**
+ * The convert entry for a kind='direct' conversation: a small badge button
+ * that upgrades the standalone chat to a project conversation (folder
+ * authorization + kind flip via convertDirectToProject). Shared by BOTH
+ * route spaces so /chats/:id offers the same conversion entry as
+ * /projects/:projectId (desktop only — the mobile header has no room for
+ * the inline label and keeps the action in the more menu's reach via the
+ * conversation surface).
+ */
+const ConvertDirectChatBadge = () => {
+  const t = useT()
+  return (
+    <ActionTooltip label={t('topbar.directChat.convertTooltip')}>
+      <button
+        type="button"
+        data-testid="direct-chat-convert"
+        className="shrink-0 rounded-full border border-primary-200 bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-300"
+        onClick={async () => {
+          const id = useConversationStore.getState().activeConversationId
+          if (!id) return
+          await useConversationStore.getState().convertDirectToProject(id)
+        }}
+      >
+        {t('conversation.directChat.badge')}
+      </button>
+    </ActionTooltip>
+  )
+}
+
 interface TopBarProps {
   onSkillsManagerOpen?: () => void
   onToolsPanelOpen?: () => void
@@ -64,6 +95,8 @@ interface TopBarProps {
   activeConversationName?: string
   /** @deprecated use activeConversationName */
   activeWorkspaceName?: string
+  /** Active conversation is kind='direct' (standalone chat) — shows the badge */
+  activeConversationIsDirect?: boolean
   /** Called when menu button is pressed on mobile */
   onMenuOpen?: () => void
   /** Whether the device is mobile */
@@ -84,6 +117,14 @@ interface TopBarProps {
   onWorkflowOpen?: () => void
   /** Create a new conversation */
   onNewConversation?: () => void
+  /** Navigate to the standalone chats home (/chats) — global ◇ entry */
+  onOpenStandaloneChats?: () => void
+  /**
+   * Which route space hosts this TopBar. 'chats' hides the project switcher
+   * (standalone chats have no project semantics) and swaps the back-target
+   * wording.
+   */
+  routeSpace?: 'projects' | 'chats'
 }
 
 export function TopBar({
@@ -93,6 +134,7 @@ export function TopBar({
   onBackToProjects,
   activeProjectName,
   activeConversationName,
+  activeConversationIsDirect,
   activeWorkspaceName,
   onMenuOpen,
   isMobile,
@@ -104,6 +146,8 @@ export function TopBar({
   onScheduleDrawerOpen,
   onWorkflowOpen,
   onNewConversation,
+  onOpenStandaloneChats,
+  routeSpace = 'projects',
 }: TopBarProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>(undefined)
@@ -190,6 +234,36 @@ export function TopBar({
               </BrandButton>
             </ActionTooltip>
           )}
+          {routeSpace === 'chats' ? (
+            // Standalone chats space: no project semantics — show the space
+            // name instead of a project switcher. The convert badge is still
+            // rendered here: a standalone chat opened in /chats/:id must keep
+            // its conversion entry (identical to the project-space branch),
+            // otherwise users in the chats route space have no convert UI.
+            <div className="flex min-w-0 items-center gap-1">
+              <span className="max-w-[200px] truncate rounded-md bg-muted px-2 py-1 text-xs text-secondary dark:bg-muted/50 dark:text-muted-foreground">
+                {t('topbar.standaloneChats.spaceName')}
+              </span>
+              {conversationName && (
+                <>
+                  {!isMobile && (
+                    <>
+                      <span className="text-xs text-tertiary dark:text-muted">/</span>
+                      <ActionTooltip label={t('topbar.workspaceLabel', { name: conversationName })}>
+                        <span className="max-w-[200px] truncate rounded-md bg-muted px-2 py-1 text-xs text-secondary dark:bg-muted/50 dark:text-muted-foreground">
+                          {conversationName}
+                        </span>
+                      </ActionTooltip>
+                    </>
+                  )}
+                </>
+              )}
+              {activeConversationIsDirect && (
+                <ConvertDirectChatBadge />
+              )}
+            </div>
+          ) : (
+            <>
           {activeProjectName && (
             <div className={`flex min-w-0 items-center gap-1 ${isMobile ? 'max-w-[30vw]' : ''}`}>
               <ProjectSwitcher
@@ -210,13 +284,18 @@ export function TopBar({
                           {conversationName}
                         </span>
                       </ActionTooltip>
+                      {activeConversationIsDirect && (
+                        <ConvertDirectChatBadge />
+                      )}
                     </>
                   )}
                 </>
               )}
             </div>
           )}
-          {isMobile && (
+            </>
+          )}
+          {isMobile && !activeConversationIsDirect && routeSpace === 'projects' && (
             <div className="flex min-w-0 shrink items-center">
               <FolderSelector />
             </div>
@@ -226,6 +305,19 @@ export function TopBar({
         {/* Right: Actions */}
         {isMobile ? (
           <div className="ml-1 flex shrink-0 items-center gap-0.5">
+            {/* Standalone chats — global entry (all pages, all route spaces) */}
+            {onOpenStandaloneChats && (
+              <ActionTooltip label={t('topbar.standaloneChats.tooltip')}>
+                <BrandButton
+                  iconButton
+                  className="h-7 w-7"
+                  onClick={onOpenStandaloneChats}
+                  aria-label={t('topbar.standaloneChats.tooltip')}
+                >
+                  <MessageCircle className="h-[14px] w-[14px]" />
+                </BrandButton>
+              </ActionTooltip>
+            )}
             {/* Model switcher — directly visible. Previously it only lived
                 inside the ⋯ more menu, which new users (especially in the
                 narrow side panel) never discovered. The TopBar renders on the
@@ -260,10 +352,26 @@ export function TopBar({
           </div>
         ) : (
           <div className="flex items-center gap-2">
-            {/* Folder Selector */}
-            <div className="shrink-0">
-              <FolderSelector />
-            </div>
+            {/* Folder Selector — hidden in direct conversations (no folder semantics) */}
+            {!activeConversationIsDirect && (
+              <div className="shrink-0">
+                <FolderSelector />
+              </div>
+            )}
+
+            {/* Standalone chats — global ◇ entry (all pages, all route spaces) */}
+            {onOpenStandaloneChats && (
+              <ActionTooltip label={t('topbar.standaloneChats.tooltip')}>
+                <BrandButton
+                  iconButton
+                  className="shrink-0"
+                  onClick={onOpenStandaloneChats}
+                  aria-label={t('topbar.standaloneChats.tooltip')}
+                >
+                  <MessageCircle className="h-[14px] w-[14px]" />
+                </BrandButton>
+              </ActionTooltip>
+            )}
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

@@ -983,6 +983,11 @@ export async function runAgentImpl(
               : 20
 
         const agentMode = getCurrentWorkspaceAgentMode()
+        // Direct conversations (kind='direct') have no folder authorization:
+        // folder-dependent tools are never registered and the project context
+        // block is omitted. Read through the store so a mid-session upgrade
+        // (direct → project) applies from the next run onward.
+        const directMode = state.conversations.find((c) => c.id === conversationId)?.kind === 'direct'
 
         // Resolve OPFS workspace dir for subagent transcript storage
         let subagentGetWorkspaceDir: (() => Promise<FileSystemDirectoryHandle>) | undefined
@@ -1009,6 +1014,7 @@ export async function runAgentImpl(
             directoryHandle,
             workspaceId: conversationId,
             projectId: resolvedProjectId,
+            directMode,
             currentAgentId: activeAgentId,
             agentMode,
             onWorkspacePathsChanged: (paths) => {
@@ -1078,6 +1084,7 @@ export async function runAgentImpl(
             directoryHandle,
             workspaceId: conversationId,
             projectId: resolvedProjectId,
+            directMode,
             currentAgentId: activeAgentId,
             agentMode,
             onWorkspacePathsChanged: (paths) => {

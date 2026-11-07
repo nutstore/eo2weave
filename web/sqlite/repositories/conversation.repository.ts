@@ -28,6 +28,8 @@ export interface ConversationMeta {
   compressedContextSummary?: string | null
   compressedContextCutoffTimestamp?: number | null
   flowInstance?: FlowInstance | null
+  /** 'project' | 'direct' — undefined ≡ 'project' (legacy rows, zero migration) */
+  kind?: 'project' | 'direct'
   createdAt: number
   updatedAt: number
 }
@@ -53,6 +55,27 @@ const BASE_SELECT = `SELECT id, title, title_mode, context_usage_json, created_a
 const EXTENDED_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, created_at, updated_at FROM conversations`
 const FLOW_INSTANCE_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, flow_instance_json, created_at, updated_at FROM conversations`
 const FLOW_INSTANCE_BASE_SELECT = `SELECT id, title, title_mode, context_usage_json, flow_instance_json, created_at, updated_at FROM conversations`
+const KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, flow_instance_json, kind, created_at, updated_at FROM conversations`
+// Kind-inclusive fallbacks for schemas that have `kind` but not every other
+// extended column — the row converters read kind off the row when present,
+// so these selects keep standalone chats loading as kind='direct' even on
+// legacy tiers (otherwise they reload as project conversations and vanish
+// from /chats).
+const EXTENDED_KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, kind, created_at, updated_at FROM conversations`
+const BASE_KIND_SELECT = `SELECT id, title, title_mode, context_usage_json, kind, created_at, updated_at FROM conversations`
+
+/**
+ * True only for schema-shape errors: a missing column/table is a PERMANENT
+ * property of the database, so the probe may cache it. Anything else (worker
+ * restart, DB busy, transient backend failure) must NOT be cached as "column
+ * absent" — a cached false makes saveMeta() drop `kind` from INSERTs and turns
+ * updateKind() into a permanent no-op, silently reloading standalone chats as
+ * project conversations.
+ */
+function isMissingColumnError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error)
+  return msg.includes('no such column') || msg.includes('no such table')
+}
 
 //=============================================================================
 // Conversation Repository
@@ -61,13 +84,33 @@ const FLOW_INSTANCE_BASE_SELECT = `SELECT id, title, title_mode, context_usage_j
 export class ConversationRepository {
   private _hasCompressionColumns: boolean | null = null
   private _hasFlowInstanceColumn: boolean | null = null
+  private _hasKindColumn: boolean | null = null
+
+  private async hasKindColumn(): Promise<boolean> {
+    if (this._hasKindColumn !== null) return this._hasKindColumn
+    try {
+      await getSQLiteDB().queryFirst('SELECT kind FROM conversations LIMIT 0')
+      this._hasKindColumn = true
+    } catch (error) {
+      if (!isMissingColumnError(error)) {
+        // Transient failure — leave uncached so the next call re-probes.
+        throw error
+      }
+      this._hasKindColumn = false
+    }
+    return this._hasKindColumn
+  }
 
   private async hasFlowInstanceColumn(): Promise<boolean> {
     if (this._hasFlowInstanceColumn !== null) return this._hasFlowInstanceColumn
     try {
       await getSQLiteDB().queryFirst('SELECT flow_instance_json FROM conversations LIMIT 0')
       this._hasFlowInstanceColumn = true
-    } catch {
+    } catch (error) {
+      if (!isMissingColumnError(error)) {
+        // Transient failure — leave uncached so the next call re-probes.
+        throw error
+      }
       this._hasFlowInstanceColumn = false
     }
     return this._hasFlowInstanceColumn
@@ -85,7 +128,11 @@ export class ConversationRepository {
         'SELECT compressed_context_summary, compressed_context_cutoff_ts FROM conversations LIMIT 0'
       )
       this._hasCompressionColumns = true
-    } catch {
+    } catch (error) {
+      if (!isMissingColumnError(error)) {
+        // Transient failure — leave uncached so the next call re-probes.
+        throw error
+      }
       this._hasCompressionColumns = false
     }
     return this._hasCompressionColumns
@@ -97,19 +144,36 @@ export class ConversationRepository {
    */
   private async queryMetaAll(orderBy: string): Promise<ConversationMeta[]> {
     const db = getSQLiteDB()
-    const [hasFlowInstance, hasCompression] = await Promise.all([
+    const [hasFlowInstance, hasCompression, hasKind] = await Promise.all([
       this.hasFlowInstanceColumn(),
       this.hasCompressionColumns(),
+      this.hasKindColumn(),
     ])
+    if (hasFlowInstance && hasCompression && hasKind) {
+      const rows = await db.queryAll<FlowInstanceMetaColumns>(`${KIND_SELECT} ${orderBy}`)
+      return rows.map((row) => this.flowInstanceRowToMeta(row))
+    }
     if (hasFlowInstance && hasCompression) {
-      const rows = await db.queryAll<FlowInstanceMetaColumns>(`${FLOW_INSTANCE_SELECT} ${orderBy}`)
+      const rows = await db.queryAll<FlowInstanceMetaColumns>(
+        `${FLOW_INSTANCE_SELECT} ${orderBy}`
+      )
       return rows.map((row) => this.flowInstanceRowToMeta(row))
     }
     if (hasFlowInstance) {
+      // Pre-compression DB that already has the flow column: base select plus
+      // flow parsing (the kind-tier probe rejects independently above).
       const rows = await db.queryAll<FlowInstanceBaseMetaColumns>(
         `${FLOW_INSTANCE_BASE_SELECT} ${orderBy}`
       )
       return rows.map((row) => this.flowInstanceBaseRowToMeta(row))
+    }
+    if (hasCompression && hasKind) {
+      // Compression without the flow column, kind present: keep kind so
+      // standalone chats don't reload as project conversations.
+      const rows = await db.queryAll<ExtendedMetaColumns>(
+        `${EXTENDED_KIND_SELECT} ${orderBy}`
+      )
+      return rows.map((row) => this.extendedRowToMeta(row))
     }
     if (hasCompression) {
       const rows = await db.queryAll<ExtendedMetaColumns>(
@@ -117,16 +181,27 @@ export class ConversationRepository {
       )
       return rows.map((row) => this.extendedRowToMeta(row))
     }
+    if (hasKind) {
+      // Legacy base schema that already gained the kind column: include kind
+      // independently of the flow-instance column.
+      const rows = await db.queryAll<BaseMetaColumns>(`${BASE_KIND_SELECT} ${orderBy}`)
+      return rows.map((row) => this.baseRowToMeta(row))
+    }
     const rows = await db.queryAll<BaseMetaColumns>(`${BASE_SELECT} ${orderBy}`)
     return rows.map((row) => this.baseRowToMeta(row))
   }
 
   private async queryMetaFirst(where: string, params: unknown[]): Promise<ConversationMeta | null> {
     const db = getSQLiteDB()
-    const [hasFlowInstance, hasCompression] = await Promise.all([
+    const [hasFlowInstance, hasCompression, hasKind] = await Promise.all([
       this.hasFlowInstanceColumn(),
       this.hasCompressionColumns(),
+      this.hasKindColumn(),
     ])
+    if (hasFlowInstance && hasCompression && hasKind) {
+      const row = await db.queryFirst<FlowInstanceMetaColumns>(`${KIND_SELECT} ${where}`, params)
+      return row ? this.flowInstanceRowToMeta(row) : null
+    }
     if (hasFlowInstance && hasCompression) {
       const row = await db.queryFirst<FlowInstanceMetaColumns>(`${FLOW_INSTANCE_SELECT} ${where}`, params)
       return row ? this.flowInstanceRowToMeta(row) : null
@@ -138,11 +213,23 @@ export class ConversationRepository {
       )
       return row ? this.flowInstanceBaseRowToMeta(row) : null
     }
+    if (hasCompression && hasKind) {
+      const row = await db.queryFirst<ExtendedMetaColumns>(
+        `${EXTENDED_KIND_SELECT} ${where}`, params
+      )
+      return row ? this.extendedRowToMeta(row) : null
+    }
     if (hasCompression) {
       const row = await db.queryFirst<ExtendedMetaColumns>(
         `${EXTENDED_SELECT} ${where}`, params
       )
       return row ? this.extendedRowToMeta(row) : null
+    }
+    if (hasKind) {
+      const row = await db.queryFirst<BaseMetaColumns>(
+        `${BASE_KIND_SELECT} ${where}`, params
+      )
+      return row ? this.baseRowToMeta(row) : null
     }
     const row = await db.queryFirst<BaseMetaColumns>(
       `${BASE_SELECT} ${where}`, params
@@ -279,16 +366,28 @@ export class ConversationRepository {
     contextUsage?: ContextWindowUsage | null
     compressedContextSummary?: string | null
     compressedContextCutoffTimestamp?: number | null
+    kind?: 'project' | 'direct'
     createdAt: number
     updatedAt: number
   }): Promise<void> {
     const db = getSQLiteDB()
     const useExtended = await this.hasCompressionColumns()
+    const useKind = await this.hasKindColumn()
+    // kind is written on INSERT (creating a 'direct' conversation row must
+    // persist its kind) but NEVER on CONFLICT UPDATE: persistConversationMeta()
+    // snapshots `kind` from in-memory state when the save STARTS; if that write
+    // lands after a concurrent direct→project transition has committed, an
+    // `kind = excluded.kind` clause would silently revert the conversion (the
+    // in-memory conversation stays 'project' while the row reloads as 'direct'
+    // after a refresh). Kind changes go through the dedicated updateKind()
+    // transition path instead. (The non-kind branches always behaved this way:
+    // the DB default 'project' applies on INSERT.)
+    const normalizedKind = meta.kind === 'direct' ? 'direct' : 'project'
 
-    if (useExtended) {
+    if (useExtended && useKind) {
       await db.execute(
-        `INSERT INTO conversations (id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO conversations (id, title, title_mode, context_usage_json, compressed_context_summary, compressed_context_cutoff_ts, kind, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            title_mode = excluded.title_mode,
@@ -303,11 +402,12 @@ export class ConversationRepository {
           toJSON(meta.contextUsage || null),
           meta.compressedContextSummary || null,
           meta.compressedContextCutoffTimestamp ?? null,
+          normalizedKind,
           meta.createdAt,
           meta.updatedAt,
         ]
       )
-    } else {
+    } else if (useExtended) {
       await db.execute(
         `INSERT INTO conversations (id, title, title_mode, context_usage_json, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -325,7 +425,41 @@ export class ConversationRepository {
           meta.updatedAt,
         ]
       )
+    } else {
+      // Pre-compression schema (migration v8 not applied): persist the base
+      // columns so titles (and other metadata) are not silently dropped.
+      await db.execute(
+        `INSERT INTO conversations (id, title, title_mode, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           title_mode = excluded.title_mode,
+           updated_at = excluded.updated_at`,
+        [
+          meta.id,
+          meta.title,
+          meta.titleMode || 'manual',
+          meta.createdAt,
+          meta.updatedAt,
+        ]
+      )
     }
+  }
+
+  /**
+   * Dedicated kind-transition write (direct ↔ project).
+   *
+   * This is the ONLY path allowed to change an existing row's kind: generic
+   * meta saves (saveMeta) deliberately leave the kind column untouched on
+   * conflict so a stale 'direct' snapshot cannot revert a committed
+   * conversion that raced ahead of them.
+   */
+  async updateKind(id: string, kind: 'project' | 'direct'): Promise<void> {
+    if (!await this.hasKindColumn()) return
+    await getSQLiteDB().execute(
+      'UPDATE conversations SET kind = ?, updated_at = ? WHERE id = ?',
+      [kind, Date.now(), id]
+    )
   }
 
   private baseRowToMeta(row: BaseMetaColumns): ConversationMeta {
@@ -336,6 +470,9 @@ export class ConversationRepository {
       lastContextWindowUsage: parseJSON(row.context_usage_json || '', null),
       compressedContextSummary: null,
       compressedContextCutoffTimestamp: null,
+      // BASE_KIND_SELECT already includes kind on the legacy tier; keep it so
+      // standalone chats don't reload as project conversations there either.
+      kind: (row as { kind?: 'project' | 'direct' }).kind === 'direct' ? 'direct' : 'project',
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
@@ -350,6 +487,7 @@ export class ConversationRepository {
       compressedContextSummary: row.compressed_context_summary || null,
       compressedContextCutoffTimestamp: row.compressed_context_cutoff_ts ?? null,
       flowInstance: null,
+      kind: (row as { kind?: 'project' | 'direct' }).kind === 'direct' ? 'direct' : 'project',
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
@@ -365,6 +503,7 @@ export class ConversationRepository {
   private flowInstanceBaseRowToMeta(row: FlowInstanceBaseMetaColumns): ConversationMeta {
     return {
       ...this.baseRowToMeta(row),
+      kind: (row as { kind?: 'project' | 'direct' }).kind === 'direct' ? 'direct' : 'project',
       flowInstance: parseJSON<FlowInstance | null>(row.flow_instance_json || '', null),
     }
   }

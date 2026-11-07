@@ -1,5 +1,8 @@
 // 에이전트 관련
 export const agent = {
+    directChat: {
+        systemBoundary: "이것은 프로젝트와 무관한 대화로 로컬 파일 접근이 없습니다. 파일 도구(read/write/edit/delete/ls/search, 스냅샷, sync-to-opfs)는 사용할 수 없습니다. page_* 브라우저 도구, run_python, bash(샌드박스), 스킬, web 검색/가져오기, WebMCP 외부 도구는 계속 사용할 수 있습니다.",
+    },
     inputHint: "@를 입력하여 일시적으로 에이전트 전환",
     createNew: "새 에이전트 생성...",
     noAgents: "사용 가능한 에이전트 없음",

@@ -1,5 +1,8 @@
 // エージェント関連
 export const agent = {
+    directChat: {
+        systemBoundary: "これはプロジェクトに依存しない会話で、ローカルファイルへのアクセスはありません。ファイルツール（read/write/edit/delete/ls/search、スナップショット、sync-to-opfs）は利用できません。page_* ブラウザツール、run_python、bash（サンドボックス）、スキル、web検索/取得、WebMCP 外部ツールは引き続き利用できます。",
+    },
     inputHint: "@を入力して一時的にエージェントを切り替え",
     createNew: "新しいエージェントを作成...",
     noAgents: "利用可能なエージェントがありません",

@@ -34,6 +34,7 @@ import { clearAgentLoops } from '../agent-loop-registry'
 import { clearStreamingQueues } from '../streaming-queue-registry'
 
 const conversationRepoSaveMetaMock = vi.fn(() => Promise.resolve())
+const conversationRepoUpdateKindMock = vi.fn((_id: string, _kind: 'project' | 'direct') => Promise.resolve())
 const conversationRepoTouchMock = vi.fn(() => Promise.resolve())
 const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
 const messageRepoApplyDiffMock = vi.fn(() => Promise.resolve())
@@ -118,6 +119,7 @@ vi.mock('@/sqlite', () => ({
     findByConversation: vi.fn(() => Promise.resolve([])),
     save: vi.fn(() => Promise.resolve()),
     saveMeta: conversationRepoSaveMetaMock,
+    updateKind: conversationRepoUpdateKindMock,
     touch: conversationRepoTouchMock,
     delete: vi.fn(() => Promise.resolve()),
   })),
@@ -359,6 +361,47 @@ describe('conversation persistence: metadata routing', () => {
     expect(saved.title).toBe('renamed')
     // Meta persist must not rewrite message rows
     expect(messageRepoReplaceAllMock).not.toHaveBeenCalled()
+  })
+
+  it('a late generic meta save never reverts a committed kind change (stale-kind guard)', async () => {
+    const conv = useConversationStore.getState().createNew('race-conv', { kind: 'direct' })
+
+    // 1) A generic meta save STARTS while the conversation is still 'direct':
+    //    its saveMeta call snapshot carries kind='direct'.
+    const slowSave = new Promise<void>((resolve) => setTimeout(resolve, 500))
+    conversationRepoSaveMetaMock.mockImplementationOnce(() => slowSave)
+    useConversationStore.getState().updateTitle(conv.id, 'renamed mid-flight')
+
+    // 2) The direct→project transition commits while the meta save is still
+    //    in flight (persistConversationKind awaits the in-flight meta save, so
+    //    advance past it and run through the kind write).
+    const kindPersist = useConversationStore.getState().setConversationKind(conv.id, 'project')
+    await vi.advanceTimersByTimeAsync(600)
+    await kindPersist
+
+    // The transition went through the dedicated updateKind write...
+    expect(conversationRepoUpdateKindMock).toHaveBeenCalledWith(conv.id, 'project')
+    // Non-vacuous guard: the pre-transition generic meta save (its snapshot
+    // carrying the stale kind='direct') MUST actually have fired — otherwise
+    // the 'never reverts' assertion below would pass on an empty call list.
+    const staleMetaCall = conversationRepoSaveMetaMock.mock.calls.find(
+      (call) => call[0]?.id === conv.id && call[0]?.kind === 'direct',
+    )
+    expect(staleMetaCall).toBeDefined()
+    // ...and NO kind='project' value ever travelled through the generic
+    // saveMeta path (the stale 'direct' snapshot is ignored by the repository
+    // UPSERT guard, so the committed conversion cannot be reverted).
+    const metaKinds = conversationRepoSaveMetaMock.mock.calls.map((call) => call[0]?.kind)
+    expect(metaKinds).not.toContain('project')
+    // NOTE: the SQL-level half of this contract (the saveMeta UPSERT must
+    // declare kind on INSERT and NEVER assign it in the ON CONFLICT update
+    // clause — not via excluded.kind, a positional parameter, or a literal)
+    // is asserted against the real SQL in
+    // web/sqlite/repositories/conversation.repository.test.ts
+    // ('saveMeta writes kind on INSERT but never updates it on conflict');
+    // this file mocks the repository, so only the caller-side argument
+    // contract is observable here.
+    expect(useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.kind).toBe('project')
   })
 })
 

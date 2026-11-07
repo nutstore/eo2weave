@@ -161,8 +161,28 @@ export const readSkillExecutor: ToolExecutor = async (
   const skill = manager.getSkillByName(skillName)
 
   if (!skill) {
-    const availableSkills = manager.getEnabledSkillNames()
+    // Direct-mode filter (Sourcery round 7): the not-found hint must not
+    // reveal project-skill names to a standalone chat — the full list spans
+    // all sources while project-skill metadata is withheld in direct mode,
+    // so the available list honors the same boundary.
+    const availableSkills = _context.directMode === true
+      ? manager.getEnabledSkillNames({ excludeSources: ['project'] })
+      : manager.getEnabledSkillNames()
     return toolErrorJson('read_skill', 'skill_not_found', `Skill '${skill_name}' not found. Available skills: ${availableSkills.join(', ')}`)
+  }
+
+  // Direct-mode (standalone chat) authorization: project-sourced skills are
+  // host-project data. Their SKILL.md and resources resolve through the HOST
+  // project's runtime directory handles, so serving one would hand a
+  // folder-less conversation host-project files despite the no-file-access
+  // boundary. The context source already withholds project-skill metadata in
+  // direct mode; this guard closes the by-name bypass.
+  if (_context.directMode === true && skill.source === 'project') {
+    return toolErrorJson(
+      'read_skill',
+      'direct_mode_forbidden',
+      `Skill '${skill_name}' belongs to a project and is not available in a standalone chat (no project data authorized).`,
+    )
   }
 
   // Get associated resources — read directly from OPFS/native FS for
@@ -370,6 +390,17 @@ export const readSkillResourceExecutor: ToolExecutor = async (
 
   if (!skill) {
     return toolErrorJson('read_skill_resource', 'skill_not_found', `Skill '${skill_name}' not found. Please check the skill name and try again.`)
+  }
+
+  // Direct-mode (standalone chat) authorization — same boundary as
+  // read_skill: project skill resources resolve through the HOST project's
+  // runtime directory handles and must not serve a folder-less conversation.
+  if (_context.directMode === true && skill.source === 'project') {
+    return toolErrorJson(
+      'read_skill_resource',
+      'direct_mode_forbidden',
+      `Skill '${skill_name}' belongs to a project and is not available in a standalone chat (no project data authorized).`,
+    )
   }
 
   if (skill.source === 'provider') {

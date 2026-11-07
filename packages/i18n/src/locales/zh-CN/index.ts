@@ -38,6 +38,7 @@ import { assets } from './assets'
 import { processes } from './processes'
 import { tools } from './tools'
 import { schedule } from './schedule'
+import { chats } from './chats'
 import { skillInstall } from './skillInstall'
 export const zhCN = {
   common,
@@ -97,5 +98,6 @@ export const zhCN = {
   processes,
   tools,
   schedule,
+  chats,
   skillInstall,
 } as const

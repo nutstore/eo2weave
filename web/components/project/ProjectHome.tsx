@@ -10,7 +10,7 @@ import {
   BrandCheckbox,
   BrandInput,
 } from '@creatorweave/ui'
-import { Plus, Settings as SettingsIcon } from 'lucide-react'
+import { Plus, Settings as SettingsIcon, ChevronRight } from 'lucide-react'
 import type { Project, ProjectStats } from '@/sqlite/repositories/project.repository'
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
@@ -39,6 +39,8 @@ export interface ProjectHomeProps {
   projectStats?: Record<string, ProjectStats>
   activeProjectId: string
   isLoading?: boolean
+  /** kind='direct' conversations — preview data for the standalone-chats card */
+  standaloneChats?: Array<{ id: string; title: string; updatedAt: number }>
   onOpenProject: (projectId: string) => void | Promise<void>
   /**
    * Create the project. Returns the new project's id, or null on failure.
@@ -51,6 +53,8 @@ export interface ProjectHomeProps {
   onExportProjectUsage?: (project: Project) => void | Promise<void>
   onClearLocalData: () => void | Promise<void>
   onOpenDocs?: () => void | Promise<void>
+  /** Navigate to the standalone chats home (/chats) */
+  onOpenStandaloneChats?: () => void
   isClearingLocalData?: boolean
 }
 
@@ -61,6 +65,7 @@ export function ProjectHome({
   projectStats = {},
   activeProjectId,
   isLoading = false,
+  standaloneChats = [],
   onOpenProject,
   onCreateProject,
   onRenameProject,
@@ -69,6 +74,7 @@ export function ProjectHome({
   onExportProjectUsage,
   onClearLocalData,
   onOpenDocs,
+  onOpenStandaloneChats,
   isClearingLocalData = false,
 }: ProjectHomeProps) {
   const t = useT()
@@ -120,6 +126,14 @@ export function ProjectHome({
       </span>
     </>
   )
+
+  // Most recent standalone chat (kind='direct') — powers the hero card preview.
+  const latestChatTitle = useMemo(() => {
+    const direct = standaloneChats
+    if (direct.length === 0) return null
+    const latest = [...direct].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+    return latest?.title ?? null
+  }, [standaloneChats])
 
   const wrapWithPending = useCallback(
     (projectId: string, action: () => Promise<void> | void) => {
@@ -249,21 +263,34 @@ export function ProjectHome({
             />
             <span>{t('projectHome.brand')}</span>
           </div>
-          {/* No overflow-hidden on this group: HelpPopover's dropdown is absolutely
-              positioned BELOW the buttons, so clipping the group would cut the
-              whole menu away (it was invisible and unclickable). The buttons
-              have no background, so nothing needs clipping for the rounded look. */}
-          <div className="flex items-center rounded-lg border border-border bg-card">
-            <HelpPopover onOpenDocs={() => void onOpenDocs?.()} />
-            <span className="h-5 w-px bg-border" aria-hidden />
-            <button
-              type="button"
-              aria-label={t('projectHome.openSettings')}
-              onClick={() => setShowSettingsDrawer(true)}
-              className="grid h-9 w-9 place-items-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+          {/* Standalone-chats entry (◇) beside the help/settings button group.
+              No overflow-hidden on the settings group: HelpPopover's dropdown is
+              absolutely positioned BELOW the buttons, so clipping the group would
+              cut the whole menu away (it was invisible and unclickable). The
+              buttons have no background, so nothing needs clipping for the
+              rounded look. */}
+          <div className="flex items-center gap-2">
+            <BrandButton
+              variant="outline"
+              className="h-8 gap-1.5 px-3 text-xs"
+              onClick={() => onOpenStandaloneChats?.()}
+              data-testid="standalone-chats-header-button"
             >
-              <SettingsIcon className="h-4 w-4" />
-            </button>
+              <span aria-hidden className="leading-none">◇</span>
+              {t('projectHome.standaloneChats.cardTitle')}
+            </BrandButton>
+            <div className="flex items-center rounded-lg border border-border bg-card">
+              <HelpPopover onOpenDocs={() => void onOpenDocs?.()} />
+              <span className="h-5 w-px bg-border" aria-hidden />
+              <button
+                type="button"
+                aria-label={t('projectHome.openSettings')}
+                onClick={() => setShowSettingsDrawer(true)}
+                className="grid h-9 w-9 place-items-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+              >
+                <SettingsIcon className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -273,6 +300,36 @@ export function ProjectHome({
         {!isMobileDeviceForExtension() && (
           <ExtensionBanner onInstallClick={() => useExtensionStore.getState().openInstallGuide()} />
         )}
+
+        {/* Standalone chats hero card — project-independent conversations.
+            Sits above the projects grid: a first-class space, not a project. */}
+        <button
+          type="button"
+          data-testid="standalone-chats-card"
+          onClick={onOpenStandaloneChats}
+          className="group flex w-full items-center gap-4 rounded-2xl border border-border/80 bg-card px-5 py-4 text-left transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+        >
+          <span
+            aria-hidden
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-lg text-primary"
+          >
+            ◇
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-base font-semibold text-secondary dark:text-secondary-foreground">
+              {t('projectHome.standaloneChats.cardTitle')}
+            </span>
+            <span className="mt-0.5 block truncate text-sm text-muted-foreground">
+              {latestChatTitle
+                ? t('projectHome.standaloneChats.cardPreview', { title: latestChatTitle })
+                : t('projectHome.standaloneChats.cardDescription')}
+            </span>
+          </span>
+          <ChevronRight
+            aria-hidden
+            className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
+          />
+        </button>
 
         {/* Hero — text left, undraw illustration right (desktop only) */}
         <section className="home-hero relative mt-2 grid grid-cols-1 items-center gap-6 overflow-hidden rounded-2xl border border-border/80 bg-card px-5 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,240px)] lg:gap-10 lg:px-6 lg:py-6">

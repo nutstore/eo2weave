@@ -1,5 +1,10 @@
 // 首页
 export const projectHome = {
+    standaloneChats: {
+        cardTitle: "独立对话",
+        cardDescription: "不挂项目、随时开聊",
+        cardPreview: "最近：{title}",
+    },
     // 顶部品牌
     brand: "怡氧知知",
     openSettings: "打开设置",

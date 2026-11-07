@@ -130,13 +130,19 @@ export const pythonToolExecutor: ToolExecutor = async (args, context) => {
   const code = args.code as string
   const timeout = (args.timeout as number) || 60000
 
+  // Direct conversations have no folder authorization: the (host-inherited)
+  // directoryHandle must never reach the python sandbox path. It is only
+  // used by registerDetectedChanges to read native host files when recording
+  // pending changes — pass null so detection stays OPFS-scoped (same
+  // boundary as bash.tool's VFS handler).
   return pythonMutex.runExclusive(() =>
     executePython(
       code,
       timeout,
       context.workspaceId,
-      context.directoryHandle,
+      context.directMode ? null : context.directoryHandle,
       context.onWorkspacePathsChanged,
+      context.directMode === true,
     )
   )
 }
@@ -164,6 +170,7 @@ async function executePython(
   workspaceId?: string | null,
   directoryHandle?: FileSystemDirectoryHandle | null,
   onWorkspacePathsChanged?: (paths: readonly string[]) => void,
+  directMode?: boolean,
 ): Promise<string> {
   // workspaceId is always provided by the agent loop (= conversationId).
   // If missing, that's a programming error — fail fast.
@@ -202,7 +209,8 @@ async function executePython(
 
     // Load browser-local secrets for every Python execution. Their values are
     // intentionally kept out of the agent tool schema, workspace files, and logs.
-    const runtimeSecrets = await loadRuntimeSecrets()
+    // In directMode this resolves to {} — see loadRuntimeSecrets.
+    const runtimeSecrets = await loadRuntimeSecrets({ directMode })
 
     // Execute Python code
     const result = await runtimePythonExecutor.execute({
@@ -296,8 +304,16 @@ function redactPythonResult<T extends { stdout?: string; stderr?: string; error?
  * Load all browser-local secrets into an ephemeral map for the Pyodide worker.
  * The map is created per execution so additions, updates, and deletions in
  * Settings → Secret Manager take effect on the next Python tool call.
+ *
+ * In directMode (standalone chats) NOTHING is loaded — no project and no
+ * global secrets. The sandbox executes model-supplied code that untrusted
+ * conversation or fetched content can steer, so any injected value is one
+ * `pyfetch` away from exfiltration; output redaction cannot prevent an
+ * outbound transfer. This matches web_fetch's direct-mode behavior (secret
+ * templates stay unresolved there for the same reason).
  */
-async function loadRuntimeSecrets(): Promise<Record<string, string>> {
+async function loadRuntimeSecrets(options?: { directMode?: boolean }): Promise<Record<string, string>> {
+  if (options?.directMode) return {}
   try {
     const [{ getAllSecretNames, loadSecret }, { useProjectStore }] = await Promise.all([
       import('@/security/secret-store'),

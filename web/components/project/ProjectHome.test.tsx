@@ -81,6 +81,9 @@ const t = (key: string, params?: Record<string, string | number>) => {
     'projectHome.hero.title': 'Start creating here',
     'projectHome.hero.description': 'desc',
     'projectHome.hero.descriptionSuffix': 'suffix',
+    'projectHome.standaloneChats.cardTitle': '独立对话',
+    'projectHome.standaloneChats.cardDescription': '不挂项目、随时开聊',
+    'projectHome.standaloneChats.cardPreview': '最近：{title}',
     'projectHome.grid.title': 'My Projects',
     'projectHome.grid.newProject': 'New Project',
     'projectHome.grid.search': 'Search projects',
@@ -481,5 +484,55 @@ describe('ProjectHome — new homepage layout', () => {
     nativeAvailSpy.mockReturnValue(false)
     addNativeHostRootSpy.mockReset()
     folderStore.roots = []
+  })
+
+  it('opens /chats from the standalone-chats hero card', async () => {
+    const user = userEvent.setup()
+    const onOpenStandaloneChats = vi.fn()
+
+    render(
+      <ProjectHome
+        projects={[]}
+        projectStats={{}}
+        activeProjectId=""
+        onOpenProject={vi.fn()}
+        onCreateProject={vi.fn().mockResolvedValue(null)}
+        onRenameProject={vi.fn()}
+        onArchiveProject={vi.fn()}
+        onDeleteProject={vi.fn()}
+        onClearLocalData={vi.fn()}
+        onOpenStandaloneChats={onOpenStandaloneChats}
+      />,
+    )
+
+    await user.click(screen.getByTestId('standalone-chats-card'))
+    expect(onOpenStandaloneChats).toHaveBeenCalledTimes(1)
+    // Without chats, the card shows the generic description.
+    expect(screen.getByTestId('standalone-chats-card')).toHaveTextContent('不挂项目、随时开聊')
+  })
+
+  it('previews the most recent standalone chat in the hero card', () => {
+    const onOpenStandaloneChats = vi.fn()
+
+    render(
+      <ProjectHome
+        projects={[]}
+        projectStats={{}}
+        activeProjectId=""
+        standaloneChats={[
+          { id: 'c1', title: 'Older chat', updatedAt: 1000 },
+          { id: 'c2', title: 'Newest chat', updatedAt: 2000 },
+        ]}
+        onOpenProject={vi.fn()}
+        onCreateProject={vi.fn().mockResolvedValue(null)}
+        onRenameProject={vi.fn()}
+        onArchiveProject={vi.fn()}
+        onDeleteProject={vi.fn()}
+        onClearLocalData={vi.fn()}
+        onOpenStandaloneChats={onOpenStandaloneChats}
+      />,
+    )
+
+    expect(screen.getByTestId('standalone-chats-card')).toHaveTextContent('最近：Newest chat')
   })
 })

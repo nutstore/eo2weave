@@ -26,7 +26,7 @@
 
 import { Fragment, memo, type ReactNode, useContext, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { projectWorkspacePath } from '@/lib/route-paths'
+import { projectWorkspacePath, chatPath } from '@/lib/route-paths'
 import { Bot, Database, Split, AlertTriangle, Download, Minus, Plus } from 'lucide-react'
 import type { Turn } from './group-messages'
 import type {
@@ -456,7 +456,7 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
 }: AssistantTurnBubbleProps) {
   const t = useT()
   const navigate = useRouter()
-  const { projectId } = useParams<{ projectId: string }>()
+  const { projectId, chatId } = useParams<{ projectId?: string; chatId?: string }>()
   const conversationActions = useContext(ConversationActionContext)
   const isStreamingReasoning = streamingState?.reasoning ?? false
   const isStreamingContent = streamingState?.content ?? false
@@ -494,9 +494,13 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
     setIsBranching(true)
     try {
       const branched = await useConversationStore.getState().branchConversation(conversationId, branchPointMessageId)
-      // Navigate to the new branched conversation so syncFromRoute triggers workspace switching
-      if (projectId && branched) {
-        navigate.push(projectWorkspacePath(projectId, branched.id))
+      // Navigate to the new branched conversation so syncFromRoute triggers workspace switching.
+      // Standalone chats have no project segment: navigate inside /chats, otherwise the
+      // route keeps the old chat id and the chats gate pins its loading spinner on the
+      // newly active (branched) conversation forever.
+      if (branched) {
+        if (chatId) navigate.push(chatPath(branched.id))
+        else if (projectId) navigate.push(projectWorkspacePath(projectId, branched.id))
       }
     } catch (error) {
       console.error('[AssistantTurnBubble] Failed to branch conversation:', error)

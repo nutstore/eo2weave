@@ -37,6 +37,7 @@ import { webmcpPackages } from './webmcpPackages'
 import { execPolicy } from './execPolicy'
 import { tools } from './tools'
 import { schedule } from './schedule'
+import { chats } from './chats'
 import { skillInstall } from './skillInstall'
 import { extension } from './extension'
 
@@ -98,5 +99,6 @@ export const koKR = {
   extension,
   tools,
   schedule,
+  chats,
   skillInstall,
 } as const

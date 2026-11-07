@@ -176,6 +176,85 @@ export function getModeDisplayName(mode: AgentMode): string {
 }
 
 /**
+ * Tools that depend on a disk-folder authorization (folderHandle / ProjectRoot).
+ *
+ * Direct conversations have NO folder mounted, so these tools are never
+ * registered there — stricter than plan mode (plan keeps read; direct removes
+ * even read). Everything else (page_*, run_python, bash, skills, webmcp
+ * app-tools, spawn_subagent, schedule) stays available.
+ *
+ * Table-driven by design (P1.0 decision): adding a new folder-dependent tool
+ * means adding one entry here, not grepping call sites.
+ */
+export const FOLDER_DEPENDENT_TOOLS: ReadonlySet<string> = new Set([
+  'read',
+  'write',
+  'edit',
+  'delete',
+  'ls',
+  'search',
+  'snapshot_status',
+  'snapshot_diff',
+  'snapshot_log',
+  'snapshot_show',
+  'snapshot_restore',
+  'sync-to-opfs',
+  // VFS-backed image tools: their executors resolve readable paths against
+  // the host project's mounted roots, so a direct-mode agent could read
+  // host-project images through them.
+  'read_image',
+  'ocr',
+])
+
+/**
+ * Tools that can reach the HOST filesystem or processes even without a
+ * folder authorization: native-host shell execution, host process
+ * management, real-disk flushes, conflict detection over pending disk
+ * changes, and the dynamically registered checkpoint tools. A standalone
+ * chat (directMode) must never offer these — "no folder authorized" also
+ * means no host file/process access.
+ *
+ * Checkpoint tools (create_checkpoint / rollback_checkpoint) are registered
+ * dynamically when a native directory handle exists, but registration alone
+ * must not re-introduce them into a folder-less conversation — hence they
+ * are enumerated here rather than relying on registration state.
+ */
+export const HOST_CAPABLE_TOOLS: ReadonlySet<string> = new Set([
+  'exec',
+  'processes',
+  'sync-to-disk',
+  'detect_conflicts',
+  'create_checkpoint',
+  'rollback_checkpoint',
+])
+
+/**
+ * Tools bound to the HOST PROJECT's data even though they need no folder
+ * authorization: `delegate_to` reaches project agents (a direct-mode agent
+ * must not expose or switch into host-project personas), and the dev-only
+ * `db_query` runs SQL over the host project's OPFS SQLite database. A
+ * standalone chat has no project, so both are excluded unconditionally —
+ * dev-mode inclusion of `db_query` changes nothing: "dev only" gates WHO may
+ * register it, not WHAT data it can reach.
+ */
+export const PROJECT_BOUND_TOOLS: ReadonlySet<string> = new Set([
+  'delegate_to',
+  'db_query',
+])
+
+/**
+ * Check if a tool should be excluded in direct mode (folder-less conversation).
+ * Unknown tools are kept — only the explicit exclusion sets are removed.
+ */
+export function isToolAllowedInDirectMode(toolName: string): boolean {
+  return (
+    !FOLDER_DEPENDENT_TOOLS.has(toolName) &&
+    !HOST_CAPABLE_TOOLS.has(toolName) &&
+    !PROJECT_BOUND_TOOLS.has(toolName)
+  )
+}
+
+/**
  * Get mode description for UI
  */
 export function getModeDescription(mode: AgentMode): string {

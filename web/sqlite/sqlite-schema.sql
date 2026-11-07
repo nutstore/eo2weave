@@ -11,7 +11,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 18;
+PRAGMA user_version = 19;
 
 -- ============================================================================
 -- Projects Table (top-level container for workspaces)
@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     compressed_context_summary TEXT,        -- compression baseline summary
     compressed_context_cutoff_ts INTEGER,   -- timestamp covered by the compression baseline
     flow_instance_json TEXT,               -- JSON object for the visual workflow working copy
+    kind TEXT NOT NULL DEFAULT 'project',  -- 'project' | 'direct' (direct = folder-less chat)
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 's') * 1000),
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 's') * 1000)
 );

@@ -10,7 +10,7 @@
 
 import { scanProviderSkills, listProviderSkillResources } from './provider-skills'
 import { providerRegistry } from '@/vfs/provider-registry'
-import type { Skill, SkillMetadata, SkillResource } from './skill-types'
+import type { Skill, SkillMetadata, SkillResource, SkillSource } from '@/skills/skill-types'
 import * as storage from './skill-storage'
 import {
   buildAvailableSkillsBlock,
@@ -287,10 +287,13 @@ export class SkillManager {
 
   /**
    * Get enabled skill names from combined cache.
+   * `excludeSources` drops whole origins from the result (used by direct-mode
+   * tooling so the not-found hint never reveals withheld project-skill names).
    */
-  getEnabledSkillNames(): string[] {
+  getEnabledSkillNames(options?: { excludeSources?: SkillSource[] }): string[] {
+    const excluded = options?.excludeSources
     return this.getSkills()
-      .filter((skill) => skill.enabled)
+      .filter((skill) => skill.enabled && !(excluded && excluded.includes(skill.source)))
       .map((skill) => skill.source === 'provider' ? skill.id : skill.name)
       .sort((a, b) => a.localeCompare(b))
   }
