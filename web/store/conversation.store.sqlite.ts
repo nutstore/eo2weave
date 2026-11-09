@@ -180,6 +180,11 @@ import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 //=============================================================================
 import { deleteConversationFromDB, loadConversationsMeta, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers, beginConversationLoadGeneration, isCurrentConversationLoadGeneration, resetInflightLoadForTests } from '@/store/conversation-persist'
+import {
+  cancelScheduledEviction,
+  configureConversationEviction,
+  scheduleConversationEviction,
+} from './conversation-eviction'
 import { CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 
 
@@ -505,113 +510,8 @@ function writeWithMessagesLoaded(conversationId: string, apply: () => void): voi
 // ---------------------------------------------------------------------------
 // Conversation message memory eviction (phase 2 of the memory-governance plan)
 // ---------------------------------------------------------------------------
-// Conversations keep their full message history in memory forever once opened
-// (mount ref-counting has no cache-releasing consumer), which is a major
-// contributor to the "page gets slower the longer you chat" problem. Eviction
-// returns a conversation to its metadata-only state (`messages: []`,
-// `messagesLoaded: false`); reopening it reloads from SQLite via setActive.
-//
-// Safety relies on phase 1: after eviction any late writer goes through the
-// `writeWithMessagesLoaded` guard (reload-before-write), so a write can never
-// truncate the DB history.
-
-/** Minimum in-memory message count before eviction is worth the reload cost. */
-export const EVICTION_MIN_MESSAGES = 100
-/** Newest conversations (by updatedAt) with loaded messages that stay cached. */
-export const EVICTION_LRU_KEEP = 3
-/** Delay before an eviction candidate is re-checked and evicted. Lets final
- *  persists settle (completion handlers read `conv.messages` right after
- *  setting status idle — evicting synchronously would hand them `[]`). */
-export const EVICTION_DELAY_MS = 30_000
-
-const evictionTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-/**
- * Schedule a delayed eviction check for `conversationId`. All safety guards are
- * re-evaluated when the timer fires, so scheduling is cheap and always safe.
- * Idempotent: a pending timer for the same conversation is kept.
- */
-export function scheduleConversationEviction(conversationId: string): void {
-  if (evictionTimers.has(conversationId)) return
-  const timer = setTimeout(() => {
-    evictionTimers.delete(conversationId)
-    evictConversationMessagesIfSafe(conversationId)
-  }, EVICTION_DELAY_MS)
-  evictionTimers.set(conversationId, timer)
-}
-
-function cancelScheduledEviction(conversationId: string): void {
-  const timer = evictionTimers.get(conversationId)
-  if (timer) {
-    clearTimeout(timer)
-    evictionTimers.delete(conversationId)
-  }
-}
-
-/**
- * Test helper: drop all pending eviction timers. Tests that discard fake
- * timers mid-flight would otherwise leave stale `evictionTimers` entries that
- * silently block future `scheduleConversationEviction` calls for the same id.
- */
-export function clearScheduledEvictionTimers(): void {
-  for (const timer of evictionTimers.values()) clearTimeout(timer)
-  evictionTimers.clear()
-}
-
-/**
- * Evict a conversation's in-memory messages back to metadata-only state when it
- * is provably quiescent and outside the LRU keep-set. Every guard is checked
- * at execution time (not scheduling time). Returns true when eviction ran.
- */
-export function evictConversationMessagesIfSafe(conversationId: string): boolean {
-  const state = useConversationStoreSQLite.getState()
-  const conv = state.conversations.find((c) => c.id === conversationId)
-  if (!conv || conv.messagesLoaded === false) return false
-  if (conv.messages.length < EVICTION_MIN_MESSAGES) return false
-  if (state.activeConversationId === conversationId) return false
-  if (conv.status !== 'idle') return false
-  if (conv.draftAssistant) return false
-
-  const runtimeState = useConversationRuntimeStore.getState()
-  if ((runtimeState.mountedConversations.get(conversationId) ?? 0) > 0) return false
-  if ((runtimeState.pendingMessageQueues.get(conversationId)?.length ?? 0) > 0) return false
-  if (persistSchedulers.has(conversationId)) return false
-  if (unloadedWriteQueues.has(conversationId)) return false
-
-  // LRU keep-set: the newest conversations with loaded messages stay cached so
-  // recently-used ones reopen instantly.
-  const keepSet = new Set(
-    state.conversations
-      .filter((c) => c.messagesLoaded !== false && c.messages.length > 0)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, EVICTION_LRU_KEEP)
-      .map((c) => c.id),
-  )
-  if (keepSet.has(conversationId)) return false
-
-  const messageCount = conv.messages.length
-  useConversationStoreSQLite.setState((draft) => {
-    const c = draft.conversations.find((x) => x.id === conversationId)
-    if (c && c.messagesLoaded !== false) {
-      c.messages = []
-      c.messagesLoaded = false
-    }
-  })
-  // Baseline must go too: it pins references to every evicted message object.
-  invalidatePersistBaseline(conversationId)
-  // Release the mirrored runtime entry as well (idle leftovers only).
-  useConversationRuntimeStore.setState((draft) => {
-    const rt = draft.runtimes.get(conversationId)
-    if (rt && rt.status === 'idle' && !rt.activeRunId && !rt.draftAssistant) {
-      draft.runtimes.delete(conversationId)
-    }
-  })
-  console.info('[conversation.store] Evicted conversation messages from memory', {
-    conversationId,
-    messageCount,
-  })
-  return true
-}
+// Policy + timers live in ./conversation-eviction.ts; this module supplies the
+// port (conversation state, runtime ref-counts, pending writes) it reads.
 
 /**
  * Persist a load failure for Diagnostics (issue #147 — same pattern as the
@@ -3835,6 +3735,15 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 // (external importers and tests resolve these names here).
 export { findSpawnStepInDraft } from './conversation-message-ops'
 export { reconcileMessageSnapshot } from './conversation-message-ops'
+export {
+  clearScheduledEvictionTimers,
+  EVICTION_DELAY_MS,
+  EVICTION_LRU_KEEP,
+  EVICTION_MIN_MESSAGES,
+  evictConversationMessagesIfSafe,
+  scheduleConversationEviction,
+  type ConversationEvictionPort,
+} from './conversation-eviction'
 
 /**
  * The single kind selector — read a conversation's direct-mode flag.
@@ -3847,6 +3756,45 @@ export function isDirectConversation(id: string | null | undefined): boolean {
   if (!id) return false
   return useConversationStoreSQLite.getState().conversations.find((c) => c.id === id)?.kind === 'direct'
 }
+
+// ---------------------------------------------------------------------------
+// Eviction port: the minimal store surface the policy module may read or act on
+// ---------------------------------------------------------------------------
+configureConversationEviction({
+  listCandidates: () =>
+    useConversationStoreSQLite.getState().conversations.map((c) => ({
+      id: c.id,
+      messageCount: c.messages.length,
+      messagesLoaded: c.messagesLoaded !== false,
+      status: c.status,
+      hasDraftAssistant: Boolean(c.draftAssistant),
+      updatedAt: c.updatedAt,
+    })),
+  getActiveConversationId: () => useConversationStoreSQLite.getState().activeConversationId,
+  getMountedCount: (id) => useConversationRuntimeStore.getState().mountedConversations.get(id) ?? 0,
+  getPendingQueueLength: (id) =>
+    useConversationRuntimeStore.getState().pendingMessageQueues.get(id)?.length ?? 0,
+  hasPendingPersist: (id) => persistSchedulers.has(id),
+  hasPendingUnloadedWrite: (id) => unloadedWriteQueues.has(id),
+  unload: (id) => {
+    useConversationStoreSQLite.setState((draft) => {
+      const c = draft.conversations.find((x) => x.id === id)
+      if (c && c.messagesLoaded !== false) {
+        c.messages = []
+        c.messagesLoaded = false
+      }
+    })
+    // Baseline must go too: it pins references to every evicted message object.
+    invalidatePersistBaseline(id)
+    // Release the mirrored runtime entry as well (idle leftovers only).
+    useConversationRuntimeStore.setState((draft) => {
+      const rt = draft.runtimes.get(id)
+      if (rt && rt.status === 'idle' && !rt.activeRunId && !rt.draftAssistant) {
+        draft.runtimes.delete(id)
+      }
+    })
+  },
+})
 
 // ---------------------------------------------------------------------------
 // Eviction trigger: last view unmounted
