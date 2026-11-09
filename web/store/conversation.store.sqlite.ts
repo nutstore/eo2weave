@@ -135,9 +135,9 @@ import {
   retryLoadedFailure,
   runLoadFromDB,
   withTimeout,
-} from './conversation-load'
-export { getTranscriptVersionEntryForTests, resetConversationRetryStateForTests } from './conversation-load'
-import type { ConversationLoadState } from './conversation-load'
+} from '@/store/conversation-load'
+export { getTranscriptVersionEntryForTests, resetConversationRetryStateForTests } from '@/store/conversation-load'
+import type { ConversationLoadState } from '@/store/conversation-load'
 
 
 /**

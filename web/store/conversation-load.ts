@@ -27,8 +27,8 @@ import {
   DEFAULT_CONVERSATION_NAME,
   healCompressionBaseline,
   makeSyntheticAskUserResult,
-} from './conversation-message-ops'
-import { useConversationContextStore } from './conversation-context.store'
+} from '@/store/conversation-message-ops'
+import { useConversationContextStore } from '@/store/conversation-context.store'
 
 /**
  * The state slice the load pipeline reads and writes. `ConversationState` in
