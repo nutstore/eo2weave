@@ -123,11 +123,13 @@ describe('conversation eviction policy', () => {
     running.seed(withKeepSet([candidate('old', { status: 'streaming' })], 'old'))
     configureConversationEviction(running.port)
     expect(evictConversationMessagesIfSafe('old')).toBe(false)
+    expect(running.unloaded).toEqual([])
 
     const drafted = makePort()
     drafted.seed(withKeepSet([candidate('old', { hasDraftAssistant: true })], 'old'))
     configureConversationEviction(drafted.port)
     expect(evictConversationMessagesIfSafe('old')).toBe(false)
+    expect(drafted.unloaded).toEqual([])
   })
 
   it('keeps mounted conversations and conversations with queued messages', () => {
@@ -162,8 +164,10 @@ describe('conversation eviction policy', () => {
 
   it('keeps the newest loaded conversations (LRU keep-set)', () => {
     const fake = makePort()
+    // Keep-set members are above the message threshold on purpose: the ONLY
+    // guard that can keep them is the LRU keep-set (not the min-messages one).
     const newer = Array.from({ length: EVICTION_LRU_KEEP }, (_, i) =>
-      candidate(`new-${i}`, { messageCount: 2, updatedAt: 2_000 + i })
+      candidate(`new-${i}`, { messageCount: EVICTION_MIN_MESSAGES + 2, updatedAt: 2_000 + i })
     )
     // Exactly as many loaded conversations as the keep-set holds → nothing is evictable.
     fake.seed(newer)
@@ -215,6 +219,9 @@ describe('conversation eviction policy', () => {
 
       scheduleConversationEviction('old')
       scheduleConversationEviction('old')
+      // Exactly one pending timer — a second one would be invisible in the
+      // unload list (the first unload makes the guard reject the second fire).
+      expect(vi.getTimerCount()).toBe(1)
       vi.advanceTimersByTime(EVICTION_DELAY_MS)
       expect(fake.unloaded).toEqual(['old'])
     })
@@ -232,12 +239,15 @@ describe('conversation eviction policy', () => {
 
     it('clearScheduledEvictionTimers drops every pending check', () => {
       const fake = makePort()
-      fake.seed(withKeepSet([], 'old'))
+      // Both are evictable: if a timer survived the clear, it would unload.
+      fake.seed(withKeepSet([candidate('other')], 'old'))
       configureConversationEviction(fake.port)
 
       scheduleConversationEviction('old')
       scheduleConversationEviction('other')
+      expect(vi.getTimerCount()).toBe(2)
       clearScheduledEvictionTimers()
+      expect(vi.getTimerCount()).toBe(0)
       vi.advanceTimersByTime(EVICTION_DELAY_MS)
       expect(fake.unloaded).toEqual([])
     })
