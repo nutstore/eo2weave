@@ -51,13 +51,16 @@ describe('conversation-load transcript watermark', () => {
     bumpTranscriptVersion('conv-a')
     const generation = claimTranscriptRead('conv-a')
     bumpTranscriptVersion('conv-b')
+    const neighbourGeneration = claimTranscriptRead('conv-b')
 
     forgetTranscriptState('conv-a')
 
     expect(getTranscriptVersion('conv-a')).toBeUndefined()
     expect(isCurrentTranscriptRead('conv-a', generation)).toBe(false)
-    // The neighbour survives: deleting one conversation must not reset others.
+    // The neighbour survives in BOTH maps: deleting one conversation must not
+    // reset another's watermark or invalidate its pending read.
     expect(getTranscriptVersion('conv-b')).toBe(1)
+    expect(isCurrentTranscriptRead('conv-b', neighbourGeneration)).toBe(true)
   })
 
   it('reset clears every watermark and read generation', () => {
