@@ -17,7 +17,7 @@ import {
   scheduleConversationEviction,
   type ConversationEvictionPort,
   type EvictionCandidate,
-} from '../conversation-eviction'
+} from '@/store/conversation-eviction'
 
 function candidate(id: string, over: Partial<EvictionCandidate> = {}): EvictionCandidate {
   return {

@@ -184,7 +184,7 @@ import {
   cancelScheduledEviction,
   configureConversationEviction,
   scheduleConversationEviction,
-} from './conversation-eviction'
+} from '@/store/conversation-eviction'
 import { CONVERSATION_STORE_LOAD_ERROR_KEY } from '@/lib/app-storage-keys'
 
 
@@ -3743,7 +3743,7 @@ export {
   evictConversationMessagesIfSafe,
   scheduleConversationEviction,
   type ConversationEvictionPort,
-} from './conversation-eviction'
+} from '@/store/conversation-eviction'
 
 /**
  * The single kind selector — read a conversation's direct-mode flag.
