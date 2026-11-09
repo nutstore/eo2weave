@@ -334,9 +334,11 @@ const conversationTranscriptVersions = new Map<string, number>()
  * Conversations deleted while a load's metadata read was pending. The
  * snapshot was taken BEFORE the delete, so installing it verbatim puts the
  * row back in the sidebar even though its SQLite record is gone (issue #251).
- * The delete path records ids through `forgetTranscriptState`; the install
- * filters them out. Cleared at the start of each run and after each install,
- * so the set only ever describes the run that is pending right now.
+ * The delete path records ids through `forgetTranscriptState`; both install
+ * paths filter their snapshot through it. Cleared when a run starts, so it
+ * only ever describes deletes made while THAT run was pending — entries left
+ * from a previous run (or from deletes made with no load pending) never
+ * filter a later snapshot the database already reflects.
  */
 const conversationsDeletedWhileLoadPending = new Set<string>()
 
@@ -701,8 +703,10 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
   const isCurrentRun = () => isCurrentConversationLoadGeneration(loadGeneration)
   // This run installs the snapshot ITS metadata read returns. Start from an
   // empty deletion log: deletes made before this run began are already
-  // reflected in what the read will return, and entries left over from a
-  // previous run must not filter this one (issue #251).
+  // reflected in what the read returns, and entries left over from a previous
+  // run must not filter this one (issue #251). Nothing clears it afterwards —
+  // a delete landing after the install is picked up by the next run's read,
+  // and keeping the entry can only make a stale run filter more, never less.
   conversationsDeletedWhileLoadPending.clear()
   // Snapshot the selection generation BEFORE this run can yield or install
   // its own active id. Anything that changes the active selection while the
@@ -959,9 +963,6 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
           state.cancelledRunIds.clear()
         })
         const selectionGenerationAtLoad = activeSelectionGeneration
-        // The snapshot is installed: every delete recorded while this run was
-        // pending has been filtered out of it (issue #251).
-        conversationsDeletedWhileLoadPending.clear()
 
         if (workspaceEnsureError !== null) {
           // The ensure targeted the workspace captured BEFORE the ensure was
@@ -1217,9 +1218,6 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
             state.suggestedFollowUps.clear()
             state.cancelledRunIds.clear()
           })
-          // Deletes recorded while this fallback ran are already filtered out
-          // of the installed list (issue #251).
-          conversationsDeletedWhileLoadPending.clear()
           console.log(
             '[conversation.store] loadFromDB fallback metadata read succeeded',
             { conversationCount: retryConversations.length },
