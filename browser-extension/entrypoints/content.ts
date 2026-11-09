@@ -62,6 +62,7 @@ export default defineContentScript({
       // External MCP proxy bridge
       'mcp_proxy_fetch',
       'mcp_proxy_fetch_stream',
+      'mcp_network_v2',
       // WebMCP tool discovery / invocation (host authorization enforced
       // inside the background handlers)
       'webmcp_discover_tools',
@@ -90,11 +91,18 @@ export default defineContentScript({
       'codex_image_generate',
       'webmcp_plugin_download_stream',
       'mcp_proxy_fetch_stream',
+      'mcp_network_v2',
     ])
 
     // Streaming ports are keyed by the page request id so page-side timeout,
     // iterator return(), or ReadableStream cancellation can abort upstream.
     const streamingPorts = new Map<string, chrome.runtime.Port>()
+    window.addEventListener('pagehide', () => {
+      for (const port of streamingPorts.values()) {
+        try { port.postMessage({ type: 'cancel' }); port.disconnect() } catch {}
+      }
+      streamingPorts.clear()
+    })
 
     window.addEventListener('message', (event) => {
       // Only accept messages from same window, with our bridge marker

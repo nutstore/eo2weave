@@ -2497,6 +2497,17 @@ export async function runAgentImpl(
       // If so, dequeue the next one and trigger a new agent run.
       const finalStatus = get().conversations.find((c) => c.id === conversationId)?.status
       if (finalStatus === 'idle') {
+        const pendingMCP = useConversationRuntimeStore.getState().getQueuedMessage(conversationId, 0)
+        if (pendingMCP?.mcpTaskId) {
+          try {
+            const { continueQueuedMCPTask } = await import('@/mcp/continue-task')
+            await continueQueuedMCPTask(pendingMCP.mcpTaskId, pendingMCP.text)
+          } catch (error) {
+            console.error('[MCP] Queued result delivery failed:', error)
+            toast.error(error instanceof Error ? error.message : String(error))
+          }
+          return
+        }
         const nextMsg = useConversationRuntimeStore.getState().dequeueMessage(conversationId)
         if (nextMsg) {
           if (nextMsg.rerunOnly) {

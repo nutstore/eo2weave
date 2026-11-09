@@ -5,27 +5,18 @@
  * Supports Streamable HTTP transport with JSON-RPC 2.0
  */
 
-//=============================================================================
-// JSON-RPC 2.0 Types
-//=============================================================================
-
-export interface JSONRPCRequest {
-  jsonrpc: '2.0'
-  id: number | string
-  method: string
-  params?: unknown
-}
-
-export interface JSONRPCResponse<T = unknown> {
-  jsonrpc: '2.0'
-  id: number | string
-  result?: T
-  error?: {
-    code: number
-    message: string
-    data?: unknown
-  }
-}
+export type {
+  JSONRPCRequest, CallToolRequestParams as MCPToolCallRequest,
+  CallToolResult as MCPToolCallResult, Resource as MCPResourceDefinition,
+  ReadResourceResult as MCPResourceContent, InitializeRequestParams as MCPInitializeParams,
+  ClientCapabilities as MCPClientCapabilities, InitializeResult as MCPInitializeResult,
+  ServerCapabilities as MCPServerCapabilities, ListToolsResult as MCPToolsListResult,
+  ListResourcesResult as MCPResourcesListResult,
+} from '@modelcontextprotocol/client'
+import type { Tool, ServerCapabilities } from '@modelcontextprotocol/client'
+export type JSONRPCResponse<T = unknown> = { jsonrpc: '2.0'; id: string | number; result?: T; error?: { code: number; message: string; data?: unknown } }
+export type MCPToolDefinition = Tool & { _serverId?: string }
+export type MCPToolInputSchema = Tool['inputSchema']
 
 //=============================================================================
 // MCP Server Configuration
@@ -33,7 +24,7 @@ export interface JSONRPCResponse<T = unknown> {
 
 export type MCPServerType = 'builtin' | 'user' | 'project'
 
-export type MCPTransportType = 'streamable_http' | 'sse'
+export type MCPTransportType = 'streamable_http' | 'legacy_sse' | 'sse'
 
 export interface MCPServerConfig {
   /** Unique server ID (user-defined, memorable format like "excel-analyzer") */
@@ -46,6 +37,7 @@ export interface MCPServerConfig {
   url: string
   /** Transport type */
   transport: MCPTransportType
+  protocolMode?: 'auto' | 'legacy'
   /** Whether this server is enabled */
   enabled: boolean
   /** Optional authentication token (Bearer) */
@@ -76,117 +68,8 @@ export interface MCPConnectionStatus {
   error?: string
   lastConnected?: number
   tools?: MCPToolDefinition[]
-}
-
-//=============================================================================
-// MCP Tool Types
-//=============================================================================
-
-export interface MCPToolDefinition {
-  name: string
-  description?: string
-  inputSchema: MCPToolInputSchema
-  /** Execution hints for the tool */
-  execution?: {
-    /** Whether this tool requires/supports task augmentation */
-    taskSupport?: 'required' | 'optional'
-  }
-  /** Optional server metadata */
-  _serverId?: string
-}
-
-export interface MCPToolInputSchema {
-  type: 'object'
-  properties: Record<string, unknown>
-  required?: string[]
-  /** JSON Schema compatible additional properties */
-  [key: string]: unknown
-}
-
-export interface MCPToolCallRequest {
-  name: string
-  arguments?: Record<string, unknown>
-}
-
-export interface MCPToolCallResult {
-  content: Array<{
-    type: 'text' | 'image' | 'resource'
-    text?: string
-    data?: string
-    mimeType?: string
-  }>
-  isError?: boolean
-  _meta?: {
-    progressToken?: string | number
-    [key: string]: unknown
-  }
-}
-
-//=============================================================================
-// MCP Resource Types
-//=============================================================================
-
-export interface MCPResourceDefinition {
-  uri: string
-  name: string
-  description?: string
-  mimeType?: string
-}
-
-export interface MCPResourceContent {
-  uri: string
-  contents: Array<{
-    uri: string
-    mimeType?: string
-    text?: string
-    blob?: string
-  }>
-}
-
-//=============================================================================
-// MCP Protocol Types
-//=============================================================================
-
-export interface MCPInitializeParams {
-  protocolVersion: string
-  capabilities: MCPClientCapabilities
-  clientInfo: {
-    name: string
-    version: string
-  }
-}
-
-export interface MCPClientCapabilities {
-  roots?: {
-    listChanged?: boolean
-  }
-  sampling?: Record<string, never>
-}
-
-export interface MCPInitializeResult {
-  protocolVersion: string
-  serverInfo: {
-    name: string
-    version: string
-  }
-  capabilities: MCPServerCapabilities
-}
-
-export interface MCPServerCapabilities {
-  tools?: Record<string, never>
-  resources?: {
-    subscribe?: boolean
-    listChanged?: boolean
-  }
-  prompts?: Record<string, never>
-}
-
-export interface MCPToolsListResult {
-  tools: MCPToolDefinition[]
-}
-
-export interface MCPResourcesListResult {
-  resources: MCPResourceDefinition[]
+  protocolVersion?: string
+  capabilities?: ServerCapabilities
 }
 
 //=============================================================================
@@ -241,34 +124,6 @@ export class MCPToolExecutionError extends MCPError {
 }
 
 //=============================================================================
-// MCP Tasks Types (MCP Tasks Specification - Nov 2025)
-//=============================================================================
-
-export type MCPTaskStatus = 'working' | 'completed' | 'failed' | 'cancelled'
-
-export interface MCPTaskInfo {
-  taskId: string
-  status: MCPTaskStatus
-  createdAt: string
-  lastUpdatedAt: string
-  /** Suggested poll interval in milliseconds */
-  pollInterval?: number
-  /** Human-readable status message */
-  statusMessage?: string
-  /** Optional TTL for task result storage */
-  ttl?: number
-}
-
-export interface MCPTaskResultResponse {
-  result?: MCPToolCallResult
-  error?: {
-    code: string
-    message: string
-  }
-  status?: MCPTaskInfo
-}
-
-//=============================================================================
 // SEP-1306: Binary Mode Elicitation for File Uploads
 //=============================================================================
 
@@ -311,4 +166,10 @@ export interface FileMetadata {
   // Additional fields for tool usage
   file_id?: string
   download_url?: string
+}
+
+/** Normalize the former POST-stream label without reusing stale session IDs. */
+export function normalizeMCPConfig(config: MCPServerConfig): MCPServerConfig {
+  return { ...config, transport: config.transport === 'sse' ? 'streamable_http' : config.transport,
+    protocolMode: config.protocolMode ?? 'auto', sessionId: undefined }
 }

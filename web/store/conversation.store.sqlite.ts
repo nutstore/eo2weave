@@ -430,6 +430,11 @@ function writeWithMessagesLoaded(conversationId: string, apply: () => void): voi
   })
 }
 
+/** Await deferred reload-before-append operations before starting an offscreen run. */
+export async function waitForConversationWrites(conversationId: string): Promise<void> {
+  while (unloadedWriteQueues.has(conversationId)) await unloadedWriteQueues.get(conversationId)
+}
+
 // ---------------------------------------------------------------------------
 // Conversation message memory eviction (phase 2 of the memory-governance plan)
 // ---------------------------------------------------------------------------

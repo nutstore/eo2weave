@@ -73,6 +73,11 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
     category: 'external',
     planModeDescription: 'Execute external MCP/WebMCP tools (each call requires explicit user approval, even in plan mode)'
   }],
+  ['mcp_tasks', {
+    name: 'mcp_tasks',
+    category: 'external',
+    planModeDescription: 'Inspect existing MCP tasks and retrieve results; cancel and resume require authorization.'
+  }],
   // Web bridge tools (read-only — fetch external info, requires Browser Extension)
   ['web_search', { name: 'web_search', category: 'read' }],
   ['web_fetch', { name: 'web_fetch', category: 'read' }],
@@ -153,10 +158,8 @@ export function isToolAllowedInMode(toolName: string, mode: AgentMode): boolean 
   if (mode === 'act') return true // Act mode allows all tools
 
   const category = getToolCategory(toolName)
-  // 'external' tools (call_tool) stay visible in plan mode: plan is for
-  // read-only EXPLORATION, which includes probing external sources. Safety
-  // comes from the prompt-level authorization on every invocation (see
-  // policy-engine), not from hiding the tool.
+  // External tools stay visible for exploration and task result retrieval.
+  // Their executors authorize external calls and task control actions.
   return category === 'read' || category === 'external'
 }
 

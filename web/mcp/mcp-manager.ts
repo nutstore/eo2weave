@@ -1,3 +1,5 @@
+import { normalizeMCPConfig } from './mcp-types'
+import type { MCPInvocationContext, MCPInvocation } from './task-types'
 /**
  * MCP Manager
  *
@@ -99,7 +101,13 @@ export class MCPManager {
   /**
    * Initialize the manager - load servers from storage
    */
-  async initialize(): Promise<void> {
+  private initialization?: Promise<void>
+
+  initialize(): Promise<void> {
+    return this.initialization ??= this.load().catch(error => { this.initialization = undefined; throw error })
+  }
+
+  private async load(): Promise<void> {
     if (this.initialized) {
       return
     }
@@ -134,6 +142,7 @@ export class MCPManager {
 
     this.initialized = true
     console.log('[MCPManager] Initialization complete')
+    if (typeof window !== 'undefined') void import('./task-manager').then(module => module.getMCPTaskManager().initialize()).catch(error => console.error('[MCP Tasks] Restore failed', error))
   }
 
   //===========================================================================
@@ -160,7 +169,7 @@ export class MCPManager {
     const now = Date.now()
     const storedConfig: StoredMCPServer = {
       ...config,
-      transport: config.transport ?? 'sse',
+      transport: config.transport === 'sse' ? 'streamable_http' : config.transport ?? 'streamable_http',
       timeout: config.timeout ?? 30000,
       retryCount: config.retryCount ?? 3,
       retryDelay: config.retryDelay ?? 1000,
@@ -324,6 +333,7 @@ export class MCPManager {
 
     // Update cache
     server.config.enabled = enabled
+    this.client.addServer(server.config)
 
     console.log(`[MCPManager] ${enabled ? 'Enabled' : 'Disabled'} server: ${serverId}`)
   }
@@ -537,7 +547,8 @@ export class MCPManager {
     serverId: string,
     toolName: string,
     args: Record<string, unknown> = {},
-    onProgress?: (status: string, message?: string) => void
+    onProgress?: (status: string, message?: string) => void,
+    signal?: AbortSignal
   ): Promise<unknown> {
     const server = this.connectionCache.get(serverId)
     if (!server?.config) {
@@ -557,7 +568,8 @@ export class MCPManager {
           name: toolName,
           arguments: args,
         },
-        onProgress
+        onProgress,
+        signal
       )
 
       return result
@@ -568,6 +580,16 @@ export class MCPManager {
         error instanceof Error ? error.message : String(error)
       )
     }
+  }
+
+  async invokeTool(serverId: string, toolName: string, args: Record<string, unknown>, options: {
+    context?: MCPInvocationContext; signal?: AbortSignal; executionMode?: 'background' | 'wait'
+  } = {}): Promise<MCPInvocation> {
+    if (!options.context || options.executionMode === 'wait') {
+      return { kind: 'result', result: await this.client.executeTool(serverId, { name: toolName, arguments: args }, undefined, options.signal, options.context) }
+    }
+    const { getMCPTaskManager } = await import('./task-manager')
+    return getMCPTaskManager().invoke(serverId, toolName, args, options.context, options.signal)
   }
 
   /**
@@ -733,6 +755,7 @@ export class MCPManager {
     this.connectionCache.clear()
     this.listeners.clear()
     this.initialized = false
+    this.initialization = undefined
     console.log('[MCPManager] Disposed')
   }
 
@@ -744,7 +767,7 @@ export class MCPManager {
    * Convert StoredMCPServer to MCPServerConfig (for client use)
    */
   private toClientConfig(stored: StoredMCPServer): MCPServerConfig {
-    return {
+    return normalizeMCPConfig({
       id: stored.id,
       name: stored.name,
       description: stored.description,
@@ -757,8 +780,8 @@ export class MCPManager {
       retryDelay: stored.retryDelay,
       type: stored.type,
       env: stored.env,
-      sessionId: stored.sessionId,
-    }
+      protocolMode: stored.protocolMode,
+    })
   }
 }
 

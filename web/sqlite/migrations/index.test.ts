@@ -182,7 +182,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(18)
+    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ALTER TABLE fs_ops ADD COLUMN delete_mode')
     )
@@ -193,7 +193,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(18)
+    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ALTER TABLE fs_ops ADD COLUMN delete_mode')
     )
@@ -205,6 +205,23 @@ describe('initializeSchema', () => {
     db.blockFsOpsRepair = true
 
     await expect(initializeSchema(db)).rejects.toThrow('SCHEMA_INCOMPATIBLE')
+  })
+
+  it('upgrades a v18 database with managed MCP tasks and resets legacy sessions', async () => {
+    const db = new SchemaDatabase(18)
+
+    await initializeSchema(db)
+
+    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.statements).toContainEqual(
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS mcp_tasks')
+    )
+    expect(db.statements).toContainEqual(
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS mcp_task_inputs')
+    )
+    expect(db.statements).toContain("ALTER TABLE mcp_servers ADD COLUMN protocol_mode TEXT NOT NULL DEFAULT 'auto'")
+    expect(db.statements).toContain("UPDATE mcp_servers SET transport = 'streamable_http' WHERE transport = 'sse'")
+    expect(db.statements).toContain('UPDATE mcp_servers SET session_id = NULL')
   })
 
   it('does not downgrade the version when repair functions run on a fresh database', async () => {

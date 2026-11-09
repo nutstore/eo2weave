@@ -26,6 +26,8 @@ import type { AssetMeta } from '@/types/asset'
 
 /** A message waiting in the per-conversation queue */
 export interface QueuedMessage {
+  /** Explicit MCP result continuation; used to restore its card if withdrawn. */
+  mcpTaskId?: string
   text: string
   assets?: AssetMeta[]
   agentOverrideId?: string | null

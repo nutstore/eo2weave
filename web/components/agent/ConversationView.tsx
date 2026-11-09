@@ -1,3 +1,4 @@
+import dynamic from 'next/dynamic'
 /**
  * ConversationView - pure conversation display and interaction.
  *
@@ -60,6 +61,8 @@ import { FlowCanvasPanel } from './FlowCanvasPanel'
  * container stays untouched, so without memo every scroll-follower update
  * would re-aggregate usage for the whole conversation.
  */
+const MCPTaskCards = dynamic(() => import('@/components/mcp/MCPTaskCards'), { ssr: false })
+
 const ConversationUsageBarMemo = memo(ConversationUsageBar)
 
 interface ConversationViewProps {
@@ -90,6 +93,7 @@ export function ConversationView({
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null)
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false)
   const conversationMessagesRef = useRef<ConversationMessagesHandle>(null)
+  const messagesAreaRef = useRef<HTMLDivElement>(null)
   const richInputRef = useRef<AgentRichInputHandle>(null)
   const modelName = useSettingsStore((s) => s.modelName)
   const providerType = useSettingsStore((s) => s.providerType)
@@ -387,7 +391,7 @@ export function ConversationView({
         {activeMessages.length > 0 && <ConversationUsageBarMemo messages={activeMessages} />}
 
         {/* Messages area */}
-        <div className="relative min-h-0 flex-1">
+        <div ref={messagesAreaRef} className="relative min-h-0 flex-1">
           <div ref={scrollContainerRef} className="custom-scrollbar absolute inset-0 overflow-y-auto">
           {activeMessages.length === 0 && !isProcessing ? (
             <ConversationEmptyState />
@@ -464,6 +468,8 @@ export function ConversationView({
             className="pointer-events-none absolute inset-x-0 top-0 h-5 -translate-y-full bg-gradient-to-b from-transparent to-white dark:to-neutral-900"
           />
           <div className="mx-auto flex max-w-3xl flex-col">
+            {/* Keep progress in flow while task details float above the summary. */}
+            <MCPTaskCards key={`${convId ?? 'new'}`} conversationId={convId ?? undefined} viewportRef={messagesAreaRef} />
             {/* Quick chip — shares the generate_image availability gate, so it
                 only ever promises what the current provider can deliver. */}
             <ImageGenQuickChip onPrefill={handleChipPrefill} />

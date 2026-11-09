@@ -14,6 +14,7 @@
  */
 
 import schemaSQL from '../sqlite-schema.sql?raw'
+import mcpTasksSQL from '../mcp-tasks-schema.sql?raw'
 
 // Progress callback type
 export type MigrationProgressCallback = (progress: {
@@ -190,7 +191,7 @@ function verifyFsOpsDeleteModeSchema(db: any): void {
 }
 
 // Base schema version
-export const BASE_SCHEMA_VERSION = 18
+export const BASE_SCHEMA_VERSION = 19
 
 // ============================================================================
 // Migration Registry
@@ -424,6 +425,20 @@ export const migrations: Migration[] = [
     version: 18,
     name: 'add_fs_ops_delete_mode',
     up: repairFsOpsDeleteModeColumn,
+  },
+  {
+    version: 19,
+    name: 'add_managed_mcp_tasks',
+    up: (db) => {
+      db.exec(mcpTasksSQL)
+      const columns = db.exec('PRAGMA table_info(mcp_servers)', { returnValue: 'resultRows', rowMode: 'object' })
+      if (!columns.some((column: { name?: string }) => column.name === 'protocol_mode')) {
+        db.exec("ALTER TABLE mcp_servers ADD COLUMN protocol_mode TEXT NOT NULL DEFAULT 'auto'")
+      }
+      db.exec("UPDATE mcp_servers SET transport = 'streamable_http' WHERE transport = 'sse'")
+      db.exec('UPDATE mcp_servers SET session_id = NULL')
+      db.exec('PRAGMA user_version = 19')
+    },
   },
 ]
 
