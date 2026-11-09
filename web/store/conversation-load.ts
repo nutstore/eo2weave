@@ -330,6 +330,18 @@ const transcriptReadGenerations = new Map<string, number>()
  */
 const conversationTranscriptVersions = new Map<string, number>()
 
+/**
+ * Conversations deleted while a load's metadata read was pending. The
+ * snapshot was taken BEFORE the delete, so installing it verbatim puts the
+ * row back in the sidebar even though its SQLite record is gone (issue #251).
+ * The delete path records ids through `forgetTranscriptState`; both install
+ * paths filter their snapshot through it. Cleared when a run starts, so it
+ * only ever describes deletes made while THAT run was pending — entries left
+ * from a previous run (or from deletes made with no load pending) never
+ * filter a later snapshot the database already reflects.
+ */
+const conversationsDeletedWhileLoadPending = new Set<string>()
+
 export function bumpTranscriptVersion(conversationId: string): void {
   conversationTranscriptVersions.set(
     conversationId,
@@ -384,6 +396,7 @@ export function resetConversationRetryStateForTests(): void {
   // (PR #152 review, "Recent transcript changes disappear").
   conversationTranscriptVersions.clear()
   transcriptReadGenerations.clear()
+  conversationsDeletedWhileLoadPending.clear()
   // Also release the withInflightLoad slot: a prior scenario's deliberately
   // hung leg (e.g. a never-settling workspace ensure) keeps the slot forever,
   // and the next test's loadFromDB would silently no-op behind it
@@ -688,6 +701,13 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
   // overwrite recovered state").
   const loadGeneration = beginConversationLoadGeneration()
   const isCurrentRun = () => isCurrentConversationLoadGeneration(loadGeneration)
+  // This run installs the snapshot ITS metadata read returns. Start from an
+  // empty deletion log: deletes made before this run began are already
+  // reflected in what the read returns, and entries left over from a previous
+  // run must not filter this one (issue #251). Nothing clears it afterwards —
+  // a delete landing after the install is picked up by the next run's read,
+  // and keeping the entry can only make a stale run filter more, never less.
+  conversationsDeletedWhileLoadPending.clear()
   // Snapshot the selection generation BEFORE this run can yield or install
   // its own active id. Anything that changes the active selection while the
   // load is pending (setActive, createNew with activate) bumps the counter,
@@ -745,11 +765,19 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
         }
         const tMigrate = performance.now()
 
-        const conversations = await withTimeout(
-          loadConversationsMeta(),
-          TEST_INITIAL_LOAD_TIMEOUT_MS(),
-          'conversation metadata read'
-        )
+        // A conversation deleted while this read was pending is still in the
+        // snapshot; installing it would resurrect the row in the sidebar
+        // although its SQLite record is already gone (issue #251). Filter
+        // before the install (and before the orphan-recovery pass, which
+        // would otherwise persist messages for a row that no longer exists).
+        const conversations = (
+          await withTimeout(
+            loadConversationsMeta(),
+            TEST_INITIAL_LOAD_TIMEOUT_MS(),
+            'conversation metadata read'
+          )
+        ).filter((conv) => !conversationsDeletedWhileLoadPending.has(conv.id))
+
         const tLoadMeta = performance.now()
 
         // Orphan recovery: find ask_user_question tool_calls in committed messages
@@ -876,8 +904,17 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
         // NOTE: workspace switching is handled by syncFromRoute in App.tsx.
         // loadFromDB only loads conversation data; it does NOT call refreshWorkspaces or switchWorkspace.
 
+        // The snapshot was filtered when it was read, but the orphan-recovery
+        // pass and the workspace ensure below both await — a conversation
+        // deleted in that window is still in this array and would be installed
+        // back as a live row (issue #251). Re-filter at install time, where no
+        // await separates the filter from the store write.
+        const installableConversations = conversations.filter(
+          (conv) => !conversationsDeletedWhileLoadPending.has(conv.id)
+        )
+
         // Determine the active conversation ID from workspace store's current state.
-        const activeId = selectActiveConversationId(conversations)
+        const activeId = selectActiveConversationId(installableConversations)
         // If the user changed the active selection while this load was pending,
         // keep their choice — this run installs its context-preferred id only
         // when the selection is unchanged (PR #152 review).
@@ -894,7 +931,7 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
         // conversations disappear from sidebar").
         const conversationsCreatedDuringLoad = get().conversations.filter(
           (conversation) =>
-            !conversations.some((meta) => meta.id === conversation.id)
+            !installableConversations.some((meta) => meta.id === conversation.id)
         )
 
         // Stale-run gate: if a newer load (e.g. a forced retry) has started,
@@ -903,7 +940,7 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
         if (!isCurrentRun()) return
 
         set((state) => {
-          const existingRows: Conversation[] = conversations.map((conv) => ({
+          const existingRows: Conversation[] = installableConversations.map((conv) => ({
               ...conv,
               status: 'idle',
               streamingContent: '',
@@ -1147,11 +1184,14 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
           // in-flight state unobservable forever — the timeout rejects into
           // the catch below, which records a retryable metadata failure
           // (PR #149 round-6 review, "Fallback hang hides retry").
-          const retryConversations = await withTimeout(
-            loadConversationsMeta(),
-            FALLBACK_META_TIMEOUT_MS,
-            'conversation metadata fallback read'
-          )
+          // Same delete-during-load rule as the primary read (issue #251).
+          const retryConversations = (
+            await withTimeout(
+              loadConversationsMeta(),
+              FALLBACK_META_TIMEOUT_MS,
+              'conversation metadata fallback read'
+            )
+          ).filter((conv) => !conversationsDeletedWhileLoadPending.has(conv.id))
           if (!isCurrentRun()) return
           // Same selection-preservation rule as the primary install, but
           // measured against the RUN-START snapshot: the user may have changed
@@ -1429,6 +1469,10 @@ export function getTranscriptVersion(conversationId: string): number | undefined
 export function forgetTranscriptState(conversationId: string): void {
   conversationTranscriptVersions.delete(conversationId)
   transcriptReadGenerations.delete(conversationId)
+  // Record the delete against any load whose metadata read is in flight: its
+  // snapshot predates the delete and would otherwise reinstall the row
+  // (issue #251). The next run clears the log when it starts.
+  conversationsDeletedWhileLoadPending.add(conversationId)
 }
 
 export function getActiveSelectionGeneration(): number {
