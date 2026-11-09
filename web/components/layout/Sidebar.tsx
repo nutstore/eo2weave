@@ -38,6 +38,7 @@ import { useT } from '@/i18n'
 import { ExportConversationDialog } from '@/components/conversation/ExportConversationDialog'
 import { BatchExportDialog } from '@/components/conversation/BatchExportDialog'
 import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.store'
+import { createAttemptTokenSource } from '@/components/layout/sidebar-retry-guard'
 import { ResourceTabPanel, type ResourceTab } from './sidebar/ResourceTabPanel'
 import { ConversationList } from './sidebar/ConversationList'
 import { SidebarDialogs } from './sidebar/SidebarDialogs'
@@ -346,6 +347,50 @@ export const Sidebar = memo(function Sidebar({
     [conversationRatio, setConversationRatio]
   )
 
+  // Retry in-flight state lives HERE (not inside ConversationList) so it
+  // survives sidebar collapse/reopen: ConversationList unmounts when the
+  // sidebar collapses, which would reset the flag and the attempt-token
+  // source and let a second click start overlapping retries (Sourcery
+  // finding on the split PR; the original pre-split code kept both here).
+  const [isRetryingLoad, setIsRetryingLoad] = useState(false)
+  // Module-stable attempt-token source for the retry button's in-flight flag
+  const retryTokenSource = useRef(createAttemptTokenSource()).current
+  // Explicit retry: bypass the in-flight guard so a load wedged past the
+  // timeout starts a FRESH run instead of re-awaiting the stuck promise
+  // ("Retry cannot restart stuck load", PR #149 round-4 review).
+  const retryConversationsLoad = useConversationStore((s) => s.retryLoadFromDB)
+
+  const handleRetryConversationsLoad = useCallback(() => {
+    setIsRetryingLoad(true)
+    // Attempt-token guard: when retry #1 exceeds the 15s
+    // timeout and retry #2 starts, #1's settle must NOT
+    // re-enable the button while #2 is still pending — that
+    // allowed overlapping retries (PR #149 round-6 review,
+    // "Retry re-enables prematurely"). Only the LATEST
+    // attempt may clear the in-flight flag.
+    const attempt = retryTokenSource.next()
+    // Bound the retry: a loadFromDB that never settles must
+    // not leave the button disabled ("Retrying…") forever.
+    // Re-enable on settle OR after ~15s, whichever comes
+    // first (issue #147, PR #149 review).
+    const settled = retryConversationsLoad().catch(() => {})
+    // Keep the timer handle: when the retry settles first the
+    // pending 15s timeout must be cleared, not left scheduled
+    // (PR #149 round-6 review, "Stale retries overwrite
+    // recovered state"). Clearing an already-fired timer is a
+    // harmless no-op on the timeout path.
+    let timerId: number | undefined
+    const timeout = new Promise<void>((resolve) => {
+      timerId = window.setTimeout(resolve, 15_000)
+    })
+    void Promise.race([settled, timeout]).finally(() => {
+      if (timerId !== undefined) window.clearTimeout(timerId)
+      if (retryTokenSource.isCurrent(attempt)) {
+        setIsRetryingLoad(false)
+      }
+    })
+  }, [retryConversationsLoad, retryTokenSource])
+
   // The route owner owns navigation (URL params are the source of truth,
   // notably during project switches); the sidebar only closes itself.
   const handleCreateNewWorkspace = useCallback(() => {
@@ -481,6 +526,8 @@ export const Sidebar = memo(function Sidebar({
             workspaceScheduleCount={workspaceScheduleCount}
             reduceMotion={reduceMotion}
             actions={conversationActions}
+            isRetryingLoad={isRetryingLoad}
+            onRetryLoad={handleRetryConversationsLoad}
             t={t}
           />
           </div>

@@ -1,9 +1,8 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { RefreshCw } from 'lucide-react'
 import { projectWorkspacePath } from '@/lib/route-paths'
 import { useConversationStore } from '@/store/conversation.store'
-import { createAttemptTokenSource } from '@/components/layout/sidebar-retry-guard'
 import { ConversationItem, NewWorkspaceButton } from './ConversationItem'
 import type { ConversationActions } from './useConversationActions'
 
@@ -26,6 +25,10 @@ interface ConversationListProps {
   workspaceScheduleCount: Map<string, number>
   reduceMotion: boolean | null
   actions: ConversationActions
+  /** Retry in-flight flag — owned by Sidebar so it survives list unmount (sidebar collapse). */
+  isRetryingLoad: boolean
+  /** Starts a forced conversations reload; Sidebar owns the attempt-token guard. */
+  onRetryLoad: () => void
   t: (key: string, params?: Record<string, string | number>) => string
 }
 
@@ -47,6 +50,8 @@ export function ConversationList({
   workspaceScheduleCount,
   reduceMotion,
   actions,
+  isRetryingLoad,
+  onRetryLoad,
   t,
 }: ConversationListProps) {
   // Issue #147: a failed loadFromDB leaves `conversations` empty with
@@ -73,16 +78,8 @@ export function ConversationList({
   // Explicit retry: bypass the in-flight guard so a load wedged past the
   // timeout below starts a FRESH run instead of re-awaiting the stuck
   // promise, which would leave Retry a no-op (PR #149 round-4 review,
-  // "Retry cannot restart stuck load").
-  const retryConversationsLoad = useConversationStore((s) => s.retryLoadFromDB)
-  // Keep the banner (and its disabled Retry button) mounted while a retry is
-  // in flight — loadFromDB clears loadError only after the active transcript
-  // read succeeded, so the empty list never flashes as a false "no history"
-  // state (PR #133 semantics).
-  const [isRetryingLoad, setIsRetryingLoad] = useState(false)
-  // Module-stable attempt-token source for the retry button's in-flight flag
-  // (see the onClick handler below for why it exists).
-  const retryTokenSource = useRef(createAttemptTokenSource()).current
+  // "Retry cannot restart stuck load"). The retry action itself lives in
+  // Sidebar (onRetryLoad) so the in-flight guard survives list unmounts.
 
   const {
     editingId,
@@ -183,36 +180,7 @@ export function ConversationList({
             </p>
             <button
               type="button"
-              onClick={() => {
-                setIsRetryingLoad(true)
-                // Attempt-token guard: when retry #1 exceeds the 15s
-                // timeout and retry #2 starts, #1's settle must NOT
-                // re-enable the button while #2 is still pending — that
-                // allowed overlapping retries (PR #149 round-6 review,
-                // "Retry re-enables prematurely"). Only the LATEST
-                // attempt may clear the in-flight flag.
-                const attempt = retryTokenSource.next()
-                // Bound the retry: a loadFromDB that never settles must
-                // not leave the button disabled ("Retrying…") forever.
-                // Re-enable on settle OR after ~15s, whichever comes
-                // first (issue #147, PR #149 review).
-                const settled = retryConversationsLoad().catch(() => {})
-                // Keep the timer handle: when the retry settles first the
-                // pending 15s timeout must be cleared, not left scheduled
-                // (PR #149 round-6 review, "Stale retries overwrite
-                // recovered state"). Clearing an already-fired timer is a
-                // harmless no-op on the timeout path.
-                let timerId: number | undefined
-                const timeout = new Promise<void>((resolve) => {
-                  timerId = window.setTimeout(resolve, 15_000)
-                })
-                void Promise.race([settled, timeout]).finally(() => {
-                  if (timerId !== undefined) window.clearTimeout(timerId)
-                  if (retryTokenSource.isCurrent(attempt)) {
-                    setIsRetryingLoad(false)
-                  }
-                })
-              }}
+              onClick={onRetryLoad}
               disabled={isRetryingLoad}
               className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
             >
