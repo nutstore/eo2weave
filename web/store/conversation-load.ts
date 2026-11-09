@@ -904,8 +904,17 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
         // NOTE: workspace switching is handled by syncFromRoute in App.tsx.
         // loadFromDB only loads conversation data; it does NOT call refreshWorkspaces or switchWorkspace.
 
+        // The snapshot was filtered when it was read, but the orphan-recovery
+        // pass and the workspace ensure below both await — a conversation
+        // deleted in that window is still in this array and would be installed
+        // back as a live row (issue #251). Re-filter at install time, where no
+        // await separates the filter from the store write.
+        const installableConversations = conversations.filter(
+          (conv) => !conversationsDeletedWhileLoadPending.has(conv.id)
+        )
+
         // Determine the active conversation ID from workspace store's current state.
-        const activeId = selectActiveConversationId(conversations)
+        const activeId = selectActiveConversationId(installableConversations)
         // If the user changed the active selection while this load was pending,
         // keep their choice — this run installs its context-preferred id only
         // when the selection is unchanged (PR #152 review).
@@ -922,7 +931,7 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
         // conversations disappear from sidebar").
         const conversationsCreatedDuringLoad = get().conversations.filter(
           (conversation) =>
-            !conversations.some((meta) => meta.id === conversation.id)
+            !installableConversations.some((meta) => meta.id === conversation.id)
         )
 
         // Stale-run gate: if a newer load (e.g. a forced retry) has started,
@@ -931,7 +940,7 @@ export async function runLoadFromDB<S extends ConversationLoadState>(
         if (!isCurrentRun()) return
 
         set((state) => {
-          const existingRows: Conversation[] = conversations.map((conv) => ({
+          const existingRows: Conversation[] = installableConversations.map((conv) => ({
               ...conv,
               status: 'idle',
               streamingContent: '',

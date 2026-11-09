@@ -232,4 +232,30 @@ describe('conversation.store delete during a pending load (issue #251)', () => {
 
     expect(ids()).toEqual([CONV_A, CONV_B])
   })
+
+  it('does not reinstall a conversation deleted after the snapshot was filtered', async () => {
+    // The primary install awaits the orphan-recovery pass and the workspace
+    // ensure between the metadata read and the store write. A delete landing
+    // in that window is not in the read-time filter's result, so the install
+    // has to re-check the deletion log.
+    await useConversationStore.getState().loadFromDB()
+    expect(ids()).toEqual([CONV_A, CONV_B])
+
+    let releaseEnsure!: () => void
+    createWorkspaceMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releaseEnsure = resolve })
+    )
+
+    const pending = useConversationStore.getState().loadFromDB()
+    await vi.waitFor(() => expect(createWorkspaceMock).toHaveBeenCalledTimes(1))
+
+    await useConversationStore.getState().deleteConversation(CONV_B)
+    expect(ids()).toEqual([CONV_A])
+
+    releaseEnsure()
+    await pending
+
+    expect(ids()).toEqual([CONV_A])
+    expect(useConversationStore.getState().loaded).toBe(true)
+  })
 })
