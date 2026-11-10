@@ -456,8 +456,9 @@ describe('AgentLoop', () => {
 
       const result = await loop.run([createUserMessage('test')])
       expect(result.length).toBeGreaterThan(0)
-      // One summary attempt, then the turn proceeds with the truncation fallback.
-      expect(mockProvider.chat).toHaveBeenCalledTimes(1)
+      // Two summary attempts (initial + retry), then the turn runs with the
+      // transcript intact instead of failing.
+      expect(mockProvider.chat).toHaveBeenCalledTimes(2)
     })
 
     it('keeps all messages until a later real usage report triggers compression', async () => {

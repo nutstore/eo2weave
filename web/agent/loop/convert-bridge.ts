@@ -70,16 +70,41 @@ function extractLastTurnUsedTokens(agentMessages: PiAgentMessage[]): number | nu
 }
 
 /**
- * Deterministic stand-in for a failed summary (#268). The automatic per-turn
- * path must never retry a summarizer that just failed — that is what turned one
- * bad summary into a permanently unusable conversation.
+ * When the summarizer is unavailable the transcript must survive (#268): dropping
+ * it would make the model forget the task. Shrink the bulky parts instead —
+ * old long tool outputs and assistant dumps carry most of the tokens, while the
+ * first user message (the task) and the recent tail stay intact.
  */
-function buildFallbackSummary(droppedGroups: number): string {
-  return (
-    `Earlier conversation was truncated (${droppedGroups} messages dropped) because the ` +
-    'automatic summary could not be generated. Continue from the messages below and ask the ' +
-    'user if a detail from before this point is needed.'
-  )
+const SHRINK_KEEP_TAIL = 6
+const SHRINK_LIMITS: Record<string, number> = { assistant: 4000, tool: 1200, user: 4000, system: 4000 }
+
+function shrinkOversizedHistory(messages: Message[]): Message[] {
+  const keepFrom = messages.length - SHRINK_KEEP_TAIL
+  return messages.map((message, index) => {
+    if (index === 0 || index >= keepFrom) return message
+    const limit = SHRINK_LIMITS[message.role] ?? SHRINK_LIMITS.user
+
+    if (message.contentParts?.length) {
+      let changed = false
+      const parts = message.contentParts.map(part => {
+        if (part.type !== 'text' || part.text.length <= limit) return part
+        changed = true
+        return {
+          type: 'text' as const,
+          text: `${part.text.slice(0, limit)}\n…[truncated ${part.text.length - limit} chars]`,
+        }
+      })
+      return changed ? { ...message, contentParts: parts } : message
+    }
+
+    if (typeof message.content === 'string' && message.content.length > limit) {
+      return {
+        ...message,
+        content: `${message.content.slice(0, limit)}\n…[truncated ${message.content.length - limit} chars]`,
+      }
+    }
+    return message
+  })
 }
 
 export async function convertAgentMessagesToLlm(
@@ -191,21 +216,31 @@ export async function convertAgentMessagesToLlm(
         const generated = await input.generateContextSummaryWithLLM(droppedContent, summaryTokenBudget)
         summary = generated.summary
         mode = generated.mode
-      } catch (error) {
-        // A failed summary must not brick the conversation (#268): the gate below
-        // only re-checks token usage, and nothing recorded the attempt, so every
-        // later turn re-entered this branch and threw again. Fall back to a
-        // deterministic truncation summary — it is persisted through the same
-        // baseline path a real summary uses, so the dropped tail stays dropped
-        // and the turn stays runnable.
-        console.error('[AgentLoop] Context compression failed; falling back to truncation', {
-          sessionId: input.sessionId,
-          provider: input.model.provider,
-          model: input.model.id,
-          error: error instanceof Error ? error.message : String(error),
-        })
-        summary = buildFallbackSummary(droppedGroups)
-        mode = 'fallback'
+      } catch (firstError) {
+        // One retry: most empty/failed summaries are transient. If it fails
+        // again the turn must still run with the transcript intact — dropping
+        // history would silently make the model forget the task (#268).
+        try {
+          const retried = await input.generateContextSummaryWithLLM(droppedContent, summaryTokenBudget)
+          summary = retried.summary
+          mode = retried.mode
+        } catch (retryError) {
+          console.error('[AgentLoop] Context compression failed twice; keeping the transcript and shrinking oversized messages', {
+            sessionId: input.sessionId,
+            provider: input.model.provider,
+            model: input.model.id,
+            error: retryError instanceof Error ? retryError.message : String(retryError),
+            firstError: firstError instanceof Error ? firstError.message : String(firstError),
+            droppedGroups,
+            droppedContentChars,
+          })
+          // No baseline is written: the conversation stays whole and the next
+          // turn retries compression once the transient cause is gone.
+          outputMessages = shrinkOversizedHistory(internalMessages)
+          trimmed = messagesToChatMessages(outputMessages)
+          mode = 'skip'
+          summary = null
+        }
       }
       const latencyMs = Date.now() - startedAt
 

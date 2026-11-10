@@ -151,20 +151,19 @@ describe('Codex context compression through the real Pi loop and Responses parse
       .rejects.toThrow('Summary request rejected')
   })
 
-  it('falls back to a truncated context and still runs when the summary request fails (#268)', async () => {
+  it('keeps the transcript and still runs when both summary requests fail (#268)', async () => {
     const input = setup()
     input.initialMessages.push({
       id: 'previous', role: 'assistant', content: 'Earlier answer', timestamp: 2,
       usage: { promptTokens: 970, completionTokens: 10, totalTokens: 980 },
     }, { id: 'continue', role: 'user', content: 'Continue', timestamp: 3 })
-    // First request is the summarizer and fails; the turn itself must still reach
-    // the model using the deterministic truncation summary.
+    // Two failed summary attempts (initial + retry), then the turn itself.
     let calls = 0
     const bodies: string[] = []
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
       calls += 1
       bodies.push(String(init?.body ?? ''))
-      if (calls === 1) {
+      if (calls <= 2) {
         return new Response(JSON.stringify({
           error: { message: 'Summary request rejected', type: 'invalid_request_error' },
         }), { status: 400, headers: { 'Content-Type': 'application/json' } })
@@ -176,12 +175,13 @@ describe('Codex context compression through the real Pi loop and Responses parse
 
     const result = await executePiCoreLoop({ ...input, callbacks: { onContextCompressionComplete } })
 
-    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenCalledTimes(3)
     expect(onContextCompressionComplete).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: 'fallback' })
+      expect.objectContaining({ mode: 'skip', summary: null })
     )
     expect(result.allMessages.length).toBeGreaterThan(0)
-    expect(bodies[1]).toContain('truncated')
+    // History is preserved: the model still sees the earlier turn, not a marker.
+    expect(bodies[2]).toContain('Earlier answer')
   })
 
   it('rejects an empty summary instead of continuing with an uncompressed context', async () => {
