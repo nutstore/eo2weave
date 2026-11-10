@@ -564,7 +564,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const metaPersist = persistConversationMeta(conversation)
         .catch((error) => {
           console.error('[conversation.store] Failed to persist new conversation:', error)
-          toast.error('对话保存失败，刷新页面后可能丢失')
+          i18nText('conversation.toast.saveFailed', '对话保存失败，刷新页面后可能丢失')
           throw error
         })
         .finally(() => {
@@ -791,7 +791,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         const seq = conv.messages.indexOf(message)
         persistNewMessage(conversationId, message, seq).catch((error) => {
           console.error('[conversation.store] Failed to persist conversation on addMessage:', error)
-          toast.error('消息保存失败')
+          i18nText('conversation.toast.messageSaveFailed', '消息保存失败')
         })
         // If title was auto-generated, also persist metadata
         if (conv.titleMode === 'auto' && isHumanUserMessage(message)) {
@@ -862,7 +862,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation on updateMessages:',
             error
           )
-          toast.error('消息更新保存失败')
+          i18nText('conversation.toast.messageUpdateFailed', '消息更新保存失败')
         })
         // If title was auto-updated, persist metadata too
         if (conv.titleMode === 'auto') {
@@ -888,7 +888,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     deleteUserMessage: (conversationId, userMessageId) => {
       const state = get()
       if (state.isConversationRunning(conversationId)) {
-        toast.error('请先停止当前运行，再删除消息')
+        i18nText('conversation.toast.stopBeforeDeleteMessage', '请先停止当前运行，再删除消息')
         return false
       }
 
@@ -916,7 +916,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation on deleteUserMessage:',
             error
           )
-          toast.error('删除消息失败')
+          i18nText('conversation.toast.messageDeleteFailed', '删除消息失败')
         })
       }
       return true
@@ -925,7 +925,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     deleteAgentLoop: (conversationId, userMessageId) => {
       const state = get()
       if (state.isConversationRunning(conversationId)) {
-        toast.error('请先停止当前运行，再删除对话轮次')
+        i18nText('conversation.toast.stopBeforeDeleteTurn', '请先停止当前运行，再删除对话轮次')
         return false
       }
 
@@ -963,7 +963,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation on deleteAgentLoop:',
             error
           )
-          toast.error('删除对话轮次失败')
+          i18nText('conversation.toast.turnDeleteFailed', '删除对话轮次失败')
         })
       }
       return true
@@ -1444,7 +1444,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation on updateTitle:',
             error
           )
-          toast.error('标题修改保存失败')
+          i18nText('conversation.toast.titleSaveFailed', '标题修改保存失败')
         })
     },
 
@@ -1732,7 +1732,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                 '[conversation.store] Failed to persist conversation on cancelAgent partial commit:',
                 error
               )
-              toast.error('停止后保存草稿失败，部分内容可能丢失')
+              i18nText('conversation.toast.draftSaveFailed', '停止后保存草稿失败，部分内容可能丢失')
             })
         }
         // Cancelled → idle: eviction candidate (guards re-checked after delay).
