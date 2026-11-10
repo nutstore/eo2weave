@@ -145,6 +145,7 @@ export const conversation = {
       turnDeleteFailed: "ターンの削除に失敗しました",
       titleSaveFailed: "タイトルの変更を保存できませんでした",
       draftSaveFailed: "停止後の下書きの保存に失敗しました。一部の内容が失われる可能性があります",
+      saveFailedContentLost: "チャットの保存に失敗しました。一部の内容が失われる可能性があります",
       conversationMissing: "チャットが見つかりません",
       convertNoProject: "このチャットを配置できるプロジェクトがありません",
       convertedToProject: "プロジェクトチャットに変換しました",

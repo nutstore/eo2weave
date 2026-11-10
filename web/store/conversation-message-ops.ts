@@ -73,9 +73,9 @@ export function ensureRuntime(state: import('./conversation-runtime.store').Conv
   return rt
 }
 
-export function i18nText(key: string, fallback: string): string {
+export function i18nText(key: string, fallback: string, params?: Record<string, string | number>): string {
   const locale = useI18nStore.getState().locale
-  const translated = translateStatic(locale, key)
+  const translated = translateStatic(locale, key, params)
   return translated === key ? fallback : translated
 }
 

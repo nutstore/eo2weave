@@ -1461,7 +1461,9 @@ export async function runAgentImpl(
                   '[conversation.store] Failed to persist conversation on complete:',
                   err
                 )
-                toast.error('对话保存失败，部分内容可能丢失')
+                toast.error(
+                  i18nText('conversation.toast.saveFailedContentLost', '对话保存失败，部分内容可能丢失')
+                )
               })
             if (finalConv) {
               persistConversationMeta(finalConv).catch((err) => {

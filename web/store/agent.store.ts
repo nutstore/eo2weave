@@ -7,6 +7,7 @@
 
 import { create } from 'zustand'
 import { toast } from 'sonner'
+import { i18nText } from './conversation-message-ops'
 
 interface AgentState {
   /** @deprecated 使用 folder-access.store */
@@ -76,7 +77,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   setDirectoryHandle: async (handle) => {
     const { activeProjectId } = get()
     if (!activeProjectId) {
-      toast.error('请先进入一个项目，再绑定文件夹')
+      toast.error(i18nText('agent.toast.projectRequiredForFolder', '请先进入一个项目，再绑定文件夹'))
       return
     }
 
@@ -100,7 +101,10 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       }
     } catch (error) {
       console.error('[AgentStore] setDirectoryHandle failed:', error)
-      toast.error('设置文件夹失败: ' + (error instanceof Error ? error.message : 'Unknown error'))
+      const detail = error instanceof Error ? error.message : 'Unknown error'
+      toast.error(
+        i18nText('agent.toast.setFolderFailed', `设置文件夹失败: ${detail}`, { message: detail })
+      )
     }
   },
 

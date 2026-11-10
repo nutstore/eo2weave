@@ -172,4 +172,9 @@ export const agent = {
         stateExited: "종료됨",
         stateStopped: "중지됨",
     },
+    toast: {
+        projectRequiredForFolder: "폴더를 연결하기 전에 프로젝트를 먼저 열어 주세요",
+        setFolderFailed: "폴더 설정에 실패했습니다: {message}",
+        invalidAgentId: "Agent ID에는 문자(중국어 포함), 숫자, 밑줄(_), 하이픈(-)만 사용할 수 있습니다",
+    },
 } as const
