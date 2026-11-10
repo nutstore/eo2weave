@@ -160,6 +160,7 @@ export const conversation = {
       conversationMissingForEditResend: "Conversation not found. Cannot edit and resend.",
       onlyUserMessageEditResend: "Only user messages can be edited and resent.",
       branchCreated: "Branched conversation created",
+      branchFailed: "Failed to branch the conversation. Please try again.",
       messageQueued: "Message queued (position {position})",
       queueFull: "Queue is full. Please wait for the current task to finish.",
       kindSaveFailed: "Failed to save the conversation type change.",

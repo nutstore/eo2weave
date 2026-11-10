@@ -45,6 +45,7 @@ import { RunChangesCard } from './RunChangesCard'
 import { TextSelectionToolbar } from './TextSelectionToolbar'
 import { AssetCompactList } from './AssetCard'
 import { useT } from '@/i18n'
+import { toast } from 'sonner'
 import { useConversationStore } from '@/store/conversation.store'
 import { useSettingsStore } from '@/store/settings.store'
 import { ConversationActionContext } from './ConversationActionContext'
@@ -504,6 +505,7 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
       }
     } catch (error) {
       console.error('[AssistantTurnBubble] Failed to branch conversation:', error)
+      toast.error(t('conversation.toast.branchFailed') || 'Failed to branch the conversation')
     } finally {
       setIsBranching(false)
     }
