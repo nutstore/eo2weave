@@ -132,6 +132,7 @@ export const conversation = {
       conversationMissingForEditResend: "대화가 존재하지 않아 편집 후 다시 보낼 수 없습니다",
       onlyUserMessageEditResend: "사용자 메시지만 편집하여 다시 보낼 수 있습니다",
       branchCreated: "분기 채팅가 생성되었습니다",
+      branchFailed: "채팅 분기에 실패했습니다. 다시 시도해 주세요",
       messageQueued: "메시지가 대기열에 추가되었습니다 (위치 {position})",
       queueFull: "대기열이 가득 찼습니다. 현재 작업이 완료될 때까지 기다려주세요.",
       kindSaveFailed: "대화 유형 변경을 저장하지 못했습니다",

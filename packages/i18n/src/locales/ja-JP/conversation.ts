@@ -132,6 +132,7 @@ export const conversation = {
       conversationMissingForEditResend: "チャットが存在しないため、編集して再送信できません",
       onlyUserMessageEditResend: "ユーザーメッセージのみ編集して再送信できます",
       branchCreated: "分岐チャットを作成しました",
+      branchFailed: "チャットの分岐に失敗しました。もう一度お試しください",
       messageQueued: "メッセージをキューに追加しました (位置 {position})",
       queueFull: "キューが満杯です。現在のタスクが完了するまでお待ちください。",
       kindSaveFailed: "チャット種別の変更を保存できませんでした",

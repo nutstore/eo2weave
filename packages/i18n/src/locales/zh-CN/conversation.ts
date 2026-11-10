@@ -164,6 +164,7 @@ export const conversation = {
       conversationMissingForEditResend: "对话不存在，无法编辑重发",
       onlyUserMessageEditResend: "只能编辑并重发用户消息",
       branchCreated: "已创建分叉对话",
+      branchFailed: "分支对话失败，请重试",
       messageQueued: "消息已加入队列 (第 {position} 位)",
       queueFull: "队列已满，请等待当前任务完成后再试",
       kindSaveFailed: "对话类型修改保存失败",
