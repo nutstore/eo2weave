@@ -75,6 +75,7 @@ function createStoredTask(input: {
   parentToolCallId?: string
   messages?: Message[]
   queue?: Array<{ message: string; enqueued_at: number }>
+  timeout_ms?: number
 }): Record<string, unknown> {
   const now = Date.now()
   return {
@@ -86,6 +87,7 @@ function createStoredTask(input: {
     mode: 'act',
     subagent_type: 'general-purpose',
     parentToolCallId: input.parentToolCallId,
+    timeout_ms: input.timeout_ms,
     messages: input.messages || [],
     queue: input.queue || [],
     usage: undefined,
@@ -138,6 +140,20 @@ async function waitForStatus(runtime: SubagentRuntime, agentIdOrName: string, st
     const current = await runtime.getStatus({ agentId: agentIdOrName })
     if (current.status === status) return
     await Promise.resolve()
+  }
+  throw new Error(`status did not reach ${status}`)
+}
+
+/** Like waitForStatus, but advances fake timers so spawned tasks actually start. */
+async function waitForStatusWithTimers(
+  runtime: SubagentRuntime,
+  agentIdOrName: string,
+  status: string
+): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    const current = await runtime.getStatus({ agentId: agentIdOrName })
+    if (current.status === status) return
+    await vi.advanceTimersByTimeAsync(1)
   }
   throw new Error(`status did not reach ${status}`)
 }
@@ -657,5 +673,104 @@ describe('subagent runtime', () => {
     expect(s1After.error?.code).toBe('SESSION_INTERRUPTED')
     expect(s2After.status).toBe('failed')
     expect(s2After.error?.code).toBe('SESSION_INTERRUPTED')
+  })
+
+  it('stopAll kills every active member and leaves terminal ones untouched', async () => {
+    const notifications: (SubagentTaskNotification | SubagentStepNotification)[] = []
+    const runtime = createRuntime(`workspace-stop-all-${Date.now()}`, notifications)
+
+    await runtime.spawn({ description: 'already done', prompt: 'run', name: 'stop-all-done' })
+
+    hoisted.setRunImpl(() => new Promise<Message[]>(() => {}))
+    runtime.spawn({ description: 'active-1', prompt: 'run', name: 'stop-all-1' }).catch(() => {})
+    runtime.spawn({ description: 'active-2', prompt: 'run', name: 'stop-all-2' }).catch(() => {})
+    await waitForStatusWithTimers(runtime, 'stop-all-1', 'running').catch(() => {})
+    await waitForStatusWithTimers(runtime, 'stop-all-2', 'running').catch(() => {})
+    expect(['pending', 'running']).toContain((await runtime.getStatus({ agentId: 'stop-all-1' })).status)
+    expect(['pending', 'running']).toContain((await runtime.getStatus({ agentId: 'stop-all-2' })).status)
+
+    const result = await runtime.stopAll({ force: true })
+
+    expect(result.stopped).toHaveLength(2)
+    expect(new Set(result.stopped).size).toBe(2)
+    expect((await runtime.getStatus({ agentId: 'stop-all-1' })).status).toBe('killed')
+    expect((await runtime.getStatus({ agentId: 'stop-all-2' })).status).toBe('killed')
+    expect((await runtime.getStatus({ agentId: 'stop-all-done' })).status).toBe('completed')
+    expect(taskNotifications(notifications).filter((event) => event.status === 'killed')).toHaveLength(2)
+  })
+
+  it('applies the default deadline when the caller passes no timeout_ms', async () => {
+    let resolveRun = () => {}
+    hoisted.setRunImpl(
+      (messages) =>
+        new Promise<Message[]>((resolve) => {
+          resolveRun = () => resolve([...messages, createAssistantMessage('late')])
+        })
+    )
+
+    const notifications: (SubagentTaskNotification | SubagentStepNotification)[] = []
+    const runtime = createRuntime(`workspace-default-deadline-${Date.now()}`, notifications)
+
+    const spawnPromise = runtime.spawn({ description: 'no deadline', prompt: 'run', name: 'default-deadline' })
+    spawnPromise.catch(() => {})
+    await waitForStatusWithTimers(runtime, 'default-deadline', 'running')
+
+    // Just short of the ten-minute default the run is still alive.
+    await vi.advanceTimersByTimeAsync(599000)
+    expect((await runtime.getStatus({ agentId: 'default-deadline' })).status).toBe('running')
+
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((await runtime.getStatus({ agentId: 'default-deadline' })).status).toBe('failed')
+
+    resolveRun()
+    await expect(spawnPromise).rejects.toMatchObject({ code: 'SUBAGENT_TIMEOUT' })
+    expect(
+      taskNotifications(notifications).some(
+        (event) => event.status === 'failed' && event.exit_reason === 'timeout'
+      )
+    ).toBe(true)
+  })
+
+  it('keeps timeout_ms: 0 as an explicit no-deadline opt-out', async () => {
+    hoisted.setRunImpl(() => new Promise<Message[]>(() => {}))
+
+    const notifications: (SubagentTaskNotification | SubagentStepNotification)[] = []
+    const runtime = createRuntime(`workspace-opt-out-deadline-${Date.now()}`, notifications)
+
+    runtime
+      .spawn({ description: 'no deadline', prompt: 'run', name: 'opt-out', timeout_ms: 0 })
+      .catch(() => {})
+    await waitForStatus(runtime, 'opt-out', 'running')
+
+    await vi.advanceTimersByTimeAsync(3_600_000)
+    expect((await runtime.getStatus({ agentId: 'opt-out' })).status).toBe('running')
+
+    await runtime.stopAll({ force: true })
+  })
+
+  it('persists the execution deadline and restores it after hydration', async () => {
+    const workspaceId = `workspace-deadline-persist-${Date.now()}`
+    hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([
+      createStoredTask({
+        workspaceId,
+        agentId: 'subagent_restored_deadline',
+        status: 'completed',
+        timeout_ms: 900000,
+      }),
+    ] as any)
+
+    const runtime = createRuntime(workspaceId, [])
+    // Any lookup forces the lazy hydration from SQLite.
+    await runtime.getStatus({ agentId: 'subagent_restored_deadline' })
+    runtime.shutdown()
+
+    for (let i = 0; i < 50 && hoisted.repo.saveBatch.mock.calls.length === 0; i += 1) {
+      await Promise.resolve()
+    }
+    const call = hoisted.repo.saveBatch.mock.calls.at(-1) as unknown as
+      | [string, Array<{ agentId: string; timeout_ms?: number }>]
+      | undefined
+    const saved = call?.[1] ?? []
+    expect(saved.find((task) => task.agentId === 'subagent_restored_deadline')?.timeout_ms).toBe(900000)
   })
 })

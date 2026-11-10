@@ -11,6 +11,15 @@ const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
 const toastErrorMock = vi.fn()
 const ensureWorkspaceMock = vi.fn(() => Promise.resolve())
 
+// The real subagent runtime is heavy; only the lookup used by the cancellation
+// path is replaced, every other export stays real.
+const { peekSubagentRuntimeMock } = vi.hoisted(() => ({ peekSubagentRuntimeMock: vi.fn() }))
+
+vi.mock('@/agent/subagent/runtime', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return { ...actual, peekSubagentRuntime: peekSubagentRuntimeMock }
+})
+
 vi.mock('sonner', () => ({
   toast: {
     error: (...args: unknown[]) => toastErrorMock(...args),
@@ -237,6 +246,8 @@ import { clearStreamingQueues } from '../streaming-queue-registry'
 describe('conversation.store.sqlite tool-call routing', () => {
   beforeEach(() => {
     deleteWorkspaceMock.mockClear()
+    peekSubagentRuntimeMock.mockReset()
+    peekSubagentRuntimeMock.mockReturnValue(undefined)
     conversationRepoDeleteMock.mockClear()
     conversationRepoSaveMetaMock.mockReset()
     conversationRepoSaveMetaMock.mockResolvedValue(undefined)
@@ -1314,6 +1325,10 @@ describe('conversation.store.sqlite tool-call routing', () => {
     useConversationStore.getState().updateMessages(conv.id, [user])
 
     const cancelSpy = vi.fn()
+    const stopAllSpy = vi.fn(() => Promise.resolve({ stopped: ['subagent_1'] }))
+    peekSubagentRuntimeMock.mockImplementation((workspaceId: string) =>
+      workspaceId === conv.id ? { stopAll: stopAllSpy } : undefined
+    )
     const pendingToolCall = {
       id: 'tool-pending-1',
       type: 'function' as const,
@@ -1353,6 +1368,7 @@ describe('conversation.store.sqlite tool-call routing', () => {
 
     const updated = useConversationStore.getState().conversations.find((c) => c.id === conv.id)
     expect(cancelSpy).toHaveBeenCalledTimes(1)
+    expect(stopAllSpy).toHaveBeenCalledWith({ force: true })
     expect(updated?.status).toBe('idle')
     expect(updated?.activeRunId).toBeNull()
     expect(updated?.draftAssistant).toBeNull()
