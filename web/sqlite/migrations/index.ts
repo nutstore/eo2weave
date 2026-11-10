@@ -223,8 +223,40 @@ function verifyConversationKindSchema(db: any): void {
   }
 }
 
+function subagentTasksColumnExists(db: any, column: string): boolean {
+  try {
+    db.exec(`SELECT ${column} FROM subagent_tasks LIMIT 0`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Ensure subagent_tasks.timeout_ms exists.
+ *
+ * A member restored without its deadline silently reverts to the default, so
+ * the column is repaired on every startup rather than trusting user_version.
+ */
+function repairSubagentTimeoutColumn(db: any): void {
+  if (!subagentTasksColumnExists(db, 'timeout_ms')) {
+    db.exec('ALTER TABLE subagent_tasks ADD COLUMN timeout_ms INTEGER')
+  }
+  bumpUserVersionFloor(db, 20)
+}
+
+function verifySubagentTimeoutSchema(db: any): void {
+  try {
+    db.exec('SELECT timeout_ms FROM subagent_tasks LIMIT 0')
+  } catch (error) {
+    throw new Error(
+      `SCHEMA_INCOMPATIBLE: subagent_tasks is missing the timeout_ms column. ${getErrorMessage(error)}`
+    )
+  }
+}
+
 // Base schema version
-export const BASE_SCHEMA_VERSION = 19
+export const BASE_SCHEMA_VERSION = 20
 
 // ============================================================================
 // Migration Registry
@@ -464,6 +496,11 @@ export const migrations: Migration[] = [
     name: 'add_conversations_kind',
     up: repairConversationKindColumn,
   },
+  {
+    version: 20,
+    name: 'add_timeout_ms_to_subagent_tasks',
+    up: repairSubagentTimeoutColumn,
+  },
 ]
 
 // ============================================================================
@@ -640,6 +677,9 @@ export async function initializeSchema(
   // Same guard for the v19 conversations.kind column.
   repairConversationKindColumn(db)
 
+  // v20: subagent_tasks.timeout_ms
+  repairSubagentTimeoutColumn(db)
+
   // Version numbers alone are not enough: validate the physical columns after
   // migration so the app fails safely with an exportable database instead of
   // later rendering an empty conversation list.
@@ -647,6 +687,7 @@ export async function initializeSchema(
   verifyProjectRootSchema(db)
   verifyFsOpsDeleteModeSchema(db)
   verifyConversationKindSchema(db)
+  verifySubagentTimeoutSchema(db)
 
   // Report completion
   onProgress?.({
