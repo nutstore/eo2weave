@@ -109,7 +109,7 @@ import { generateConversationTitle } from '@/agent/title-generator'
 import { getMessageRepository, getSQLiteDB } from '@/sqlite'
 import { useSettingsStore } from './settings.store'
 import type { SubagentStepNotification } from '@/agent/tools/tool-types'
-import { disposeSubagentRuntime } from '@/agent/subagent/runtime'
+import { disposeSubagentRuntime, peekSubagentRuntime } from '@/agent/subagent/runtime'
 
 // Follow-up suggestions are enabled by default
 
@@ -1620,6 +1620,11 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           clearPendingQuestions(conversationId)
         })
         .catch(() => {})
+
+      // Aborting the parent must abort its subagents too. `stopAll` marks and
+      // cancels every member synchronously, so this stays correct even though
+      // the action itself is not awaited.
+      void peekSubagentRuntime(conversationId)?.stopAll({ force: true }).catch(() => {})
 
       const agentLoop = getAgentLoop(conversationId)
       if (agentLoop) {

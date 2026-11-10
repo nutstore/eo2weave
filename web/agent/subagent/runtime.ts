@@ -90,7 +90,12 @@ const SUBAGENT_CONTROL_TOOLS = new Set([
   'list_subagents',
 ])
 
-const DEFAULT_EXECUTION_TIMEOUT_MS = 0 // 0 = no timeout
+// A subagent without an explicit deadline used to run until the tab closed: the
+// only bound was the 20-request cap per queued message. Ten minutes covers the
+// longest legitimate member (a multi-step edit + verification) while keeping a
+// stuck stream from holding an execution slot forever. `timeout_ms: 0` still
+// opts out explicitly.
+const DEFAULT_EXECUTION_TIMEOUT_MS = 600000
 const MAX_EXECUTION_TIMEOUT_MS = 3600000
 const DEFAULT_ENQUEUE_TIMEOUT_MS = 5000
 const DEFAULT_STOP_TIMEOUT_MS = 10000
@@ -405,6 +410,40 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       recoverable: false,
     })
     return { success: true }
+  }
+
+  /**
+   * Stop every pending/running task owned by this runtime.
+   *
+   * Every member is marked stopped and has its loop cancelled and run timer
+   * cleared in one synchronous pass before the kills are awaited, so a caller
+   * that aborts a parent run cannot leave members running behind it. Returns
+   * the agentIds it stopped.
+   */
+  async stopAll(input: { force?: boolean } = {}): Promise<{ stopped: string[] }> {
+    await this.ensureHydrated()
+    const targets = Array.from(this.tasks.values()).filter(
+      (task) => task.status === 'pending' || task.status === 'running'
+    )
+    for (const task of targets) {
+      task.stopped = true
+      task.running_notification_armed = false
+      task.loop?.cancel()
+      this.clearRunTimeout(task)
+    }
+    await Promise.all(
+      targets.map((task) =>
+        this.killTask(task, {
+          code: input.force ? 'STOPPED_FORCE' : 'STOPPED',
+          message: input.force ? 'Subagent stopped by force.' : 'Subagent stopped.',
+          recoverable: false,
+        }).catch(() => {
+          // A member that finished between the snapshot and the kill keeps its
+          // own terminal state; nothing to report.
+        })
+      )
+    )
+    return { stopped: targets.map((task) => task.agentId) }
   }
 
   async resume(input: {
@@ -1065,7 +1104,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   }
 
   private parseExecutionTimeout(raw: number | undefined): number {
-    if (typeof raw !== 'number') return 0 // no timeout by default
+    if (typeof raw !== 'number') return DEFAULT_EXECUTION_TIMEOUT_MS
     if (!Number.isFinite(raw) || raw < 0) {
       throw new SubagentError(SubagentErrorCode.INVALID_INPUT, 'timeout_ms must be a non-negative number', { field: 'timeout_ms' })
     }
@@ -1446,7 +1485,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           max_queue_size: DEFAULT_QUEUE_SIZE,
           overflow_action: DEFAULT_OVERFLOW_ACTION,
           message_timeout_ms: DEFAULT_MESSAGE_TIMEOUT_MS,
-          timeout_ms: DEFAULT_EXECUTION_TIMEOUT_MS,
+          timeout_ms: item.timeout_ms ?? DEFAULT_EXECUTION_TIMEOUT_MS,
           usage: item.usage,
           processing: false,
           processingPromise: undefined,
@@ -1487,6 +1526,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     last_activity_at: number
     subagent_type: SubagentType
     parentToolCallId?: string
+    timeout_ms?: number
   } {
     return {
       agentId: task.agentId,
@@ -1505,6 +1545,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       last_activity_at: task.last_activity_at,
       subagent_type: task.subagent_type,
       parentToolCallId: task.parentToolCallId,
+      timeout_ms: task.timeout_ms,
     }
   }
 
@@ -1645,6 +1686,17 @@ export function getOrCreateSubagentRuntime(input: {
   runtimeRegistry.set(key, created)
   registerBeforeunload()
   return created
+}
+
+/**
+ * Look up the runtime for a workspace without creating one.
+ *
+ * Cancellation paths need this: calling `getOrCreateSubagentRuntime` just to
+ * stop work would build a provider/registry/context manager for a conversation
+ * that may have no subagents at all.
+ */
+export function peekSubagentRuntime(workspaceId: string): SubagentRuntime | undefined {
+  return runtimeRegistry.get(workspaceId || 'default')
 }
 
 /**
