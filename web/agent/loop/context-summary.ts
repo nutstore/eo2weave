@@ -51,7 +51,10 @@ export async function generateContextSummaryWithLLM(input: {
     )
 
     const summary = response.choices[0]?.message?.content?.trim()
-    return { summary: summary || null, mode: 'llm' }
+    if (!summary) {
+      throw new Error('The model returned an empty context summary. Please try again.')
+    }
+    return { summary, mode: 'llm' }
   } catch (error) {
     console.error('[AgentLoop] LLM context summary failed:', error)
     throw error

@@ -3,7 +3,9 @@ export const chats = {
     home: {
         title: "Standalone chats",
         subtitle: "Conversations independent of projects — no file access, start chatting anytime",
-        newChat: "Start a new standalone chat",
+        newChat: "New chat",
+        recentChats: "Recent chats",
+        chatActions: "Chat actions",
         newChatTitle: "New chat",
         emptyWelcome: "Just chat, or ask me anything…",
         openChat: "Open chat",

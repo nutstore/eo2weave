@@ -58,6 +58,10 @@ export const searchConversationsDefinition: ToolDefinition = {
           description:
             'Optional project name filter (exact match against `projects.name`).',
         },
+        project_id: {
+          type: 'string',
+          description: 'Optional project ID filter (exact match); takes precedence over project names.',
+        },
         projects: {
           type: 'array',
           items: { type: 'string' },
@@ -84,6 +88,8 @@ export const searchConversationsDefinition: ToolDefinition = {
 interface SearchResultRow {
   conversationId: string
   title: string
+  kind: 'project' | 'direct' | null
+  projectId: string | null
   workspaceName: string | null
   projectName: string | null
   updatedAt: number
@@ -217,12 +223,14 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
       : null
   const projectFilter =
     typeof args.project === 'string' && args.project.trim().length > 0 ? args.project.trim() : ''
+  const projectIdFilter =
+    typeof args.project_id === 'string' && args.project_id.trim().length > 0 ? args.project_id.trim() : ''
   // Multi-project filter (OR semantics). Mutually exclusive with `project` —
   // when both are given, `project` wins (single filter is the stricter intent).
   const projectsFilter: string[] = Array.isArray(args.projects)
     ? args.projects.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0).map((p: string) => p.trim())
     : []
-  const hasProjectScope = !!projectFilter || projectsFilter.length > 0
+  const hasProjectScope = !!projectIdFilter || !!projectFilter || projectsFilter.length > 0
   const sortBy = args.sort_by === 'updated_asc' ? 'updated_asc' : 'updated_desc'
 
   // At least one filter is required: keyword OR time OR project(s).
@@ -230,7 +238,7 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
     return toolErrorJson(
       'search_conversations',
       'invalid_arguments',
-      'at least one of query, updated_after, updated_before, project, projects is required'
+      'at least one of query, updated_after, updated_before, project_id, project, projects is required'
     )
   }
 
@@ -257,14 +265,17 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
         conversationConditions.push('c.updated_at <= ?')
         conversationParams.push(updatedBefore)
       }
-      if (projectFilter) {
+      if (projectIdFilter) {
+        conversationConditions.push('w.project_id = ?')
+        conversationParams.push(projectIdFilter)
+      } else if (projectFilter) {
         conversationConditions.push('p.name = ?')
         conversationParams.push(projectFilter)
       } else if (projectsFilter.length > 0) {
         conversationConditions.push(`p.name IN (${projectsFilter.map(() => '?').join(',')})`)
         conversationParams.push(...projectsFilter)
       }
-      if (conversationConditions.length > 0) {
+      if (hasProjectScope) {
         // A project filter must not sweep in standalone chats merely because
         // their hidden host workspace carries that project's id.
         conversationConditions.push(`c.kind IS NOT 'direct'`)
@@ -284,6 +295,8 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
         SELECT
           c.id AS conversationId,
           c.title,
+          c.kind,
+          w.project_id AS projectId,
           w.name AS workspaceName,
           p.name AS projectName,
           c.updated_at AS updatedAt,
@@ -318,14 +331,17 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
         conditions.push('c.updated_at <= ?')
         params.push(updatedBefore)
       }
-      if (projectFilter) {
+      if (projectIdFilter) {
+        conditions.push('w.project_id = ?')
+        params.push(projectIdFilter)
+      } else if (projectFilter) {
         conditions.push('p.name = ?')
         params.push(projectFilter)
       } else if (projectsFilter.length > 0) {
         conditions.push(`p.name IN (${projectsFilter.map(() => '?').join(',')})`)
         params.push(...projectsFilter)
       }
-      if (conditions.length > 0) {
+      if (hasProjectScope) {
         // Same standalone-chat exclusion as keyword mode.
         conditions.push(`c.kind IS NOT 'direct'`)
       }
@@ -337,6 +353,8 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
         SELECT
           c.id AS conversationId,
           c.title,
+          c.kind,
+          w.project_id AS projectId,
           w.name AS workspaceName,
           p.name AS projectName,
           c.updated_at AS updatedAt,
@@ -364,7 +382,7 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
           FROM conversations c
           LEFT JOIN workspaces w ON c.id = w.id
           LEFT JOIN projects p ON w.project_id = p.id
-          ${where}
+          WHERE ${[...conditions, "c.kind IS NOT 'direct'"].join(' AND ')}
           GROUP BY p.name
           ORDER BY conversationCount DESC, lastActivityAt DESC
         `
@@ -376,8 +394,10 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
     const results = rows.slice(0, limit).map((row) => ({
       conversationId: row.conversationId,
       title: row.title,
-      workspaceName: row.workspaceName || '(未命名工作区)',
-      projectName: row.projectName || '(未命名项目)',
+      kind: row.kind === 'direct' ? 'direct' : 'project',
+      projectId: row.kind === 'direct' ? null : row.projectId || null,
+      workspaceName: row.kind === 'direct' ? null : row.workspaceName || '(未命名工作区)',
+      projectName: row.kind === 'direct' ? null : row.projectName || '(未命名项目)',
       updatedAt: row.updatedAt,
       snippet:
         hasQuery && row.matchedContentJson
@@ -395,6 +415,7 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
       filters: {
         updated_after: updatedAfter,
         updated_before: updatedBefore,
+        project_id: projectIdFilter || null,
         project: projectFilter || null,
         projects: projectsFilter.length > 0 ? projectsFilter : null,
         sort_by: sortBy,

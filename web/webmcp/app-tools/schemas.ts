@@ -33,7 +33,7 @@ export const APP_TOOLS: AppToolDefinition[] = [
   {
     name: 'list_projects',
     description:
-      'List all EO2Weave projects with their folder counts and last access time.',
+      'List EO2Weave projects with their conversation counts and last access time.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
   },
@@ -80,12 +80,14 @@ export const APP_TOOLS: AppToolDefinition[] = [
   {
     name: 'list_conversations',
     description:
-      'List conversations (metadata only, no message bodies), newest first. ' +
-      'Filter by mounted folder to find conversations that operate on it.',
+      'List conversations (id, title, kind, projectId, status and updatedAt; no message bodies), newest first. ' +
+      'Filter by projectId to list a project’s conversations, or by mounted folder. ' +
+      'Project-filtered results exclude standalone chats.',
     inputSchema: {
       type: 'object',
       properties: {
         folderId: str('Only conversations bound to this mounted folder id (from list_mounted_folders)'),
+        projectId: str('Project ID from list_projects; must match folderId if both are supplied'),
         limit: num('Max entries to return (default 20, max 100)'),
         offset: num('Offset for paging'),
       },
@@ -103,6 +105,7 @@ export const APP_TOOLS: AppToolDefinition[] = [
       type: 'object',
       properties: {
         query: str('Keyword or phrase to search for'),
+        projectId: str('Only conversations in this project ID from list_projects'),
         updatedAfter: num('Unix epoch ms lower bound on conversation updatedAt'),
         updatedBefore: num('Unix epoch ms upper bound'),
         limit: num('Max results (default 10, max 50)'),

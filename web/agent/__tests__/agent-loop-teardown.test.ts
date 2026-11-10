@@ -33,8 +33,8 @@ vi.mock('@/agent/prefetch', () => ({
   triggerPrefetch: vi.fn(() => Promise.resolve()),
 }))
 
-vi.mock('@earendil-works/pi-agent-core', () => ({
-  agentLoopContinue: vi.fn(),
+vi.mock('@/agent/loop/agent-loop-stream', () => ({
+  continueAgentLoop: vi.fn(),
 }))
 
 // Minimal Pi-loop stub: the FIRST run hangs on a deferred gate (stays in
@@ -53,7 +53,7 @@ const secondRunGate: { resolve: () => void; promise: Promise<void> } = (() => {
 let runCount = 0
 
 const mockAgentLoopContinue = vi.mocked(
-  (await import('@earendil-works/pi-agent-core')).agentLoopContinue,
+  (await import('@/agent/loop/agent-loop-stream')).continueAgentLoop,
 ) as any
 mockAgentLoopContinue.mockImplementation(() => {
   runCount += 1

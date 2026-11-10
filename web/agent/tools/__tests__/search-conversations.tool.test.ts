@@ -13,6 +13,43 @@ describe('search_conversations', () => {
     queryAllMock.mockResolvedValue([])
   })
 
+  it('filters by exact project ID and excludes standalone chats in keyword and list modes', async () => {
+    for (const query of ['release', '']) {
+      queryAllMock.mockClear()
+      await searchConversationsExecutor({ query, project_id: 'p_1' }, { directoryHandle: null })
+      const [sql, params] = queryAllMock.mock.calls[0]
+      expect(sql).toContain('w.project_id = ?')
+      expect(sql).toContain("c.kind IS NOT 'direct'")
+      expect(params).toContain('p_1')
+    }
+  })
+
+  it('includes standalone chats when filtering only by time', async () => {
+    await searchConversationsExecutor({ updated_after: 100 }, { directoryHandle: null })
+    expect(queryAllMock.mock.calls[0][0]).not.toContain("c.kind IS NOT 'direct'")
+  })
+
+  it('does not attribute standalone search results to their hidden host project', async () => {
+    for (const query of ['release', '']) {
+      queryAllMock.mockResolvedValueOnce([{
+        conversationId: 'direct-1', title: 'Standalone', kind: 'direct',
+        workspaceName: 'hidden workspace', projectId: 'host-project', projectName: 'Hidden host',
+        updatedAt: 200, matchedContentJson: '',
+      }])
+      const result = await searchConversationsExecutor(
+        { query, updated_after: 100 }, { directoryHandle: null },
+      )
+      expect(JSON.parse(result).data.results[0]).toMatchObject({
+        kind: 'direct', projectId: null, projectName: null, workspaceName: null,
+      })
+    }
+  })
+
+  it('excludes standalone conversations from project activity counts', async () => {
+    await searchConversationsExecutor({ updated_after: 100 }, { directoryHandle: null })
+    expect(queryAllMock.mock.calls[1][0]).toContain("c.kind IS NOT 'direct'")
+  })
+
   it('clamps a negative result limit to one row before querying SQLite', async () => {
     await searchConversationsExecutor({ query: 'release notes', limit: -1 }, { directoryHandle: null })
 

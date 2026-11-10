@@ -64,12 +64,22 @@ export class PiAIProvider implements LLMProvider {
         if (this.model.provider === 'codex-oauth') {
           delete p.max_output_tokens
           delete p.temperature
+          // Auxiliary calls do not select a reasoning level. Let Codex use
+          // its default instead of pi-ai forcing effort='none'.
+          delete p.reasoning
         }
         // Dynamically-registered providers never emit developer role (no-op
         // for built-ins) — see stripDeveloperRoleForDynamicProviders.
         stripDeveloperRoleForDynamicProviders(p, this.model.provider)
       },
     })
+
+    // pi-ai resolves failed completions as assistant messages rather than
+    // rejecting. Propagate them before callers interpret empty text as success.
+    if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+      signal?.throwIfAborted()
+      throw new Error(message.errorMessage || 'The model provider failed to complete the request.')
+    }
 
     const content = this.textFromContent(message.content)
     const toolCalls = message.content

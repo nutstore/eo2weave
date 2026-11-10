@@ -37,12 +37,14 @@ export async function registerAppTools(): Promise<void> {
     const { useConversationStore } = await import('@/store/conversation.store')
     const { useSettingsStore } = await import('@/store/settings.store')
     const { useAgentStore } = await import('@/store/agent.store')
+    const { useProjectStore } = await import('@/store/project.store')
     const { useConversationContextStore } = await import('@/store/conversation-context.store')
     const { waitForConversationMetaPersist } = await import('@/store/conversation-persist')
     const { useWorkspacePreferencesStore } = await import('@/store/workspace-preferences.store')
     const { resolveConversationTarget } = await import('@/services/conversation-target')
     const { getWorkspaceManager } = await import('@/opfs')
     const { getProjectRepository } = await import('@/sqlite/repositories/project.repository')
+    const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
     const { getMessageRepository } = await import('@/sqlite/repositories/message.repository')
     const { searchConversationsExecutor } = await import('@/agent/tools/search-conversations.tool')
 
@@ -55,6 +57,7 @@ export async function registerAppTools(): Promise<void> {
       getRuntimeStore: () => useConversationRuntimeStore.getState(),
       getSettingsStore: () => useSettingsStore.getState(),
       getAgentStore: () => useAgentStore.getState(),
+      createProject: (name) => useProjectStore.getState().createProject(name),
       resolveConversationTarget,
       setConversationAgent: (id, agentId) => useWorkspacePreferencesStore.getState().setWorkspaceAgentId(id, agentId),
       ensureConversationWorkspace: async (id, title, projectId) => {
@@ -81,6 +84,7 @@ export async function registerAppTools(): Promise<void> {
         return manager
       },
       getProjectRepository: () => getProjectRepository(),
+      getWorkspaceRepository: () => getWorkspaceRepository(),
       getMessageRepository: () => getMessageRepository(),
       searchConversations: async (args) => {
         const result = await searchConversationsExecutor(args, {

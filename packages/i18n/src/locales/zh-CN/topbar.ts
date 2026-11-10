@@ -67,6 +67,7 @@ export const topbar = {
       shortcut: "⌘P",
     },
     mobile: {
+      openInNewTab: "在新标签页打开",
       workDirectory: "工作目录",
       workspaceSettings: "对话设置",
       skills: "技能",

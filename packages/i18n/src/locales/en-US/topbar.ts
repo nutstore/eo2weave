@@ -66,6 +66,7 @@ export const topbar = {
       shortcut: "⌘P",
     },
     mobile: {
+      openInNewTab: "Open in new tab",
       workDirectory: "Working Directory",
       workspaceSettings: "Chat Settings",
       skills: "Skills",
