@@ -69,6 +69,19 @@ function extractLastTurnUsedTokens(agentMessages: PiAgentMessage[]): number | nu
   return null
 }
 
+/**
+ * Deterministic stand-in for a failed summary (#268). The automatic per-turn
+ * path must never retry a summarizer that just failed — that is what turned one
+ * bad summary into a permanently unusable conversation.
+ */
+function buildFallbackSummary(droppedGroups: number): string {
+  return (
+    `Earlier conversation was truncated (${droppedGroups} messages dropped) because the ` +
+    'automatic summary could not be generated. Continue from the messages below and ask the ' +
+    'user if a detail from before this point is needed.'
+  )
+}
+
 export async function convertAgentMessagesToLlm(
   input: ConvertAgentMessagesToLlmInput
 ): Promise<ConvertAgentMessagesToLlmResult> {
@@ -172,16 +185,28 @@ export async function convertAgentMessagesToLlm(
     if (droppedContent.length > 0) {
       input.callbacks?.onContextCompressionStart?.({ droppedGroups, droppedContentChars })
       const startedAt = Date.now()
-      const { summary, mode } = await input.generateContextSummaryWithLLM(droppedContent, summaryTokenBudget)
-        .catch(error => {
-          console.error('[AgentLoop] Context compression failed', {
-            sessionId: input.sessionId,
-            provider: input.model.provider,
-            model: input.model.id,
-            error: error instanceof Error ? error.message : String(error),
-          })
-          throw error
+      let summary: string | null = null
+      let mode: CompressionSummaryMode = 'llm'
+      try {
+        const generated = await input.generateContextSummaryWithLLM(droppedContent, summaryTokenBudget)
+        summary = generated.summary
+        mode = generated.mode
+      } catch (error) {
+        // A failed summary must not brick the conversation (#268): the gate below
+        // only re-checks token usage, and nothing recorded the attempt, so every
+        // later turn re-entered this branch and threw again. Fall back to a
+        // deterministic truncation summary — it is persisted through the same
+        // baseline path a real summary uses, so the dropped tail stays dropped
+        // and the turn stays runnable.
+        console.error('[AgentLoop] Context compression failed; falling back to truncation', {
+          sessionId: input.sessionId,
+          provider: input.model.provider,
+          model: input.model.id,
+          error: error instanceof Error ? error.message : String(error),
         })
+        summary = buildFallbackSummary(droppedGroups)
+        mode = 'fallback'
+      }
       const latencyMs = Date.now() - startedAt
 
       if (summary) {

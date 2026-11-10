@@ -151,21 +151,37 @@ describe('Codex context compression through the real Pi loop and Responses parse
       .rejects.toThrow('Summary request rejected')
   })
 
-  it('stops before the next model request when automatic compression fails', async () => {
+  it('falls back to a truncated context and still runs when the summary request fails (#268)', async () => {
     const input = setup()
     input.initialMessages.push({
       id: 'previous', role: 'assistant', content: 'Earlier answer', timestamp: 2,
       usage: { promptTokens: 970, completionTokens: 10, totalTokens: 980 },
     }, { id: 'continue', role: 'user', content: 'Continue', timestamp: 3 })
-    const fetch = vi.fn(async () => new Response(JSON.stringify({
-      error: { message: 'Summary request rejected', type: 'invalid_request_error' },
-    }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
+    // First request is the summarizer and fails; the turn itself must still reach
+    // the model using the deterministic truncation summary.
+    let calls = 0
+    const bodies: string[] = []
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      calls += 1
+      bodies.push(String(init?.body ?? ''))
+      if (calls === 1) {
+        return new Response(JSON.stringify({
+          error: { message: 'Summary request rejected', type: 'invalid_request_error' },
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      return response('Done', 100)
+    })
     vi.stubGlobal('fetch', fetch)
     const onContextCompressionComplete = vi.fn()
-    await expect(executePiCoreLoop({ ...input, callbacks: { onContextCompressionComplete } }))
-      .rejects.toThrow('Summary request rejected')
-    expect(fetch).toHaveBeenCalledOnce()
-    expect(onContextCompressionComplete).not.toHaveBeenCalled()
+
+    const result = await executePiCoreLoop({ ...input, callbacks: { onContextCompressionComplete } })
+
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(onContextCompressionComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'fallback' })
+    )
+    expect(result.allMessages.length).toBeGreaterThan(0)
+    expect(bodies[1]).toContain('truncated')
   })
 
   it('rejects an empty summary instead of continuing with an uncompressed context', async () => {

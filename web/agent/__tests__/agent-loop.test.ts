@@ -433,7 +433,7 @@ describe('AgentLoop', () => {
       expect(mockProvider.chat).not.toHaveBeenCalled()
     })
 
-    it('propagates an LLM summary failure after real token usage triggers compression', async () => {
+    it('falls back to a truncated summary instead of failing the run when the LLM summary call fails', async () => {
       ;(mockProvider.chat as any).mockRejectedValue(new Error('network failed'))
 
       mockAgentLoopContinue.mockImplementation((_context: any, config: any) => {
@@ -454,7 +454,9 @@ describe('AgentLoop', () => {
         toolContext: createMockToolContext(),
       })
 
-      await expect(loop.run([createUserMessage('test')])).rejects.toThrow('network failed')
+      const result = await loop.run([createUserMessage('test')])
+      expect(result.length).toBeGreaterThan(0)
+      // One summary attempt, then the turn proceeds with the truncation fallback.
       expect(mockProvider.chat).toHaveBeenCalledTimes(1)
     })
 
