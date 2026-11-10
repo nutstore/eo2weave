@@ -1231,11 +1231,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       })
       bumpTranscriptVersion(branched.id)
 
-      // Persist conversation metadata
+      // Persist conversation metadata. Errors are rethrown for the caller:
+      // AssistantTurnBubble is the only caller and it owns the user-facing
+      // message (i18n'd, one toast per failure). A second hardcoded-Chinese
+      // toast here both duplicated it and broke the all-copy-lives-in-i18n rule.
       const metaPersist = persistConversationMeta(branched)
         .catch((error) => {
           console.error('[conversation.store] Failed to persist branched conversation:', error)
-          toast.error('分支对话保存失败，刷新页面后可能丢失')
           throw error
         })
         .finally(() => {
