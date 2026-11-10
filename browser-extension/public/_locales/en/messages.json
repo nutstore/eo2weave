@@ -438,6 +438,9 @@
   "webmcpPackagesEmptyRegistry": {
     "message": "No package registry added yet. Add one above to browse installable packages."
   },
+  "webmcpPackagesLoadTimeout": {
+    "message": "The package list did not respond in time. Reload the page to try again."
+  },
   "webmcpPackagesEmptyMine": {
     "message": "No packages of your own yet — ask the cw-webmcp-creator skill to build one."
   },
