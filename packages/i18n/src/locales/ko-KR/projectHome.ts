@@ -2,8 +2,6 @@
 export const projectHome = {
     standaloneChats: {
         cardTitle: "독립 대화",
-        cardDescription: "프로젝트 없이 언제든 대화 시작",
-        cardPreview: "최근: {title}",
     },
     // 헤더 브랜드
     brand: "怡氧知知",

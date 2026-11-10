@@ -34,6 +34,9 @@ export default function ChatsHomeView() {
       // (every row would be kind=undefined ≡ not 'direct' → empty list).
       kind: c.kind,
       messageCount: c.messagesLoaded ? c.messages.length : null,
+      preview: c.messagesLoaded
+        ? [...c.messages].reverse().find((message) => message.role === 'user' && message.content?.trim())?.content?.trim() ?? undefined
+        : undefined,
       lastActivityAt:
         c.messagesLoaded && c.messages.length > 0
           ? (c.messages[c.messages.length - 1]?.timestamp ?? c.updatedAt)

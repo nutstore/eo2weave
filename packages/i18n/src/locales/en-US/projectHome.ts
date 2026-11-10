@@ -2,8 +2,6 @@
 export const projectHome = {
     standaloneChats: {
         cardTitle: "Standalone chats",
-        cardDescription: "No project attached — start chatting anytime",
-        cardPreview: "Recent: {title}",
     },
     // Header brand
     brand: "EO2Weave",

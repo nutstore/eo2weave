@@ -8,7 +8,7 @@ const t = (key: string, params?: Record<string, string | number>) => {
   const messages: Record<string, string> = {
     'chats.home.title': '独立对话',
     'chats.home.subtitle': '与项目无关的对话——无文件访问，随时开聊',
-    'chats.home.newChat': '开始新的独立对话',
+    'chats.home.newChat': '新建对话',
     'chats.home.emptyWelcome': '随便聊聊，或问我任何问题…',
     'chats.home.openChat': '打开对话',
     'chats.home.messageCount': '{count} 条消息',
@@ -29,6 +29,8 @@ vi.mock('@/i18n', () => ({
   useT: () => t,
   useLocale: () => ['zh-CN'],
 }))
+
+vi.mock('@/components/chats/ChatActions', () => ({ ChatActions: () => null }))
 
 // BrandButton comes from the ui package — render children plainly.
 vi.mock('@creatorweave/ui', () => ({
@@ -98,7 +100,7 @@ describe('ChatsHome — standalone chats home', () => {
 
     expect(screen.getByRole('heading', { name: '独立对话' })).toBeInTheDocument()
     expect(screen.getByText('与项目无关的对话——无文件访问，随时开聊')).toBeInTheDocument()
-    expect(screen.getByTestId('create-standalone-chat')).toHaveTextContent('开始新的独立对话')
+    expect(screen.getByTestId('create-standalone-chat')).toHaveTextContent('新建对话')
   })
 
   it('creates a new chat from the dashed button', async () => {

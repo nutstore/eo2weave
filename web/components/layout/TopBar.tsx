@@ -18,9 +18,8 @@ import {
   ArrowLeft,
   Clock,
   ExternalLink,
-  SquarePen,
+  MessageSquarePlus,
   MoreHorizontal,
-  MessageCircle,
 } from 'lucide-react'
 import { ProjectSwitcher } from './ProjectSwitcher'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
@@ -42,6 +41,7 @@ import {
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
 import { useFlowStore } from '@/store/flow.store'
 import { useConversationStore } from '@/store/conversation.store'
+import { ChatActions } from '@/components/chats/ChatActions'
 
 /** Stable tooltip wrapper — defined at module level to avoid recreating on every render. */
 const ActionTooltip = ({
@@ -117,8 +117,6 @@ interface TopBarProps {
   onWorkflowOpen?: () => void
   /** Create a new conversation */
   onNewConversation?: () => void
-  /** Navigate to the standalone chats home (/chats) — global ◇ entry */
-  onOpenStandaloneChats?: () => void
   /**
    * Which route space hosts this TopBar. 'chats' hides the project switcher
    * (standalone chats have no project semantics) and swaps the back-target
@@ -146,7 +144,6 @@ export function TopBar({
   onScheduleDrawerOpen,
   onWorkflowOpen,
   onNewConversation,
-  onOpenStandaloneChats,
   routeSpace = 'projects',
 }: TopBarProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -154,6 +151,7 @@ export function TopBar({
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const mobileMorePanelRef = useRef<HTMLDivElement | null>(null)
   const flowPanelOpen = useFlowStore((s) => s.panelOpen)
+  const activeConversationId = useConversationStore((s) => s.activeConversationId)
   const t = useT()
   const conversationName = activeConversationName ?? activeWorkspaceName
 
@@ -221,13 +219,13 @@ export function TopBar({
         {/* Left: Menu button (mobile) + Logo + Name */}
         <div className={`flex min-w-0 items-center ${isMobile ? 'gap-1 flex-1' : 'flex-1 gap-2'}`}>
           {onBackToProjects && (
-            <ActionTooltip label={t('topbar.tooltips.backToProjects')}>
-              <BrandButton iconButton onClick={onBackToProjects} className={isMobile ? 'h-7 w-7 shrink-0' : ''}>
+            <ActionTooltip label={routeSpace === 'chats' ? t('chats.home.title') : t('topbar.tooltips.backToProjects')}>
+              <BrandButton iconButton onClick={onBackToProjects} aria-label={routeSpace === 'chats' ? t('chats.home.title') : t('topbar.tooltips.backToProjects')} className={isMobile ? 'h-7 w-7 shrink-0' : ''}>
                 <ArrowLeft className="h-[14px] w-[14px]" />
               </BrandButton>
             </ActionTooltip>
           )}
-          {isMobile && (
+          {isMobile && routeSpace !== 'chats' && (
             <ActionTooltip label={t('topbar.tooltips.menu')}>
               <BrandButton iconButton onClick={onMenuOpen} data-tour="menu" className="h-7 w-7 shrink-0">
                 <Menu className="h-[14px] w-[14px]" />
@@ -241,23 +239,9 @@ export function TopBar({
             // its conversion entry (identical to the project-space branch),
             // otherwise users in the chats route space have no convert UI.
             <div className="flex min-w-0 items-center gap-1">
-              <span className="max-w-[200px] truncate rounded-md bg-muted px-2 py-1 text-xs text-secondary dark:bg-muted/50 dark:text-muted-foreground">
-                {t('topbar.standaloneChats.spaceName')}
+              <span className="max-w-[min(40vw,320px)] truncate text-sm font-semibold text-foreground">
+                {conversationName || t('topbar.standaloneChats.spaceName')}
               </span>
-              {conversationName && (
-                <>
-                  {!isMobile && (
-                    <>
-                      <span className="text-xs text-tertiary dark:text-muted">/</span>
-                      <ActionTooltip label={t('topbar.workspaceLabel', { name: conversationName })}>
-                        <span className="max-w-[200px] truncate rounded-md bg-muted px-2 py-1 text-xs text-secondary dark:bg-muted/50 dark:text-muted-foreground">
-                          {conversationName}
-                        </span>
-                      </ActionTooltip>
-                    </>
-                  )}
-                </>
-              )}
               {activeConversationIsDirect && (
                 <ConvertDirectChatBadge />
               )}
@@ -303,21 +287,31 @@ export function TopBar({
         </div>
 
         {/* Right: Actions */}
-        {isMobile ? (
-          <div className="ml-1 flex shrink-0 items-center gap-0.5">
-            {/* Standalone chats — global entry (all pages, all route spaces) */}
-            {onOpenStandaloneChats && (
-              <ActionTooltip label={t('topbar.standaloneChats.tooltip')}>
-                <BrandButton
-                  iconButton
-                  className="h-7 w-7"
-                  onClick={onOpenStandaloneChats}
-                  aria-label={t('topbar.standaloneChats.tooltip')}
-                >
-                  <MessageCircle className="h-[14px] w-[14px]" />
+        {routeSpace === 'chats' ? (
+          <div className="flex shrink-0 items-center gap-1">
+            {onNewConversation && (
+              <ActionTooltip label={t('chats.home.newChat')}>
+                <BrandButton iconButton onClick={onNewConversation} aria-label={t('chats.home.newChat')}>
+                  <MessageSquarePlus className="h-4 w-4" />
                 </BrandButton>
               </ActionTooltip>
             )}
+            {activeConversationId && conversationName && (
+              <ChatActions id={activeConversationId} title={conversationName} onDeleted={onBackToProjects} extraItems={
+                <>
+                  <DropdownMenuItem onSelect={() => onToolsPanelOpen?.()}><List className="h-4 w-4" />{t('topbar.tooltips.toolsPanel')}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onScheduleDrawerOpen?.()}><Clock className="h-4 w-4" />{t('topbar.tooltips.schedules')}</DropdownMenuItem>
+                  {onWorkflowOpen && <DropdownMenuItem onSelect={onWorkflowOpen}><Workflow className="h-4 w-4" />{t('topbar.tooltips.workflow')}{flowPanelOpen && <span className="ml-auto text-xs text-primary">●</span>}</DropdownMenuItem>}
+                  <DropdownMenuItem onSelect={() => onCommandPaletteOpen?.()}><Keyboard className="h-4 w-4" />{t('topbar.tooltips.commandPalette')}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onSkillsManagerOpen?.()}><WandSparkles className="h-4 w-4" />{t('topbar.tooltips.skillsManager')}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => openSettings()}><Settings className="h-4 w-4" />{t('topbar.tooltips.appSettings')}</DropdownMenuItem>
+                  {isSidePanelMode() && <DropdownMenuItem onSelect={() => window.open(window.location.href, '_blank', 'noopener')}><ExternalLink className="h-4 w-4" />{t('topbar.mobile.openInNewTab')}</DropdownMenuItem>}
+                </>
+              } />
+            )}
+          </div>
+        ) : isMobile ? (
+          <div className="ml-1 flex shrink-0 items-center gap-0.5">
             {/* Model switcher — directly visible. Previously it only lived
                 inside the ⋯ more menu, which new users (especially in the
                 narrow side panel) never discovered. The TopBar renders on the
@@ -333,7 +327,7 @@ export function TopBar({
                 onClick={() => onNewConversation?.()}
                 aria-label={t('sidebar.newWorkspace')}
               >
-                <SquarePen className="h-[14px] w-[14px]" />
+                <MessageSquarePlus className="h-[14px] w-[14px]" />
               </BrandButton>
             </ActionTooltip>
 
@@ -357,20 +351,6 @@ export function TopBar({
               <div className="shrink-0">
                 <FolderSelector />
               </div>
-            )}
-
-            {/* Standalone chats — global ◇ entry (all pages, all route spaces) */}
-            {onOpenStandaloneChats && (
-              <ActionTooltip label={t('topbar.standaloneChats.tooltip')}>
-                <BrandButton
-                  iconButton
-                  className="shrink-0"
-                  onClick={onOpenStandaloneChats}
-                  aria-label={t('topbar.standaloneChats.tooltip')}
-                >
-                  <MessageCircle className="h-[14px] w-[14px]" />
-                </BrandButton>
-              </ActionTooltip>
             )}
 
             <DropdownMenu>

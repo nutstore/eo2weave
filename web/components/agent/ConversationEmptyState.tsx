@@ -13,6 +13,20 @@ export function ConversationEmptyState() {
     (s) => !!s.activeConversationId && s.conversations.find((c) => c.id === s.activeConversationId)?.kind === 'direct'
   )
 
+  if (isDirect) {
+    return (
+      <div className="flex h-full items-center justify-center px-6 text-center">
+        <div className="max-w-lg space-y-3">
+          <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-primary/10 text-primary">
+            <MessageSquare className="h-5 w-5" aria-hidden />
+          </div>
+          <h3 className="text-xl font-semibold tracking-tight text-foreground">{t('conversation.empty.title')}</h3>
+          <p className="text-sm leading-relaxed text-muted-foreground">{t('conversation.directChat.inputPlaceholder')}</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full items-center justify-center">
       <div className="mx-auto w-full max-w-2xl space-y-6 px-4">

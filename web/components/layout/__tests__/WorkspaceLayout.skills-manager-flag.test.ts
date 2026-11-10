@@ -25,7 +25,7 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }))
 vi.mock('@/components/layout/TopBar', () => ({ TopBar: () => null }))
-vi.mock('@/components/layout/Sidebar', () => ({ Sidebar: () => null }))
+vi.mock('@/components/layout/Sidebar', () => ({ Sidebar: () => React.createElement('div', { 'data-testid': 'project-sidebar' }) }))
 vi.mock('@/components/layout/FolderPermissionBanner', () => ({
   FolderPermissionBanner: () => null,
 }))
@@ -356,5 +356,12 @@ describe('WorkspaceLayout consumes the persisted skills-manager flag on mount', 
     render(React.createElement(WorkspaceLayout))
     expect(managerEl().getAttribute('data-open')).toBe('false')
     expect(useWorkspacePreferencesStore.getState().panelState.skillsManagerOpen).toBe(false)
+  })
+})
+
+describe('standalone chat layout', () => {
+  it('does not show the project sidebar on the standalone chat route', () => {
+    render(React.createElement(WorkspaceLayout, { routeSpace: 'chats' }))
+    expect(screen.queryByTestId('project-sidebar')).toBeNull()
   })
 })

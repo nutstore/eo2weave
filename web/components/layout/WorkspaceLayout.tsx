@@ -17,7 +17,6 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
 import { useConversationStore } from '@/store/conversation.store'
 import { useAssetStore } from '@/store/asset.store'
 import { useFlowStore } from '@/store/flow.store'
@@ -63,7 +62,6 @@ import { MCPSettingsDialog } from '@/components/mcp'
 import { SettingsDialog, type SettingsTab } from '@/components/settings/SettingsDialog'
 import { ScheduleDrawer } from '@/components/schedule/ScheduleDrawer'
 import { useLocale, useT } from '@/i18n'
-import { chatsPath } from '@/lib/route-paths'
 import { WebContainerPanel } from '@/components/webcontainer/WebContainerPanel'
 import { useWebContainerStore } from '@/store/webcontainer.store'
 import { getWorkspaceManager } from '@/opfs'
@@ -110,9 +108,6 @@ export function WorkspaceLayout({
   onDraftConversationCreated,
   routeSpace = 'projects',
 }: WorkspaceLayoutProps) {
-  // Client-side router for in-app navigation (see onOpenStandaloneChats
-  // below — a document-level navigation there would trip the unload guard).
-  const router = useRouter()
   const waitForWorkspaceReady = useCallback(async (workspaceId: string, timeoutMs = 30000) => {
     const manager = await getWorkspaceManager()
     const start = Date.now()
@@ -920,15 +915,6 @@ export function WorkspaceLayout({
         onProjectSwitcherOpenChange={setProjectSwitcherOpen}
         onScheduleDrawerOpen={() => setScheduleDrawerOpen(true)}
         onWorkflowOpen={() => useFlowStore.getState().setPanelOpen(true)}
-        onOpenStandaloneChats={() => {
-          // Client-side navigation: /chats is an internal App Router route, and
-          // a full document navigation here would trip the unload guard (and
-          // tear down a running agent / pending file changes) for what is just
-          // a route-space switch. WorkspaceLayout renders inside the App
-          // Router's client tree (WorkspaceRouteView / ChatsRouteView), so
-          // useRouter is available at this layer.
-          router.push(chatsPath())
-        }}
         routeSpace={routeSpace}
         onNewConversation={() => {
           // Same space semantics as the sidebar's New chat (see
@@ -954,11 +940,11 @@ export function WorkspaceLayout({
       {/* Folder re-authorization banner — a browser-picker root's permission
           can lapse across browser restarts; surface it with a one-click
           restore instead of leaving only an amber dropdown row (issue #83). */}
-      <FolderPermissionBanner />
+      {routeSpace !== 'chats' && <FolderPermissionBanner />}
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         {/* Mobile sidebar overlay */}
-        {isMobile && isSidebarOpen && (
+        {routeSpace !== 'chats' && isMobile && isSidebarOpen && (
           <div
             className="absolute inset-0 z-40 bg-black/45"
             onClick={() => setIsSidebarOpen(false)}
@@ -966,7 +952,7 @@ export function WorkspaceLayout({
         )}
 
         {/* Sidebar - desktop inline, mobile drawer */}
-        {!isMobile && (
+        {routeSpace !== 'chats' && !isMobile && (
           <Sidebar
             onFileSelect={handleSidebarFileSelect}
             onInspect={handleElementInspect}
@@ -978,7 +964,7 @@ export function WorkspaceLayout({
             hideProjectResources={activeConversationIsDirect}
           />
         )}
-        {isMobile && isSidebarOpen && (
+        {routeSpace !== 'chats' && isMobile && isSidebarOpen && (
           <div className="absolute inset-y-0 left-0 z-50 w-[min(80vw,300px)] border-r border-border bg-background shadow-2xl dark:bg-card">
             <Sidebar
               isMobile

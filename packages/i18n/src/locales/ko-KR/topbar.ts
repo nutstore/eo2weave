@@ -68,6 +68,7 @@ export const topbar = {
       shortcut: "⌘P",
     },
     mobile: {
+      openInNewTab: "새 탭에서 열기",
       workDirectory: "작업 디렉토리",
       workspaceSettings: "채팅 설정",
       skills: "스킬",
