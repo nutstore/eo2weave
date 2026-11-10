@@ -351,10 +351,9 @@ export class MCPTaskManager {
   }
   private observe(task: ManagedMCPTask) {
     // `active` only dedupes observations within THIS tab. Cross-tab ownership is
-    // the per-remote-task Web Lock taken in `owner.promise` at the bottom of
-    // this method (`mcp-task:<endpointId>:<generation>:<taskId>`), shared with
-    // pause(). It is deliberately named after the remote task rather than after
-    // this record, so grep for `locks.request`, not for `mcp-observe`.
+    // the per-remote-task Web Lock taken in `owner.promise` at the bottom of this
+    // method — see executionLockName(). It is named after the remote task, not
+    // after this record, so grep for `locks.request`, not for `mcp-observe`.
     if (this.disposed || this.active.has(task.id) || !needsTaskObservation(task)) return
     const controller = new AbortController()
     const owner = {
@@ -445,7 +444,7 @@ export class MCPTaskManager {
     owner.promise = (async () => {
       if (typeof navigator !== 'undefined' && navigator.locks) {
         await navigator.locks.request(
-          `mcp-task:${task.endpointId}:${task.reference!.generation}:${task.reference!.taskId}`,
+          this.executionLockName(task),
           { signal: controller.signal },
           work
         )
@@ -489,7 +488,20 @@ export class MCPTaskManager {
     ).readFile(task.resultAssetId, { encoding: 'text' })
     return JSON.parse(String(file.content))
   }
-  private lockName(task: ManagedMCPTask) {
+  /**
+   * The one lock that serialises *remote* work on a task: observation and
+   * pause() both take it, so two tabs (or a tab plus a paused observer) can
+   * never drive the same remote task concurrently.
+   *
+   * Keyed by the REMOTE identity (endpoint + generation + remote task id), not
+   * by the local record id — a page reload can mint a new local id for the same
+   * remote task, and the lock must still match. The other lock names in this
+   * area (`mcp-record:` / `mcp-submit:` / `mcp-notify:` / `mcp-queue:` here,
+   * `mcp-delivery:` in continue-task) are keyed by the local record id; this one
+   * is the exception, which is why it has its own helper instead of an inline
+   * string.
+   */
+  private executionLockName(task: ManagedMCPTask) {
     return `mcp-task:${task.endpointId}:${task.reference?.generation}:${task.reference?.taskId}`
   }
   async pause(projectId: string, id: string) {
@@ -502,7 +514,7 @@ export class MCPTaskManager {
       return this.save({ ...latest, observation: 'paused' })
     }
     return typeof navigator !== 'undefined' && navigator.locks && task.reference
-      ? navigator.locks.request(this.lockName(task), save)
+      ? navigator.locks.request(this.executionLockName(task), save)
       : save()
   }
   async resume(projectId: string, id: string) {
