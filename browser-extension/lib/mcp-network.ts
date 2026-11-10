@@ -7,7 +7,7 @@ export interface MCPNetworkPort {
 }
 export function relayMCPNetwork(port: MCPNetworkPort, request: {
   url: string; method?: string; headers?: Record<string, string>; body?: string | null
-  timeoutMs?: number; redirect?: RequestRedirect
+  timeoutMs?: number
 }): void {
   const abort = new AbortController()
   let ended = false
@@ -39,7 +39,12 @@ export function relayMCPNetwork(port: MCPNetworkPort, request: {
       if (!['GET', 'POST', 'DELETE'].includes(method)) throw new Error('Unsupported MCP HTTP method')
       const response = await fetch(url, {
         method, headers: request.headers, body: method === 'GET' ? undefined : request.body,
-        signal: abort.signal, redirect: request.redirect ?? 'error', credentials: 'omit',
+        // SECURITY: redirects are never followed. The caller's URL is the only
+        // one validated (assertValidMcpEndpointUrl in the background handler),
+        // so following a 3xx would let a public endpoint bounce the privileged
+        // fetch into an intranet/metadata host. Same policy as
+        // fetchMcpEndpointNoRedirects on the mcp_proxy_fetch_stream path.
+        signal: abort.signal, redirect: 'error', credentials: 'omit',
       })
       clearTimeout(timer)
       post({ type: 'chunk', data: {

@@ -49,7 +49,8 @@ export function createExtensionFetch(
       headers: Object.fromEntries(request.headers.entries()),
       body: request.method === 'GET' || request.method === 'HEAD' ? null : await request.text(),
       timeoutMs,
-      redirect: request.redirect,
+      // No `redirect` field: the relay never follows redirects (the extension
+      // validates only this URL, so a 3xx would escape the endpoint policy).
     }
     request.signal.throwIfAborted()
     if (bridge.mcpNetworkCapabilities?.version !== 2 || !bridge.mcpNetworkFetch) {
