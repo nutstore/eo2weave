@@ -212,8 +212,8 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    // v19 (kind) and v20 (managed MCP tasks) also run — the final version is
-    // the current base.
+    // v19 (kind) and v20/v21 (subagent timeout, managed MCP tasks) also run —
+    // the final version is the current base.
     expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ALTER TABLE fs_ops ADD COLUMN delete_mode')
@@ -266,8 +266,8 @@ describe('initializeSchema', () => {
     expect(db.statements).toContain('UPDATE mcp_servers SET session_id = NULL')
   })
 
-  it('repairs managed MCP task tables when a v20 database is missing physical DDL', async () => {
-    // Startup repair covers databases whose user_version already reached v20
+  it('repairs managed MCP task tables when a v21 database is missing physical DDL', async () => {
+    // Startup repair covers databases whose user_version already reached v21
     // while the DDL never landed, and existing databases adopting the feature.
     const db = new SchemaDatabase(BASE_SCHEMA_VERSION)
 

@@ -29,6 +29,7 @@ function createMockRuntime(): SubagentRuntime {
     stop: vi.fn().mockResolvedValue({
       success: true,
     }),
+    stopAll: vi.fn().mockResolvedValue({ stopped: [] }),
     resume: vi.fn().mockResolvedValue({
       status: 'resumed',
       agentId: 'subagent_1',

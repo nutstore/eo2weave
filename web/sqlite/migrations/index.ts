@@ -225,11 +225,11 @@ function verifyConversationKindSchema(db: any): void {
 }
 
 /**
- * Managed MCP tasks (v20).
+ * Managed MCP tasks (v21).
  *
  * Creates the background task tables and adds the `protocol_mode` column used
  * by the official MCP SDK transport negotiation. Written as a repair helper so
- * a database whose user_version already reached 20 while the DDL was raced
+ * a database whose user_version already reached 21 while the DDL was raced
  * still converges on the physical schema.
  */
 function repairManagedMcpTasks(db: any): void {
@@ -248,7 +248,7 @@ function repairManagedMcpTasks(db: any): void {
   db.exec("UPDATE mcp_servers SET transport = 'streamable_http' WHERE transport = 'sse'")
   db.exec('UPDATE mcp_servers SET session_id = NULL')
 
-  bumpUserVersionFloor(db, 20)
+  bumpUserVersionFloor(db, 21)
 }
 
 function verifyManagedMcpTasksSchema(db: any): void {
@@ -262,8 +262,40 @@ function verifyManagedMcpTasksSchema(db: any): void {
   }
 }
 
+function subagentTasksColumnExists(db: any, column: string): boolean {
+  try {
+    db.exec(`SELECT ${column} FROM subagent_tasks LIMIT 0`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Ensure subagent_tasks.timeout_ms exists.
+ *
+ * A member restored without its deadline silently reverts to the default, so
+ * the column is repaired on every startup rather than trusting user_version.
+ */
+function repairSubagentTimeoutColumn(db: any): void {
+  if (!subagentTasksColumnExists(db, 'timeout_ms')) {
+    db.exec('ALTER TABLE subagent_tasks ADD COLUMN timeout_ms INTEGER')
+  }
+  bumpUserVersionFloor(db, 20)
+}
+
+function verifySubagentTimeoutSchema(db: any): void {
+  try {
+    db.exec('SELECT timeout_ms FROM subagent_tasks LIMIT 0')
+  } catch (error) {
+    throw new Error(
+      `SCHEMA_INCOMPATIBLE: subagent_tasks is missing the timeout_ms column. ${getErrorMessage(error)}`
+    )
+  }
+}
+
 // Base schema version
-export const BASE_SCHEMA_VERSION = 20
+export const BASE_SCHEMA_VERSION = 21
 
 // ============================================================================
 // Migration Registry
@@ -505,6 +537,11 @@ export const migrations: Migration[] = [
   },
   {
     version: 20,
+    name: 'add_timeout_ms_to_subagent_tasks',
+    up: repairSubagentTimeoutColumn,
+  },
+  {
+    version: 21,
     name: 'add_managed_mcp_tasks',
     up: repairManagedMcpTasks,
   },
@@ -684,7 +721,10 @@ export async function initializeSchema(
   // Same guard for the v19 conversations.kind column.
   repairConversationKindColumn(db)
 
-  // Same guard for the v20 managed MCP task tables and mcp_servers.protocol_mode.
+  // v20: subagent_tasks.timeout_ms
+  repairSubagentTimeoutColumn(db)
+
+  // Same guard for the v21 managed MCP task tables and mcp_servers.protocol_mode.
   repairManagedMcpTasks(db)
 
   // Version numbers alone are not enough: validate the physical columns after
@@ -694,6 +734,7 @@ export async function initializeSchema(
   verifyProjectRootSchema(db)
   verifyFsOpsDeleteModeSchema(db)
   verifyConversationKindSchema(db)
+  verifySubagentTimeoutSchema(db)
   verifyManagedMcpTasksSchema(db)
 
   // Report completion

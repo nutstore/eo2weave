@@ -186,6 +186,8 @@ export interface SubagentRuntime {
     force?: boolean
     timeout_ms?: number
   }): Promise<{ success: boolean; already_stopped?: boolean }>
+  /** Stop every pending/running task owned by this runtime. */
+  stopAll(input?: { force?: boolean }): Promise<{ stopped: string[] }>
   resume(input: {
     agentId: string
     prompt: string

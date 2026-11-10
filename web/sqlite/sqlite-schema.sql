@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS subagent_tasks (
     mode TEXT NOT NULL DEFAULT 'act',       -- 'plan' | 'act'
     subagent_type TEXT NOT NULL DEFAULT 'general-purpose',
     parent_tool_call_id TEXT,
+    timeout_ms INTEGER,
     messages_json TEXT NOT NULL DEFAULT '[]',
     queue_json TEXT NOT NULL DEFAULT '[]',
     usage_json TEXT,

@@ -12,6 +12,7 @@ interface SubagentTaskRow {
   mode: string
   subagent_type: string
   parent_tool_call_id: string | null
+  timeout_ms: number | null
   messages_json: string
   queue_json: string
   usage_json: string | null
@@ -31,6 +32,7 @@ export interface StoredSubagentTask {
   mode: AgentMode
   subagent_type: SubagentType
   parentToolCallId?: string
+  timeout_ms?: number
   messages: Message[]
   queue: Array<{ message: string; enqueued_at: number }>
   usage?: SubagentTaskUsage
@@ -92,10 +94,10 @@ export class SubagentRepository {
       for (const task of tasks) {
         await tx.execute(
           `INSERT INTO subagent_tasks (
-              agent_id, workspace_id, name, description, status, mode, subagent_type, parent_tool_call_id,
+              agent_id, workspace_id, name, description, status, mode, subagent_type, parent_tool_call_id, timeout_ms,
               messages_json, queue_json, usage_json, error_json, stopped,
               created_at, updated_at, last_activity_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(agent_id) DO UPDATE SET
              workspace_id = excluded.workspace_id,
              name = excluded.name,
@@ -104,6 +106,7 @@ export class SubagentRepository {
              mode = excluded.mode,
              subagent_type = excluded.subagent_type,
              parent_tool_call_id = excluded.parent_tool_call_id,
+             timeout_ms = excluded.timeout_ms,
              messages_json = excluded.messages_json,
              queue_json = excluded.queue_json,
              usage_json = excluded.usage_json,
@@ -122,6 +125,7 @@ export class SubagentRepository {
             task.mode,
             task.subagent_type,
             task.parentToolCallId || null,
+            task.timeout_ms ?? null,
             toJSON(task.messages),
             toJSON(task.queue),
             toJSON(task.usage || null),
@@ -216,6 +220,7 @@ export class SubagentRepository {
       mode: row.mode === 'plan' ? 'plan' : 'act',
       subagent_type: row.subagent_type as SubagentType,
       parentToolCallId: row.parent_tool_call_id || undefined,
+      timeout_ms: row.timeout_ms ?? undefined,
       messages: parseJSON<Message[]>(row.messages_json, []),
       queue: parseJSON<Array<{ message: string; enqueued_at: number }>>(row.queue_json, []),
       usage: parseJSON<SubagentTaskUsage | null>(row.usage_json || '', null) || undefined,
