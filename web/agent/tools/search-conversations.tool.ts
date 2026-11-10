@@ -88,6 +88,8 @@ export const searchConversationsDefinition: ToolDefinition = {
 interface SearchResultRow {
   conversationId: string
   title: string
+  kind: 'project' | 'direct' | null
+  projectId: string | null
   workspaceName: string | null
   projectName: string | null
   updatedAt: number
@@ -293,6 +295,8 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
         SELECT
           c.id AS conversationId,
           c.title,
+          c.kind,
+          w.project_id AS projectId,
           w.name AS workspaceName,
           p.name AS projectName,
           c.updated_at AS updatedAt,
@@ -349,6 +353,8 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
         SELECT
           c.id AS conversationId,
           c.title,
+          c.kind,
+          w.project_id AS projectId,
           w.name AS workspaceName,
           p.name AS projectName,
           c.updated_at AS updatedAt,
@@ -376,7 +382,7 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
           FROM conversations c
           LEFT JOIN workspaces w ON c.id = w.id
           LEFT JOIN projects p ON w.project_id = p.id
-          ${where}
+          WHERE ${[...conditions, "c.kind IS NOT 'direct'"].join(' AND ')}
           GROUP BY p.name
           ORDER BY conversationCount DESC, lastActivityAt DESC
         `
@@ -388,8 +394,10 @@ export const searchConversationsExecutor: ToolExecutor = async (args) => {
     const results = rows.slice(0, limit).map((row) => ({
       conversationId: row.conversationId,
       title: row.title,
-      workspaceName: row.workspaceName || '(未命名工作区)',
-      projectName: row.projectName || '(未命名项目)',
+      kind: row.kind === 'direct' ? 'direct' : 'project',
+      projectId: row.kind === 'direct' ? null : row.projectId || null,
+      workspaceName: row.kind === 'direct' ? null : row.workspaceName || '(未命名工作区)',
+      projectName: row.kind === 'direct' ? null : row.projectName || '(未命名项目)',
       updatedAt: row.updatedAt,
       snippet:
         hasQuery && row.matchedContentJson
