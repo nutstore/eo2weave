@@ -100,6 +100,7 @@ export function resetPageActionDedupeForTest(): void {
   pageActionSettled.clear()
 }
 
+import { relayMCPNetwork } from '../lib/mcp-network'
 // ============================================================
 // Background Service Worker
 // ============================================================
@@ -3348,6 +3349,7 @@ export default defineBackground(() => {
   // ── Port-based streaming bridge for Codex, page-outside MCP, and plugin download flows ──
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'agent_bridge_stream') return;
+    let mcpNetworkStarted = false
 
     port.onMessage.addListener((message) => {
       if (CODEX_OAUTH_ENABLED && message.type === 'codex_image_generate') {
@@ -3469,6 +3471,33 @@ export default defineBackground(() => {
         }
       })()
       return
+      }
+
+      if (message.type === 'mcp_network_v2') {
+        // SECURITY: this relay is the SDK's default transport, so it must carry
+        // the same SSRF gate as mcp_proxy_fetch_stream (#148): trusted sender
+        // plus an endpoint URL that cannot point at an intranet/adjacent host.
+        // http + loopback stays allowed for local MCP dev servers.
+        if (!isTrustedWebMCPSender(port.sender)) {
+          port.postMessage({
+            type: 'error',
+            errorCode: 'UNAUTHORIZED_MCP_PROXY_SENDER',
+            message: 'MCP network stream is only available to trusted WebMCP senders',
+          })
+          try { port.disconnect() } catch {}
+          return
+        }
+        if (mcpNetworkStarted) return
+        mcpNetworkStarted = true
+        try {
+          assertValidMcpEndpointUrl(String(message.url || ''))
+        } catch (err: any) {
+          port.postMessage({ type: 'error', errorCode: 'INVALID_MCP_ENDPOINT_URL', message: String(err?.message || err) })
+          try { port.disconnect() } catch {}
+          return
+        }
+        relayMCPNetwork(port, message)
+        return
       }
 
       if (message.type === 'mcp_proxy_fetch_stream') {

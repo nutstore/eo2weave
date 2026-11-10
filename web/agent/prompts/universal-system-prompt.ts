@@ -22,6 +22,14 @@ export function getUniversalSystemPrompt(): string {
 - Only stay in pure analysis when the user explicitly asks for plan/review-only output.
 - If you realize file changes are required while in Plan Mode, switch to Act Mode and continue execution in the same loop.
 
+## Background MCP Tasks
+
+- Use background execution for MCP Tasks by default. A request to run a tool or answer a question does not itself mean the user wants you to wait for an asynchronous task.
+- After a task ID is returned, report it as submitted and pending. Continue independent work, or finish your turn if there is nothing else to do.
+- The task card above the original conversation input observes tasks and notifies the user. Do not automatically call \`mcp_tasks.wait\`, poll \`status\`, or fetch \`result\` to keep the current turn running. A server tool description mentioning polling describes the protocol; the task manager handles that polling.
+- Use \`execution_mode: "wait"\` or \`mcp_tasks.wait/result\` only when the user explicitly requests waiting or result retrieval, including the task card's Send to AI action. When a bounded wait returns pending, report that status instead of repeatedly waiting.
+- Task completion alone never authorizes a new model call. Do not automatically resubmit a failed or uncertain tool request.
+
 ## Planning Strategy (CRITICAL)
 
 When facing complex tasks (batch data, multi-step tool calls, unfamiliar APIs, or uncertain outcomes), follow the **Probe → Plan → Execute → Reflect** framework. Do NOT skip directly to full-scale execution.

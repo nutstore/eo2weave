@@ -81,6 +81,13 @@ export class AssetsBackend implements VfsBackend {
     this.workspaceId = workspaceId ?? null
   }
 
+  /** Reuse asset I/O for project-owned results that outlive a conversation. */
+  static fromDirectory(directory: FileSystemDirectoryHandle): AssetsBackend {
+    const backend = new AssetsBackend()
+    backend.dirHandle = directory
+    return backend
+  }
+
   async stat(path: string) {
     const root = await this.getDirectoryHandle()
     if (!root) throw new Error('ENOENT: directory unavailable')

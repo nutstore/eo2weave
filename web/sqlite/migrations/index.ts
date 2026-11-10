@@ -14,6 +14,7 @@
  */
 
 import schemaSQL from '../sqlite-schema.sql?raw'
+import mcpTasksSQL from '../mcp-tasks-schema.sql?raw'
 
 // Progress callback type
 export type MigrationProgressCallback = (progress: {
@@ -223,8 +224,46 @@ function verifyConversationKindSchema(db: any): void {
   }
 }
 
+/**
+ * Managed MCP tasks (v20).
+ *
+ * Creates the background task tables and adds the `protocol_mode` column used
+ * by the official MCP SDK transport negotiation. Written as a repair helper so
+ * a database whose user_version already reached 20 while the DDL was raced
+ * still converges on the physical schema.
+ */
+function repairManagedMcpTasks(db: any): void {
+  db.exec(mcpTasksSQL)
+
+  const columns = (db.exec('PRAGMA table_info(mcp_servers)', {
+    returnValue: 'resultRows',
+    rowMode: 'object',
+  }) ?? []) as { name?: string }[]
+  if (!columns.some((column) => column.name === 'protocol_mode')) {
+    db.exec("ALTER TABLE mcp_servers ADD COLUMN protocol_mode TEXT NOT NULL DEFAULT 'auto'")
+  }
+
+  // Legacy SSE endpoints are served over the streamable HTTP transport now,
+  // and persisted session ids are no longer valid across launches.
+  db.exec("UPDATE mcp_servers SET transport = 'streamable_http' WHERE transport = 'sse'")
+  db.exec('UPDATE mcp_servers SET session_id = NULL')
+
+  bumpUserVersionFloor(db, 20)
+}
+
+function verifyManagedMcpTasksSchema(db: any): void {
+  try {
+    db.exec('SELECT id FROM mcp_tasks LIMIT 0')
+    db.exec('SELECT task_id FROM mcp_task_inputs LIMIT 0')
+  } catch (error) {
+    throw new Error(
+      `SCHEMA_INCOMPATIBLE: managed MCP task tables are missing. ${getErrorMessage(error)}`
+    )
+  }
+}
+
 // Base schema version
-export const BASE_SCHEMA_VERSION = 19
+export const BASE_SCHEMA_VERSION = 20
 
 // ============================================================================
 // Migration Registry
@@ -464,6 +503,11 @@ export const migrations: Migration[] = [
     name: 'add_conversations_kind',
     up: repairConversationKindColumn,
   },
+  {
+    version: 20,
+    name: 'add_managed_mcp_tasks',
+    up: repairManagedMcpTasks,
+  },
 ]
 
 // ============================================================================
@@ -640,6 +684,9 @@ export async function initializeSchema(
   // Same guard for the v19 conversations.kind column.
   repairConversationKindColumn(db)
 
+  // Same guard for the v20 managed MCP task tables and mcp_servers.protocol_mode.
+  repairManagedMcpTasks(db)
+
   // Version numbers alone are not enough: validate the physical columns after
   // migration so the app fails safely with an exportable database instead of
   // later rendering an empty conversation list.
@@ -647,6 +694,7 @@ export async function initializeSchema(
   verifyProjectRootSchema(db)
   verifyFsOpsDeleteModeSchema(db)
   verifyConversationKindSchema(db)
+  verifyManagedMcpTasksSchema(db)
 
   // Report completion
   onProgress?.({

@@ -435,6 +435,15 @@ function writeWithMessagesLoaded(conversationId: string, apply: () => void): voi
   })
 }
 
+/**
+ * Await deferred reload-before-append operations before starting an offscreen
+ * run. A background MCP task continuation must not append to a conversation
+ * whose history is still being reloaded, otherwise the continuation snapshot
+ * races the load and can drop the reloaded messages.
+ */
+export async function waitForConversationWrites(conversationId: string): Promise<void> {
+  while (unloadedWriteQueues.has(conversationId)) await unloadedWriteQueues.get(conversationId)
+}
 
 export const useConversationStoreSQLite = create<ConversationState>()(
   immer((set, get) => ({

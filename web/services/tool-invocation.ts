@@ -122,7 +122,11 @@ export async function invokeTool(
       raw = await execute(AbortSignal.any(signals))
     } else {
       let timeoutMs: number | null = input.toolExecutionTimeout
-      if (input.toolTimeoutExemptions.has(toolName) || getToolPolicy(toolName).level === 'prompt')
+      // Task controls authorize inside mcp_tasks; allow time for that confirmation.
+      const timeoutPolicyTool = toolName === 'mcp_tasks' && (args.action === 'cancel' || args.action === 'resume')
+        ? 'mcp_task_control'
+        : toolName
+      if (input.toolTimeoutExemptions.has(toolName) || getToolPolicy(timeoutPolicyTool).level === 'prompt')
         timeoutMs = null
       else if (typeof args.timeout === 'number' && args.timeout > 0)
         timeoutMs = Math.min(args.timeout, 300_000)
@@ -140,6 +144,13 @@ export async function invokeTool(
       const fullToolNameArg = typeof args.full_tool_name === 'string' ? args.full_tool_name : ''
       const isWebMCPInvocation = toolName === 'call_tool' &&
         (/^https_/.test(fullToolNameArg) || fullToolNameArg.includes('__'))
+      if (toolName === 'mcp_tasks' && args.action === 'wait' && timeoutMs !== null) {
+        // The outer deadline must leave room for the bounded local wait to return.
+        const seconds = typeof args.seconds === 'number' && Number.isFinite(args.seconds)
+          ? Math.min(30, Math.max(0, args.seconds))
+          : 10
+        timeoutMs = Math.max(timeoutMs, seconds * 1000 + 5000)
+      }
       raw = await executeToolWithTimeout({
         toolName,
         args,

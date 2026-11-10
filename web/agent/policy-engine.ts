@@ -291,6 +291,8 @@ function createPolicyTable(): Map<string, ToolPolicy> {
     },
   })
 
+  set('mcp_task_control', { level: 'prompt', memoryKey: () => null })
+
   set('snapshot_restore', {
     level: 'prompt',
     describe: () => ({ key: 'describeSnapshotRestore' }),

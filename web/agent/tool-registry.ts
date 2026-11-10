@@ -1,3 +1,4 @@
+import { mcpTasksDefinition, mcpTasksExecutor } from './tools/mcp-tasks.tool'
 import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 /**
  * Tool Registry - manages tool registration, lookup, and execution.
@@ -499,6 +500,7 @@ export class ToolRegistry {
     // Replaces the old separate MCP + WebMCP tool pairs
     this.register(searchToolsDefinition, searchToolsExecutor)
     this.register(callToolDefinition, callToolExecutor)
+    this.register(mcpTasksDefinition, mcpTasksExecutor)
     // Conditionally register image generation tool
     this.registerImageGenTool()
   }

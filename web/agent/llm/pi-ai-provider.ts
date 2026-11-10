@@ -127,10 +127,10 @@ export class PiAIProvider implements LLMProvider {
       }
 
       if (msg.role === 'user') {
-        const text = extractTextContent(msg.content) || ''
+        const content = Array.isArray(msg.content) ? msg.content : extractTextContent(msg.content) || ''
         messages.push({
           role: 'user',
-          content: text,
+          content,
           timestamp: Date.now(),
         })
         continue

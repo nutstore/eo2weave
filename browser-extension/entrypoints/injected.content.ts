@@ -198,6 +198,7 @@ export default defineContentScript({
       // two-minute safety window, but it is now correctly treated as idle.
       const isCodexStream = type === 'codex_proxy_fetch_stream';
       const isCodexImage = type === 'codex_image_generate';
+      const isMCPNetwork = type === 'mcp_network_v2';
       // Give the background a small grace period to deliver its authoritative
       // 10-minute idle error instead of racing it in the page context.
       const idleTimeoutMs = isCodexImage ? 5 * 60 * 1000 : isCodexStream ? 10 * 60 * 1000 + 5_000 : 2 * 60 * 1000;
@@ -245,8 +246,8 @@ export default defineContentScript({
       }
 
       function enqueueChunk(data: unknown) {
-        if (cancelled) return;
-        armIdleTimeout();
+        if (cancelled || streamFinished || streamError) return;
+        if (!isMCPNetwork) armIdleTimeout();
         if (resolveChunk) {
           const r = resolveChunk;
           resolveChunk = null;
@@ -297,7 +298,7 @@ export default defineContentScript({
       // Start the idle watchdog after dispatch. Active streams keep it alive
       // by rearming it in enqueueChunk(). Codex additionally has a hard page-
       // side ceiling so a lost background port cannot wait forever.
-      armIdleTimeout();
+      if (!isMCPNetwork) armIdleTimeout();
       if (totalTimeoutMs !== null) {
         totalTimeout = setTimeout(() => {
           if (!streamFinished && !streamError && !cancelled) {
@@ -328,6 +329,7 @@ export default defineContentScript({
               clearStreamTimeouts();
               _streaming.delete(id);
               requestStreamCancel();
+              finishStream();
               return Promise.resolve({ value: undefined, done: true });
             },
           };
@@ -752,6 +754,11 @@ export default defineContentScript({
       /**
        * Proxy an MCP HTTP request through the extension.
        */
+      mcpNetworkCapabilities: { version: 2, bytes: true, abort: true },
+      mcpNetworkFetch(payload: Record<string, unknown>) {
+        return sendToBridgeStream('mcp_network_v2', payload)
+      },
+
       async mcpProxyFetch(payload: {
         url: string
         method?: string
@@ -1232,6 +1239,10 @@ export default defineContentScript({
             errorCode: 'BRIDGE_REPLACED',
             error: 'Bridge instance replaced by a newer injection',
           })
+        }
+        for (const [id, stream] of _streaming) {
+          window.postMessage({ __agentWebBridge: true, __agentWebStreamCancel: true, id }, '*')
+          stream.onError('BRIDGE_REPLACED', 'Bridge instance replaced')
         }
         _streaming.clear()
       },

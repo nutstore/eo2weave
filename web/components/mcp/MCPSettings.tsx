@@ -26,6 +26,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { getMCPManager } from '@/mcp'
+import { hasMCPNetworkV2 } from '@/mcp/extension-fetch'
 import type { MCPServerConfig, MCPConnectionState } from '@/mcp/mcp-types'
 import { useT } from '@/i18n'
 import { useExtensionStore } from '@/store/extension.store'
@@ -33,7 +34,7 @@ import { ShieldCheck } from 'lucide-react'
 import { useTrustedSourceStore } from '@/store/trusted-source.store'
 import { ExternalTrustCard } from '@/components/external-tools/ExternalTrustCard'
 
-type TransportType = 'sse' | 'streamable_http'
+type TransportType = 'legacy_sse' | 'streamable_http'
 
 interface MCPServerItem extends MCPServerConfig {
   connectionStatus?: MCPConnectionState
@@ -46,6 +47,7 @@ interface ServerFormData {
   name: string
   description: string
   url: string
+  protocolMode: 'auto' | 'legacy'
   transport: TransportType
   enabled: boolean
   token: string
@@ -59,6 +61,7 @@ const EMPTY_FORM: ServerFormData = {
   description: '',
   url: '',
   transport: 'streamable_http',
+  protocolMode: 'auto',
   enabled: true,
   token: '',
   timeout: '30000',
@@ -78,7 +81,7 @@ export function MCPSettings() {
     [t]
   )
   const transportLabels: Record<TransportType, string> = {
-    sse: tf('mcp.form.transport.sse', 'SSE'),
+    legacy_sse: tf('mcp.tasks.legacySse', 'Legacy SSE (GET stream)'),
     streamable_http: tf('mcp.form.transport.streamableHttp', 'Streamable HTTP'),
   }
 
@@ -187,6 +190,7 @@ export function MCPSettings() {
       description: server.description || '',
       url: server.url,
       transport: server.transport as TransportType,
+      protocolMode: server.protocolMode ?? 'auto',
       enabled: server.enabled,
       token: server.token || '',
       timeout: String(server.timeout || 30000),
@@ -247,6 +251,7 @@ export function MCPSettings() {
           description: formData.description || undefined,
           url: formData.url,
           transport: formData.transport,
+          protocolMode: formData.protocolMode,
           enabled: formData.enabled,
           token: formData.token || undefined,
           timeout: parseInt(formData.timeout),
@@ -260,6 +265,7 @@ export function MCPSettings() {
           description: formData.description || undefined,
           url: formData.url,
           transport: formData.transport,
+          protocolMode: formData.protocolMode,
           enabled: formData.enabled,
           token: formData.token || undefined,
           timeout: parseInt(formData.timeout),
@@ -339,6 +345,7 @@ export function MCPSettings() {
       description: s.description,
       url: s.url,
       transport: s.transport,
+      protocolMode: s.protocolMode ?? 'auto',
       enabled: s.enabled,
       token: s.token,
       timeout: s.timeout,
@@ -393,6 +400,7 @@ export function MCPSettings() {
               description: item.description || undefined,
               url: item.url,
               transport: item.transport || 'streamable_http',
+              protocolMode: item.protocolMode === 'legacy' ? 'legacy' : 'auto',
               enabled: item.enabled ?? true,
               token: item.token || undefined,
               timeout: item.timeout || 30000,
@@ -456,6 +464,7 @@ export function MCPSettings() {
 
       {/* Global trust switch (shared card, always first) */}
       <ExternalTrustCard t={(key) => tf(key, key)} />
+      {extensionInstalled && !hasMCPNetworkV2() ? <p role="status" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">{t('mcp.tasks.extensionUpgrade')}</p> : null}
 
       {/* ── Header ──────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
@@ -601,9 +610,18 @@ export function MCPSettings() {
                 className="w-full rounded-md border border-neutral-200 bg-transparent px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none dark:border-neutral-700 dark:text-primary-foreground"
               >
                 <option value="streamable_http">{transportLabels.streamable_http}</option>
-                <option value="sse">{transportLabels.sse}</option>
+                <option value="legacy_sse">{transportLabels.legacy_sse}</option>
               </select>
             </div>
+
+            <label className="space-y-1 text-xs font-medium">
+              <span>{t('mcp.tasks.protocolMode')}</span>
+              <select value={formData.protocolMode} onChange={event => setFormData({ ...formData, protocolMode: event.target.value as 'auto' | 'legacy' })}
+                className="w-full rounded-md border border-neutral-200 bg-transparent px-3 py-1.5 dark:border-neutral-700">
+                <option value="auto">{t('mcp.tasks.protocolAuto')}</option>
+                <option value="legacy">{t('mcp.tasks.protocolLegacy')}</option>
+              </select>
+            </label>
 
             {/* Timeout */}
             <div className="space-y-1">

@@ -784,7 +784,9 @@ export const callToolDefinition: ToolDefinition = {
     name: 'call_tool',
     description:
       'Execute an external tool (MCP or WebMCP) with the provided arguments. ' +
-      'Use search_tools first to discover tools and get their parameter schemas.',
+      'Use search_tools first to discover tools and get their parameter schemas. ' +
+      'MCP Tasks run in the background by default. After receiving a task ID, report it as pending and continue independent work or finish your turn. ' +
+      'Do not automatically wait, poll, or fetch its result; the user chooses when to continue with the result.',
     parameters: {
       type: 'object',
       properties: {
@@ -802,6 +804,7 @@ export const callToolDefinition: ToolDefinition = {
             'Required for WebMCP tools: the exact tab_id returned by search_tools or ' +
             'get_page_tools. This selects the page instance that will execute the tool.',
         },
+        execution_mode: { type: 'string', enum: ['background', 'wait'], description: 'MCP only. Default background: return a durable task ID when the server starts a Task. Use wait only when the user explicitly asks to wait for completion; asking to run a tool or answer a question is not such a request. Synchronous tools return immediately.' },
         args: {
           type: 'object',
           description:
@@ -814,9 +817,10 @@ export const callToolDefinition: ToolDefinition = {
 }
 
 export const callToolExecutor: ToolExecutor = async (args, context) => {
-  const { full_tool_name, tab_id, args: toolArgs } = args as {
+  const { full_tool_name, tab_id, execution_mode, args: toolArgs } = args as {
     full_tool_name: string
     tab_id?: number
+    execution_mode?: 'background' | 'wait'
     args?: Record<string, unknown>
   }
 
@@ -840,7 +844,9 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
     )
   }
 
+  if (execution_mode !== undefined && execution_mode !== 'background' && execution_mode !== 'wait') return toolErrorJson('call_tool', 'INVALID_ARGUMENT', 'Invalid execution_mode')
   if (tool.source === 'webmcp') {
+    if (execution_mode === 'background') return toolErrorJson('call_tool', 'UNSUPPORTED_EXECUTION_MODE', 'WebMCP does not support background MCP Tasks')
     if (!Number.isSafeInteger(tab_id) || tab_id! <= 0) {
       return toolErrorJson(
         'call_tool',
@@ -912,7 +918,7 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
   }
 
   if (tool.source === 'mcp') {
-    return executeMCPTool(tool, toolArgs || {})
+    return executeMCPTool(tool, toolArgs || {}, context, execution_mode)
   } else {
     if (!useSettingsStore.getState().enableWebMCP) {
       return toolErrorJson('call_tool', 'WEBMCP_DISABLED', 'WebMCP is disabled.', { retryable: false })
@@ -927,7 +933,9 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
 
 async function executeMCPTool(
   tool: UnifiedToolEntry,
-  toolArgs: Record<string, unknown>
+  toolArgs: Record<string, unknown>,
+  context: ToolContext,
+  executionMode?: 'background' | 'wait'
 ): Promise<string> {
   const serverId = tool.sourceId
   const toolName = tool.name
@@ -957,10 +965,36 @@ async function executeMCPTool(
   }
 
   try {
-    const result = await manager.executeTool(serverId, toolName, toolArgs)
+    const invocationContext = context.projectId && context.workspaceId ? {
+      projectId: context.projectId, conversationId: context.workspaceId, agentId: context.currentAgentId ?? undefined,
+      toolCallId: context.toolCallId,
+    } : undefined
+    const invocation = invocationContext ? await manager.invokeTool(serverId, toolName, toolArgs, {
+      context: invocationContext, signal: context.abortSignal, executionMode,
+    }) : { kind: 'result' as const, result: await manager.executeTool(serverId, toolName, toolArgs, undefined, context.abortSignal) }
+    if (invocation.kind === 'task') return toolOkJson('call_tool', {
+      submitted: true, completed: false, local_task_id: invocation.task.id,
+      remote_task_id: invocation.task.reference?.taskId, status: invocation.task.remoteStatus,
+      message: 'Submitted; not completed. The task card above the original conversation input manages observation and completion notifications. Report this task ID as pending, then continue independent work or finish your turn. Do not automatically call mcp_tasks.wait/status/result unless the user explicitly asked to wait or retrieve it. The user can choose Send to AI in the task card. Completion will not start a model call.',
+    })
+    const result = invocation.result
 
+    return formatMCPToolResult(result, { serverId, fullName: tool.fullName, untrusted })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return toolErrorJson('call_tool', 'MCP_EXECUTION_FAILED', message, {
+      retryable: false,
+      details: { fullToolName: tool.fullName, local_task_id: (error as { localTaskId?: string })?.localTaskId },
+    })
+  }
+}
+
+/** Preserve original protocol blocks while isolating the Agent presentation. */
+export function formatMCPToolResult(result: unknown, source: { serverId: string; fullName: string; untrusted: boolean }, envelopeName = 'call_tool'): string {
+  const { serverId, untrusted } = source
+  const tool = { fullName: source.fullName }
     if (typeof result === 'string') {
-      return toolOkJson('call_tool', {
+      return toolOkJson(envelopeName, {
         text: wrapUntrustedContent(result, {
           untrusted,
           sourceId: serverId,
@@ -993,7 +1027,7 @@ async function executeMCPTool(
             }))
           : 'Unknown MCP tool error'
         return toolErrorJson(
-          'call_tool',
+          envelopeName,
           'MCP_TOOL_ERROR',
           errorMessage,
           { retryable: true, details: { fullToolName: tool.fullName } }
@@ -1012,7 +1046,7 @@ async function executeMCPTool(
       if (!presentation.length) presentation.push({
         type: 'text', text: String(wrapUntrustedContent(JSON.stringify(mcpResult), { untrusted, sourceId: serverId, toolName: tool.fullName })),
       })
-      return toolOkJson('call_tool', {
+      return toolOkJson(envelopeName, {
         ...(text ? { text } : {}),
         ...mcpResult,
         ...(content ? { content } : {}),
@@ -1022,7 +1056,7 @@ async function executeMCPTool(
       }, { contentParts: presentation })
     }
 
-    return toolOkJson('call_tool', {
+    return toolOkJson(envelopeName, {
       result: wrapUntrustedContent(result, {
         untrusted,
         sourceId: serverId,
@@ -1031,13 +1065,6 @@ async function executeMCPTool(
       fullToolName: tool.fullName,
       untrusted,
     })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return toolErrorJson('call_tool', 'MCP_EXECUTION_FAILED', message, {
-      retryable: true,
-      details: { fullToolName: tool.fullName },
-    })
-  }
 }
 
 //=============================================================================

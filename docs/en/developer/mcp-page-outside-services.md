@@ -94,7 +94,8 @@ This principle applies to:
 - `browser-extension/entrypoints/injected.content.ts`
   - Injects `window.__agentWeb` into the page
   - Exposes:
-    - `mcpProxyFetch(...)`
+    - `mcpNetworkFetch(...)` (SDK byte-stream interface)
+    - `mcpProxyFetch(...)` (legacy page compatibility)
     - `mcpProxyFetchStream(...)`
 
 - `browser-extension/entrypoints/content.ts`
@@ -103,6 +104,7 @@ This principle applies to:
 - `browser-extension/entrypoints/background.ts`
   - Performs the actual network requests
   - Handles:
+    - `mcp_network_v2`
     - `mcp_proxy_fetch`
     - `mcp_proxy_fetch_stream`
 
@@ -114,7 +116,7 @@ The call chain for out-of-page MCP services:
 
 ```text
 MCPSettings / MCPManager / MCPClientService
-  -> window.__agentWeb.mcpProxyFetch(...) / mcpProxyFetchStream(...)
+  -> SDK Transport -> window.__agentWeb.mcpNetworkFetch(...)
   -> injected.content.ts
   -> content.ts relay
   -> background.ts
@@ -123,22 +125,22 @@ MCPSettings / MCPManager / MCPClientService
 
 ### 4.1 Streamable HTTP
 
-For standard HTTP request/response scenarios.
+For Streamable HTTP, including JSON and POST SSE responses.
 
 In the current implementation:
 
 - `server.transport === 'streamable_http'`
-- Uses `mcpProxyFetch(...)` through the extension proxy
+- SDK Streamable HTTP Transport uses `mcpNetworkFetch(...)` through the extension proxy
 
 ### 4.2 SSE
 
-For servers that return a JSON-RPC response stream via SSE.
+For traditional GET SSE connections with separate POST requests.
 
 In the current implementation:
 
-- `server.transport === 'sse'`
-- Uses `mcpProxyFetchStream(...)` through the extension streaming proxy
-- The extension sends `response_start` first, then `chunk` / `done` / `error`
+- `server.transport === 'legacy_sse'`
+- SDK SSE Transport uses `mcpNetworkFetch(...)` through the extension byte-stream proxy
+- The extension sends `response_start`, Base64 byte chunks, completion or an error; cancellation aborts the upstream fetch
 
 ---
 
@@ -211,7 +213,7 @@ The project already ships a Figma preset:
 - The browser extension is not installed
 - The extension is too old to support out-of-page MCP proxying
 - Figma token missing, expired, or insufficient permissions
-- Transport mistakenly set to `sse`
+- Transport mistakenly set to `legacy_sse`
 - Network failure or request timeout
 
 `MCPSettings.tsx` now shows friendlier connection-failure hints for Figma.
@@ -271,7 +273,7 @@ The project already ships a Mail preset:
 - Mail MCP server not running, or blocked by an intranet firewall
 - Personal Mail Token not generated / copied wrong / SMTP credentials not saved on the setup page
 - Wrong SMTP credentials (QQ Mail requires the SMTP **authorization code**, not the login password; host: `smtp.qq.com`, port: `465` SSL or `587` STARTTLS)
-- Transport mistakenly set to `sse`
+- Transport mistakenly set to `legacy_sse`
 
 ### 7.6 Automated vs not yet automated
 
@@ -325,7 +327,7 @@ Add a user server in MCP Settings, for example:
 - `name`: `OpenPencil MCP`
 - `url`: determined by the actual local HTTP MCP address OpenPencil exposes
 - `transport`: follow the actual OpenPencil HTTP MCP protocol
-  - Standard SSE → `sse`
+  - Standard SSE → `legacy_sse`
   - Standard streamable HTTP → `streamable_http`
 - `token`: the auth token provided by OpenPencil
 
@@ -358,7 +360,7 @@ When integrating a new out-of-page MCP service, follow this flow:
 Determine whether the service offers:
 
 - `streamable_http`
-- `sse`
+- `legacy_sse`
 - or `stdio` only
 
 > Note: the web platform mainly supports HTTP shapes; pure `stdio` services cannot be integrated by a web page directly — a desktop layer or proxy must convert them first.
@@ -401,12 +403,13 @@ To lower the barrier, also add:
 
 At minimum verify:
 
-1. `initialize`
+1. `server/discover`, or legacy `initialize`
 2. `tools/list`
 3. A real `tools/call` on one tool
 4. If tasks are supported, also verify:
-   - `/tasks/get`
-   - `/tasks/result`
+   - `tasks/get`
+   - `tasks/result` (2025 Tasks); modern task results arrive in `tasks/get`
+   - `tasks/cancel`, and modern `tasks/update` (JSON-RPC methods on the MCP endpoint)
 
 ---
 
@@ -415,7 +418,7 @@ At minimum verify:
 ### Done
 
 - `mcp-client.service.ts` production client goes through the extension bridge uniformly
-- Supports `mcpProxyFetch` and `mcpProxyFetchStream`
+- SDK requests use `mcpNetworkFetch`; `mcpProxyFetch` and `mcpProxyFetchStream` remain for legacy pages
 - Supports timeout forwarding
 - Supports capturing `mcp-session-id` from response headers
 - Task polling also goes through the bridge
@@ -455,3 +458,146 @@ If productization continues, prioritize:
 - A more standard preset catalog for common services
 - Unified error classification:
   - Extension unavailable
+
+## Official SDK and background Tasks
+
+The browser client uses `@modelcontextprotocol/client@2.4.0` and
+`@modelcontextprotocol/ext-tasks@0.2.2`. Each service has an independent SDK
+Client, Transport and Tasks session. Automatic negotiation supports legacy
+initialization and modern discovery. The advanced **Legacy initialize** setting
+skips discovery when a legacy endpoint cannot handle the probe. Authentication
+and network failures are surfaced instead of triggering a compatibility fallback.
+
+Transport configuration is normalized on load, import and export:
+
+| Configuration | Meaning |
+| --- | --- |
+| `streamable_http` | SDK Streamable HTTP; JSON and POST SSE responses |
+| `legacy_sse` | SDK traditional GET SSE connection with separate POST messages |
+| old `sse` | Migrated to `streamable_http`; the old label meant POST streaming |
+
+`protocolMode` defaults to `auto`. Old stored connection session IDs are cleared;
+only a saved task's own legacy session snapshot can be used for task recovery.
+Bearer Token settings continue to work. There is no new OAuth login flow, Node
+backend, browser stdio transport or Native Host protocol migration.
+
+The extension's `mcp_network_v2` port sends response headers followed by Base64
+byte chunks, completion or an error. Cancellation and port disconnection abort the
+upstream fetch. A timeout bounds response headers; the SDK/task layer owns each
+request's deadline. A live event stream has no five-minute lifetime limit. The
+old bridge remains available for older clients. New pages connected to an older
+extension can make ordinary HTTP calls, but must upgrade for durable Tasks,
+traditional SSE and reliable stream cancellation.
+
+### Calling and controlling tasks
+
+`call_tool` accepts MCP-only `execution_mode: "background" | "wait"`. Background
+is the default when the call has a project and conversation. A synchronous tool
+still returns its original content immediately. A standard task returns
+`submitted: true`, `completed: false`, `local_task_id`, `remote_task_id` and its
+status, so the Agent can continue other work. Calls without an owner wait for the
+final result. Explicit background mode is rejected for WebMCP tools.
+
+After receiving a background task ID, the Agent reports it as pending and continues
+independent work or ends its turn. It must not automatically loop over
+`wait/status/result`; waiting or retrieving results requires an explicit user
+request, including Send to AI from the task card. System instructions, tool
+descriptions and submission receipts guide this behavior; it is not an authorization
+gate. The outer tool deadline for `mcp_tasks.wait` leaves at least five seconds beyond
+the local wait so a 30-second wait does not race the general tool timeout.
+
+`mcp_tasks` operates only on the current project's known records:
+
+| Action | Behavior |
+| --- | --- |
+| `list` | List known tasks, optionally filtered by `conversation_id` |
+| `status` | Read current remote and local observation states |
+| `result` | Return original final protocol content, or current state |
+| `wait` | Wait locally for 10 seconds by default, at most 30 seconds |
+| `cancel` | Request remote cancellation after Agent authorization |
+| `resume` | Resume observation of an existing reference after authorization |
+
+Neither `resume` nor recovery replays `tools/call`. Private REST task endpoints,
+`arguments.task` injection and JSON task IDs embedded in text content are not
+recognized. A user argument named `task` remains an ordinary tool argument.
+
+SQLite v19 adds `mcp_tasks` and `mcp_task_inputs`. Submissions are recorded before
+sending. The durable handoff boundary is a saved task reference owned by the
+page-level manager. Stopping the Agent after handoff leaves the remote task
+running. Before handoff a known task is cancelled on a best-effort basis. A lost
+creation response becomes **Submission outcome unknown** and is never replayed
+automatically. Transport/authorization failures pause local observation without
+inventing a remote failed state. Transient observation failures use 2, 5, 10 and
+30 second backoff; authentication and protocol errors pause for intervention.
+
+Web Locks coordinate one observer per endpoint/generation/remote task. Other
+same-origin tabs receive updates and input requests over BroadcastChannel. The
+page releases local ownership on unload; no extension worker polls tasks while
+the page is closed. Recovery requires the same endpoint and authentication
+identity, an enabled service, and a still-valid remote task. Legacy HTTP tasks
+also require their original session and capability snapshot. Expired/missing
+sessions are reported without creating a replacement task.
+
+Final protocol content is preserved, including images, embedded resources and
+structured content. Results over 256,000 serialized characters use the existing
+asset I/O under the owning project's `assets/mcp-tasks` directory, independently
+of the originating conversation's lifetime. Task records contain references and
+capability/session snapshots, never copied bearer tokens or model API keys.
+
+### Temporary task cards and standard input
+
+MCP task cards appear above the original conversation input only when needed. Running
+rows show service, tool, status and elapsed time. Polling updates the row without
+adding messages or stealing focus. Completed results can be inspected inline or sent
+using **Send to AI**. **Later** collapses the area into one row; completion does not
+force it open. Two entries are shown initially, with more available on expansion.
+Pause, resume, cancellation and input handling remain in the expanded card. The old
+corner trigger and task dialog have been removed.
+
+New tasks and previously unfinished tasks are eligible. Older completed records do
+not produce cards; records remain in the database and can be queried with `mcp_tasks`.
+Result inspection does not call a model. Failed, cancelled or unknown submissions can
+be acknowledged without deleting their record or resubmitting the tool.
+
+Completion produces one deduplicated notification and never starts a model call.
+**Send to AI** creates an ordinary user message referencing the local task ID in the
+original conversation without changing the input draft or historical tool calls.
+The card disappears once the message is persisted, without waiting for model completion.
+Busy conversations use **Add to message queue** and the existing queue UI. Removing,
+clearing or losing that queue on refresh restores the card without automatic requeueing.
+Sent and acknowledged states survive refresh. Missing conversations, unavailable results
+and delivery failures keep the card visible with an explanation.
+
+Ordinary SDK input requests and Tasks inputs share one application handler bound
+to the original project/conversation. Forms validate their schema and support
+accept/decline/cancel. Password-like values stay in memory and are requested
+again after refresh. URL elicitation shows the service URL and requires a user
+click; the application does not fetch it or enter credentials. Sampling previews
+the supplied messages, configured model and bounded output budget, then waits
+for explicit approval. Only server-supplied messages enter the model request;
+unsupported modalities, forced tool choices and providers that cannot enforce
+the budget are rejected. Sampling tool calls are returned as data and never
+executed. Roots always return `{ roots: [] }`. The separate binary-upload
+business flow is unchanged.
+
+### Verification commands
+
+```sh
+cd web
+pnpm test:run mcp
+pnpm test:run agent
+pnpm test:run components
+pnpm test:run store sqlite services
+pnpm typecheck
+MCP_LONG_TASK=1 pnpm test:run mcp/__tests__/long-task.integration.test.ts
+```
+
+The last command runs a real-time 305-second SDK/relay fixture without launching
+a browser. It does not substitute for testing an installed extension against a
+real service. The optional `playwright.mcp.config.ts` harness covers installed
+MV3 extension behavior, two Tasks generations, reload recovery, cross-tab input
+and cancellation; run it only when browser testing is requested. Its repository
+adapter is deliberately browser-local, while SQLite schema/DDL are tested
+separately. `MCP_E2E_EXTENSION` selects the exact built extension directory and
+`MCP_LONG_TASK=1` enables its long task case. Normal extension output remains
+`browser-extension/dist/chrome-mv3`; development output remains separate.

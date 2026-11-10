@@ -11,7 +11,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 19;
+PRAGMA user_version = 20;
 
 -- ============================================================================
 -- Projects Table (top-level container for workspaces)
@@ -467,7 +467,8 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     name TEXT NOT NULL,                -- Display name
     description TEXT,                  -- Optional description
     url TEXT NOT NULL,                 -- Server URL
-    transport TEXT NOT NULL DEFAULT 'sse',  -- 'stdio' | 'streamable_http' | 'sse'
+    protocol_mode TEXT NOT NULL DEFAULT 'auto',
+    transport TEXT NOT NULL DEFAULT 'streamable_http',  -- 'stdio' | 'streamable_http' | 'sse'
     enabled INTEGER NOT NULL DEFAULT 1,   -- BOOLEAN (0 or 1)
     token TEXT,                        -- Optional Bearer token
     timeout INTEGER NOT NULL DEFAULT 30000,  -- Timeout in milliseconds
@@ -508,3 +509,34 @@ CREATE INDEX IF NOT EXISTS idx_flow_templates_updated ON flow_templates(updated_
 -- ============================================================================
 -- Applications should explicitly set updated_at when updating records.
 -- SQLite trigger limitations prevent safe automatic timestamp updates.
+
+CREATE TABLE IF NOT EXISTS mcp_tasks (
+    id TEXT PRIMARY KEY,
+    server_id TEXT NOT NULL,
+    endpoint_id TEXT NOT NULL,
+    generation TEXT,
+    remote_task_id TEXT,
+    project_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    remote_status TEXT,
+    observation TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    notified_at INTEGER,
+    record_json TEXT NOT NULL,
+    UNIQUE(endpoint_id, generation, remote_task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_tasks_project ON mcp_tasks(project_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_tasks_conversation ON mcp_tasks(project_id, conversation_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_tasks_status ON mcp_tasks(observation, remote_status);
+CREATE TABLE IF NOT EXISTS mcp_task_inputs (
+    task_id TEXT NOT NULL,
+    input_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    response_json TEXT,
+    submission TEXT NOT NULL DEFAULT 'pending',
+    PRIMARY KEY(task_id, input_id),
+    FOREIGN KEY(task_id) REFERENCES mcp_tasks(id) ON DELETE CASCADE
+);

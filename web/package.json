@@ -43,6 +43,8 @@
     "@iconify/react": "^6.0.2",
     "@mcp-b/webmcp-polyfill": "6.0.0",
     "@mertdeveci55/univer-import-export": "^0.2.1",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/ext-tasks": "0.2.2",
     "@monaco-editor/react": "^4.7.0",
     "@mozilla/readability": "^0.6.0",
     "@sqlite.org/sqlite-wasm": "3.51.2-build6",
