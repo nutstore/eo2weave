@@ -14,6 +14,7 @@ import type { AgentCallbacks, CompressionSummaryMode } from './types'
 import type { PiAIProvider } from '../llm/pi-ai-provider'
 
 export interface ConvertAgentMessagesToLlmInput {
+  sessionId?: string
   agentMessages: PiAgentMessage[]
   model: Model<Api>
   provider: PiAIProvider
@@ -106,6 +107,8 @@ export async function convertAgentMessagesToLlm(
 
   if (usedRealTokens !== null) {
     console.info('[AgentLoop] Real token usage from last turn', {
+      sessionId: input.sessionId,
+      model: input.model.id,
       convertCallCount,
       usedRealTokens,
       inputBudget,
@@ -123,6 +126,9 @@ export async function convertAgentMessagesToLlm(
     typeof usedRealTokens === 'number' && usedRealTokens >= compressionTriggerThreshold &&
     (!compressionBaseline || internalMessagesRaw.some(message => message.role === 'assistant' && message.timestamp >= compressionBaseline!.cutoffTimestamp))
   console.info('[AgentLoop] Compression gate evaluation', {
+    sessionId: input.sessionId,
+    provider: input.model.provider,
+    model: input.model.id,
     convertCallCount,
     preTrimTokens,
     usedRealTokens,
@@ -167,6 +173,15 @@ export async function convertAgentMessagesToLlm(
       input.callbacks?.onContextCompressionStart?.({ droppedGroups, droppedContentChars })
       const startedAt = Date.now()
       const { summary, mode } = await input.generateContextSummaryWithLLM(droppedContent, summaryTokenBudget)
+        .catch(error => {
+          console.error('[AgentLoop] Context compression failed', {
+            sessionId: input.sessionId,
+            provider: input.model.provider,
+            model: input.model.id,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          throw error
+        })
       const latencyMs = Date.now() - startedAt
 
       if (summary) {
@@ -205,6 +220,7 @@ export async function convertAgentMessagesToLlm(
         Math.min(100, (postCompressionTokens / inputBudget) * 100)
       )
       console.info('[AgentLoop] Context compression complete', {
+        sessionId: input.sessionId,
         convertCallCount,
         mode,
         droppedGroups,

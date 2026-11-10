@@ -8,7 +8,7 @@ import type { Message } from '../message-types'
 import type { ToolContext } from '../tools/tool-types'
 import type { ChatMessage } from '../llm/llm-provider'
 import { PiAIProvider } from '../llm/pi-ai-provider'
-import { agentLoopContinue } from '@earendil-works/pi-agent-core'
+import { continueAgentLoop } from '../loop/agent-loop-stream'
 import { truncateLargeToolResult } from '../loop/tool-execution'
 
 vi.mock('@/skills/skill-manager', () => ({
@@ -33,8 +33,8 @@ vi.mock('../prefetch', () => ({
   triggerPrefetch: vi.fn(() => Promise.resolve()),
 }))
 
-vi.mock('@earendil-works/pi-agent-core', () => ({
-  agentLoopContinue: vi.fn(),
+vi.mock('../loop/agent-loop-stream', () => ({
+  continueAgentLoop: vi.fn(),
 }))
 
 function createMockProvider(): PiAIProvider {
@@ -110,7 +110,7 @@ function toolResultMessage(toolCallId: string, toolName: string, text: string): 
   }
 }
 
-const mockAgentLoopContinue = vi.mocked(agentLoopContinue) as any
+const mockAgentLoopContinue = vi.mocked(continueAgentLoop) as any
 
 describe('AgentLoop', () => {
   let mockProvider: PiAIProvider

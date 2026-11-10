@@ -15,8 +15,8 @@ vi.mock('@/store/settings.store', () => ({
   },
 }))
 
-vi.mock('@earendil-works/pi-agent-core', () => ({
-  agentLoopContinue: (...args: unknown[]) => mockAgentLoopContinue(...args),
+vi.mock('../loop/agent-loop-stream', () => ({
+  continueAgentLoop: (...args: unknown[]) => mockAgentLoopContinue(...args),
 }))
 
 vi.mock('@earendil-works/pi-ai', async (importOriginal) => {

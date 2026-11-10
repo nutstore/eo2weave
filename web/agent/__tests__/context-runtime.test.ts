@@ -6,7 +6,7 @@ import { executePiCoreLoop, type ExecutePiCoreLoopInput } from '@/agent/loop/pi-
 import { foldContext } from '@/agent/context/journal'
 
 const hooks = vi.hoisted(() => ({ run: vi.fn() }))
-vi.mock('@earendil-works/pi-agent-core', () => ({ agentLoopContinue: (...args: unknown[]) => hooks.run(...args) }))
+vi.mock('@/agent/loop/agent-loop-stream', () => ({ continueAgentLoop: (...args: unknown[]) => hooks.run(...args) }))
 vi.mock('@/store/settings.store', () => ({ useSettingsStore: { getState: () => ({}) } }))
 
 const model = { id: 'test', api: 'openai-completions', provider: 'test', maxTokens: 1024 }

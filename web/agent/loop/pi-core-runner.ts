@@ -1,7 +1,7 @@
 import { reconcileContext, type ContextObservation } from '@/agent/context/journal'
 import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 import { produce } from 'immer'
-import { agentLoopContinue, type StreamFn } from '@earendil-works/pi-agent-core'
+import type { StreamFn } from '@earendil-works/pi-agent-core'
 import { streamSimple as piAiStreamSimple } from '@earendil-works/pi-ai'
 import { useSettingsStore } from '@/store/settings.store'
 import type { AgentMode } from '../agent-mode'
@@ -17,6 +17,7 @@ import { convertAgentMessagesToLlm } from './convert-bridge'
 import { extractTextContent, piToInternalMessage, internalToPiMessages } from './message-mappers'
 import { applyPiAssistantUpdate } from './pi-events'
 import { processPiLoopEvents } from './process-loop-events'
+import { continueAgentLoop } from './agent-loop-stream'
 import type { AgentCallbacks, AgentLoopConfig, CompressionSummaryMode } from './types'
 
 function normalizeResponsesInputPayload(payload: Record<string, unknown>): void {
@@ -295,7 +296,7 @@ export async function executePiCoreLoop(
   let emptyTurnRetryPending = false
   let emptyTurnRetried = false
 
-  const loop = agentLoopContinue(
+  const loop = continueAgentLoop(
     context,
     {
       model,
@@ -344,6 +345,7 @@ export async function executePiCoreLoop(
         await bashCommandRegistry.refresh()
         const contextConfig = input.contextManager.getConfig()
         const converted = await convertAgentMessagesToLlm({
+          sessionId: input.sessionId,
           agentMessages,
           model,
           provider: input.provider,
