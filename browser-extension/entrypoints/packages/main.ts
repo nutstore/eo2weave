@@ -12,7 +12,7 @@ import { listRegistries, type RegistryListResult } from '../webmcp/registry-clie
 import { createBuiltinSection } from './builtin-section'
 import { createMineSection } from './mine-section'
 import { createRegistrySection } from './registry-section'
-import { t } from './shared'
+import { SECTION_LOAD_TIMEOUT_MS, t, withTimeout } from './shared'
 
 for (const [id, key] of [
   ['pageTitle', 'webmcpPackagesPageTitle'],
@@ -62,7 +62,11 @@ async function renderAll(): Promise<void> {
   let userMountComplete = true
   let registries: RegistryListResult | undefined
 
-  const packagesSettled = listManagedPackages().then(
+  const packagesSettled = withTimeout(
+    listManagedPackages(),
+    SECTION_LOAD_TIMEOUT_MS,
+    'webmcpPackagesLoadTimeout',
+  ).then(
     catalog => {
       packages = catalog.entries
       userMountComplete = catalog.userMountComplete
@@ -77,7 +81,11 @@ async function renderAll(): Promise<void> {
     },
   )
 
-  const registriesSettled = listRegistries().then(
+  const registriesSettled = withTimeout(
+    listRegistries(),
+    SECTION_LOAD_TIMEOUT_MS,
+    'webmcpPackagesLoadTimeout',
+  ).then(
     result => {
       registries = result
       if (current !== generation) return

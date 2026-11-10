@@ -163,6 +163,9 @@
   "webmcpPackagesEmptyRegistry": {
     "message": "尚未添加镜像源，在上方添加一个即可浏览可安装的包。"
   },
+  "webmcpPackagesLoadTimeout": {
+    "message": "包列表长时间没有响应，请刷新页面重试。"
+  },
   "webmcpPackagesEmptyMine": {
     "message": "还没有自建包，可用 cw-webmcp-creator 生成。"
   },

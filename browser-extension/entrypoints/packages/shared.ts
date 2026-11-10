@@ -22,6 +22,33 @@ export function t(key: string, substitutions?: string | string[]): string {
 }
 
 /**
+ * Bounded wait for a section's data load (issue #208).
+ *
+ * A list request that never settles used to leave its section blank forever,
+ * with no action available: the failure never happened, so neither the section's
+ * error box nor its retry path was ever reached. Bounding the wait turns a hang
+ * into an ordinary load failure, which every section already renders and which a
+ * later refresh clears.
+ */
+export const SECTION_LOAD_TIMEOUT_MS = 10_000
+
+export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, messageKey: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(t(messageKey))), timeoutMs)
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      error => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
+/**
  * Classify one package:
  *
  *   builtin-webmcp (read-only)              → builtin
