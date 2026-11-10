@@ -96,7 +96,9 @@ export interface AppToolDeps {
   ensureConversationWorkspace: (conversationId: string, title?: string, projectId?: string) => Promise<{ projectId?: string }>
   resolveConversationTarget: (input: ConversationTargetInput) => Promise<ConversationTarget>
   setConversationAgent: (conversationId: string, agentId: string) => void
+  createProject: (name: string) => Promise<{ id: string; name: string } | null>
   getProjectRepository: () => any
+  getWorkspaceRepository: () => any
   getMessageRepository: () => any
   getFSOverlayRepository: () => any
   searchConversations: (args: Record<string, unknown>) => Promise<string>
@@ -365,8 +367,8 @@ export const handlers: Record<string, Handler> = {
   create_project: async (args) => {
     const name = String(args.name ?? '').trim()
     if (!name) return err('name is required')
-    const repo = d().getProjectRepository()
-    const project = await repo.createProject({ name })
+    const project = await d().createProject(name)
+    if (!project) return err('Failed to create or initialize project')
     return ok({ project: { id: project.id, name: project.name } })
   },
 
@@ -394,20 +396,24 @@ export const handlers: Record<string, Handler> = {
     const limit = Math.min(Math.max(1, Number(args.limit ?? 20)), 100)
     const offset = Math.max(0, Number(args.offset ?? 0))
     let list: any[] = store.conversations ?? []
-    if (args.folderId) {
-      // folderId = "projectId:rootName" (from list_mounted_folders). Each
-      // conversation maps 1:1 to a workspace whose id IS the conversation id;
-      // scope to the project's workspaces (the project's roots share one OPFS
-      // files/ tree per conversation workspace).
-      const projectId = String(args.folderId).split(':')[0]
-      const manager = await d().getWorkspaceManager()
-      const wsIds = new Set(
-        manager
-          .getAllWorkspaces()
-          .filter((w: any) => w.projectId === projectId)
-          .map((w: any) => w.workspaceId),
-      )
-      list = list.filter((c: any) => wsIds.has(c.id))
+    const requestedProjectId = typeof args.projectId === 'string' ? args.projectId.trim() : ''
+    const folderProjectId = typeof args.folderId === 'string' ? args.folderId.split(':')[0].trim() : ''
+    if (args.projectId != null && !requestedProjectId) return err('projectId must be a non-empty string')
+    if (args.folderId != null && !folderProjectId) return err('folderId must be a non-empty string')
+    if (requestedProjectId && folderProjectId && requestedProjectId !== folderProjectId) {
+      return err('projectId must match the folderId project')
+    }
+    const projectId = requestedProjectId || folderProjectId
+    let projectByWorkspace = new Map<string, string>()
+    if (projectId) {
+      // SQLite contains every project's workspaces, not just those loaded in
+      // the current WorkspaceManager. Standalone chats have a hidden host row.
+      const workspaces = await d().getWorkspaceRepository().findWorkspacesByProject(projectId)
+      const wsIds = new Set(workspaces.map((workspace: { id: string }) => workspace.id))
+      list = list.filter((c: any) => c.kind !== 'direct' && wsIds.has(c.id))
+    } else {
+      const workspaces = await d().getWorkspaceRepository().findAllWorkspaces()
+      projectByWorkspace = new Map(workspaces.map((workspace: { id: string; projectId?: string }) => [workspace.id, workspace.projectId ?? '']))
     }
     list = [...list].sort((a: any, b: any) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     const page = list.slice(offset, offset + limit)
@@ -415,6 +421,8 @@ export const handlers: Record<string, Handler> = {
       conversations: page.map((c: any) => ({
         id: c.id,
         title: c.title,
+        kind: c.kind === 'direct' ? 'direct' : 'project',
+        projectId: c.kind === 'direct' ? null : (projectId || projectByWorkspace.get(c.id) || null),
         status: c.status ?? 'idle',
         updatedAt: c.updatedAt ?? null,
       })),
@@ -428,7 +436,7 @@ export const handlers: Record<string, Handler> = {
       query: args.query,
       limit: args.limit,
     }
-    if (args.projectId) mapped.project = String(args.projectId)
+    if (args.projectId) mapped.project_id = String(args.projectId)
     if (args.updatedAfter != null) mapped.updated_after = Number(args.updatedAfter)
     if (args.updatedBefore != null) mapped.updated_before = Number(args.updatedBefore)
     // The executor returns a JSON string — pass it through verbatim; double

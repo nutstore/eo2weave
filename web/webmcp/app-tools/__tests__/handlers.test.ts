@@ -71,6 +71,7 @@ function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
     getConversationStore: () => conversationStore,
     getSettingsStore: () => ({ ...settings }),
     getAgentStore: () => agentStore,
+    createProject: async (name) => ({ id: 'p_new', name }),
     getWorkspaceManager: async () => manager,
     ensureConversationWorkspace: vi.fn(async () => ({ projectId: 'p_1' })),
     resolveConversationTarget: vi.fn(async () => ({
@@ -82,6 +83,10 @@ function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
       findAllProjects: async () => [{ id: 'p_1', name: 'P1' }],
       findProjectStats: async () => [{ projectId: 'p_1', workspaceCount: 1, lastWorkspaceAccessAt: 100 }],
       createProject: async (input: any) => ({ id: 'p_new', name: input.name }),
+    }),
+    getWorkspaceRepository: () => ({
+      findWorkspacesByProject: async () => [{ id: 'c_1', projectId: 'p_1' }],
+      findAllWorkspaces: async () => [{ id: 'c_1', projectId: 'p_1' }],
     }),
     getMessageRepository: () => ({
       findByConversation: async () => conversations[0].messages,
@@ -126,6 +131,21 @@ describe('app-tools handlers', () => {
   it('create_project creates', async () => {
     const r = JSON.parse((await handlers.create_project({ name: 'X' })).content)
     expect(r.project.name).toBe('X')
+  })
+
+  it('creates projects through the app store so they are initialized and visible', async () => {
+    const createProject = vi.fn(async (name: string) => ({ id: 'p_new', name }))
+    initAppToolDeps({ ...deps, createProject } as AppToolDeps)
+    const result = JSON.parse((await handlers.create_project({ name: ' X ' })).content)
+    expect(createProject).toHaveBeenCalledWith('X')
+    expect(result.project).toEqual({ id: 'p_new', name: 'X' })
+  })
+
+  it('does not report a successful project when initialization fails', async () => {
+    initAppToolDeps({ ...deps, createProject: vi.fn(async () => null) } as AppToolDeps)
+    const result = JSON.parse((await handlers.create_project({ name: 'X' })).content)
+    expect(result.error).toBeTruthy()
+    expect(result.project).toBeUndefined()
   })
 
   it('create_conversation waits for workspace readiness without activating the conversation', async () => {
@@ -205,6 +225,38 @@ describe('app-tools handlers', () => {
     const r = JSON.parse((await handlers.list_conversations({ folderId: 'p_1:p_1' })).content)
     expect(r.conversations.map((c: any) => c.id)).toContain('c_1')
     vi.doUnmock('@/store/folder-access.store')
+  })
+
+  it('filters conversations by project ID, excluding standalone chats and other projects', async () => {
+    const store = deps.getConversationStore()
+    store.conversations.push(
+      { id: 'c_2', title: 'Other project', kind: 'project', updatedAt: 200 },
+      { id: 'c_direct', title: 'Standalone', kind: 'direct', updatedAt: 300 },
+    )
+    initAppToolDeps({ ...deps, getWorkspaceRepository: () => ({
+      findWorkspacesByProject: vi.fn(async () => [{ id: 'c_1' }, { id: 'c_direct' }]),
+    }) } as AppToolDeps)
+    const result = JSON.parse((await handlers.list_conversations({ projectId: 'p_1' })).content)
+    expect(result.conversations.map((c: any) => c.id)).toEqual(['c_1'])
+  })
+
+  it('returns conversation kind and project ID without exposing standalone host projects', async () => {
+    deps.getConversationStore().conversations.push({ id: 'c_direct', title: 'Standalone', kind: 'direct', updatedAt: 300 })
+    initAppToolDeps({ ...deps, getWorkspaceRepository: () => ({
+      findAllWorkspaces: async () => [{ id: 'c_1', projectId: 'p_1' }, { id: 'c_direct', projectId: 'p_1' }],
+    }) })
+    const result = JSON.parse((await handlers.list_conversations({})).content)
+    expect(result.conversations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'c_1', kind: 'project', projectId: 'p_1' }),
+      expect.objectContaining({ id: 'c_direct', kind: 'direct', projectId: null }),
+    ]))
+  })
+
+  it('passes project ID to the search executor as an ID filter', async () => {
+    const search = vi.fn(async () => '{}')
+    initAppToolDeps({ ...deps, searchConversations: search })
+    await handlers.search_conversations({ query: 'login', projectId: 'p_1' })
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: 'login', project_id: 'p_1' }))
   })
 
   it('rename_conversation validates and renames', async () => {
