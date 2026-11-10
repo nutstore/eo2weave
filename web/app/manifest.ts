@@ -17,7 +17,9 @@ export default function manifest(): MetadataRoute.Manifest {
     description: IS_CN_BUILD
       ? '面向创作者的 AI 原生工作台：本地优先的文件、知识工作流与多智能体编排'
       : 'AI-native creator workspace with local-first files, knowledge workflows, and multi-agent orchestration',
-    start_url: '/',
+    // Preserve the existing installed app's identity when its start URL changes.
+    id: '/',
+    start_url: '/projects',
     display: 'standalone',
     orientation: 'any',
     background_color: '#0f172a',
@@ -42,7 +44,7 @@ export default function manifest(): MetadataRoute.Manifest {
         description: IS_CN_BUILD
           ? '开启一个新的创作工作台会话'
           : 'Start a new creator workspace session',
-        url: '/?new=true',
+        url: '/projects?new=true',
       },
     ],
   }

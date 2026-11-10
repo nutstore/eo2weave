@@ -1,0 +1,294 @@
+/* 豆瓣体验区保留通栏的柔和绿背景，安装后只展示一次连续体验。 */
+html.manual-route :where(.marketing-page-experience) .manual-guide { padding-bottom:64px; }
+html.manual-route :where(.marketing-page-experience) .douban-demo { padding-top:72px; }
+html.manual-route :where(.marketing-page-experience) .manual-guide .section-copy { margin-top:16px; }
+html.manual-route :where(.marketing-page-experience) .manual-guide .steps { margin-top:32px; }
+html.manual-route :where(.marketing-page-experience) .manual-guide .step-visual { padding-top:32px; }
+:where(.marketing-page-experience) .site-header .extension-control [data-extension-trigger] { border:1px solid #dce9e3; background:#f4f8f6; color:#286d63; font-weight:600; box-shadow:none; }
+:where(.marketing-page-experience) .site-header .extension-control [data-extension-trigger]:hover { background:#eaf3ee; border-color:#bddbd0; color:#1b7469; }
+@media (min-width:901px) {
+  html.manual-route :where(.marketing-page-experience) .manual-guide .step { min-height:420px; }
+}
+:where(.marketing-page-experience) .manual-guide .section-head { display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:28px; align-items:center; }
+:where(.marketing-page-experience) .manual-guide .section-head h2 { grid-column:1; grid-row:1; }
+:where(.marketing-page-experience) .manual-guide .section-head .section-copy { grid-column:1; grid-row:2; min-width:0; white-space:normal; }
+:where(.marketing-page-experience) .manual-next { grid-column:2; grid-row:1 / span 2; display:inline-flex; width:240px; min-height:60px; align-items:center; justify-content:center; justify-self:end; border:2px solid var(--brand); border-radius:10px; background:var(--brand); padding:0 30px; color:#fff; white-space:nowrap; box-shadow:0 12px 25px rgba(27,116,105,.17); transition:background .2s ease,border-color .2s ease,transform .2s ease; }
+:where(.marketing-page-experience) .manual-next:hover { transform:translateY(-2px); border-color:#125f56; background:#125f56; }
+:where(.marketing-page-experience) .manual-next-label { font-size:20px; font-weight:700; line-height:1.4; }
+@media (max-width:1100px) {
+  :where(.marketing-page-experience) .manual-guide .section-head { grid-template-columns:minmax(0,1fr); }
+  :where(.marketing-page-experience) .manual-next { grid-column:1; grid-row:3; justify-self:start; margin-top:20px; }
+}
+:where(.marketing-page-experience) .douban-demo {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: 32px 32px 0 0;
+  background: linear-gradient(180deg, #f5f9f8 0%, #f1f7f5 100%);
+  padding: 88px 24px 108px;
+  scroll-margin-top: 72px;
+}
+html:not(.manual-route) :where(.marketing-page-experience) .douban-demo { padding-top:136px; }
+:where(.marketing-page-experience) .douban-demo::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(circle at 17% 22%, rgba(73,190,169,.13), transparent 27%), radial-gradient(circle at 83% 72%, rgba(90,154,143,.1), transparent 30%);
+  content: "";
+}
+:where(.marketing-page-experience) .douban-demo::after {
+  position: absolute;
+  top: 45%;
+  left: 50%;
+  z-index: -1;
+  width: 760px;
+  height: 300px;
+  border-radius: 50%;
+  background: rgba(89,210,185,.09);
+  filter: blur(95px);
+  transform: translate(-50%, -50%);
+  content: "";
+}
+:where(.marketing-page-experience) .douban-demo-inner { width: min(1240px, 100%); margin: 0 auto; }
+:where(.marketing-page-experience) .douban-demo-intro h2 { margin: 0; color: #14201e; font-size: clamp(34px, 4vw, 48px); line-height: 1.2; letter-spacing: -.045em; }
+:where(.marketing-page-experience) .store-next-prompt { display:block; margin-bottom:20px; }
+html.manual-route :where(.marketing-page-experience) .store-next-prompt { display:none; }
+:where(.marketing-page-experience) .douban-site-focus { margin: 26px 0 0; padding: 19px 0 0; }
+:where(.marketing-page-experience) .douban-site-name { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 11px; }
+:where(.marketing-page-experience) .douban-site-label { color: #167f76; font-size: 24px; font-weight: 600; line-height: 1.4; }
+:where(.marketing-page-experience) .douban-site-name strong { color: #167f76; font-size: 24px; line-height: 1.4; }
+:where(.marketing-page-experience) .douban-scope-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-left: 4px; }
+:where(.marketing-page-experience) .douban-scope-tags span { border-radius: 6px; background: rgba(66,174,163,.1); padding: 5px 8px; color: #55756e; font-size: 12px; font-weight: 600; line-height: 1.2; }
+:where(.marketing-page-experience) .douban-site-focus > p { max-width: 1180px; margin: 0; color: #40514c; font-size: 18px; line-height: 1.85; }
+:where(.marketing-page-experience) .douban-inline-steps { text-decoration-line:underline; text-decoration-style:wavy; text-decoration-color:#42aea3; text-decoration-thickness:1.5px; text-underline-offset:5px; }
+:where(.marketing-page-experience) .douban-guide { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 22px; }
+:where(.marketing-page-experience) .douban-card {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 382px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(188,215,208,.72);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(255,255,255,.86), rgba(247,253,251,.6));
+  padding: 32px 30px;
+  box-shadow: 0 16px 42px rgba(28,72,64,.075), inset 0 1px 0 rgba(255,255,255,.85);
+  backdrop-filter: blur(22px) saturate(115%);
+  -webkit-backdrop-filter: blur(22px) saturate(115%);
+}
+:where(.marketing-page-experience) .douban-card::before { position: absolute; bottom: -65px; left: -45px; width: 150px; height: 150px; border-radius: 50%; background: rgba(70,190,168,.08); filter: blur(25px); content: ""; }
+:where(.marketing-page-experience) .douban-card-number { position: absolute; top: 19px; right: 25px; color: rgba(22,127,118,.085); font-size: 76px; font-weight: 800; line-height: 1; letter-spacing: -.08em; }
+:where(.marketing-page-experience) .douban-step-label, :where(.marketing-page-experience) .douban-card h3, :where(.marketing-page-experience) .douban-card > p, :where(.marketing-page-experience) .douban-action, :where(.marketing-page-experience) .douban-visual { position: relative; z-index: 1; }
+:where(.marketing-page-experience) .douban-step-label { color: #167f76; font-size: 13px; font-weight: 800; letter-spacing: .05em; }
+:where(.marketing-page-experience) .douban-card h3 { max-width: 86%; margin: 6px 0 10px; color: #172421; font-size: 24px; line-height: 1.4; letter-spacing: -.02em; }
+:where(.marketing-page-experience) .douban-card > p { margin: 0; color: #61706c; font-size: 16px; line-height: 1.8; }
+:where(.marketing-page-experience) .douban-action { display: inline-flex; width:240px; min-height:60px; align-items: center; justify-content:center; align-self: flex-start; gap: 10px; margin-top: 20px; border-radius: 10px; background: #167f76; padding: 0 30px; color: #fff; font-size: 20px; font-weight: 700; letter-spacing:-.02em; box-shadow: 0 10px 22px rgba(22,127,118,.16); transition: background .2s ease, transform .2s ease; }
+:where(.marketing-page-experience) .douban-action:hover { background: #106f66; transform: translateY(-1px); }
+:where(.marketing-page-experience) .douban-visual { height: 96px; flex: 0 0 96px; margin-top: auto; padding-top: 16px; }
+:where(.marketing-page-experience) .douban-mini-window { position: relative; width: 100%; height: 100%; overflow: hidden; border: 1px solid rgba(126,157,151,.46); border-radius: 9px; background: rgba(255,255,255,.88); box-shadow: 0 7px 17px rgba(24,69,61,.06); }
+:where(.marketing-page-experience) .douban-mini-toolbar { display: flex; height: 25px; align-items: center; justify-content: flex-end; gap: 6px; border-bottom: 1px solid rgba(148,174,168,.34); background: rgba(244,248,247,.96); padding: 0 8px; }
+:where(.marketing-page-experience) .douban-mini-logo { display: grid; width: 22px; height: 19px; place-items: center; border: 1px solid rgba(91,220,195,.68); border-radius: 6px; background: rgba(66,174,163,.1); }
+:where(.marketing-page-experience) .douban-mini-logo img { width: 13px; height: 13px; }
+:where(.marketing-page-experience) .douban-mini-puzzle { color: #71817d; font-size: 15px; line-height: 1; }
+:where(.marketing-page-experience) .douban-mini-avatar { width: 16px; height: 16px; border-radius: 50%; background: #d4dfdc; }
+:where(.marketing-page-experience) .douban-mini-lines { display: grid; width: 43%; gap: 7px; margin: 14px; }
+:where(.marketing-page-experience) .douban-mini-lines i { height: 6px; border-radius: 99px; background: #e1e9e7; }
+:where(.marketing-page-experience) .douban-mini-lines i:nth-child(2) { width: 72%; }
+:where(.marketing-page-experience) .douban-mini-lines i:nth-child(3) { width: 88%; }
+:where(.marketing-page-experience) .douban-mini-menu { position: absolute; top: 26px; right: 11px; width: 142px; height: 112px; overflow: hidden; border-radius: 8px; background: rgba(255,255,255,.96); box-shadow: 0 8px 18px rgba(18,67,58,.14); }
+:where(.marketing-page-experience) .douban-mini-menu div { display: flex; height: 23px; align-items: center; gap: 5px; background: #15998d; padding: 0 8px; color: #fff; font-size: 8px; font-weight: 700; }
+:where(.marketing-page-experience) .douban-mini-menu img { width: 10px; height: 10px; filter: brightness(0) invert(1); }
+:where(.marketing-page-experience) .douban-mini-menu i { display: block; height: 5px; margin: 7px 9px 0; border-radius: 99px; background: #e3ebe9; }
+:where(.marketing-page-experience) .douban-mini-menu i:nth-of-type(1) { width: 72%; background: rgba(66,174,163,.24); }
+:where(.marketing-page-experience) .douban-mini-menu i:nth-of-type(2) { width: 54%; }
+:where(.marketing-page-experience) .douban-mini-menu i:nth-of-type(3) { width: 67%; }
+:where(.marketing-page-experience) .douban-movie-toolbar { display: flex; height: 21px; align-items: center; gap: 7px; border-bottom: 1px solid #dfe8e6; background: #f6f9f8; padding: 0 10px; }
+:where(.marketing-page-experience) .douban-movie-toolbar span { color: #64746f; font-size: 7px; font-weight: 700; }
+:where(.marketing-page-experience) .douban-movie-toolbar i { width: 46%; height: 9px; border-radius: 99px; background: #e5ecea; }
+:where(.marketing-page-experience) .douban-movie-toolbar b { width: 9px; height: 9px; margin-left: auto; border-radius: 50%; background: #a8b8b4; }
+:where(.marketing-page-experience) .douban-movie-sidebar { position: absolute; top: 21px; bottom: 0; left: 0; width: 27%; border-right: 1px solid #e2eae8; background: #f5f8fa; padding: 10px 7px; }
+:where(.marketing-page-experience) .douban-movie-sidebar i { display: block; height: 6px; margin-bottom: 7px; border-radius: 99px; background: #dfe7e5; }
+:where(.marketing-page-experience) .douban-movie-sidebar i:first-child { height: 10px; background: #cfe7f5; }
+:where(.marketing-page-experience) .douban-movie-sidebar i:nth-child(2) { width: 84%; }
+:where(.marketing-page-experience) .douban-movie-sidebar i:nth-child(3) { width: 68%; }
+:where(.marketing-page-experience) .douban-movie-main { position: absolute; top: 21px; right: 0; bottom: 0; left: 27%; padding: 8px 10px; }
+:where(.marketing-page-experience) .douban-movie-main b { display: block; height: 18px; margin-bottom: 7px; border-radius: 5px; background: #eaf1f8; }
+:where(.marketing-page-experience) .douban-movie-main i { display: block; height: 9px; margin-bottom: 5px; border-bottom: 1px solid #e7edeb; background: linear-gradient(90deg, #dfe7e5 0 27%, transparent 27% 34%, #e6ecea 34% 88%, transparent 88%); }
+:where(.marketing-page-experience) .douban-floating-logo { position: absolute; top: 52%; right: 7px; display: grid; width: 31px; height: 31px; place-items: center; border-radius: 8px; background: #15998d; box-shadow: 0 5px 12px rgba(22,127,118,.16); transform: translateY(-50%); }
+:where(.marketing-page-experience) .douban-floating-logo::before { position: absolute; inset: -5px; border: 2px solid #72cabb; border-radius: 10px; content: ""; }
+:where(.marketing-page-experience) .douban-floating-logo img { width: 17px; height: 17px; filter: brightness(0) invert(1); }
+:where(.marketing-page-experience) .douban-chat-window { display: grid; grid-template-columns: 58% 42%; background: rgba(255,255,255,.9); }
+:where(.marketing-page-experience) .douban-chat-site { overflow: hidden; border-right: 1px solid #dfe7e5; background: #fbfdfc; }
+:where(.marketing-page-experience) .douban-chat-site div { display: flex; height: 20px; align-items: center; gap: 6px; border-bottom: 1px solid #e1e9e7; background: #f5f8f7; padding: 0 8px; }
+:where(.marketing-page-experience) .douban-chat-site div span { color: #667772; font-size: 7px; font-weight: 700; }
+:where(.marketing-page-experience) .douban-chat-site div i { width: 55%; height: 8px; border-radius: 99px; background: #e2eae8; }
+:where(.marketing-page-experience) .douban-chat-site > b { display: block; height: 18px; margin: 8px; border-radius: 5px; background: #eaf1f8; }
+:where(.marketing-page-experience) .douban-chat-site > i { display: block; height: 9px; margin: 0 8px 5px; border-bottom: 1px solid #e7edeb; background: linear-gradient(90deg, #dfe7e5 0 31%, transparent 31% 39%, #e7edeb 39% 96%, transparent 96%); }
+:where(.marketing-page-experience) .douban-chat-panel { position: relative; background: rgba(255,255,255,.98); }
+:where(.marketing-page-experience) .douban-chat-panel > div { display: flex; height: 20px; align-items: center; gap: 5px; border-bottom: 1px solid #e0e8e6; padding: 0 7px; color: #4d615c; font-size: 7px; font-weight: 700; }
+:where(.marketing-page-experience) .douban-chat-panel img { width: 10px; height: 10px; }
+:where(.marketing-page-experience) .douban-chat-input { position: absolute; right: 7px; bottom: 7px; left: 7px; height: 34px; border: 1px solid rgba(66,174,163,.66); border-radius: 7px; background: #fff; box-shadow: 0 0 0 2px rgba(66,174,163,.07); }
+:where(.marketing-page-experience) .douban-chat-input::before { position: absolute; top: 10px; left: 9px; width: 1px; height: 11px; background: #42aea3; content: ""; }
+:where(.marketing-page-experience) .douban-chat-input i { position: absolute; top: 13px; left: 15px; width: 47%; height: 5px; border-radius: 99px; background: #e3ebe9; }
+:where(.marketing-page-experience) .douban-chat-input b { position: absolute; top: 7px; right: 7px; width: 18px; height: 18px; border-radius: 5px; background: rgba(66,174,163,.22); }
+:where(.marketing-page-experience) .douban-showcase { margin-top:32px; }
+:where(.marketing-page-experience) .douban-showcase-intro { display:flex; flex-direction:column; align-items:flex-start; gap:0; margin-bottom:40px; }
+:where(.marketing-page-experience) .douban-showcase-intro .douban-action { margin-top:0; }
+:where(.marketing-page-experience) .douban-motion { padding:0 0 28px; }
+:where(.marketing-page-experience) .douban-motion-browser { --site-open-width:62%; --demo-duration:11.2s; position:relative; width:min(100%,1120px); height:390px; margin:0; overflow:hidden; border:1px solid #d8e5e0; border-radius:14px; background:#fff; box-shadow:0 18px 38px rgba(28,72,64,.12); }
+:where(.marketing-page-experience) .douban-motion-toolbar { display:flex; height:42px; align-items:center; gap:16px; border-bottom:1px solid #e4ebe8; background:#f8faf9; padding:0 16px; }
+:where(.marketing-page-experience) .douban-motion-dots { display:flex; gap:6px; }
+:where(.marketing-page-experience) .douban-motion-dots i { width:8px; height:8px; border-radius:50%; background:#e9a09d; }
+:where(.marketing-page-experience) .douban-motion-dots i:nth-child(2) { background:#efca7f; }
+:where(.marketing-page-experience) .douban-motion-dots i:nth-child(3) { background:#8dccaa; }
+:where(.marketing-page-experience) .douban-motion-address { position:relative; width:min(330px,55%); height:25px; overflow:hidden; border-radius:99px; background:#eef3f0; color:#718780; font-size:12px; line-height:25px; }
+:where(.marketing-page-experience) .douban-motion-address > span { position:absolute; inset:0; padding:0 14px; white-space:nowrap; }
+:where(.marketing-page-experience) .douban-motion-address-start { animation:douban-start-address 20s linear infinite; }
+:where(.marketing-page-experience) .douban-motion-address-douban { opacity:0; animation:douban-site-address 20s linear infinite; }
+:where(.marketing-page-experience) .douban-motion-page { position:relative; height:calc(100% - 42px); overflow:hidden; background:#fff; }
+:where(.marketing-page-experience) .douban-motion-launch { position:absolute; z-index:6; inset:0; background:#fff; padding:60px 8%; animation:douban-launch-screen 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-launch-lines i { display:block; height:11px; width:36%; margin-bottom:13px; border-radius:99px; background:#dbe8e2; }
+:where(.marketing-page-experience) .douban-motion-launch-lines i:nth-child(2) { width:49%; background:#e6efea; }
+:where(.marketing-page-experience) .douban-motion-launch-lines i:nth-child(3) { width:42%; background:#e9f0ed; }
+:where(.marketing-page-experience) .douban-motion-launch-button { position:relative; display:inline-flex; min-height:48px; align-items:center; margin-top:18px; border-radius:9px; background:#167f76; padding:0 20px; color:#fff; font-size:15px; font-weight:700; box-shadow:0 9px 20px rgba(22,127,118,.16); animation:douban-launch-press 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-site { position:absolute; inset:0 auto 0 0; width:100%; overflow:hidden; background:#fff; opacity:0; animation:douban-site-enter 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-nav { display:flex; height:50px; align-items:center; gap:28px; border-bottom:1px solid #e7eeeb; padding:0 25px; color:#6c7e77; font-size:13px; }
+:where(.marketing-page-experience) .douban-motion-nav strong { margin-right:14px; color:#208278; font-size:20px; }
+:where(.marketing-page-experience) .douban-motion-content { padding:24px 32px; }
+:where(.marketing-page-experience) .douban-motion-hero { height:94px; border-radius:12px; background:linear-gradient(110deg,#e1f3ed,#edf5f2 72%); padding:19px 24px; }
+:where(.marketing-page-experience) .douban-motion-hero span { display:block; color:#326a5f; font-size:18px; font-weight:700; }
+:where(.marketing-page-experience) .douban-motion-hero i { display:block; width:42%; height:7px; margin-top:10px; border-radius:99px; background:#c5ded5; }
+:where(.marketing-page-experience) .douban-motion-hero i:last-child { width:30%; margin-top:7px; background:#d3e6df; }
+:where(.marketing-page-experience) .douban-motion-posters { display:flex; gap:15px; margin-top:20px; }
+:where(.marketing-page-experience) .douban-motion-posters i { width:72px; height:90px; border-radius:7px; background:linear-gradient(145deg,#d3dfe0,#eef2ee); box-shadow:0 4px 10px rgba(38,73,64,.08); }
+:where(.marketing-page-experience) .douban-motion-posters i:nth-child(2) { background:linear-gradient(145deg,#d9e9dc,#e9f2e8); }
+:where(.marketing-page-experience) .douban-motion-posters i:nth-child(3) { background:linear-gradient(145deg,#e7dfd3,#f3ede5); }
+:where(.marketing-page-experience) .douban-motion-posters i:nth-child(4) { background:linear-gradient(145deg,#d7e5ea,#edf4f5); }
+:where(.marketing-page-experience) .douban-motion-lines { display:flex; gap:15px; margin-top:10px; }
+:where(.marketing-page-experience) .douban-motion-lines i { width:72px; height:6px; border-radius:99px; background:#dfe8e3; }
+:where(.marketing-page-experience) .douban-motion-float { position:absolute; z-index:2; top:49%; right:22px; display:grid; width:54px; height:54px; place-items:center; border-radius:15px; background:#168d80; box-shadow:0 9px 24px rgba(22,127,118,.25); animation:douban-float-in 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-float img { width:31px; height:31px; filter:brightness(0) invert(1); }
+:where(.marketing-page-experience) .douban-motion-float-hint { position:absolute; top:calc(49% + 7px); right:88px; border:1px solid #d3e9e0; border-radius:9px; background:#fff; padding:8px 12px; color:#2a645a; font-size:13px; font-weight:700; white-space:nowrap; box-shadow:0 8px 20px rgba(27,91,78,.11); opacity:0; animation:douban-float-hint 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-float-hint::after { position:absolute; top:50%; right:-6px; width:9px; height:9px; border-top:1px solid #d3e9e0; border-right:1px solid #d3e9e0; background:#fff; transform:translateY(-50%) rotate(45deg); content:''; }
+:where(.marketing-page-experience) .douban-motion-float-focus { position:absolute; z-index:1; top:calc(49% - 14px); right:8px; width:82px; height:82px; border:2px solid rgba(22,127,118,.48); border-radius:24px; background:rgba(225,248,240,.36); opacity:0; animation:douban-float-focus 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-cursor { position:absolute; z-index:8; width:29px; height:31px; pointer-events:none; }
+:where(.marketing-page-experience) .douban-motion-cursor-launch { top:18px; right:24px; animation:douban-cursor-launch 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-cursor-float { top:53%; right:27px; animation:douban-cursor-float 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-click { position:absolute; z-index:7; width:24px; height:24px; border:2px solid #111; border-radius:50%; box-shadow:0 0 0 4px #fff; opacity:0; pointer-events:none; }
+:where(.marketing-page-experience) .douban-motion-click-launch { top:17px; right:19px; animation:douban-click-launch 20s ease-out infinite; }
+:where(.marketing-page-experience) .douban-motion-click-float { top:52%; right:36px; animation:douban-click-float 20s ease-out infinite; }
+:where(.marketing-page-experience) .douban-motion-panel { position:absolute; z-index:5; top:0; right:0; bottom:0; width:38%; min-width:300px; border-left:1px solid #dce7e2; background:#fff; box-shadow:-5px 0 15px rgba(27,71,62,.06); transform:translateX(103%); animation:douban-panel-enter 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-panel-head { display:flex; height:49px; align-items:center; gap:9px; border-bottom:1px solid #e5eee9; padding:0 17px; color:#24574f; font-size:15px; }
+:where(.marketing-page-experience) .douban-motion-panel-head img { width:23px; height:23px; }
+:where(.marketing-page-experience) .douban-motion-panel-head span { margin-left:auto; color:#8ca19a; font-size:22px; font-weight:300; }
+:where(.marketing-page-experience) .douban-motion-permission { position:absolute; top:76px; right:20px; left:20px; border:1px solid #d2e9de; border-radius:14px; background:#f8fcfa; padding:21px; box-shadow:0 12px 24px rgba(28,72,64,.08); opacity:0; animation:douban-permission-show 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-permission-icon { display:grid; width:37px; height:37px; place-items:center; border-radius:9px; background:#e6f6f0; }
+:where(.marketing-page-experience) .douban-motion-permission-icon img { width:25px; height:25px; }
+:where(.marketing-page-experience) .douban-motion-permission strong { display:block; margin-top:11px; color:#233d36; font-size:15px; }
+:where(.marketing-page-experience) .douban-motion-permission p { margin:6px 0 14px; color:#74867e; font-size:12px; line-height:1.55; }
+:where(.marketing-page-experience) .douban-motion-allow { display:grid; width:78px; height:32px; place-items:center; margin-left:auto; border-radius:7px; background:#168477; color:#fff; font-size:12px; font-weight:700; }
+:where(.marketing-page-experience) .douban-motion-cursor-allow { right:47px; bottom:20px; animation:douban-cursor-allow 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-click-allow { right:54px; bottom:27px; animation:douban-click-allow 20s ease-out infinite; }
+:where(.marketing-page-experience) .douban-motion-conversation { position:absolute; top:68px; right:18px; left:18px; opacity:0; animation:douban-chat-show 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-question { display:block; width:min(100%,316px); margin-left:auto; border-radius:11px 11px 3px 11px; background:#e8f5ef; padding:11px 13px; color:#24564b; font-size:14px; line-height:1.55; }
+:where(.marketing-page-experience) .douban-motion-response { display:flex; gap:9px; margin-top:16px; opacity:0; animation:douban-answer-in 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-response img { width:23px; height:23px; }
+:where(.marketing-page-experience) .douban-motion-response div { width:80%; border:1px solid #e6eeea; border-radius:3px 11px 11px 11px; background:#fbfdfc; padding:12px; }
+:where(.marketing-page-experience) .douban-motion-response i { display:block; height:7px; margin-bottom:9px; border-radius:99px; background:#dae7e0; }
+:where(.marketing-page-experience) .douban-motion-response i:nth-child(2) { width:87%; }
+:where(.marketing-page-experience) .douban-motion-response i:nth-child(3) { width:61%; margin-bottom:0; }
+:where(.marketing-page-experience) .douban-motion-input { position:absolute; right:17px; bottom:17px; left:17px; display:flex; min-height:68px; align-items:center; gap:8px; border:1px solid #dce8e2; border-radius:10px; padding:9px 10px 9px 13px; color:#9aada4; font-size:14px; }
+:where(.marketing-page-experience) .douban-motion-placeholder { animation:douban-placeholder-hide 20s linear infinite; }
+:where(.marketing-page-experience) .douban-motion-typed { position:absolute; top:8px; right:44px; left:13px; color:#2f534b; line-height:1.45; opacity:0; animation:douban-typed-show 20s linear infinite; }
+:where(.marketing-page-experience) .douban-motion-input b { display:grid; flex:none; width:27px; height:27px; place-items:center; margin-left:auto; border-radius:7px; background:#d9ece4; color:#5b9d87; font-size:16px; animation:douban-send-active 20s linear infinite; }
+:where(.marketing-page-experience) .douban-motion-cursor-send { right:24px; bottom:34px; animation:douban-cursor-send 20s ease-in-out infinite; }
+:where(.marketing-page-experience) .douban-motion-click-send { right:29px; bottom:43px; animation:douban-click-send 20s ease-out infinite; }
+@keyframes douban-start-address { 0%,9.83% { opacity:1; } 14.28%,100% { opacity:0; } }
+@keyframes douban-site-address { 0%,9.83% { opacity:0; } 15.18%,100% { opacity:1; } }
+@keyframes douban-launch-screen { 0%,9.83% { opacity:1; visibility:visible; } 14.28%,100% { opacity:0; visibility:hidden; } }
+@keyframes douban-launch-press { 0%,5.36%,8.93%,100% { transform:scale(1); } 7.15% { transform:scale(.96); } }
+@keyframes douban-cursor-launch { 0%,2.68%,9.83%,100% { opacity:0; transform:translate(22px,18px); } 5.36%,8.04% { opacity:1; transform:none; } }
+@keyframes douban-click-launch { 0%,6.25%,8.04%,100% { opacity:0; transform:scale(.3); } 7.15% { opacity:.9; transform:scale(1); } 7.85% { opacity:0; transform:scale(1.45); } }
+@keyframes douban-site-enter { 0%,10.71% { opacity:0; width:100%; } 15.18%,28.58% { opacity:1; width:100%; } 33.93%,86.6%,97% { opacity:1; width:var(--site-open-width); } 100% { opacity:0; width:100%; } }
+@keyframes douban-float-in { 0%,15.18% { opacity:0; transform:translateY(8px) scale(.84); } 18.75%,21.43%,28.58% { opacity:1; transform:none; } 23.22%,25.9% { opacity:1; transform:scale(1.12); } 34.82%,100% { opacity:0; transform:scale(.88); } }
+@keyframes douban-float-hint { 0%,16.96%,30.35%,100% { opacity:0; transform:translateY(6px); } 20.54%,27.68% { opacity:1; transform:none; } }
+@keyframes douban-float-focus { 0%,19.64%,29.46%,100% { opacity:0; transform:scale(.8); } 23.22%,26.79% { opacity:1; transform:scale(1); } }
+@keyframes douban-cursor-float { 0%,19.64%,30.35%,100% { opacity:0; transform:translate(26px,22px); } 23.22%,27.68% { opacity:1; transform:none; } }
+@keyframes douban-click-float { 0%,27.68%,29.46%,100% { opacity:0; transform:scale(.35); } 28.58% { opacity:.9; transform:scale(1); } 29.28% { opacity:0; transform:scale(1.45); } }
+@keyframes douban-panel-enter { 0%,28.58% { transform:translateX(103%); } 33.93%,86.6%,97% { transform:translateX(0); } 100% { transform:translateX(103%); } }
+@keyframes douban-permission-show { 0%,33.03%,50.89%,100% { opacity:0; transform:translateY(10px); } 37.5%,47.33% { opacity:1; transform:none; } }
+@keyframes douban-cursor-allow { 0%,41.97%,50.89%,100% { opacity:0; transform:translate(16px,17px); } 44.65%,48.21% { opacity:1; transform:none; } }
+@keyframes douban-click-allow { 0%,48.21%,50%,100% { opacity:0; transform:scale(.35); } 49.1% { opacity:.9; transform:scale(1); } 49.82% { opacity:0; transform:scale(1.45); } }
+@keyframes douban-placeholder-hide { 0%,50%,73.21%,100% { opacity:1; } 51.78%,71.43% { opacity:0; } }
+@keyframes douban-typed-show { 0%,50%,72.32%,100% { opacity:0; } 52.68%,69.64% { opacity:1; } }
+@keyframes douban-send-active { 0%,64.29%,72.32%,100% { background:#d9ece4; color:#5b9d87; } 66.96%,70.53% { background:#168477; color:#fff; } }
+@keyframes douban-cursor-send { 0%,65.18%,72.32%,100% { opacity:0; transform:translate(18px,16px); } 67.85%,70.53% { opacity:1; transform:none; } }
+@keyframes douban-click-send { 0%,69.64%,71.43%,100% { opacity:0; transform:scale(.35); } 70.53% { opacity:.9; transform:scale(1); } 71.25% { opacity:0; transform:scale(1.45); } }
+@keyframes douban-chat-show { 0%,72.32%,100% { opacity:0; transform:translateY(8px); } 75%,86.6%,97% { opacity:1; transform:none; } }
+@keyframes douban-answer-in { 0%,75.89%,100% { opacity:0; transform:translateY(7px); } 79.47%,86.6%,97% { opacity:1; transform:none; } }
+:where(.marketing-page-experience) .douban-motion-browser * { animation-duration:var(--demo-duration); }
+@media (max-width: 900px) {
+  :where(.marketing-page-experience) .douban-demo { padding: 70px 24px 80px; }
+  :where(.marketing-page-experience) .douban-motion-browser { --site-open-width:58%; height:360px; }
+  :where(.marketing-page-experience) .douban-motion-panel { width:42%; min-width:0; }
+}
+@media (max-width: 640px) {
+  :where(.marketing-page-experience) .douban-demo { padding: 56px 20px 72px; }
+  html:not(.manual-route) :where(.marketing-page-experience) .douban-demo { padding-top:108px; }
+  html.manual-route :where(.marketing-page-experience) .douban-demo { padding-top:58px; }
+  :where(.marketing-page-experience) .douban-demo-intro h2 { font-size: 34px; }
+  :where(.marketing-page-experience) .douban-site-focus { margin-top: 18px; padding: 12px 0 0; }
+  :where(.marketing-page-experience) .douban-site-label, :where(.marketing-page-experience) .douban-site-name strong { font-size: 22px; }
+  :where(.marketing-page-experience) .douban-site-focus > p { font-size: 16px; }
+  :where(.marketing-page-experience) .douban-showcase { margin-top:32px; }
+  :where(.marketing-page-experience) .douban-showcase-intro { margin-bottom:40px; }
+  :where(.marketing-page-experience) .douban-action { width:100%; font-size:16px; }
+  :where(.marketing-page-experience) .douban-motion { padding:0 0 16px; }
+  :where(.marketing-page-experience) .douban-motion-browser { --site-open-width:31%; height:360px; }
+  :where(.marketing-page-experience) .douban-motion-launch { padding:49px 8%; }
+  :where(.marketing-page-experience) .douban-motion-launch-button { min-height:42px; padding:0 12px; font-size:12px; }
+  :where(.marketing-page-experience) .douban-motion-launch-lines i { height:8px; margin-bottom:10px; }
+  :where(.marketing-page-experience) .douban-motion-nav { gap:9px; padding:0 11px; font-size:9px; }
+  :where(.marketing-page-experience) .douban-motion-nav strong { margin-right:2px; font-size:14px; }
+  :where(.marketing-page-experience) .douban-motion-nav span:last-child { display:none; }
+  :where(.marketing-page-experience) .douban-motion-content { padding:15px 12px; }
+  :where(.marketing-page-experience) .douban-motion-hero { height:80px; padding:14px; }
+  :where(.marketing-page-experience) .douban-motion-hero span { font-size:13px; }
+  :where(.marketing-page-experience) .douban-motion-posters { gap:8px; }
+  :where(.marketing-page-experience) .douban-motion-posters i { width:42px; height:66px; }
+  :where(.marketing-page-experience) .douban-motion-lines { gap:8px; }
+  :where(.marketing-page-experience) .douban-motion-lines i { width:42px; }
+  :where(.marketing-page-experience) .douban-motion-float { right:10px; width:39px; height:39px; border-radius:11px; }
+  :where(.marketing-page-experience) .douban-motion-float img { width:24px; height:24px; }
+  :where(.marketing-page-experience) .douban-motion-float-hint { right:58px; padding:6px 9px; font-size:10px; }
+  :where(.marketing-page-experience) .douban-motion-float-focus { right:5px; width:64px; height:64px; border-radius:17px; }
+  :where(.marketing-page-experience) .douban-motion-cursor-float { right:10px; }
+  :where(.marketing-page-experience) .douban-motion-click-float { right:17px; }
+  :where(.marketing-page-experience) .douban-motion-panel { width:69%; min-width:0; }
+  :where(.marketing-page-experience) .douban-motion-permission { top:66px; right:9px; left:9px; padding:12px; }
+  :where(.marketing-page-experience) .douban-motion-permission strong { font-size:12px; }
+  :where(.marketing-page-experience) .douban-motion-permission p { font-size:10px; }
+  :where(.marketing-page-experience) .douban-motion-conversation { top:48px; right:9px; left:9px; }
+  :where(.marketing-page-experience) .douban-motion-question { width:100%; padding:8px; font-size:12px; }
+  :where(.marketing-page-experience) .douban-motion-response { margin-top:6px; }
+  :where(.marketing-page-experience) .douban-motion-response div { padding:8px; }
+  :where(.marketing-page-experience) .douban-motion-response i { margin-bottom:6px; }
+  :where(.marketing-page-experience) .douban-motion-input { right:8px; bottom:9px; left:8px; min-height:94px; padding-left:8px; font-size:12px; }
+  :where(.marketing-page-experience) .douban-motion-typed { left:8px; right:34px; font-size:12px; }
+  :where(.marketing-page-experience) .douban-motion-cursor-allow { right:29px; bottom:18px; }
+  :where(.marketing-page-experience) .douban-motion-click-allow { right:36px; bottom:25px; }
+  :where(.marketing-page-experience) .douban-motion-cursor-send { right:13px; bottom:24px; }
+  :where(.marketing-page-experience) .douban-motion-click-send { right:18px; bottom:33px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :where(.marketing-page-experience) .douban-action { transition: none; }
+  :where(.marketing-page-experience) .douban-motion-address > span,:where(.marketing-page-experience) .douban-motion-launch,:where(.marketing-page-experience) .douban-motion-site,:where(.marketing-page-experience) .douban-motion-float,:where(.marketing-page-experience) .douban-motion-float-hint,:where(.marketing-page-experience) .douban-motion-float-focus,:where(.marketing-page-experience) .douban-motion-cursor,:where(.marketing-page-experience) .douban-motion-click,:where(.marketing-page-experience) .douban-motion-panel,:where(.marketing-page-experience) .douban-motion-permission,:where(.marketing-page-experience) .douban-motion-conversation,:where(.marketing-page-experience) .douban-motion-response,:where(.marketing-page-experience) .douban-motion-placeholder,:where(.marketing-page-experience) .douban-motion-typed,:where(.marketing-page-experience) .douban-motion-input b { animation:none; }
+  :where(.marketing-page-experience) .douban-motion-launch,:where(.marketing-page-experience) .douban-motion-address-start,:where(.marketing-page-experience) .douban-motion-float,:where(.marketing-page-experience) .douban-motion-float-hint,:where(.marketing-page-experience) .douban-motion-float-focus { display:none; }
+  :where(.marketing-page-experience) .douban-motion-address-douban { opacity:1; }
+  :where(.marketing-page-experience) .douban-motion-site { width:var(--site-open-width); opacity:1; }
+  :where(.marketing-page-experience) .douban-motion-panel { transform:none; }
+  :where(.marketing-page-experience) .douban-motion-cursor,:where(.marketing-page-experience) .douban-motion-click,:where(.marketing-page-experience) .douban-motion-permission { display:none; }
+  :where(.marketing-page-experience) .douban-motion-conversation,:where(.marketing-page-experience) .douban-motion-response { opacity:1; transform:none; }
+  :where(.marketing-page-experience) .douban-motion-typed { display:none; }
+}

@@ -4,15 +4,8 @@ export {}
 
 declare const self: ServiceWorkerGlobalScope & typeof globalThis
 
-const APPSHELL_CACHE = 'appshell-v3'
-// Caches from previous service worker versions. The activate handler migrates
-// the offline-critical entries of 'dynamic-v2' into APPSHELL_CACHE before
-// deleting it (see migrateLegacyCaches):
-// - 'static-v2': hashed static assets (now owned by the browser HTTP cache);
-//   never migrated (immutable URLs are re-fetched by the browser on miss)
-// - 'dynamic-v2': API/MCP + subresources (now pass-through). Only the offline
-//   shell ('/') and Pyodide wheel entries are migrated; API/MCP responses
-//   must never be served stale, and everything else has no offline contract.
+const APPSHELL_CACHE = 'appshell-v4'
+// Upgrade older caches without discarding offline Python runtime assets.
 
 // Keep this dependency-free: esbuild compiles this file directly with no
 // bundling of imports, and browser workers do not provide require().
@@ -40,16 +33,13 @@ const PYODIDE_VERSION = '0.29.3'
 const PYODIDE_CDN_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`
 
 self.addEventListener('install', (event) => {
-  // Precache the minimal offline shell: '/' is the navigation fallback and
-  // '/manifest.json' keeps installability metadata available offline. Static
-  // assets are owned by the browser HTTP cache and API/MCP responses must
-  // never be cached. Without '/', the first offline navigation after install
-  // has no shell to serve.
+  // Precache the workspace shell and generated Next.js manifest.
+  // Static assets remain in the browser cache and API responses are not cached.
   event.waitUntil(
     (async () => {
       try {
         const cache = await caches.open(APPSHELL_CACHE)
-        await cache.addAll(['/', '/manifest.json'])
+        await cache.addAll(['/projects', '/manifest.webmanifest'])
       } catch (error) {
         console.warn('[ServiceWorker] Failed to precache offline shell:', error)
       }
@@ -74,48 +64,27 @@ self.addEventListener('activate', (event) => {
   self.clients.claim()
 })
 
-// Base origin used to build absolute Request URLs for Cache Storage keys
-// (relative Request URLs fail outside a browser page context). This must
-// match the deployed origin of the service worker.
-const SW_ORIGIN = 'https://eo2weave.example.com'
-
-/**
- * Copy offline-critical entries from the previous version's 'dynamic-v2'
- * cache into APPSHELL_CACHE before it is deleted: the '/' offline shell (if
- * the old SW precached or network-first cached it) and Pyodide wheels, so an
- * offline upgrade does not drop the shell or break Python cold start. Best
- * effort and fault tolerant: a missing legacy cache is a silent no-op, and
- * entries already present in APPSHELL_CACHE are left untouched.
- */
+/** Preserve cached Python packages and runtime files across worker upgrades. */
 async function migrateLegacyCaches(): Promise<void> {
-  const LEGACY_DYNAMIC_CACHE = 'dynamic-v2'
   try {
-    if (!(await caches.has(LEGACY_DYNAMIC_CACHE))) return
-    const [legacy, target] = await Promise.all([
-      caches.open(LEGACY_DYNAMIC_CACHE),
-      caches.open(APPSHELL_CACHE),
-    ])
-    // Cache Storage keys are absolute URLs; build the shell request from the
-    // worker origin explicitly (relative Request URLs fail outside browsers).
-    const shellRequest = new Request(`${SW_ORIGIN}/`)
-    if (await target.match(shellRequest)) {
-      // Do not overwrite a fresher shell already present in the new cache.
-    } else {
-      const shell = await legacy.match(shellRequest)
-      if (shell) await target.put(shellRequest, shell)
+    const target = await caches.open(APPSHELL_CACHE)
+    for (const name of ['dynamic-v2', 'appshell-v3']) {
+      if (!(await caches.has(name))) continue
+      const legacy = await caches.open(name)
+      const keys = await legacy.keys()
+      await Promise.all(keys.filter((request) => new URL(request.url).pathname.startsWith(PYODIDE_RUNTIME_PREFIX)).map(async (request) => {
+        if (await target.match(request)) return
+        const response = await legacy.match(request)
+        if (response) await target.put(request, response)
+      }))
+      // The workspace shell moved from '/' to '/projects'; carry the previous
+      // shell over so a user who updates while offline still has a document.
+      const shell = new Request(new URL('/projects', self.location.origin).href)
+      if (await target.match(shell)) continue
+      const previous = await legacy.match(new Request(new URL('/', self.location.origin).href))
+      if (previous) await target.put(shell, previous)
     }
-    const keys = await legacy.keys()
-    await Promise.all(
-      keys
-        .filter((request) => isPyodideWheel(new URL(request.url).pathname))
-        .map(async (request) => {
-          if (await target.match(request)) return
-          const response = await legacy.match(request)
-          if (response) await target.put(request, response)
-        })
-    )
   } catch (error) {
-    // Migration is best effort; never block activation on it.
     console.warn('[ServiceWorker] Legacy cache migration failed:', error)
   }
 }
@@ -181,9 +150,8 @@ async function networkFirstWithCacheFallback(request: Request): Promise<Response
     const cached = await caches.match(request)
     if (cached) return cached
 
-    // Next runtime has no exported /index.html. The root document is cached
-    // as a provider-neutral offline shell; exact navigations still win first.
-    const appShell = await caches.match('/')
+    // The workspace entry is the offline shell; exact navigations win first.
+    const appShell = await caches.match('/projects')
     if (appShell) return appShell
 
     return new Response('Offline', { status: 503 })

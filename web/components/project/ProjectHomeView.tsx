@@ -124,6 +124,7 @@ export default function ProjectHomeView() {
       // Reset auto-default-project flags so re-init can auto-create again
       localStorage.removeItem('creatorweave:auto-default-project-created')
       sessionStorage.removeItem('creatorweave:auto-default-redirected')
+      sessionStorage.removeItem('creatorweave:auto-default-pending-entry')
 
       useProjectStore.setState({
         activeProjectId: '',

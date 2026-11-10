@@ -18,7 +18,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  * - everything else                                     → NOT claimed
  */
 
-const APPSHELL_CACHE = 'appshell-v3'
+const APPSHELL_CACHE = 'appshell-v4'
 
 type Listener = (event: Record<string, unknown>) => void
 
@@ -127,7 +127,7 @@ describe('service worker fetch routing (issue #94)', () => {
 
   it('compiles sw.ts before tests run', async () => {
     const source = await getWorkerSource()
-    expect(source).toContain('appshell-v3')
+    expect(source).toContain('appshell-v4')
   })
 
   it('does not claim /_next/static requests (pass-through to HTTP cache)', async () => {
@@ -200,7 +200,7 @@ describe('service worker fetch routing (issue #94)', () => {
 
     // Seed the shell: a successful navigation caches the root document.
     vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>shell</html>', { status: 200 })))
-    const seedRequest = makeRequest('https://eo2weave.example.com/', { headers: { accept: 'text/html' } })
+    const seedRequest = makeRequest('https://eo2weave.example.com/projects', { headers: { accept: 'text/html' } })
     sandbox.dispatch('fetch', { request: seedRequest, respondWith: sandbox.respondWith })
     await Promise.resolve()
     await sandbox.respondWith.mock.calls[0][0]
@@ -321,7 +321,7 @@ describe('service worker fetch routing (issue #94)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('activates by deleting legacy caches and keeping only appshell-v3', async () => {
+  it('activates by deleting legacy caches and keeping only appshell-v4', async () => {
     await evalWorker(await getWorkerSource(), sandbox)
     sandbox.cacheNames.set('static-v2', new Map())
     sandbox.cacheNames.set('dynamic-v2', new Map())
@@ -334,19 +334,19 @@ describe('service worker fetch routing (issue #94)', () => {
     expect(Array.from(sandbox.cacheNames.keys())).toEqual([APPSHELL_CACHE])
   })
 
-  it('install precaches the offline shell (/ and /manifest.json)', async () => {
+  it('install precaches the workspace shell and manifest', async () => {
     await evalWorker(await getWorkerSource(), sandbox)
     const waitUntilPromises: Promise<unknown>[] = []
     sandbox.dispatch('install', { waitUntil: (p: Promise<unknown>) => waitUntilPromises.push(p) })
     await Promise.all(waitUntilPromises)
     expect(sandbox.cachesMock.open).toHaveBeenCalledTimes(1)
-    expect(sandbox.addAllCalls[0]).toEqual(['/', '/manifest.json'])
+    expect(sandbox.addAllCalls[0]).toEqual(['/projects', '/manifest.webmanifest'])
     const entries = sandbox.cacheNames.get(APPSHELL_CACHE) as Map<string, Response>
-    expect(entries.get('/')).toBeDefined()
-    expect(entries.get('/manifest.json')).toBeDefined()
+    expect(entries.get('/projects')).toBeDefined()
+    expect(entries.get('/manifest.webmanifest')).toBeDefined()
   })
 
-  it('activate migrates the shell and pyodide wheels from dynamic-v2 before deleting it', async () => {
+  it('activate migrates pyodide wheels but not the old root shell', async () => {
     await evalWorker(await getWorkerSource(), sandbox)
     const legacyShell = new Response('<html>legacy shell</html>', { status: 200 })
     const legacyWheel = new Response('LEGACY_WHEEL', { status: 200 })
@@ -364,15 +364,27 @@ describe('service worker fetch routing (issue #94)', () => {
     sandbox.dispatch('activate', { waitUntil: (p: Promise<unknown>) => waitUntilPromises.push(p) })
     await Promise.all(waitUntilPromises)
 
-    // Legacy cache deleted, but its offline-critical entries survived in appshell-v3.
+    // Legacy cache deleted, but its offline-critical entries survived in appshell-v4.
     expect(Array.from(sandbox.cacheNames.keys())).toEqual([APPSHELL_CACHE])
     const entries = sandbox.cacheNames.get(APPSHELL_CACHE) as Map<string, Response>
-    expect(await entries.get('https://eo2weave.example.com/')?.text()).toBe('<html>legacy shell</html>')
+    expect(entries.get('https://eo2weave.example.com/')).toBeUndefined()
     expect(
       await entries.get('https://eo2weave.example.com/assets/pyodide/pyodide-0.29.3.whl')?.text()
     ).toBe('LEGACY_WHEEL')
     // API responses must not be migrated.
     expect(entries.get('https://eo2weave.example.com/api/projects')).toBeUndefined()
+  })
+
+  it('preserves cached Python runtime files when upgrading appshell-v3', async () => {
+    await evalWorker(await getWorkerSource(), sandbox)
+    const runtimeUrl = 'https://eo2weave.example.com/assets/pyodide/pyodide.asm.wasm'
+    sandbox.cacheNames.set('appshell-v3', new Map([[runtimeUrl, new Response('RUNTIME')]]))
+    const waiting: Promise<unknown>[] = []
+    sandbox.dispatch('activate', { waitUntil: (p: Promise<unknown>) => waiting.push(p) })
+    await Promise.all(waiting)
+    const entries = sandbox.cacheNames.get(APPSHELL_CACHE) as Map<string, Response>
+    expect(await entries.get(runtimeUrl)?.text()).toBe('RUNTIME')
+    expect(sandbox.cacheNames.has('appshell-v3')).toBe(false)
   })
 
   it('activate tolerates a missing legacy cache (no legacy caches seeded)', async () => {
@@ -382,7 +394,7 @@ describe('service worker fetch routing (issue #94)', () => {
     const waitUntilPromises: Promise<unknown>[] = []
     sandbox.dispatch('activate', { waitUntil: (p: Promise<unknown>) => waitUntilPromises.push(p) })
     await Promise.all(waitUntilPromises)
-    // Only a no-op: nothing throws, appshell-v3 is untouched.
+    // Only a no-op: nothing throws, appshell-v4 is untouched.
     expect(Array.from(sandbox.cacheNames.keys())).toEqual([APPSHELL_CACHE])
   })
 

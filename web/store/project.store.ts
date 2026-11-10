@@ -461,6 +461,7 @@ export const useProjectStore = create<ProjectState>()(
               }
               await bootstrapProjectOpfs(defaultProject.id)
               localStorage.setItem(AUTO_DEFAULT_CREATED_KEY, '1')
+              try { sessionStorage.setItem('creatorweave:auto-default-pending-entry', '1') } catch { /* Storage is optional. */ }
               normalizedProjects = [defaultProject]
               normalizedStats = [{
                 projectId: defaultProject.id,

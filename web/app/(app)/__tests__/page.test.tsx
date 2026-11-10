@@ -24,7 +24,7 @@ vi.mock('@/app-build', () => ({
   IS_DEVELOPMENT: false,
 }))
 
-import RootPage from '@/app/(app)/page'
+import { WorkspaceEntry as RootPage } from '@/components/project/WorkspaceEntry'
 import { useProjectStore } from '@/store/project.store'
 
 // ── Fixtures ─────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ function App() {
   return <RootPage />
 }
 
-describe('(app)/page.tsx first-run redirect', () => {
+describe('workspace first-run redirect', () => {
   beforeEach(() => {
     routerReplaceMock.mockClear()
     sessionStorage.clear()
@@ -75,14 +75,15 @@ describe('(app)/page.tsx first-run redirect', () => {
     useProjectStore.setState({ error: null, initError: null, initErrorKind: 'transient' })
   })
 
-  it('redirects to /projects without the first-run flow when store init failed', async () => {
+  it('leaves the project list visible when store init failed', async () => {
     // Issue #131: a SQLite init failure must surface the ProjectHomeView
     // error banner (via /projects), never the blank page or a redirect into
     // a "default project" that was never loaded.
     setupStore({ initialized: false, projects: [], initError: 'OPFS pool busy' })
     render(<App />)
 
-    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith('/projects'))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(routerReplaceMock).not.toHaveBeenCalled()
     expect(routerReplaceMock).not.toHaveBeenCalledWith('/projects/project-fresh')
   })
 
@@ -104,14 +105,13 @@ describe('(app)/page.tsx first-run redirect', () => {
     await new Promise((r) => setTimeout(r, 30))
     expect(routerReplaceMock).not.toHaveBeenCalled()
   })
-  it('redirects to /projects when initialized but the list is terminally empty', async () => {
-    // Terminal empty state: the user deleted every project. The auto-default
-    // flag stays set, so initialize() will never auto-create again — waiting
-    // forever would leave `/` blank. Redirect to the ProjectHome empty state.
+  it('leaves the project list visible when initialized with no projects', async () => {
+    // A user who deleted every project should see the empty project list.
     setupStore({ initialized: true, projects: [] })
     render(<App />)
 
-    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith('/projects'))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(routerReplaceMock).not.toHaveBeenCalled()
   })
 
   it('waits (no redirect) while storage is not yet initialized', async () => {
@@ -122,7 +122,8 @@ describe('(app)/page.tsx first-run redirect', () => {
     expect(routerReplaceMock).not.toHaveBeenCalled()
   })
 
-  it('defers the root redirect while a side-panel hostname route is pending', async () => {
+  it('defers the redirect while a side-panel hostname route is pending', async () => {
+    sessionStorage.setItem('creatorweave:auto-default-pending-entry', '1')
     sessionStorage.setItem('__cw_workspace_assistant_pending', '1')
     localStorage.setItem('creatorweave:auto-default-project-created', '1')
     setupStore({ initialized: true, projects: [makeProject('project-fresh')] })
@@ -133,6 +134,7 @@ describe('(app)/page.tsx first-run redirect', () => {
   })
 
   it('redirects into the auto-created default project for first-time users', async () => {
+    sessionStorage.setItem('creatorweave:auto-default-pending-entry', '1')
     localStorage.setItem('creatorweave:auto-default-project-created', '1')
     setupStore({ initialized: true, projects: [makeProject('project-fresh')] })
     render(<App />)
@@ -141,7 +143,7 @@ describe('(app)/page.tsx first-run redirect', () => {
     expect(sessionStorage.getItem('creatorweave:auto-default-redirected')).toBe('1')
   })
 
-  it('redirects to /projects when multiple projects exist (returning user)', async () => {
+  it('leaves the project list visible when multiple projects exist', async () => {
     localStorage.setItem('creatorweave:auto-default-project-created', '1')
     setupStore({
       initialized: true,
@@ -149,16 +151,18 @@ describe('(app)/page.tsx first-run redirect', () => {
     })
     render(<App />)
 
-    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith('/projects'))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(routerReplaceMock).not.toHaveBeenCalled()
     // Session flag must NOT be consumed in this branch
     expect(sessionStorage.getItem('creatorweave:auto-default-redirected')).toBeNull()
   })
 
-  it('redirects to /projects when the auto-created flag is absent', async () => {
+  it('leaves the project list visible without a new default project', async () => {
     setupStore({ initialized: true, projects: [makeProject('project-a')] })
     render(<App />)
 
-    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith('/projects'))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(routerReplaceMock).not.toHaveBeenCalled()
   })
 
   it('skips the first-run flow once the session flag is set', async () => {
@@ -168,7 +172,8 @@ describe('(app)/page.tsx first-run redirect', () => {
     render(<App />)
 
     // Already redirected this session → plain /projects redirect
-    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith('/projects'))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(routerReplaceMock).not.toHaveBeenCalled()
     expect(routerReplaceMock).not.toHaveBeenCalledWith('/projects/project-fresh')
   })
 })

@@ -1,0 +1,103 @@
+:where(.marketing-page-experience) { --ink:#172b27; --muted:#62746e; --brand:#1b7469; --line:#dce9e3; --soft:#e9f5ef; }
+    :where(.marketing-page-experience) * { box-sizing:border-box; }
+    :where(.marketing-page-experience) { scroll-behavior:smooth; }
+    :where(.marketing-page-experience) { min-width:320px; margin:0; color:var(--ink); background:#fff; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif; -webkit-font-smoothing:antialiased; }
+    :where(.marketing-page-experience) a { color:inherit; text-decoration:none; }
+    :where(.marketing-page-experience) button { font:inherit; cursor:pointer; }
+    :where(.marketing-page-experience) a:focus-visible,:where(.marketing-page-experience) button:focus-visible { outline:3px solid rgba(36,143,125,.35); outline-offset:4px; }
+    :where(.marketing-page-experience) [hidden] { display:none!important; }
+    :where(.marketing-page-experience) .shell { width:min(1180px,calc(100% - 64px)); margin:0 auto; }
+    :where(.marketing-page-experience) .button { display:inline-flex; min-height:58px; align-items:center; justify-content:center; gap:10px; border:1px solid transparent; border-radius:10px; padding:0 27px; font-size:17px; font-weight:700; white-space:nowrap; transition:transform .2s ease,background .2s ease,border-color .2s ease; }
+    :where(.marketing-page-experience) .button:hover { transform:translateY(-2px); }
+    :where(.marketing-page-experience) .button-primary { background:var(--brand); color:#fff; box-shadow:0 15px 28px rgba(27,116,105,.16); }
+    :where(.marketing-page-experience) .button-primary:hover { background:#125f56; }
+    :where(.marketing-page-experience) .button-outline { border-color:#b9d8ce; background:#fff; color:var(--brand); }
+    :where(.marketing-page-experience) .button-outline:hover { border-color:#81b7a9; background:#f7fcf9; }
+    :where(.marketing-page-experience) .arrow { font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif; font-size:21px; font-weight:400; line-height:1; }
+    :where(.marketing-page-experience) .experience { scroll-margin-top:108px; padding:0 0 138px; }
+    :where(.marketing-page-experience) .section-kicker { color:var(--brand); font-size:14px; font-weight:700; letter-spacing:.1em; }
+    :where(.marketing-page-experience) .section-head h2 { margin:16px 0 0; font-size:clamp(34px,3.8vw,48px); letter-spacing:-.05em; line-height:1.2; }
+    :where(.marketing-page-experience) .section-head p { max-width:740px; margin:16px 0 0; color:var(--muted); font-size:18px; line-height:1.75; }
+    :where(.marketing-page-experience) .experience-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:62px; align-items:center; margin-top:45px; }
+    :where(.marketing-page-experience) .preview { position:relative; display:grid; min-height:470px; place-items:center; overflow:hidden; border-radius:26px; background:radial-gradient(circle at 22% 24%,#f0fbf6,transparent 55%),linear-gradient(135deg,#e3f4eb,#eaf6f1); padding:38px; }
+    :where(.marketing-page-experience) .preview-window { width:100%; max-width:500px; min-height:322px; overflow:hidden; border:1px solid #d4e6dc; border-radius:16px; background:#fff; box-shadow:0 20px 45px rgba(37,96,73,.1); }
+    :where(.marketing-page-experience) .preview-toolbar { display:flex; height:40px; align-items:center; gap:7px; border-bottom:1px solid #e8eeeb; padding:0 16px; }
+    :where(.marketing-page-experience) .preview-dot { width:8px; height:8px; border-radius:50%; background:#e9a3a1; }
+    :where(.marketing-page-experience) .preview-dot:nth-child(2) { background:#eccb82; }
+    :where(.marketing-page-experience) .preview-dot:nth-child(3) { background:#93cbb1; }
+    :where(.marketing-page-experience) .preview-address { flex:1; height:21px; margin-left:13px; border-radius:11px; background:#f0f5f2; color:#81968b; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif; font-size:10px; line-height:21px; padding-left:12px; }
+    :where(.marketing-page-experience) .preview-site { padding:20px 24px; }
+    :where(.marketing-page-experience) .preview-site-title { display:flex; align-items:baseline; gap:13px; color:#263b35; font-size:20px; font-weight:700; }
+    :where(.marketing-page-experience) .preview-site-title small { color:#8ba199; font-size:10px; font-weight:400; }
+    :where(.marketing-page-experience) .preview-rule { height:1px; margin:13px 0 19px; background:#edf1ee; }
+    :where(.marketing-page-experience) .preview-card-row { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+    :where(.marketing-page-experience) .preview-poster { height:125px; border-radius:7px; background:linear-gradient(155deg,#d9e9e3,#9dbcb1); }
+    :where(.marketing-page-experience) .preview-poster:nth-child(2) { background:linear-gradient(150deg,#e8ece7,#afc7c4); }
+    :where(.marketing-page-experience) .preview-poster:nth-child(3) { background:linear-gradient(155deg,#d8e9dc,#b1cebd); }
+    :where(.marketing-page-experience) .preview-lines { height:8px; width:79%; margin-top:12px; border-radius:5px; background:#e9efeb; }
+    :where(.marketing-page-experience) .preview-lines.short { width:52%; margin-top:6px; }
+    :where(.marketing-page-experience) .floating-button { position:absolute; right:41px; bottom:43px; display:grid; width:59px; height:59px; place-items:center; border:4px solid #fff; border-radius:16px; background:var(--brand); box-shadow:0 10px 23px rgba(24,113,95,.24); }
+    :where(.marketing-page-experience) .floating-button img { width:33px; height:33px; filter:brightness(0) invert(1); }
+    :where(.marketing-page-experience) .preview-hint { position:absolute; right:95px; bottom:55px; border-radius:10px; background:#fff; padding:11px 14px; color:#315c50; font-size:13px; font-weight:700; box-shadow:0 7px 20px rgba(33,101,74,.09); }
+    :where(.marketing-page-experience) .steps { list-style:none; margin:0; padding:0; }
+    :where(.marketing-page-experience) .step { display:grid; grid-template-columns:33px minmax(0,1fr); gap:16px; padding:21px 0; border-bottom:1px solid #e8efeb; }
+    :where(.marketing-page-experience) .step:first-child { padding-top:0; }
+    :where(.marketing-page-experience) .step:last-child { border-bottom:0; }
+    :where(.marketing-page-experience) .step-number { color:#5ba390; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif; font-size:15px; font-weight:700; padding-top:4px; }
+    :where(.marketing-page-experience) .step h3 { margin:0; font-size:21px; letter-spacing:-.03em; }
+    :where(.marketing-page-experience) .step p { margin:8px 0 0; color:var(--muted); font-size:16px; line-height:1.72; }
+    :where(.marketing-page-experience) .step .button { min-height:48px; margin-top:17px; padding:0 20px; font-size:15px; }
+    :where(.marketing-page-experience) .sample-prompt { margin:16px 0 0; border-left:3px solid #78bcaa; background:#f2f9f5; padding:16px 18px; color:#2f5147; font-size:16px; line-height:1.6; }
+    :where(.marketing-page-experience) .copy-prompt { margin-top:12px; border:0; background:transparent; padding:4px 0; color:var(--brand); font-size:14px; font-weight:700; }
+    :where(.marketing-page-experience) .copy-prompt:hover { text-decoration:underline; text-underline-offset:4px; }
+    :where(.marketing-page-experience) .experience-help { margin:24px 0 0; color:#778b82; font-size:14px; line-height:1.65; }
+    :where(.marketing-page-experience) .experience-help a { color:var(--brand); font-weight:700; text-decoration:underline; text-underline-offset:3px; }
+    @media (max-width:900px) {
+      :where(.marketing-page-experience) .experience-grid { grid-template-columns:1fr; gap:35px; }
+      :where(.marketing-page-experience) .preview { max-width:620px; min-height:410px; }
+    }
+    @media (max-width:640px) {
+      :where(.marketing-page-experience) .shell { width:calc(100% - 40px); }
+      :where(.marketing-page-experience) .experience { padding-bottom:95px; }
+      :where(.marketing-page-experience) .section-head h2 { font-size:34px; }
+      :where(.marketing-page-experience) .section-head p { font-size:16px; }
+      :where(.marketing-page-experience) .experience-grid { margin-top:31px; }
+      :where(.marketing-page-experience) .preview { min-height:310px; padding:18px; }
+      :where(.marketing-page-experience) .preview-window { min-height:260px; }
+      :where(.marketing-page-experience) .preview-site { padding:15px; }
+      :where(.marketing-page-experience) .preview-poster { height:95px; }
+      :where(.marketing-page-experience) .floating-button { right:21px; bottom:24px; width:51px; height:51px; }
+      :where(.marketing-page-experience) .floating-button img { width:28px; height:28px; }
+      :where(.marketing-page-experience) .preview-hint { right:64px; bottom:34px; font-size:11px; }
+    }
+    @media (prefers-reduced-motion:reduce) { :where(.marketing-page-experience) { scroll-behavior:auto; } :where(.marketing-page-experience) .button { transition:none; } }
+    :where(.marketing-page-experience) .setup-screen { padding:0 0 72px; }
+    :where(.marketing-page-experience) .setup-screen.manual-guide { padding-bottom:72px; }
+    html.manual-route :where(.marketing-page-experience) .manual-guide { padding-top:120px; }
+    @media (max-width:640px) {
+      :where(.marketing-page-experience) .setup-screen,:where(.marketing-page-experience) .setup-screen.manual-guide { padding-bottom:64px; }
+      html.manual-route :where(.marketing-page-experience) .manual-guide { padding-top:108px; }
+    }
+
+    /* A simplified mailbox for the Jmail walkthrough. */
+    :where(.marketing-page-experience) .jmail-toolbar { display:flex; height:50px; align-items:center; gap:28px; border-bottom:1px solid #e3e8eb; background:#f6f8fc; padding:0 20px; color:#465566; }
+    :where(.marketing-page-experience) .jmail-toolbar strong { color:#3c4c5e; font-size:20px; }
+    :where(.marketing-page-experience) .jmail-toolbar > span { width:min(320px,60%); overflow:hidden; border-radius:8px; background:#eaf0f8; padding:8px 12px; color:#66788a; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+    :where(.marketing-page-experience) .jmail-inbox { display:flex; height:calc(100% - 50px); background:#f6f8fc; padding:12px 14px 0 0; }
+    :where(.marketing-page-experience) .jmail-sidebar { display:flex; width:125px; flex:none; flex-direction:column; gap:6px; padding:0 10px 0 0; color:#718092; font-size:12px; }
+    :where(.marketing-page-experience) .jmail-sidebar span,:where(.marketing-page-experience) .jmail-sidebar b { padding:8px 12px 8px 20px; }
+    :where(.marketing-page-experience) .jmail-sidebar b { border-radius:0 18px 18px 0; background:#dce9fa; color:#345579; }
+    :where(.marketing-page-experience) .jmail-messages { min-width:0; flex:1; overflow:hidden; border-radius:12px 12px 0 0; background:#fff; }
+    :where(.marketing-page-experience) .jmail-inbox-title { display:flex; align-items:center; gap:14px; height:42px; border-bottom:1px solid #edf0f2; padding:0 16px; color:#46576b; font-size:13px; font-weight:700; white-space:nowrap; }
+    :where(.marketing-page-experience) .jmail-inbox-title span { color:#99a5b1; font-size:10px; font-weight:400; }
+    :where(.marketing-page-experience) .jmail-message { display:flex; height:37px; align-items:center; gap:12px; border-bottom:1px solid #edf0f2; padding:0 14px; }
+    :where(.marketing-page-experience) .jmail-message b { flex:none; color:#9caab5; font-size:12px; font-weight:400; white-space:nowrap; }
+    :where(.marketing-page-experience) .jmail-message i,:where(.marketing-page-experience) .jmail-message em,:where(.marketing-page-experience) .jmail-message small { display:block; height:6px; border-radius:4px; background:#dce4ec; }
+    :where(.marketing-page-experience) .jmail-message i { width:21%; flex:none; }
+    :where(.marketing-page-experience) .jmail-message em { width:48%; background:#e8edf1; }
+    :where(.marketing-page-experience) .jmail-message small { width:8%; margin-left:auto; }
+    :where(.marketing-page-experience) .jmail-demo .jmail-example-answer { color:#456158; font-size:12px; line-height:1.45; }
+    :where(.marketing-page-experience) .jmail-demo .douban-motion-allow { width:auto; padding:0 10px; white-space:nowrap; }
+    :where(.marketing-page-experience) .jmail-example-answer strong { display:block; margin-bottom:4px; color:#769289; font-size:10px; text-transform:uppercase; letter-spacing:.04em; }
+    :where(.marketing-page-experience) .jmail-example-answer p { margin:0; }
+    @media (max-width:640px) { :where(.marketing-page-experience) .jmail-toolbar { gap:10px; padding:0 10px; } :where(.marketing-page-experience) .jmail-toolbar strong { font-size:14px; } :where(.marketing-page-experience) .jmail-sidebar { width:62px; font-size:9px; } :where(.marketing-page-experience) .jmail-sidebar span,:where(.marketing-page-experience) .jmail-sidebar b { padding:7px 4px 7px 9px; } :where(.marketing-page-experience) .jmail-inbox { padding-right:6px; } :where(.marketing-page-experience) .jmail-inbox-title { padding:0 9px; } :where(.marketing-page-experience) .jmail-inbox-title span { display:none; } :where(.marketing-page-experience) .jmail-message { gap:6px; padding:0 8px; } :where(.marketing-page-experience) .jmail-demo .jmail-example-answer { font-size:10px; } }
