@@ -415,10 +415,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   /**
    * Stop every pending/running task owned by this runtime.
    *
-   * The marks are applied synchronously before any await so a caller that
-   * aborts a parent run cannot leave members running behind it: the loops are
-   * cancelled and the run timers cleared in the same tick. Returns the
-   * agentIds it stopped.
+   * Every member is marked stopped and has its loop cancelled and run timer
+   * cleared in one synchronous pass before the kills are awaited, so a caller
+   * that aborts a parent run cannot leave members running behind it. Returns
+   * the agentIds it stopped.
    */
   async stopAll(input: { force?: boolean } = {}): Promise<{ stopped: string[] }> {
     await this.ensureHydrated()
