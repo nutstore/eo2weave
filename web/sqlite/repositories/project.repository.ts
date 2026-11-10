@@ -54,13 +54,21 @@ export class ProjectRepository {
 
   async findProjectStats(): Promise<ProjectStats[]> {
     const db = getSQLiteDB()
+    // Standalone chats keep a hidden host workspace row (NOT NULL project_id
+    // schema) but they are not project conversations, so the count must skip
+    // them — same rule as findWorkspacesByProject. The kind check lives in the
+    // join result, not a WHERE clause: a project hosting only standalone chats
+    // still has to appear, with a zero count. `IS NOT` is null-safe in SQLite,
+    // so a workspace with no conversation row (legacy/orphan) stays counted,
+    // matching findWorkspacesByProject's `c.kind IS NOT 'direct'` filter.
     const rows = await db.queryAll<ProjectStatsRow>(
       `SELECT
          p.id AS project_id,
-         COUNT(w.id) AS workspace_count,
-         MAX(w.last_accessed_at) AS last_workspace_access_at
+         COUNT(CASE WHEN c.kind IS NOT 'direct' THEN w.id END) AS workspace_count,
+         MAX(CASE WHEN c.kind IS NOT 'direct' THEN w.last_accessed_at END) AS last_workspace_access_at
        FROM projects p
        LEFT JOIN workspaces w ON w.project_id = p.id
+       LEFT JOIN conversations c ON c.id = w.id
        GROUP BY p.id`
     )
 
