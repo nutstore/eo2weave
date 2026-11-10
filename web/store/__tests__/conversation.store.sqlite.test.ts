@@ -7,6 +7,8 @@ const conversationRepoDeleteMock = vi.fn(() => Promise.resolve())
 const conversationRepoSaveMetaMock = vi.fn((..._: [Record<string, unknown>]) => Promise.resolve())
 const conversationRepoUpdateKindMock = vi.fn((_id: string, _kind: 'project' | 'direct') => Promise.resolve())
 const messageRepoInsertMock = vi.fn(() => Promise.resolve())
+const messageRepoInsertBatchMock = vi.fn((_convId: string, _messages: unknown[]) => Promise.resolve())
+const messageRepoFindMock = vi.fn((_convId: string) => Promise.resolve([] as unknown[]))
 const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
 const toastErrorMock = vi.fn()
 const ensureWorkspaceMock = vi.fn(() => Promise.resolve())
@@ -90,9 +92,9 @@ vi.mock('@/sqlite', () => ({
   })),
   getConversationRepository: vi.fn(() => conversationRepoMock),
   getMessageRepository: vi.fn(() => ({
-    findByConversation: vi.fn(() => Promise.resolve([])),
+    findByConversation: messageRepoFindMock,
     insert: messageRepoInsertMock,
-    insertBatch: vi.fn(() => Promise.resolve()),
+    insertBatch: messageRepoInsertBatchMock,
     replaceAll: messageRepoReplaceAllMock,
     migrateFromJsonBlob: vi.fn(() => Promise.resolve({ conversations: 0, messages: 0 })),
     recoverFromAppSessions: vi.fn(() =>
@@ -255,6 +257,10 @@ describe('conversation.store.sqlite tool-call routing', () => {
     conversationRepoUpdateKindMock.mockResolvedValue(undefined)
     messageRepoInsertMock.mockReset()
     messageRepoInsertMock.mockResolvedValue(undefined)
+    messageRepoInsertBatchMock.mockReset()
+    messageRepoInsertBatchMock.mockResolvedValue(undefined)
+    messageRepoFindMock.mockReset()
+    messageRepoFindMock.mockResolvedValue([])
     messageRepoReplaceAllMock.mockReset()
     messageRepoReplaceAllMock.mockResolvedValue(undefined)
     conversationRepoMock.findAll.mockReset()
@@ -1982,6 +1988,57 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(runUsers).toContain('real queued question')
     await vi.waitFor(() => {
       expect(useConversationStore.getState().getConversationStatus(conv.id)).toBe('idle')
+    })
+  })
+
+  // ── Branch conversation persistence (issue #259) ───────────────────────
+  // messages.conversation_id has a FK onto conversations(id) and foreign_keys
+  // is ON, so the conversations row must exist before the branch's messages
+  // land; and eviction can leave the branch point outside the in-memory window.
+
+  describe('branchConversation persistence', () => {
+    it('waits for the conversations row before inserting branch messages (FK ordering)', async () => {
+      const savedConversationIds = new Set<string>()
+      // saveMeta resolves a few ticks later, like its column probes do on a
+      // cold worker; insertBatch mirrors the schema's FK check.
+      conversationRepoSaveMetaMock.mockImplementation(async (conv: Record<string, unknown>) => {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        savedConversationIds.add(conv.id as string)
+      })
+      messageRepoInsertBatchMock.mockImplementation(async (convId: string) => {
+        if (!savedConversationIds.has(convId)) {
+          throw new Error('SQLITE_CONSTRAINT_FOREIGNKEY: FOREIGN KEY constraint failed')
+        }
+      })
+
+      const store = useConversationStore.getState()
+      const source = store.createNew('fk-order-source')
+      const userMsg = createUserMessage('branch from here')
+      useConversationStore.getState().addMessage(source.id, userMsg)
+
+      const branched = await useConversationStore.getState().branchConversation(source.id, userMsg.id)
+
+      expect(savedConversationIds.has(branched.id)).toBe(true)
+      expect(messageRepoInsertBatchMock).toHaveBeenCalledWith(branched.id, expect.any(Array))
+    })
+
+    it('falls back to the database when the branch point is outside the loaded window', async () => {
+      const store = useConversationStore.getState()
+      const source = store.createNew('trimmed-window-source', { activate: false })
+      const first = createUserMessage('first')
+      const second = createAssistantMessage('second')
+      const third = createUserMessage('third')
+      messageRepoFindMock.mockResolvedValue([first, second, third] as never)
+      // Eviction keeps only the newest turn in memory; the branch point is older.
+      useConversationStore.setState((state) => {
+        const conv = state.conversations.find((c) => c.id === source.id)
+        if (conv) conv.messages = [third]
+      })
+
+      const branched = await useConversationStore.getState().branchConversation(source.id, second.id)
+
+      expect(messageRepoFindMock).toHaveBeenCalledWith(source.id)
+      expect(branched.messages.map((msg) => msg.content)).toEqual(['first', 'second'])
     })
   })
 })

@@ -115,7 +115,7 @@ import { disposeSubagentRuntime, peekSubagentRuntime } from '@/agent/subagent/ru
 
 
 //=============================================================================
-import { deleteConversationFromDB, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from '@/store/conversation-persist'
+import { deleteConversationFromDB, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, waitForConversationMetaPersist, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from '@/store/conversation-persist'
 import {
   cancelScheduledEviction,
   configureConversationEviction,
@@ -1175,11 +1175,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         throw new Error('Source conversation not found')
       }
 
-      // Ensure source messages are loaded
+      // Ensure source messages are loaded. In-memory history can be empty (never
+      // loaded) or a trimmed window (evicted turns), so a miss on the branch
+      // point is not proof the row is gone — read the DB before failing.
       let sourceMessages = sourceConv.messages
-      if (sourceMessages.length === 0) {
+      let branchIndex = sourceMessages.findIndex((msg) => msg.id === upToMessageId)
+      if (branchIndex === -1) {
         const msgRepo = getMessageRepository()
-        sourceMessages = await msgRepo.findByConversation(sourceConversationId)
+        const dbMessages = (await msgRepo.findByConversation(sourceConversationId)) as Message[]
+        if (dbMessages.length > 0) {
+          sourceMessages = dbMessages
+          branchIndex = sourceMessages.findIndex((msg) => msg.id === upToMessageId)
+        }
       }
 
       if (sourceMessages.length === 0) {
@@ -1187,7 +1194,6 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       }
 
       // Only include messages up to (and including) the branch point
-      const branchIndex = sourceMessages.findIndex((msg) => msg.id === upToMessageId)
       if (branchIndex === -1) {
         throw new Error('Branch point message not found in source conversation')
       }
@@ -1239,7 +1245,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         })
       pendingConversationMetaPersists.set(branched.id, metaPersist)
 
-      // Persist messages to SQLite
+      // Persist messages to SQLite. messages.conversation_id has a FK onto
+      // conversations(id) and foreign_keys is ON, so the conversations row must
+      // exist first: the meta chain above is fire-and-forget, and inserting
+      // before it lands fails the whole branch with
+      // SQLITE_CONSTRAINT_FOREIGNKEY (same reason persistNewMessage waits).
+      await waitForConversationMetaPersist(branched.id)
       const msgRepo = getMessageRepository()
       await msgRepo.insertBatch(branched.id, branchedMessages)
 
