@@ -58,7 +58,6 @@ export const topbar = {
       docs: "ドキュメント",
       more: "もっと",
       schedules: "スケジュール",
-      webContainer: "WebContainer",
     },
     projectSwitcher: {
       createProject: "新しいプロジェクト",

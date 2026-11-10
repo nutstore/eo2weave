@@ -58,7 +58,6 @@ export const topbar = {
       docs: "帮助文档",
       more: "更多",
       schedules: "定时任务",
-      webContainer: "WebContainer",
     },
     projectSwitcher: {
       createProject: "新建项目",
