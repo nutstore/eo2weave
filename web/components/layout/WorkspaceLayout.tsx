@@ -64,8 +64,6 @@ import { SettingsDialog, type SettingsTab } from '@/components/settings/Settings
 import { ScheduleDrawer } from '@/components/schedule/ScheduleDrawer'
 import { useLocale, useT } from '@/i18n'
 import { chatsPath } from '@/lib/route-paths'
-import { WebContainerPanel } from '@/components/webcontainer/WebContainerPanel'
-import { useWebContainerStore } from '@/store/webcontainer.store'
 import { getWorkspaceManager } from '@/opfs'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { getRuntimeHandlesForProject } from '@/native-fs/directory-handle-manager'
@@ -256,8 +254,6 @@ export function WorkspaceLayout({
   }, [filePreviewRequestSeq, filePreviewRequestPath])
   /** Target file path (with rootName prefix) to reveal in file tree */
   const [revealTargetPath, setRevealTargetPath] = useState<string | null>(null)
-  const isWebContainerPanelOpen = useWebContainerStore((s) => s.isPanelOpen)
-  const closeWebContainerPanel = useWebContainerStore((s) => s.closePanel)
   const [locale] = useLocale()
   const t = useT()
 
@@ -694,8 +690,6 @@ export function WorkspaceLayout({
           setToolsPanelOpen(false)
         } else if (skillsManagerOpen) {
           setSkillsManagerOpen(false)
-        } else if (isWebContainerPanelOpen) {
-          closeWebContainerPanel()
         }
       }
     }
@@ -709,12 +703,10 @@ export function WorkspaceLayout({
     quickActionsOpen,
     toolsPanelOpen,
     skillsManagerOpen,
-    isWebContainerPanelOpen,
     selectedFilePath,
     panelState.sidebarCollapsed,
     setSidebarCollapsed,
     setActiveResourceTab,
-    closeWebContainerPanel,
     wordWrapEnabled,
     setWordWrap,
   ])
@@ -1229,7 +1221,6 @@ export function WorkspaceLayout({
       )}
 
       <MCPSettingsDialog open={showMcpSettings} onOpenChange={setShowMcpSettings} />
-      <WebContainerPanel isOpen={isWebContainerPanelOpen} onClose={closeWebContainerPanel} />
 
       {/* Schedule Drawer */}
       <ScheduleDrawer
