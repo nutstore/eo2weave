@@ -7,6 +7,7 @@
 
 import { create } from 'zustand'
 import { toast } from 'sonner'
+import { i18nText } from './conversation-message-ops'
 import { ProjectManager, type AgentMeta, type AgentInfo } from '@/opfs'
 import { useProjectStore } from './project.store'
 
@@ -267,7 +268,12 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
 
       // 验证 ID 格式
       if (!/^[\p{L}\p{N}_-]+$/u.test(id)) {
-        toast.error('Agent ID 只能包含字母（含中文）、数字、下划线(_)和连字符(-)')
+        toast.error(
+          i18nText(
+            'agent.toast.invalidAgentId',
+            'Agent ID 只能包含字母（含中文）、数字、下划线(_)和连字符(-)'
+          )
+        )
         return null
       }
 

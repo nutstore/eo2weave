@@ -67,7 +67,6 @@ vi.mock('@/components/extension', () => ({
 vi.mock('@/components/mcp', () => ({ MCPSettingsDialog: () => null }))
 vi.mock('@/components/settings/SettingsDialog', () => ({ SettingsDialog: () => null }))
 vi.mock('@/components/schedule/ScheduleDrawer', () => ({ ScheduleDrawer: () => null }))
-vi.mock('@/components/webcontainer/WebContainerPanel', () => ({ WebContainerPanel: () => null }))
 
 // SkillsManager: stub that EXPOSES the `open` prop — the consumer assertion
 // reads `data-open` off this stub.
@@ -247,15 +246,6 @@ vi.mock('@/store/extension.store', () => {
   ;(useExtensionStoreMock as unknown as { getState: () => typeof extensionState }).getState =
     () => extensionState
   return { useExtensionStore: useExtensionStoreMock }
-})
-
-vi.mock('@/store/webcontainer.store', () => {
-  const webContainerState = { isPanelOpen: false, closePanel: vi.fn() }
-  const useWebContainerStoreMock = ((selector?: (s: typeof webContainerState) => unknown) =>
-    selector ? selector(webContainerState) : { ...webContainerState }) as unknown as typeof import('@/store/webcontainer.store').useWebContainerStore
-  ;(useWebContainerStoreMock as unknown as { getState: () => typeof webContainerState }).getState =
-    () => webContainerState
-  return { useWebContainerStore: useWebContainerStoreMock }
 })
 
 vi.mock('@/store/folder-access.store', () => {

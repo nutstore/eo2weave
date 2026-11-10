@@ -58,7 +58,6 @@ export const topbar = {
       docs: "문서",
       more: "더보기",
       schedules: "예약 작업",
-      webContainer: "WebContainer",
     },
     projectSwitcher: {
       createProject: "새 프로젝트",

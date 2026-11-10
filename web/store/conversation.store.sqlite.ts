@@ -115,7 +115,7 @@ import { disposeSubagentRuntime, peekSubagentRuntime } from '@/agent/subagent/ru
 
 
 //=============================================================================
-import { deleteConversationFromDB, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from '@/store/conversation-persist'
+import { deleteConversationFromDB, pendingConversationMetaPersists, persistConversationMeta, persistConversationKind, persistMessageReplace, persistNewMessage, primePersistBaseline, waitForConversationMetaPersist, withInflightLoad, invalidatePersistBaseline, persistSchedulers } from '@/store/conversation-persist'
 import {
   cancelScheduledEviction,
   configureConversationEviction,
@@ -564,7 +564,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const metaPersist = persistConversationMeta(conversation)
         .catch((error) => {
           console.error('[conversation.store] Failed to persist new conversation:', error)
-          toast.error('对话保存失败，刷新页面后可能丢失')
+          i18nText('conversation.toast.saveFailed', '对话保存失败，刷新页面后可能丢失')
           throw error
         })
         .finally(() => {
@@ -791,7 +791,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         const seq = conv.messages.indexOf(message)
         persistNewMessage(conversationId, message, seq).catch((error) => {
           console.error('[conversation.store] Failed to persist conversation on addMessage:', error)
-          toast.error('消息保存失败')
+          i18nText('conversation.toast.messageSaveFailed', '消息保存失败')
         })
         // If title was auto-generated, also persist metadata
         if (conv.titleMode === 'auto' && isHumanUserMessage(message)) {
@@ -862,7 +862,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation on updateMessages:',
             error
           )
-          toast.error('消息更新保存失败')
+          i18nText('conversation.toast.messageUpdateFailed', '消息更新保存失败')
         })
         // If title was auto-updated, persist metadata too
         if (conv.titleMode === 'auto') {
@@ -888,7 +888,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     deleteUserMessage: (conversationId, userMessageId) => {
       const state = get()
       if (state.isConversationRunning(conversationId)) {
-        toast.error('请先停止当前运行，再删除消息')
+        i18nText('conversation.toast.stopBeforeDeleteMessage', '请先停止当前运行，再删除消息')
         return false
       }
 
@@ -916,7 +916,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation on deleteUserMessage:',
             error
           )
-          toast.error('删除消息失败')
+          i18nText('conversation.toast.messageDeleteFailed', '删除消息失败')
         })
       }
       return true
@@ -925,7 +925,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     deleteAgentLoop: (conversationId, userMessageId) => {
       const state = get()
       if (state.isConversationRunning(conversationId)) {
-        toast.error('请先停止当前运行，再删除对话轮次')
+        i18nText('conversation.toast.stopBeforeDeleteTurn', '请先停止当前运行，再删除对话轮次')
         return false
       }
 
@@ -963,7 +963,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation on deleteAgentLoop:',
             error
           )
-          toast.error('删除对话轮次失败')
+          i18nText('conversation.toast.turnDeleteFailed', '删除对话轮次失败')
         })
       }
       return true
@@ -1175,11 +1175,18 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         throw new Error('Source conversation not found')
       }
 
-      // Ensure source messages are loaded
+      // Ensure source messages are loaded. In-memory history can be empty (never
+      // loaded) or a trimmed window (evicted turns), so a miss on the branch
+      // point is not proof the row is gone — read the DB before failing.
       let sourceMessages = sourceConv.messages
-      if (sourceMessages.length === 0) {
+      let branchIndex = sourceMessages.findIndex((msg) => msg.id === upToMessageId)
+      if (branchIndex === -1) {
         const msgRepo = getMessageRepository()
-        sourceMessages = await msgRepo.findByConversation(sourceConversationId)
+        const dbMessages = (await msgRepo.findByConversation(sourceConversationId)) as Message[]
+        if (dbMessages.length > 0) {
+          sourceMessages = dbMessages
+          branchIndex = sourceMessages.findIndex((msg) => msg.id === upToMessageId)
+        }
       }
 
       if (sourceMessages.length === 0) {
@@ -1187,7 +1194,6 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       }
 
       // Only include messages up to (and including) the branch point
-      const branchIndex = sourceMessages.findIndex((msg) => msg.id === upToMessageId)
       if (branchIndex === -1) {
         throw new Error('Branch point message not found in source conversation')
       }
@@ -1225,11 +1231,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       })
       bumpTranscriptVersion(branched.id)
 
-      // Persist conversation metadata
+      // Persist conversation metadata. Errors are rethrown for the caller:
+      // AssistantTurnBubble is the only caller and it owns the user-facing
+      // message (i18n'd, one toast per failure). A second hardcoded-Chinese
+      // toast here both duplicated it and broke the all-copy-lives-in-i18n rule.
       const metaPersist = persistConversationMeta(branched)
         .catch((error) => {
           console.error('[conversation.store] Failed to persist branched conversation:', error)
-          toast.error('分支对话保存失败，刷新页面后可能丢失')
           throw error
         })
         .finally(() => {
@@ -1239,7 +1247,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         })
       pendingConversationMetaPersists.set(branched.id, metaPersist)
 
-      // Persist messages to SQLite
+      // Persist messages to SQLite. messages.conversation_id has a FK onto
+      // conversations(id) and foreign_keys is ON, so the conversations row must
+      // exist first: the meta chain above is fire-and-forget, and inserting
+      // before it lands fails the whole branch with
+      // SQLITE_CONSTRAINT_FOREIGNKEY (same reason persistNewMessage waits).
+      await waitForConversationMetaPersist(branched.id)
       const msgRepo = getMessageRepository()
       await msgRepo.insertBatch(branched.id, branchedMessages)
 
@@ -1431,7 +1444,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
             '[conversation.store] Failed to persist conversation on updateTitle:',
             error
           )
-          toast.error('标题修改保存失败')
+          i18nText('conversation.toast.titleSaveFailed', '标题修改保存失败')
         })
     },
 
@@ -1719,7 +1732,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                 '[conversation.store] Failed to persist conversation on cancelAgent partial commit:',
                 error
               )
-              toast.error('停止后保存草稿失败，部分内容可能丢失')
+              i18nText('conversation.toast.draftSaveFailed', '停止后保存草稿失败，部分内容可能丢失')
             })
         }
         // Cancelled → idle: eviction candidate (guards re-checked after delay).

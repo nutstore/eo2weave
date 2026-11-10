@@ -57,7 +57,6 @@ export const topbar = {
       docs: "Documentation",
       more: "More",
       schedules: "Schedules",
-      webContainer: "WebContainer",
     },
     projectSwitcher: {
       createProject: "New Project",

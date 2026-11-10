@@ -76,6 +76,9 @@ export const workflowEditor = {
     updateFailed: "워크플로우 업데이트 실패",
     deleteFailed: "워크플로우 삭제 실패",
     importFailed: "워크플로우 가져오기 실패",
+    toast: {
+        apiKeyRequired: "먼저 설정에서 API 키를 구성하세요",
+    },
 } as const
 
 export const customWorkflowManager = {

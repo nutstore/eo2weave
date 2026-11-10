@@ -8,7 +8,6 @@ import { projectRoots } from './projectRoots'
 import { workspaceSettings } from './workspaceSettings'
 import { welcome } from './welcome'
 import { skills, discover, skillCard, skillEditor, skillUpload, skillDetail, skillFileEditor } from './skills'
-import { webContainer } from './webContainer'
 import { workflowEditor, customWorkflowManager, workflowEditorDialog, workflow } from './workflow'
 import { conversation, toolCallDisplay, questionCard, runChanges, session } from './conversation'
 import { fileViewer, standalonePreview, filePreview, officePreview } from './fileViewer'
@@ -57,7 +56,6 @@ export const zhCN = {
   skillUpload,
   skillDetail,
   skillFileEditor,
-  webContainer,
   workflowEditor,
   customWorkflowManager,
   workflowEditorDialog,

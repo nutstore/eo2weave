@@ -75,6 +75,9 @@ export const workflowEditor = {
     updateFailed: "更新工作流失败",
     deleteFailed: "删除工作流失败",
     importFailed: "导入工作流失败",
+    toast: {
+        apiKeyRequired: "请先在设置中配置 API Key",
+    },
 } as const
 
 export const customWorkflowManager = {

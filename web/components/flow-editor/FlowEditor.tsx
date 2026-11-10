@@ -27,6 +27,7 @@ import { isCustomProviderType } from '@/agent/providers/types'
 import { useAgentStore } from '@/store/agent.store'
 import type { FlowNode, FlowNodeKind } from '@/agent/flow/types'
 import type { ToolContext } from '@/agent/tools/tool-types'
+import { useT } from '@/i18n'
 
 // ---------------------------------------------------------------------------
 // Add-node toolbar items
@@ -269,6 +270,8 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
     onNodeStatusChange: setNodeStatuses,
   })
 
+  const t = useT()
+
   const handleRun = useCallback(async () => {
     if (!llmConfigBase || !toolContext) return
 
@@ -286,7 +289,7 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
     const apiKeyRepo = getApiKeyRepository()
     const apiKey = await apiKeyRepo.load(effectiveConfig?.apiKeyProviderKey ?? '')
     if (!apiKey && !isCustomProviderType(providerType)) {
-      toast.error('请先在设置中配置 API Key')
+      toast.error(t('workflowEditor.toast.apiKeyRequired'))
       return
     }
 
@@ -297,7 +300,7 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
       llm: { ...llmConfigBase, apiKey: apiKey || '' },
       userInput: userInput.trim() || undefined,
     })
-  }, [llmConfigBase, toolContext, flowRun, activeInstance, effectiveConfig, providerType, userInput, needsUserInput])
+  }, [llmConfigBase, toolContext, flowRun, activeInstance, effectiveConfig, providerType, userInput, needsUserInput, t])
 
   const canRun = !!(activeInstance && activeInstance.nodes.length > 0 && llmConfigBase && toolContext)
 

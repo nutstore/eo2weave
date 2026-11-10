@@ -172,4 +172,9 @@ export const agent = {
         stateExited: "終了",
         stateStopped: "停止済み",
     },
+    toast: {
+        projectRequiredForFolder: "フォルダを紐付ける前にプロジェクトを開いてください",
+        setFolderFailed: "フォルダの設定に失敗しました: {message}",
+        invalidAgentId: "Agent ID には英字（中国語を含む）、数字、アンダースコア(_)、ハイフン(-) だけを使用できます",
+    },
 } as const
