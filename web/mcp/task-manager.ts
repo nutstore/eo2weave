@@ -350,6 +350,11 @@ export class MCPTaskManager {
     }
   }
   private observe(task: ManagedMCPTask) {
+    // `active` only dedupes observations within THIS tab. Cross-tab ownership is
+    // the per-remote-task Web Lock taken in `owner.promise` at the bottom of
+    // this method (`mcp-task:<endpointId>:<generation>:<taskId>`), shared with
+    // pause(). It is deliberately named after the remote task rather than after
+    // this record, so grep for `locks.request`, not for `mcp-observe`.
     if (this.disposed || this.active.has(task.id) || !needsTaskObservation(task)) return
     const controller = new AbortController()
     const owner = {
