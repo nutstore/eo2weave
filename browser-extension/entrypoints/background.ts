@@ -3474,10 +3474,12 @@ export default defineBackground(() => {
       }
 
       if (message.type === 'mcp_network_v2') {
-        // SECURITY: this relay is the SDK's default transport, so it must carry
-        // the same SSRF gate as mcp_proxy_fetch_stream (#148): trusted sender
-        // plus an endpoint URL that cannot point at an intranet/adjacent host.
-        // http + loopback stays allowed for local MCP dev servers.
+        // Only the sender is gated here. Unlike mcp_proxy_fetch_stream (#148),
+        // this relay deliberately does NOT apply assertValidMcpEndpointUrl:
+        // self-hosted and intranet MCP servers are a supported deployment
+        // (product decision), and they are unreachable through that validator.
+        // Redirects stay refused inside the relay (redirect:'error'), so a
+        // public endpoint still cannot bounce the fetch at a metadata host.
         if (!isTrustedWebMCPSender(port.sender)) {
           port.postMessage({
             type: 'error',
@@ -3489,13 +3491,6 @@ export default defineBackground(() => {
         }
         if (mcpNetworkStarted) return
         mcpNetworkStarted = true
-        try {
-          assertValidMcpEndpointUrl(String(message.url || ''))
-        } catch (err: any) {
-          port.postMessage({ type: 'error', errorCode: 'INVALID_MCP_ENDPOINT_URL', message: String(err?.message || err) })
-          try { port.disconnect() } catch {}
-          return
-        }
         relayMCPNetwork(port, message)
         return
       }
