@@ -49,6 +49,8 @@ export function useExtensionStatus(): ExtensionStatus {
     if (timer === null) timer = window.setInterval(sync, 1000)
     window.addEventListener('focus', sync)
     sync()
+    // Another subscriber may have published before this effect subscribed.
+    setStatus(current)
     return () => {
       subscribers.delete(setStatus)
       window.removeEventListener('focus', sync)
