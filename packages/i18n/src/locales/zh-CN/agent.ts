@@ -170,4 +170,9 @@ export const agent = {
         stateExited: "已退出",
         stateStopped: "已停止",
     },
+    toast: {
+        projectRequiredForFolder: "请先进入一个项目，再绑定文件夹",
+        setFolderFailed: "设置文件夹失败: {message}",
+        invalidAgentId: "Agent ID 只能包含字母（含中文）、数字、下划线(_)和连字符(-)",
+    },
 } as const

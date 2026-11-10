@@ -170,4 +170,9 @@ export const agent = {
         stateExited: "exited",
         stateStopped: "stopped",
     },
+    toast: {
+        projectRequiredForFolder: "Enter a project before binding a folder.",
+        setFolderFailed: "Failed to set the folder: {message}",
+        invalidAgentId: "Agent ID may only contain letters (including Chinese), digits, underscores (_), and hyphens (-).",
+    },
 } as const

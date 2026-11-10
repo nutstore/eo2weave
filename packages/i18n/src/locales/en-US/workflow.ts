@@ -76,6 +76,9 @@ export const workflowEditor = {
     updateFailed: "Failed to update workflow",
     deleteFailed: "Failed to delete workflow",
     importFailed: "Failed to import workflow",
+    toast: {
+        apiKeyRequired: "Configure an API key in Settings first",
+    },
 } as const
 
 export const customWorkflowManager = {

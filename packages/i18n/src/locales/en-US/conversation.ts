@@ -173,6 +173,7 @@ export const conversation = {
       turnDeleteFailed: "Failed to delete the turn.",
       titleSaveFailed: "Failed to save the title change.",
       draftSaveFailed: "Failed to save the draft after stopping. Some content may be lost.",
+      saveFailedContentLost: "Failed to save the conversation. Some content may be lost.",
       conversationMissing: "Conversation not found.",
       convertNoProject: "No project is available to host this conversation.",
       convertedToProject: "Converted to a project conversation.",

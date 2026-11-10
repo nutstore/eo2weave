@@ -25,6 +25,7 @@ import {
   getRuntimeHandlesForProject,
 } from '@/native-fs'
 import { toast } from 'sonner'
+import { i18nText } from './conversation-message-ops'
 
 /**
  * Checkpoint tools belong to the agent tool registry, which transitively reads
@@ -1585,7 +1586,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             // but syncToDisk internally routes via getAllNativeDirectoryHandles + resolvePath.
             const hasDiskRoot = await workspace.hasAnyNativeDirectoryHandle()
             if (!hasDiskRoot) {
-              toast.error('没有可用的本地目录')
+              toast.error(i18nText('workspace.toast.noLocalDirectory', '没有可用的本地目录'))
               set({ isLoading: false })
               return
             }
@@ -1633,7 +1634,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           } catch (e) {
             console.error('[WorkspaceStore] Failed to sync unsynced snapshots:', e)
             set({ isLoading: false })
-            toast.error('同步快照失败')
+            toast.error(i18nText('workspace.toast.snapshotSyncFailed', '同步快照失败'))
           }
         },
 
@@ -1682,7 +1683,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
             const hasDiskRoot = await workspace.hasAnyNativeDirectoryHandle()
             if (!hasDiskRoot) {
-              toast.error('没有可用的本地目录')
+              toast.error(i18nText('workspace.toast.noLocalDirectory', '没有可用的本地目录'))
               set({ isLoading: false })
               return
             }
@@ -1701,7 +1702,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           } catch (e) {
             console.error('[WorkspaceStore] Failed to sync OPFS-only files:', e)
             set({ isLoading: false })
-            toast.error('同步 OPFS 文件失败')
+            toast.error(i18nText('workspace.toast.opfsSyncFailed', '同步 OPFS 文件失败'))
           }
         },
 

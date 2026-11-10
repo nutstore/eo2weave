@@ -177,6 +177,7 @@ export const conversation = {
       turnDeleteFailed: "删除对话轮次失败",
       titleSaveFailed: "标题修改保存失败",
       draftSaveFailed: "停止后保存草稿失败，部分内容可能丢失",
+      saveFailedContentLost: "对话保存失败，部分内容可能丢失",
       conversationMissing: "对话不存在",
       convertNoProject: "没有可用的项目来承载此对话",
       convertedToProject: "已转换为项目对话",

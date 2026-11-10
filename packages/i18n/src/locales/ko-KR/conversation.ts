@@ -145,6 +145,7 @@ export const conversation = {
       turnDeleteFailed: "턴 삭제에 실패했습니다",
       titleSaveFailed: "제목 변경을 저장하지 못했습니다",
       draftSaveFailed: "중지 후 초안 저장에 실패했습니다. 일부 내용이 사라질 수 있습니다",
+      saveFailedContentLost: "대화 저장에 실패했습니다. 일부 내용이 사라질 수 있습니다",
       conversationMissing: "대화를 찾을 수 없습니다",
       convertNoProject: "이 대화를 저장할 프로젝트가 없습니다",
       convertedToProject: "프로젝트 대화로 전환되었습니다",
