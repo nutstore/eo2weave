@@ -153,6 +153,7 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
           args,
           context: {
             ...originalToolContext,
+            toolCallId,
             contextUsage: { usedTokens: realUsedTokens ?? 0, maxTokens: maxContextTokens - reserveTokens },
           },
           prepareResult: isRunCode ? stripRunCodeTrace : undefined,

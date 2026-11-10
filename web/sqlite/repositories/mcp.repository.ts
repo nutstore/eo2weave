@@ -5,6 +5,7 @@
  */
 
 import { getSQLiteDB } from '../sqlite-database'
+import { normalizeMCPConfig } from '../../mcp/mcp-types'
 import type { MCPServerConfig, MCPServerType, MCPTransportType } from '../../mcp/mcp-types'
 import { parseJSON, toJSON, boolToInt, intToBool } from '../sqlite-database'
 
@@ -18,6 +19,7 @@ interface MCPServerRow {
   description: string | null
   url: string
   transport: string
+  protocol_mode?: 'auto' | 'legacy'
   enabled: number
   token: string | null
   timeout: number
@@ -103,9 +105,9 @@ export class MCPRepository {
     const db = getSQLiteDB()
     await db.execute(
       `INSERT INTO mcp_servers (id, name, description, url, transport, enabled,
-                                token, timeout, retry_count, retry_delay, type,
+                                token, timeout, retry_count, retry_delay, type, protocol_mode,
                                 env, session_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
          description = excluded.description,
@@ -117,6 +119,7 @@ export class MCPRepository {
          retry_count = excluded.retry_count,
          retry_delay = excluded.retry_delay,
          type = excluded.type,
+         protocol_mode = excluded.protocol_mode,
          env = excluded.env,
          session_id = excluded.session_id,
          updated_at = excluded.updated_at`,
@@ -125,13 +128,14 @@ export class MCPRepository {
         server.name,
         server.description || null,
         server.url,
-        server.transport,
+        server.transport === 'sse' ? 'streamable_http' : server.transport,
         boolToInt(server.enabled),
         server.token || null,
         server.timeout ?? 30000,
         server.retryCount ?? 3,
         server.retryDelay ?? 1000,
         server.type ?? 'user',
+        server.protocolMode ?? 'auto',
         server.env ? toJSON(server.env) : null,
         server.sessionId || null,
         server.createdAt,
@@ -261,6 +265,7 @@ export class MCPRepository {
    */
   private rowToServer(row: MCPServerRow): StoredMCPServer {
     return {
+      ...normalizeMCPConfig({
       id: row.id,
       name: row.name,
       description: row.description || undefined,
@@ -273,7 +278,8 @@ export class MCPRepository {
       retryDelay: row.retry_delay ?? undefined,
       type: row.type as MCPServerType,
       env: row.env ? parseJSON<Record<string, string>>(row.env, {}) : undefined,
-      sessionId: row.session_id || undefined,
+      protocolMode: row.protocol_mode ?? 'auto',
+      }),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }

@@ -100,6 +100,7 @@ export function resetPageActionDedupeForTest(): void {
   pageActionSettled.clear()
 }
 
+import { relayMCPNetwork } from '../lib/mcp-network'
 // ============================================================
 // Background Service Worker
 // ============================================================
@@ -3348,6 +3349,7 @@ export default defineBackground(() => {
   // ── Port-based streaming bridge for Codex, page-outside MCP, and plugin download flows ──
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'agent_bridge_stream') return;
+    let mcpNetworkStarted = false
 
     port.onMessage.addListener((message) => {
       if (CODEX_OAUTH_ENABLED && message.type === 'codex_image_generate') {
@@ -3469,6 +3471,28 @@ export default defineBackground(() => {
         }
       })()
       return
+      }
+
+      if (message.type === 'mcp_network_v2') {
+        // Only the sender is gated here. Unlike mcp_proxy_fetch_stream (#148),
+        // this relay deliberately does NOT apply assertValidMcpEndpointUrl:
+        // self-hosted and intranet MCP servers are a supported deployment
+        // (product decision), and they are unreachable through that validator.
+        // Redirects stay refused inside the relay (redirect:'error'), so a
+        // public endpoint still cannot bounce the fetch at a metadata host.
+        if (!isTrustedWebMCPSender(port.sender)) {
+          port.postMessage({
+            type: 'error',
+            errorCode: 'UNAUTHORIZED_MCP_PROXY_SENDER',
+            message: 'MCP network stream is only available to trusted WebMCP senders',
+          })
+          try { port.disconnect() } catch {}
+          return
+        }
+        if (mcpNetworkStarted) return
+        mcpNetworkStarted = true
+        relayMCPNetwork(port, message)
+        return
       }
 
       if (message.type === 'mcp_proxy_fetch_stream') {

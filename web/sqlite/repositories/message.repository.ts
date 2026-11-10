@@ -64,6 +64,12 @@ export class MessageRepository {
     )
   }
 
+  async hasMessage(convId: string, messageId: string): Promise<boolean> {
+    return !!(await getSQLiteDB().queryFirst(
+      'SELECT id FROM messages WHERE conversation_id = ? AND id = ?', [convId, messageId]
+    ))
+  }
+
   /**
    * Insert multiple messages in a transaction
    */

@@ -212,7 +212,8 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    // v19 (kind) also runs — the final version is the current base.
+    // v19 (kind) and v20/v21 (subagent timeout, managed MCP tasks) also run —
+    // the final version is the current base.
     expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ALTER TABLE fs_ops ADD COLUMN delete_mode')
@@ -246,6 +247,39 @@ describe('initializeSchema', () => {
     db.blockFsOpsRepair = true
 
     await expect(initializeSchema(db)).rejects.toThrow('SCHEMA_INCOMPATIBLE')
+  })
+
+  it('upgrades a v18 database with managed MCP tasks and resets legacy sessions', async () => {
+    const db = new SchemaDatabase(18)
+
+    await initializeSchema(db)
+
+    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.statements).toContainEqual(
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS mcp_tasks')
+    )
+    expect(db.statements).toContainEqual(
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS mcp_task_inputs')
+    )
+    expect(db.statements).toContain("ALTER TABLE mcp_servers ADD COLUMN protocol_mode TEXT NOT NULL DEFAULT 'auto'")
+    expect(db.statements).toContain("UPDATE mcp_servers SET transport = 'streamable_http' WHERE transport = 'sse'")
+    expect(db.statements).toContain('UPDATE mcp_servers SET session_id = NULL')
+  })
+
+  it('repairs managed MCP task tables when a v21 database is missing physical DDL', async () => {
+    // Startup repair covers databases whose user_version already reached v21
+    // while the DDL never landed, and existing databases adopting the feature.
+    const db = new SchemaDatabase(BASE_SCHEMA_VERSION)
+
+    await initializeSchema(db)
+
+    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.statements).toContainEqual(
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS mcp_tasks')
+    )
+    expect(db.statements).toContainEqual(
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS mcp_task_inputs')
+    )
   })
 
   it('does not downgrade the version when repair functions run on a fresh database', async () => {

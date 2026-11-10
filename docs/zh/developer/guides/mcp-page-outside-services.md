@@ -94,7 +94,8 @@ WebMCP 指的是 **当前页面上下文直接暴露** 的 MCP 能力。
 - `browser-extension/entrypoints/injected.content.ts`
   - 页面内注入 `window.__agentWeb`
   - 暴露：
-    - `mcpProxyFetch(...)`
+    - `mcpNetworkFetch(...)`（SDK 字节流接口）
+    - `mcpProxyFetch(...)`（旧网页兼容）
     - `mcpProxyFetchStream(...)`
 
 - `browser-extension/entrypoints/content.ts`
@@ -103,6 +104,7 @@ WebMCP 指的是 **当前页面上下文直接暴露** 的 MCP 能力。
 - `browser-extension/entrypoints/background.ts`
   - 真正执行网络请求
   - 处理：
+    - `mcp_network_v2`
     - `mcp_proxy_fetch`
     - `mcp_proxy_fetch_stream`
 
@@ -114,7 +116,7 @@ WebMCP 指的是 **当前页面上下文直接暴露** 的 MCP 能力。
 
 ```text
 MCPSettings / MCPManager / MCPClientService
-  -> window.__agentWeb.mcpProxyFetch(...) / mcpProxyFetchStream(...)
+  -> SDK Transport -> window.__agentWeb.mcpNetworkFetch(...)
   -> injected.content.ts
   -> content.ts relay
   -> background.ts
@@ -123,22 +125,22 @@ MCPSettings / MCPManager / MCPClientService
 
 ### 4.1 streamable HTTP
 
-适用于标准 HTTP 请求/响应场景。
+适用于标准 Streamable HTTP，支持 JSON 与 POST SSE 响应。
 
 当前实现中：
 
 - `server.transport === 'streamable_http'`
-- 通过 `mcpProxyFetch(...)` 走插件代理
+- SDK Streamable HTTP Transport 通过 `mcpNetworkFetch(...)` 走插件代理
 
 ### 4.2 SSE
 
-适用于服务端通过 SSE 返回 JSON-RPC 响应流。
+适用于传统 GET 建流、独立 POST 发送请求的 SSE 服务。
 
 当前实现中：
 
-- `server.transport === 'sse'`
-- 通过 `mcpProxyFetchStream(...)` 走插件流式代理
-- 插件会先发送 `response_start`，再发送 `chunk` / `done` / `error`
+- `server.transport === 'legacy_sse'`
+- SDK SSE Transport 通过 `mcpNetworkFetch(...)` 走插件字节流代理
+- 插件先发送 `response_start`，再传递 Base64 字节块、正常结束或错误；取消会中止上游 fetch
 
 ---
 
@@ -211,7 +213,7 @@ Figma Remote 是当前最直接可接入的页面外 MCP 服务。
 - 浏览器插件不存在
 - 插件版本过旧，不支持页面外 MCP 代理
 - Figma token 缺失、过期或权限不足
-- transport 误设为 `sse`
+- transport 误设为 `legacy_sse`
 - 网络访问失败或请求超时
 
 当前 `MCPSettings.tsx` 已针对 Figma 补充了更友好的连接失败提示。
@@ -271,7 +273,7 @@ Mail MCP 是 EO2Weave 自研的 streamable_http MCP server，提供邮件起草 
 - Mail MCP server 未启动，或内网 firewall 拦截
 - Personal Mail Token 没生成 / 复制错位 / 在 setup 页未保存 SMTP 凭据
 - SMTP 凭据错误（QQ Mail 必须用 SMTP **授权码**，不是登录密码；host: `smtp.qq.com`，port: `465` SSL 或 `587` STARTTLS）
-- transport 误设为 `sse`
+- transport 误设为 `legacy_sse`
 
 ### 7.6 当前已自动化 vs 未自动化
 
@@ -325,7 +327,7 @@ OpenPencil 更适合作为 **本地桌面应用 + 插件代理** 场景接入。
 - `name`: `OpenPencil MCP`
 - `url`: 由 OpenPencil 实际暴露的本地 HTTP MCP 地址决定
 - `transport`: 以 OpenPencil HTTP MCP 实际协议为准
-  - 若是标准 SSE，则填 `sse`
+  - 若是标准 SSE，则填 `legacy_sse`
   - 若是标准 streamable HTTP，则填 `streamable_http`
 - `token`: 使用 OpenPencil 提供的 auth token
 
@@ -358,7 +360,7 @@ OpenPencil 更适合作为 **本地桌面应用 + 插件代理** 场景接入。
 先确认服务提供的是：
 
 - `streamable_http`
-- `sse`
+- `legacy_sse`
 - 还是仅 `stdio`
 
 > 注意：当前 Web 平台主要支持 HTTP 形态；纯 `stdio` 服务不能由网页直接接入，必须先有桌面端或代理层转换。
@@ -401,12 +403,13 @@ OpenPencil 更适合作为 **本地桌面应用 + 插件代理** 场景接入。
 
 至少验证：
 
-1. `initialize`
+1. `server/discover`，或旧版 `initialize`
 2. `tools/list`
 3. 选一个真实工具执行 `tools/call`
 4. 如支持 task，再验证：
-   - `/tasks/get`
-   - `/tasks/result`
+   - `tasks/get`
+   - `tasks/result`（2025 Tasks）；新版结果随 `tasks/get` 返回
+   - `tasks/cancel`，以及新版 `tasks/update`（标准 JSON-RPC 方法，使用 MCP 端点）
 
 ---
 
@@ -417,7 +420,7 @@ OpenPencil 更适合作为 **本地桌面应用 + 插件代理** 场景接入。
 ### 已完成
 
 - `mcp-client.service.ts` 正式 client 统一走插件 bridge
-- 支持 `mcpProxyFetch` 与 `mcpProxyFetchStream`
+- SDK 使用 `mcpNetworkFetch` 字节流；保留 `mcpProxyFetch` 与 `mcpProxyFetchStream` 兼容旧网页
 - 支持 timeout 透传
 - 支持从响应头捕获 `mcp-session-id`
 - 支持 task 轮询也走 bridge
@@ -472,3 +475,112 @@ OpenPencil 更适合作为 **本地桌面应用 + 插件代理** 场景接入。
 - **Mail MCP**：EO2Weave 自研远程 MCP，已通过 preset 接入，依赖用户在 `/setup` 页自助配置 Personal Mail Token + SMTP 凭据
 - **OpenPencil MCP**：技术上可接，但应通过浏览器插件 bridge 代理，不应由页面直连本地地址
 - **通用原则**：所有页面外的 MCP 服务，都通过 `web/services/mcp-client.service.ts` + 浏览器插件 bridge 接入
+
+## 官方 SDK 与后台 Tasks
+
+网页端使用固定版本 `@modelcontextprotocol/client@2.4.0` 和
+`@modelcontextprotocol/ext-tasks@0.2.2`。每个服务连接有独立的 SDK Client、Transport
+和 Tasks Session。协议默认自动协商；高级设置中的「旧版 initialize」可以跳过新版探测。
+认证、网络错误会直接显示，不会被当作协议不兼容。
+
+配置迁移规则：旧 `sse` 表示 POST 响应流，统一迁移为 `streamable_http`；真正的 GET
+建流使用新选项 `legacy_sse`。导入也执行相同转换，导出包含规范化后的传输值与
+`protocolMode`。普通连接不复用数据库中的旧会话 ID。现有 Bearer Token 配置继续有效，
+本轮不增加 OAuth 登录流程、Node 后端、浏览器 stdio 客户端或 Native Host 协议迁移。
+
+扩展新增 `mcp_network_v2` 流接口，依次传递响应状态与头、Base64 字节块、结束或错误。
+取消流、页面断开均会中止上游 fetch。网络响应头超时、每次协议请求超时、本地有限等待
+分别管理，持续流没有固定 5 分钟寿命。旧桥接仍保留；连接旧扩展时普通请求仍可使用，
+但后台 Tasks、传统 SSE 与可靠取消需要升级扩展，设置页会显示提示。
+
+### Agent 调用与查询
+
+`call_tool` 增加 MCP 专用参数 `execution_mode: "background" | "wait"`。
+有项目、会话归属时默认后台模式；同步工具仍直接返回原结果。标准 Tasks 返回
+`submitted: true`、`completed: false`、`local_task_id`、`remote_task_id` 和状态，Agent
+可以继续其他工作。没有归属的内部调用等待最终结果。WebMCP 显式后台模式会返回不支持。
+
+Agent 收到后台任务编号后应告知用户任务待完成，继续独立工作或结束当前轮次，不主动连续
+调用 `wait/status/result`。仅在用户明确要求等待、获取结果，或点击卡片中的「发送给 AI」后使用
+等待与结果读取。这个默认行为通过系统提示、工具说明及提交回执共同约束，不是权限拦截。
+`mcp_tasks.wait` 的外层工具超时至少比本地等待期限多 5 秒，避免 30 秒等待与统一超时竞争。
+
+`mcp_tasks` 只操作当前项目已知任务：
+
+| action | 行为 |
+| --- | --- |
+| `list` | 列表，可用 `conversation_id` 筛选 |
+| `status` | 读取远端状态和本地观察状态 |
+| `result` | 返回原始最终结果；未取得结果时返回当前状态 |
+| `wait` | 默认本地等待 10 秒，最多 30 秒 |
+| `cancel` | Agent 授权后请求远端取消 |
+| `resume` | Agent 授权后恢复已有任务的观察 |
+
+恢复、取消、查询均不会重新执行原工具。已移除私有 REST Tasks 路径、向工具参数注入
+`arguments.task`、从文本 JSON 识别任务 ID 的逻辑。用户工具参数中原本的 `task` 字段
+保持普通参数的含义。
+
+### 持久化、刷新与多标签页
+
+SQLite v19 新增 `mcp_tasks` 和 `mcp_task_inputs`。创建请求发送前先保存提交记录；
+任务引用保存并由页面级管理器接管后，Agent 停止不会取消任务。交接前已知任务 ID 时
+尽力取消。创建响应丢失时标记「提交结果不明」，禁止自动重放。网络观察失败不等于远端
+失败；瞬态错误按 2、5、10、30 秒退避，认证和协议错误暂停并提示处理。
+
+Web Locks 按端点、协议代次、远端任务编号协调单一观察者；同源其他标签页通过
+BroadcastChannel 接收状态和输入请求。页面关闭后停止本地观察；扩展后台和 Service
+Worker 不负责长期轮询。重新打开后仅恢复已有引用。恢复要求服务仍启用、端点及认证
+身份一致、服务端任务仍存在。旧版 HTTP Tasks 还要求原会话 ID 与能力快照有效。
+会话过期或任务不存在时只显示原因，不创建替代任务。
+
+任务记录不复制 Token 或模型 API Key。最终结果保留文本、图片、资源块和结构化内容。
+序列化超过 256,000 字符的结果复用资产 I/O，保存在所属项目的 `assets/mcp-tasks`
+目录；删除原会话后仍可查看，不依赖原会话资产目录。
+
+### 临时任务卡片、输入与手动继续
+
+原会话输入框上方按需显示 MCP 任务卡片，没有任务时不占空间。运行中紧凑显示服务、
+工具、状态和耗时；轮询只更新状态，不新增消息、不抢焦点。结果就绪后可展开查看，或
+点击「发送给 AI」。任务区域可通过「稍后」收起为一行，任务完成时不会强行展开。
+多任务默认显示两项，其余按需展开。暂停、恢复、取消和输入交互在卡片详情中处理。
+原左下角任务入口和任务弹框已移除。
+
+只为新任务及上线时尚未结束的任务启用卡片。已完成的旧记录不弹出；历史仍保存在数据库，
+可由 `mcp_tasks` 按项目查询。查看结果无需调用模型。失败、取消及提交结果不明可点击
+「知道了」隐藏提示，不删除记录或重新提交。
+
+完成通知通过持久化标记去重，不自动启动 Agent。用户点击「发送给 AI」后，向原会话
+发送引用本地任务编号的普通用户消息，不改动输入草稿或历史工具调用。消息保存成功后卡片
+消失，不等待 AI 回答结束；原会话忙碌时按钮显示「加入待发送队列」。入队后由现有队列
+展示，若队列撤销、清空或刷新丢失则恢复卡片，不自动重投。已发送及已关闭状态跨刷新保留。
+原会话不存在、结果尚未保存或发送失败时保留卡片并说明原因。
+
+标准 SDK 请求与 Tasks 输入共用处理器，并绑定原项目、会话：
+
+- 表单按 Schema 校验，可接受、拒绝或取消。密码类字段仅在内存保留，刷新后重新询问。
+- URL 请求展示来源与链接，必须由用户手动打开，不自动访问或代填凭据。
+- sampling 展示待发送消息、实际配置模型和输出预算，明确确认后才调用模型。仅发送
+  服务端提供的内容，不自动附带会话或工作区。无法表示的内容、无法强制执行的工具选择、
+  无法保证输出预算的 Provider 会明确拒绝。返回的工具调用只是数据，不自动执行。
+- roots 默认返回 `{ roots: [] }`，不暴露本地路径。
+
+原有自定义二进制上传继续作为独立业务流程保留。
+
+### 验证
+
+```sh
+cd web
+pnpm test:run mcp
+pnpm test:run agent
+pnpm test:run components
+pnpm test:run store sqlite services
+pnpm typecheck
+MCP_LONG_TASK=1 pnpm test:run mcp/__tests__/long-task.integration.test.ts
+```
+
+最后一条执行真实经过 305 秒的 SDK/桥接协议夹具，不启动浏览器；它不能代替真实扩展与
+服务端的联调。可选 `playwright.mcp.config.ts` 测试覆盖实际 MV3 扩展、两代 Tasks、
+刷新恢复、多标签页输入和取消，仅在需要浏览器验证时运行。该夹具的任务仓库使用浏览器
+本地适配，SQLite 的 schema 与 DDL 单独验证。`MCP_E2E_EXTENSION` 指定实际加载的
+扩展构建目录，`MCP_LONG_TASK=1` 启用长任务场景。普通扩展构建产物仍为
+`browser-extension/dist/chrome-mv3`，开发产物目录独立。

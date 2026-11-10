@@ -267,6 +267,7 @@ export interface ToolContext {
   /** True when this tool call originates from a delegated subagent. */
   isSubagent?: boolean
   /** Workspace ID bound to the current agent run */
+  toolCallId?: string
   workspaceId?: string | null
   /** Active project ID for cross-namespace VFS routing */
   projectId?: string | null
