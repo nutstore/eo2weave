@@ -280,12 +280,15 @@ async function buildRuntimeDeps(schedule: NonNullable<Awaited<ReturnType<typeof 
   const contextManager = new ContextManager({
     maxContextTokens: provider.maxContextTokens,
     reserveTokens: 4000,
-    enableSummarization: false, // No compression for schedule runs
+    // Headless runs DO compress: a long tool-heavy schedule can outgrow the
+    // model's window, and summarising keeps the run alive with the history
+    // intact instead of failing on a context-length error. Dropping history
+    // (trimMessages) would be the only alternative and it loses information.
+    enableSummarization: true,
     maxMessageGroups: 20,
     // Headless runs stay on the ratio gate. ContextManager treats an unset flag
     // as "cap on", so omitting this would silently apply the 200K cap here —
-    // and would ignore a user who turned the cap off. (The convert gate also
-    // honours enableSummarization, so this run never summarises either way.)
+    // and would ignore a user who turned the cap off.
     compressionAbsoluteCapEnabled: false,
   })
 

@@ -533,4 +533,31 @@ describe('convert-bridge', () => {
     expect(payload).not.toContain('critical task statement')
     expect(payload).toContain('follow up')
   })
+  it('compresses on the ratio when summarization is on and the cap is off (schedule config)', async () => {
+    // services/schedule-runner.ts builds exactly this combination for headless
+    // runs. A long tool-heavy run must degrade by summarising — dropping the
+    // history instead would lose the work the run already did.
+    const summarize = vi.fn(async () => ({ summary: 'HEADLESS', mode: 'llm' as const }))
+    const result = await convertAgentMessagesToLlm({
+      agentMessages: [
+        { role: 'user', content: 'scheduled prompt', timestamp: 1 },
+        { role: 'assistant', content: [{ type: 'text', text: 'did the work' }], timestamp: 2, usage: { totalTokens: 900_000 } },
+      ] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 4_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 3,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionEnabled: true,
+      compressionAbsoluteCapEnabled: false,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).toHaveBeenCalledTimes(1)
+    expect(result.compressionBaseline?.summary).toBe('HEADLESS')
+  })
 })
