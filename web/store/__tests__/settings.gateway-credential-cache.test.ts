@@ -80,6 +80,40 @@ describe('gateway credential cache (#277)', () => {
     await vi.waitFor(() => expect(useSettingsStore.getState().hasApiKey).toBe(true))
   })
 
+  it('re-reads the gateway credential when a workspace restore changes the provider', async () => {
+    await registerGateway()
+    const { useSettingsStore } = await importStore()
+
+    // Gateway active with an unreadable shadow: the "no key" verdict is cached
+    // under the gateway's credential key.
+    loadApiKeyMock.mockResolvedValue(null)
+    useSettingsStore.setState({
+      providerType: 'llm-gateway',
+      modelName: 'gw-model',
+      hasApiKey: false,
+      hasApiKeyLoaded: false,
+      modelOverridesByWorkspace: {
+        'conv-gateway': { providerType: 'llm-gateway', modelName: 'gw-model' },
+      },
+    })
+    expect(await useSettingsStore.getState().checkHasApiKey()).toBe(false)
+
+    // The shadow becomes readable while another provider is active.
+    loadApiKeyMock.mockImplementation(async (providerKey?: string) =>
+      providerKey === GATEWAY_CREDENTIAL_KEY ? 'access-token-1' : 'sk-openai',
+    )
+    useSettingsStore.getState().switchProviderAndModel('openai', 'gpt-test')
+    await vi.waitFor(() => expect(useSettingsStore.getState().hasApiKey).toBe(true))
+    loadApiKeyMock.mockClear()
+
+    // Switching to a conversation pinned to the gateway changes the active
+    // provider outside switchProviderAndModel — it must re-read too.
+    useSettingsStore.getState().syncModelForWorkspace('conv-gateway')
+
+    await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalledWith(GATEWAY_CREDENTIAL_KEY))
+    await vi.waitFor(() => expect(useSettingsStore.getState().providerType).toBe('llm-gateway'))
+  })
+
   it('does not re-read the gateway credential on a same-provider switch', async () => {
     await registerGateway()
     const { useSettingsStore } = await importStore()

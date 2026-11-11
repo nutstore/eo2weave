@@ -1455,6 +1455,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             }
           }
           set(updates as SettingsState)
+          // Restoring a workspace pinned to a DIFFERENT provider changes the
+          // active provider outside switchProviderAndModel, so the cached
+          // credential verdict has to be dropped here too — the same stale
+          // "no key" replay described in switchProviderAndModel below (#277).
+          if (!credentialStillApplies) {
+            get().invalidateApiKeyCache()
+            void get().checkHasApiKey()
+          }
         }
       },
 
