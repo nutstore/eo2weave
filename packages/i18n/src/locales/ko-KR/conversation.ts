@@ -28,6 +28,8 @@ export const conversation = {
     pageContextCollapse: "접기",
     pageContextRawData: "원시 데이터",
     pageContextWebmcpTools: "WebMCP 도구 ({count}개)",
+    pageContextWebmcpHostDisabled: "WebMCP를 사용할 수 없습니다: 이 사이트가 승인되지 않았습니다",
+    pageContextWebmcpNoTools: "WebMCP: 이 페이지에서 도구를 찾지 못했습니다",
     branch: "여기서 분기",
     share: "내보내기",
     shareAsMarkdown: "Markdown 파일",

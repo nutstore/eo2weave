@@ -155,6 +155,9 @@ export interface Message {
      *  Frozen at capture time so the conversation history shows what the
      *  agent actually saw, and stale snapshots age out with the message. */
     webmcpTools?: Array<{ name: string; description: string; fullName: string }>
+    /** Why the tool list is empty (frozen with it). Only present on snapshots
+     *  captured after the field existed; older messages render nothing. */
+    webmcpStatus?: 'ok' | 'host-disabled' | 'unavailable'
   }
 }
 

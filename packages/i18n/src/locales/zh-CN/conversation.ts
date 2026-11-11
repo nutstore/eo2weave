@@ -27,6 +27,8 @@ export const conversation = {
     pageContextCollapse: "收起",
     pageContextRawData: "原始数据",
     pageContextWebmcpTools: "WebMCP 工具（{count} 个）",
+    pageContextWebmcpHostDisabled: "WebMCP 不可用：该站点未授权",
+    pageContextWebmcpNoTools: "WebMCP：此页面未检测到工具",
     branch: "从此处分叉",
     share: "导出",
     shareAsMarkdown: "Markdown 文件",
