@@ -310,25 +310,23 @@ describe('LLMGatewayCard credential state', () => {
     expect(screen.queryByText('Login expired')).toBeNull()
   })
 
-  it('rejects the login confirmation when a concurrent logout purges the shared credentials before the in-lock re-read', async () => {
+  it('rejects the login confirmation when a concurrent logout purges the shared session', async () => {
     // Sourcery (PR #128): the freshness re-read must consult SHARED
     // credential state, not the tab-local modelCredentialStatus field —
     // that field is excluded from the cross-tab settings snapshots, so a
     // logout committing in ANOTHER tab leaves a stale 'valid' here and the
-    // old check accepted it. The re-read now runs INSIDE the credential
-    // lock against the shared token cache / access shadow, so a logout
-    // that committed before it wins: the login must surface the auth
-    // failure instead of repainting "Logged in" over purged credentials.
+    // old check accepted it. The shared state is the token pair (#277): the
+    // re-read runs INSIDE the credential lock against it, so a logout that
+    // committed before it wins and the login must surface the auth failure
+    // instead of repainting "Logged in" over purged credentials.
     settingsState.modelCredentialStatus = 'expired'
     applyGatewayLoginTokensMock.mockImplementation(async (_token, options) => {
       options.onCommit()
       // Simulate the concurrent logout committing FIRST (it holds the same
-      // lock): it deleted the shared access-token shadow, while the
+      // lock): `clearStoredTokens` wipes the shared token pair, while the
       // tab-local status field — excluded from cross-tab sync — still
-      // carries whatever this tab last saw. The pre-lock token-cache guard
-      // passes (the cache delete has not landed here yet), so the IN-LOCK
-      // re-read is what must catch the purge.
-      apiKeyState.key = null
+      // carries whatever this tab last saw.
+      gatewayMock.hasStoredTokens.mockReturnValue(false)
       return { ok: true, accessToken: 'new-access-token', models: [] }
     })
 

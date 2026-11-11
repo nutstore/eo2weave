@@ -803,8 +803,14 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
   // Handle llm-gateway separately (uses different API key storage)
   if (llmGatewayProviderKey) {
     try {
-      const gwMod = await import('@/agent/providers/llm-gateway-provider')
-      const gwKey = await loadApiKey(gwMod.getLLMGatewayApiKeyProviderKey())
+      // Availability comes from the authoritative session (#277): the api-key
+      // shadow is a best-effort mirror, so discovery must not depend on it.
+      // 'unknown' = nothing resolved in this tab yet — keep the provider
+      // visible (with its registry status) instead of dropping the user's
+      // persisted gateway selection.
+      const { getGatewayCredentialStatus: gwStatusFn } = await import('@/agent/providers/llm-gateway-auth')
+      const gwStatus = gwStatusFn()
+      const gwKey = gwStatus === 'valid' || gwStatus === 'expired' || gwStatus === 'unknown'
       // A registered gateway WITHOUT its saved access-token shadow yet
       // (startup: registration lands before AppBootstrap persists the
       // restored token) must still appear in discovery with its registry status

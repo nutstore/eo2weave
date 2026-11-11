@@ -1356,9 +1356,10 @@ export function LLMGatewayCard({
     let cancelled = false
     ;(async () => {
       try {
-        const { loadApiKey } = await import('@/security/api-key-store')
-        const key = await loadApiKey(getLLMGatewayApiKeyProviderKey())
-        if (!cancelled) setIsLoggedIn(!!key)
+        // The session IS the token pair (#277). The api-key shadow is only a
+        // best-effort mirror of the access token, so a failed shadow write
+        // must not render a logged-in user as logged out.
+        if (!cancelled) setIsLoggedIn(hasStoredTokens())
       } catch (error) {
         if (cancelled) return
         console.error('[LLMGatewayCard] Failed to check login status:', error)
@@ -1570,9 +1571,12 @@ export function LLMGatewayCard({
       // in-lock re-read and we keep its verdict instead of overwriting it
       // with our confirmation.
       await withGatewayCredentialLock(async () => {
-        const { loadApiKey: loadSharedKey } = await import('@/security/api-key-store')
-        const sharedShadowKey = await loadSharedKey(getLLMGatewayApiKeyProviderKey())
-        const sharedCredentialAlive = hasStoredTokens() && !!sharedShadowKey
+        // The shared credential is the token pair alone (#277): `clearStoredTokens`
+        // clears it under this same lock, which is what orders a concurrent
+        // logout against this commit. The api-key shadow used to be an extra
+        // term here, but it is a best-effort mirror — requiring it turned a
+        // login whose shadow write failed into "no login".
+        const sharedCredentialAlive = hasStoredTokens()
         if (!sharedCredentialAlive) {
           staleAfterLock = true
           return
@@ -1707,9 +1711,9 @@ export function LLMGatewayCard({
     // cannot come from a concurrent login (its commit repopulates it inside
     // this lock); clearing our own logged-out UI remains correct for it.
     await withGatewayCredentialLock(async () => {
-      const { loadApiKey: loadSharedKey } = await import('@/security/api-key-store')
-      const sharedShadowKey = await loadSharedKey(getLLMGatewayApiKeyProviderKey())
-      const concurrentLoginAlive = hasStoredTokens() && !!sharedShadowKey
+      // Same ordering as the login guard: the token pair is the shared
+      // credential state a concurrent login commits and a logout purges.
+      const concurrentLoginAlive = hasStoredTokens()
       if (concurrentLoginAlive) {
         logoutSuperseded = true
         return
