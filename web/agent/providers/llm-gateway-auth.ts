@@ -10,6 +10,7 @@
  */
 
 import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
+import { credentialRegistry } from '@/agent/providers/credential-state'
 import { t as translate } from '@creatorweave/i18n'
 import {
   pendingKeyStoreOpIsFenced,
@@ -334,7 +335,6 @@ export const LLM_GATEWAY_REFRESH_TOKEN_KEY_ID = REFRESH_TOKEN_DB_KEY
  * just failed — i.e. "expired" vs "never logged in" — to pick the right
  * message. This mirror keeps that read synchronous.
  */
-let lastCredentialStatus: 'unknown' | 'valid' | 'expired' | 'missing' = 'unknown'
 
 /**
  * Whether a status verdict produced under `generation` may still be applied.
@@ -379,7 +379,7 @@ function setCredentialStatus(
   // login can land, so the generation is re-checked after it resolves too.
   // The authoritative credential state is unaffected — only this UI mirror.
   if (expectedGeneration !== undefined && !isCredentialStatusCurrent(expectedGeneration)) return
-  lastCredentialStatus = status
+  credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: status })
   const generation = authSessionGeneration
   void import('@/store/settings.store')
     .then(({ useSettingsStore }) => {
@@ -403,7 +403,7 @@ function setCredentialStatus(
 async function setCredentialStatusLocked(
   status: 'valid' | 'expired' | 'missing',
 ): Promise<void> {
-  lastCredentialStatus = status
+  credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: status })
   try {
     const { useSettingsStore } = await import('@/store/settings.store')
     useSettingsStore.getState().setModelCredentialStatus(status)
@@ -417,7 +417,10 @@ async function setCredentialStatusLocked(
  * module. `'unknown'` means no token operation has run in this session yet.
  */
 export function getGatewayCredentialStatus(): 'unknown' | 'valid' | 'expired' | 'missing' {
-  return lastCredentialStatus
+  const { kind } = credentialRegistry.getState(GATEWAY_CREDENTIAL_KEY_ALIAS)
+  // `temporary` has no equivalent in this older API: report it as `unknown`,
+  // which callers already treat as "no verdict yet" rather than "no key".
+  return kind === 'temporary' ? 'unknown' : kind
 }
 
 export type RefreshResult =
@@ -786,7 +789,7 @@ function escalateFencedKeyStoreWrite(opId: string): void {
  * store field.
  */
 export function escalateFencedKeyStoreMutation(): void {
-  lastCredentialStatus = 'expired'
+  credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: 'expired' })
   void import('@/store/settings.store')
     .then(({ useSettingsStore }) => {
       const state = useSettingsStore.getState()
@@ -1308,7 +1311,7 @@ export function persistDeviceLoginTokens(
   // logged-out session. Callers (applyGatewayLoginTokensInner) already set
   // the status inside their own lock-held commit via
   // settings.setModelCredentialStatus, which covers the settings store.
-  lastCredentialStatus = 'valid'
+  credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: 'valid' })
 }
 
 /**

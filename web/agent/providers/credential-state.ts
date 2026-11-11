@@ -79,6 +79,17 @@ export class CredentialRegistry {
 
   constructor(private readonly timeoutMs: number = CREDENTIAL_RESOLVE_TIMEOUT_MS) {}
 
+  /**
+   * Clear every verdict. Tests use this to keep the module-level singleton from
+   * leaking state between cases; the app never calls it.
+   */
+  reset(): void {
+    this.states.clear()
+    this.versions.clear()
+    this.inflight.clear()
+    this.epoch += 1
+  }
+
   /** The current verdict. Never throws; unknown until something resolves or commits. */
   getState(providerKey: string): CredentialState {
     return (
