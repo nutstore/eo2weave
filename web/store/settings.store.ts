@@ -1329,6 +1329,31 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
 
         const providerKey = effective.apiKeyProviderKey
 
+        // llm-gateway: availability comes from the AUTHORITATIVE session, not
+        // from the api-key shadow (#277). The shadow is a best-effort
+        // durability copy written by login / refresh / boot restore; when that
+        // write fails the shadow is missing while the session is perfectly
+        // valid (documented at resolveGatewayDispatchCredential), and gating a
+        // send on it produced "configure your API Key" for a logged-in user.
+        // getGatewayCredentialStatus() is the verdict the dispatch resolver
+        // maintains, and it is synchronous — no extra await on the send path.
+        if (state.providerType === 'llm-gateway') {
+          const { getGatewayCredentialStatus } = await import('@/agent/providers/llm-gateway-auth')
+          const status = getGatewayCredentialStatus()
+          if (status === 'unknown') {
+            // Nothing resolved yet in this tab. Defer like the
+            // registering-provider path: `hasApiKeyLoaded` stays false so the
+            // UI shows a neutral state instead of "no key", and the dispatch
+            // resolver still owns the definitive answer.
+            return false
+          }
+          const hasKey = status === 'valid'
+          if (get().providerType === 'llm-gateway') {
+            set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
+          }
+          return hasKey
+        }
+
         // Return cached value if available and not stale.
         // `hasApiKeyLoaded` was set during the initial population that
         // filled the cache, so we don't need to set it again here.
