@@ -1246,7 +1246,13 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         void persistSnapshotWatermarksToDb(high, nextLow)
       },
       setHasApiKey: (hasApiKey) => set({ hasApiKey }),
-      setModelCredentialStatus: (modelCredentialStatus) => set({ modelCredentialStatus }),
+      setModelCredentialStatus: (modelCredentialStatus) => set((state) => ({
+        modelCredentialStatus,
+        ...(state.providerType === 'llm-gateway' &&
+        (modelCredentialStatus === 'valid' || modelCredentialStatus === 'expired' || modelCredentialStatus === 'missing')
+          ? { hasApiKey: modelCredentialStatus === 'valid', hasApiKeyLoaded: true }
+          : {}),
+      })),
       setModelCredentialStatusError: (modelCredentialStatusError) =>
         set({ modelCredentialStatusError }),
       setAgentLoopNotificationsEnabled: (enabled) => {
@@ -1352,14 +1358,12 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           const { getGatewayCredentialStatus } = await import('@/agent/providers/llm-gateway-auth')
           const status = getGatewayCredentialStatus()
           if (status === 'unknown') {
-            // An unknown session is not evidence of a missing API key. Allow
-            // dispatch to resolve it authoritatively, including retrying a
-            // transient restore failure, instead of inheriting another
-            // provider's verdict or blocking the resolver behind the UI gate.
+            // Unknown is not a configured credential. Preserve a completed
+            // flush on subsequent checks so startup cannot return to loading.
             if (get().providerType === 'llm-gateway') {
-              set({ hasApiKey: true, hasApiKeyLoaded: true })
+              set({ hasApiKey: false, ...(options?.flush ? { hasApiKeyLoaded: true } : {}) })
             }
-            return true
+            return false
           }
           const hasKey = status === 'valid'
           if (get().providerType === 'llm-gateway') {
@@ -1516,6 +1520,9 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const updates: Partial<SettingsState> = {
           providerType: newProviderType,
           modelName: newModelName,
+          ...(!credentialStillApplies && newProviderType === 'llm-gateway'
+            ? { hasApiKey: false, hasApiKeyLoaded: false }
+            : {}),
           ...(credentialStillApplies ||
             (state.modelCredentialStatus !== 'expired' &&
               state.modelCredentialStatus !== 'unauthorized')

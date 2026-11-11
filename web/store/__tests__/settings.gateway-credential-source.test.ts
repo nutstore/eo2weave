@@ -94,18 +94,45 @@ describe('gateway availability source (#277)', () => {
     expect(store.getState().hasApiKeyLoaded).toBe(true)
   })
 
-  it('allows the session resolver to retry an unknown verdict after switching providers', async () => {
+  it('keeps an unknown verdict neutral even after switching from a configured provider', async () => {
     const store = await setup('unknown')
-    store.setState({ hasApiKey: false, hasApiKeyLoaded: true })
-    expect(await store.getState().checkHasApiKey()).toBe(true)
-    expect(store.getState().hasApiKey).toBe(true)
+    store.setState({ providerType: 'openai', hasApiKey: true, hasApiKeyLoaded: true })
+    store.getState().switchProviderAndModel('llm-gateway', 'gw-model')
+    expect(await store.getState().checkHasApiKey()).toBe(false)
+    expect(store.getState().hasApiKey).toBe(false)
+    expect(store.getState().hasApiKeyLoaded).toBe(false)
+  })
+
+  it('finishes a flush without reporting an unknown session as configured', async () => {
+    const store = await setup('unknown')
+    expect(await store.getState().checkHasApiKey({ flush: true })).toBe(false)
+    expect(store.getState().hasApiKey).toBe(false)
     expect(store.getState().hasApiKeyLoaded).toBe(true)
   })
 
-  it('allows a configured gateway with an unknown verdict to retry after a flush', async () => {
+  it('updates the selected gateway availability after the session resolves', async () => {
     const store = await setup('unknown')
-    expect(await store.getState().checkHasApiKey({ flush: true })).toBe(true)
+    store.setState({ hasApiKey: false, hasApiKeyLoaded: true })
+    store.getState().setModelCredentialStatus('valid')
+    expect(store.getState().hasApiKey).toBe(true)
     expect(store.getState().hasApiKeyLoaded).toBe(true)
+    store.getState().setModelCredentialStatus('missing')
+    expect(store.getState().hasApiKey).toBe(false)
+  })
+
+  it('does not change another provider key when the gateway session changes', async () => {
+    const store = await setup('unknown')
+    store.setState({ providerType: 'openai', hasApiKey: true, hasApiKeyLoaded: true })
+    store.getState().setModelCredentialStatus('missing')
+    expect(store.getState().hasApiKey).toBe(true)
+  })
+
+  it('does not re-enter loading when an unknown verdict follows a flush', async () => {
+    const store = await setup('unknown')
+    await store.getState().checkHasApiKey({ flush: true })
+    await store.getState().checkHasApiKey()
+    expect(store.getState().hasApiKeyLoaded).toBe(true)
+    expect(store.getState().hasApiKey).toBe(false)
   })
 
 })
