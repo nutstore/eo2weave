@@ -262,6 +262,47 @@ const REFRESH_TOKEN_DB_KEY = '__llm_gateway_refresh_token__'
 const LOGOUT_MARKER_KEY = '__llm_gateway_last_logout_at__'
 
 /**
+ * localStorage marker recording that this browser's gateway session DIED
+ * (an expired purge committed), as opposed to the user never having logged
+ * in or having logged out explicitly.
+ *
+ * `clearStoredTokens` deletes the SQLite refresh-token record — the record
+ * `inspectPriorSession` used to distinguish "expired" from "missing"
+ * (#282). The verdict therefore flipped within one session: right after the
+ * failed refresh the UI said "session expired, log in again", and the next
+ * read said "configure a provider". The marker makes the verdict
+ * independent of the record: an expired purge sets it, an explicit logout
+ * and any new credential commit (saveStoredTokens) clear it, so every later
+ * read keeps reporting `expired` until the user acts.
+ */
+const EXPIRED_SESSION_MARKER_KEY = '__llm_gateway_expired_session__'
+
+function markExpiredSession(): void {
+  try {
+    localStorage.setItem(EXPIRED_SESSION_MARKER_KEY, String(Date.now()))
+  } catch {
+    // Non-fatal: without the marker the next read degrades to the record
+    // (already deleted) → 'missing'. Same failure class as the logout marker.
+  }
+}
+
+function clearExpiredSessionMarker(): void {
+  try {
+    localStorage.removeItem(EXPIRED_SESSION_MARKER_KEY)
+  } catch {
+    // Non-fatal.
+  }
+}
+
+function hasExpiredSessionMarker(): boolean {
+  try {
+    return localStorage.getItem(EXPIRED_SESSION_MARKER_KEY) !== null
+  } catch {
+    return false
+  }
+}
+
+/**
  * Read the last logout timestamp (null when never logged out / unreadable).
  */
 export function getLastLogoutTimestamp(): number | null {
@@ -547,6 +588,10 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
 
 function saveStoredTokens(tokens: StoredTokens): void {
   bumpAuthSessionGeneration()
+  // A credential commit supersedes whatever killed the previous session:
+  // clear the expired marker so a FUTURE expired purge (of this new pair)
+  // is what the next read reports, not a stale one (#282).
+  clearExpiredSessionMarker()
   localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens))
   // Also persist refresh_token to SQLite for durability across localStorage clears.
   // The backup write may run after a newer login. Serialize and verify its
@@ -806,6 +851,18 @@ async function clearStoredTokens(
       notifyGatewayTokensPurged('expired')
     }
     localStorage.removeItem(TOKEN_STORAGE_KEY)
+    // An expired purge destroys the refresh-token record (#277 tombstone),
+    // so the "session died" evidence must move somewhere the next read can
+    // still see: the marker keeps the verdict 'expired' for the rest of the
+    // session instead of letting it degrade to 'missing' (#282).
+    if (finalStatus === 'expired') {
+      markExpiredSession()
+    } else {
+      // An explicit logout means the user INTENTIONALLY ended the session:
+      // the next read must offer setup, not a re-login prompt for a session
+      // they chose to end.
+      clearExpiredSessionMarker()
+    }
     // Record the logout timestamp so a login attempt that was pending
     // (device-code approval / model preparation) in another tab cannot
     // commit AFTER this logout: gateway-login's commit re-checks this
@@ -920,9 +977,17 @@ async function resyncGatewayApiKeyAvailability(): Promise<void> {
 /**
  * Did this browser ever log in to the gateway?
  *
- * The tombstone is the SQLite refresh-token record (#277): login writes it,
- * `clearStoredTokens` deletes it, and `loadStoredTokensWithFallback` reads it.
- * So "the token pair is gone but this record exists" means the session DIED,
+ * Two tombstones, in order:
+ * 1. The expired-session marker (#282): set by the expired purge itself,
+ *    cleared by logout and by any new credential commit. The SQLite record
+ *    cannot serve this role — the purge DELETES it, which is exactly the
+ *    bug: the verdict flipped 'expired' → 'missing' on the next read.
+ * 2. The SQLite refresh-token record (#277): login writes it,
+ *    `loadStoredTokensWithFallback` reads it. It still covers sessions
+ *    whose token PAIR was cleared by older paths before the marker existed,
+ *    and the localStorage-evicted case.
+ *
+ * So "the token pair is gone but a tombstone exists" means the session DIED,
  * not that the user never logged in.
  *
  * Tri-state on purpose: 'error' means the store could not be read, which is
@@ -935,6 +1000,11 @@ async function inspectPriorSession(): Promise<PriorSessionInspection> {
   try {
     return await withGatewayCredentialLock(async (): Promise<PriorSessionInspection> => {
       if (loadStoredTokens()) return 'none'
+      // The refresh-token record is DELETED by the expired purge itself, so
+      // its absence no longer proves "never logged in": a session that died
+      // (invalid_grant) leaves the expired marker behind, and every later
+      // read must keep reporting 'had-session' → 'expired' (#282).
+      if (hasExpiredSessionMarker()) return 'had-session'
       const { loadApiKey } = await import('@/security/api-key-store')
       // Bounded read only: a stalled read must not hold the credential lock.
       const record = await runBoundedKeyStoreOp(loadApiKey(REFRESH_TOKEN_DB_KEY))
