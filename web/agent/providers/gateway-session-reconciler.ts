@@ -11,7 +11,7 @@
  * Wiring: the auth layer (llm-gateway-auth.ts) publishes cross-tab session
  * events through a small subscription API — deliberately NOT a static
  * auth → provider import, which would create the fragile cycle documented
- * at `LLM_GATEWAY_API_KEY_ID`. This module statically imports BOTH sides
+ * in the api-key store (removed in #277). This module statically imports BOTH sides
  * (the event API and the provider module) and is itself wired from the app
  * lifecycle (AppBootstrap) via a dynamic import, so no cycle exists.
  *
@@ -55,7 +55,6 @@ import {
 } from '@/agent/providers/llm-gateway-auth'
 import { getProviderConfig } from '@/agent/providers/types'
 import {
-  getLLMGatewayApiKeyProviderKey,
   getLLMGatewayBaseURL,
   getLLMGatewayClientId,
   registerLLMGatewayProvider,
@@ -237,7 +236,6 @@ async function reconcileLoggedIn(job: ReconcileJob, event: GatewaySessionEvent):
     const { useSettingsStore } = await import('@/store/settings.store')
     if (fenceAfterResolve()) {
       const settings = useSettingsStore.getState()
-      settings.invalidateApiKeyCache(getLLMGatewayApiKeyProviderKey())
       settings.checkHasApiKey()
       settings.triggerProviderRefresh()
     }
@@ -265,7 +263,6 @@ async function reconcileAccessRefresh(job: ReconcileJob): Promise<GatewayReconci
       const { useSettingsStore } = await import('@/store/settings.store')
       if (fence(job)) {
         const settings = useSettingsStore.getState()
-        settings.invalidateApiKeyCache(getLLMGatewayApiKeyProviderKey())
         settings.checkHasApiKey()
         settings.triggerProviderRefresh()
       }

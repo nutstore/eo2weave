@@ -104,6 +104,7 @@ import {
   isCredentialStatusCurrent,
   isGatewayAccessTokenCurrent,
   type GatewaySessionEvent,
+  hasStoredSession,
 } from '@/agent/providers/llm-gateway-auth'
 import { getModelsForProvider, getProviderCatalogStatus, getProviderConfig, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 // The catalog module registers the token-purge listener at import time; the
@@ -398,7 +399,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
       const result = await refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
       expect(result.status).toBe('expired')
       await vi.waitFor(() => {
-        expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
         expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_refresh_token__')
       })
       expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
@@ -597,45 +597,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(JSON.parse(localStorage.getItem(TOKENS_KEY)!).refresh_token).toBe('newer-login-refresh')
     })
 
-    it('does not purge a new login while checking a stale access shadow', async () => {
-      let releaseShadow!: (value: string) => void
-      loadApiKeyMock.mockImplementation((provider) => provider === '__llm_gateway_token__'
-        ? new Promise<string>((resolve) => { releaseShadow = resolve })
-        : Promise.resolve(null))
-      const pending = getValidAccessToken(BASE_URL, CLIENT_ID)
-      await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__'))
-      seedStoredTokens({ access_expires_at: Date.now() + 3600_000, refresh_token: 'new-login-refresh' })
-      releaseShadow('old-access-shadow')
-      await pending
-      expect(deleteApiKeyMock).not.toHaveBeenCalledWith('__llm_gateway_token__')
-      expect(JSON.parse(localStorage.getItem(TOKENS_KEY)!).refresh_token).toBe('new-login-refresh')
-    })
-
-    it('serializes logout behind an in-flight refreshed access-key write', async () => {
-      seedStoredTokens()
-      vi.stubGlobal('fetch', vi.fn(async () => refreshResponse('refreshed-access')))
-      let releaseShadow!: () => void
-      saveApiKeyMock.mockImplementation(async (provider) => {
-        if (provider === '__llm_gateway_token__') {
-          await new Promise<void>((resolve) => { releaseShadow = resolve })
-        }
-      })
-      const refresh = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
-      await vi.waitFor(() => expect(saveApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__', 'refreshed-access'))
-      const logout = logoutGateway()
-      const finishedEarly = await Promise.race([
-        Promise.resolve(logout).then(() => true),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 20)),
-      ])
-      expect(finishedEarly).toBe(false)
-      expect(deleteApiKeyMock).not.toHaveBeenCalled()
-      releaseShadow()
-      await refresh
-      await logout
-      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
-      expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
-    })
-
     it('logout does not hold the credential lock forever on a stalled key-store delete', async () => {
       seedStoredTokens()
       // A deletion that NEVER settles: the logout must still complete within
@@ -701,37 +662,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(settingsStoreState.modelCredentialStatusError).toBeNull()
     })
 
-    it('purges the api-key shadow key when the refresh_token is expired locally', async () => {
-      seedStoredTokens({ refresh_expires_at: Date.now() - 1000 })
-
-      const result = await forceRefreshAccessToken(BASE_URL, CLIENT_ID)
-
-      expect(result).toBeNull()
-      await vi.waitFor(() => {
-        expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
-      })
-      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
-    })
-
-    it('getValidAccessToken purges the shadow on a definitively invalid token', async () => {
-      seedStoredTokens()
-
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async () =>
-          new Response(JSON.stringify({ code: 'invalid_grant', message: 'token revoked' }), { status: 401 })
-        )
-      )
-
-      const token = await getValidAccessToken(BASE_URL, CLIENT_ID)
-
-      expect(token).toBeNull()
-      await vi.waitFor(() => {
-        expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
-      })
-      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
-    })
-
     it('getValidAccessToken returns the cached access token while it is still valid', async () => {
       const now = Date.now()
       localStorage.setItem(
@@ -752,16 +682,17 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(deleteApiKeyMock).not.toHaveBeenCalled()
     })
 
-    it('stale access_token shadow without a token pair reports "expired"', async () => {
+    it('a surviving refresh-token record without a token pair reports "expired"', async () => {
+      // The durable record is the tombstone (#277): the pair is gone but the
+      // browser did log in, so this is a dead session, not a fresh install.
       loadApiKeyMock.mockImplementation(async (provider: string) =>
-        provider === '__llm_gateway_token__' ? 'stale-access-token' : null
+        provider === '__llm_gateway_refresh_token__' ? '{"refresh_token":"r"}' : null
       )
 
       const token = await getValidAccessToken(BASE_URL, CLIENT_ID)
 
       expect(token).toBeNull()
       expect(getGatewayCredentialStatus()).toBe('expired')
-      expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
     })
 
     it('no shadow either (never logged in) still reports "missing"', async () => {
@@ -809,14 +740,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
       await expect(logout).rejects.toThrow()
       expect(settingsStoreState.modelCredentialStatusError).not.toBeNull()
       __resetGatewayCredentialFencingForTests()
-    })
-
-    it('logoutGateway also purges the api-key shadow key', async () => {
-      await logoutGateway()
-
-      await vi.waitFor(() => {
-        expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
-      })
     })
 
     it('invalidates only the access token rejected by the gateway', async () => {
@@ -868,7 +791,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       // The key store really loses the gateway's credential on purge; the
       // cached verdict only follows if the resync actually runs.
       deleteApiKeyMock.mockImplementation(async (key: string) => {
-        if (key === '__llm_gateway_token__') settingsStoreState.gatewayKeyPresent = false
+        if (key === '__llm_gateway_refresh_token__') settingsStoreState.gatewayKeyPresent = false
       })
       expect(settingsStoreState.hasApiKey).toBe(true)
 
@@ -879,7 +802,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
       // `true` outlives the purge and the welcome screen keeps the gateway
       // "configured" instead of offering setup / re-login (review: "Expired
       // credentials leave a stale key result").
-      expect(settingsStoreState.invalidatedKeyCaches).toContain('__llm_gateway_token__')
       expect(settingsStoreState.apiKeyChecks).toEqual([{ flush: true }])
       // The state the UI actually reads. Asserting only the calls above would
       // pass even if the re-check never landed (review: "Stale key state goes
@@ -895,7 +817,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       settingsStoreState.hasApiKeyLoaded = false
       seedStoredTokens({ refresh_expires_at: Date.now() - 1000 })
       deleteApiKeyMock.mockImplementation(async (key: string) => {
-        if (key === '__llm_gateway_token__') settingsStoreState.gatewayKeyPresent = false
+        if (key === '__llm_gateway_refresh_token__') settingsStoreState.gatewayKeyPresent = false
       })
 
       await expect(refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)).resolves.toMatchObject({ status: 'expired' })
@@ -904,7 +826,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
       // would resolve that provider's status and end its loading state before
       // its own registration completes (review: "Other provider shows false
       // setup state"). Dropping the gateway's cache entry is enough.
-      expect(settingsStoreState.invalidatedKeyCaches).toContain('__llm_gateway_token__')
       expect(settingsStoreState.apiKeyChecks).toEqual([])
       expect(settingsStoreState.hasApiKeyLoaded).toBe(false)
     })
@@ -1118,74 +1039,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
     }, 20_000)
   })
 
-  describe('late key-store ops are tracked until real settlement', () => {
-    it('a credential commit waits for the UNDERLYING op, not just the grace timer', async () => {
-      // A key-store op that outlives deadline AND grace still holds the
-      // registry: a later credential commit must not be admitted while the
-      // old op can still write (the pre-fix registry dropped the op when
-      // the grace timer resolved `settled`, letting a late write land after
-      // a newer login/logout committed under the lock).
-      seedStoredTokens()
-      let releaseShadow!: () => void
-      saveApiKeyMock.mockImplementation(async (provider) => {
-        if (provider === '__llm_gateway_token__') {
-          await new Promise<void>((resolve) => { releaseShadow = resolve })
-        }
-      })
-
-      // Op 1: a refresh whose shadow write stalls past deadline+grace.
-      vi.stubGlobal('fetch', vi.fn(async () => refreshResponse('stalled-access')))
-      const refresh = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
-      await vi.waitFor(() =>
-        expect(saveApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__', 'stalled-access'),
-      )
-
-      // Op 2: a logout that queues behind op 1. Under the pre-fix registry
-      // op 1 left the registry when its grace timer fired, so this lock
-      // acquisition would NOT wait for the still-pending write.
-      const logout = logoutGateway()
-      // Hold the stalled write PAST the 10s deadline AND the 5s grace
-      // window: the pre-fix registry dropped op 1 as soon as the grace
-      // timer fired its `settled`, so only exercising the window after
-      // deadline+grace distinguishes the real-tracking registry from the
-      // broken one — before that point both registries still hold the op
-      // (the deadline itself had not expired), and this test would pass
-      // without ever touching the regression. A below-deadline release
-      // cannot prove the fix.
-      await new Promise((resolve) => setTimeout(resolve, 10_000 + 5_000 + 100))
-      // While the write is STILL pending (well past deadline+grace), a
-      // later credential commit must remain blocked: it may only proceed
-      // once the underlying op settles.
-      let commitSettled = false
-      const { withGatewayCredentialLock } = await import(
-        '@/agent/providers/gateway-credential-lock'
-      )
-      const laterCommit = withGatewayCredentialLock(async () => {
-        commitSettled = true
-        return 'commit'
-      })
-      let commitFailed: unknown = null
-      laterCommit.catch((e) => {
-        commitFailed = e
-      })
-      await new Promise((resolve) => setTimeout(resolve, 100))
-      expect(commitSettled).toBe(false)
-      expect(commitFailed).toBeNull()
-
-      // Release the stalled write: only then may the logout and the later
-      // commit proceed, in registry order.
-      releaseShadow()
-      await Promise.all([refresh, logout, laterCommit])
-      expect(localStorage.getItem(TOKENS_KEY)).toBeNull()
-      expect(commitSettled).toBe(true)
-      expect(commitFailed).toBeNull()
-
-      // The registry must be empty now — a follow-up commit is admitted
-      // without waiting on any ghost op.
-      await withGatewayCredentialLock(async () => 'commit')
-    }, 45_000)
-  })
-
   describe('cross-tab pending-op barrier', () => {
     const PENDING_OPS_KEY = 'eo2weave-gateway-keystore-pending-ops'
 
@@ -1394,10 +1247,10 @@ describe('resolveGatewayDispatchCredential (#172 findings 3+4+5)', () => {
     expect(getGatewayCredentialStatus()).toBe('missing')
   })
 
-  it('reports expired (not missing) when the access shadow of a dead session survives', async () => {
+  it('reports expired (not missing) when only the refresh-token record of a dead session survives', async () => {
     localStorage.clear()
     loadApiKeyMock.mockImplementation(async (provider: string) =>
-      provider === '__llm_gateway_token__' ? 'dead-shadow' : null)
+      provider === '__llm_gateway_refresh_token__' ? '{"refresh_token":"dead"}' : null)
 
     const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
     expect(resolved.ok).toBe(false)
@@ -1777,5 +1630,32 @@ describe('credential status generation fence (#180)', () => {
       name: 'GatewayTokenStoreUnavailableError',
       cause: expect.objectContaining({ message: 'sqlite down' }),
     })
+  })
+})
+
+describe('hasStoredSession (#277)', () => {
+  it('counts the durable refresh record when localStorage was evicted', async () => {
+    localStorage.clear()
+    loadApiKeyMock.mockImplementation(async (provider: string) =>
+      provider === '__llm_gateway_refresh_token__' ? '{"refresh_token":"r"}' : null)
+
+    // The pair is gone but the record survives: the next dispatch restores the
+    // session from it, so the card must not offer a login.
+    await expect(hasStoredSession()).resolves.toBe(true)
+  })
+
+  it('is false when neither the pair nor the record exists', async () => {
+    localStorage.clear()
+    loadApiKeyMock.mockResolvedValue(null)
+
+    await expect(hasStoredSession()).resolves.toBe(false)
+  })
+
+  it('answers from the pair without touching the key store', async () => {
+    loadApiKeyMock.mockClear()
+    seedStoredTokens()
+
+    await expect(hasStoredSession()).resolves.toBe(true)
+    expect(loadApiKeyMock).not.toHaveBeenCalled()
   })
 })

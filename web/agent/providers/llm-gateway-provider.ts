@@ -22,7 +22,7 @@
 import { ENABLE_LLM_GATEWAY } from '@/lib/deploy-region'
 import type { LLMProviderConfig, LLMProviderType, ModelInfo, ProviderCatalogStatus, ProviderMeta } from '@/agent/providers/types'
 import { getModelsForProvider, getProviderCatalogStatus, getProviderConfig, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
-import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, invalidateGatewayAccessToken, onGatewayTokensPurged, refreshAccessTokenWithStatus, LLM_GATEWAY_API_KEY_ID, type RateLimitsResponse } from './llm-gateway-auth'
+import { fetchGatewayModels, fetchRateLimits, forceRefreshAccessToken, getGatewayAuthSessionGeneration, getGatewayCredentialStatus, getValidAccessToken, invalidateGatewayAccessToken, onGatewayTokensPurged, refreshAccessTokenWithStatus, type RateLimitsResponse } from './llm-gateway-auth'
 import { getModelContextWindow } from './model-store'
 import { t as translateStatic } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
@@ -36,7 +36,6 @@ export const LLM_GATEWAY_PROVIDER_TYPE: LLMProviderType = 'llm-gateway'
  * truth lives in llm-gateway-auth.ts (the auth layer needs to purge dead
  * tokens without importing this module); re-exported here for convenience.
  */
-export { LLM_GATEWAY_API_KEY_ID }
 
 // ── Configuration ──
 
@@ -376,13 +375,7 @@ export function isLLMGatewayActive(providerType: LLMProviderType): boolean {
   return providerType === LLM_GATEWAY_PROVIDER_TYPE
 }
 
-/**
- * Get the API key storage key for LLM Gateway.
- * The actual "API key" is the gateway's access_token.
- */
-export function getLLMGatewayApiKeyProviderKey(): string {
-  return LLM_GATEWAY_API_KEY_ID
-}
+
 
 /**
  * Fetch rate-limit / quota status from the gateway with automatic token

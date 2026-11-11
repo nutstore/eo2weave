@@ -1545,12 +1545,9 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // select-model step as soon as they pick their default model.
         apiKeyCache.delete(newProviderType)
         apiKeyCachePromise.delete(newProviderType)
-        // …but the cache key is the provider's CREDENTIAL key, not its id:
-        // llm-gateway caches its verdict under `__llm_gateway_token__`, so
-        // deleting `newProviderType` alone left a stale "no key" verdict
-        // behind. Switching away and back then replayed it without reading
-        // the (meanwhile restored) credential, and the send gate kept
-        // refusing with "configure your API Key" (#277).
+        // The cache key is the provider's CREDENTIAL key, not its id, so drop
+        // whatever the new selection resolves to as well (it may have been
+        // cached while the credential was unreadable — #277).
         get().invalidateApiKeyCache()
         void get().checkHasApiKey()
       },

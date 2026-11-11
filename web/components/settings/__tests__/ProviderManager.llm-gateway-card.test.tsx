@@ -71,6 +71,7 @@ const gatewayMock = vi.hoisted(() => ({
   prepareGatewayModels: vi.fn(),
   getGatewayCredentialStatus: vi.fn(() => 'unknown'),
   hasStoredTokens: vi.fn(() => true),
+  hasStoredSession: vi.fn(async () => true),
   registerGatewayModels: vi.fn(),
   catalogVersion: 0,
   authGeneration: 0,
@@ -98,6 +99,7 @@ vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   fetchGatewayModels: gatewayMock.fetchGatewayModels,
   getGatewayCredentialStatus: gatewayMock.getGatewayCredentialStatus,
   hasStoredTokens: gatewayMock.hasStoredTokens,
+  hasStoredSession: gatewayMock.hasStoredSession,
   // Consumed by handleLogout's purge-failure badge re-derivation (which key
   // to check for a surviving refresh-token backup). Missing here, the
   // binding access throws inside that catch and silently keeps the card
@@ -194,6 +196,9 @@ describe('LLMGatewayCard credential state', () => {
     // Shared credential state: default to live tokens so the login/logout
     // freshness guards pass; tests override to simulate another tab's purge.
     gatewayMock.hasStoredTokens.mockReturnValue(true)
+    // The card asks the session-aware check (#277); mirror the pair state so
+    // per-test hasStoredTokens overrides keep driving the logged-in UI.
+    gatewayMock.hasStoredSession.mockImplementation(async () => gatewayMock.hasStoredTokens())
     applyGatewayLoginTokensMock.mockImplementation(async (_token, options) => {
       options.onCommit()
       settingsState.setModelCredentialStatus('valid')

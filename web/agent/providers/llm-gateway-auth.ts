@@ -13,7 +13,6 @@ import {
   trackPendingKeyStoreOp,
   withGatewayCredentialLock,
 } from '@/agent/providers/gateway-credential-lock'
-import { saveApiKey as saveGatewayApiKey } from '@/security/api-key-store'
 import { useI18nStore } from '@/i18n/store'
 import { unregisterDynamicProvider, type ProviderCatalogStatus } from '@/agent/providers/types'
 
@@ -110,7 +109,7 @@ const TOKEN_STORAGE_KEY = 'llm-gateway-tokens'
 // The storage listener below implements INVALIDATION only: it bumps the
 // tab-local auth generation and unregisters the provider. It deliberately
 // does NOT import the provider module (a static auth → provider import
-// would create the fragile cycle documented at LLM_GATEWAY_API_KEY_ID), so
+// would create a fragile auth <-> provider import cycle), so
 // re-adoption of the new session cannot live here. Instead the listener
 // publishes a small typed event, and the observer-side reconciler
 // (gateway-session-reconciler.ts, wired from the app lifecycle) subscribes
@@ -238,22 +237,13 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * Single source of truth for the api-key-store key holding the gateway
- * access_token (llm-gateway-provider.ts re-exports this). Lives HERE because
- * the auth layer must be able to purge a dead token without importing the
- * provider module (which statically imports this file — a dynamic import from
- * here would create a fragile cycle that silently breaks in test envs).
- */
-export const LLM_GATEWAY_API_KEY_ID = '__llm_gateway_token__'
-
-/**
  * SQLite-backed storage key for the refresh_token.
  *
- * access_token lives in the api-key-store under __llm_gateway_token__
- * (see llm-gateway-provider.ts). The refresh_token is persisted here so it
- * survives localStorage clearing — localStorage is volatile (browsers may
- * evict it, users may clear it, private mode discards it), while the
- * api-key-store is backed by SQLite in OPFS which is far more durable.
+ * This record is the gateway's only durable credential state (#277): the
+ * access_token lives in localStorage (volatile — browsers evict it, users
+ * clear it, private mode discards it) and the refresh_token is persisted here
+ * so a session survives that. It is also the tombstone that tells "session
+ * died" apart from "never logged in".
  *
  * We store a JSON blob containing refresh_token + expiry metadata so that on
  * restore we can reconstruct the full StoredTokens object.
@@ -842,19 +832,14 @@ async function clearStoredTokens(
     } catch (e) {
       purgeFailures.push(e)
     }
-    try {
-      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(LLM_GATEWAY_API_KEY_ID))
-    } catch (e) {
-      purgeFailures.push(e)
-    }
     if (purgeFailures.length > 0) {
       // Diagnostic log on purpose — a silent failure here would re-create
       // the "logged-in badge on a dead session" state with no way to debug.
       console.warn('[llm-gateway] failed to purge stored credentials:', purgeFailures)
-      // A surviving refresh-token backup can be resurrected by
-      // loadStoredTokensWithFallback, and a surviving access-key shadow
-      // keeps the settings card's "Logged in" badge lit. Do NOT report the
-      // logout complete: mark the status write as FAILED so the UI renders
+      // A surviving refresh-token record can be resurrected by
+      // loadStoredTokensWithFallback, so the session is not gone. Do NOT
+      // report the logout complete: mark the status write as FAILED so the UI
+      // renders
       // a stale-state hint instead of trusting 'missing', and throw so the
       // caller surfaces a retryable error instead of silently declaring a
       // session gone that can come back.
@@ -907,7 +892,6 @@ async function resyncGatewayApiKeyAvailability(): Promise<void> {
   try {
     const { useSettingsStore } = await import('@/store/settings.store')
     const settings = useSettingsStore.getState()
-    settings.invalidateApiKeyCache(LLM_GATEWAY_API_KEY_ID)
     // `checkHasApiKey()` answers for the SELECTED provider. Forcing a lookup
     // while another provider is selected would resolve ITS status — ending a
     // still-registering provider's loading state with a false "not
@@ -926,67 +910,36 @@ async function resyncGatewayApiKeyAvailability(): Promise<void> {
 }
 
 /**
- * Detect (and purge) a stale access_token shadow left behind in the
- * api-key-store.
+ * Did this browser ever log in to the gateway?
  *
- * The shadow (LLM_GATEWAY_API_KEY_ID) is written on every successful login
- * and is the key the settings card's "Logged in" badge is derived from. When
- * a session dies, the token pair is purged — but the shadow can survive
- * (e.g. only the localStorage copy was lost, or purging one key failed).
- * The card would then show "Logged in" + "Log out" while every gateway call
- * reports "not logged in" (user-reported bug).
+ * The tombstone is the SQLite refresh-token record (#277): login writes it,
+ * `clearStoredTokens` deletes it, and `loadStoredTokensWithFallback` reads it.
+ * So "the token pair is gone but this record exists" means the session DIED,
+ * not that the user never logged in.
  *
+ * Tri-state on purpose: 'error' means the store could not be read, which is
+ * NOT evidence of a logout (#172 finding 3) — callers keep the session
+ * retryable instead of declaring the user signed out.
  */
-/**
- * Inspect the access-token shadow to distinguish "session died" from
- * "never logged in". Tri-state: 'had-session' (a shadow existed and was
- * purged), 'none' (no token pair, no shadow), 'error' (storage unreachable
- * — NOT evidence of logout; #172 finding 3).
- */
-type ShadowInspection = 'had-session' | 'none' | 'error'
+type PriorSessionInspection = 'had-session' | 'none' | 'error'
 
-async function inspectAccessTokenShadow(): Promise<ShadowInspection> {
+async function inspectPriorSession(): Promise<PriorSessionInspection> {
   try {
-    return await withGatewayCredentialLock(async (): Promise<ShadowInspection> => {
+    return await withGatewayCredentialLock(async (): Promise<PriorSessionInspection> => {
       if (loadStoredTokens()) return 'none'
-      const { loadApiKey, deleteApiKey } = await import('@/security/api-key-store')
-      // The read is bounded only (see runBoundedKeyStoreOp): a stalled read
-      // must not hold the credential lock forever.
-      const shadow = await runBoundedKeyStoreOp(loadApiKey(LLM_GATEWAY_API_KEY_ID))
-      // A new session can appear during the key-store read. Do not delete
-      // its access shadow when the earlier no-token observation is stale.
-      if (!shadow || loadStoredTokens()) return 'none'
-      // The deletion is fenced at its landing point: an op that stayed
-      // pending past a newer credential commit must not delete that
-      // commit's shadow key (round-20). A fenced deletion here is reported
-      // like any other purge failure — the caller degrades to 'error'.
-      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(LLM_GATEWAY_API_KEY_ID))
+      const { loadApiKey } = await import('@/security/api-key-store')
+      // Bounded read only: a stalled read must not hold the credential lock.
+      const record = await runBoundedKeyStoreOp(loadApiKey(REFRESH_TOKEN_DB_KEY))
+      // A new session can appear during the read; then it is not a tombstone.
+      if (!record || loadStoredTokens()) return 'none'
       return 'had-session'
     })
   } catch (e) {
-    // Diagnostic log on purpose — a silent failure here would keep the
-    // "logged-in badge on a dead session" state with no way to debug.
-    console.warn('[llm-gateway] failed to inspect the access_token shadow:', e)
+    console.warn('[llm-gateway] failed to inspect the refresh-token record:', e)
     return 'error'
   }
 }
 
-/**
- * Purge a stale access_token shadow (pre-fencing callers). Returns true
- * when a shadow was found — i.e. the user HAD logged in and the session
- * died ('expired') — and false otherwise (never logged in, or the storage
- * could not be read; those callers report 'missing' either way).
- */
-async function purgeStaleAccessTokenShadow(): Promise<boolean> {
-  return (await inspectAccessTokenShadow()) === 'had-session'
-}
-
-//
-// NOTE: clearStoredTokens() purges both SQLite keys (refresh-token backup +
-// the access_token shadow) through a single dynamic import — see the comment
-// inside it. purgeStaleAccessTokenShadow() is the narrow counterpart for the
-// case where the token pair is ALREADY gone but the shadow survived.
-//
 // ── API Calls ──
 
 async function gatewayFetch<T>(
@@ -1151,17 +1104,6 @@ export async function refreshAccessToken(
     body: JSON.stringify({ refresh_token: refreshToken }),
     signal,
   }), signal)
-}
-
-/**
- * Update the API key store with a new access token.
- * Call after refresh to ensure the next LLM request uses the new token.
- */
-export async function persistAccessTokenToKeyStore(accessToken: string): Promise<void> {
-  // Keep this auth-layer write independent from the provider module. The
-  // provider re-exports this auth module, so importing it here creates a
-  // fragile cycle.
-  await saveGatewayApiKey(LLM_GATEWAY_API_KEY_ID, accessToken)
 }
 
 /**
@@ -1606,11 +1548,11 @@ async function refreshAccessTokenWithStatusImpl(
     // The token pair is gone, but the api-key-store may still hold the
     // access_token shadow of an earlier session. That means the session DIED
     // (the user had logged in), not that they never logged in — report
-    // 'expired' and purge the shadow so the settings card offers a re-login
-    // instead of a logout.
-    // Distinguish "shadow purged" (session died) from a failed shadow
-    // inspection (storage unreachable — retryable, NOT absence; #175 review).
-    const inspection = await inspectAccessTokenShadow()
+    // 'expired' so the settings card offers a re-login instead of a logout.
+    // The record itself stays: it is the tombstone this verdict came from.
+    // Distinguish "a session existed" (it died) from a failed inspection
+    // (storage unreachable — retryable, NOT absence; #175 review).
+    const inspection = await inspectPriorSession()
     if (inspection === 'error') {
       return { status: 'temporary_error', error: new Error('gateway credential storage unavailable') }
     }
@@ -1712,13 +1654,6 @@ async function refreshAccessTokenWithStatusImpl(
       // The helper awaits `settled` in its finally, so the lock is held
       // until the write SETTLES: a late write cannot land after a newer
       // credential committed by another tab.
-      try {
-        await runBoundedFencedKeyStoreMutation(() =>
-          persistAccessTokenToKeyStore(tokens.access_token),
-        )
-      } catch (error) {
-        console.warn('[llm-gateway] persist refreshed access token shadow failed:', error)
-      }
       // The verdict belongs to the session this refresh just committed, and
       // that commit advanced the generation itself — declaring it under the
       // pre-commit snapshot would fence it out and leave the mirror stale
@@ -1781,8 +1716,8 @@ export type GatewayDispatchCredential =
 /**
  * Authoritative, status-bearing gateway credential resolution for dispatch.
  *
- * The dispatch path (runAgent) previously loaded the api-key-store shadow
- * (`__llm_gateway_token__`) directly and — because the keyless-custom-
+ * The dispatch path (runAgent) used to load the api-key-store shadow (the
+ * access-token copy removed in #277) directly and — because the keyless-custom-
  * provider exception applied to the dynamically-registered gateway — let an
  * EMPTY result pass the send gate, reaching the request layer which then
  * sent without Authorization (#172 finding 4). The shadow is also a
@@ -1823,7 +1758,7 @@ export async function resolveGatewayDispatchCredential(
     // logged in ('missing'). A storage error is NOT proof of absence (#172
     // finding 3): report it as temporary so the caller keeps the session
     // retryable instead of falsely declaring the user logged out.
-    const inspection = await inspectAccessTokenShadow()
+    const inspection = await inspectPriorSession()
     if (inspection === 'error') {
       return { ok: false, kind: 'temporary', error: new Error('gateway credential storage unavailable') }
     }
@@ -1891,7 +1826,7 @@ export async function getValidAccessToken(
     // (the user had logged in), not that they never logged in — report
     // 'expired' and purge the shadow so the settings card offers a re-login
     // instead of a logout.
-    const hadSession = await purgeStaleAccessTokenShadow()
+    const hadSession = (await inspectPriorSession()) === 'had-session'
     setCredentialStatus(hadSession ? 'expired' : 'missing', loadGeneration)
     return null
   }
@@ -1927,6 +1862,21 @@ export async function getValidAccessToken(
  */
 export function hasStoredTokens(): boolean {
   return loadStoredTokens() !== null
+}
+
+/**
+ * Is there a session the UI should show as logged in?
+ *
+ * Unlike `hasStoredTokens()` (localStorage only) this also counts the durable
+ * refresh-token record: a browser that evicted localStorage still renders
+ * "logged in", because the next dispatch restores the pair from that record
+ * (#277). The api-key shadow used to cover this case; the record is the record
+ * the restore actually reads. A store failure reports false — the card then
+ * offers login, which is recoverable.
+ */
+export async function hasStoredSession(): Promise<boolean> {
+  if (hasStoredTokens()) return true
+  return (await inspectPriorSession()) === 'had-session'
 }
 
 /**

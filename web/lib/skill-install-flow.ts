@@ -13,7 +13,6 @@ import {
   getLLMGatewayBaseURL,
   getLLMGatewayClientId,
   isLLMGatewayConfigured,
-  LLM_GATEWAY_API_KEY_ID,
   LLM_GATEWAY_PROVIDER_TYPE,
 } from '@/agent/providers/llm-gateway-provider'
 import {
@@ -247,7 +246,7 @@ async function checkAiReadinessOnce(allowRecheck: boolean): Promise<AiReadinessR
     // mean usable (the token branch above already proved the shadow invalid;
     // the refresh-token backup is internal bookkeeping, not a provider key)
     // — exclude both before declaring "another provider has a key".
-    const gatewayOwnedKeys = new Set([LLM_GATEWAY_API_KEY_ID, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID])
+    const gatewayOwnedKeys = new Set([LLM_GATEWAY_REFRESH_TOKEN_KEY_ID])
     const { getProviderMeta, isPotentiallyDynamicProviderType } = await import(
       '@/agent/providers/types'
     )

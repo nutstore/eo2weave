@@ -214,7 +214,6 @@ describe('gateway session reconciler', () => {
     expect(getModelsForProvider(LLM_GATEWAY_PROVIDER_TYPE).map((m) => m.id)).toEqual(['glm-5.2'])
     expect(settingsStoreState.modelCredentialStatus).toBe('valid')
     expect(settingsStoreState.modelCredentialStatusError).toBeNull()
-    expect(settingsStoreState.invalidateApiKeyCacheCalls).toContain('__llm_gateway_token__')
     expect(settingsStoreState.checkHasApiKeyCalls).toBeGreaterThan(0)
     expect(settingsStoreState.triggerProviderRefreshCalls).toBeGreaterThan(0)
     // /v1/models was fetched with the shared session's token.

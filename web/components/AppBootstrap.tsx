@@ -383,7 +383,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       let gatewayRestoreVersion: number | undefined
       let gatewayRestoreGeneration: number | undefined
       try {
-        const { registerLLMGatewayProvider, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, applyGatewayCredentialOutcome, isGatewayCredentialOutcomeCurrent } = await import('@/agent/providers/llm-gateway-provider')
+        const { registerLLMGatewayProvider, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayBaseURL, getLLMGatewayClientId, applyGatewayCredentialOutcome, isGatewayCredentialOutcomeCurrent } = await import('@/agent/providers/llm-gateway-provider')
         const { resolveGatewayDispatchCredential, getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
         registerLLMGatewayProvider()
         const clientId = getLLMGatewayClientId()
@@ -404,9 +404,6 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
           if (resolved.ok) {
             const tokenGeneration = getGatewayAuthSessionGeneration()
             gatewayRestoreGeneration = tokenGeneration
-            // Persist refreshed access_token back so SQLite stays in sync
-            const { saveApiKey } = await import('@/security/api-key-store')
-            await saveApiKey(getLLMGatewayApiKeyProviderKey(), resolved.accessToken)
             await updateGatewayModels(resolved.accessToken, tokenGeneration)
           } else if (isGatewayCredentialOutcomeCurrent(resolvedGeneration, getGatewayAuthSessionGeneration(), resolved.kind)) {
             // Each verdict owns a different write (see
