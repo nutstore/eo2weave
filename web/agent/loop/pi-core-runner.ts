@@ -356,6 +356,7 @@ export async function executePiCoreLoop(
           compressionBaseline,
           maxContextTokens: contextConfig.maxContextTokens,
           reserveTokens: contextConfig.reserveTokens ?? 0,
+          compressionEnabled: contextConfig.enableSummarization,
           compressionAbsoluteCapEnabled: contextConfig.compressionAbsoluteCapEnabled,
           compressionAbsoluteCap: contextConfig.compressionAbsoluteCap,
           generateContextSummaryWithLLM: input.generateContextSummaryWithLLM,

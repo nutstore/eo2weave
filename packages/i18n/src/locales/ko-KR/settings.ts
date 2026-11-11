@@ -448,7 +448,7 @@ export const settings = {
     compressionAbsoluteCap: "절대 상한",
     compressionAbsoluteCapHint: "컨텍스트가 이 토큰 수를 넘으면 비율과 관계없이 압축합니다",
     compressionTriggerExplain:
-      "트리거는 둘 중 작은 값이며 대화마다 계산됩니다. 채팅 상단의 컨텍스트 표시기에서 확인할 수 있습니다.",
+      "트리거는 둘 중 작은 값이며 대화마다 계산됩니다.",
     compressionAbsoluteCapOffWarning:
       "절대 상한이 꺼져 있습니다: 윈도의 85%에 도달할 때만 압축되므로 매우 긴 대화는 모델의 한도를 초과해 실패할 수 있습니다.",
 

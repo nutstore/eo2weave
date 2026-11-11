@@ -25,7 +25,7 @@ async function importStore() {
   return mod
 }
 
-function seedStorage(value: PersistedShape | null, version = 4) {
+function seedStorage(value: PersistedShape | null, version = 5) {
   if (value === null) {
     localStorage.removeItem(STORAGE_KEY)
   } else {
@@ -97,7 +97,7 @@ describe('first-run thinking default (#88)', () => {
     expect((state as unknown as Record<string, unknown>).enableSchedules).toBeUndefined()
   })
 
-  it('defaults persist at version 4: a later set() round-trips through storage', async () => {
+  it('defaults persist at the current schema version: a later set() round-trips through storage', async () => {
     seedStorage(null)
     const { useSettingsStore } = await importStore()
 
@@ -110,7 +110,7 @@ describe('first-run thinking default (#88)', () => {
     const raw = localStorage.getItem(STORAGE_KEY)
     expect(raw).not.toBeNull()
     const parsed = JSON.parse(raw as string) as { state: PersistedShape & { __settingsWriteRevision?: number }; version: number }
-    expect(parsed.version).toBe(4)
+    expect(parsed.version).toBe(5)
     expect(parsed.state.enableThinking).toBe(false)
     expect(parsed.state.thinkingLevel).toBe('medium')
   })

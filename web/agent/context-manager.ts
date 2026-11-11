@@ -101,7 +101,12 @@ export class ContextManager {
    * @returns Trimmed messages with metadata about truncation
    */
   trimMessages(messages: ChatMessage[], options?: SummarizationOptions): TrimResult {
-    const budget = this.maxTokens - this.reserveTokens
+    // The absolute cap bounds the working budget too: a model with a 1M window
+    // must not send 1M tokens just because the provider allows it.
+    const budget = Math.min(
+      this.maxTokens - this.reserveTokens,
+      this.getCompressionTriggerTokens(),
+    )
 
     // System message always included
     const systemMessage: ChatMessage | null = this.systemPrompt

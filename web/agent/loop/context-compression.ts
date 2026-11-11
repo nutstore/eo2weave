@@ -33,7 +33,7 @@ export interface CompressionTriggerInput {
  */
 export function resolveCompressionTriggerTokens(input: CompressionTriggerInput): number {
   const ratioTrigger = Math.floor(input.maxContextTokens * COMPRESSION_TRIGGER_RATIO)
-  if (!input.absoluteCapEnabled) return ratioTrigger
+  if (input.absoluteCapEnabled === false) return ratioTrigger
   const cap = Math.floor(input.absoluteCap ?? DEFAULT_COMPRESSION_ABSOLUTE_CAP)
   if (!Number.isFinite(cap) || cap <= 0) return ratioTrigger
   return Math.min(ratioTrigger, cap)

@@ -322,4 +322,84 @@ describe('convert-bridge', () => {
       expect.objectContaining({ mode: 'skip', summary: null })
     )
   })
+
+  it('does not summarise twice on consecutive converts', async () => {
+    const summarize = vi.fn(async () => ({ summary: 'SUMMARY_2', mode: 'llm' as const }))
+    const result = await convertAgentMessagesToLlm({
+      agentMessages: [
+        { role: 'user', content: 'earlier question', timestamp: 1 },
+        { role: 'assistant', content: [{ type: 'text', text: 'earlier answer' }], timestamp: 2, usage: { totalTokens: 250_000 } },
+        { role: 'user', content: 'follow up', timestamp: 3 },
+      ] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 3,
+      // Counters are the *next* call number: a summary written by call #3 is
+      // recorded as lastSummaryConvertCall = 3, and call #4 must wait.
+      lastSummaryConvertCall: 3,
+      compressionBaseline: { summary: 'SUMMARY_1', cutoffTimestamp: 1 },
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).not.toHaveBeenCalled()
+    expect(result.compressionBaseline?.summary).toBe('SUMMARY_1')
+  })
+
+  it('feeds the previous summary into the next summarisation', async () => {
+    const summarize = vi.fn(async (_content: string, _maxTokens: number) => ({
+      summary: 'SUMMARY_2',
+      mode: 'llm' as const,
+    }))
+    await convertAgentMessagesToLlm({
+      agentMessages: [
+        { role: 'assistant', content: [{ type: 'text', text: 'later answer' }], timestamp: 5, usage: { totalTokens: 250_000 } },
+        { role: 'user', content: 'newest question', timestamp: 6 },
+      ] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 10,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: { summary: 'SUMMARY_ONE', cutoffTimestamp: 1 },
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).toHaveBeenCalledTimes(1)
+    const fed = summarize.mock.calls[0][0]
+    expect(fed).toContain('SUMMARY_ONE')
+    expect(fed).toContain('newest question')
+  })
+
+  it('never summarises on a path that disables it', async () => {
+    const summarize = vi.fn(async () => ({ summary: 'nope', mode: 'llm' as const }))
+    await convertAgentMessagesToLlm({
+      agentMessages: [
+        { role: 'assistant', content: [{ type: 'text', text: 'answer' }], timestamp: 2, usage: { totalTokens: 900_000 } },
+      ] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 1,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionEnabled: false,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).not.toHaveBeenCalled()
+  })
 })

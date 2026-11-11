@@ -455,7 +455,7 @@ export const settings = {
     compressionAbsoluteCap: "絶対上限",
     compressionAbsoluteCapHint: "コンテキストがこのトークン数を超えたら、比率に関係なく圧縮します",
     compressionTriggerExplain:
-      "トリガーは両者の小さい方で、会話ごとに計算されます。チャット上部のコンテキストインジケーターで確認できます。",
+      "トリガーは両者の小さい方で、会話ごとに計算されます。",
     compressionAbsoluteCapOffWarning:
       "絶対上限がオフです：コンテキストウィンドウの 85% に達したときだけ圧縮されるため、非常に長い会話はモデルの上限を超えてエラーになる可能性があります。",
 

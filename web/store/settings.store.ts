@@ -529,7 +529,7 @@ function mergeSnapshotOverCurrent(
 let lastRevisionlessEventTimestamp = 0
 
 /** Persist schema version — must match the persist config's `version` below. */
-const SETTINGS_PERSIST_VERSION = 4
+const SETTINGS_PERSIST_VERSION = 5
 
 /** True when persist middleware writes to storage are currently suppressed. */
 function persistWritesSuppressed(): boolean {
@@ -1764,6 +1764,16 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         }
         if (version < 3) {
           delete next.enableSchedules
+        }
+        if (version < 5) {
+          // v5 added the absolute compression cap. Backfill it for old
+          // snapshots and sanitise hand-edited values: a non-finite or
+          // out-of-range cap must not reach the trigger maths.
+          const rawCap = Number(next.compressionAbsoluteCap)
+          next.compressionAbsoluteCap = Number.isFinite(rawCap)
+            ? Math.max(32_000, Math.min(1_000_000, Math.round(rawCap)))
+            : 200_000
+          next.compressionAbsoluteCapEnabled = next.compressionAbsoluteCapEnabled !== false
         }
         return next as unknown as PersistedSettingsState
       },

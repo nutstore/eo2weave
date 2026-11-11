@@ -439,7 +439,7 @@ export const settings = {
     compressionAbsoluteCap: "绝对上限",
     compressionAbsoluteCapHint: "上下文超过该 token 数时立即压缩，不受比例影响",
     compressionTriggerExplain:
-      "触发点取两者较小值，按每个对话的实际上下文计算，可在对话顶部的上下文指示器中查看。",
+      "触发点取两者较小值，按每个对话的实际上下文计算。",
     compressionAbsoluteCapOffWarning:
       "绝对上限已关闭：只在达到上下文窗口的 85% 时压缩，超长对话可能超出模型的硬上限而报错。",
 

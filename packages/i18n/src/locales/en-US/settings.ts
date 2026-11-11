@@ -453,7 +453,7 @@ export const settings = {
     compressionAbsoluteCapHint:
       "Compress as soon as the context exceeds this many tokens, regardless of the ratio",
     compressionTriggerExplain:
-      "The trigger is the smaller of the two, evaluated per conversation — see the context indicator above the chat.",
+      "The trigger is the smaller of the two, evaluated per conversation.",
     compressionAbsoluteCapOffWarning:
       "Absolute cap is off: compression only starts at 85% of the window, so very long conversations can exceed the model's hard limit and fail.",
 
