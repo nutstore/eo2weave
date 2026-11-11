@@ -260,7 +260,7 @@ describe('CredentialRegistry — bounded waits and recovery (#286 review round 2
       .fn<() => Promise<CredentialVerdict>>()
       .mockReturnValueOnce(hung.promise)
       .mockResolvedValueOnce({ kind: 'valid' })
-    registry.registerResolver(KEY, resolver)
+    registry.registerResolver(KEY, resolver, { restartable: true })
 
     await expect(registry.resolve(KEY)).resolves.toMatchObject({ kind: 'temporary' })
     await new Promise((resolve) => setTimeout(resolve, 30))
@@ -308,7 +308,7 @@ describe('CredentialRegistry — abandonment and snapshots (#286 review round 3)
       .fn<() => Promise<CredentialVerdict>>()
       .mockReturnValueOnce(hung.promise)
       .mockReturnValueOnce(replacement.promise)
-    registry.registerResolver(KEY, resolver)
+    registry.registerResolver(KEY, resolver, { restartable: true })
 
     await registry.resolve(KEY) // times out; attempt stays in flight
     await new Promise((resolve) => setTimeout(resolve, 30))
@@ -333,7 +333,7 @@ describe('CredentialRegistry — abandonment and snapshots (#286 review round 3)
     registry.registerResolver(KEY, ({ signal }) => {
       signals.push(signal)
       return new Promise<CredentialVerdict>(() => {})
-    })
+    }, { restartable: true })
 
     await registry.resolve(KEY)
     const abandoned = signals[0]
@@ -380,5 +380,81 @@ describe('CredentialRegistry — abandonment and snapshots (#286 review round 3)
     expect(after).not.toBe(first)
     expect(after.kind).toBe('missing')
     expect(registry.getState(KEY)).toBe(after)
+  })
+})
+
+
+describe('CredentialRegistry — safe retry and consistent snapshots', () => {
+  it('does not overlap an unsafe resolver even after its deadline and abandon horizon', async () => {
+    const registry = new CredentialRegistry(5, 10)
+    const gate = deferred<CredentialVerdict>()
+    const resolver = vi.fn(() => gate.promise)
+    registry.registerResolver(KEY, resolver)
+    await expect(registry.resolve(KEY, { refresh: true })).resolves.toMatchObject({ kind: 'temporary' })
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    await expect(registry.resolve(KEY, { refresh: true })).resolves.toMatchObject({ kind: 'temporary' })
+    expect(resolver).toHaveBeenCalledTimes(1)
+    gate.resolve({ kind: 'valid' })
+  })
+
+  it('allows safe replacements when the credential owner deduplicates its operation', async () => {
+    const registry = new CredentialRegistry(5, 10)
+    const gate = deferred<CredentialVerdict>()
+    const credentialOperation = vi.fn(() => gate.promise)
+    let shared: Promise<CredentialVerdict> | undefined
+    const resolver = vi.fn(() => shared ??= credentialOperation())
+    registry.registerResolver(KEY, resolver, { restartable: true })
+
+    await registry.resolve(KEY, { refresh: true })
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    const retry = registry.resolve(KEY, { refresh: true })
+    await Promise.resolve()
+    expect(resolver).toHaveBeenCalledTimes(2)
+    expect(credentialOperation).toHaveBeenCalledTimes(1)
+    gate.resolve({ kind: 'valid' })
+    await expect(retry).resolves.toMatchObject({ kind: 'valid' })
+  })
+
+  it('retries a non-restartable resolver after its original operation settles', async () => {
+    const registry = new CredentialRegistry(5, 10)
+    const gate = deferred<CredentialVerdict>()
+    const resolver = vi.fn<() => Promise<CredentialVerdict>>()
+      .mockReturnValueOnce(gate.promise)
+      .mockResolvedValueOnce({ kind: 'valid' })
+    registry.registerResolver(KEY, resolver)
+    await registry.resolve(KEY)
+    const timeoutEpoch = registry.getState(KEY).epoch
+    gate.resolve({ kind: 'temporary' })
+    await vi.waitFor(() => expect(registry.getState(KEY).epoch).toBeGreaterThan(timeoutEpoch))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await expect(registry.resolve(KEY)).resolves.toMatchObject({ kind: 'valid' })
+    expect(resolver).toHaveBeenCalledTimes(2)
+  })
+
+  it('joins an in-flight attempt when a synchronous failure subscriber retries', async () => {
+    const registry = new CredentialRegistry()
+    const resolver = vi.fn((): Promise<CredentialVerdict> => { throw new Error('offline') })
+    let retried = false
+    registry.registerResolver(KEY, resolver)
+    registry.subscribe(KEY, () => {
+      if (!retried) {
+        retried = true
+        void registry.resolve(KEY)
+      }
+    })
+    await registry.resolve(KEY)
+    expect(resolver).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns a current snapshot on repeat timeout after another provider changes', async () => {
+    const registry = new CredentialRegistry(5, 1000)
+    registry.commit(KEY, { kind: 'valid' })
+    registry.registerResolver(KEY, () => new Promise(() => {}))
+    await registry.resolve(KEY)
+    registry.commit('anthropic', { kind: 'valid' })
+    const result = await registry.resolve(KEY)
+    expect(result.stale).toBe(true)
+    expect(result).toBe(registry.getState(KEY))
+    expect(registry.isCurrent(result.epoch)).toBe(true)
   })
 })

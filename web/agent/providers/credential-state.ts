@@ -49,13 +49,25 @@ export interface CredentialResolverContext {
 
 export type CredentialResolver = (context: CredentialResolverContext) => Promise<CredentialVerdict>
 
+/** Provider-owned guarantees for replacing a still-running resolver. */
+export interface CredentialResolverOptions {
+  /**
+   * Opt in only when overlapping attempts are safe: the resolver is read-only,
+   * or its credential-owning layer serializes and fences every side effect,
+   * including requests that outlive AbortSignal cancellation. The registry
+   * cannot undo an already dispatched server request or protect other tabs.
+   * Default false: a timed-out attempt remains single-flight until it settles.
+   */
+  restartable?: boolean
+}
+
 export type CredentialListener = (state: CredentialState) => void
 
 /**
  * How long a resolve may keep its CALLER waiting before it gets the last known
- * verdict (or `temporary`). This is not a cancellation: the attempt keeps
- * running and its result still lands if nothing newer committed meanwhile —
- * aborting a token refresh mid-flight is worse than answering late.
+ * verdict (or `temporary`). A caller timeout does not cancel the attempt.
+ * An explicitly restartable attempt may later be abandoned; cancellation is
+ * advisory and the credential owner must protect its own side effects.
  * "Neutral" is only allowed to be brief (#281 decision comment).
  */
 export const CREDENTIAL_RESOLVE_TIMEOUT_MS = 1800
@@ -66,12 +78,18 @@ interface InflightAttempt {
   readonly startedAt: number
   readonly version: number
   readonly controller: AbortController
+  readonly restartable: boolean
+}
+
+interface ResolverRegistration {
+  readonly resolver: CredentialResolver
+  readonly restartable: boolean
 }
 
 export class CredentialRegistry {
   private readonly states = new Map<string, CredentialState>()
 
-  private readonly resolvers = new Map<string, CredentialResolver>()
+  private readonly resolvers = new Map<string, ResolverRegistration>()
 
   private readonly inflight = new Map<string, InflightAttempt>()
 
@@ -89,10 +107,8 @@ export class CredentialRegistry {
   constructor(
     private readonly timeoutMs: number = CREDENTIAL_RESOLVE_TIMEOUT_MS,
     /**
-     * How long an attempt may stay in flight before it is abandoned and a new
-     * one may start. Preserving the in-flight promise is what stops duplicate
-     * refreshes, but a resolver that never settles must not be able to block
-     * every later call forever (#286 review).
+     * How long a restartable attempt may stay in flight before replacement.
+     * A non-restartable attempt remains single-flight until it settles.
      */
     private readonly abandonAfterMs: number = 10_000,
   ) {}
@@ -156,10 +172,15 @@ export class CredentialRegistry {
    * registration (its registration path already knows a credential may exist).
    * A key without a resolver answers `unknown` rather than inventing a verdict.
    */
-  registerResolver(providerKey: string, resolver: CredentialResolver): () => void {
-    this.resolvers.set(providerKey, resolver)
+  registerResolver(
+    providerKey: string,
+    resolver: CredentialResolver,
+    options: CredentialResolverOptions = {},
+  ): () => void {
+    const registration = { resolver, restartable: options.restartable === true }
+    this.resolvers.set(providerKey, registration)
     return () => {
-      if (this.resolvers.get(providerKey) === resolver) this.resolvers.delete(providerKey)
+      if (this.resolvers.get(providerKey) === registration) this.resolvers.delete(providerKey)
     }
   }
 
@@ -182,12 +203,11 @@ export class CredentialRegistry {
   /**
    * Ask the provider's resolver for a verdict.
    *
-   * - Single-flight per key: a second caller joins the attempt in progress.
+   * - Single-flight per key unless the owner opts into safe replacement.
    * - `refresh: true` is never satisfied by a non-refreshing attempt: it waits
-   *   for that attempt and then runs its own.
-   * - The caller is bounded by the registry's timeout; the attempt is not
-   *   cancelled, and its verdict is discarded if anything authoritative
-   *   committed while it was running.
+   *   for that attempt and then runs its own within the original deadline.
+   * - A caller timeout does not cancel the attempt. Only explicitly restartable
+   *   attempts may be abandoned; old verdicts cannot overwrite newer commits.
    */
   async resolve(providerKey: string, options: { refresh?: boolean } = {}): Promise<CredentialState> {
     // One deadline for the WHOLE call: waiting for a plain attempt and then
@@ -216,8 +236,8 @@ export class CredentialRegistry {
       return this.resolveWithin(providerKey, true, deadline)
     }
 
-    const resolver = this.resolvers.get(providerKey)
-    if (!resolver) return this.getState(providerKey)
+    const registration = this.resolvers.get(providerKey)
+    if (!registration) return this.getState(providerKey)
 
     const version = this.versionOf(providerKey)
     const controller = new AbortController()
@@ -226,7 +246,12 @@ export class CredentialRegistry {
       version,
       startedAt: Date.now(),
       controller,
-      promise: this.runResolver(providerKey, resolver, refresh, version, controller.signal),
+      restartable: registration.restartable,
+      // Register the attempt before invoking user code: a synchronous throw can
+      // notify a subscriber that immediately calls resolve() again.
+      promise: Promise.resolve().then(() =>
+        this.runResolver(providerKey, registration.resolver, refresh, version, controller.signal),
+      ),
     }
     this.inflight.set(providerKey, attempt)
     // Keep the entry until the RESOLVER settles, not until the caller's
@@ -242,15 +267,14 @@ export class CredentialRegistry {
   }
 
   /**
-   * The in-flight attempt, unless it has outlived the abandon horizon — a
-   * resolver that never settles must not permanently block new attempts. The
-   * abandoned attempt still runs; its verdict is version-guarded like any
-   * other late result.
+   * A restartable attempt may be replaced after the abandon horizon. Other
+   * attempts remain single-flight until they settle: a timeout or abort alone
+   * cannot prove that a credential-changing server request has stopped.
    */
   private takeInflight(providerKey: string): InflightAttempt | undefined {
     const attempt = this.inflight.get(providerKey)
     if (!attempt) return undefined
-    if (Date.now() - attempt.startedAt < this.abandonAfterMs) return attempt
+    if (!attempt.restartable || Date.now() - attempt.startedAt < this.abandonAfterMs) return attempt
     this.inflight.delete(providerKey)
     // The abandoned attempt is VOID: bump the version so its late verdict can
     // never beat the attempt that replaces it, and abort so a resolver that
@@ -317,7 +341,7 @@ export class CredentialRegistry {
     if (this.versionOf(providerKey) !== startVersion) return this.getState(providerKey)
     const known = this.states.get(providerKey)
     if (known && known.kind !== 'unknown') {
-      if (known.stale) return known
+      if (known.stale) return this.getState(providerKey)
       return this.publish(providerKey, { ...known, stale: true })
     }
     return this.publish(providerKey, {
