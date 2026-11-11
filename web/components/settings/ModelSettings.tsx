@@ -21,7 +21,11 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { useSettingsStore } from '@/store/settings.store'
+import {
+  useSettingsStore,
+  COMPRESSION_ABSOLUTE_CAP_MIN,
+  COMPRESSION_ABSOLUTE_CAP_MAX,
+} from '@/store/settings.store'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import type { LLMProviderType, ModelCapability } from '@/agent/providers/types'
 import { useT } from '@/i18n'
