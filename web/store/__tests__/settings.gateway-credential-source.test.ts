@@ -16,16 +16,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 type CredentialStatus = 'unknown' | 'valid' | 'expired' | 'missing'
 
-let credentialStatus: CredentialStatus = 'unknown'
-
-vi.mock('@/agent/providers/llm-gateway-auth', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/agent/providers/llm-gateway-auth')>()
-  return {
-    ...actual,
-    getGatewayCredentialStatus: () => credentialStatus,
-  }
-})
-
 const loadApiKeyMock = vi.fn<(providerKey?: string) => Promise<string | null>>()
 
 vi.mock('@/security/api-key-store', () => ({
@@ -35,7 +25,6 @@ vi.mock('@/security/api-key-store', () => ({
 }))
 
 async function setup(status: CredentialStatus) {
-  credentialStatus = status
   const { registerDynamicProvider } = await import('@/agent/providers/types')
   registerDynamicProvider(
     'llm-gateway',
@@ -54,13 +43,14 @@ async function setup(status: CredentialStatus) {
     hasApiKey: false,
     hasApiKeyLoaded: false,
   })
+  const { credentialRegistry } = await import('@/agent/providers/credential-state')
+  credentialRegistry.commit('__llm_gateway_token__', { kind: status })
   return useSettingsStore
 }
 
 describe('gateway availability source (#277)', () => {
   beforeEach(() => {
     localStorage.clear()
-    credentialStatus = 'unknown'
     loadApiKeyMock.mockReset()
     loadApiKeyMock.mockResolvedValue(null) // no shadow at all
     vi.resetModules()
@@ -122,7 +112,8 @@ describe('gateway availability source (#277)', () => {
 
   it('does not change another provider key when the gateway session changes', async () => {
     const store = await setup('unknown')
-    store.setState({ providerType: 'openai', hasApiKey: true, hasApiKeyLoaded: true })
+    store.setState({ providerType: 'openai' })
+    store.getState().setHasApiKey(true)
     store.getState().setModelCredentialStatus('missing')
     expect(store.getState().hasApiKey).toBe(true)
   })

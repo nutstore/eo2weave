@@ -12,8 +12,8 @@
  * gets its credential — resolvers are registered by the provider's own module,
  * so this file stays free of auth imports and cannot create an import cycle.
  *
- * Step 2 of #281 introduces it without wiring: the store fields stay as they
- * are until the migration step deletes them.
+ * Settings exposes compatibility fields projected from the selected key;
+ * credential transitions and in-flight resolution remain owned here.
  */
 
 export type CredentialKind = 'unknown' | 'missing' | 'valid' | 'expired' | 'temporary'
@@ -150,6 +150,11 @@ export class CredentialRegistry {
   /** True when a consumer's cached verdict is still current. */
   isCurrent(epoch: number): boolean {
     return this.epoch === epoch
+  }
+
+  /** Version of a provider's own authoritative credential state. */
+  getRevision(providerKey: string): number {
+    return this.versionOf(providerKey)
   }
 
   subscribe(providerKey: string, listener: CredentialListener): () => void {

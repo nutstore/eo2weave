@@ -27,6 +27,8 @@
  * points at the model chip) — the chip itself is the configuration entry.
  */
 
+import { credentialRegistry } from '@/agent/providers/credential-state'
+import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
 import { useState, useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { Sparkles, KeyRound, ChevronRight, Shield, Loader2, ArrowRight, CircleHelp, Puzzle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
@@ -69,11 +71,11 @@ type OnboardingStep = 'welcome' | 'api-key' | 'select-model' | 'ready'
 type ProviderReadiness = {
   hasApiKey: boolean
   hasUsableModel: boolean
-  gatewaySessionUnknown: boolean
+  credentialUncertain: boolean
 }
 
 function providerStep(readiness: ProviderReadiness): OnboardingStep {
-  if (!readiness.hasApiKey && !readiness.gatewaySessionUnknown) return 'api-key'
+  if (!readiness.hasApiKey && !readiness.credentialUncertain) return 'api-key'
   if (!readiness.hasUsableModel) return 'select-model'
   return 'ready'
 }
@@ -262,13 +264,20 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     return !getProviderConfig(providerType)
   }, [hasUsableModel, providerType, providerRegistryVersion])
 
+  const credentialKey = providerType === 'llm-gateway' ? GATEWAY_CREDENTIAL_KEY_ALIAS : providerType
+  const credentialKind = useSyncExternalStore(
+    useCallback((listener) => credentialRegistry.subscribe(credentialKey, listener), [credentialKey]),
+    useCallback(() => credentialRegistry.getState(credentialKey).kind, [credentialKey]),
+    () => 'unknown' as const,
+  )
+
   const readiness: ProviderReadiness = {
     hasApiKey,
     hasUsableModel,
     // A registered gateway with an unresolved session can retry at dispatch;
     // it must not be presented as an unconfigured API key.
-    gatewaySessionUnknown: providerType === 'llm-gateway' &&
-      modelCredentialStatus === 'unknown' && !!getProviderConfig(providerType),
+    credentialUncertain: credentialKind === 'temporary' || (providerType === 'llm-gateway' &&
+      modelCredentialStatus === 'unknown' && !!getProviderConfig(providerType)),
   }
 
   const [step, setStep] = useState<OnboardingStep>(() =>
@@ -312,7 +321,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
       if (provider !== 'ready' && !aiSetupSkipped) return provider
       return 'ready'
     })
-  }, [readiness.hasApiKey, readiness.hasUsableModel, readiness.gatewaySessionUnknown, hasApiKeyLoaded, aiSetupSkipped, modelCredentialStatus])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, readiness.credentialUncertain, hasApiKeyLoaded, aiSetupSkipped, modelCredentialStatus])
 
   // Onboarding completed (key + default model configured): the AI-setup skip
   // has served its purpose. Clear it so a LATER deliberate unconfigure (user
@@ -330,7 +339,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     const provider = providerStep(readiness)
     if (provider !== 'ready' && !aiSetupSkipped) setStep(provider)
     else setStep('ready')
-  }, [readiness.hasApiKey, readiness.hasUsableModel, readiness.gatewaySessionUnknown, aiSetupSkipped])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, readiness.credentialUncertain, aiSetupSkipped])
 
   // "Skip for now" on the AI-setup cards (api-key / select-model) persists:
   // a refresh must not resurrect the card the user just dismissed. The flag

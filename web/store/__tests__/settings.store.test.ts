@@ -261,6 +261,7 @@ describe('useSettingsStore', () => {
         },
       })
 
+      useSettingsStore.getState().setModelCredentialStatus('expired')
       useSettingsStore.getState().syncModelForWorkspace('ws-1')
 
       const s = useSettingsStore.getState()

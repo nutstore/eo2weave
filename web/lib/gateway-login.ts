@@ -229,8 +229,6 @@ async function applyGatewayLoginTokensInner(
         settings.markPinnedModelsSeen(LLM_GATEWAY_PROVIDER_TYPE, defaults)
       }
 
-      settings.setHasApiKey(true)
-      settings.setModelCredentialStatus('valid')
       settings.triggerProviderRefresh()
       return { ok: true, accessToken, models: discovery.models }
     }

@@ -1692,10 +1692,6 @@ export function LLMGatewayCard({
       setIsLoggedIn(true)
       return
     }
-    // Re-check from DB so we don't flip hasApiKey off when another provider is active
-    if (useSettingsStore.getState().providerType === LLM_GATEWAY_PROVIDER_TYPE) {
-      useSettingsStore.getState().setHasApiKey(false)
-    }
     // Atomicity: re-read the SHARED credential state and clear the card's
     // logged-in UI INSIDE the credential lock — the same lock the purge in
     // logoutGateway() held and any concurrent login's commit holds — so the

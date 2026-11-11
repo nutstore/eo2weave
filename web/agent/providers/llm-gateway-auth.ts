@@ -327,16 +327,6 @@ export function getLastLogoutTimestamp(): number | null {
 export const LLM_GATEWAY_REFRESH_TOKEN_KEY_ID = REFRESH_TOKEN_DB_KEY
 
 /**
- * Last credential status recorded by this module.
- *
- * The settings store holds the same value, but reading it back is async
- * (the store is loaded through a dynamic import), while callers such as
- * `fetchGatewayRateLimits` need the state of the token acquisition that
- * just failed — i.e. "expired" vs "never logged in" — to pick the right
- * message. This mirror keeps that read synchronous.
- */
-
-/**
  * Whether a status verdict produced under `generation` may still be applied.
  *
  * A resolution that spans awaits can outlive the credential set it inspected
@@ -373,22 +363,9 @@ function setCredentialStatus(
   status: 'valid' | 'expired' | 'missing',
   expectedGeneration?: number,
 ): void {
-  // A verdict produced by an operation that started under an older credential
-  // set must not overwrite the current session's status (#180). The settings
-  // import below is itself an await boundary during which a logout or a new
-  // login can land, so the generation is re-checked after it resolves too.
-  // The authoritative credential state is unaffected — only this UI mirror.
+  // Ignore verdicts produced for a session superseded by login or logout.
   if (expectedGeneration !== undefined && !isCredentialStatusCurrent(expectedGeneration)) return
   credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: status })
-  const generation = authSessionGeneration
-  void import('@/store/settings.store')
-    .then(({ useSettingsStore }) => {
-      if (!isCredentialStatusCurrent(generation)) return
-      useSettingsStore.getState().setModelCredentialStatus(status)
-    })
-    .catch(() => {
-      // Auth must remain usable even when the settings store is unavailable.
-    })
 }
 
 /**
@@ -404,12 +381,6 @@ async function setCredentialStatusLocked(
   status: 'valid' | 'expired' | 'missing',
 ): Promise<void> {
   credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: status })
-  try {
-    const { useSettingsStore } = await import('@/store/settings.store')
-    useSettingsStore.getState().setModelCredentialStatus(status)
-  } catch {
-    // Auth must remain usable even when the settings store is unavailable.
-  }
 }
 
 /**
@@ -457,6 +428,65 @@ function loadStoredTokens(): StoredTokens | null {
     return JSON.parse(raw) as StoredTokens
   } catch {
     return null
+  }
+}
+
+/** Seed only locally provable gateway state before the first settings check. */
+export async function seedGatewayCredentialState(): Promise<void> {
+  const initial = credentialRegistry.getState(GATEWAY_CREDENTIAL_KEY_ALIAS)
+  if (initial.kind !== 'unknown' && initial.kind !== 'temporary') return
+  const generation = getGatewayAuthSessionGeneration()
+  const revision = credentialRegistry.getRevision(GATEWAY_CREDENTIAL_KEY_ALIAS)
+  const commit = (kind: 'valid' | 'expired' | 'missing' | 'temporary', error?: unknown) => {
+    if (generation !== getGatewayAuthSessionGeneration() ||
+        credentialRegistry.getRevision(GATEWAY_CREDENTIAL_KEY_ALIAS) !== revision) return
+    if (kind === 'temporary') {
+      credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind, error })
+    } else {
+      setCredentialStatus(kind, generation)
+    }
+  }
+
+  try {
+    const raw = localStorage.getItem(TOKEN_STORAGE_KEY)
+    if (raw) {
+      const stored = JSON.parse(raw) as Partial<StoredTokens>
+      if (typeof stored.access_token === 'string' && stored.access_token.trim() &&
+          typeof stored.access_expires_at === 'number' && stored.access_expires_at > Date.now() + 60_000) {
+        commit('valid')
+      } else if (typeof stored.refresh_expires_at === 'number' && stored.refresh_expires_at <= Date.now()) {
+        commit('expired')
+      }
+      // A live refresh token is not proof that the server still accepts it.
+      return
+    }
+    if (localStorage.getItem(EXPIRED_SESSION_MARKER_KEY) !== null) {
+      commit('expired')
+      return
+    }
+
+    const { loadApiKey } = await import('@/security/api-key-store')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('gateway credential seed timed out')), 1800)
+      })
+      const backup = await Promise.race([loadApiKey(REFRESH_TOKEN_DB_KEY), timeout])
+      if (!backup) {
+        commit('missing')
+        return
+      }
+      const stored = JSON.parse(backup) as Partial<StoredTokens>
+      if (typeof stored.refresh_token !== 'string' || !stored.refresh_token ||
+          typeof stored.refresh_expires_at !== 'number' || !Number.isFinite(stored.refresh_expires_at)) {
+        throw new Error('invalid gateway refresh record')
+      }
+      if (stored.refresh_expires_at <= Date.now()) commit('expired')
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  } catch (error) {
+    commit('temporary', error)
   }
 }
 
@@ -793,7 +823,6 @@ export function escalateFencedKeyStoreMutation(): void {
   void import('@/store/settings.store')
     .then(({ useSettingsStore }) => {
       const state = useSettingsStore.getState()
-      state.setModelCredentialStatus('expired')
       state.setModelCredentialStatusError(
         translate(
           useI18nStore.getState().locale,

@@ -143,7 +143,7 @@ import {
   setupGatewaySessionReconciler,
   whenGatewayReconcilerSettledForTests,
 } from '@/agent/providers/gateway-session-reconciler'
-import { getGatewayAuthSessionGeneration } from '@/agent/providers/llm-gateway-auth'
+import { getGatewayAuthSessionGeneration, getGatewayCredentialStatus } from '@/agent/providers/llm-gateway-auth'
 import {
   getModelsForProvider,
   getProviderConfig,
@@ -285,7 +285,7 @@ describe('gateway session reconciler', () => {
     })
     dispose = setupGatewaySessionReconciler()
     await whenGatewayReconcilerSettledForTests()
-    expect(settingsStoreState.modelCredentialStatus).toBe('expired')
+    expect(getGatewayCredentialStatus()).toBe('expired')
     expect(getProviderConfigRegistered()).toBe(false)
   })
 
@@ -419,10 +419,10 @@ describe('gateway session reconciler', () => {
     await vi.waitFor(() => {
       expect(getLastGatewayReconcileOutcome()).not.toBeNull()
     })
-    // Let the queued logout job run to completion.
-    await vi.waitFor(() => {
-      expect(settingsStoreState.modelCredentialStatus).toBe('missing')
-    })
+    // Wait for the queued logout itself: the setup-only drain cannot wait
+    // for jobs added by later storage events.
+    await vi.waitFor(() => expect(getProviderConfigRegistered()).toBe(false))
+    expect(settingsStoreState.modelCredentialStatus).toBe('missing')
 
     // The stale job must not have restored the provider/catalog.
     expect(getProviderConfigRegistered()).toBe(false)
