@@ -28,6 +28,8 @@ export const conversation = {
     pageContextCollapse: "折りたたむ",
     pageContextRawData: "生データ",
     pageContextWebmcpTools: "WebMCP ツール（{count} 件）",
+    pageContextWebmcpHostDisabled: "WebMCP は利用できません：このサイトは許可されていません",
+    pageContextWebmcpNoTools: "WebMCP：このページにツールが見つかりません",
     branch: "ここから分岐",
     share: "エクスポート",
     shareAsMarkdown: "Markdown ファイル",

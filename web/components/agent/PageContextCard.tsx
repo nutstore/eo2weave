@@ -122,6 +122,16 @@ export function PageContextCard({ pageContext }: PageContextCardProps) {
       </dl>
 
       {/* WebMCP tools frozen into this snapshot (collapsed by default) */}
+      {webmcpTools.length === 0 && pageContext.webmcpStatus && (
+        <div className="border-t border-neutral-200 px-3 py-1.5 text-[11px] text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+          <span className="inline-flex items-center gap-1.5">
+            <Wrench className="h-3 w-3" />
+            {pageContext.webmcpStatus === 'host-disabled'
+              ? t('conversation.pageContextWebmcpHostDisabled')
+              : t('conversation.pageContextWebmcpNoTools')}
+          </span>
+        </div>
+      )}
       {webmcpTools.length > 0 && (
         <div className="border-t border-neutral-200 dark:border-neutral-700">
           <button

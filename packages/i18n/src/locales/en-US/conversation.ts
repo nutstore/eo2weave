@@ -27,6 +27,8 @@ export const conversation = {
     pageContextCollapse: "Collapse",
     pageContextRawData: "Raw data",
     pageContextWebmcpTools: "WebMCP tools ({count})",
+    pageContextWebmcpHostDisabled: "WebMCP unavailable: this site is not authorized",
+    pageContextWebmcpNoTools: "WebMCP: no tools detected on this page",
     branch: "Branch from here",
     share: "Export",
     shareAsMarkdown: "Markdown File",

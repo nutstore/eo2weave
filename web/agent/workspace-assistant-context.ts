@@ -408,6 +408,7 @@ export interface PageContextSnapshot {
   selectedText?: string | null
   providerContext?: unknown
   webmcpTools?: Array<{ name: string; description: string; fullName: string }>
+  webmcpStatus?: 'ok' | 'host-disabled' | 'unavailable'
 }
 
 /**
@@ -520,16 +521,38 @@ export async function capturePageContext(): Promise<PageContextSnapshot | null> 
     } catch {
       // bridge module unavailable — the fast path exposes no page tools
     }
+    // Scope tools to the BOUND TAB, not just the hostname: same-hostname
+    // tabs in different apps (jmail.world / vs /messages) expose disjoint
+    // toolsets and hostname-only filtering merges them into garbage.
+    const webmcpTools = await readWebmcpToolsForHost(hostname, boundTabId)
+    // Freeze WHY the list is empty next to the list itself (#239). Only the
+    // two app-side states are knowable today; the reason a package did not
+    // match needs extension diagnostics (#273).
+    let webmcpStatus: 'ok' | 'host-disabled' | 'unavailable' = 'unavailable'
+    if (hostname) {
+      try {
+        const [{ useSettingsStore }, { useWebMCPStore }, { deriveWebmcpAvailability }] = await Promise.all([
+          import('@/store/settings.store'),
+          import('@/webmcp/store'),
+          import('@/webmcp/availability'),
+        ])
+        webmcpStatus = deriveWebmcpAvailability({
+          globalEnabled: useSettingsStore.getState().enableWebMCP,
+          hostEnabled: useWebMCPStore.getState().isHostEnabled(hostname),
+          toolCount: webmcpTools.length,
+        })
+      } catch {
+        // Status is decorative: a store read failure must not drop the snapshot.
+      }
+    }
     return {
       hostname,
       url: pick<string>('url'),
       title: pick<string>('title'),
       selectedText: pick<string>('selectedText'),
       providerContext: pick('providerContext'),
-      // Scope tools to the BOUND TAB, not just the hostname: same-hostname
-      // tabs in different apps (jmail.world / vs /messages) expose disjoint
-      // toolsets and hostname-only filtering merges them into garbage.
-      webmcpTools: await readWebmcpToolsForHost(hostname, boundTabId),
+      webmcpTools,
+      webmcpStatus,
     }
   } catch (err) {
     console.warn('[Workspace Assistant] capturePageContext failed:', err)
