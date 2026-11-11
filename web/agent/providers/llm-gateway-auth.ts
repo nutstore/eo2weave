@@ -456,8 +456,15 @@ export async function seedGatewayCredentialState(): Promise<void> {
         commit('valid')
       } else if (typeof stored.refresh_expires_at === 'number' && stored.refresh_expires_at <= Date.now()) {
         commit('expired')
+      } else {
+        // Access token expired, refresh token still live: the session is very
+        // likely fine but only the server can confirm it. Commit `temporary`
+        // rather than leave `unknown` — a live refresh token is not proof of a
+        // valid session, but `unknown` keeps `hasApiKeyLoaded` false and the
+        // UI in its loading state until the user happens to send something
+        // (#281: neutral must never be permanent).
+        commit('temporary')
       }
-      // A live refresh token is not proof that the server still accepts it.
       return
     }
     if (localStorage.getItem(EXPIRED_SESSION_MARKER_KEY) !== null) {
@@ -482,6 +489,7 @@ export async function seedGatewayCredentialState(): Promise<void> {
         throw new Error('invalid gateway refresh record')
       }
       if (stored.refresh_expires_at <= Date.now()) commit('expired')
+      else commit('temporary')
     } finally {
       if (timer) clearTimeout(timer)
     }
