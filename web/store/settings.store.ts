@@ -1220,10 +1220,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       setTemperature: (temperature) => set({ temperature }),
       setCompressionAbsoluteCapEnabled: (compressionAbsoluteCapEnabled) =>
         set({ compressionAbsoluteCapEnabled }),
-      setCompressionAbsoluteCap: (compressionAbsoluteCap) =>
+      setCompressionAbsoluteCap: (compressionAbsoluteCap) => {
+        // A cleared/non-numeric number input must keep the previous value, not
+        // poison the setting with NaN.
+        if (!Number.isFinite(compressionAbsoluteCap)) return
         set({
           compressionAbsoluteCap: Math.max(32_000, Math.min(1_000_000, Math.round(compressionAbsoluteCap))),
-        }),
+        })
+      },
       setMaxIterations: (maxIterations) =>
         set({
           maxIterations:

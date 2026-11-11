@@ -204,6 +204,9 @@ export function ModelSettings({ open }: ModelSettingsProps) {
   const t = useT()
 
   const [showAdvanced, setShowAdvanced] = useState(false)
+  // Cap input keeps a local draft while typing: the store clamps to 32K–1M, so
+  // committing per keystroke would rewrite "3" into "32000" mid-edit.
+  const [capDraft, setCapDraft] = useState<string | null>(null)
   const [referenceRefreshing, setReferenceRefreshing] = useState(false)
   const [providers, setProviders] = useState<
     Array<{
@@ -487,8 +490,15 @@ export function ModelSettings({ open }: ModelSettingsProps) {
                     min={32000}
                     max={1000000}
                     step={10000}
-                    value={compressionAbsoluteCap}
-                    onChange={(e) => setCompressionAbsoluteCap(Number(e.target.value))}
+                    value={capDraft ?? compressionAbsoluteCap}
+                    onChange={(e) => setCapDraft(e.target.value)}
+                    onBlur={() => {
+                      if (capDraft !== null) setCompressionAbsoluteCap(Number(capDraft))
+                      setCapDraft(null)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur()
+                    }}
                     className="h-8 w-32 rounded-md border border-input bg-background px-2 text-sm tabular-nums text-secondary"
                   />
                   <span className="text-xs text-tertiary">
