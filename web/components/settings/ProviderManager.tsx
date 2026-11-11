@@ -9,6 +9,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { credentialRegistry } from '@/agent/providers/credential-state'
 import {
   Eye,
   EyeOff,
@@ -125,7 +126,6 @@ export function ProviderCard({
     removeCustomProvider,
     addCustomProviderModel,
     setCustomProviderApiMode,
-    invalidateApiKeyCache,
     pinnedModelsByProvider,
     pinModel,
     unpinModel,
@@ -364,7 +364,7 @@ export function ProviderCard({
     setHasKey(false)
     setSaved(false)
     setShowKey(false)
-    invalidateApiKeyCache(providerKey)
+    credentialRegistry.commit(providerKey, { kind: 'unknown' })
 
     // Update global hasApiKey state if this is the active provider
     const activeConfig = useSettingsStore.getState().getEffectiveProviderConfig()
@@ -374,7 +374,7 @@ export function ProviderCard({
 
     triggerProviderRefresh()
     toast.success(t('settings.toast.apiKeyCleared'))
-  }, [invalidateApiKeyCache, providerKey, triggerProviderRefresh, t])
+  }, [providerKey, triggerProviderRefresh, t])
 
   const handleSaveKey = useCallback(async () => {
     const trimmedKey = apiKey.trim()
@@ -387,7 +387,7 @@ export function ProviderCard({
     await saveApiKey(providerKey, trimmedKey)
     setHasKey(true)
     setSaved(true)
-    invalidateApiKeyCache(providerKey)
+    credentialRegistry.commit(providerKey, { kind: 'unknown' })
     // Update global hasApiKey state if this is the active provider
     const activeConfig = useSettingsStore.getState().getEffectiveProviderConfig()
     if (activeConfig && activeConfig.apiKeyProviderKey === providerKey) {
@@ -439,7 +439,6 @@ export function ProviderCard({
     apiKey,
     clearApiKey,
     providerKey,
-    invalidateApiKeyCache,
     isCustom,
     customProvider,
     config,

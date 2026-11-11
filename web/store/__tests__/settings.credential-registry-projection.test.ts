@@ -21,14 +21,23 @@ describe('credential registry projection', () => {
     useSettingsStore.setState({ providerType: 'openai', hasApiKey: false, hasApiKeyLoaded: false })
     credentialRegistry.commit('openai', { kind: 'valid' })
     expect(useSettingsStore.getState()).toMatchObject({ hasApiKey: true, hasApiKeyLoaded: true })
-    credentialRegistry.commit('__llm_gateway_token__', { kind: 'expired' })
+    credentialRegistry.commit('llm-gateway', { kind: 'expired' })
     expect(useSettingsStore.getState()).toMatchObject({ hasApiKey: true, hasApiKeyLoaded: true })
+  })
+
+  it('projects gateway credentials by provider identity rather than the legacy storage key', async () => {
+    const { credentialRegistry, useSettingsStore } = await setup()
+    useSettingsStore.setState({ providerType: 'llm-gateway' })
+    credentialRegistry.commit('llm-gateway', { kind: 'valid' })
+    expect(useSettingsStore.getState()).toMatchObject({
+      hasApiKey: true, hasApiKeyLoaded: true, modelCredentialStatus: 'valid',
+    })
   })
 
   it('projects gateway expiry after switching from another provider', async () => {
     const { credentialRegistry, useSettingsStore } = await setup()
     credentialRegistry.commit('openai', { kind: 'valid' })
-    credentialRegistry.commit('__llm_gateway_token__', { kind: 'expired' })
+    credentialRegistry.commit('llm-gateway', { kind: 'expired' })
     useSettingsStore.setState({ providerType: 'openai' })
     useSettingsStore.setState({ providerType: 'llm-gateway' })
     expect(useSettingsStore.getState()).toMatchObject({
@@ -71,7 +80,7 @@ describe('credential registry projection', () => {
     useSettingsStore.getState().setHasApiKey(true)
     expect(credentialRegistry.getState('openai').kind).toBe('valid')
     useSettingsStore.getState().setModelCredentialStatus('expired')
-    expect(credentialRegistry.getState('__llm_gateway_token__').kind).toBe('expired')
+    expect(credentialRegistry.getState('llm-gateway').kind).toBe('expired')
     expect(useSettingsStore.getState().hasApiKey).toBe(true)
   })
 

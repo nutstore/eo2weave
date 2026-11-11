@@ -9,7 +9,7 @@
  * @see https://gitea.jianguoyun.net.cn/huangqingming/llm_gateway_service
  */
 
-import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
+import { getGatewayDispatchCredentialKey } from '@/agent/providers/gateway-credential-alias'
 import { credentialRegistry } from '@/agent/providers/credential-state'
 import { t as translate } from '@creatorweave/i18n'
 import {
@@ -365,7 +365,7 @@ function setCredentialStatus(
 ): void {
   // Ignore verdicts produced for a session superseded by login or logout.
   if (expectedGeneration !== undefined && !isCredentialStatusCurrent(expectedGeneration)) return
-  credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: status })
+  credentialRegistry.commit('llm-gateway', { kind: status })
 }
 
 /**
@@ -380,7 +380,7 @@ function setCredentialStatus(
 async function setCredentialStatusLocked(
   status: 'valid' | 'expired' | 'missing',
 ): Promise<void> {
-  credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: status })
+  credentialRegistry.commit('llm-gateway', { kind: status })
 }
 
 /**
@@ -388,7 +388,7 @@ async function setCredentialStatusLocked(
  * module. `'unknown'` means no token operation has run in this session yet.
  */
 export function getGatewayCredentialStatus(): 'unknown' | 'valid' | 'expired' | 'missing' {
-  const { kind } = credentialRegistry.getState(GATEWAY_CREDENTIAL_KEY_ALIAS)
+  const { kind } = credentialRegistry.getState('llm-gateway')
   // `temporary` has no equivalent in this older API: report it as `unknown`,
   // which callers already treat as "no verdict yet" rather than "no key".
   return kind === 'temporary' ? 'unknown' : kind
@@ -433,15 +433,15 @@ function loadStoredTokens(): StoredTokens | null {
 
 /** Seed only locally provable gateway state before the first settings check. */
 export async function seedGatewayCredentialState(): Promise<void> {
-  const initial = credentialRegistry.getState(GATEWAY_CREDENTIAL_KEY_ALIAS)
+  const initial = credentialRegistry.getState('llm-gateway')
   if (initial.kind !== 'unknown' && initial.kind !== 'temporary') return
   const generation = getGatewayAuthSessionGeneration()
-  const revision = credentialRegistry.getRevision(GATEWAY_CREDENTIAL_KEY_ALIAS)
+  const revision = credentialRegistry.getRevision('llm-gateway')
   const commit = (kind: 'valid' | 'expired' | 'missing' | 'temporary', error?: unknown) => {
     if (generation !== getGatewayAuthSessionGeneration() ||
-        credentialRegistry.getRevision(GATEWAY_CREDENTIAL_KEY_ALIAS) !== revision) return
+        credentialRegistry.getRevision('llm-gateway') !== revision) return
     if (kind === 'temporary') {
-      credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind, error })
+      credentialRegistry.commit('llm-gateway', { kind, error })
     } else {
       setCredentialStatus(kind, generation)
     }
@@ -819,7 +819,7 @@ function escalateFencedKeyStoreWrite(opId: string): void {
  * store field.
  */
 export function escalateFencedKeyStoreMutation(): void {
-  credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: 'expired' })
+  credentialRegistry.commit('llm-gateway', { kind: 'expired' })
   void import('@/store/settings.store')
     .then(({ useSettingsStore }) => {
       const state = useSettingsStore.getState()
@@ -925,7 +925,7 @@ async function clearStoredTokens(
       purgeFailures.push(e)
     }
     try {
-      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS))
+      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(getGatewayDispatchCredentialKey()))
     } catch (e) {
       purgeFailures.push(e)
     }
@@ -1337,10 +1337,8 @@ export function persistDeviceLoginTokens(
   // deferred (dynamic import, unawaited): scheduled during this
   // lock-held commit, it could land AFTER the lock releases and after a
   // concurrent logout wrote 'missing' — reporting valid credentials for a
-  // logged-out session. Callers (applyGatewayLoginTokensInner) already set
-  // the status inside their own lock-held commit via
-  // settings.setModelCredentialStatus, which covers the settings store.
-  credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind: 'valid' })
+  // logged-out session. The registry projects this status into settings.
+  credentialRegistry.commit('llm-gateway', { kind: 'valid' })
 }
 
 /**

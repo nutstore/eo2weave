@@ -28,7 +28,6 @@
  */
 
 import { credentialRegistry } from '@/agent/providers/credential-state'
-import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
 import { useState, useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { Sparkles, KeyRound, ChevronRight, Shield, Loader2, ArrowRight, CircleHelp, Puzzle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
@@ -264,7 +263,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     return !getProviderConfig(providerType)
   }, [hasUsableModel, providerType, providerRegistryVersion])
 
-  const credentialKey = providerType === 'llm-gateway' ? GATEWAY_CREDENTIAL_KEY_ALIAS : providerType
+  const credentialKey = providerType
   const credentialKind = useSyncExternalStore(
     useCallback((listener) => credentialRegistry.subscribe(credentialKey, listener), [credentialKey]),
     useCallback(() => credentialRegistry.getState(credentialKey).kind, [credentialKey]),

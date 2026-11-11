@@ -45,9 +45,6 @@ const settingsStoreState = vi.hoisted(() => ({
   // Ordered log of status writes the auth layer actually LANDED. Proves a
   // verdict was dropped instead of merely overwritten by a later one.
   statusWrites: [] as string[],
-  // A purge must invalidate the cached api-key verdict, or checkHasApiKey()
-  // keeps answering `true` for a session whose key was just deleted.
-  invalidatedKeyCaches: [] as string[],
   apiKeyChecks: [] as Array<{ flush: boolean }>,
   // Which provider the app has selected. `checkHasApiKey()` answers for THAT
   // provider, so the purge resync must not run it on someone else's behalf.
@@ -69,10 +66,6 @@ vi.mock('@/store/settings.store', () => ({
       },
       setModelCredentialStatusError: (message: string | null) => {
         settingsStoreState.modelCredentialStatusError = message
-      },
-      invalidateApiKeyCache: (provider: string) => {
-        settingsStoreState.invalidatedKeyCaches.push(provider)
-        settingsStoreState.hasApiKeyLoaded = false
       },
       checkHasApiKey: async (options?: { flush?: boolean }) => {
         settingsStoreState.apiKeyChecks.push({ flush: options?.flush === true })
@@ -205,7 +198,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
     loadApiKeyMock.mockResolvedValue(null)
     saveApiKeyMock.mockReset()
     saveApiKeyMock.mockResolvedValue(undefined)
-    settingsStoreState.invalidatedKeyCaches.length = 0
     settingsStoreState.apiKeyChecks.length = 0
     settingsStoreState.providerType = 'llm-gateway'
     settingsStoreState.gatewayKeyPresent = true
@@ -233,7 +225,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
 
     it('seeds after a preliminary check marked the session temporarily unknown', async () => {
       const { credentialRegistry } = await import('@/agent/providers/credential-state')
-      credentialRegistry.commit('__llm_gateway_token__', { kind: 'temporary' })
+      credentialRegistry.commit('llm-gateway', { kind: 'temporary' })
       localStorage.setItem('__llm_gateway_expired_session__', '1')
       await seedGatewayCredentialState()
       expect(getGatewayCredentialStatus()).toBe('expired')
@@ -258,7 +250,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       loadApiKeyMock.mockRejectedValue(new Error('sqlite unavailable'))
       await seedGatewayCredentialState()
       const { credentialRegistry } = await import('@/agent/providers/credential-state')
-      expect(credentialRegistry.getState('__llm_gateway_token__').kind).toBe('temporary')
+      expect(credentialRegistry.getState('llm-gateway').kind).toBe('temporary')
     })
 
     it('does not discard the seed when an unrelated provider changes', async () => {
@@ -279,7 +271,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       const pending = seedGatewayCredentialState()
       await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalled())
       const { credentialRegistry } = await import('@/agent/providers/credential-state')
-      credentialRegistry.commit('__llm_gateway_token__', { kind: 'valid' })
+      credentialRegistry.commit('llm-gateway', { kind: 'valid' })
       finish(null)
       await pending
       expect(getGatewayCredentialStatus()).toBe('valid')
@@ -1692,7 +1684,7 @@ describe('credential status generation fence (#180)', () => {
     expect(localStorage.getItem(TOKENS_KEY)).toContain('new-session-refresh')
     const { credentialRegistry } = await import('@/agent/providers/credential-state')
     const subsequentVerdicts: string[] = []
-    const unsubscribe = credentialRegistry.subscribe('__llm_gateway_token__', state => subsequentVerdicts.push(state.kind))
+    const unsubscribe = credentialRegistry.subscribe('llm-gateway', state => subsequentVerdicts.push(state.kind))
 
     releaseLoad(null)
     await pending

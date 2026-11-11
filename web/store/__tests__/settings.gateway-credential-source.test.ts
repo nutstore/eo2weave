@@ -44,7 +44,7 @@ async function setup(status: CredentialStatus) {
     hasApiKeyLoaded: false,
   })
   const { credentialRegistry } = await import('@/agent/providers/credential-state')
-  credentialRegistry.commit('__llm_gateway_token__', { kind: status })
+  credentialRegistry.commit('llm-gateway', { kind: status })
   return useSettingsStore
 }
 

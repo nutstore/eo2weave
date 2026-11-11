@@ -598,10 +598,11 @@ export const useExtensionStore = create<ExtensionState>()(
               // IS registered, so the check can proceed normally.
               try {
                 const { useSettingsStore } = await import('@/store/settings.store')
-                useSettingsStore.getState().invalidateApiKeyCache('codex-oauth')
+                const { credentialRegistry } = await import('@/agent/providers/credential-state')
+                credentialRegistry.commit('codex-oauth', { kind: 'unknown' })
                 await useSettingsStore.getState().checkHasApiKey()
               } catch {
-                // Cache invalidation / re-check is best-effort.
+                // Credential re-check is best-effort.
               }
             } else if (resp?.ok && resp.data?.authorized) {
               // Catalog is temporarily unavailable; keep the existing provider

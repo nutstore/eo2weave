@@ -34,7 +34,6 @@ const settingsState = vi.hoisted(() => ({
   modelCredentialStatus: 'unknown',
   modelCredentialStatusError: null as string | null,
   setModelCredentialStatusError: vi.fn(),
-  invalidateApiKeyCache: vi.fn(),
   customProviders: [],
 }))
 
@@ -50,7 +49,6 @@ vi.mock('@/security/api-key-store', () => ({
   saveApiKey: vi.fn(async () => {}),
   loadApiKey: vi.fn(async () => 'key'),
   deleteApiKey: vi.fn(async () => {}),
-  invalidateApiKeyCache: vi.fn(),
 }))
 
 const useDynamicModelsMock = vi.hoisted(() => ({

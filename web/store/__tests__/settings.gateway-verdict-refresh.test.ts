@@ -50,7 +50,7 @@ describe('gateway verdict refresh (#277)', () => {
     const { useSettingsStore } = await importStore()
 
     const { credentialRegistry } = await import('@/agent/providers/credential-state')
-    credentialRegistry.commit('__llm_gateway_token__', { kind: 'missing' })
+    credentialRegistry.commit('llm-gateway', { kind: 'missing' })
     useSettingsStore.setState({
       providerType: 'llm-gateway',
       modelName: 'gw-model',
@@ -61,7 +61,7 @@ describe('gateway verdict refresh (#277)', () => {
     expect(useSettingsStore.getState().hasApiKey).toBe(false)
 
     // The session becomes valid while another provider is active.
-    credentialRegistry.commit('__llm_gateway_token__', { kind: 'valid' })
+    credentialRegistry.commit('llm-gateway', { kind: 'valid' })
     useSettingsStore.getState().switchProviderAndModel('openai', 'gpt-test')
     await vi.waitFor(() => expect(useSettingsStore.getState().hasApiKey).toBe(true))
 
@@ -77,7 +77,7 @@ describe('gateway verdict refresh (#277)', () => {
     const { useSettingsStore } = await importStore()
 
     const { credentialRegistry } = await import('@/agent/providers/credential-state')
-    credentialRegistry.commit('__llm_gateway_token__', { kind: 'missing' })
+    credentialRegistry.commit('llm-gateway', { kind: 'missing' })
     useSettingsStore.setState({
       providerType: 'llm-gateway',
       modelName: 'gw-model',
@@ -89,7 +89,7 @@ describe('gateway verdict refresh (#277)', () => {
     })
     expect(await useSettingsStore.getState().checkHasApiKey()).toBe(false)
 
-    credentialRegistry.commit('__llm_gateway_token__', { kind: 'valid' })
+    credentialRegistry.commit('llm-gateway', { kind: 'valid' })
     useSettingsStore.getState().switchProviderAndModel('openai', 'gpt-test')
     await vi.waitFor(() => expect(useSettingsStore.getState().hasApiKey).toBe(true))
 
@@ -113,11 +113,11 @@ describe('gateway verdict refresh (#277)', () => {
     })
     expect(await useSettingsStore.getState().checkHasApiKey()).toBe(true)
     const { credentialRegistry } = await import('@/agent/providers/credential-state')
-    const revisionBefore = credentialRegistry.getRevision('__llm_gateway_token__')
+    const revisionBefore = credentialRegistry.getRevision('llm-gateway')
 
     useSettingsStore.getState().switchProviderAndModel('openai', 'gpt-mini')
 
     await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalledWith('openai'))
-    expect(credentialRegistry.getRevision('__llm_gateway_token__')).toBe(revisionBefore)
+    expect(credentialRegistry.getRevision('llm-gateway')).toBe(revisionBefore)
   })
 })

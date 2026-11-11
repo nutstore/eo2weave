@@ -9,7 +9,7 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import type { LLMProviderType } from '@/agent/providers/types'
-import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
+import { getGatewayDispatchCredentialKey } from '@/agent/providers/gateway-credential-alias'
 import { credentialRegistry } from '@/agent/providers/credential-state'
 import {
   isCustomProviderType,
@@ -229,12 +229,6 @@ interface SettingsState {
    * (see `isPotentiallyDynamicProviderType`).
    */
   checkHasApiKey: (options?: { flush?: boolean }) => Promise<boolean>
-
-  /**
-   * Invalidate the API key cache for a provider
-   * Call this after saving/deleting an API key
-   */
-  invalidateApiKeyCache: (provider?: string) => void
 
   /**
    * Save current model selection to a specific workspace
@@ -1278,12 +1272,11 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       },
       setHasApiKey: (hasApiKey) => {
         const provider = get().providerType
-        const key = provider === 'llm-gateway' ? GATEWAY_CREDENTIAL_KEY_ALIAS : provider
-        credentialRegistry.commit(key, { kind: hasApiKey ? 'valid' : 'missing' })
+        credentialRegistry.commit(provider, { kind: hasApiKey ? 'valid' : 'missing' })
       },
       setModelCredentialStatus: (status) => {
         const kind = status === 'unauthorized' ? 'expired' : status
-        credentialRegistry.commit(GATEWAY_CREDENTIAL_KEY_ALIAS, { kind })
+        credentialRegistry.commit('llm-gateway', { kind })
       },
       setModelCredentialStatusError: (modelCredentialStatusError) =>
         set({ modelCredentialStatusError }),
@@ -1307,7 +1300,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // instead of reading the store.
         const apiKeyProviderKey =
           state.providerType === 'llm-gateway'
-            ? GATEWAY_CREDENTIAL_KEY_ALIAS
+            ? getGatewayDispatchCredentialKey()
             : state.providerType
 
         return {
@@ -1320,8 +1313,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       checkHasApiKey: async (options?: { flush?: boolean }) => {
         const state = get()
         const effective = state.getEffectiveProviderConfig()
-        const providerKey = state.providerType === 'llm-gateway'
-          ? GATEWAY_CREDENTIAL_KEY_ALIAS : state.providerType
+        const providerKey = state.providerType
         if (!effective) {
           if (isPotentiallyDynamicProviderType(state.providerType) && !options?.flush) return false
           if (state.providerType === 'llm-gateway') {
@@ -1356,12 +1348,6 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           }, { restartable: true })
         }
         return (await credentialRegistry.resolve(providerKey)).kind === 'valid'
-      },
-
-      invalidateApiKeyCache: (provider) => {
-        const key = provider || get().getEffectiveProviderConfig()?.apiKeyProviderKey
-        if (!key || key === GATEWAY_CREDENTIAL_KEY_ALIAS || key === 'llm-gateway') return
-        credentialRegistry.commit(key, { kind: 'unknown' })
       },
 
       saveModelOverrideForWorkspace: (workspaceId) => {
@@ -1770,12 +1756,10 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
 function bindSelectedCredential(): void {
   let selectedKey: string | undefined
   let unsubscribe: (() => void) | undefined
-  const selectKey = (providerType: string) =>
-    providerType === 'llm-gateway' ? GATEWAY_CREDENTIAL_KEY_ALIAS : providerType
   const project = () => {
     if (selectedKey === undefined) return
     const current = useSettingsStore.getState()
-    if (selectKey(current.providerType) !== selectedKey) return
+    if (current.providerType !== selectedKey) return
     const verdict = credentialRegistry.getState(selectedKey)
     const modelCredentialStatus = current.providerType === 'llm-gateway'
       ? verdict.kind === 'valid' || verdict.kind === 'missing' || verdict.kind === 'expired'
@@ -1793,7 +1777,7 @@ function bindSelectedCredential(): void {
     try { useSettingsStore.setState(projection) } finally { suppressPersistWrites-- }
   }
   const bind = (providerType: string) => {
-    const key = selectKey(providerType)
+    const key = providerType
     if (key === selectedKey) return
     unsubscribe?.()
     selectedKey = key

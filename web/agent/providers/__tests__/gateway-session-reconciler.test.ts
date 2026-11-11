@@ -38,7 +38,6 @@ const settingsStoreState = vi.hoisted(() => {
   const state = {
     modelCredentialStatus: 'unknown' as string,
     modelCredentialStatusError: null as string | null,
-    invalidateApiKeyCacheCalls: [] as Array<string | undefined>,
     checkHasApiKeyCalls: 0,
     triggerProviderRefreshCalls: 0,
   }
@@ -52,9 +51,6 @@ vi.mock('@/store/settings.store', () => ({
       },
       setModelCredentialStatusError: (message: string | null) => {
         settingsStoreState.modelCredentialStatusError = message
-      },
-      invalidateApiKeyCache: (provider?: string) => {
-        settingsStoreState.invalidateApiKeyCacheCalls.push(provider)
       },
       checkHasApiKey: () => {
         settingsStoreState.checkHasApiKeyCalls++
@@ -177,7 +173,6 @@ describe('gateway session reconciler', () => {
     localStorage.clear()
     settingsStoreState.modelCredentialStatus = 'unknown'
     settingsStoreState.modelCredentialStatusError = null
-    settingsStoreState.invalidateApiKeyCacheCalls = []
     settingsStoreState.checkHasApiKeyCalls = 0
     settingsStoreState.triggerProviderRefreshCalls = 0
     deleteApiKeyMock.mockReset()

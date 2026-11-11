@@ -22,7 +22,6 @@ const settingsState = vi.hoisted(() => ({
   getStalePinnedModels: vi.fn(() => []),
   pinnedModelsByProvider: {} as Record<string, string[]>,
   modelCredentialStatus: 'unknown' as CredentialStatus,
-  invalidateApiKeyCache: vi.fn(),
   setHasApiKey: vi.fn(),
   setModelCredentialStatus: vi.fn(),
   providerType: 'llm-gateway',
