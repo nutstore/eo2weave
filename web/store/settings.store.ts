@@ -11,6 +11,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import type { LLMProviderType } from '@/agent/providers/types'
 import { getGatewayDispatchCredentialKey } from '@/agent/providers/gateway-credential-alias'
 import { credentialRegistry } from '@/agent/providers/credential-state'
+import { API_KEY_CHANGE_STORAGE_KEY } from '@/security/api-key-change'
 import {
   isCustomProviderType,
   isPotentiallyDynamicProviderType,
@@ -1386,6 +1387,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           // credential verdict has to be dropped here too — the same stale
           // "no key" replay described in switchProviderAndModel below (#277).
           if (!credentialStillApplies) {
+            if (override.providerType !== 'llm-gateway') credentialRegistry.commit(override.providerType, { kind: 'unknown' })
             void get().checkHasApiKey()
           }
         }
@@ -1419,6 +1421,9 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // it, so re-evaluate. This is what lets a first-time user who saved a
         // key (while providerType was still empty) leave the onboarding
         // select-model step as soon as they pick their default model.
+        if (!credentialStillApplies && newProviderType !== 'llm-gateway') {
+          credentialRegistry.commit(newProviderType, { kind: 'unknown' })
+        }
         void get().checkHasApiKey(
           newProviderType === 'llm-gateway' && !credentialStillApplies ? { flush: true } : undefined,
         )
@@ -1963,6 +1968,15 @@ function setupCrossTabSettingsSync(): void {
   if (crossTabSyncInstalled || typeof window === 'undefined') return
   crossTabSyncInstalled = true
   window.addEventListener('storage', (e) => {
+    if (e.key === API_KEY_CHANGE_STORAGE_KEY && e.newValue) {
+      try {
+        const { provider } = JSON.parse(e.newValue) as { provider?: unknown }
+        if (typeof provider !== 'string' || !provider || provider.startsWith('__') || provider === 'llm-gateway') return
+        credentialRegistry.commit(provider, { kind: 'unknown' })
+        if (useSettingsStore.getState().providerType === provider) void useSettingsStore.getState().checkHasApiKey()
+      } catch { /* Ignore malformed notifications. */ }
+      return
+    }
     if (e.key !== 'bfosa-settings' || e.newValue == null) return
     // Parse ONCE — the schema-version guard, revision guard, and apply path
     // all read the same envelope.
@@ -2106,6 +2120,9 @@ function setupCrossTabSettingsSync(): void {
         applied.modelName !== credentialsBefore.modelName
       ) {
         const next = useSettingsStore.getState()
+        if (next.providerType !== 'llm-gateway') {
+          credentialRegistry.commit(next.providerType, { kind: 'unknown' })
+        }
         void next.checkHasApiKey()
       }
     } catch {

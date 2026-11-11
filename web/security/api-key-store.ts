@@ -6,6 +6,7 @@
  */
 
 import { getApiKeyRepository, initSQLiteDB } from '@/sqlite'
+import { notifyApiKeyChanged } from '@/security/api-key-change'
 
 let initPromise: Promise<void> | null = null
 
@@ -62,6 +63,7 @@ export async function saveApiKey(provider: string, apiKey: string): Promise<void
   await ensureInitialized()
   const repo = getApiKeyRepository()
   await repo.save(provider, apiKey)
+  notifyApiKeyChanged(provider)
 }
 
 /** Load an API key (decrypted) */
@@ -76,6 +78,7 @@ export async function deleteApiKey(provider: string): Promise<void> {
   await ensureInitialized()
   const repo = getApiKeyRepository()
   await repo.delete(provider)
+  notifyApiKeyChanged(provider)
 }
 
 /** Check if an API key exists for a provider */

@@ -9,6 +9,7 @@
  * and not persisted to SQLite.
  */
 
+import { credentialRegistry } from '@/agent/providers/credential-state'
 import { isConversationUserMessage, isHumanUserMessage } from '@/agent/message-types'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
@@ -1798,8 +1799,14 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       // 2. Create provider / contextManager / toolRegistry (same as runAgent)
       const settingsState = useSettingsStore.getState()
       const { hasApiKey: hasKey, providerType: pType, modelName: mName } = settingsState
-      if (!hasKey) {
-        toast.error(i18nText('conversation.toast.noApiKey', '未配置 API Key'))
+      const credentialKind = credentialRegistry.getState(pType).kind
+      if (!hasKey && credentialKind !== 'temporary') {
+        const message = pType === 'llm-gateway' && credentialKind === 'expired'
+          ? i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
+          : pType === 'llm-gateway' && credentialKind === 'missing'
+            ? i18nText('conversation.error.gatewayCredentialMissing', 'Not logged in to Nutstore AI. Please log in first.')
+            : i18nText('conversation.toast.noApiKey', '未配置 API Key')
+        toast.error(message)
         return
       }
 
@@ -1822,10 +1829,23 @@ export const useConversationStoreSQLite = create<ConversationState>()(
 
       const apiKeyRepo = getApiKeyRepository()
       const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
-      const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, () => apiKeyRepo.load(providerConfig.apiKeyProviderKey))
+      let credential: Awaited<ReturnType<typeof resolveDispatchApiKey>>
+      try {
+        credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, () => apiKeyRepo.load(providerConfig.apiKeyProviderKey))
+      } catch {
+        toast.error(i18nText('settings.toast.apiKeyLoadFailed', 'Failed to read saved API key. Please retry.'))
+        return
+      }
       const apiKey = credential.ok ? credential.apiKey : null
       if (!apiKey) {
-        toast.error(i18nText('conversation.toast.noApiKey', '未配置 API Key'))
+        const message = !credential.ok && credential.kind === 'temporary'
+          ? i18nText('conversation.error.gatewayCredentialTemporary', 'Nutstore AI is temporarily unavailable — please retry')
+          : !credential.ok && pType === 'llm-gateway' && credential.kind === 'expired'
+            ? i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
+            : !credential.ok && pType === 'llm-gateway' && credential.kind === 'missing'
+              ? i18nText('conversation.error.gatewayCredentialMissing', 'Not logged in to Nutstore AI. Please log in first.')
+              : i18nText('conversation.toast.noApiKey', '未配置 API Key')
+        toast.error(message)
         return
       }
 

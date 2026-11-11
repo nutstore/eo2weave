@@ -298,6 +298,18 @@ describe('app-tools handlers', () => {
     expect(deps.getConversationStore().runAgent).toHaveBeenCalled()
   })
 
+  it('lets a temporary gateway credential reach dispatch for retry', async () => {
+    const { credentialRegistry } = await import('@/agent/providers/credential-state')
+    credentialRegistry.commit('llm-gateway', { kind: 'temporary' })
+    try {
+      initAppToolDeps({ ...deps, getSettingsStore: () => ({
+        ...deps.getSettingsStore(), providerType: 'llm-gateway', hasApiKey: false, hasApiKeyLoaded: true,
+      }) })
+      const result = JSON.parse((await handlers.send_message({ conversationId: 'c_1', content: 'retry' })).content)
+      expect(result.status).toBe('started')
+    } finally { credentialRegistry.reset() }
+  })
+
   it('send_message errors without api key', async () => {
     initAppToolDeps({
       ...deps,

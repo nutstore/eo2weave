@@ -272,14 +272,15 @@ export class CredentialRegistry {
   }
 
   /**
-   * A restartable attempt may be replaced after the abandon horizon. Other
-   * attempts remain single-flight until they settle: a timeout or abort alone
+   * A restartable attempt may be replaced after the abandon horizon or an
+   * authoritative update. Other attempts remain single-flight: a timeout or abort alone
    * cannot prove that a credential-changing server request has stopped.
    */
   private takeInflight(providerKey: string): InflightAttempt | undefined {
     const attempt = this.inflight.get(providerKey)
     if (!attempt) return undefined
-    if (!attempt.restartable || Date.now() - attempt.startedAt < this.abandonAfterMs) return attempt
+    const superseded = this.versionOf(providerKey) !== attempt.version
+    if (!attempt.restartable || (!superseded && Date.now() - attempt.startedAt < this.abandonAfterMs)) return attempt
     this.inflight.delete(providerKey)
     // The abandoned attempt is VOID: bump the version so its late verdict can
     // never beat the attempt that replaces it, and abort so a resolver that

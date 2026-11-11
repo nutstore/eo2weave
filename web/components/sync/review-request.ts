@@ -1,3 +1,4 @@
+import { credentialRegistry } from '@/agent/providers/credential-state'
 import { createUserMessage } from '@/agent/message-types'
 import { useAgentStore } from '@/store/agent.store'
 import { useConversationStore } from '@/store/conversation.store'
@@ -109,7 +110,8 @@ export async function sendChangeReviewToConversation(changes: FileChange[]): Pro
   // store reports `hasApiKey: false` merely because nothing has resolved yet,
   // and "send changes for review" fired from a fresh tab would tell the user to
   // configure a key they already have (#277).
-  if (settings.hasApiKeyLoaded && !settings.hasApiKey) {
+  if (settings.hasApiKeyLoaded && !settings.hasApiKey &&
+      credentialRegistry.getState(settings.providerType).kind !== 'temporary') {
     throw new Error(ReviewErrorKey.PLEASE_CONFIGURE_API_KEY)
   }
 
