@@ -18,6 +18,7 @@ import {
   subscribeToProviderRegistry,
 } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
+import { DEFAULT_COMPRESSION_ABSOLUTE_CAP } from '@/agent/loop/context-compression'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import {
   resolveDefaultModelSelection,
@@ -115,6 +116,13 @@ interface SettingsState {
    */
   maxTokens: number
   maxIterations: number
+  /**
+   * Absolute context-compression cap (Settings → Advanced). When enabled, the
+   * compression trigger is min(85% of the window, cap) — see
+   * resolveCompressionTriggerTokens. Disabled = ratio only.
+   */
+  compressionAbsoluteCapEnabled: boolean
+  compressionAbsoluteCap: number
   enableThinking: boolean
   thinkingLevel: ExtendedThinkingLevel
 
@@ -194,6 +202,8 @@ interface SettingsState {
   removeCustomProviderModel: (providerId: string, model: string) => void
   setCustomProviderApiMode: (providerId: string, apiMode: import('@/store/settings.store').CustomApiMode) => void
   setTemperature: (temp: number) => void
+  setCompressionAbsoluteCapEnabled: (enabled: boolean) => void
+  setCompressionAbsoluteCap: (tokens: number) => void
   setMaxIterations: (iterations: number) => void
   setEnableThinking: (v: boolean) => void
   setThinkingLevel: (v: ExtendedThinkingLevel) => void
@@ -520,7 +530,23 @@ function mergeSnapshotOverCurrent(
 let lastRevisionlessEventTimestamp = 0
 
 /** Persist schema version — must match the persist config's `version` below. */
-const SETTINGS_PERSIST_VERSION = 4
+const SETTINGS_PERSIST_VERSION = 5
+
+/**
+ * Allowed range for the absolute compression cap. The migrate, the setter and
+ * the Settings input all clamp to this range; keep them on one definition so a
+ * hand-edited snapshot cannot land outside what the UI can display.
+ */
+export const COMPRESSION_ABSOLUTE_CAP_MIN = 32_000
+export const COMPRESSION_ABSOLUTE_CAP_MAX = 1_000_000
+
+/** Clamp a cap value into the allowed range (caller checks it is a number). */
+function clampCompressionAbsoluteCap(tokens: number): number {
+  return Math.max(
+    COMPRESSION_ABSOLUTE_CAP_MIN,
+    Math.min(COMPRESSION_ABSOLUTE_CAP_MAX, Math.round(tokens)),
+  )
+}
 
 /** True when persist middleware writes to storage are currently suppressed. */
 function persistWritesSuppressed(): boolean {
@@ -981,6 +1007,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       temperature: 0.7,
       maxTokens: 4096,
       maxIterations: 20,
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: DEFAULT_COMPRESSION_ABSOLUTE_CAP,
       // First-run defaults (v4): thinking ON at 'high'. Existing installs keep
       // their persisted values — the persist migrate (version < 4) restores
       // whatever was stored, so these defaults only apply to fresh installs.
@@ -1207,6 +1235,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       },
 
       setTemperature: (temperature) => set({ temperature }),
+      setCompressionAbsoluteCapEnabled: (compressionAbsoluteCapEnabled) =>
+        set({ compressionAbsoluteCapEnabled }),
+      setCompressionAbsoluteCap: (compressionAbsoluteCap) => {
+        // A cleared/non-numeric number input must keep the previous value, not
+        // poison the setting with NaN.
+        if (!Number.isFinite(compressionAbsoluteCap)) return
+        set({ compressionAbsoluteCap: clampCompressionAbsoluteCap(compressionAbsoluteCap) })
+      },
       setMaxIterations: (maxIterations) =>
         set({
           maxIterations:
@@ -1759,6 +1795,18 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         if (version < 3) {
           delete next.enableSchedules
         }
+        if (version < 5) {
+          // v5 added the absolute compression cap. Backfill it for old
+          // snapshots and sanitise hand-edited values: a non-finite or
+          // non-positive cap must not reach the trigger maths (the resolver
+          // ignores those and falls back to the ratio; here a corrupt value
+          // must not silently become the most aggressive cap).
+          const rawCap = Number(next.compressionAbsoluteCap)
+          next.compressionAbsoluteCap = Number.isFinite(rawCap) && rawCap > 0
+            ? clampCompressionAbsoluteCap(rawCap)
+            : DEFAULT_COMPRESSION_ABSOLUTE_CAP
+          next.compressionAbsoluteCapEnabled = next.compressionAbsoluteCapEnabled !== false
+        }
         return next as unknown as PersistedSettingsState
       },
       // Don't persist hasApiKey - it's derived from SQLite
@@ -1770,6 +1818,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         temperature: state.temperature,
         maxTokens: state.maxTokens,
         maxIterations: state.maxIterations,
+        compressionAbsoluteCapEnabled: state.compressionAbsoluteCapEnabled,
+        compressionAbsoluteCap: state.compressionAbsoluteCap,
         enableThinking: state.enableThinking,
         thinkingLevel: state.thinkingLevel,
         enableBatchSpawn: state.enableBatchSpawn,
@@ -1880,6 +1930,8 @@ interface PersistedSettingsState {
   temperature: number
   maxTokens: number
   maxIterations: number
+  compressionAbsoluteCapEnabled: boolean
+  compressionAbsoluteCap: number
   enableThinking: boolean
   thinkingLevel: ExtendedThinkingLevel
   enableBatchSpawn: boolean
@@ -1950,6 +2002,8 @@ function restoreCurrentSnapshotToStorage(): void {
       temperature: current.temperature as number,
       maxTokens: current.maxTokens as number,
       maxIterations: current.maxIterations as number,
+      compressionAbsoluteCapEnabled: current.compressionAbsoluteCapEnabled as boolean,
+      compressionAbsoluteCap: current.compressionAbsoluteCap as number,
       enableThinking: current.enableThinking as boolean,
       thinkingLevel: current.thinkingLevel as PersistedSettingsState['thinkingLevel'],
       enableBatchSpawn: current.enableBatchSpawn as boolean,

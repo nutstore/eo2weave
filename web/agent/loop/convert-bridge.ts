@@ -4,7 +4,7 @@ import {
   applyCompressionBaseline,
   getCompressionCutoffTimestamp,
   injectSummaryMessage,
-  COMPRESSION_TRIGGER_RATIO,
+  resolveCompressionTriggerTokens,
   type CompressionBaselineState,
 } from './context-compression'
 import { internalToPiMessages, piToInternalMessage, extractTextContent } from './message-mappers'
@@ -25,6 +25,11 @@ export interface ConvertAgentMessagesToLlmInput {
   compressionBaseline: CompressionBaselineState | null
   maxContextTokens: number
   reserveTokens: number
+  /** False for paths that must never summarize (e.g. scheduled runs). */
+  compressionEnabled?: boolean
+  /** Absolute cap from Settings → Advanced (see resolveCompressionTriggerTokens). */
+  compressionAbsoluteCapEnabled?: boolean
+  compressionAbsoluteCap?: number
   generateContextSummaryWithLLM: (
     droppedContent: string,
     maxSummaryTokens: number
@@ -143,6 +148,12 @@ export async function convertAgentMessagesToLlm(
   // If the user deletes messages, the next API call will correct the numbers.
   const usedRealTokens = extractLastTurnUsedTokens(input.agentMessages)
 
+  const compressionTriggerThreshold = resolveCompressionTriggerTokens({
+    maxContextTokens,
+    absoluteCapEnabled: input.compressionAbsoluteCapEnabled,
+    absoluteCap: input.compressionAbsoluteCap,
+  })
+
   if (usedRealTokens !== null) {
     console.info('[AgentLoop] Real token usage from last turn', {
       sessionId: input.sessionId,
@@ -152,15 +163,22 @@ export async function convertAgentMessagesToLlm(
       inputBudget,
       maxContextTokens,
       usagePercent: Number(((usedRealTokens / maxContextTokens) * 100).toFixed(2)),
-      triggerThreshold: Math.floor(maxContextTokens * COMPRESSION_TRIGGER_RATIO),
+      triggerThreshold: compressionTriggerThreshold,
     })
   }
 
-  const compressionTriggerThreshold = Math.floor(maxContextTokens * COMPRESSION_TRIGGER_RATIO)
   // Only use real token usage from the last API response for the compression
   // gate.  The heuristic estimate (preTrimTokens) is inaccurate and can
   // trigger compression as early as 40% real usage.
+  // Cooldown: a summary written on the previous convert must not be redone
+  // immediately. Without it, a conversation whose fixed overhead (system prompt
+  // + tool schemas) already exceeds the cap would re-summarize every turn.
+  // Exactly one convert is skipped: counters restored from an inconsistent
+  // snapshot must fail open (compress) rather than suppress the cap forever.
+  const summarizedLastCall = convertCallCount - lastSummaryConvertCall === 1
   const shouldAllowCompression =
+    input.compressionEnabled !== false &&
+    !summarizedLastCall &&
     typeof usedRealTokens === 'number' && usedRealTokens >= compressionTriggerThreshold &&
     (!compressionBaseline || internalMessagesRaw.some(message => message.role === 'assistant' && message.timestamp >= compressionBaseline!.cutoffTimestamp))
   console.info('[AgentLoop] Compression gate evaluation', {
@@ -190,6 +208,10 @@ export async function convertAgentMessagesToLlm(
 
   if (shouldAllowCompression) {
     // Compression: generate summary via LLM, then replace all messages with [summary].
+    // Recompression must not forget what the previous summary already covers:
+    // the summarizer receives it as context, otherwise each round keeps only the
+    // messages since the last cutoff and the original task is lost.
+    const previousSummary = compressionBaseline?.summary?.trim()
     const droppedContent = internalMessages
       .filter((msg) => msg.kind !== 'context_summary' && msg.kind !== 'run_changes' && msg.kind !== 'context_update')
       .map((msg) => {
@@ -203,7 +225,13 @@ export async function convertAgentMessagesToLlm(
       })
       .filter(Boolean)
       .join('\n')
+    const droppedContentWithHistory = previousSummary
+      ? `Earlier summary:\n${previousSummary}\n\nNewer messages:\n${droppedContent}`
+      : droppedContent
 
+    const summarizeInput = droppedContentWithHistory
+    // Metrics report what was actually dropped this round; the carried-over
+    // summary is input context, not dropped content.
     const droppedContentChars = droppedContent.length
     const droppedGroups = internalMessages.length
 
@@ -213,7 +241,7 @@ export async function convertAgentMessagesToLlm(
       let summary: string | null = null
       let mode: CompressionSummaryMode = 'llm'
       try {
-        const generated = await input.generateContextSummaryWithLLM(droppedContent, summaryTokenBudget)
+        const generated = await input.generateContextSummaryWithLLM(summarizeInput, summaryTokenBudget)
         summary = generated.summary
         mode = generated.mode
       } catch (firstError) {
@@ -221,7 +249,7 @@ export async function convertAgentMessagesToLlm(
         // again the turn must still run with the transcript intact — dropping
         // history would silently make the model forget the task (#268).
         try {
-          const retried = await input.generateContextSummaryWithLLM(droppedContent, summaryTokenBudget)
+          const retried = await input.generateContextSummaryWithLLM(summarizeInput, summaryTokenBudget)
           summary = retried.summary
           mode = retried.mode
         } catch (retryError) {

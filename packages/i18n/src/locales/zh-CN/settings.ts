@@ -431,6 +431,17 @@ export const settings = {
     maxIterationsHint: "限制单次 Agent Loop 的最大 assistant 回合数",
     maxIterationsUnlimited: "无限",
     maxIterationsUnlimitedHint: "单次 Agent Loop 不限制 assistant 回合数",
+    // 上下文压缩
+    contextCompression: "上下文压缩",
+    contextCompressionHint: "对话接近模型上下文窗口时，旧消息会被自动摘要。",
+    compressionRatioTrigger: "比例触发",
+    compressionRatioFixed: "85%（固定）",
+    compressionAbsoluteCap: "绝对上限",
+    compressionAbsoluteCapHint: "上下文超过该 token 数时立即压缩，不受比例影响",
+    compressionTriggerExplain:
+      "触发点取两者较小值，按每个对话的实际上下文计算。",
+    compressionAbsoluteCapOffWarning:
+      "绝对上限已关闭：只在达到上下文窗口的 85% 时压缩，超长对话可能超出模型的硬上限而报错。",
 
     // 思考模式
     thinkingMode: "思考模式",

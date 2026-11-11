@@ -119,6 +119,13 @@ export interface RunFlowOptions {
   userInput?: string
   /** Abort signal */
   abortSignal?: AbortSignal
+  /**
+   * Absolute compression cap from Settings → Advanced. Flow nodes run their own
+   * AgentLoop, so they must receive the same trigger as the main chat loop
+   * (see resolveCompressionTriggerTokens).
+   */
+  compressionAbsoluteCapEnabled?: boolean
+  compressionAbsoluteCap?: number
 
   // Progress callbacks
   onNodeStart?: (nodeId: string, kind: FlowNode['kind']) => void
@@ -204,6 +211,8 @@ export async function runFlow(options: RunFlowOptions): Promise<FlowRunResult> {
             nodes: flow.nodes,
             abortSignal,
             loopTargets,
+            compressionAbsoluteCapEnabled: options.compressionAbsoluteCapEnabled,
+            compressionAbsoluteCap: options.compressionAbsoluteCap,
             onNodeStart: options.onNodeStart,
             onNodeComplete: options.onNodeComplete,
             onNodeError: options.onNodeError,
@@ -309,6 +318,9 @@ interface ExecuteNodeParams {
   /** All upstream outputs keyed by node label (for multi-input fan-in). */
   upstreamOutputs?: Record<string, string>
   abortSignal?: AbortSignal
+  /** Same absolute compression cap as the main chat loop (Settings → Advanced). */
+  compressionAbsoluteCapEnabled?: boolean
+  compressionAbsoluteCap?: number
   loopTargets: Map<string, string>
   /** The flow's node list — lets review nodes locate their retry target. */
   nodes: FlowNode[]
@@ -326,6 +338,11 @@ async function executeNode(
   const { context, llm, outputStore, inputAlias, upstreamOutputs } = params
   const config = node.config as Record<string, unknown>
   const variables = outputStore.toVariables()
+  // Every per-node agent must compress on the same trigger as the main chat loop.
+  const compression = {
+    enabled: params.compressionAbsoluteCapEnabled,
+    cap: params.compressionAbsoluteCap,
+  }
 
   params.onNodeStart?.(node.id, node.kind)
 
@@ -392,7 +409,7 @@ async function executeNode(
           ? `${finalPrompt}\n\n---\n${upstreamData}`
           : finalPrompt
 
-        const agentResult = await runAgentNode(llm, userMessage, params.context, params.abortSignal)
+        const agentResult = await runAgentNode(llm, userMessage, params.context, params.abortSignal, compression)
         const rawOutput = agentResult.output
         nodeTrace = agentResult.trace
 
@@ -440,7 +457,8 @@ async function executeNode(
             llm,
             reviewPrompt,
             params.context,
-            params.abortSignal
+            params.abortSignal,
+            compression
           )
           reviewResult = agentResult.output
           nodeTrace = agentResult.trace
@@ -470,7 +488,8 @@ async function executeNode(
             llm,
             feedback,
             params.context,
-            params.abortSignal
+            params.abortSignal,
+            compression
           )
           const retryOutput = retryAgentResult.output
           // Update output store so downstream sees the improved version
@@ -765,7 +784,8 @@ async function runAgentNode(
   llm: RunFlowOptions['llm'],
   userMessage: string,
   context: ToolContext,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  compression?: { enabled?: boolean; cap?: number }
 ): Promise<{ output: string; trace: FlowNodeTraceStep[] }> {
   const provider = createLLMProvider({
     apiKey: llm.apiKey,
@@ -780,6 +800,8 @@ async function runAgentNode(
     reserveTokens: 8192,
     enableSummarization: true,
     maxMessageGroups: 50,
+    compressionAbsoluteCapEnabled: compression?.enabled,
+    compressionAbsoluteCap: compression?.cap,
   })
 
   const toolRegistry = getToolRegistry()

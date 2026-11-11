@@ -8,6 +8,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { ContextManager } from '../context-manager'
 import type { ChatMessage } from '../llm/llm-provider'
+import { estimateMessageTokens } from '../llm/token-counter'
 
 // Mock token counter - inline factory for proper hoisting
 vi.mock('../llm/token-counter', () => {
@@ -298,6 +299,79 @@ describe('ContextManager', () => {
         (m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('Compressed memory')
       )
       expect(compressedSummary).toBeDefined()
+    })
+
+    it('should compress at the absolute cap instead of the ratio', () => {
+      // 3 x 700 chars ≈ 700 tokens: below the 85% ratio trigger (850) but above
+      // the 300-token cap, so only the capped manager may compress.
+      const messages: ChatMessage[] = []
+      for (let i = 0; i < 3; i++) {
+        messages.push(createMessage('user', `Message ${i} ${'x'.repeat(690)}`))
+      }
+      const hasCompressedMemory = (msgs: ChatMessage[]) =>
+        msgs.some(
+          (m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('Compressed memory')
+        )
+
+      const capped = new ContextManager({
+        maxContextTokens: 1000,
+        reserveTokens: 100,
+        enableSummarization: true,
+        compressionAbsoluteCapEnabled: true,
+        compressionAbsoluteCap: 300,
+      })
+      expect(hasCompressedMemory(capped.trimMessages(messages, { createSummary: true }).messages)).toBe(true)
+
+      const ratioOnly = new ContextManager({
+        maxContextTokens: 1000,
+        reserveTokens: 100,
+        enableSummarization: true,
+        compressionAbsoluteCapEnabled: false,
+      })
+      expect(hasCompressedMemory(ratioOnly.trimMessages(messages, { createSummary: true }).messages)).toBe(false)
+    })
+
+    it('should cap the trim budget at the absolute cap for huge windows', () => {
+      // 1M window, 32K reserve: the ratio trigger (850K) would let a 300K-token
+      // history through untouched, so only a manager that bounds `budget` by the
+      // 200K cap drops anything here.
+      const messages: ChatMessage[] = []
+      for (let i = 0; i < 300; i++) {
+        // 3 chars/token in the mocked counter => ~1000 tokens per message.
+        messages.push(createMessage('user', `Message ${i} ${'x'.repeat(2980)}`))
+      }
+
+      const capped = new ContextManager({
+        maxContextTokens: 1_000_000,
+        reserveTokens: 32_000,
+        enableSummarization: true,
+        // 300 single-message groups: keep the 50-group limit out of the picture
+        // so only the token budget decides.
+        maxMessageGroups: 400,
+        compressionAbsoluteCapEnabled: true,
+        compressionAbsoluteCap: 200_000,
+      })
+      const result = capped.trimMessages(messages, {
+        createSummary: true,
+        usedRealTokens: 300_000,
+      })
+
+      expect(result.wasTruncated).toBe(true)
+      expect(result.droppedGroups).toBeGreaterThan(0)
+      const keptTokens = result.messages.reduce((sum, msg) => sum + estimateMessageTokens(msg), 0)
+      expect(keptTokens).toBeLessThanOrEqual(200_000)
+      expect(keptTokens).toBeGreaterThan(0)
+
+      // Without the cap the same history fits in the 968K ratio budget, so
+      // nothing is dropped — that is the behaviour this test pins down.
+      const ratioOnly = new ContextManager({
+        maxContextTokens: 1_000_000,
+        reserveTokens: 32_000,
+        enableSummarization: true,
+        maxMessageGroups: 400,
+        compressionAbsoluteCapEnabled: false,
+      })
+      expect(ratioOnly.trimMessages(messages, { createSummary: true }).droppedGroups).toBe(0)
     })
 
     it('should exclude prior compressed memory messages from external dropped content', () => {

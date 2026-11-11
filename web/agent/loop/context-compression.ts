@@ -8,6 +8,42 @@ import { generateId, type Message } from '../message-types'
  */
 export const COMPRESSION_TRIGGER_RATIO = 0.85
 
+/**
+ * Default for the absolute compression cap (Settings → Advanced → context
+ * compression). 200K matches the context window of the models this app
+ * targets most, so the cap only binds when a model advertises a larger
+ * window than the user is willing to pay for per turn.
+ */
+export const DEFAULT_COMPRESSION_ABSOLUTE_CAP = 200_000
+
+export interface CompressionTriggerInput {
+  /** The model's advertised context window. */
+  maxContextTokens: number
+  /**
+   * Whether the absolute cap is enabled (Settings toggle). Only an EXPLICIT
+   * `false` turns it off: `undefined` means "on", so a caller that predates the
+   * setting cannot silently land on the unbounded ratio-only gate. Pass `false`
+   * deliberately where the cap must not apply (headless schedules).
+   */
+  absoluteCapEnabled?: boolean
+  /** Absolute cap in tokens; ignored when disabled or non-positive. */
+  absoluteCap?: number
+}
+
+/**
+ * Tokens at which compression starts: min(ratio × window, absolute cap).
+ *
+ * Every compression gate must go through this function. A ratio-only gate
+ * leaves a path that grows unbounded on models with very large windows.
+ */
+export function resolveCompressionTriggerTokens(input: CompressionTriggerInput): number {
+  const ratioTrigger = Math.floor(input.maxContextTokens * COMPRESSION_TRIGGER_RATIO)
+  if (input.absoluteCapEnabled === false) return ratioTrigger
+  const cap = Math.floor(input.absoluteCap ?? DEFAULT_COMPRESSION_ABSOLUTE_CAP)
+  if (!Number.isFinite(cap) || cap <= 0) return ratioTrigger
+  return Math.min(ratioTrigger, cap)
+}
+
 export interface CompressionBaselineState {
   summary: string
   cutoffTimestamp: number

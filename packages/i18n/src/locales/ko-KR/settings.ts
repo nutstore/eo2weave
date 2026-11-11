@@ -439,6 +439,18 @@ export const settings = {
     maxIterationsUnlimited: "무제한",
     maxIterationsUnlimitedHint:
       "단일 Agent Loop에서 assistant 턴 수를 무제한으로 허용합니다",
+    // 컨텍스트 압축
+    contextCompression: "컨텍스트 압축",
+    contextCompressionHint:
+      "대화가 모델의 컨텍스트 윈도에 가까워지면 오래된 메시지가 자동으로 요약됩니다.",
+    compressionRatioTrigger: "비율 트리거",
+    compressionRatioFixed: "85%(고정)",
+    compressionAbsoluteCap: "절대 상한",
+    compressionAbsoluteCapHint: "컨텍스트가 이 토큰 수를 넘으면 비율과 관계없이 압축합니다",
+    compressionTriggerExplain:
+      "트리거는 둘 중 작은 값이며 대화마다 계산됩니다.",
+    compressionAbsoluteCapOffWarning:
+      "절대 상한이 꺼져 있습니다: 윈도의 85%에 도달할 때만 압축되므로 매우 긴 대화는 모델의 한도를 초과해 실패할 수 있습니다.",
 
     // 사고 모드
     thinkingMode: "사고 모드",

@@ -9,6 +9,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { Loader2, CheckCircle2, XCircle, X, Brain, Wrench, ArrowRight, ChevronDown } from 'lucide-react'
 import { cn } from '@creatorweave/ui'
 import { runFlow } from '@/agent/flow/engine'
+import { useSettingsStore } from '@/store/settings.store'
 import type { FlowInstance, FlowNodeRunResult, FlowRunResult, FlowNodeTraceStep } from '@/agent/flow/types'
 import type { ToolContext } from '@/agent/tools/tool-types'
 import {
@@ -81,6 +82,8 @@ export function useFlowRun(options: UseFlowRunOptions): FlowRunHandle {
         llm,
         userInput,
         abortSignal: abortController.signal,
+        compressionAbsoluteCapEnabled: useSettingsStore.getState().compressionAbsoluteCapEnabled,
+        compressionAbsoluteCap: useSettingsStore.getState().compressionAbsoluteCap,
         onNodeStart: (nodeId) => {
           useFlowStore.getState().setRunState({
             nodeStatuses: { ...useFlowStore.getState().nodeStatuses, [nodeId]: 'running' },

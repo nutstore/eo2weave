@@ -322,4 +322,242 @@ describe('convert-bridge', () => {
       expect.objectContaining({ mode: 'skip', summary: null })
     )
   })
+
+  it('does not summarise twice on consecutive converts', async () => {
+    const summarize = vi.fn(async () => ({ summary: 'SUMMARY_2', mode: 'llm' as const }))
+    const result = await convertAgentMessagesToLlm({
+      agentMessages: [
+        { role: 'user', content: 'earlier question', timestamp: 1 },
+        { role: 'assistant', content: [{ type: 'text', text: 'earlier answer' }], timestamp: 2, usage: { totalTokens: 250_000 } },
+        { role: 'user', content: 'follow up', timestamp: 3 },
+      ] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 3,
+      // Counters are the *next* call number: a summary written by call #3 is
+      // recorded as lastSummaryConvertCall = 3, and call #4 must wait.
+      lastSummaryConvertCall: 3,
+      compressionBaseline: { summary: 'SUMMARY_1', cutoffTimestamp: 1 },
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).not.toHaveBeenCalled()
+    expect(result.compressionBaseline?.summary).toBe('SUMMARY_1')
+  })
+
+  it('feeds the previous summary into the next summarisation', async () => {
+    const summarize = vi.fn(async (_content: string, _maxTokens: number) => ({
+      summary: 'SUMMARY_2',
+      mode: 'llm' as const,
+    }))
+    await convertAgentMessagesToLlm({
+      agentMessages: [
+        { role: 'assistant', content: [{ type: 'text', text: 'later answer' }], timestamp: 5, usage: { totalTokens: 250_000 } },
+        { role: 'user', content: 'newest question', timestamp: 6 },
+      ] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 10,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: { summary: 'SUMMARY_ONE', cutoffTimestamp: 1 },
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).toHaveBeenCalledTimes(1)
+    const fed = summarize.mock.calls[0][0]
+    expect(fed).toContain('SUMMARY_ONE')
+    expect(fed).toContain('newest question')
+  })
+
+  it('never summarises on a path that disables it', async () => {
+    const summarize = vi.fn(async () => ({ summary: 'nope', mode: 'llm' as const }))
+    await convertAgentMessagesToLlm({
+      agentMessages: [
+        { role: 'assistant', content: [{ type: 'text', text: 'answer' }], timestamp: 2, usage: { totalTokens: 900_000 } },
+      ] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 1,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionEnabled: false,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).not.toHaveBeenCalled()
+  })
+  it('triggers on the absolute cap, not the window ratio', async () => {
+    // 250K tokens on a 1M window: far below the 85% ratio trigger (850K), above
+    // the 200K cap. Only a gate wired to the cap may summarise here.
+    const messages = [
+      { role: 'user', content: 'long task', timestamp: 1 },
+      { role: 'assistant', content: [{ type: 'text', text: 'answer' }], timestamp: 2, usage: { totalTokens: 250_000 } },
+      { role: 'user', content: 'next', timestamp: 3 },
+    ]
+    const summarize = vi.fn(async () => ({ summary: 'CAPPED', mode: 'llm' as const }))
+
+    const capped = await convertAgentMessagesToLlm({
+      agentMessages: messages as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 2,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).toHaveBeenCalledTimes(1)
+    expect(capped.compressionBaseline?.summary).toBe('CAPPED')
+
+    // Same usage with the cap disabled stays on the ratio gate: no summarising.
+    const ratioOnly = await convertAgentMessagesToLlm({
+      agentMessages: messages as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 2,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionAbsoluteCapEnabled: false,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).toHaveBeenCalledTimes(1)
+    expect(ratioOnly.compressionBaseline).toBeNull()
+  })
+
+  it('reopens the gate on the convert after the cooldown one', async () => {
+    const run = async (convertCallCount: number, lastSummaryConvertCall: number) => {
+      const summarize = vi.fn(async () => ({ summary: 'AGAIN', mode: 'llm' as const }))
+      await convertAgentMessagesToLlm({
+        agentMessages: [
+          { role: 'user', content: 'task', timestamp: 1 },
+          { role: 'assistant', content: [{ type: 'text', text: 'answer' }], timestamp: 2, usage: { totalTokens: 300_000 } },
+          { role: 'user', content: 'next', timestamp: 3 },
+        ] as never[],
+        model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+        provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+        maxContextTokens: 1_000_000,
+        reserveTokens: 32_000,
+        callbacks: {},
+        compressedMemoryPrefix: 'Earlier conversation summary:',
+        convertCallCount,
+        lastSummaryConvertCall,
+        compressionBaseline: null,
+        compressionAbsoluteCapEnabled: true,
+        compressionAbsoluteCap: 200_000,
+        generateContextSummaryWithLLM: summarize,
+      } as never)
+      return summarize
+    }
+
+    // Call #4 follows a summary written by call #3: one convert of cooldown.
+    expect(await run(3, 3)).toHaveBeenCalledTimes(0)
+    // Call #5 is two converts past that summary: the gate is open again, so the
+    // cooldown can never latch compression off for the rest of the run.
+    expect(await run(4, 3)).toHaveBeenCalledTimes(1)
+  })
+  it('keeps the convert after a summary small, so the cooldown cannot overflow the window', async () => {
+    // Evidence for the cooldown's safety: the suppressed convert is the one that
+    // already runs on the baseline (summary + messages since the cutoff), never
+    // the full pre-compression history.
+    const provider = { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never
+    const history = [
+      { role: 'user', content: [{ type: 'text', text: 'critical task statement' }], timestamp: 1 },
+      { role: 'assistant', content: [{ type: 'text', text: 'answer' }], timestamp: 2, usage: { totalTokens: 900_000 } },
+    ]
+    const summarize = vi.fn(async () => ({ summary: 'S1', mode: 'llm' as const }))
+    const first = await convertAgentMessagesToLlm({
+      agentMessages: history as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 1,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+    expect(first.compressionBaseline?.summary).toBe('S1')
+
+    const summarizeAgain = vi.fn(async () => ({ summary: 'S2', mode: 'llm' as const }))
+    const second = await convertAgentMessagesToLlm({
+      agentMessages: [...history, { role: 'user', content: 'follow up', timestamp: 3 }] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: first.convertCallCount,
+      lastSummaryConvertCall: first.lastSummaryConvertCall,
+      compressionBaseline: first.compressionBaseline,
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarizeAgain,
+    } as never)
+
+    expect(summarizeAgain).not.toHaveBeenCalled()
+    const payload = JSON.stringify(second.piMessages)
+    // Old history is behind the baseline: only the summary and the new turn go out.
+    expect(payload).not.toContain('critical task statement')
+    expect(payload).toContain('follow up')
+  })
+  it('compresses on the ratio when summarization is on and the cap is off (schedule config)', async () => {
+    // services/schedule-runner.ts builds exactly this combination for headless
+    // runs. A long tool-heavy run must degrade by summarising — dropping the
+    // history instead would lose the work the run already did.
+    const summarize = vi.fn(async () => ({ summary: 'HEADLESS', mode: 'llm' as const }))
+    const result = await convertAgentMessagesToLlm({
+      agentMessages: [
+        { role: 'user', content: 'scheduled prompt', timestamp: 1 },
+        { role: 'assistant', content: [{ type: 'text', text: 'did the work' }], timestamp: 2, usage: { totalTokens: 900_000 } },
+      ] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 4_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 3,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionEnabled: true,
+      compressionAbsoluteCapEnabled: false,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).toHaveBeenCalledTimes(1)
+    expect(result.compressionBaseline?.summary).toBe('HEADLESS')
+  })
 })

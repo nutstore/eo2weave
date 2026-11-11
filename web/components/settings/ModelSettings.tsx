@@ -21,7 +21,11 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { useSettingsStore } from '@/store/settings.store'
+import {
+  useSettingsStore,
+  COMPRESSION_ABSOLUTE_CAP_MIN,
+  COMPRESSION_ABSOLUTE_CAP_MAX,
+} from '@/store/settings.store'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import type { LLMProviderType, ModelCapability } from '@/agent/providers/types'
 import { useT } from '@/i18n'
@@ -187,10 +191,14 @@ export function ModelSettings({ open }: ModelSettingsProps) {
     modelName,
     temperature,
     maxIterations,
+    compressionAbsoluteCapEnabled,
+    compressionAbsoluteCap,
     enableThinking,
     thinkingLevel,
     setTemperature,
     setMaxIterations,
+    setCompressionAbsoluteCapEnabled,
+    setCompressionAbsoluteCap,
     setEnableThinking,
     setThinkingLevel,
     switchProviderAndModel,
@@ -200,6 +208,9 @@ export function ModelSettings({ open }: ModelSettingsProps) {
   const t = useT()
 
   const [showAdvanced, setShowAdvanced] = useState(false)
+  // Cap input keeps a local draft while typing: the store clamps to 32K–1M, so
+  // committing per keystroke would rewrite "3" into "32000" mid-edit.
+  const [capDraft, setCapDraft] = useState<string | null>(null)
   const [referenceRefreshing, setReferenceRefreshing] = useState(false)
   const [providers, setProviders] = useState<
     Array<{
@@ -441,6 +452,77 @@ export function ModelSettings({ open }: ModelSettingsProps) {
                   ? t('settings.maxIterationsUnlimitedHint')
                   : t('settings.maxIterationsHint')}
               </p>
+            </div>
+
+            {/* Context compression: absolute cap on top of the ratio trigger */}
+            <div className="space-y-2.5 border-t border-border/40 pt-3">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-secondary">
+                  {t('settings.contextCompression')}
+                </label>
+              </div>
+              <p className="text-[10px] text-tertiary">
+                {t('settings.contextCompressionHint')}
+              </p>
+
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-tertiary">{t('settings.compressionRatioTrigger')}</span>
+                <span className="text-xs text-tertiary tabular-nums">
+                  {t('settings.compressionRatioFixed')}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-secondary">
+                    {t('settings.compressionAbsoluteCap')}
+                  </p>
+                  <p className="text-[10px] text-tertiary">
+                    {t('settings.compressionAbsoluteCapHint')}
+                  </p>
+                </div>
+                <BrandSwitch
+                  checked={compressionAbsoluteCapEnabled}
+                  onCheckedChange={setCompressionAbsoluteCapEnabled}
+                />
+              </div>
+
+              {compressionAbsoluteCapEnabled && (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={COMPRESSION_ABSOLUTE_CAP_MIN}
+                    max={COMPRESSION_ABSOLUTE_CAP_MAX}
+                    step={10000}
+                    value={capDraft ?? compressionAbsoluteCap}
+                    onChange={(e) => setCapDraft(e.target.value)}
+                    onBlur={() => {
+                      // An emptied input must keep the previous value: Number('')
+                      // is 0 (finite), so the store would clamp it to 32K.
+                      const draft = capDraft?.trim() ?? ''
+                      if (draft !== '') setCompressionAbsoluteCap(Number(draft))
+                      setCapDraft(null)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur()
+                    }}
+                    className="h-8 w-32 rounded-md border border-input bg-background px-2 text-sm tabular-nums text-secondary"
+                  />
+                  <span className="text-xs text-tertiary">
+                    tokens ≈ {Math.round(compressionAbsoluteCap / 1000)}K
+                  </span>
+                </div>
+              )}
+
+              <p className="text-[10px] text-tertiary">
+                {t('settings.compressionTriggerExplain')}
+              </p>
+
+              {!compressionAbsoluteCapEnabled && (
+                <p className="rounded-md border border-warning/30 bg-warning-bg px-2 py-1.5 text-[10px] text-warning">
+                  {t('settings.compressionAbsoluteCapOffWarning')}
+                </p>
+              )}
             </div>
 
             {/* Thinking Mode */}
