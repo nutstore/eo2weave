@@ -231,3 +231,69 @@ describe('CredentialRegistry (#281)', () => {
     expect(listener).not.toHaveBeenCalled()
   })
 })
+
+describe('CredentialRegistry — bounded waits and recovery (#286 review round 2)', () => {
+  // P1: a forced refresh must not queue forever behind an attempt that never settles.
+  it('bounds the wait for a plain attempt when a refresh is requested', async () => {
+    const registry = new CredentialRegistry(10, 60_000)
+    const hung = deferred<CredentialVerdict>()
+    const calls: boolean[] = []
+    registry.registerResolver(KEY, async ({ refresh }) => {
+      calls.push(refresh)
+      return hung.promise
+    })
+
+    const plain = registry.resolve(KEY)
+    const forced = registry.resolve(KEY, { refresh: true })
+
+    await expect(forced).resolves.toMatchObject({ kind: 'temporary' })
+    expect(calls).toEqual([false])
+    hung.resolve({ kind: 'valid' })
+    await plain
+  })
+
+  // P1: a resolver that never settles must not block every later call forever.
+  it('abandons an attempt that outlives the abandon horizon and retries', async () => {
+    const registry = new CredentialRegistry(10, 20)
+    const hung = deferred<CredentialVerdict>()
+    const resolver = vi
+      .fn<() => Promise<CredentialVerdict>>()
+      .mockReturnValueOnce(hung.promise)
+      .mockResolvedValueOnce({ kind: 'valid' })
+    registry.registerResolver(KEY, resolver)
+
+    await expect(registry.resolve(KEY)).resolves.toMatchObject({ kind: 'temporary' })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    await expect(registry.resolve(KEY)).resolves.toMatchObject({ kind: 'valid' })
+    expect(resolver).toHaveBeenCalledTimes(2)
+  })
+
+  // P2: a fresh read must not look stale because ANOTHER key committed.
+  it('reports a fresh read as current even after another provider commits', () => {
+    const registry = new CredentialRegistry()
+    const state = registry.commit(KEY, { kind: 'valid' })
+    expect(registry.isCurrent(state.epoch)).toBe(true)
+
+    registry.commit('anthropic', { kind: 'valid' })
+    expect(registry.isCurrent(state.epoch)).toBe(false)
+
+    // Re-reading must recover: the epoch it carries is the registry's current one.
+    const reread = registry.getState(KEY)
+    expect(registry.isCurrent(reread.epoch)).toBe(true)
+  })
+
+  // P2: an old timeout must not stamp a newer login as stale.
+  it('does not mark a verdict stale when a newer commit landed during the wait', async () => {
+    const registry = new CredentialRegistry(10)
+    const hung = deferred<CredentialVerdict>()
+    registry.registerResolver(KEY, () => hung.promise)
+
+    const resolving = registry.resolve(KEY)
+    registry.commit(KEY, { kind: 'valid' })
+
+    const state = await resolving
+    expect(state.kind).toBe('valid')
+    expect(state.stale).toBeUndefined()
+  })
+})

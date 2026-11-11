@@ -61,6 +61,8 @@ export const CREDENTIAL_RESOLVE_TIMEOUT_MS = 1800
 interface InflightAttempt {
   readonly promise: Promise<CredentialState>
   readonly refresh: boolean
+  readonly startedAt: number
+  readonly version: number
 }
 
 export class CredentialRegistry {
@@ -77,7 +79,16 @@ export class CredentialRegistry {
 
   private epoch = 0
 
-  constructor(private readonly timeoutMs: number = CREDENTIAL_RESOLVE_TIMEOUT_MS) {}
+  constructor(
+    private readonly timeoutMs: number = CREDENTIAL_RESOLVE_TIMEOUT_MS,
+    /**
+     * How long an attempt may stay in flight before it is abandoned and a new
+     * one may start. Preserving the in-flight promise is what stops duplicate
+     * refreshes, but a resolver that never settles must not be able to block
+     * every later call forever (#286 review).
+     */
+    private readonly abandonAfterMs: number = 10_000,
+  ) {}
 
   /**
    * Clear every verdict. Tests use this to keep the module-level singleton from
@@ -92,13 +103,12 @@ export class CredentialRegistry {
 
   /** The current verdict. Never throws; unknown until something resolves or commits. */
   getState(providerKey: string): CredentialState {
-    return (
-      this.states.get(providerKey) ?? {
-        kind: 'unknown',
-        epoch: this.epoch,
-        observedAt: 0,
-      }
-    )
+    const known = this.states.get(providerKey)
+    if (!known) return { kind: 'unknown', epoch: this.epoch, observedAt: 0 }
+    // Stamp the CURRENT epoch, not the one this verdict was published under:
+    // otherwise a fresh read of a key that has not changed still compares
+    // older-than-global and reads as stale forever (#286 review).
+    return { ...known, epoch: this.epoch }
   }
 
   /** True when a consumer's cached verdict is still current. */
@@ -161,13 +171,18 @@ export class CredentialRegistry {
    */
   async resolve(providerKey: string, options: { refresh?: boolean } = {}): Promise<CredentialState> {
     const refresh = options.refresh === true
-    const running = this.inflight.get(providerKey)
+    const running = this.takeInflight(providerKey)
 
     if (running) {
-      if (!refresh || running.refresh) return this.awaitWithDeadline(providerKey, running.promise)
-      // The attempt in flight cannot satisfy a forced refresh: let it settle,
-      // then run a refreshing one (never two refreshes at once).
-      await running.promise.catch(() => undefined)
+      if (!refresh || running.refresh) {
+        return (await this.wait(providerKey, running)).state
+      }
+      // The attempt in flight cannot satisfy a forced refresh. Wait for it —
+      // but bounded, like every other caller: queueing without a deadline
+      // behind an attempt that never settles is an unbounded wait
+      // (#286 review).
+      const waited = await this.wait(providerKey, running)
+      if (waited.timedOut) return waited.state
       return this.resolve(providerKey, { refresh: true })
     }
 
@@ -177,6 +192,8 @@ export class CredentialRegistry {
     const version = this.versionOf(providerKey)
     const attempt: InflightAttempt = {
       refresh,
+      version,
+      startedAt: Date.now(),
       promise: this.runResolver(providerKey, resolver, refresh, version),
     }
     this.inflight.set(providerKey, attempt)
@@ -189,7 +206,21 @@ export class CredentialRegistry {
       })
       .catch(() => undefined)
 
-    return this.awaitWithDeadline(providerKey, attempt.promise)
+    return (await this.wait(providerKey, attempt)).state
+  }
+
+  /**
+   * The in-flight attempt, unless it has outlived the abandon horizon — a
+   * resolver that never settles must not permanently block new attempts. The
+   * abandoned attempt still runs; its verdict is version-guarded like any
+   * other late result.
+   */
+  private takeInflight(providerKey: string): InflightAttempt | undefined {
+    const attempt = this.inflight.get(providerKey)
+    if (!attempt) return undefined
+    if (Date.now() - attempt.startedAt < this.abandonAfterMs) return attempt
+    this.inflight.delete(providerKey)
+    return undefined
   }
 
   private async runResolver(
@@ -216,18 +247,18 @@ export class CredentialRegistry {
     return this.commit(providerKey, verdict)
   }
 
-  private async awaitWithDeadline(
+  private async wait(
     providerKey: string,
-    attempt: Promise<CredentialState>,
-  ): Promise<CredentialState> {
+    attempt: InflightAttempt,
+  ): Promise<{ state: CredentialState; timedOut: boolean }> {
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => resolve('timeout'), this.timeoutMs)
     })
     try {
-      const outcome = await Promise.race([attempt, deadline])
-      if (outcome !== 'timeout') return outcome
-      return this.publishTimeout(providerKey)
+      const outcome = await Promise.race([attempt.promise, deadline])
+      if (outcome !== 'timeout') return { state: outcome, timedOut: false }
+      return { state: this.publishTimeout(providerKey, attempt.version), timedOut: true }
     } finally {
       if (timer) clearTimeout(timer)
     }
@@ -239,7 +270,11 @@ export class CredentialRegistry {
    * bump the version, because it is a hint about our patience, not a statement
    * about the credential; the attempt still in flight may land right after.
    */
-  private publishTimeout(providerKey: string): CredentialState {
+  private publishTimeout(providerKey: string, startVersion: number): CredentialState {
+    // A commit that landed while this attempt was waiting is newer than the
+    // attempt: stamping THAT verdict stale would mislabel a fresh login
+    // (#286 review).
+    if (this.versionOf(providerKey) !== startVersion) return this.getState(providerKey)
     const known = this.states.get(providerKey)
     if (known && known.kind !== 'unknown') {
       if (known.stale) return known
