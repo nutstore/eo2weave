@@ -1501,12 +1501,11 @@ export async function runAgentImpl(
                 // (#277): a raw `load` returns null for the gateway, whose
                 // credential is the shared session, so gating on it silently
                 // disabled follow-up suggestions for Nutstore AI users.
-                const storedKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
                 const { resolveDispatchApiKey } =
                   await import('@/agent/providers/gateway-dispatch-key')
                 const credential = await resolveDispatchApiKey(
                   providerConfig.apiKeyProviderKey,
-                  storedKey
+                  () => apiKeyRepo.load(providerConfig.apiKeyProviderKey)
                 )
                 if (credential.ok) {
                   const suggestion = await generateFollowUp(

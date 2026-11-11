@@ -258,12 +258,11 @@ async function buildRuntimeDeps(schedule: NonNullable<Awaited<ReturnType<typeof 
 
   // Load API key from SQLite
   const { getApiKeyRepository } = await import('@/sqlite')
-  const storedKey = await getApiKeyRepository().load(providerConfig.apiKeyProviderKey)
   // The gateway has no store key of its own (#277): its credential is the
   // shared session, so resolve it authoritatively (refresh included) instead of
   // reading a copy that may be stale or absent.
   const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
-  const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, storedKey)
+  const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, () => getApiKeyRepository().load(providerConfig.apiKeyProviderKey))
   if (!credential.ok) {
     throw new Error(
       `LLM_NOT_AVAILABLE: API key not configured for provider key "${providerConfig.apiKeyProviderKey}" (${credential.kind})`,

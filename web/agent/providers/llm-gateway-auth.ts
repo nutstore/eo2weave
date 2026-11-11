@@ -9,6 +9,7 @@
  * @see https://gitea.jianguoyun.net.cn/huangqingming/llm_gateway_service
  */
 
+import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
 import { t as translate } from '@creatorweave/i18n'
 import {
   pendingKeyStoreOpIsFenced,
@@ -831,6 +832,11 @@ async function clearStoredTokens(
     const purgeFailures: unknown[] = []
     try {
       await runBoundedFencedKeyStoreMutation(() => deleteApiKey(REFRESH_TOKEN_DB_KEY))
+    } catch (e) {
+      purgeFailures.push(e)
+    }
+    try {
+      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS))
     } catch (e) {
       purgeFailures.push(e)
     }

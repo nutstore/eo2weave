@@ -1352,24 +1352,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           const { getGatewayCredentialStatus } = await import('@/agent/providers/llm-gateway-auth')
           const status = getGatewayCredentialStatus()
           if (status === 'unknown') {
-            // Nothing resolved yet in this tab. Defer like the
-            // registering-provider path: `hasApiKeyLoaded` stays false so the
-            // UI shows a neutral state instead of "no key", and the dispatch
-            // resolver still owns the definitive answer.
-            //
-            // A `flush: true` caller has already attempted registration and
-            // wants a definitive answer (AppBootstrap flushes when the gateway
-            // can never register here — no client id — and after a failed
-            // restore). Deferring THERE would leave `hasApiKeyLoaded` false for
-            // the whole session and pin the UI to its loading state, which is
-            // exactly what the flag exists to prevent.
-            if (options?.flush) {
-              if (get().providerType === 'llm-gateway') {
-                set({ hasApiKey: false, hasApiKeyLoaded: true })
-              }
-              return false
+            // An unknown session is not evidence of a missing API key. Allow
+            // dispatch to resolve it authoritatively, including retrying a
+            // transient restore failure, instead of inheriting another
+            // provider's verdict or blocking the resolver behind the UI gate.
+            if (get().providerType === 'llm-gateway') {
+              set({ hasApiKey: true, hasApiKeyLoaded: true })
             }
-            return false
+            return true
           }
           const hasKey = status === 'valid'
           if (get().providerType === 'llm-gateway') {

@@ -94,27 +94,18 @@ describe('gateway availability source (#277)', () => {
     expect(store.getState().hasApiKeyLoaded).toBe(true)
   })
 
-  it('defers while the verdict is still unknown instead of declaring "no key"', async () => {
+  it('allows the session resolver to retry an unknown verdict after switching providers', async () => {
     const store = await setup('unknown')
-
-    expect(await store.getState().checkHasApiKey()).toBe(false)
-    const state = store.getState()
-    // `hasApiKeyLoaded` stays false: the UI must render the neutral state, not
-    // the setup guidance, and the dispatch resolver still owns the answer.
-    expect(state.hasApiKeyLoaded).toBe(false)
-    expect(loadApiKeyMock).not.toHaveBeenCalled()
+    store.setState({ hasApiKey: false, hasApiKeyLoaded: true })
+    expect(await store.getState().checkHasApiKey()).toBe(true)
+    expect(store.getState().hasApiKey).toBe(true)
+    expect(store.getState().hasApiKeyLoaded).toBe(true)
   })
 
-  it('resolves a flush caller definitively while the verdict is unknown', async () => {
-    // A flush caller already attempted registration and wants an answer, so it
-    // must not stay deferred: `hasApiKeyLoaded` left false would pin the UI to
-    // its loading state for the rest of the session (AppBootstrap flushes when
-    // the gateway can never register here, and after a failed restore).
+  it('allows a configured gateway with an unknown verdict to retry after a flush', async () => {
     const store = await setup('unknown')
-
-    expect(await store.getState().checkHasApiKey({ flush: true })).toBe(false)
-    const state = store.getState()
-    expect(state.hasApiKey).toBe(false)
-    expect(state.hasApiKeyLoaded).toBe(true)
+    expect(await store.getState().checkHasApiKey({ flush: true })).toBe(true)
+    expect(store.getState().hasApiKeyLoaded).toBe(true)
   })
+
 })

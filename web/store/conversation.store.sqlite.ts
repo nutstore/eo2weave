@@ -1554,10 +1554,9 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       }
 
       const apiKeyRepo = getApiKeyRepository()
-      const storedKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
       // The gateway's credential is the shared session (#277).
       const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
-      const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, storedKey)
+      const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, () => apiKeyRepo.load(providerConfig.apiKeyProviderKey))
       const apiKey = credential.ok ? credential.apiKey : null
       // A gateway without a live session is NOT keyless: sending would reach the
       // endpoint with no Authorization header (#172 finding 4).
@@ -1822,9 +1821,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       }
 
       const apiKeyRepo = getApiKeyRepository()
-      const storedKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
       const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
-      const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, storedKey)
+      const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, () => apiKeyRepo.load(providerConfig.apiKeyProviderKey))
       const apiKey = credential.ok ? credential.apiKey : null
       if (!apiKey) {
         toast.error(i18nText('conversation.toast.noApiKey', '未配置 API Key'))

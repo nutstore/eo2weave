@@ -19,7 +19,7 @@ describe('resolveDispatchApiKey (#277)', () => {
   })
 
   it('uses the stored key for a provider that really has one', async () => {
-    await expect(resolveDispatchApiKey('openai', 'sk-stored')).resolves.toEqual({
+    await expect(resolveDispatchApiKey('openai', async () => 'sk-stored')).resolves.toEqual({
       ok: true,
       apiKey: 'sk-stored',
     })
@@ -27,7 +27,7 @@ describe('resolveDispatchApiKey (#277)', () => {
   })
 
   it('reports a missing key for a key-based provider without one', async () => {
-    await expect(resolveDispatchApiKey('openai', null)).resolves.toEqual({
+    await expect(resolveDispatchApiKey('openai', async () => null)).resolves.toEqual({
       ok: false,
       kind: 'missing',
     })
@@ -40,16 +40,24 @@ describe('resolveDispatchApiKey (#277)', () => {
     resolveMock.mockResolvedValue({ ok: true, accessToken: 'session-token' })
 
     await expect(
-      resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, 'stale-store-token'),
+      resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, async () => 'stale-store-token'),
     ).resolves.toEqual({ ok: true, apiKey: 'session-token' })
     expect(resolveMock).toHaveBeenCalledWith('https://gateway.test', 'client')
+  })
+
+  it('resolves a gateway session without loading the obsolete key', async () => {
+    resolveMock.mockResolvedValue({ ok: true, accessToken: 'session-token' })
+    const loadKey = vi.fn(async () => { throw new Error('key store unavailable') })
+    await expect(resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, loadKey))
+      .resolves.toEqual({ ok: true, apiKey: 'session-token' })
+    expect(loadKey).not.toHaveBeenCalled()
   })
 
   it('does not treat a provider literally named "llm-gateway" as the gateway', async () => {
     // Only the effective-config marker routes to the session. The bare type is
     // also a legal custom-provider id, and sending that provider down the
     // gateway path would hand it a credential it never configured.
-    await expect(resolveDispatchApiKey('llm-gateway', 'sk-custom')).resolves.toEqual({
+    await expect(resolveDispatchApiKey('llm-gateway', async () => 'sk-custom')).resolves.toEqual({
       ok: true,
       apiKey: 'sk-custom',
     })
@@ -59,7 +67,7 @@ describe('resolveDispatchApiKey (#277)', () => {
   it('propagates an expired session instead of sending without auth', async () => {
     resolveMock.mockResolvedValue({ ok: false, kind: 'expired' })
 
-    await expect(resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, null)).resolves.toEqual({
+    await expect(resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, async () => null)).resolves.toEqual({
       ok: false,
       kind: 'expired',
       error: undefined,
@@ -70,7 +78,7 @@ describe('resolveDispatchApiKey (#277)', () => {
     const err = new Error('storage unavailable')
     resolveMock.mockResolvedValue({ ok: false, kind: 'temporary', error: err })
 
-    await expect(resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, null)).resolves.toEqual({
+    await expect(resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, async () => null)).resolves.toEqual({
       ok: false,
       kind: 'temporary',
       error: err,

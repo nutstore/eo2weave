@@ -429,6 +429,12 @@ describe('llm-gateway-auth token refresh hardening', () => {
     })
   })
 
+  it('removes a legacy access-token shadow when logging out', async () => {
+    seedStoredTokens()
+    await logoutGateway()
+    expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_token__')
+  })
+
   describe('SQLite fallback freshness validation', () => {
     it('refuses to restore an expired refresh token from SQLite', async () => {
       // No localStorage copy → forced through the SQLite fallback.
