@@ -857,7 +857,9 @@ export async function runAgentImpl(
         // confirmed absence/expiry (offering login), and surface transient
         // storage/refresh failures as retryable errors without clearing a
         // possibly valid session.
-        let apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
+        let apiKey = providerType === 'llm-gateway'
+          ? null
+          : await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
         if (providerType === 'llm-gateway') {
           const { resolveGatewayDispatchCredential } =
             await import('@/agent/providers/llm-gateway-auth')

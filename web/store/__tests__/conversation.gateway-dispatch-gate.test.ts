@@ -16,6 +16,7 @@ import { createUserMessage } from '@/agent/message-types'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 
 const resolveCredentialMock = vi.hoisted(() => vi.fn())
+const loadCredentialMock = vi.hoisted(() => vi.fn<(provider: string) => Promise<string | null>>())
 const setFaviconStateMock = vi.hoisted(() => vi.fn())
 const gatewayRegistered = vi.hoisted(() => ({ value: true }))
 // Access token the credential store currently holds ('validated-token' by
@@ -76,7 +77,7 @@ vi.mock('@/store/settings.store', () => ({
 vi.mock('@/sqlite', () => ({
   initSQLiteDB: vi.fn(() => Promise.resolve()),
   getApiKeyRepository: vi.fn(() => ({
-    load: vi.fn(() => Promise.resolve(null)),
+    load: loadCredentialMock,
   })),
   getConversationRepository: vi.fn(() => ({
     findAll: vi.fn(() => Promise.resolve([])),
@@ -198,6 +199,7 @@ async function startRun(): Promise<void> {
 describe('llm-gateway dispatch credential gate (issue #172)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    loadCredentialMock.mockReset().mockResolvedValue(null)
     gatewayRegistered.value = true
     storedAccessToken.value = 'validated-token'
     useConversationRuntimeStore.setState({ runtimes: new Map() })
@@ -449,4 +451,12 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
       ),
     )
   })
+  it('dispatches a valid gateway session without reading its obsolete key', async () => {
+    loadCredentialMock.mockRejectedValue(new Error('obsolete key unreadable'))
+    resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+    await startRun()
+    expect(loadCredentialMock).not.toHaveBeenCalledWith('__llm_gateway_token__')
+    expect(agentLoopConstructed).toHaveBeenCalled()
+  })
+
 })

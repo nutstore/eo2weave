@@ -589,6 +589,27 @@ describe('WelcomeScreen', () => {
     expect(onStart).not.toHaveBeenCalled()
   })
 
+  it('lets an unknown gateway session retry from the welcome screen without setup guidance', async () => {
+    const { registerDynamicProvider, unregisterDynamicProvider } = await import('@/agent/providers/types')
+    registerDynamicProvider('llm-gateway', { baseURL: 'https://gateway.test/v1', modelName: 'model' }, { category: 'custom', displayName: 'Gateway', models: [] })
+    settingsState.providerType = 'llm-gateway'
+    settingsState.modelName = 'model'
+    settingsState.modelCredentialStatus = 'unknown'
+    settingsState.hasApiKey = false
+    settingsState.hasApiKeyLoaded = true
+    const onStart = vi.fn()
+    try {
+      render(<WelcomeScreen onStartConversation={onStart} onOpenSettings={vi.fn()} />)
+      expect(screen.queryByRole('button', { name: 'Skip for now' })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('mock-input-type'))
+      fireEvent.click(screen.getByTestId('mock-send'))
+      expect(onStart).toHaveBeenCalledWith('typed text')
+      expect(toastWarningMock).not.toHaveBeenCalled()
+    } finally {
+      unregisterDynamicProvider('llm-gateway')
+    }
+  })
+
   it('keeps an expired-credential selection on the ready step and defers blocking to the send path', () => {
     const onStart = vi.fn()
     const onOpenSettings = vi.fn()

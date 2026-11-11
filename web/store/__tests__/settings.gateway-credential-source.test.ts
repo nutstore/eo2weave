@@ -94,13 +94,13 @@ describe('gateway availability source (#277)', () => {
     expect(store.getState().hasApiKeyLoaded).toBe(true)
   })
 
-  it('keeps an unknown verdict neutral even after switching from a configured provider', async () => {
+  it('finishes checking after switching to an unknown gateway without claiming a credential', async () => {
     const store = await setup('unknown')
     store.setState({ providerType: 'openai', hasApiKey: true, hasApiKeyLoaded: true })
     store.getState().switchProviderAndModel('llm-gateway', 'gw-model')
     expect(await store.getState().checkHasApiKey()).toBe(false)
     expect(store.getState().hasApiKey).toBe(false)
-    expect(store.getState().hasApiKeyLoaded).toBe(false)
+    expect(store.getState().hasApiKeyLoaded).toBe(true)
   })
 
   it('finishes a flush without reporting an unknown session as configured', async () => {

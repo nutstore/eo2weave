@@ -1551,7 +1551,9 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // whatever the new selection resolves to as well (it may have been
         // cached while the credential was unreadable — #277).
         get().invalidateApiKeyCache()
-        void get().checkHasApiKey()
+        void get().checkHasApiKey(
+          newProviderType === 'llm-gateway' && !credentialStillApplies ? { flush: true } : undefined,
+        )
       },
 
       ensureValidModelSelection: (providers, options = {}) => {

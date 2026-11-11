@@ -69,10 +69,11 @@ type OnboardingStep = 'welcome' | 'api-key' | 'select-model' | 'ready'
 type ProviderReadiness = {
   hasApiKey: boolean
   hasUsableModel: boolean
+  gatewaySessionUnknown: boolean
 }
 
 function providerStep(readiness: ProviderReadiness): OnboardingStep {
-  if (!readiness.hasApiKey) return 'api-key'
+  if (!readiness.hasApiKey && !readiness.gatewaySessionUnknown) return 'api-key'
   if (!readiness.hasUsableModel) return 'select-model'
   return 'ready'
 }
@@ -264,6 +265,10 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
   const readiness: ProviderReadiness = {
     hasApiKey,
     hasUsableModel,
+    // A registered gateway with an unresolved session can retry at dispatch;
+    // it must not be presented as an unconfigured API key.
+    gatewaySessionUnknown: providerType === 'llm-gateway' &&
+      modelCredentialStatus === 'unknown' && !!getProviderConfig(providerType),
   }
 
   const [step, setStep] = useState<OnboardingStep>(() =>
@@ -307,7 +312,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
       if (provider !== 'ready' && !aiSetupSkipped) return provider
       return 'ready'
     })
-  }, [readiness.hasApiKey, readiness.hasUsableModel, hasApiKeyLoaded, aiSetupSkipped, modelCredentialStatus])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, readiness.gatewaySessionUnknown, hasApiKeyLoaded, aiSetupSkipped, modelCredentialStatus])
 
   // Onboarding completed (key + default model configured): the AI-setup skip
   // has served its purpose. Clear it so a LATER deliberate unconfigure (user
@@ -325,7 +330,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
     const provider = providerStep(readiness)
     if (provider !== 'ready' && !aiSetupSkipped) setStep(provider)
     else setStep('ready')
-  }, [readiness.hasApiKey, readiness.hasUsableModel, aiSetupSkipped])
+  }, [readiness.hasApiKey, readiness.hasUsableModel, readiness.gatewaySessionUnknown, aiSetupSkipped])
 
   // "Skip for now" on the AI-setup cards (api-key / select-model) persists:
   // a refresh must not resurrect the card the user just dismissed. The flag
