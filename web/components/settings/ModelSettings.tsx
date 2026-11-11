@@ -493,7 +493,10 @@ export function ModelSettings({ open }: ModelSettingsProps) {
                     value={capDraft ?? compressionAbsoluteCap}
                     onChange={(e) => setCapDraft(e.target.value)}
                     onBlur={() => {
-                      if (capDraft !== null) setCompressionAbsoluteCap(Number(capDraft))
+                      // An emptied input must keep the previous value: Number('')
+                      // is 0 (finite), so the store would clamp it to 32K.
+                      const draft = capDraft?.trim() ?? ''
+                      if (draft !== '') setCompressionAbsoluteCap(Number(draft))
                       setCapDraft(null)
                     }}
                     onKeyDown={(e) => {
