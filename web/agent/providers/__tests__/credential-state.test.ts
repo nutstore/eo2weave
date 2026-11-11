@@ -297,3 +297,88 @@ describe('CredentialRegistry — bounded waits and recovery (#286 review round 2
     expect(state.stale).toBeUndefined()
   })
 })
+
+describe('CredentialRegistry — abandonment and snapshots (#286 review round 3)', () => {
+  // P1: an abandoned attempt must not beat the attempt that replaced it.
+  it('discards a late verdict from an abandoned attempt', async () => {
+    const registry = new CredentialRegistry(10, 20)
+    const hung = deferred<CredentialVerdict>()
+    const replacement = deferred<CredentialVerdict>()
+    const resolver = vi
+      .fn<() => Promise<CredentialVerdict>>()
+      .mockReturnValueOnce(hung.promise)
+      .mockReturnValueOnce(replacement.promise)
+    registry.registerResolver(KEY, resolver)
+
+    await registry.resolve(KEY) // times out; attempt stays in flight
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    const second = registry.resolve(KEY) // abandons attempt 1, starts attempt 2
+
+    // The abandoned attempt answers FIRST, while the replacement is still
+    // running: without voiding it, its verdict would commit and then discard
+    // the replacement's.
+    hung.resolve({ kind: 'missing' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(registry.getState(KEY).kind).toBe('temporary')
+
+    replacement.resolve({ kind: 'valid' })
+    await expect(second).resolves.toMatchObject({ kind: 'valid' })
+    expect(registry.getState(KEY).kind).toBe('valid')
+  })
+
+  // P1: abandoning signals the resolver so a cancellable one can stop.
+  it('aborts the resolver signal when an attempt is abandoned', async () => {
+    const registry = new CredentialRegistry(10, 20)
+    const signals: AbortSignal[] = []
+    registry.registerResolver(KEY, ({ signal }) => {
+      signals.push(signal)
+      return new Promise<CredentialVerdict>(() => {})
+    })
+
+    await registry.resolve(KEY)
+    const abandoned = signals[0]
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await registry.resolve(KEY)
+
+    expect(abandoned.aborted).toBe(true)
+    expect(signals[1].aborted).toBe(false)
+  })
+
+  // P2: the whole call shares one deadline, not two.
+  it('does not spend two full timeouts on a refresh request', async () => {
+    const registry = new CredentialRegistry(80)
+    const resolver = vi
+      .fn<() => Promise<CredentialVerdict>>()
+      .mockImplementationOnce(
+        () => new Promise<CredentialVerdict>((resolve) => setTimeout(() => resolve({ kind: 'expired' }), 20)),
+      )
+      .mockImplementationOnce(() => new Promise<CredentialVerdict>(() => {}))
+    registry.registerResolver(KEY, resolver)
+
+    const plain = registry.resolve(KEY) // occupies the slot with a 20ms attempt
+    const forcedStarted = Date.now()
+    const state = await registry.resolve(KEY, { refresh: true })
+    const elapsed = Date.now() - forcedStarted
+    await plain
+
+    // With one deadline the caller gives up at ~80ms; with a second deadline
+    // for the refreshing attempt it would take ~100ms.
+    expect(state.kind).toBe('expired')
+    expect(elapsed).toBeLessThan(95)
+  })
+
+  // P2: a stable snapshot per epoch, so useSyncExternalStore does not loop.
+  it('returns the same snapshot reference until the epoch changes', () => {
+    const registry = new CredentialRegistry()
+    registry.commit(KEY, { kind: 'valid' })
+
+    const first = registry.getState(KEY)
+    expect(registry.getState(KEY)).toBe(first)
+
+    registry.commit(KEY, { kind: 'missing' })
+    const after = registry.getState(KEY)
+    expect(after).not.toBe(first)
+    expect(after.kind).toBe('missing')
+    expect(registry.getState(KEY)).toBe(after)
+  })
+})

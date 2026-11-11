@@ -36,7 +36,9 @@ export interface CredentialState {
 
 export type CredentialVerdict = Omit<CredentialState, 'epoch' | 'observedAt'>
 
+/** Aborted when the registry abandons an attempt (#286 review). */
 export interface CredentialResolverContext {
+  signal: AbortSignal
   /**
    * True when the caller needs a verdict from the server rather than from the
    * local store (e.g. the previous attempt was rejected). A resolver that
@@ -63,6 +65,7 @@ interface InflightAttempt {
   readonly refresh: boolean
   readonly startedAt: number
   readonly version: number
+  readonly controller: AbortController
 }
 
 export class CredentialRegistry {
@@ -76,6 +79,10 @@ export class CredentialRegistry {
 
   /** Per-key counter bumped only by authoritative commits, never by timeout hints. */
   private readonly versions = new Map<string, number>()
+
+  private readonly snapshots = new Map<string, CredentialState>()
+
+  private snapshotEpoch = -1
 
   private epoch = 0
 
@@ -103,12 +110,25 @@ export class CredentialRegistry {
 
   /** The current verdict. Never throws; unknown until something resolves or commits. */
   getState(providerKey: string): CredentialState {
+    // One snapshot per (key, epoch): callers may hand this straight to
+    // `useSyncExternalStore`, which re-renders whenever the reference changes
+    // (#286 review).
+    if (this.snapshotEpoch !== this.epoch) {
+      this.snapshots.clear()
+      this.snapshotEpoch = this.epoch
+    }
+    const cached = this.snapshots.get(providerKey)
+    if (cached) return cached
+
     const known = this.states.get(providerKey)
-    if (!known) return { kind: 'unknown', epoch: this.epoch, observedAt: 0 }
     // Stamp the CURRENT epoch, not the one this verdict was published under:
     // otherwise a fresh read of a key that has not changed still compares
     // older-than-global and reads as stale forever (#286 review).
-    return { ...known, epoch: this.epoch }
+    const snapshot: CredentialState = known
+      ? { ...known, epoch: this.epoch }
+      : { kind: 'unknown', epoch: this.epoch, observedAt: 0 }
+    this.snapshots.set(providerKey, snapshot)
+    return snapshot
   }
 
   /** True when a consumer's cached verdict is still current. */
@@ -170,31 +190,43 @@ export class CredentialRegistry {
    *   committed while it was running.
    */
   async resolve(providerKey: string, options: { refresh?: boolean } = {}): Promise<CredentialState> {
-    const refresh = options.refresh === true
+    // One deadline for the WHOLE call: waiting for a plain attempt and then
+    // running a refreshing one must not add up to twice the contract (#286
+    // review).
+    return this.resolveWithin(providerKey, options.refresh === true, Date.now() + this.timeoutMs)
+  }
+
+  private async resolveWithin(
+    providerKey: string,
+    refresh: boolean,
+    deadline: number,
+  ): Promise<CredentialState> {
     const running = this.takeInflight(providerKey)
 
     if (running) {
       if (!refresh || running.refresh) {
-        return (await this.wait(providerKey, running)).state
+        return (await this.wait(providerKey, running, deadline)).state
       }
       // The attempt in flight cannot satisfy a forced refresh. Wait for it —
       // but bounded, like every other caller: queueing without a deadline
       // behind an attempt that never settles is an unbounded wait
       // (#286 review).
-      const waited = await this.wait(providerKey, running)
+      const waited = await this.wait(providerKey, running, deadline)
       if (waited.timedOut) return waited.state
-      return this.resolve(providerKey, { refresh: true })
+      return this.resolveWithin(providerKey, true, deadline)
     }
 
     const resolver = this.resolvers.get(providerKey)
     if (!resolver) return this.getState(providerKey)
 
     const version = this.versionOf(providerKey)
+    const controller = new AbortController()
     const attempt: InflightAttempt = {
       refresh,
       version,
       startedAt: Date.now(),
-      promise: this.runResolver(providerKey, resolver, refresh, version),
+      controller,
+      promise: this.runResolver(providerKey, resolver, refresh, version, controller.signal),
     }
     this.inflight.set(providerKey, attempt)
     // Keep the entry until the RESOLVER settles, not until the caller's
@@ -206,7 +238,7 @@ export class CredentialRegistry {
       })
       .catch(() => undefined)
 
-    return (await this.wait(providerKey, attempt)).state
+    return (await this.wait(providerKey, attempt, deadline)).state
   }
 
   /**
@@ -220,6 +252,11 @@ export class CredentialRegistry {
     if (!attempt) return undefined
     if (Date.now() - attempt.startedAt < this.abandonAfterMs) return attempt
     this.inflight.delete(providerKey)
+    // The abandoned attempt is VOID: bump the version so its late verdict can
+    // never beat the attempt that replaces it, and abort so a resolver that
+    // can stop does (#286 review).
+    this.versions.set(providerKey, this.versionOf(providerKey) + 1)
+    attempt.controller.abort()
     return undefined
   }
 
@@ -228,10 +265,11 @@ export class CredentialRegistry {
     resolver: CredentialResolver,
     refresh: boolean,
     version: number,
+    signal: AbortSignal,
   ): Promise<CredentialState> {
     let verdict: CredentialVerdict
     try {
-      verdict = await resolver({ refresh })
+      verdict = await resolver({ refresh, signal })
     } catch (error) {
       return this.land(providerKey, version, { kind: 'temporary', error })
     }
@@ -250,10 +288,12 @@ export class CredentialRegistry {
   private async wait(
     providerKey: string,
     attempt: InflightAttempt,
+    deadlineAt: number,
   ): Promise<{ state: CredentialState; timedOut: boolean }> {
+    const remaining = Math.max(0, deadlineAt - Date.now())
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), this.timeoutMs)
+      timer = setTimeout(() => resolve('timeout'), remaining)
     })
     try {
       const outcome = await Promise.race([attempt.promise, deadline])
