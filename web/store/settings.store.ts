@@ -1455,6 +1455,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             }
           }
           set(updates as SettingsState)
+          // Restoring a workspace pinned to a DIFFERENT provider changes the
+          // active provider outside switchProviderAndModel, so the cached
+          // credential verdict has to be dropped here too — the same stale
+          // "no key" replay described in switchProviderAndModel below (#277).
+          if (!credentialStillApplies) {
+            get().invalidateApiKeyCache()
+            void get().checkHasApiKey()
+          }
         }
       },
 
@@ -1493,6 +1501,13 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // select-model step as soon as they pick their default model.
         apiKeyCache.delete(newProviderType)
         apiKeyCachePromise.delete(newProviderType)
+        // …but the cache key is the provider's CREDENTIAL key, not its id:
+        // llm-gateway caches its verdict under `__llm_gateway_token__`, so
+        // deleting `newProviderType` alone left a stale "no key" verdict
+        // behind. Switching away and back then replayed it without reading
+        // the (meanwhile restored) credential, and the send gate kept
+        // refusing with "configure your API Key" (#277).
+        get().invalidateApiKeyCache()
         void get().checkHasApiKey()
       },
 
