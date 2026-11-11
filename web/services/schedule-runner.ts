@@ -283,9 +283,9 @@ async function buildRuntimeDeps(schedule: NonNullable<Awaited<ReturnType<typeof 
     enableSummarization: false, // No compression for schedule runs
     maxMessageGroups: 20,
     // Headless runs stay on the ratio gate. ContextManager treats an unset flag
-    // as "cap on", and the convert-bridge gate ignores enableSummarization, so
-    // omitting this would silently apply the 200K cap here — and would ignore a
-    // user who turned the cap off.
+    // as "cap on", so omitting this would silently apply the 200K cap here —
+    // and would ignore a user who turned the cap off. (The convert gate also
+    // honours enableSummarization, so this run never summarises either way.)
     compressionAbsoluteCapEnabled: false,
   })
 

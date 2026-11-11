@@ -173,7 +173,9 @@ export async function convertAgentMessagesToLlm(
   // Cooldown: a summary written on the previous convert must not be redone
   // immediately. Without it, a conversation whose fixed overhead (system prompt
   // + tool schemas) already exceeds the cap would re-summarize every turn.
-  const summarizedLastCall = convertCallCount - lastSummaryConvertCall <= 1
+  // Exactly one convert is skipped: counters restored from an inconsistent
+  // snapshot must fail open (compress) rather than suppress the cap forever.
+  const summarizedLastCall = convertCallCount - lastSummaryConvertCall === 1
   const shouldAllowCompression =
     input.compressionEnabled !== false &&
     !summarizedLastCall &&
@@ -228,7 +230,9 @@ export async function convertAgentMessagesToLlm(
       : droppedContent
 
     const summarizeInput = droppedContentWithHistory
-    const droppedContentChars = summarizeInput.length
+    // Metrics report what was actually dropped this round; the carried-over
+    // summary is input context, not dropped content.
+    const droppedContentChars = droppedContent.length
     const droppedGroups = internalMessages.length
 
     if (droppedContent.length > 0) {

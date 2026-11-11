@@ -29,6 +29,14 @@ describe('resolveCompressionTriggerTokens', () => {
     expect(trigger).toBe(DEFAULT_COMPRESSION_ABSOLUTE_CAP)
   })
 
+  it('applies the default cap when the flag is omitted (cap is on by default)', () => {
+    // Callers that never learned about the setting (flows, subagents) must not
+    // silently fall back to the ratio — that is the unbounded path this PR closes.
+    expect(resolveCompressionTriggerTokens({ maxContextTokens: 1_000_000 }))
+      .toBe(DEFAULT_COMPRESSION_ABSOLUTE_CAP)
+    expect(resolveCompressionTriggerTokens({ maxContextTokens: 128_000 })).toBe(108_800)
+  })
+
   it('ignores a non-positive cap instead of compressing immediately', () => {
     expect(
       resolveCompressionTriggerTokens({ maxContextTokens: 200_000, absoluteCapEnabled: true, absoluteCap: 0 })

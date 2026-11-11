@@ -402,4 +402,53 @@ describe('convert-bridge', () => {
 
     expect(summarize).not.toHaveBeenCalled()
   })
+  it('triggers on the absolute cap, not the window ratio', async () => {
+    // 250K tokens on a 1M window: far below the 85% ratio trigger (850K), above
+    // the 200K cap. Only a gate wired to the cap may summarise here.
+    const messages = [
+      { role: 'user', content: 'long task', timestamp: 1 },
+      { role: 'assistant', content: [{ type: 'text', text: 'answer' }], timestamp: 2, usage: { totalTokens: 250_000 } },
+      { role: 'user', content: 'next', timestamp: 3 },
+    ]
+    const summarize = vi.fn(async () => ({ summary: 'CAPPED', mode: 'llm' as const }))
+
+    const capped = await convertAgentMessagesToLlm({
+      agentMessages: messages as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 2,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).toHaveBeenCalledTimes(1)
+    expect(capped.compressionBaseline?.summary).toBe('CAPPED')
+
+    // Same usage with the cap disabled stays on the ratio gate: no summarising.
+    const ratioOnly = await convertAgentMessagesToLlm({
+      agentMessages: messages as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 2,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionAbsoluteCapEnabled: false,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+
+    expect(summarize).toHaveBeenCalledTimes(1)
+    expect(ratioOnly.compressionBaseline).toBeNull()
+  })
 })
