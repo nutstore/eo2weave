@@ -446,6 +446,18 @@ export const settings = {
     maxIterationsUnlimited: "無制限",
     maxIterationsUnlimitedHint:
       "単一 Agent Loop で assistant ターン数を無制限にします",
+    // コンテキスト圧縮
+    contextCompression: "コンテキスト圧縮",
+    contextCompressionHint:
+      "会話がモデルのコンテキストウィンドウに近づくと、古いメッセージは自動的に要約されます。",
+    compressionRatioTrigger: "比率トリガー",
+    compressionRatioFixed: "85%（固定）",
+    compressionAbsoluteCap: "絶対上限",
+    compressionAbsoluteCapHint: "コンテキストがこのトークン数を超えたら、比率に関係なく圧縮します",
+    compressionTriggerExplain:
+      "トリガーは両者の小さい方で、会話ごとに計算されます。チャット上部のコンテキストインジケーターで確認できます。",
+    compressionAbsoluteCapOffWarning:
+      "絶対上限がオフです：コンテキストウィンドウの 85% に達したときだけ圧縮されるため、非常に長い会話はモデルの上限を超えてエラーになる可能性があります。",
 
     // 思考モード
     thinkingMode: "思考モード",

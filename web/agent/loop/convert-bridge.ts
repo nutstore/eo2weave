@@ -4,7 +4,7 @@ import {
   applyCompressionBaseline,
   getCompressionCutoffTimestamp,
   injectSummaryMessage,
-  COMPRESSION_TRIGGER_RATIO,
+  resolveCompressionTriggerTokens,
   type CompressionBaselineState,
 } from './context-compression'
 import { internalToPiMessages, piToInternalMessage, extractTextContent } from './message-mappers'
@@ -25,6 +25,9 @@ export interface ConvertAgentMessagesToLlmInput {
   compressionBaseline: CompressionBaselineState | null
   maxContextTokens: number
   reserveTokens: number
+  /** Absolute cap from Settings → Advanced (see resolveCompressionTriggerTokens). */
+  compressionAbsoluteCapEnabled?: boolean
+  compressionAbsoluteCap?: number
   generateContextSummaryWithLLM: (
     droppedContent: string,
     maxSummaryTokens: number
@@ -143,6 +146,12 @@ export async function convertAgentMessagesToLlm(
   // If the user deletes messages, the next API call will correct the numbers.
   const usedRealTokens = extractLastTurnUsedTokens(input.agentMessages)
 
+  const compressionTriggerThreshold = resolveCompressionTriggerTokens({
+    maxContextTokens,
+    absoluteCapEnabled: input.compressionAbsoluteCapEnabled,
+    absoluteCap: input.compressionAbsoluteCap,
+  })
+
   if (usedRealTokens !== null) {
     console.info('[AgentLoop] Real token usage from last turn', {
       sessionId: input.sessionId,
@@ -152,11 +161,10 @@ export async function convertAgentMessagesToLlm(
       inputBudget,
       maxContextTokens,
       usagePercent: Number(((usedRealTokens / maxContextTokens) * 100).toFixed(2)),
-      triggerThreshold: Math.floor(maxContextTokens * COMPRESSION_TRIGGER_RATIO),
+      triggerThreshold: compressionTriggerThreshold,
     })
   }
 
-  const compressionTriggerThreshold = Math.floor(maxContextTokens * COMPRESSION_TRIGGER_RATIO)
   // Only use real token usage from the last API response for the compression
   // gate.  The heuristic estimate (preTrimTokens) is inaccurate and can
   // trigger compression as early as 40% real usage.

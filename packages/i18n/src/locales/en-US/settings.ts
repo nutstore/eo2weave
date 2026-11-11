@@ -443,6 +443,19 @@ export const settings = {
     maxIterationsUnlimited: "Unlimited",
     maxIterationsUnlimitedHint:
       "Allow unlimited assistant turns in a single Agent Loop",
+    // Context compression
+    contextCompression: "Context Compression",
+    contextCompressionHint:
+      "Older messages are summarized automatically as the conversation approaches the model's context window.",
+    compressionRatioTrigger: "Ratio trigger",
+    compressionRatioFixed: "85% (fixed)",
+    compressionAbsoluteCap: "Absolute cap",
+    compressionAbsoluteCapHint:
+      "Compress as soon as the context exceeds this many tokens, regardless of the ratio",
+    compressionTriggerExplain:
+      "The trigger is the smaller of the two, evaluated per conversation — see the context indicator above the chat.",
+    compressionAbsoluteCapOffWarning:
+      "Absolute cap is off: compression only starts at 85% of the window, so very long conversations can exceed the model's hard limit and fail.",
 
     // Thinking Mode
     thinkingMode: "Thinking Mode",

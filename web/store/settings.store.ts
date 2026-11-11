@@ -115,6 +115,13 @@ interface SettingsState {
    */
   maxTokens: number
   maxIterations: number
+  /**
+   * Absolute context-compression cap (Settings → Advanced). When enabled, the
+   * compression trigger is min(85% of the window, cap) — see
+   * resolveCompressionTriggerTokens. Disabled = ratio only.
+   */
+  compressionAbsoluteCapEnabled: boolean
+  compressionAbsoluteCap: number
   enableThinking: boolean
   thinkingLevel: ExtendedThinkingLevel
 
@@ -194,6 +201,8 @@ interface SettingsState {
   removeCustomProviderModel: (providerId: string, model: string) => void
   setCustomProviderApiMode: (providerId: string, apiMode: import('@/store/settings.store').CustomApiMode) => void
   setTemperature: (temp: number) => void
+  setCompressionAbsoluteCapEnabled: (enabled: boolean) => void
+  setCompressionAbsoluteCap: (tokens: number) => void
   setMaxIterations: (iterations: number) => void
   setEnableThinking: (v: boolean) => void
   setThinkingLevel: (v: ExtendedThinkingLevel) => void
@@ -981,6 +990,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       temperature: 0.7,
       maxTokens: 4096,
       maxIterations: 20,
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
       // First-run defaults (v4): thinking ON at 'high'. Existing installs keep
       // their persisted values — the persist migrate (version < 4) restores
       // whatever was stored, so these defaults only apply to fresh installs.
@@ -1207,6 +1218,12 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       },
 
       setTemperature: (temperature) => set({ temperature }),
+      setCompressionAbsoluteCapEnabled: (compressionAbsoluteCapEnabled) =>
+        set({ compressionAbsoluteCapEnabled }),
+      setCompressionAbsoluteCap: (compressionAbsoluteCap) =>
+        set({
+          compressionAbsoluteCap: Math.max(32_000, Math.min(1_000_000, Math.round(compressionAbsoluteCap))),
+        }),
       setMaxIterations: (maxIterations) =>
         set({
           maxIterations:
@@ -1755,6 +1772,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         temperature: state.temperature,
         maxTokens: state.maxTokens,
         maxIterations: state.maxIterations,
+        compressionAbsoluteCapEnabled: state.compressionAbsoluteCapEnabled,
+        compressionAbsoluteCap: state.compressionAbsoluteCap,
         enableThinking: state.enableThinking,
         thinkingLevel: state.thinkingLevel,
         enableBatchSpawn: state.enableBatchSpawn,
@@ -1865,6 +1884,8 @@ interface PersistedSettingsState {
   temperature: number
   maxTokens: number
   maxIterations: number
+  compressionAbsoluteCapEnabled: boolean
+  compressionAbsoluteCap: number
   enableThinking: boolean
   thinkingLevel: ExtendedThinkingLevel
   enableBatchSpawn: boolean
@@ -1935,6 +1956,8 @@ function restoreCurrentSnapshotToStorage(): void {
       temperature: current.temperature as number,
       maxTokens: current.maxTokens as number,
       maxIterations: current.maxIterations as number,
+      compressionAbsoluteCapEnabled: current.compressionAbsoluteCapEnabled as boolean,
+      compressionAbsoluteCap: current.compressionAbsoluteCap as number,
       enableThinking: current.enableThinking as boolean,
       thinkingLevel: current.thinkingLevel as PersistedSettingsState['thinkingLevel'],
       enableBatchSpawn: current.enableBatchSpawn as boolean,

@@ -1037,6 +1037,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       reserveTokens: contextConfig.reserveTokens,
       enableSummarization: contextConfig.enableSummarization,
       maxMessageGroups: contextConfig.maxMessageGroups,
+      compressionAbsoluteCapEnabled: contextConfig.compressionAbsoluteCapEnabled,
+      compressionAbsoluteCap: contextConfig.compressionAbsoluteCap,
       systemPrompt: finalSystemPrompt,
     })
     const taskContext: ToolContext = {

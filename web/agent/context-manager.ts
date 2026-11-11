@@ -12,7 +12,7 @@
 
 import type { ChatMessage } from './llm/llm-provider'
 import { estimateMessageTokens, estimateStringTokens } from './llm/token-counter'
-import { COMPRESSION_TRIGGER_RATIO } from './loop/context-compression'
+import { resolveCompressionTriggerTokens } from './loop/context-compression'
 
 const COMPRESSED_MEMORY_PREFIXES = [
   'Earlier conversation summary:',
@@ -33,6 +33,9 @@ export interface ContextManagerConfig {
   enableSummarization?: boolean
   /** Maximum number of message groups to keep */
   maxMessageGroups?: number
+  /** Absolute compression cap (Settings → Advanced); see resolveCompressionTriggerTokens */
+  compressionAbsoluteCapEnabled?: boolean
+  compressionAbsoluteCap?: number
 }
 
 export interface TrimResult {
@@ -64,13 +67,14 @@ export interface SummarizationOptions {
 }
 
 export class ContextManager {
-  private static readonly PROACTIVE_COMPRESSION_TRIGGER = COMPRESSION_TRIGGER_RATIO
   private static readonly PROACTIVE_COMPRESSION_TARGET = 0.7
   private maxTokens: number
   private reserveTokens: number
   private systemPrompt: string
   private enableSummarization: boolean
   private maxMessageGroups: number
+  private compressionAbsoluteCapEnabled: boolean
+  private compressionAbsoluteCap: number | undefined
 
   constructor(config: ContextManagerConfig) {
     this.maxTokens = config.maxContextTokens
@@ -78,6 +82,8 @@ export class ContextManager {
     this.systemPrompt = config.systemPrompt ?? ''
     this.enableSummarization = config.enableSummarization ?? false
     this.maxMessageGroups = config.maxMessageGroups ?? 50
+    this.compressionAbsoluteCapEnabled = config.compressionAbsoluteCapEnabled ?? true
+    this.compressionAbsoluteCap = config.compressionAbsoluteCap
   }
 
   /** Update system prompt */
@@ -149,7 +155,7 @@ export class ContextManager {
       droppedGroups === 0 &&
       selectedGroups.length > 1
     ) {
-      const proactiveTrigger = Math.floor(this.maxTokens * ContextManager.PROACTIVE_COMPRESSION_TRIGGER)
+      const proactiveTrigger = this.getCompressionTriggerTokens()
       const proactiveTarget = Math.floor(budget * ContextManager.PROACTIVE_COMPRESSION_TARGET)
       // Use real tokens when available; otherwise fall back to heuristic
       const triggerTokens = options.usedRealTokens != null && options.usedRealTokens > 0
@@ -180,7 +186,7 @@ export class ContextManager {
       droppedGroups > 0 &&
       selectedGroups.length > 1
     ) {
-      const proactiveTrigger = Math.floor(this.maxTokens * ContextManager.PROACTIVE_COMPRESSION_TRIGGER)
+      const proactiveTrigger = this.getCompressionTriggerTokens()
       const proactiveTarget = Math.floor(budget * ContextManager.PROACTIVE_COMPRESSION_TARGET)
       // Use real tokens when available; otherwise recompute from selected groups
       const triggerTokens = options.usedRealTokens != null && options.usedRealTokens > 0
@@ -434,6 +440,8 @@ export class ContextManager {
       systemPrompt: this.systemPrompt,
       enableSummarization: this.enableSummarization,
       maxMessageGroups: this.maxMessageGroups,
+      compressionAbsoluteCapEnabled: this.compressionAbsoluteCapEnabled,
+      compressionAbsoluteCap: this.compressionAbsoluteCap,
     }
   }
 
@@ -445,5 +453,21 @@ export class ContextManager {
     if (config.enableSummarization !== undefined)
       this.enableSummarization = config.enableSummarization
     if (config.maxMessageGroups !== undefined) this.maxMessageGroups = config.maxMessageGroups
+    if (config.compressionAbsoluteCapEnabled !== undefined)
+      this.compressionAbsoluteCapEnabled = config.compressionAbsoluteCapEnabled
+    if (config.compressionAbsoluteCap !== undefined)
+      this.compressionAbsoluteCap = config.compressionAbsoluteCap
+  }
+
+  /**
+   * Tokens at which proactive compression starts: min(ratio x window, absolute
+   * cap). Both proactive gates below must use this, never the raw ratio.
+   */
+  private getCompressionTriggerTokens(): number {
+    return resolveCompressionTriggerTokens({
+      maxContextTokens: this.maxTokens,
+      absoluteCapEnabled: this.compressionAbsoluteCapEnabled,
+      absoluteCap: this.compressionAbsoluteCap,
+    })
   }
 }

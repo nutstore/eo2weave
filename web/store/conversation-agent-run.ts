@@ -954,6 +954,8 @@ export async function runAgentImpl(
           reserveTokens: maxTokens,
           enableSummarization: true,
           maxMessageGroups: provider.maxContextTokens >= 200000 ? 80 : 50,
+          compressionAbsoluteCapEnabled: settingsState.compressionAbsoluteCapEnabled,
+          compressionAbsoluteCap: settingsState.compressionAbsoluteCap,
         })
 
         const toolRegistry = getToolRegistry()
