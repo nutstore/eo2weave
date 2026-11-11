@@ -24,7 +24,7 @@ vi.mock('@/lib/gateway-login', () => ({
 
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
-    getState: () => ({ setModelCredentialStatus: setModelCredentialStatusMock }),
+    getState: () => ({ setGatewayCredentialStatus: setModelCredentialStatusMock }),
   },
 }))
 

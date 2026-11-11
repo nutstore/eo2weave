@@ -17,6 +17,9 @@
  */
 const GATEWAY_CREDENTIAL_KEY_ALIAS = '__llm_gateway_token__'
 
+/** Durable session backup, owned by gateway auth rather than API-key providers. */
+export const LLM_GATEWAY_REFRESH_TOKEN_KEY_ID = '__llm_gateway_refresh_token__'
+
 /** Internal dispatch sentinel; it is not a credential-store key. */
 export function getGatewayDispatchCredentialKey(): string {
   return GATEWAY_CREDENTIAL_KEY_ALIAS

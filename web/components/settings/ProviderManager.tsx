@@ -1593,7 +1593,7 @@ export function LLMGatewayCard({
         // so it cannot overwrite a concurrent logout's 'missing'/'expired'
         // commit (any logout ordering after our re-read would itself hold
         // the lock and commit first).
-        useSettingsStore.getState().setModelCredentialStatus('valid')
+        useSettingsStore.getState().setGatewayCredentialStatus('valid')
         setAuthState({ status: 'idle' })
         // Drop the stale quota/error state so it is refetched with the new token.
         setRateLimitsResult(null)
@@ -1722,7 +1722,7 @@ export function LLMGatewayCard({
       // the in-lock re-read above: that guard confirmed the shared
       // credentials were gone (no newer login won) just before this write,
       // and the lock keeps that pairing atomic against a concurrent commit.
-      useSettingsStore.getState().setModelCredentialStatus('missing')
+      useSettingsStore.getState().setGatewayCredentialStatus('missing')
       // Clear cached rate-limits so next login refetches
       setRateLimitsResult(null)
       setRateLimitsError(null)

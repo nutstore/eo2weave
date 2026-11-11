@@ -111,7 +111,7 @@ export const useGatewayReloginStore = create<GatewayReloginState>()((set) => ({
       // (same distinction useGatewayLogin makes).
       if (errorCode === 'invalid_grant' || errorCode === 'expired_token') {
         const { useSettingsStore } = await import('@/store/settings.store')
-        useSettingsStore.getState().setModelCredentialStatus('expired')
+        useSettingsStore.getState().setGatewayCredentialStatus('expired')
       }
       running = false
       set({ phase: 'error', authState: { status: 'error', error: message }, error: message })

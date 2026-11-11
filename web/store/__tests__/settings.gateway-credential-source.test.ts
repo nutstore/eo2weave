@@ -103,10 +103,10 @@ describe('gateway availability source (#277)', () => {
   it('updates the selected gateway availability after the session resolves', async () => {
     const store = await setup('unknown')
     store.setState({ hasApiKey: false, hasApiKeyLoaded: true })
-    store.getState().setModelCredentialStatus('valid')
+    store.getState().setGatewayCredentialStatus('valid')
     expect(store.getState().hasApiKey).toBe(true)
     expect(store.getState().hasApiKeyLoaded).toBe(true)
-    store.getState().setModelCredentialStatus('missing')
+    store.getState().setGatewayCredentialStatus('missing')
     expect(store.getState().hasApiKey).toBe(false)
   })
 
@@ -114,7 +114,7 @@ describe('gateway availability source (#277)', () => {
     const store = await setup('unknown')
     store.setState({ providerType: 'openai' })
     store.getState().setHasApiKey(true)
-    store.getState().setModelCredentialStatus('missing')
+    store.getState().setGatewayCredentialStatus('missing')
     expect(store.getState().hasApiKey).toBe(true)
   })
 

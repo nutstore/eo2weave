@@ -494,7 +494,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     // selection unusable.
     seedStorage({ providerType: 'llm-gateway', modelName: 'gateway-model' })
     const { useSettingsStore } = await importStore()
-    useSettingsStore.getState().setModelCredentialStatus('expired')
+    useSettingsStore.getState().setGatewayCredentialStatus('expired')
 
     dispatchStorageEvent(
       performance.now() + 5,
@@ -510,7 +510,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     // the same expired credential, mirroring switchProviderAndModel.
     seedStorage({ providerType: 'llm-gateway', modelName: 'gateway-model' })
     const { useSettingsStore } = await importStore()
-    useSettingsStore.getState().setModelCredentialStatus('expired')
+    useSettingsStore.getState().setGatewayCredentialStatus('expired')
 
     dispatchStorageEvent(
       performance.now() + 5,

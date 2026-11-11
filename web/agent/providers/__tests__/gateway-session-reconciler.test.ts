@@ -46,7 +46,7 @@ const settingsStoreState = vi.hoisted(() => {
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
     getState: () => ({
-      setModelCredentialStatus: (status: string) => {
+      setGatewayCredentialStatus: (status: string) => {
         settingsStoreState.modelCredentialStatus = status
       },
       setModelCredentialStatusError: (message: string | null) => {

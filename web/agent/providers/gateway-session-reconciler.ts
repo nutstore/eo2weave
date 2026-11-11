@@ -137,7 +137,7 @@ async function reconcileCredentialStatus(
   // Fence: a newer session change supersedes this status write.
   if (!stillCurrent()) return false
   const settings = useSettingsStore.getState()
-  settings.setModelCredentialStatus(status)
+  settings.setGatewayCredentialStatus(status)
   if (options.clearError) settings.setModelCredentialStatusError(null)
   return true
 }

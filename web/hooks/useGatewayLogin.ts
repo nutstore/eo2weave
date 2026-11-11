@@ -106,7 +106,7 @@ export function useGatewayLogin(): UseGatewayLoginResult {
       // and never reach this branch as 'expired_token'.
       const credentialInvalid = errorCode === 'invalid_grant' || errorCode === 'expired_token'
       if (credentialInvalid) {
-        useSettingsStore.getState().setModelCredentialStatus('expired')
+        useSettingsStore.getState().setGatewayCredentialStatus('expired')
       }
       if (mountedRef.current) {
         setAuthState({

@@ -9,7 +9,7 @@
  * @see https://gitea.jianguoyun.net.cn/huangqingming/llm_gateway_service
  */
 
-import { getGatewayDispatchCredentialKey } from '@/agent/providers/gateway-credential-alias'
+import { getGatewayDispatchCredentialKey, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/gateway-credential-alias'
 import { credentialRegistry } from '@/agent/providers/credential-state'
 import { t as translate } from '@creatorweave/i18n'
 import {
@@ -252,7 +252,7 @@ if (typeof window !== 'undefined') {
  * We store a JSON blob containing refresh_token + expiry metadata so that on
  * restore we can reconstruct the full StoredTokens object.
  */
-const REFRESH_TOKEN_DB_KEY = '__llm_gateway_refresh_token__'
+const REFRESH_TOKEN_DB_KEY = LLM_GATEWAY_REFRESH_TOKEN_KEY_ID
 
 /**
  * localStorage marker recording when the last logout purged credentials.
@@ -324,7 +324,7 @@ export function getLastLogoutTimestamp(): number | null {
  * api-key-store as real provider keys, and counting it as one would let a
  * visitor skip login with no usable credential.
  */
-export const LLM_GATEWAY_REFRESH_TOKEN_KEY_ID = REFRESH_TOKEN_DB_KEY
+export { LLM_GATEWAY_REFRESH_TOKEN_KEY_ID }
 
 /**
  * Whether a status verdict produced under `generation` may still be applied.

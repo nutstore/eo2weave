@@ -17,7 +17,7 @@ const { provider, keyStore, settings } = vi.hoisted(() => ({
     pinnedModelsByProvider: { 'llm-gateway': ['old-model'] },
     switchProviderAndModel: vi.fn(),
     setHasApiKey: vi.fn(),
-    setModelCredentialStatus: vi.fn(),
+    setGatewayCredentialStatus: vi.fn(),
     setModelCredentialStatusError: vi.fn(),
     triggerProviderRefresh: vi.fn(),
   },

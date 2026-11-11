@@ -11,7 +11,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import type { LLMProviderType } from '@/agent/providers/types'
 import { getGatewayDispatchCredentialKey } from '@/agent/providers/gateway-credential-alias'
 import { credentialRegistry } from '@/agent/providers/credential-state'
-import { API_KEY_CHANGE_STORAGE_KEY } from '@/security/api-key-change'
+import { API_KEY_CHANGE_STORAGE_KEY, isApiKeyProviderIdentity } from '@/security/api-key-change'
 import {
   isCustomProviderType,
   isPotentiallyDynamicProviderType,
@@ -212,7 +212,7 @@ interface SettingsState {
   setSnapshotHighWatermark: (n: number) => void
   setSnapshotLowWatermark: (n: number) => void
   setHasApiKey: (has: boolean) => void
-  setModelCredentialStatus: (status: ModelCredentialStatus) => void
+  setGatewayCredentialStatus: (status: ModelCredentialStatus) => void
   setModelCredentialStatusError: (message: string | null) => void
   setAgentLoopNotificationsEnabled: (enabled: boolean) => void
   setAgentLoopNotificationsOnlyWhenHidden: (onlyWhenHidden: boolean) => void
@@ -1275,7 +1275,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const provider = get().providerType
         credentialRegistry.commit(provider, { kind: hasApiKey ? 'valid' : 'missing' })
       },
-      setModelCredentialStatus: (status) => {
+      setGatewayCredentialStatus: (status) => {
         const kind = status === 'unauthorized' ? 'expired' : status
         credentialRegistry.commit('llm-gateway', { kind })
       },
@@ -1971,7 +1971,7 @@ function setupCrossTabSettingsSync(): void {
     if (e.key === API_KEY_CHANGE_STORAGE_KEY && e.newValue) {
       try {
         const { provider } = JSON.parse(e.newValue) as { provider?: unknown }
-        if (typeof provider !== 'string' || !provider || provider.startsWith('__') || provider === 'llm-gateway') return
+        if (typeof provider !== 'string' || !isApiKeyProviderIdentity(provider)) return
         credentialRegistry.commit(provider, { kind: 'unknown' })
         if (useSettingsStore.getState().providerType === provider) void useSettingsStore.getState().checkHasApiKey()
       } catch { /* Ignore malformed notifications. */ }

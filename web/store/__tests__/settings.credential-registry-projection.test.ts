@@ -95,7 +95,7 @@ describe('credential registry projection', () => {
     useSettingsStore.setState({ providerType: 'openai' })
     useSettingsStore.getState().setHasApiKey(true)
     expect(credentialRegistry.getState('openai').kind).toBe('valid')
-    useSettingsStore.getState().setModelCredentialStatus('expired')
+    useSettingsStore.getState().setGatewayCredentialStatus('expired')
     expect(credentialRegistry.getState('llm-gateway').kind).toBe('expired')
     expect(useSettingsStore.getState().hasApiKey).toBe(true)
   })
@@ -142,6 +142,28 @@ describe('credential registry projection', () => {
     release(null)
     await older
     expect(useSettingsStore.getState().hasApiKey).toBe(true)
+  })
+
+  it('identifies the gateway-specific status setter while another provider is selected', async () => {
+    const { credentialRegistry, useSettingsStore } = await setup()
+    useSettingsStore.setState({ providerType: 'openai' })
+    credentialRegistry.commit('openai', { kind: 'valid' })
+    useSettingsStore.getState().setGatewayCredentialStatus('expired')
+    expect(credentialRegistry.getState('llm-gateway').kind).toBe('expired')
+    expect(useSettingsStore.getState().hasApiKey).toBe(true)
+  })
+
+  it('recognizes explicit internal identities in peer notifications', async () => {
+    const { credentialRegistry } = await setup()
+    credentialRegistry.commit('__external-provider', { kind: 'valid' })
+    credentialRegistry.commit('__secret__:_global:PRIVATE_NAME', { kind: 'valid' })
+    const emit = (provider: string) => window.dispatchEvent(new StorageEvent('storage', {
+      key: 'eo2weave:api-key-change', newValue: JSON.stringify({ provider, nonce: 'peer' }),
+    }))
+    emit('__external-provider')
+    expect(credentialRegistry.getState('__external-provider').kind).toBe('unknown')
+    emit('__secret__:_global:PRIVATE_NAME')
+    expect(credentialRegistry.getState('__secret__:_global:PRIVATE_NAME').kind).toBe('valid')
   })
 
 })
