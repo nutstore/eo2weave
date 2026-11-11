@@ -451,4 +451,36 @@ describe('convert-bridge', () => {
     expect(summarize).toHaveBeenCalledTimes(1)
     expect(ratioOnly.compressionBaseline).toBeNull()
   })
+
+  it('reopens the gate on the convert after the cooldown one', async () => {
+    const run = async (convertCallCount: number, lastSummaryConvertCall: number) => {
+      const summarize = vi.fn(async () => ({ summary: 'AGAIN', mode: 'llm' as const }))
+      await convertAgentMessagesToLlm({
+        agentMessages: [
+          { role: 'user', content: 'task', timestamp: 1 },
+          { role: 'assistant', content: [{ type: 'text', text: 'answer' }], timestamp: 2, usage: { totalTokens: 300_000 } },
+          { role: 'user', content: 'next', timestamp: 3 },
+        ] as never[],
+        model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+        provider: { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never,
+        maxContextTokens: 1_000_000,
+        reserveTokens: 32_000,
+        callbacks: {},
+        compressedMemoryPrefix: 'Earlier conversation summary:',
+        convertCallCount,
+        lastSummaryConvertCall,
+        compressionBaseline: null,
+        compressionAbsoluteCapEnabled: true,
+        compressionAbsoluteCap: 200_000,
+        generateContextSummaryWithLLM: summarize,
+      } as never)
+      return summarize
+    }
+
+    // Call #4 follows a summary written by call #3: one convert of cooldown.
+    expect(await run(3, 3)).toHaveBeenCalledTimes(0)
+    // Call #5 is two converts past that summary: the gate is open again, so the
+    // cooldown can never latch compression off for the rest of the run.
+    expect(await run(4, 3)).toHaveBeenCalledTimes(1)
+  })
 })

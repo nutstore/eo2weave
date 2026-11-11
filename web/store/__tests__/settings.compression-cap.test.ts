@@ -56,6 +56,15 @@ describe('absolute compression cap settings (#104)', () => {
     expect(useSettingsStore.getState().compressionAbsoluteCap).toBe(200_000)
   })
 
+  it('falls back to the default cap for a non-positive stored value', async () => {
+    // Number(null) and Number('') are 0 — a corrupt snapshot must not silently
+    // become the most aggressive cap.
+    seedStorage({ compressionAbsoluteCap: null }, 4)
+    const { useSettingsStore } = await importStore()
+
+    expect(useSettingsStore.getState().compressionAbsoluteCap).toBe(200_000)
+  })
+
   it('leaves a current-version snapshot untouched', async () => {
     seedStorage({ compressionAbsoluteCapEnabled: true, compressionAbsoluteCap: 45_000 }, 5)
     const { useSettingsStore } = await importStore()

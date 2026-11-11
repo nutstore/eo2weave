@@ -1768,9 +1768,11 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         if (version < 5) {
           // v5 added the absolute compression cap. Backfill it for old
           // snapshots and sanitise hand-edited values: a non-finite or
-          // out-of-range cap must not reach the trigger maths.
+          // non-positive cap must not reach the trigger maths (the resolver
+          // ignores those and falls back to the ratio; here a corrupt value
+          // must not silently become the most aggressive cap).
           const rawCap = Number(next.compressionAbsoluteCap)
-          next.compressionAbsoluteCap = Number.isFinite(rawCap)
+          next.compressionAbsoluteCap = Number.isFinite(rawCap) && rawCap > 0
             ? Math.max(32_000, Math.min(1_000_000, Math.round(rawCap)))
             : 200_000
           next.compressionAbsoluteCapEnabled = next.compressionAbsoluteCapEnabled !== false

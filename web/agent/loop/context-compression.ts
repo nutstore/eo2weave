@@ -19,9 +19,14 @@ export const DEFAULT_COMPRESSION_ABSOLUTE_CAP = 200_000
 export interface CompressionTriggerInput {
   /** The model's advertised context window. */
   maxContextTokens: number
-  /** Whether the absolute cap is enabled (Settings toggle). */
+  /**
+   * Whether the absolute cap is enabled (Settings toggle). Only an EXPLICIT
+   * `false` turns it off: `undefined` means "on", so a caller that predates the
+   * setting cannot silently land on the unbounded ratio-only gate. Pass `false`
+   * deliberately where the cap must not apply (headless schedules).
+   */
   absoluteCapEnabled?: boolean
-  /** Absolute cap in tokens; ignored when disabled. */
+  /** Absolute cap in tokens; ignored when disabled or non-positive. */
   absoluteCap?: number
 }
 
