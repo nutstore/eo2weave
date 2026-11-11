@@ -884,6 +884,81 @@ describe('llm-gateway-auth token refresh hardening', () => {
       expect(getGatewayCredentialStatus()).toBe('missing')
     })
 
+    it('keeps the expired verdict stable after the purge deleted the refresh-token record (#282)', async () => {
+      seedStoredTokens()
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          new Response(JSON.stringify({ code: 'invalid_grant', message: 'token revoked' }), { status: 400 })
+        )
+      )
+
+      // First read: the purge commits — the SQLite record (the old tombstone)
+      // is deleted along with the token pair.
+      await getValidAccessToken(BASE_URL, CLIENT_ID)
+      expect(getGatewayCredentialStatus()).toBe('expired')
+      expect(deleteApiKeyMock).toHaveBeenCalledWith('__llm_gateway_refresh_token__')
+
+      // Later reads in the SAME session must not flip to 'missing': the
+      // record is gone, only the expired marker remembers the session died.
+      await getValidAccessToken(BASE_URL, CLIENT_ID)
+      expect(getGatewayCredentialStatus()).toBe('expired')
+
+      const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+      expect(resolved).toMatchObject({ ok: false, kind: 'expired' })
+      expect(getGatewayCredentialStatus()).toBe('expired')
+    })
+
+    it('a new credential commit clears the expired marker so a fresh purge is the one reported (#282)', async () => {
+      seedStoredTokens()
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          new Response(JSON.stringify({ code: 'invalid_grant', message: 'token revoked' }), { status: 400 })
+        )
+      )
+      await getValidAccessToken(BASE_URL, CLIENT_ID)
+      expect(getGatewayCredentialStatus()).toBe('expired')
+
+      // A new login commits a fresh pair (persistDeviceLoginTokens →
+      // saveStoredTokens), then that pair is wiped outside the auth layer
+      // (browser eviction). The next read must report 'missing' — the
+      // expired verdict belonged to the OLD session.
+      const token = {
+        access_token: 'new-access', token_type: 'Bearer', expires_in: 60,
+        refresh_token: 'new-refresh', refresh_expires_in: 3600,
+      }
+      persistDeviceLoginTokens(token as never, CLIENT_ID, BASE_URL)
+      localStorage.removeItem(TOKENS_KEY)
+
+      await getValidAccessToken(BASE_URL, CLIENT_ID)
+      expect(getGatewayCredentialStatus()).toBe('missing')
+    })
+
+    it('logout clears the expired marker: no re-login prompt for a session the user ended (#282)', async () => {
+      seedStoredTokens()
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          new Response(JSON.stringify({ code: 'invalid_grant', message: 'token revoked' }), { status: 400 })
+        )
+      )
+      await getValidAccessToken(BASE_URL, CLIENT_ID)
+      expect(getGatewayCredentialStatus()).toBe('expired')
+
+      await logoutGateway()
+      expect(getGatewayCredentialStatus()).toBe('missing')
+
+      // The post-logout reads stay 'missing' (setup offer), never 'expired'.
+      await getValidAccessToken(BASE_URL, CLIENT_ID)
+      expect(getGatewayCredentialStatus()).toBe('missing')
+      const resolved = await resolveGatewayDispatchCredential(BASE_URL, CLIENT_ID)
+      expect(resolved).toMatchObject({ ok: false, kind: 'missing' })
+    })
+
     it('credential status reports "valid" while the stored access token is usable', async () => {
       const now = Date.now()
       localStorage.setItem(
