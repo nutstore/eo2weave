@@ -300,6 +300,36 @@ describe('ContextManager', () => {
       expect(compressedSummary).toBeDefined()
     })
 
+    it('should compress at the absolute cap instead of the ratio', () => {
+      // 3 x 700 chars ≈ 700 tokens: below the 85% ratio trigger (850) but above
+      // the 300-token cap, so only the capped manager may compress.
+      const messages: ChatMessage[] = []
+      for (let i = 0; i < 3; i++) {
+        messages.push(createMessage('user', `Message ${i} ${'x'.repeat(690)}`))
+      }
+      const hasCompressedMemory = (msgs: ChatMessage[]) =>
+        msgs.some(
+          (m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('Compressed memory')
+        )
+
+      const capped = new ContextManager({
+        maxContextTokens: 1000,
+        reserveTokens: 100,
+        enableSummarization: true,
+        compressionAbsoluteCapEnabled: true,
+        compressionAbsoluteCap: 300,
+      })
+      expect(hasCompressedMemory(capped.trimMessages(messages, { createSummary: true }).messages)).toBe(true)
+
+      const ratioOnly = new ContextManager({
+        maxContextTokens: 1000,
+        reserveTokens: 100,
+        enableSummarization: true,
+        compressionAbsoluteCapEnabled: false,
+      })
+      expect(hasCompressedMemory(ratioOnly.trimMessages(messages, { createSummary: true }).messages)).toBe(false)
+    })
+
     it('should exclude prior compressed memory messages from external dropped content', () => {
       const manager = new ContextManager({
         maxContextTokens: 260,
