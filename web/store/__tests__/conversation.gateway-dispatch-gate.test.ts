@@ -430,4 +430,23 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     expect(providerCall).toBeDefined()
     expect(providerCall![0]).toMatchObject({ apiKey: 'validated-token' })
   })
+
+  it('builds the follow-up suggestion from the session credential, not a store key (#280)', async () => {
+    // The gateway's api-key shadow is gone, so the sqlite mock's
+    // `load()` returns null for `__llm_gateway_token__` exactly like a real
+    // post-#280 install. Gating the follow-up on that load would silently
+    // stop suggestions for every Nutstore AI user.
+    resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+    const { generateFollowUp } = await import('@/agent/follow-up-generator')
+
+    await startRun()
+
+    await vi.waitFor(() =>
+      expect(generateFollowUp).toHaveBeenCalledWith(
+        expect.any(Array),
+        'llm-gateway',
+        'validated-token',
+      ),
+    )
+  })
 })
