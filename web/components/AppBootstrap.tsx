@@ -46,6 +46,7 @@ import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
  * `window` at module scope.
  */
 export function AppBootstrap({ children }: { children?: React.ReactNode }) {
+  const toastPosition = isSidePanelMode() ? 'top-center' : 'bottom-right'
   useEffect(() => {
     if (isSidePanelMode()) {
       void import('@/components/workspace/WorkspaceRouteView').catch((error) => {
@@ -791,7 +792,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         <div className="relative z-[10000]">
           <StorageInitDiagnosticsActions />
         </div>
-        <Toaster position="bottom-right" />
+        <Toaster position={toastPosition} />
       </>
     )
   }
@@ -854,7 +855,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       {/* PWA install offer — after storage init so it never competes with the
           loading/error gates; dismissal state is owned by pwa/install-prompt. */}
       <PwaInstallCard />
-      <Toaster position="bottom-right" />
+      <Toaster position={toastPosition} />
     </AppStartupGate>
   )
 }
