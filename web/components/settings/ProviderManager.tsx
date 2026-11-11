@@ -1254,7 +1254,10 @@ export function LLMGatewayCard({
 }) {
   const t = useT()
   const { triggerProviderRefresh, pinModel, unpinModel, removePinnedModels, markPinnedModelsSeen, getStalePinnedModels, pinnedModelsByProvider, modelCredentialStatus, modelCredentialStatusError, setModelCredentialStatusError } = useSettingsStore()
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  // Seed from the synchronous pair so a logged-in user never renders the
+  // logged-out card for a frame; the effect below upgrades this to the
+  // session-aware answer (which also counts the durable refresh record).
+  const [isLoggedIn, setIsLoggedIn] = useState(() => hasStoredTokens())
   const [allModels, setAllModels] = useState<Array<{ id: string; name: string }>>([])
   /**
    * How the card's model list was obtained. 'failed' means the /models fetch

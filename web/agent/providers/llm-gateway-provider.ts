@@ -1,5 +1,7 @@
 /**
- * LLM Gateway Provider Registration
+ * Nutstore AI (坚果云 AI) — persisted provider id: `llm-gateway`
+ *
+ * Provider Registration
  *
  * Registers "坚果云 AI" as a built-in LLM provider that uses
  * Device Code Flow for authentication (no manual API key needed).

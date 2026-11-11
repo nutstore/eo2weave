@@ -45,13 +45,15 @@ describe('resolveDispatchApiKey (#277)', () => {
     expect(resolveMock).toHaveBeenCalledWith('https://gateway.test', 'client')
   })
 
-  it('treats the bare provider type as the gateway too', async () => {
-    resolveMock.mockResolvedValue({ ok: true, accessToken: 'session-token' })
-
-    await expect(resolveDispatchApiKey('llm-gateway', null)).resolves.toEqual({
+  it('does not treat a provider literally named "llm-gateway" as the gateway', async () => {
+    // Only the effective-config marker routes to the session. The bare type is
+    // also a legal custom-provider id, and sending that provider down the
+    // gateway path would hand it a credential it never configured.
+    await expect(resolveDispatchApiKey('llm-gateway', 'sk-custom')).resolves.toEqual({
       ok: true,
-      apiKey: 'session-token',
+      apiKey: 'sk-custom',
     })
+    expect(resolveMock).not.toHaveBeenCalled()
   })
 
   it('propagates an expired session instead of sending without auth', async () => {

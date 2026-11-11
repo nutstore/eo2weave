@@ -1,5 +1,7 @@
 /**
- * LLM Gateway Device Code Flow Authentication
+ * Nutstore AI (坚果云 AI) — persisted provider id: `llm-gateway`
+ *
+ * Device Code Flow Authentication
  *
  * Implements the device code flow for llm_gateway_service,
  * enabling browser-based OAuth login for CLI/desktop environments.

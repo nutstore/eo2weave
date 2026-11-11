@@ -1,4 +1,6 @@
 /**
+ * Nutstore AI (坚果云 AI) — persisted provider id: `llm-gateway`
+ *
  * The api-key-store identity the gateway advertises in
  * `getEffectiveProviderConfig().apiKeyProviderKey`.
  *
@@ -16,5 +18,8 @@
 export const GATEWAY_CREDENTIAL_KEY_ALIAS = '__llm_gateway_token__'
 
 export function isGatewayCredentialKey(providerKey: string | null | undefined): boolean {
-  return providerKey === GATEWAY_CREDENTIAL_KEY_ALIAS || providerKey === 'llm-gateway'
+  // Only the marker: the bare provider type is ALSO a valid id for a
+  // custom provider, so matching it would misclassify that provider as the
+  // gateway and route it through session resolution.
+  return providerKey === GATEWAY_CREDENTIAL_KEY_ALIAS
 }
