@@ -9,6 +9,7 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import type { LLMProviderType } from '@/agent/providers/types'
+import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
 import {
   isCustomProviderType,
   isPotentiallyDynamicProviderType,
@@ -1262,10 +1263,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const config = getProviderConfig(state.providerType)
         if (!config) return null
 
-        // llm-gateway uses a dedicated API key storage key
-        const apiKeyProviderKey = state.providerType === 'llm-gateway'
-          ? '__llm_gateway_token__'
-          : state.providerType
+        // The gateway has no key of its own (#277). This alias is a marker, not
+        // a storage key: generic "load the key for this provider" call sites
+        // hand it to `resolveDispatchApiKey`, which resolves the shared session
+        // instead of reading the store.
+        const apiKeyProviderKey =
+          state.providerType === 'llm-gateway'
+            ? GATEWAY_CREDENTIAL_KEY_ALIAS
+            : state.providerType
 
         return {
           apiKeyProviderKey,

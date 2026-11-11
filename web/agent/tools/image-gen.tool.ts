@@ -170,7 +170,10 @@ export const imageGenExecutor: ToolExecutor = async (
 
   try {
     const { getApiKeyRepository } = await import('@/sqlite')
-    const apiKey = await getApiKeyRepository().load(effectiveConfig.apiKeyProviderKey)
+    const storedKey = await getApiKeyRepository().load(effectiveConfig.apiKeyProviderKey)
+    const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
+    const credential = await resolveDispatchApiKey(effectiveConfig.apiKeyProviderKey, storedKey)
+    const apiKey = credential.ok ? credential.apiKey : null
     if (!apiKey) {
       return toolErrorJson(
         'generate_image',

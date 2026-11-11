@@ -217,7 +217,10 @@ async function prepareSampling(params: Readonly<Record<string, JsonValue>>) {
   const config = settings.getEffectiveProviderConfig()
   if (!config || !settings.providerType || !config.modelName)
     throw new Error('Sampling requires a configured model')
-  const apiKey = await loadApiKey(config.apiKeyProviderKey)
+  const storedKey = await loadApiKey(config.apiKeyProviderKey)
+  const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
+  const credential = await resolveDispatchApiKey(config.apiKeyProviderKey, storedKey)
+  const apiKey = credential.ok ? credential.apiKey : null
   if (!apiKey) throw new Error('Sampling model credentials are missing')
   const provider = createLLMProvider({
     apiKey,
