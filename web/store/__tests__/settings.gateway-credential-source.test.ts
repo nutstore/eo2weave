@@ -104,4 +104,17 @@ describe('gateway availability source (#277)', () => {
     expect(state.hasApiKeyLoaded).toBe(false)
     expect(loadApiKeyMock).not.toHaveBeenCalled()
   })
+
+  it('resolves a flush caller definitively while the verdict is unknown', async () => {
+    // A flush caller already attempted registration and wants an answer, so it
+    // must not stay deferred: `hasApiKeyLoaded` left false would pin the UI to
+    // its loading state for the rest of the session (AppBootstrap flushes when
+    // the gateway can never register here, and after a failed restore).
+    const store = await setup('unknown')
+
+    expect(await store.getState().checkHasApiKey({ flush: true })).toBe(false)
+    const state = store.getState()
+    expect(state.hasApiKey).toBe(false)
+    expect(state.hasApiKeyLoaded).toBe(true)
+  })
 })

@@ -1345,6 +1345,19 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             // registering-provider path: `hasApiKeyLoaded` stays false so the
             // UI shows a neutral state instead of "no key", and the dispatch
             // resolver still owns the definitive answer.
+            //
+            // A `flush: true` caller has already attempted registration and
+            // wants a definitive answer (AppBootstrap flushes when the gateway
+            // can never register here — no client id — and after a failed
+            // restore). Deferring THERE would leave `hasApiKeyLoaded` false for
+            // the whole session and pin the UI to its loading state, which is
+            // exactly what the flag exists to prevent.
+            if (options?.flush) {
+              if (get().providerType === 'llm-gateway') {
+                set({ hasApiKey: false, hasApiKeyLoaded: true })
+              }
+              return false
+            }
             return false
           }
           const hasKey = status === 'valid'
