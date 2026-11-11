@@ -487,8 +487,8 @@ export function ModelSettings({ open }: ModelSettingsProps) {
                 <div className="flex items-center gap-2">
                   <input
                     type="number"
-                    min={32000}
-                    max={1000000}
+                    min={COMPRESSION_ABSOLUTE_CAP_MIN}
+                    max={COMPRESSION_ABSOLUTE_CAP_MAX}
                     step={10000}
                     value={capDraft ?? compressionAbsoluteCap}
                     onChange={(e) => setCapDraft(e.target.value)}

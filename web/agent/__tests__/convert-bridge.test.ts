@@ -483,4 +483,54 @@ describe('convert-bridge', () => {
     // cooldown can never latch compression off for the rest of the run.
     expect(await run(4, 3)).toHaveBeenCalledTimes(1)
   })
+  it('keeps the convert after a summary small, so the cooldown cannot overflow the window', async () => {
+    // Evidence for the cooldown's safety: the suppressed convert is the one that
+    // already runs on the baseline (summary + messages since the cutoff), never
+    // the full pre-compression history.
+    const provider = { maxContextTokens: 1_000_000, estimateTokens: vi.fn(() => 1) } as never
+    const history = [
+      { role: 'user', content: [{ type: 'text', text: 'critical task statement' }], timestamp: 1 },
+      { role: 'assistant', content: [{ type: 'text', text: 'answer' }], timestamp: 2, usage: { totalTokens: 900_000 } },
+    ]
+    const summarize = vi.fn(async () => ({ summary: 'S1', mode: 'llm' as const }))
+    const first = await convertAgentMessagesToLlm({
+      agentMessages: history as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: 1,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressionBaseline: null,
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarize,
+    } as never)
+    expect(first.compressionBaseline?.summary).toBe('S1')
+
+    const summarizeAgain = vi.fn(async () => ({ summary: 'S2', mode: 'llm' as const }))
+    const second = await convertAgentMessagesToLlm({
+      agentMessages: [...history, { role: 'user', content: 'follow up', timestamp: 3 }] as never[],
+      model: { api: 'openai', provider: 'openai', id: 'big-model' } as never,
+      provider,
+      maxContextTokens: 1_000_000,
+      reserveTokens: 32_000,
+      callbacks: {},
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      convertCallCount: first.convertCallCount,
+      lastSummaryConvertCall: first.lastSummaryConvertCall,
+      compressionBaseline: first.compressionBaseline,
+      compressionAbsoluteCapEnabled: true,
+      compressionAbsoluteCap: 200_000,
+      generateContextSummaryWithLLM: summarizeAgain,
+    } as never)
+
+    expect(summarizeAgain).not.toHaveBeenCalled()
+    const payload = JSON.stringify(second.piMessages)
+    // Old history is behind the baseline: only the summary and the new turn go out.
+    expect(payload).not.toContain('critical task statement')
+    expect(payload).toContain('follow up')
+  })
 })

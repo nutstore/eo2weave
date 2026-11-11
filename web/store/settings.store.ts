@@ -18,6 +18,7 @@ import {
   subscribeToProviderRegistry,
 } from '@/agent/providers/types'
 import { getModelContextWindow } from '@/agent/providers/model-store'
+import { DEFAULT_COMPRESSION_ABSOLUTE_CAP } from '@/agent/loop/context-compression'
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import {
   resolveDefaultModelSelection,
@@ -531,6 +532,22 @@ let lastRevisionlessEventTimestamp = 0
 /** Persist schema version — must match the persist config's `version` below. */
 const SETTINGS_PERSIST_VERSION = 5
 
+/**
+ * Allowed range for the absolute compression cap. The migrate, the setter and
+ * the Settings input all clamp to this range; keep them on one definition so a
+ * hand-edited snapshot cannot land outside what the UI can display.
+ */
+export const COMPRESSION_ABSOLUTE_CAP_MIN = 32_000
+export const COMPRESSION_ABSOLUTE_CAP_MAX = 1_000_000
+
+/** Clamp a cap value into the allowed range (caller checks it is a number). */
+function clampCompressionAbsoluteCap(tokens: number): number {
+  return Math.max(
+    COMPRESSION_ABSOLUTE_CAP_MIN,
+    Math.min(COMPRESSION_ABSOLUTE_CAP_MAX, Math.round(tokens)),
+  )
+}
+
 /** True when persist middleware writes to storage are currently suppressed. */
 function persistWritesSuppressed(): boolean {
   return suppressPersistWrites > 0
@@ -991,7 +1008,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       maxTokens: 4096,
       maxIterations: 20,
       compressionAbsoluteCapEnabled: true,
-      compressionAbsoluteCap: 200_000,
+      compressionAbsoluteCap: DEFAULT_COMPRESSION_ABSOLUTE_CAP,
       // First-run defaults (v4): thinking ON at 'high'. Existing installs keep
       // their persisted values — the persist migrate (version < 4) restores
       // whatever was stored, so these defaults only apply to fresh installs.
@@ -1224,9 +1241,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // A cleared/non-numeric number input must keep the previous value, not
         // poison the setting with NaN.
         if (!Number.isFinite(compressionAbsoluteCap)) return
-        set({
-          compressionAbsoluteCap: Math.max(32_000, Math.min(1_000_000, Math.round(compressionAbsoluteCap))),
-        })
+        set({ compressionAbsoluteCap: clampCompressionAbsoluteCap(compressionAbsoluteCap) })
       },
       setMaxIterations: (maxIterations) =>
         set({
@@ -1773,8 +1788,8 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           // must not silently become the most aggressive cap).
           const rawCap = Number(next.compressionAbsoluteCap)
           next.compressionAbsoluteCap = Number.isFinite(rawCap) && rawCap > 0
-            ? Math.max(32_000, Math.min(1_000_000, Math.round(rawCap)))
-            : 200_000
+            ? clampCompressionAbsoluteCap(rawCap)
+            : DEFAULT_COMPRESSION_ABSOLUTE_CAP
           next.compressionAbsoluteCapEnabled = next.compressionAbsoluteCapEnabled !== false
         }
         return next as unknown as PersistedSettingsState
