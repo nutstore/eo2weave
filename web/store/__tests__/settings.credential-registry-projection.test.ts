@@ -74,6 +74,22 @@ describe('credential registry projection', () => {
     expect(credentialRegistry.getState('openai').kind).toBe('temporary')
   })
 
+  // The seed commits `temporary` for a returning user (access expired, refresh
+  // live). The projection must leave the UI neutral but NOT loading — that is
+  // the whole point of preferring temporary over unknown (#281).
+  it('projects a temporary gateway verdict as neutral-but-loaded', async () => {
+    const { credentialRegistry, useSettingsStore } = await setup()
+    useSettingsStore.setState({ providerType: 'llm-gateway', modelName: 'gw-model' })
+
+    credentialRegistry.commit('llm-gateway', { kind: 'temporary' })
+
+    expect(useSettingsStore.getState()).toMatchObject({
+      hasApiKey: false,
+      hasApiKeyLoaded: true,
+      modelCredentialStatus: 'unknown',
+    })
+  })
+
   it('routes compatibility writes through the registry', async () => {
     const { credentialRegistry, useSettingsStore } = await setup()
     useSettingsStore.setState({ providerType: 'openai' })
