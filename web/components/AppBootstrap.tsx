@@ -383,7 +383,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       let gatewayRestoreVersion: number | undefined
       let gatewayRestoreGeneration: number | undefined
       try {
-        const { registerLLMGatewayProvider, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, applyGatewayCredentialOutcome, isGatewayCredentialOutcomeCurrent } = await import('@/agent/providers/llm-gateway-provider')
+        const { registerLLMGatewayProvider, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayBaseURL, getLLMGatewayClientId, applyGatewayCredentialOutcome, isGatewayCredentialOutcomeCurrent } = await import('@/agent/providers/llm-gateway-provider')
         const { resolveGatewayDispatchCredential, getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
         registerLLMGatewayProvider()
         const clientId = getLLMGatewayClientId()
@@ -404,9 +404,6 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
           if (resolved.ok) {
             const tokenGeneration = getGatewayAuthSessionGeneration()
             gatewayRestoreGeneration = tokenGeneration
-            // Persist refreshed access_token back so SQLite stays in sync
-            const { saveApiKey } = await import('@/security/api-key-store')
-            await saveApiKey(getLLMGatewayApiKeyProviderKey(), resolved.accessToken)
             await updateGatewayModels(resolved.accessToken, tokenGeneration)
           } else if (isGatewayCredentialOutcomeCurrent(resolvedGeneration, getGatewayAuthSessionGeneration(), resolved.kind)) {
             // Each verdict owns a different write (see
@@ -415,6 +412,14 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
             // with a 'failed' catalog so Retry / re-login remain reachable
             // (#224) — removal is reserved for explicit logout.
             applyGatewayCredentialOutcome(resolved.kind, gatewayRestoreVersion)
+            if (resolved.kind === 'temporary') {
+              // A temporary failure has no credential verdict, but bootstrap
+              // must still finish loading. Dispatch can retry the session.
+              const { useSettingsStore } = await import('@/store/settings.store')
+              if (useSettingsStore.getState().providerType === 'llm-gateway') {
+                await useSettingsStore.getState().checkHasApiKey({ flush: true })
+              }
+            }
           }
         } else if ((await import('@/store/settings.store')).useSettingsStore.getState().providerType === 'llm-gateway') {
           // The gateway can never register here (region-gated off on global

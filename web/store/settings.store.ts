@@ -9,6 +9,7 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import type { LLMProviderType } from '@/agent/providers/types'
+import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
 import {
   isCustomProviderType,
   isPotentiallyDynamicProviderType,
@@ -829,8 +830,14 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
   // Handle llm-gateway separately (uses different API key storage)
   if (llmGatewayProviderKey) {
     try {
-      const gwMod = await import('@/agent/providers/llm-gateway-provider')
-      const gwKey = await loadApiKey(gwMod.getLLMGatewayApiKeyProviderKey())
+      // Availability comes from the authoritative session (#277): the api-key
+      // shadow is a best-effort mirror, so discovery must not depend on it.
+      // 'unknown' = nothing resolved in this tab yet — keep the provider
+      // visible (with its registry status) instead of dropping the user's
+      // persisted gateway selection.
+      const { getGatewayCredentialStatus: gwStatusFn } = await import('@/agent/providers/llm-gateway-auth')
+      const gwStatus = gwStatusFn()
+      const gwKey = gwStatus === 'valid' || gwStatus === 'expired' || gwStatus === 'unknown'
       // A registered gateway WITHOUT its saved access-token shadow yet
       // (startup: registration lands before AppBootstrap persists the
       // restored token) must still appear in discovery with its registry status
@@ -1275,7 +1282,13 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         void persistSnapshotWatermarksToDb(high, nextLow)
       },
       setHasApiKey: (hasApiKey) => set({ hasApiKey }),
-      setModelCredentialStatus: (modelCredentialStatus) => set({ modelCredentialStatus }),
+      setModelCredentialStatus: (modelCredentialStatus) => set((state) => ({
+        modelCredentialStatus,
+        ...(state.providerType === 'llm-gateway' &&
+        (modelCredentialStatus === 'valid' || modelCredentialStatus === 'expired' || modelCredentialStatus === 'missing')
+          ? { hasApiKey: modelCredentialStatus === 'valid', hasApiKeyLoaded: true }
+          : {}),
+      })),
       setModelCredentialStatusError: (modelCredentialStatusError) =>
         set({ modelCredentialStatusError }),
       setAgentLoopNotificationsEnabled: (enabled) => {
@@ -1292,10 +1305,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const config = getProviderConfig(state.providerType)
         if (!config) return null
 
-        // llm-gateway uses a dedicated API key storage key
-        const apiKeyProviderKey = state.providerType === 'llm-gateway'
-          ? '__llm_gateway_token__'
-          : state.providerType
+        // The gateway has no key of its own (#277). This alias is a marker, not
+        // a storage key: generic "load the key for this provider" call sites
+        // hand it to `resolveDispatchApiKey`, which resolves the shared session
+        // instead of reading the store.
+        const apiKeyProviderKey =
+          state.providerType === 'llm-gateway'
+            ? GATEWAY_CREDENTIAL_KEY_ALIAS
+            : state.providerType
 
         return {
           apiKeyProviderKey,
@@ -1364,6 +1381,32 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         }
 
         const providerKey = effective.apiKeyProviderKey
+
+        // llm-gateway: availability comes from the AUTHORITATIVE session, not
+        // from the api-key shadow (#277). The shadow is a best-effort
+        // durability copy written by login / refresh / boot restore; when that
+        // write fails the shadow is missing while the session is perfectly
+        // valid (documented at resolveGatewayDispatchCredential), and gating a
+        // send on it produced "configure your API Key" for a logged-in user.
+        // getGatewayCredentialStatus() is the verdict the dispatch resolver
+        // maintains, and it is synchronous — no extra await on the send path.
+        if (state.providerType === 'llm-gateway') {
+          const { getGatewayCredentialStatus } = await import('@/agent/providers/llm-gateway-auth')
+          const status = getGatewayCredentialStatus()
+          if (status === 'unknown') {
+            // Unknown is not a configured credential. Preserve a completed
+            // flush on subsequent checks so startup cannot return to loading.
+            if (get().providerType === 'llm-gateway') {
+              set({ hasApiKey: false, ...(options?.flush ? { hasApiKeyLoaded: true } : {}) })
+            }
+            return false
+          }
+          const hasKey = status === 'valid'
+          if (get().providerType === 'llm-gateway') {
+            set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
+          }
+          return hasKey
+        }
 
         // Return cached value if available and not stale.
         // `hasApiKeyLoaded` was set during the initial population that
@@ -1513,6 +1556,9 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const updates: Partial<SettingsState> = {
           providerType: newProviderType,
           modelName: newModelName,
+          ...(!credentialStillApplies && newProviderType === 'llm-gateway'
+            ? { hasApiKey: false, hasApiKeyLoaded: false }
+            : {}),
           ...(credentialStillApplies ||
             (state.modelCredentialStatus !== 'expired' &&
               state.modelCredentialStatus !== 'unauthorized')
@@ -1537,14 +1583,13 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // select-model step as soon as they pick their default model.
         apiKeyCache.delete(newProviderType)
         apiKeyCachePromise.delete(newProviderType)
-        // …but the cache key is the provider's CREDENTIAL key, not its id:
-        // llm-gateway caches its verdict under `__llm_gateway_token__`, so
-        // deleting `newProviderType` alone left a stale "no key" verdict
-        // behind. Switching away and back then replayed it without reading
-        // the (meanwhile restored) credential, and the send gate kept
-        // refusing with "configure your API Key" (#277).
+        // The cache key is the provider's CREDENTIAL key, not its id, so drop
+        // whatever the new selection resolves to as well (it may have been
+        // cached while the credential was unreadable — #277).
         get().invalidateApiKeyCache()
-        void get().checkHasApiKey()
+        void get().checkHasApiKey(
+          newProviderType === 'llm-gateway' && !credentialStillApplies ? { flush: true } : undefined,
+        )
       },
 
       ensureValidModelSelection: (providers, options = {}) => {

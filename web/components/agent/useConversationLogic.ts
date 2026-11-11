@@ -27,6 +27,7 @@ import { removeAssetsFromOPFS, writePendingAssetsToOPFS } from '@/services/asset
 import { performOcr, isOcrCompatibleImage, fileToBase64 } from '@/services/ocr.service'
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
 import { isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
+import { getGatewayCredentialStatus } from '@/agent/providers/llm-gateway-auth'
 import { useInputDraftStore } from '@/store/input-draft.store'
 import { VIRTUALIZATION_THRESHOLD } from '@/components/agent/virtualization-constants'
 import { useActiveConversation } from './useActiveConversation'
@@ -433,11 +434,18 @@ export function useConversationLogic() {
       // Precedence (Sourcery round 5): the unregistered-provider guard wins
       // over the expired-credential toast — when the provider itself is
       // gone, the gateway re-login flow is the wrong guidance.
-      if (providerUnregistered || !hasKey || modelCredentialStatus === 'expired' || !pType || !mName) {
+      // The gateway's status may be unknown while a session is being restored,
+      // or newer than the generic key flag after a successful dispatch. Let
+      // the dispatch resolver make the authoritative decision in both cases.
+      const gatewayStatus = pType === 'llm-gateway' ? getGatewayCredentialStatus() : null
+      const missingCredential = gatewayStatus
+        ? gatewayStatus === 'missing' || gatewayStatus === 'expired'
+        : !hasKey
+      if (providerUnregistered || missingCredential || modelCredentialStatus === 'expired' || !pType || !mName) {
         toast.error(
-          providerUnregistered
+          providerUnregistered || gatewayStatus === 'missing'
             ? t('conversation.toast.providerReauthRequired')
-            : modelCredentialStatus === 'expired'
+            : modelCredentialStatus === 'expired' || gatewayStatus === 'expired'
               ? t('conversation.toast.gatewayReauthRequired')
               : !pType || !mName
                 ? t('conversation.toast.noModel')

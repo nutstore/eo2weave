@@ -105,7 +105,11 @@ export async function sendChangeReviewToConversation(changes: FileChange[]): Pro
   }
 
   const settings = useSettingsStore.getState()
-  if (!settings.hasApiKey) {
+  // Only a COMPLETED check can say the credential is missing: before that the
+  // store reports `hasApiKey: false` merely because nothing has resolved yet,
+  // and "send changes for review" fired from a fresh tab would tell the user to
+  // configure a key they already have (#277).
+  if (settings.hasApiKeyLoaded && !settings.hasApiKey) {
     throw new Error(ReviewErrorKey.PLEASE_CONFIGURE_API_KEY)
   }
 

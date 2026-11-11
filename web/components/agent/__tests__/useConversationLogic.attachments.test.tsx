@@ -103,23 +103,24 @@ vi.mock('@/store/conversation-runtime.store', () => {
   return { useConversationRuntimeStore }
 })
 
+const { settingsState, gatewayStatus } = vi.hoisted(() => ({
+  settingsState: {
+    hasApiKey: true, hasApiKeyLoaded: true, enableThinking: false,
+    thinkingLevel: 'medium', modelName: 'gpt-5.4', providerType: 'openai',
+    modelCredentialStatus: 'unknown', setEnableThinking: vi.fn(), setThinkingLevel: vi.fn(),
+  },
+  gatewayStatus: { value: 'unknown' as 'unknown' | 'valid' | 'expired' | 'missing' },
+}))
+
+vi.mock('@/agent/providers/llm-gateway-auth', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/agent/providers/llm-gateway-auth')>(),
+  getGatewayCredentialStatus: () => gatewayStatus.value,
+}))
+
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: Object.assign(
-    (selector?: (s: Record<string, unknown>) => unknown) =>
-      selector?.({ hasApiKey: true, hasApiKeyLoaded: true, enableThinking: false, thinkingLevel: 'medium' }) ?? {},
-    {
-      getState: () => ({
-        hasApiKey: true,
-        hasApiKeyLoaded: true,
-        enableThinking: false,
-        thinkingLevel: 'medium',
-        modelName: 'gpt-5.4',
-        providerType: 'openai',
-        setEnableThinking: vi.fn(),
-        setThinkingLevel: vi.fn(),
-      }),
-      subscribe: vi.fn(),
-    },
+    (selector?: (s: typeof settingsState) => unknown) => selector?.(settingsState) ?? {},
+    { getState: () => settingsState, subscribe: vi.fn() },
   ),
 }))
 
@@ -173,6 +174,8 @@ function resetDraftStore() {
 describe('pending attachment sending', () => {
   beforeEach(() => {
     seedActiveConversation()
+    Object.assign(settingsState, { hasApiKey: true, hasApiKeyLoaded: true, modelName: 'gpt-5.4', providerType: 'openai', modelCredentialStatus: 'unknown' })
+    gatewayStatus.value = 'unknown'
     vi.mocked(conversationStoreModule.getState().updateMessages).mockClear()
     resetDraftStore()
     useAssetStore.getState().clearAll()
@@ -284,6 +287,35 @@ describe('pending attachment sending', () => {
     await act(async () => fail(new Error('write failed')))
     expect(useAssetStore.getState().pendingAssets).toHaveLength(0)
     expect(useAssetStore.getState().deferredAssets[CONV_ID].map((a) => a.name)).toEqual(['first.txt'])
+  })
+
+  it.each([false, true])('sends with an unknown gateway session even if loaded is %s', async (loaded) => {
+    const { registerDynamicProvider } = await import('@/agent/providers/types')
+    registerDynamicProvider('llm-gateway', { baseURL: 'https://gateway.test/v1', modelName: 'model' }, { category: 'custom', displayName: 'Gateway', models: [] })
+    Object.assign(settingsState, { providerType: 'llm-gateway', modelName: 'model', hasApiKey: false, hasApiKeyLoaded: loaded })
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => { await result.current.sendMessage('hello') })
+    expect(conversationStoreModule.getState().updateMessages).toHaveBeenCalled()
+  })
+
+  it('sends with a valid gateway session even when the old key state is false', async () => {
+    const { registerDynamicProvider } = await import('@/agent/providers/types')
+    registerDynamicProvider('llm-gateway', { baseURL: 'https://gateway.test/v1', modelName: 'model' }, { category: 'custom', displayName: 'Gateway', models: [] })
+    Object.assign(settingsState, { providerType: 'llm-gateway', modelName: 'model', hasApiKey: false, hasApiKeyLoaded: true })
+    gatewayStatus.value = 'valid'
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => { await result.current.sendMessage('hello') })
+    expect(conversationStoreModule.getState().updateMessages).toHaveBeenCalled()
+  })
+
+  it('does not send with a missing gateway session even if the old key state is true', async () => {
+    const { registerDynamicProvider } = await import('@/agent/providers/types')
+    registerDynamicProvider('llm-gateway', { baseURL: 'https://gateway.test/v1', modelName: 'model' }, { category: 'custom', displayName: 'Gateway', models: [] })
+    Object.assign(settingsState, { providerType: 'llm-gateway', modelName: 'model', hasApiKey: true, hasApiKeyLoaded: true })
+    gatewayStatus.value = 'missing'
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => { await result.current.sendMessage('hello') })
+    expect(conversationStoreModule.getState().updateMessages).not.toHaveBeenCalled()
   })
 
 })

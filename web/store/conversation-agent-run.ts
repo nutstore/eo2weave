@@ -857,7 +857,9 @@ export async function runAgentImpl(
         // confirmed absence/expiry (offering login), and surface transient
         // storage/refresh failures as retryable errors without clearing a
         // possibly valid session.
-        let apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
+        let apiKey = providerType === 'llm-gateway'
+          ? null
+          : await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
         if (providerType === 'llm-gateway') {
           const { resolveGatewayDispatchCredential } =
             await import('@/agent/providers/llm-gateway-auth')
@@ -1499,9 +1501,22 @@ export async function runAgentImpl(
             const runWasCancelled = get().cancelledRunIds.has(runId)
             if (!runWasCancelled) {
               try {
-                const apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
-                if (apiKey) {
-                  const suggestion = await generateFollowUp(targetMessages, providerType, apiKey)
+                // Same credential authority as every other dispatch path
+                // (#277): a raw `load` returns null for the gateway, whose
+                // credential is the shared session, so gating on it silently
+                // disabled follow-up suggestions for Nutstore AI users.
+                const { resolveDispatchApiKey } =
+                  await import('@/agent/providers/gateway-dispatch-key')
+                const credential = await resolveDispatchApiKey(
+                  providerConfig.apiKeyProviderKey,
+                  () => apiKeyRepo.load(providerConfig.apiKeyProviderKey)
+                )
+                if (credential.ok) {
+                  const suggestion = await generateFollowUp(
+                    targetMessages,
+                    providerType,
+                    credential.apiKey
+                  )
                   if (suggestion) {
                     get().setSuggestedFollowUp(conversationId, suggestion)
                   }

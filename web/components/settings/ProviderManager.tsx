@@ -52,8 +52,8 @@ import { useT } from '@/i18n'
 import { useI18nStore } from '@/i18n/store'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
 import { BrandInput, BrandButton, BrandDialog, BrandDialogContent, BrandDialogHeader, BrandDialogBody, BrandDialogFooter, BrandDialogTitle, BrandDialogClose } from '@creatorweave/ui'
-import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayApiKeyProviderKey, getLLMGatewayBaseURL, getLLMGatewayClientId, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
-import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, getGatewayAuthSessionGeneration, hasStoredTokens, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/llm-gateway-auth'
+import { LLM_GATEWAY_PROVIDER_TYPE, getLLMGatewayBaseURL, getLLMGatewayClientId, isLLMGatewayConfigured, fetchGatewayRateLimits, type RateLimitsResponse } from '@/agent/providers/llm-gateway-provider'
+import { performDeviceCodeFlow, persistDeviceLoginTokens, logoutGateway as logoutGatewayAuth, getValidAccessToken, getGatewayAuthSessionGeneration, hasStoredTokens, hasStoredSession, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/llm-gateway-auth'
 import { withGatewayCredentialLock } from '@/agent/providers/gateway-credential-lock'
 import { applyGatewayLoginTokens, MODEL_DISCOVERY_TIMEOUT_MS } from '@/lib/gateway-login'
 import type { AuthState, CreditPackage } from '@/agent/providers/llm-gateway-auth'
@@ -1254,7 +1254,10 @@ export function LLMGatewayCard({
 }) {
   const t = useT()
   const { triggerProviderRefresh, pinModel, unpinModel, removePinnedModels, markPinnedModelsSeen, getStalePinnedModels, pinnedModelsByProvider, modelCredentialStatus, modelCredentialStatusError, setModelCredentialStatusError } = useSettingsStore()
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  // Seed from the synchronous pair so a logged-in user never renders the
+  // logged-out card for a frame; the effect below upgrades this to the
+  // session-aware answer (which also counts the durable refresh record).
+  const [isLoggedIn, setIsLoggedIn] = useState(() => hasStoredTokens())
   const [allModels, setAllModels] = useState<Array<{ id: string; name: string }>>([])
   /**
    * How the card's model list was obtained. 'failed' means the /models fetch
@@ -1356,9 +1359,11 @@ export function LLMGatewayCard({
     let cancelled = false
     ;(async () => {
       try {
-        const { loadApiKey } = await import('@/security/api-key-store')
-        const key = await loadApiKey(getLLMGatewayApiKeyProviderKey())
-        if (!cancelled) setIsLoggedIn(!!key)
+        // The session IS the token pair (#277), plus the durable refresh
+        // record that the next dispatch would restore it from — a browser
+        // that evicted localStorage is still logged in.
+        const loggedIn = await hasStoredSession()
+        if (!cancelled) setIsLoggedIn(loggedIn)
       } catch (error) {
         if (cancelled) return
         console.error('[LLMGatewayCard] Failed to check login status:', error)
@@ -1570,9 +1575,12 @@ export function LLMGatewayCard({
       // in-lock re-read and we keep its verdict instead of overwriting it
       // with our confirmation.
       await withGatewayCredentialLock(async () => {
-        const { loadApiKey: loadSharedKey } = await import('@/security/api-key-store')
-        const sharedShadowKey = await loadSharedKey(getLLMGatewayApiKeyProviderKey())
-        const sharedCredentialAlive = hasStoredTokens() && !!sharedShadowKey
+        // The shared credential is the token pair alone (#277): `clearStoredTokens`
+        // clears it under this same lock, which is what orders a concurrent
+        // logout against this commit. The api-key shadow used to be an extra
+        // term here, but it is a best-effort mirror — requiring it turned a
+        // login whose shadow write failed into "no login".
+        const sharedCredentialAlive = hasStoredTokens()
         if (!sharedCredentialAlive) {
           staleAfterLock = true
           return
@@ -1617,7 +1625,6 @@ export function LLMGatewayCard({
     // api-key row reads as a dead session — an explicit logout must not
     // flash the "login expired" re-login state.
     setIsLoggedIn(false)
-    const keyId = getLLMGatewayApiKeyProviderKey()
     // A purge failure (storage outage, timed-out key-store op) rejects —
     // a surviving refresh-token backup can resurrect the session, so the
     // logout is NOT complete. Surface it as a retryable failure instead of
@@ -1650,11 +1657,11 @@ export function LLMGatewayCard({
       // survivor keeps the card logged in.
       try {
         const { loadApiKey } = await import('@/security/api-key-store')
-        const [accessKey, refreshBackup] = await Promise.all([
-          loadApiKey(keyId),
-          loadApiKey(LLM_GATEWAY_REFRESH_TOKEN_KEY_ID),
-        ])
-        setIsLoggedIn(!!(accessKey || refreshBackup))
+        // The refresh-token record is the gateway's only durable credential
+        // state (#277): a surviving record means a refresh can still
+        // resurrect the session, so the card must keep the logout control.
+        const refreshBackup = await loadApiKey(LLM_GATEWAY_REFRESH_TOKEN_KEY_ID)
+        setIsLoggedIn(!!refreshBackup)
       } catch {
         // The key reads failed too — keep isLoggedIn false; the banner below
         // still surfaces the purge failure.
@@ -1666,7 +1673,6 @@ export function LLMGatewayCard({
       toast.error(message)
       return
     }
-    useSettingsStore.getState().invalidateApiKeyCache(keyId)
     // Session-freshness guard: a login may have committed in another tab
     // between logoutGatewayAuth() releasing the credential lock and this
     // point (device-flow approval takes minutes, so the window is real).
@@ -1674,13 +1680,13 @@ export function LLMGatewayCard({
     // modelCredentialStatus='missing', empty model list) would corrupt a
     // live session. getGatewayCredentialStatus() is a module-local mirror
     // that another tab's commit can leave stale in THIS tab — re-derive the
-    // freshness verdict from the LIVE shared key store instead: the
-    // api-key-store access-token shadow IS what a login commits and what a
-    // logout purges, so a surviving shadow after our purge means a newer
-    // login won; leave its state alone. (The purge above already awaited
-    // the credential lock, so this read is ordered after our own commit.)
-    const postLogoutKey = await loadApiKey(keyId)
-    if (postLogoutKey) {
+    // freshness verdict from the LIVE shared key store instead: the SQLite
+    // refresh-token record is what a login writes and what a logout purges
+    // (#277), so a surviving record after our purge means a newer login won;
+    // leave its state alone. (The purge above already awaited the credential
+    // lock, so this read is ordered after our own commit.)
+    const postLogoutRecord = await loadApiKey(LLM_GATEWAY_REFRESH_TOKEN_KEY_ID)
+    if (postLogoutRecord) {
       // A newer login committed after the logout: treat this tab like the
       // post-login state instead of forcing logged-out UI over it.
       setIsLoggedIn(true)
@@ -1707,9 +1713,9 @@ export function LLMGatewayCard({
     // cannot come from a concurrent login (its commit repopulates it inside
     // this lock); clearing our own logged-out UI remains correct for it.
     await withGatewayCredentialLock(async () => {
-      const { loadApiKey: loadSharedKey } = await import('@/security/api-key-store')
-      const sharedShadowKey = await loadSharedKey(getLLMGatewayApiKeyProviderKey())
-      const concurrentLoginAlive = hasStoredTokens() && !!sharedShadowKey
+      // Same ordering as the login guard: the token pair is the shared
+      // credential state a concurrent login commits and a logout purges.
+      const concurrentLoginAlive = hasStoredTokens()
       if (concurrentLoginAlive) {
         logoutSuperseded = true
         return

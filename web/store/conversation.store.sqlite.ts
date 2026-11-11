@@ -1554,7 +1554,16 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       }
 
       const apiKeyRepo = getApiKeyRepository()
-      const apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
+      // The gateway's credential is the shared session (#277).
+      const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
+      const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, () => apiKeyRepo.load(providerConfig.apiKeyProviderKey))
+      const apiKey = credential.ok ? credential.apiKey : null
+      // A gateway without a live session is NOT keyless: sending would reach the
+      // endpoint with no Authorization header (#172 finding 4).
+      const { isGatewayCredentialKey } = await import('@/agent/providers/gateway-credential-alias')
+      if (!credential.ok && isGatewayCredentialKey(providerConfig.apiKeyProviderKey)) {
+        return { ok: false, reason: 'no_api_key' }
+      }
       // Custom providers may run keyless (e.g. Ollama) — an absent key only
       // blocks title generation for built-in providers.
       if (!apiKey && !isCustomProviderType(providerType)) {
@@ -1812,7 +1821,9 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       }
 
       const apiKeyRepo = getApiKeyRepository()
-      const apiKey = await apiKeyRepo.load(providerConfig.apiKeyProviderKey)
+      const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
+      const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, () => apiKeyRepo.load(providerConfig.apiKeyProviderKey))
+      const apiKey = credential.ok ? credential.apiKey : null
       if (!apiKey) {
         toast.error(i18nText('conversation.toast.noApiKey', '未配置 API Key'))
         return

@@ -287,7 +287,18 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
     // (e.g. Ollama at localhost:11434/v1) — an absent key is fine for them.
     const { getApiKeyRepository } = await import('@/sqlite/repositories/api-key.repository')
     const apiKeyRepo = getApiKeyRepository()
-    const apiKey = await apiKeyRepo.load(effectiveConfig?.apiKeyProviderKey ?? '')
+    const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
+    const credential = await resolveDispatchApiKey(
+      effectiveConfig?.apiKeyProviderKey,
+      () => apiKeyRepo.load(effectiveConfig?.apiKeyProviderKey ?? ''),
+    )
+    if (!credential.ok && providerType === 'llm-gateway') {
+      toast.error(t(credential.kind === 'temporary'
+        ? 'conversation.error.gatewayCredentialTemporary'
+        : 'conversation.toast.gatewayReauthRequired'))
+      return
+    }
+    const apiKey = credential.ok ? credential.apiKey : null
     if (!apiKey && !isCustomProviderType(providerType)) {
       toast.error(t('workflowEditor.toast.apiKeyRequired'))
       return
