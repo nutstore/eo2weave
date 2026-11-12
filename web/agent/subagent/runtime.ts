@@ -1395,7 +1395,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   private pruneExpiredQueue(task: SubagentTaskInternal, now = Date.now()): void {
     if (task.queue.length === 0) return
     const maxAge = task.message_timeout_ms
-    task.queue = task.queue.filter((item) => now - item.enqueued_at <= maxAge)
+    // Accepted background executions retain their identity until they run or are explicitly stopped.
+    task.queue = task.queue.filter((item) => item.execution?.isAsync || now - item.enqueued_at <= maxAge)
   }
 
   private armRunTimeout(task: SubagentTaskInternal, lifecycleVersion: number): void {
@@ -1571,6 +1572,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
 
   private makeCompletion(task: SubagentTaskInternal, execution: SubagentExecution): SubagentCompletion {
     const id = `${task.agentId}:${execution.executionId}`
+    const priorMessageIds = execution.priorMessageIds
+    const executionMessages = priorMessageIds
+      ? task.messages.filter((message) => !priorMessageIds.has(message.id))
+      : []
     return {
       id, agentId: task.agentId, executionId: execution.executionId,
       conversationId: execution.conversationId, projectId: execution.continuation?.projectId ?? execution.deps.baseToolContext.projectId,
@@ -1578,7 +1583,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       notificationMessageId: `subagent-completion:${id}`,
       status: execution.suppressed || task.stopped || !execution.isAsync ? 'suppressed' : 'pending',
       taskStatus: task.status, description: task.description, name: task.name,
-      result: this.extractLatestAssistantContent(task.messages), messages: structuredClone(task.messages),
+      result: this.extractLatestAssistantContent(executionMessages),
+      messages: structuredClone(task.messages),
       usage: task.usage, error: task.error, changedPaths: [...execution.changedPaths],
       createdAt: Date.now(), updatedAt: Date.now(),
     }
@@ -1715,7 +1721,11 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         if (revived.status !== 'pending' && revived.status !== 'running') {
           const { getSubagentCompletionRepository } = await this.repositories
           const persisted = item.execution ? await getSubagentCompletionRepository().find(`${item.agentId}:${execution.executionId}`) : null
-          const completion = persisted ?? { ...this.makeCompletion(revived, execution), status: 'suppressed' as const }
+          const completion = persisted ?? {
+            ...this.makeCompletion(revived, execution),
+            result: revived.status === 'completed' ? this.extractLatestAssistantContent(revived.messages) : '',
+            status: 'suppressed' as const,
+          }
           execution.completion = completion
           this.completions.set(completion.id, completion)
         }

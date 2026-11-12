@@ -731,6 +731,52 @@ describe('subagent runtime', () => {
     await vi.advanceTimersByTimeAsync(0)
   })
 
+  it.each(['', 'partial follow-up answer'])('scopes a failed follow-up result to its own output: %j', async (output) => {
+    const runtime = createRuntime(`async-failed-followup-${output.length}`, [])
+    hoisted.setRunImpl(async (messages) => [...messages, createAssistantMessage('earlier successful answer')])
+    const receipt = await runtime.start({ description: 'task', prompt: 'first' })
+    await vi.advanceTimersByTimeAsync(0)
+    hoisted.setRunImpl(async (_messages, _config, callbacks) => {
+      if (output) {
+        callbacks.onMessageStart()
+        callbacks.onContentStart()
+        callbacks.onContentDelta(output)
+      }
+      throw new Error('follow-up provider failure')
+    })
+    await runtime.resume({ agentId: receipt.agentId, prompt: 'follow-up' })
+    await vi.advanceTimersByTimeAsync(0)
+    const result = await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })
+    expect(result.results).toEqual([expect.objectContaining({ taskStatus: 'failed', result: output,
+      error: { code: 'SUBAGENT_FAILED', message: 'follow-up provider failure' } })])
+    const completion = hoisted.repo.finishExecution.mock.calls[1][0].completion
+    expect(completion.result).toBe(output)
+    expect(completion.messages).toEqual(expect.arrayContaining([expect.objectContaining({ content: 'earlier successful answer' })]))
+  })
+
+  it('retains an accepted async follow-up while the current execution runs beyond the legacy queue timeout', async () => {
+    const finishes: Array<(messages: Message[]) => void> = []
+    const prompts: string[] = []
+    hoisted.setRunImpl((messages) => {
+      prompts.push(messages.at(-1)?.content || '')
+      return new Promise((resolve) => { finishes.push(resolve) })
+    })
+    const runtime = createRuntime('async-durable-queue-timeout', [])
+    const receipt = await runtime.start({ description: 'long task', prompt: 'first' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await runtime.sendMessage({ to: receipt.agentId, message: 'durable follow-up' })).toMatchObject({ success: true })
+    await vi.advanceTimersByTimeAsync(300001)
+    finishes[0]([createAssistantMessage('first answer')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(prompts).toEqual(['first', 'durable follow-up'])
+    finishes[1]([createAssistantMessage('follow-up answer')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })).toMatchObject({
+      results: [{ taskStatus: 'completed', result: 'follow-up answer' }], pending: [], timed_out: false,
+    })
+    expect(hoisted.repo.finishExecution).toHaveBeenCalledTimes(2)
+  })
+
   it('spawn blocks until completion and returns result', async () => {
     const notifications: (SubagentTaskNotification | SubagentStepNotification)[] = []
     const runtime = createRuntime(`workspace-blocking-${Date.now()}`, notifications)
