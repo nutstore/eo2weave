@@ -1,3 +1,5 @@
+import { SubagentStreamTrace } from './stream-trace'
+import type { DraftAssistantEvent } from '@/store/draft-assistant'
 import type {
   SubagentAcceptedReceipt, SubagentBatchAcceptance, SubagentCompletion,
   SubagentContinuation, SubagentExecutionMetadata, WaitSubagentsInput, WaitSubagentsResult,
@@ -33,6 +35,7 @@ type SubagentExecution = SubagentExecutionMetadata & {
   terminalPromise?: Promise<void>
   startedAt?: number
   priorMessageIds?: Set<string>
+  trace?: SubagentStreamTrace
 }
 type QueuedSubagentMessage = { message: string; enqueued_at: number; execution?: SubagentExecution }
 type SubagentTaskInternal = {
@@ -59,8 +62,6 @@ type SubagentTaskInternal = {
   loop?: AgentLoop
   /** Tool context owned by the currently executing attempt. */
   toolContext?: ToolContext
-  /** Cached id of the tool call currently receiving streaming arg deltas. */
-  currentToolCallId?: string
   processing: boolean
   processingPromise?: Promise<void>
   stopped: boolean
@@ -131,11 +132,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   private repositories = import('@/sqlite')
   private deps: SubagentRuntimeDeps
   private hydrationPromise: Promise<void>
-  // Streaming buffers for delta accumulation (reasoning, content, tool args)
-  // These accumulate partial deltas before emitting a full snapshot event.
-  private reasoningBuffers = new Map<string, string>()
-  private contentBuffers = new Map<string, string>()
-  private toolArgBuffers = new Map<string, string>()
   private activeExecutionSlots = 0
   private executionWaiters: Array<() => void> = []
   private completionListeners = new Set<() => void>()
@@ -200,7 +196,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (task.processing) return
     task.loop = undefined
     task.toolContext = undefined
-    task.currentToolCallId = undefined
+    if (task.execution) task.execution.trace = undefined
   }
 
   private createExecution(isAsync: boolean): SubagentExecution {
@@ -863,59 +859,79 @@ class SubagentRuntimeImpl implements SubagentRuntime {
 
       try {
         const execution = task.execution
-        const loop = this.ensureLoop(task)
+        const loop = this.ensureLoop(task, execution, runningVersion)
+        const isCurrent = () => this.isCurrentExecution(task, execution, runningVersion)
+        const emitStep = (step: DraftAssistantEvent) => this.emitStep(task, execution, runningVersion, step)
         const userMsg = createUserMessage(queued.message)
         task.messages.push(userMsg)
         await this.appendTranscript(task, userMsg)
         execution.startedAt = Date.now()
         execution.priorMessageIds = new Set(task.messages.map((message) => message.id))
+        const trace = new SubagentStreamTrace(task.messages, execution.executionId)
+        execution.trace = trace
+        let reasoningBuffer = ''
+        let contentBuffer = ''
+        let currentToolCallId: string | undefined
+        const toolArgBuffers = new Map<string, string>()
         const resultMessages = await loop.run(task.messages, {
           onMessagesUpdated: (messages) => {
-            if (task.execution !== execution || task.stopped || task.status !== 'running' || task.lifecycle_version !== runningVersion) return
-            task.messages = structuredClone(messages)
+            if (!isCurrent()) return
+            trace.replaceMessages(messages)
+            task.messages = trace.messages()
             task.last_activity_at = Date.now()
             this.publishTask(task)
             this.persistToSQLite()
           },
-          onMessageStart: () => this.emitStep(task, { type: 'message_start' }),
-          onReasoningStart: () => this.emitStep(task, { type: 'reasoning_start' }),
+          onMessageStart: () => {
+            if (!isCurrent()) return
+            reasoningBuffer = ''
+            contentBuffer = ''
+            emitStep({ type: 'message_start' })
+          },
+          onReasoningStart: () => emitStep({ type: 'reasoning_start' }),
           onReasoningDelta: (delta) => {
-            this.reasoningBuffers.set(task.agentId, (this.reasoningBuffers.get(task.agentId) || '') + delta)
-            this.emitStep(task, {
+            if (!isCurrent()) return
+            reasoningBuffer += delta
+            emitStep({
               type: 'reasoning_stream_sync',
-              reasoning: this.reasoningBuffers.get(task.agentId) || '',
+              reasoning: reasoningBuffer,
             })
           },
           onReasoningComplete: (reasoning) => {
-            this.reasoningBuffers.delete(task.agentId)
-            this.emitStep(task, { type: 'reasoning_complete', reasoning })
+            if (!isCurrent()) return
+            reasoningBuffer = ''
+            emitStep({ type: 'reasoning_complete', reasoning })
           },
-          onContentStart: () => this.emitStep(task, { type: 'content_start' }),
+          onContentStart: () => emitStep({ type: 'content_start' }),
           onContentDelta: (delta) => {
-            this.contentBuffers.set(task.agentId, (this.contentBuffers.get(task.agentId) || '') + delta)
-            this.emitStep(task, {
+            if (!isCurrent()) return
+            contentBuffer += delta
+            emitStep({
               type: 'content_stream_sync',
-              content: this.contentBuffers.get(task.agentId) || '',
+              content: contentBuffer,
             })
           },
           onContentComplete: (content) => {
-            this.contentBuffers.delete(task.agentId)
-            this.emitStep(task, { type: 'content_complete', content })
+            if (!isCurrent()) return
+            contentBuffer = ''
+            emitStep({ type: 'content_complete', content })
           },
           onToolCallStart: (toolCall) => {
+            if (!isCurrent()) return
             // Cache the active tool call id so delta callbacks (which may
             // receive an undefined toolCallId) can find the buffer.
-            task.currentToolCallId = toolCall.id
-            this.emitStep(task, { type: 'tool_start', toolCall })
+            currentToolCallId = toolCall.id
+            emitStep({ type: 'tool_start', toolCall })
           },
           onToolCallDelta: (_index, argsDelta, toolCallId) => {
+            if (!isCurrent()) return
             // Resolve the buffer key from either the explicit id (when the
             // provider tracks it) or the cached one (when the provider passes
             // undefined because there's only one active tool call).
-            const resolvedId = toolCallId || task.currentToolCallId
+            const resolvedId = toolCallId || currentToolCallId
             if (!resolvedId) {
               // No active tool call to attribute deltas to — drop them.
-              this.emitStep(task, {
+              emitStep({
                 type: 'tool_delta',
                 argsDelta,
                 toolCallId: undefined,
@@ -923,10 +939,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
               })
               return
             }
-            const key = `${task.agentId}:${resolvedId}`
-            this.toolArgBuffers.set(key, (this.toolArgBuffers.get(key) || '') + argsDelta)
-            const isCurrentToolDelta = !toolCallId || toolCallId === task.currentToolCallId
-            this.emitStep(task, {
+            const key = resolvedId
+            toolArgBuffers.set(key, (toolArgBuffers.get(key) || '') + argsDelta)
+            const isCurrentToolDelta = !toolCallId || toolCallId === currentToolCallId
+            emitStep({
               type: 'tool_delta',
               argsDelta,
               toolCallId: resolvedId,
@@ -934,23 +950,18 @@ class SubagentRuntimeImpl implements SubagentRuntime {
             })
           },
           onToolCallComplete: (toolCall, result) => {
-            const key = `${task.agentId}:${toolCall.id}`
-            const streamedArgs = this.toolArgBuffers.get(key) || ''
-            this.toolArgBuffers.delete(key)
+            if (!isCurrent()) return
+            const key = toolCall.id
+            const streamedArgs = toolArgBuffers.get(key) || ''
+            toolArgBuffers.delete(key)
             // Build streamedArgsByCallId snapshot for the reducer
             const streamedArgsByCallId: Record<string, string> = {}
-            for (const [k, v] of this.toolArgBuffers) {
-              if (k.startsWith(`${task.agentId}:`)) {
-                streamedArgsByCallId[k.slice(task.agentId.length + 1)] = v
-              }
-            }
+            for (const [callId, args] of toolArgBuffers) streamedArgsByCallId[callId] = args
             if (streamedArgs) streamedArgsByCallId[toolCall.id] = streamedArgs
             // Clear cached id once the tool call is complete so a subsequent
             // onToolCallStart can re-populate it.
-            if (task.currentToolCallId === toolCall.id) {
-              task.currentToolCallId = undefined
-            }
-            this.emitStep(task, {
+            if (currentToolCallId === toolCall.id) currentToolCallId = undefined
+            emitStep({
               type: 'tool_complete',
               toolCall,
               result,
@@ -959,11 +970,12 @@ class SubagentRuntimeImpl implements SubagentRuntime {
               streamedArgsByCallId,
             })
           },
-          onContextCompressionStart: () => this.emitStep(task, { type: 'compression_start' }),
-          onContextCompressionComplete: (payload) => this.emitStep(task, { type: 'compression_complete', mode: payload.mode === 'skip' ? 'skip' : 'compress' }),
+          onContextCompressionStart: () => emitStep({ type: 'compression_start' }),
+          onContextCompressionComplete: (payload) => emitStep({ type: 'compression_complete', mode: payload.mode === 'skip' ? 'skip' : 'compress' }),
         })
-        if (task.execution !== execution || task.stopped || task.status !== 'running' || task.lifecycle_version !== runningVersion) return
-        task.messages = structuredClone(resultMessages)
+        if (!isCurrent()) return
+        trace.replaceMessages(resultMessages)
+        task.messages = trace.messages()
         await this.flushTranscript(task)
         console.info('[SubagentRuntime] processQueue.loopDone', {
           agentId: task.agentId,
@@ -1052,11 +1064,11 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
   }
 
-  private ensureLoop(task: SubagentTaskInternal): AgentLoop {
+  private ensureLoop(task: SubagentTaskInternal, execution: SubagentExecution, lifecycleVersion: number): AgentLoop {
     if (task.loop) return task.loop
 
-    const deps = task.execution?.deps ?? this.deps
-    const contextConfig = task.execution?.contextConfig ?? deps.contextManager.getConfig()
+    const deps = execution.deps
+    const contextConfig = execution.contextConfig
     // Build the role-specific system prompt by appending behavior suffix
     // based on subagent_type. For 'general-purpose', returns base unchanged.
     const finalSystemPrompt = buildSubagentSystemPrompt(
@@ -1079,8 +1091,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       subagentRuntime: undefined,
       readFileState: new Map(),
       onWorkspacePathsChanged: (paths) => {
-        const execution = task.execution
-        if (execution) execution.changedPaths = [...new Set([...execution.changedPaths, ...paths])]
+        if (!this.isCurrentExecution(task, execution, lifecycleVersion)) return
+        execution.changedPaths = [...new Set([...execution.changedPaths, ...paths])]
         deps.baseToolContext.onWorkspacePathsChanged?.(paths)
       },
     }
@@ -1099,6 +1111,9 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       // different cache shard than the parent conversation.
       sessionId: taskContext.workspaceId ?? undefined,
       beforeToolCall: ({ toolName }) => {
+        if (!this.isCurrentExecution(task, execution, lifecycleVersion)) {
+          return { block: true, reason: 'Subagent execution is no longer active.' }
+        }
         if (task.running_notification_armed) {
           task.running_notification_armed = false
           this.emitNotification({
@@ -1464,12 +1479,23 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
   }
 
-  /** Emit a streaming step event from the subagent's internal AgentLoop. */
+  private isCurrentExecution(task: SubagentTaskInternal, execution: SubagentExecution, lifecycleVersion: number): boolean {
+    return !this.disposed && !task.stopped && task.status === 'running' &&
+      task.execution === execution && task.lifecycle_version === lifecycleVersion
+  }
+
+  /** Keep the live and persisted trace synchronized with the owning execution's stream. */
   private emitStep(
     task: SubagentTaskInternal,
-    step: import('@/store/draft-assistant').DraftAssistantEvent
+    execution: SubagentExecution,
+    lifecycleVersion: number,
+    step: DraftAssistantEvent
   ): void {
-    if (task.stopped || task.status !== 'running') return
+    if (!this.isCurrentExecution(task, execution, lifecycleVersion)) return
+    execution.trace?.apply(step)
+    if (execution.trace) task.messages = execution.trace.messages()
+    task.last_activity_at = Date.now()
+    this.publishTask(task, step.type)
     try {
       const notification: SubagentStepNotification = {
         event_type: 'step_notification',
@@ -1478,9 +1504,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         step,
         timestamp: Date.now(),
       }
-      ;(task.execution?.deps ?? this.deps).onNotification?.(notification)
-      task.last_activity_at = Date.now()
-      this.publishTask(task, step.type)
+      execution.deps.onNotification?.(notification)
     } catch (error) {
       // Step notification failures are non-fatal — don't break the subagent
       console.debug('[SubagentRuntime] step notification delivery failed', {
@@ -1796,16 +1820,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   }
 
   private async closeTranscript(task: SubagentTaskInternal): Promise<void> {
-    // Clean up streaming buffers for this task
-    this.reasoningBuffers.delete(task.agentId)
-    this.contentBuffers.delete(task.agentId)
-    // Clean up tool arg buffers (keys are `${agentId}:${callId}`)
-    for (const key of this.toolArgBuffers.keys()) {
-      if (key.startsWith(`${task.agentId}:`)) {
-        this.toolArgBuffers.delete(key)
-      }
-    }
-    task.currentToolCallId = undefined
     if (!task.transcriptWriter) return
     try {
       await task.transcriptWriter.close()
