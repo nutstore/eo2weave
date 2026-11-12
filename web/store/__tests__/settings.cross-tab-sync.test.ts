@@ -10,7 +10,7 @@
  *   payload, not StorageEvent.timeStamp — a stale snapshot must never
  *   overwrite a newer one, even when its event fires LATER.
  * - Schema-version guard: a v4 snapshot from an old tab must not overwrite
- *   this tab's v5 settings AND must not leave the stale v4 snapshot in
+ *   this tab's v6 settings AND must not leave the stale v4 snapshot in
  *   shared localStorage (a reload would migrate it back in).
  * - Credential refresh: applying a peer's provider/model switch must
  *   re-evaluate hasApiKey and reset modelCredentialStatus.
@@ -36,7 +36,7 @@ interface PersistedShape {
   [key: string]: unknown
 }
 
-function seedStorage(value: PersistedShape | null, version = 5, revision?: number) {
+function seedStorage(value: PersistedShape | null, version = 6, revision?: number) {
   if (value === null) {
     localStorage.removeItem(STORAGE_KEY)
   } else {
@@ -55,11 +55,11 @@ function dispatchStorageEvent(timeStamp: number, rawValue: string | null) {
   window.dispatchEvent(event)
 }
 
-/** Snapshot envelope with an embedded write revision, as v5 tabs write it. */
+/** Snapshot envelope with an embedded write revision, as v6 tabs write it. */
 function revSnapshot(
   value: Record<string, unknown>,
   revision: number,
-  version = 5,
+  version = 6,
   writerId?: string,
 ): string {
   const state: Record<string, unknown> = { ...value, __settingsWriteRevision: revision }
@@ -93,7 +93,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
 
     const raw = JSON.stringify({
       state: { temperature: 0.42 },
-      version: 5,
+      version: 6,
     })
     dispatchStorageEvent(performance.now() + 5, raw)
 
@@ -268,7 +268,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     // Tab A (this simulated peer) edited temperature only.
     dispatchStorageEvent(
       performance.now() + 10,
-      revSnapshot({ temperature: 0.5, maxIterations: 20 }, 1, 5, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+      revSnapshot({ temperature: 0.5, maxIterations: 20 }, 1, 6, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
     )
     expect(useSettingsStore.getState().temperature).toBe(0.5)
     expect(useSettingsStore.getState().maxIterations).toBe(20)
@@ -285,7 +285,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     // must survive the merge.
     dispatchStorageEvent(
       performance.now() + 20,
-      revSnapshot({ temperature: 0.4, maxIterations: 20 }, localState.state.__settingsWriteRevision + 1, 5, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+      revSnapshot({ temperature: 0.4, maxIterations: 20 }, localState.state.__settingsWriteRevision + 1, 6, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
     )
     expect(useSettingsStore.getState().temperature).toBe(0.4)
     expect(useSettingsStore.getState().maxIterations).toBe(42)
@@ -300,7 +300,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
 
     dispatchStorageEvent(
       performance.now() + 10,
-      revSnapshot({ temperature: 0.5 }, 1, 5, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+      revSnapshot({ temperature: 0.5 }, 1, 6, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
     )
     expect(useSettingsStore.getState().temperature).toBe(0.5)
 
@@ -314,7 +314,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     // base AND this tab changed it too (0.5 → 0.9): incoming wins.
     dispatchStorageEvent(
       performance.now() + 20,
-      revSnapshot({ temperature: 0.3 }, localState.state.__settingsWriteRevision + 1, 5, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+      revSnapshot({ temperature: 0.3 }, localState.state.__settingsWriteRevision + 1, 6, 'tab-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
     )
     expect(useSettingsStore.getState().temperature).toBe(0.3)
   })
@@ -328,7 +328,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
 
     dispatchStorageEvent(
       performance.now() + 10,
-      revSnapshot({ temperature: 0.5, maxIterations: 33 }, 1, 5, 'tab-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),
+      revSnapshot({ temperature: 0.5, maxIterations: 33 }, 1, 6, 'tab-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),
     )
     // maxIterations:33 is NOT a peer edit relative to any base — with no
     // base the snapshot applies wholesale.
@@ -401,14 +401,14 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     // against any real tab-<uuid>; all-f is maximal and wins against any.)
     dispatchStorageEvent(
       performance.now() + 20,
-      revSnapshot({ temperature: 0.3 }, localState.state.__settingsWriteRevision, 5, 'tab-00000000-0000-0000-0000-000000000000'),
+      revSnapshot({ temperature: 0.3 }, localState.state.__settingsWriteRevision, 6, 'tab-00000000-0000-0000-0000-000000000000'),
     )
     expect(useSettingsStore.getState().temperature).toBe(0.9)
 
     // Peer write at the SAME revision with a HIGHER writer id → applies.
     dispatchStorageEvent(
       performance.now() + 30,
-      revSnapshot({ temperature: 0.3, maxIterations: 77 }, localState.state.__settingsWriteRevision, 5, 'tab-ffffffff-ffff-ffff-ffff-ffffffffffff'),
+      revSnapshot({ temperature: 0.3, maxIterations: 77 }, localState.state.__settingsWriteRevision, 6, 'tab-ffffffff-ffff-ffff-ffff-ffffffffffff'),
     )
     expect(useSettingsStore.getState().temperature).toBe(0.3)
     expect(useSettingsStore.getState().maxIterations).toBe(77)
@@ -433,7 +433,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     })
     // The old tab's write REPLACED the shared value before its event fired —
     // mirror that here, otherwise a regression that removes the repair call
-    // still passes (the assertions would read the untouched v5 seed).
+    // still passes (the assertions would read the untouched v6 seed).
     localStorage.setItem(STORAGE_KEY, staleRaw)
     dispatchStorageEvent(performance.now() + 5, staleRaw)
 
@@ -443,12 +443,12 @@ describe('cross-tab settings sync (round-3 findings)', () => {
 
     // ...AND the stale snapshot must not remain in shared localStorage —
     // a reload would migrate it back in and "newer settings disappear after
-    // reload". The handler must re-persist the current v5 snapshot.
+    // reload". The handler must re-persist the current v6 snapshot.
     const repaired = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as {
       version: number
       state: { enableThinking: boolean; temperature: number }
     }
-    expect(repaired.version).toBe(5)
+    expect(repaired.version).toBe(6)
     expect(repaired.state.enableThinking).toBe(false)
     expect(repaired.state.temperature).toBe(0.7)
   })
@@ -494,7 +494,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     // selection unusable.
     seedStorage({ providerType: 'llm-gateway', modelName: 'gateway-model' })
     const { useSettingsStore } = await importStore()
-    useSettingsStore.setState({ modelCredentialStatus: 'expired' })
+    useSettingsStore.getState().setGatewayCredentialStatus('expired')
 
     dispatchStorageEvent(
       performance.now() + 5,
@@ -510,7 +510,7 @@ describe('cross-tab settings sync (round-3 findings)', () => {
     // the same expired credential, mirroring switchProviderAndModel.
     seedStorage({ providerType: 'llm-gateway', modelName: 'gateway-model' })
     const { useSettingsStore } = await importStore()
-    useSettingsStore.setState({ modelCredentialStatus: 'expired' })
+    useSettingsStore.getState().setGatewayCredentialStatus('expired')
 
     dispatchStorageEvent(
       performance.now() + 5,

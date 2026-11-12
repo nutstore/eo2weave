@@ -9,6 +9,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { credentialRegistry } from '@/agent/providers/credential-state'
 import {
   Eye,
   EyeOff,
@@ -125,7 +126,6 @@ export function ProviderCard({
     removeCustomProvider,
     addCustomProviderModel,
     setCustomProviderApiMode,
-    invalidateApiKeyCache,
     pinnedModelsByProvider,
     pinModel,
     unpinModel,
@@ -364,7 +364,7 @@ export function ProviderCard({
     setHasKey(false)
     setSaved(false)
     setShowKey(false)
-    invalidateApiKeyCache(providerKey)
+    credentialRegistry.commit(providerKey, { kind: 'unknown' })
 
     // Update global hasApiKey state if this is the active provider
     const activeConfig = useSettingsStore.getState().getEffectiveProviderConfig()
@@ -374,7 +374,7 @@ export function ProviderCard({
 
     triggerProviderRefresh()
     toast.success(t('settings.toast.apiKeyCleared'))
-  }, [invalidateApiKeyCache, providerKey, triggerProviderRefresh, t])
+  }, [providerKey, triggerProviderRefresh, t])
 
   const handleSaveKey = useCallback(async () => {
     const trimmedKey = apiKey.trim()
@@ -387,7 +387,7 @@ export function ProviderCard({
     await saveApiKey(providerKey, trimmedKey)
     setHasKey(true)
     setSaved(true)
-    invalidateApiKeyCache(providerKey)
+    credentialRegistry.commit(providerKey, { kind: 'unknown' })
     // Update global hasApiKey state if this is the active provider
     const activeConfig = useSettingsStore.getState().getEffectiveProviderConfig()
     if (activeConfig && activeConfig.apiKeyProviderKey === providerKey) {
@@ -439,7 +439,6 @@ export function ProviderCard({
     apiKey,
     clearApiKey,
     providerKey,
-    invalidateApiKeyCache,
     isCustom,
     customProvider,
     config,
@@ -1594,7 +1593,7 @@ export function LLMGatewayCard({
         // so it cannot overwrite a concurrent logout's 'missing'/'expired'
         // commit (any logout ordering after our re-read would itself hold
         // the lock and commit first).
-        useSettingsStore.getState().setModelCredentialStatus('valid')
+        useSettingsStore.getState().setGatewayCredentialStatus('valid')
         setAuthState({ status: 'idle' })
         // Drop the stale quota/error state so it is refetched with the new token.
         setRateLimitsResult(null)
@@ -1692,10 +1691,6 @@ export function LLMGatewayCard({
       setIsLoggedIn(true)
       return
     }
-    // Re-check from DB so we don't flip hasApiKey off when another provider is active
-    if (useSettingsStore.getState().providerType === LLM_GATEWAY_PROVIDER_TYPE) {
-      useSettingsStore.getState().setHasApiKey(false)
-    }
     // Atomicity: re-read the SHARED credential state and clear the card's
     // logged-in UI INSIDE the credential lock — the same lock the purge in
     // logoutGateway() held and any concurrent login's commit holds — so the
@@ -1727,7 +1722,7 @@ export function LLMGatewayCard({
       // the in-lock re-read above: that guard confirmed the shared
       // credentials were gone (no newer login won) just before this write,
       // and the lock keeps that pairing atomic against a concurrent commit.
-      useSettingsStore.getState().setModelCredentialStatus('missing')
+      useSettingsStore.getState().setGatewayCredentialStatus('missing')
       // Clear cached rate-limits so next login refetches
       setRateLimitsResult(null)
       setRateLimitsError(null)

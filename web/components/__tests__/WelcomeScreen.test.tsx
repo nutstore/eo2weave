@@ -610,6 +610,24 @@ describe('WelcomeScreen', () => {
     }
   })
 
+  it('does not ask for a new API key when credential storage is temporarily unavailable', async () => {
+    const { credentialRegistry } = await import('@/agent/providers/credential-state')
+    credentialRegistry.commit('anthropic', { kind: 'temporary' })
+    settingsState.hasApiKey = false
+    settingsState.providerType = 'anthropic'
+    settingsState.modelName = 'claude-test'
+    const onStart = vi.fn()
+    try {
+      render(<WelcomeScreen onStartConversation={onStart} onOpenSettings={vi.fn()} />)
+      expect(screen.queryByRole('button', { name: 'Skip for now' })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('mock-input-type'))
+      fireEvent.click(screen.getByTestId('mock-send'))
+      expect(onStart).toHaveBeenCalledWith('typed text')
+    } finally {
+      credentialRegistry.reset()
+    }
+  })
+
   it('keeps an expired-credential selection on the ready step and defers blocking to the send path', () => {
     const onStart = vi.fn()
     const onOpenSettings = vi.fn()

@@ -298,17 +298,33 @@ describe('app-tools handlers', () => {
     expect(deps.getConversationStore().runAgent).toHaveBeenCalled()
   })
 
+  it.each(['unknown', 'temporary'] as const)('lets a %s gateway credential reach dispatch for retry', async (kind) => {
+    const { credentialRegistry } = await import('@/agent/providers/credential-state')
+    credentialRegistry.commit('llm-gateway', { kind })
+    try {
+      initAppToolDeps({ ...deps, getSettingsStore: () => ({
+        ...deps.getSettingsStore(), providerType: 'llm-gateway', hasApiKey: false, hasApiKeyLoaded: true,
+      }) })
+      const result = JSON.parse((await handlers.send_message({ conversationId: 'c_1', content: 'retry' })).content)
+      expect(result.status).toBe('started')
+    } finally { credentialRegistry.reset() }
+  })
+
   it('send_message errors without api key', async () => {
-    initAppToolDeps({
-      ...deps,
-      getSettingsStore: () => ({
-        ...deps.getSettingsStore(),
-        hasApiKey: false,
-        hasApiKeyLoaded: true,
-      }),
-    })
-    const r = JSON.parse((await handlers.send_message({ conversationId: 'c_1', content: 'x' })).content)
-    expect(r.error).toMatch(/No API key/)
+    const { credentialRegistry } = await import('@/agent/providers/credential-state')
+    credentialRegistry.commit('codex-oauth', { kind: 'missing' })
+    try {
+      initAppToolDeps({
+        ...deps,
+        getSettingsStore: () => ({
+          ...deps.getSettingsStore(),
+          hasApiKey: false,
+          hasApiKeyLoaded: true,
+        }),
+      })
+      const r = JSON.parse((await handlers.send_message({ conversationId: 'c_1', content: 'x' })).content)
+      expect(r.error).toMatch(/No API key/)
+    } finally { credentialRegistry.reset() }
   })
 
   it('send_message queues when conversation is running', async () => {

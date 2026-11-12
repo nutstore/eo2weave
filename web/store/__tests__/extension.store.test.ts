@@ -5,7 +5,6 @@ const mocks = vi.hoisted(() => ({
   registerDynamicProvider: vi.fn(),
   unregisterDynamicProvider: vi.fn(),
   checkHasApiKey: vi.fn(async () => true),
-  invalidateApiKeyCache: vi.fn(),
   triggerProviderRefresh: vi.fn(),
   isWebBridgeAvailable: vi.fn(() => true),
 }))
@@ -34,7 +33,6 @@ vi.mock('@/store/settings.store', () => ({
       setPinnedModels: vi.fn(),
       markPinnedModelsSeen: vi.fn(),
       triggerProviderRefresh: mocks.triggerProviderRefresh,
-      invalidateApiKeyCache: mocks.invalidateApiKeyCache,
       checkHasApiKey: mocks.checkHasApiKey,
     }),
   },

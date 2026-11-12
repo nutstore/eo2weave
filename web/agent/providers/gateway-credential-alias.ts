@@ -15,7 +15,15 @@
  * Lives in its own leaf module so the auth layer, the settings store and the
  * dispatch helper can share it without an import cycle.
  */
-export const GATEWAY_CREDENTIAL_KEY_ALIAS = '__llm_gateway_token__'
+const GATEWAY_CREDENTIAL_KEY_ALIAS = '__llm_gateway_token__'
+
+/** Durable session backup, owned by gateway auth rather than API-key providers. */
+export const LLM_GATEWAY_REFRESH_TOKEN_KEY_ID = '__llm_gateway_refresh_token__'
+
+/** Internal dispatch sentinel; it is not a credential-store key. */
+export function getGatewayDispatchCredentialKey(): string {
+  return GATEWAY_CREDENTIAL_KEY_ALIAS
+}
 
 export function isGatewayCredentialKey(providerKey: string | null | undefined): boolean {
   // Only the marker: the bare provider type is ALSO a valid id for a

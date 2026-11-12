@@ -9,7 +9,9 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import type { LLMProviderType } from '@/agent/providers/types'
-import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
+import { getGatewayDispatchCredentialKey } from '@/agent/providers/gateway-credential-alias'
+import { credentialRegistry } from '@/agent/providers/credential-state'
+import { API_KEY_CHANGE_STORAGE_KEY, isApiKeyProviderIdentity } from '@/security/api-key-change'
 import {
   isCustomProviderType,
   isPotentiallyDynamicProviderType,
@@ -54,11 +56,6 @@ function localizedProviderDisplayName(providerType: string, fallback: string): s
   const translated = translateStatic(useI18nStore.getState().locale, key)
   return translated !== key ? translated : fallback
 }
-
-// Cache for hasApiKey to avoid repeated database queries
-// This is a soft cache that can be invalidated
-const apiKeyCache = new Map<string, boolean>()
-const apiKeyCachePromise: Map<string, Promise<boolean>> = new Map()
 
 /** API mode for custom providers: chat completions vs OpenAI responses API */
 export type CustomApiMode = 'chat-completions' | 'responses'
@@ -215,7 +212,7 @@ interface SettingsState {
   setSnapshotHighWatermark: (n: number) => void
   setSnapshotLowWatermark: (n: number) => void
   setHasApiKey: (has: boolean) => void
-  setModelCredentialStatus: (status: ModelCredentialStatus) => void
+  setGatewayCredentialStatus: (status: ModelCredentialStatus) => void
   setModelCredentialStatusError: (message: string | null) => void
   setAgentLoopNotificationsEnabled: (enabled: boolean) => void
   setAgentLoopNotificationsOnlyWhenHidden: (onlyWhenHidden: boolean) => void
@@ -233,12 +230,6 @@ interface SettingsState {
    * (see `isPotentiallyDynamicProviderType`).
    */
   checkHasApiKey: (options?: { flush?: boolean }) => Promise<boolean>
-
-  /**
-   * Invalidate the API key cache for a provider
-   * Call this after saving/deleting an API key
-   */
-  invalidateApiKeyCache: (provider?: string) => void
 
   /**
    * Save current model selection to a specific workspace
@@ -531,7 +522,7 @@ function mergeSnapshotOverCurrent(
 let lastRevisionlessEventTimestamp = 0
 
 /** Persist schema version — must match the persist config's `version` below. */
-const SETTINGS_PERSIST_VERSION = 5
+const SETTINGS_PERSIST_VERSION = 6
 
 /**
  * Allowed range for the absolute compression cap. The migrate, the setter and
@@ -1169,8 +1160,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         }
         set(updates as SettingsState)
 
-        apiKeyCache.delete(providerId)
-        apiKeyCachePromise.delete(providerId)
+        credentialRegistry.commit(providerId, { kind: 'unknown' })
       },
 
       addCustomProviderModel: (providerId, model) => {
@@ -1281,14 +1271,14 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // Fire-and-forget: SQLite write failure must not block UI updates.
         void persistSnapshotWatermarksToDb(high, nextLow)
       },
-      setHasApiKey: (hasApiKey) => set({ hasApiKey }),
-      setModelCredentialStatus: (modelCredentialStatus) => set((state) => ({
-        modelCredentialStatus,
-        ...(state.providerType === 'llm-gateway' &&
-        (modelCredentialStatus === 'valid' || modelCredentialStatus === 'expired' || modelCredentialStatus === 'missing')
-          ? { hasApiKey: modelCredentialStatus === 'valid', hasApiKeyLoaded: true }
-          : {}),
-      })),
+      setHasApiKey: (hasApiKey) => {
+        const provider = get().providerType
+        credentialRegistry.commit(provider, { kind: hasApiKey ? 'valid' : 'missing' })
+      },
+      setGatewayCredentialStatus: (status) => {
+        const kind = status === 'unauthorized' ? 'expired' : status
+        credentialRegistry.commit('llm-gateway', { kind })
+      },
       setModelCredentialStatusError: (modelCredentialStatusError) =>
         set({ modelCredentialStatusError }),
       setAgentLoopNotificationsEnabled: (enabled) => {
@@ -1311,7 +1301,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // instead of reading the store.
         const apiKeyProviderKey =
           state.providerType === 'llm-gateway'
-            ? GATEWAY_CREDENTIAL_KEY_ALIAS
+            ? getGatewayDispatchCredentialKey()
             : state.providerType
 
         return {
@@ -1322,172 +1312,43 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       },
 
       checkHasApiKey: async (options?: { flush?: boolean }) => {
-        // The up-front `++apiKeyCheckEpoch` epoch guard is gone: it let a
-        // deduplicated same-provider caller (one that reused the in-flight
-        // promise cache) bump the epoch, stale-out the in-flight lookup's
-        // write guard, and leave `hasApiKey` unwritten after the promise
-        // resolved (#84 review round 3). Every lookup now writes its result
-        // when it resolves — but the write is GUARDED by the provider it
-        // was started for: a cross-provider switch can leave the previous
-        // provider's lookup in flight, and its late result must not
-        // overwrite the active provider's status (see the guard inside the
-        // promise below). Same-provider deduplicated callers still get
-        // their write because the effective key is unchanged when the
-        // shared promise resolves.
         const state = get()
         const effective = state.getEffectiveProviderConfig()
+        const providerKey = state.providerType
         if (!effective) {
-          // Provider config not available. If the configured provider is a
-          // dynamic one that registers asynchronously (e.g. codex-oauth
-          // waiting for extension auth, llm-gateway / custom-* still
-          // registering), DON'T conclude "no API key" yet — wait for the
-          // registration path to call this again. Otherwise the UI would
-          // flash a false "setup" state before the registration completes.
-          //
-          // The `flush: true` escape hatch is for callers that have already
-          // attempted registration (e.g. extension.store.checkStatus after
-          // determining the extension isn't installed, App.tsx after
-          // registerLLMGatewayProvider). They want a definitive answer even
-          // if it's "no".
-          if (
-            isPotentiallyDynamicProviderType(state.providerType) &&
-            !options?.flush
-          ) {
-            return false
+          if (isPotentiallyDynamicProviderType(state.providerType) && !options?.flush) return false
+          if (state.providerType === 'llm-gateway') {
+            if (credentialRegistry.getState(providerKey).kind === 'unknown') {
+              credentialRegistry.commit(providerKey, { kind: 'temporary' })
+            }
+          } else {
+            credentialRegistry.commit(providerKey, { kind: 'missing' })
           }
-          set({ hasApiKey: false, hasApiKeyLoaded: true })
           return false
         }
 
-        // Custom providers can run keyless (Ollama / LM Studio / llama.cpp at
-        // localhost). A configured baseUrl is enough to be "usable" — don't
-        // gate the UI on a missing API key for them.
-        //
-        // EXCEPTION (#172 finding 4): the dynamically-registered llm-gateway
-        // is NOT keyless — a configured baseUrl alone must not mark it
-        // usable, or the send gate lets an empty credential reach the request
-        // layer which then sends without Authorization. The gateway's
-        // availability is governed by its own credential status (resolved
-        // authoritatively at dispatch), so fall through to the normal
-        // api-key lookup here.
-        if (
-          isCustomProviderType(state.providerType) &&
-          state.providerType !== 'llm-gateway' &&
-          effective.baseUrl
-        ) {
-          apiKeyCache.set(effective.apiKeyProviderKey, true)
-          set({ hasApiKey: true, hasApiKeyLoaded: true })
+        if (isCustomProviderType(state.providerType) && state.providerType !== 'llm-gateway' && effective.baseUrl) {
+          credentialRegistry.commit(providerKey, { kind: 'valid' })
           return true
         }
-
-        const providerKey = effective.apiKeyProviderKey
-
-        // llm-gateway: availability comes from the AUTHORITATIVE session, not
-        // from the api-key shadow (#277). The shadow is a best-effort
-        // durability copy written by login / refresh / boot restore; when that
-        // write fails the shadow is missing while the session is perfectly
-        // valid (documented at resolveGatewayDispatchCredential), and gating a
-        // send on it produced "configure your API Key" for a logged-in user.
-        // getGatewayCredentialStatus() is the verdict the dispatch resolver
-        // maintains, and it is synchronous — no extra await on the send path.
         if (state.providerType === 'llm-gateway') {
-          const { getGatewayCredentialStatus } = await import('@/agent/providers/llm-gateway-auth')
-          const status = getGatewayCredentialStatus()
-          if (status === 'unknown') {
-            // Unknown is not a configured credential. Preserve a completed
-            // flush on subsequent checks so startup cannot return to loading.
-            if (get().providerType === 'llm-gateway') {
-              set({ hasApiKey: false, ...(options?.flush ? { hasApiKeyLoaded: true } : {}) })
-            }
-            return false
+          const verdict = credentialRegistry.getState(providerKey)
+          if (verdict.kind === 'unknown' && options?.flush) {
+            credentialRegistry.commit(providerKey, { kind: 'temporary' })
           }
-          const hasKey = status === 'valid'
-          if (get().providerType === 'llm-gateway') {
-            set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
-          }
-          return hasKey
+          return verdict.kind === 'valid'
         }
 
-        // Return cached value if available and not stale.
-        // `hasApiKeyLoaded` was set during the initial population that
-        // filled the cache, so we don't need to set it again here.
-        // STILL sync the reactive state (#84 review round 3): the module-level
-        // cache outlives store resets (tests, hot reloads), so a cache-hit
-        // caller that skipped the write would leave `hasApiKey` false while
-        // lookups answer true — onboarding and sends read the stale state.
-        if (apiKeyCache.has(providerKey)) {
-          const cached = apiKeyCache.get(providerKey)!
-          set({ hasApiKey: cached, hasApiKeyLoaded: true })
-          return cached
-        }
-
-        // Use promise cache to avoid concurrent queries
-        if (apiKeyCachePromise.has(providerKey)) {
-          return apiKeyCachePromise.get(providerKey)!
-        }
-
-        const promise = (async () => {
-          try {
+        const current = credentialRegistry.getState(providerKey)
+        if (current.kind === 'valid' || current.kind === 'missing') return current.kind === 'valid'
+        if (!credentialRegistry.hasResolver(providerKey)) {
+          credentialRegistry.registerResolver(providerKey, async () => {
             const { loadApiKey } = await import('@/security/api-key-store')
             const key = await loadApiKey(providerKey)
-            const hasKey = !!key
-            apiKeyCache.set(providerKey, hasKey)
-
-            // Update the reactive state — but ONLY if the provider this
-            // lookup was started for is still active. A cross-provider
-            // switch can leave this lookup in flight; its late result must
-            // not clobber the new provider's status (unlike the removed
-            // epoch guard, this never drops a CURRENT provider's write, so
-            // deduplicated same-provider lookups still land their result).
-            const after = get()
-            const afterKey = after.getEffectiveProviderConfig()?.apiKeyProviderKey
-            if (afterKey === providerKey) {
-              // Mark loaded in the same set() so subscribers see a
-              // consistent (hasApiKey, hasApiKeyLoaded) pair.
-              set({ hasApiKey: hasKey, hasApiKeyLoaded: true })
-            }
-
-            return hasKey
-          } catch (error) {
-            console.error('[SettingsStore] Failed to check API key:', error)
-            // Even on error, mark as loaded — otherwise the UI would stay
-            // in the "loading" state forever. Same provider guard as the
-            // success path above.
-            const after = get()
-            const afterKey = after.getEffectiveProviderConfig()?.apiKeyProviderKey
-            if (afterKey === providerKey) {
-              set({ hasApiKey: false, hasApiKeyLoaded: true })
-            }
-
-            // Schedule a delayed retry — the SQLite worker init race
-            // (OPFS lock release, cold-start handshake) often self-resolves
-            // within ~1-2s.  Without this retry, a single transient failure
-            // would mark the user as "no key" for the entire session, even
-            // though their saved key is fine — they would perceive it as
-            // data loss.  Only retry if the user hasn't switched providers
-            // in the meantime.
-            const providerTypeAtError = state.providerType
-            setTimeout(() => {
-              const currentState = get()
-              if (currentState.providerType !== providerTypeAtError) return
-              void get().checkHasApiKey()
-            }, 2000)
-
-            return false
-          } finally {
-            apiKeyCachePromise.delete(providerKey)
-          }
-        })()
-
-        apiKeyCachePromise.set(providerKey, promise)
-        return promise
-      },
-
-      invalidateApiKeyCache: (provider) => {
-        const currentProvider = provider || get().getEffectiveProviderConfig()?.apiKeyProviderKey
-        if (!currentProvider) return
-        apiKeyCache.delete(currentProvider)
-        apiKeyCachePromise.delete(currentProvider)
+            return { kind: key ? 'valid' : 'missing' }
+          }, { restartable: true })
+        }
+        return (await credentialRegistry.resolve(providerKey)).kind === 'valid'
       },
 
       saveModelOverrideForWorkspace: (workspaceId) => {
@@ -1512,20 +1373,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
             providerType: override.providerType,
             modelName: override.modelName,
           }
-          // The expired/unauthorized credential flag describes the PREVIOUS
-          // provider's gateway auth (#84 review): restoring a workspace
-          // pinned to a DIFFERENT provider must clear it, or the restored
-          // (valid) selection stays marked unusable and the switcher keeps
-          // showing a re-login warning. Restoring within the same provider
-          // keeps the flag — that model hits the same credential.
           const credentialStillApplies = override.providerType === state.providerType
-          if (
-            !credentialStillApplies &&
-            (state.modelCredentialStatus === 'expired' ||
-              state.modelCredentialStatus === 'unauthorized')
-          ) {
-            updates.modelCredentialStatus = 'unknown' as const
-          }
           // If it's a custom provider, also set baseUrl
           if (isCustomProviderType(override.providerType)) {
             const cp = state.customProviders.find((p) => p.id === override.providerType)
@@ -1539,7 +1387,7 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
           // credential verdict has to be dropped here too — the same stale
           // "no key" replay described in switchProviderAndModel below (#277).
           if (!credentialStillApplies) {
-            get().invalidateApiKeyCache()
+            if (override.providerType !== 'llm-gateway') credentialRegistry.commit(override.providerType, { kind: 'unknown' })
             void get().checkHasApiKey()
           }
         }
@@ -1556,14 +1404,6 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         const updates: Partial<SettingsState> = {
           providerType: newProviderType,
           modelName: newModelName,
-          ...(!credentialStillApplies && newProviderType === 'llm-gateway'
-            ? { hasApiKey: false, hasApiKeyLoaded: false }
-            : {}),
-          ...(credentialStillApplies ||
-            (state.modelCredentialStatus !== 'expired' &&
-              state.modelCredentialStatus !== 'unauthorized')
-            ? {}
-            : { modelCredentialStatus: 'unknown' as const }),
           lastUsedModelByProvider: {
             ...state.lastUsedModelByProvider,
             [newProviderType]: newModelName,
@@ -1581,12 +1421,9 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // it, so re-evaluate. This is what lets a first-time user who saved a
         // key (while providerType was still empty) leave the onboarding
         // select-model step as soon as they pick their default model.
-        apiKeyCache.delete(newProviderType)
-        apiKeyCachePromise.delete(newProviderType)
-        // The cache key is the provider's CREDENTIAL key, not its id, so drop
-        // whatever the new selection resolves to as well (it may have been
-        // cached while the credential was unreadable — #277).
-        get().invalidateApiKeyCache()
+        if (!credentialStillApplies && newProviderType !== 'llm-gateway') {
+          credentialRegistry.commit(newProviderType, { kind: 'unknown' })
+        }
         void get().checkHasApiKey(
           newProviderType === 'llm-gateway' && !credentialStillApplies ? { flush: true } : undefined,
         )
@@ -1827,7 +1664,12 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         if (!persistedState || typeof persistedState !== 'object') {
           return {} as PersistedSettingsState
         }
-        let next = persistedState as Record<string, unknown>
+        let next = { ...persistedState as Record<string, unknown> }
+        // Older snapshots may contain runtime-only verdicts. Rehydrate only
+        // durable configuration; credential state is reconstructed locally.
+        delete next.hasApiKey
+        delete next.hasApiKeyLoaded
+        delete next.modelCredentialStatus
         if (version < 2) {
           next = {
             ...next,
@@ -1914,6 +1756,46 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
     }
   )
 )
+
+/** Keep compatibility fields as a projection of the selected credential. */
+function bindSelectedCredential(): void {
+  let selectedKey: string | undefined
+  let unsubscribe: (() => void) | undefined
+  const project = () => {
+    if (selectedKey === undefined) return
+    const current = useSettingsStore.getState()
+    if (current.providerType !== selectedKey) return
+    const verdict = credentialRegistry.getState(selectedKey)
+    const modelCredentialStatus = current.providerType === 'llm-gateway'
+      ? verdict.kind === 'valid' || verdict.kind === 'missing' || verdict.kind === 'expired'
+        ? verdict.kind : 'unknown'
+      : 'unknown'
+    const projection = {
+      hasApiKey: verdict.kind === 'valid',
+      hasApiKeyLoaded: verdict.kind !== 'unknown',
+      modelCredentialStatus,
+    } as const
+    if (current.hasApiKey === projection.hasApiKey &&
+        current.hasApiKeyLoaded === projection.hasApiKeyLoaded &&
+        current.modelCredentialStatus === projection.modelCredentialStatus) return
+    suppressPersistWrites++
+    try { useSettingsStore.setState(projection) } finally { suppressPersistWrites-- }
+  }
+  const bind = (providerType: string) => {
+    const key = providerType
+    if (key === selectedKey) return
+    unsubscribe?.()
+    selectedKey = key
+    unsubscribe = credentialRegistry.subscribe(key, project)
+    project()
+  }
+  useSettingsStore.subscribe((state, previous) => {
+    if (state.providerType !== previous.providerType) bind(state.providerType)
+  })
+  bind(useSettingsStore.getState().providerType)
+}
+
+bindSelectedCredential()
 
 notifyRegistryDiscoveryChange = () => {
   suppressPersistWrites++
@@ -2086,6 +1968,15 @@ function setupCrossTabSettingsSync(): void {
   if (crossTabSyncInstalled || typeof window === 'undefined') return
   crossTabSyncInstalled = true
   window.addEventListener('storage', (e) => {
+    if (e.key === API_KEY_CHANGE_STORAGE_KEY && e.newValue) {
+      try {
+        const { provider } = JSON.parse(e.newValue) as { provider?: unknown }
+        if (typeof provider !== 'string' || !isApiKeyProviderIdentity(provider)) return
+        credentialRegistry.commit(provider, { kind: 'unknown' })
+        if (useSettingsStore.getState().providerType === provider) void useSettingsStore.getState().checkHasApiKey()
+      } catch { /* Ignore malformed notifications. */ }
+      return
+    }
     if (e.key !== 'bfosa-settings' || e.newValue == null) return
     // Parse ONCE — the schema-version guard, revision guard, and apply path
     // all read the same envelope.
@@ -2229,28 +2120,8 @@ function setupCrossTabSettingsSync(): void {
         applied.modelName !== credentialsBefore.modelName
       ) {
         const next = useSettingsStore.getState()
-        // Invalidate by the EFFECTIVE credential key, not providerType:
-        // getEffectiveProviderConfig derives `__llm_gateway_token__` for
-        // llm-gateway, so deleting under the providerType would leave the
-        // gateway's cached lookup in place and checkHasApiKey would reuse
-        // the stale result.
-        const effectiveKey = next.getEffectiveProviderConfig()?.apiKeyProviderKey ?? next.providerType
-        apiKeyCache.delete(effectiveKey)
-        apiKeyCachePromise.delete(effectiveKey)
-        // The credential flag describes the PREVIOUS provider's auth; a
-        // cross-provider switch must clear it (same rule as
-        // switchProviderAndModel) or noUsableModel keeps marking the new,
-        // valid selection unusable. This reset must land INSIDE the
-        // suppression window: setState is wrapped by persist, and a write
-        // outside the block would re-persist the whole (just-applied,
-        // possibly already-superseded) snapshot over a newer peer write.
-        suppressPersistWrites++
-        try {
-          if (applied.providerType !== credentialsBefore.providerType) {
-            useSettingsStore.setState({ modelCredentialStatus: 'unknown' })
-          }
-        } finally {
-          suppressPersistWrites--
+        if (next.providerType !== 'llm-gateway') {
+          credentialRegistry.commit(next.providerType, { kind: 'unknown' })
         }
         void next.checkHasApiKey()
       }
@@ -2274,15 +2145,7 @@ export function useHasApiKey(): boolean {
   // Note: This is intentionally not tracking hasApiKey to avoid loops
   // The component will re-render when hasApiKey changes via setHasApiKey
   useEffect(() => {
-    let mounted = true
-    checkHasApiKey().then((hasKey) => {
-      if (mounted) {
-        useSettingsStore.getState().setHasApiKey(hasKey)
-      }
-    })
-    return () => {
-      mounted = false
-    }
+    void checkHasApiKey()
   }, [providerType, checkHasApiKey])
 
   return hasApiKey

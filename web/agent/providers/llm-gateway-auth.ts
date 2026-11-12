@@ -9,7 +9,8 @@
  * @see https://gitea.jianguoyun.net.cn/huangqingming/llm_gateway_service
  */
 
-import { GATEWAY_CREDENTIAL_KEY_ALIAS } from '@/agent/providers/gateway-credential-alias'
+import { getGatewayDispatchCredentialKey, LLM_GATEWAY_REFRESH_TOKEN_KEY_ID } from '@/agent/providers/gateway-credential-alias'
+import { credentialRegistry } from '@/agent/providers/credential-state'
 import { t as translate } from '@creatorweave/i18n'
 import {
   pendingKeyStoreOpIsFenced,
@@ -251,7 +252,7 @@ if (typeof window !== 'undefined') {
  * We store a JSON blob containing refresh_token + expiry metadata so that on
  * restore we can reconstruct the full StoredTokens object.
  */
-const REFRESH_TOKEN_DB_KEY = '__llm_gateway_refresh_token__'
+const REFRESH_TOKEN_DB_KEY = LLM_GATEWAY_REFRESH_TOKEN_KEY_ID
 
 /**
  * localStorage marker recording when the last logout purged credentials.
@@ -323,18 +324,7 @@ export function getLastLogoutTimestamp(): number | null {
  * api-key-store as real provider keys, and counting it as one would let a
  * visitor skip login with no usable credential.
  */
-export const LLM_GATEWAY_REFRESH_TOKEN_KEY_ID = REFRESH_TOKEN_DB_KEY
-
-/**
- * Last credential status recorded by this module.
- *
- * The settings store holds the same value, but reading it back is async
- * (the store is loaded through a dynamic import), while callers such as
- * `fetchGatewayRateLimits` need the state of the token acquisition that
- * just failed — i.e. "expired" vs "never logged in" — to pick the right
- * message. This mirror keeps that read synchronous.
- */
-let lastCredentialStatus: 'unknown' | 'valid' | 'expired' | 'missing' = 'unknown'
+export { LLM_GATEWAY_REFRESH_TOKEN_KEY_ID }
 
 /**
  * Whether a status verdict produced under `generation` may still be applied.
@@ -373,22 +363,9 @@ function setCredentialStatus(
   status: 'valid' | 'expired' | 'missing',
   expectedGeneration?: number,
 ): void {
-  // A verdict produced by an operation that started under an older credential
-  // set must not overwrite the current session's status (#180). The settings
-  // import below is itself an await boundary during which a logout or a new
-  // login can land, so the generation is re-checked after it resolves too.
-  // The authoritative credential state is unaffected — only this UI mirror.
+  // Ignore verdicts produced for a session superseded by login or logout.
   if (expectedGeneration !== undefined && !isCredentialStatusCurrent(expectedGeneration)) return
-  lastCredentialStatus = status
-  const generation = authSessionGeneration
-  void import('@/store/settings.store')
-    .then(({ useSettingsStore }) => {
-      if (!isCredentialStatusCurrent(generation)) return
-      useSettingsStore.getState().setModelCredentialStatus(status)
-    })
-    .catch(() => {
-      // Auth must remain usable even when the settings store is unavailable.
-    })
+  credentialRegistry.commit('llm-gateway', { kind: status })
 }
 
 /**
@@ -403,13 +380,7 @@ function setCredentialStatus(
 async function setCredentialStatusLocked(
   status: 'valid' | 'expired' | 'missing',
 ): Promise<void> {
-  lastCredentialStatus = status
-  try {
-    const { useSettingsStore } = await import('@/store/settings.store')
-    useSettingsStore.getState().setModelCredentialStatus(status)
-  } catch {
-    // Auth must remain usable even when the settings store is unavailable.
-  }
+  credentialRegistry.commit('llm-gateway', { kind: status })
 }
 
 /**
@@ -417,7 +388,10 @@ async function setCredentialStatusLocked(
  * module. `'unknown'` means no token operation has run in this session yet.
  */
 export function getGatewayCredentialStatus(): 'unknown' | 'valid' | 'expired' | 'missing' {
-  return lastCredentialStatus
+  const { kind } = credentialRegistry.getState('llm-gateway')
+  // `temporary` has no equivalent in this older API: report it as `unknown`,
+  // which callers already treat as "no verdict yet" rather than "no key".
+  return kind === 'temporary' ? 'unknown' : kind
 }
 
 export type RefreshResult =
@@ -454,6 +428,73 @@ function loadStoredTokens(): StoredTokens | null {
     return JSON.parse(raw) as StoredTokens
   } catch {
     return null
+  }
+}
+
+/** Seed only locally provable gateway state before the first settings check. */
+export async function seedGatewayCredentialState(): Promise<void> {
+  const initial = credentialRegistry.getState('llm-gateway')
+  if (initial.kind !== 'unknown' && initial.kind !== 'temporary') return
+  const generation = getGatewayAuthSessionGeneration()
+  const revision = credentialRegistry.getRevision('llm-gateway')
+  const commit = (kind: 'valid' | 'expired' | 'missing' | 'temporary', error?: unknown) => {
+    if (generation !== getGatewayAuthSessionGeneration() ||
+        credentialRegistry.getRevision('llm-gateway') !== revision) return
+    if (kind === 'temporary') {
+      credentialRegistry.commit('llm-gateway', { kind, error })
+    } else {
+      setCredentialStatus(kind, generation)
+    }
+  }
+
+  try {
+    const raw = localStorage.getItem(TOKEN_STORAGE_KEY)
+    if (raw) {
+      const stored = JSON.parse(raw) as Partial<StoredTokens>
+      if (typeof stored.access_token === 'string' && stored.access_token.trim() &&
+          typeof stored.access_expires_at === 'number' && stored.access_expires_at > Date.now() + 60_000) {
+        commit('valid')
+      } else if (typeof stored.refresh_expires_at === 'number' && stored.refresh_expires_at <= Date.now()) {
+        commit('expired')
+      } else {
+        // Access token expired, refresh token still live: the session is very
+        // likely fine but only the server can confirm it. Commit `temporary`
+        // rather than leave `unknown` — a live refresh token is not proof of a
+        // valid session, but `unknown` keeps `hasApiKeyLoaded` false and the
+        // UI in its loading state until the user happens to send something
+        // (#281: neutral must never be permanent).
+        commit('temporary')
+      }
+      return
+    }
+    if (localStorage.getItem(EXPIRED_SESSION_MARKER_KEY) !== null) {
+      commit('expired')
+      return
+    }
+
+    const { loadApiKey } = await import('@/security/api-key-store')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('gateway credential seed timed out')), 1800)
+      })
+      const backup = await Promise.race([loadApiKey(REFRESH_TOKEN_DB_KEY), timeout])
+      if (!backup) {
+        commit('missing')
+        return
+      }
+      const stored = JSON.parse(backup) as Partial<StoredTokens>
+      if (typeof stored.refresh_token !== 'string' || !stored.refresh_token ||
+          typeof stored.refresh_expires_at !== 'number' || !Number.isFinite(stored.refresh_expires_at)) {
+        throw new Error('invalid gateway refresh record')
+      }
+      if (stored.refresh_expires_at <= Date.now()) commit('expired')
+      else commit('temporary')
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  } catch (error) {
+    commit('temporary', error)
   }
 }
 
@@ -786,11 +827,10 @@ function escalateFencedKeyStoreWrite(opId: string): void {
  * store field.
  */
 export function escalateFencedKeyStoreMutation(): void {
-  lastCredentialStatus = 'expired'
+  credentialRegistry.commit('llm-gateway', { kind: 'expired' })
   void import('@/store/settings.store')
     .then(({ useSettingsStore }) => {
       const state = useSettingsStore.getState()
-      state.setModelCredentialStatus('expired')
       state.setModelCredentialStatusError(
         translate(
           useI18nStore.getState().locale,
@@ -893,7 +933,7 @@ async function clearStoredTokens(
       purgeFailures.push(e)
     }
     try {
-      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS))
+      await runBoundedFencedKeyStoreMutation(() => deleteApiKey(getGatewayDispatchCredentialKey()))
     } catch (e) {
       purgeFailures.push(e)
     }
@@ -1305,10 +1345,8 @@ export function persistDeviceLoginTokens(
   // deferred (dynamic import, unawaited): scheduled during this
   // lock-held commit, it could land AFTER the lock releases and after a
   // concurrent logout wrote 'missing' — reporting valid credentials for a
-  // logged-out session. Callers (applyGatewayLoginTokensInner) already set
-  // the status inside their own lock-held commit via
-  // settings.setModelCredentialStatus, which covers the settings store.
-  lastCredentialStatus = 'valid'
+  // logged-out session. The registry projects this status into settings.
+  credentialRegistry.commit('llm-gateway', { kind: 'valid' })
 }
 
 /**

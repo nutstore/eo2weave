@@ -22,9 +22,8 @@ const settingsState = vi.hoisted(() => ({
   getStalePinnedModels: vi.fn(() => []),
   pinnedModelsByProvider: {} as Record<string, string[]>,
   modelCredentialStatus: 'unknown' as CredentialStatus,
-  invalidateApiKeyCache: vi.fn(),
   setHasApiKey: vi.fn(),
-  setModelCredentialStatus: vi.fn(),
+  setGatewayCredentialStatus: vi.fn(),
   providerType: 'llm-gateway',
 }))
 
@@ -201,7 +200,7 @@ describe('LLMGatewayCard credential state', () => {
     gatewayMock.hasStoredSession.mockImplementation(async () => gatewayMock.hasStoredTokens())
     applyGatewayLoginTokensMock.mockImplementation(async (_token, options) => {
       options.onCommit()
-      settingsState.setModelCredentialStatus('valid')
+      settingsState.setGatewayCredentialStatus('valid')
       return { ok: true, accessToken: 'new-access-token', models: [] }
     })
     settingsState.modelCredentialStatus = 'unknown'
@@ -212,7 +211,7 @@ describe('LLMGatewayCard credential state', () => {
     loadApiKeyMock.mockImplementation(async () => apiKeyState.key)
     // The store is a plain object here — mirror the write so the component
     // sees the state change it just made.
-    settingsState.setModelCredentialStatus.mockImplementation((status: CredentialStatus) => {
+    settingsState.setGatewayCredentialStatus.mockImplementation((status: CredentialStatus) => {
       settingsState.modelCredentialStatus = status
     })
     useI18nStore.setState({ locale: 'en-US' })
@@ -303,7 +302,7 @@ describe('LLMGatewayCard credential state', () => {
     await user.click(screen.getByRole('button', { name: 'Log in again' }))
 
     await waitFor(() => {
-      expect(settingsState.setModelCredentialStatus).toHaveBeenCalledWith('valid')
+      expect(settingsState.setGatewayCredentialStatus).toHaveBeenCalledWith('valid')
     })
     expect(applyGatewayLoginTokensMock).toHaveBeenCalledWith(
       'new-access-token', expect.objectContaining({ onCommit: expect.any(Function) }),
@@ -347,7 +346,7 @@ describe('LLMGatewayCard credential state', () => {
     expect(screen.queryByText('Logged in')).toBeNull()
     // The stale 'valid' write must NOT have happened after the logout's
     // purge.
-    expect(settingsState.setModelCredentialStatus).not.toHaveBeenCalledWith('valid')
+    expect(settingsState.setGatewayCredentialStatus).not.toHaveBeenCalledWith('valid')
   })
 
   it('rejects the login when a concurrent logout purged the shared token cache before the freshness guard', async () => {
@@ -434,7 +433,7 @@ describe('LLMGatewayCard credential state', () => {
       expect(screen.getByText('Logged in')).toBeTruthy()
     })
     // The logout must not have cleared the newer login's state.
-    expect(settingsState.setModelCredentialStatus).not.toHaveBeenCalledWith('missing')
+    expect(settingsState.setGatewayCredentialStatus).not.toHaveBeenCalledWith('missing')
     expect(screen.queryByText('Login expired')).toBeNull()
   })
 

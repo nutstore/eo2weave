@@ -45,9 +45,6 @@ const settingsStoreState = vi.hoisted(() => ({
   // Ordered log of status writes the auth layer actually LANDED. Proves a
   // verdict was dropped instead of merely overwritten by a later one.
   statusWrites: [] as string[],
-  // A purge must invalidate the cached api-key verdict, or checkHasApiKey()
-  // keeps answering `true` for a session whose key was just deleted.
-  invalidatedKeyCaches: [] as string[],
   apiKeyChecks: [] as Array<{ flush: boolean }>,
   // Which provider the app has selected. `checkHasApiKey()` answers for THAT
   // provider, so the purge resync must not run it on someone else's behalf.
@@ -63,16 +60,12 @@ const settingsStoreState = vi.hoisted(() => ({
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
     getState: () => ({
-      setModelCredentialStatus: (status: string) => {
+      setGatewayCredentialStatus: (status: string) => {
         settingsStoreState.statusWrites.push(status)
         settingsStoreState.modelCredentialStatus = status
       },
       setModelCredentialStatusError: (message: string | null) => {
         settingsStoreState.modelCredentialStatusError = message
-      },
-      invalidateApiKeyCache: (provider: string) => {
-        settingsStoreState.invalidatedKeyCaches.push(provider)
-        settingsStoreState.hasApiKeyLoaded = false
       },
       checkHasApiKey: async (options?: { flush?: boolean }) => {
         settingsStoreState.apiKeyChecks.push({ flush: options?.flush === true })
@@ -105,6 +98,7 @@ import {
   isGatewayAccessTokenCurrent,
   type GatewaySessionEvent,
   hasStoredSession,
+  seedGatewayCredentialState,
 } from '@/agent/providers/llm-gateway-auth'
 import { getModelsForProvider, getProviderCatalogStatus, getProviderConfig, registerDynamicProvider, unregisterDynamicProvider } from '@/agent/providers/types'
 // The catalog module registers the token-purge listener at import time; the
@@ -204,7 +198,6 @@ describe('llm-gateway-auth token refresh hardening', () => {
     loadApiKeyMock.mockResolvedValue(null)
     saveApiKeyMock.mockReset()
     saveApiKeyMock.mockResolvedValue(undefined)
-    settingsStoreState.invalidatedKeyCaches.length = 0
     settingsStoreState.apiKeyChecks.length = 0
     settingsStoreState.providerType = 'llm-gateway'
     settingsStoreState.gatewayKeyPresent = true
@@ -216,6 +209,73 @@ describe('llm-gateway-auth token refresh hardening', () => {
     localStorage.clear()
     unregisterDynamicProvider('llm-gateway')
     vi.unstubAllGlobals()
+  })
+
+  describe('cold-start credential seed', () => {
+    beforeEach(async () => {
+      const { credentialRegistry } = await import('@/agent/providers/credential-state')
+      credentialRegistry.reset()
+    })
+
+    it('restores an expired verdict from the durable marker', async () => {
+      localStorage.setItem('__llm_gateway_expired_session__', '1')
+      await seedGatewayCredentialState()
+      expect(getGatewayCredentialStatus()).toBe('expired')
+    })
+
+    it('seeds after a preliminary check marked the session temporarily unknown', async () => {
+      const { credentialRegistry } = await import('@/agent/providers/credential-state')
+      credentialRegistry.commit('llm-gateway', { kind: 'temporary' })
+      localStorage.setItem('__llm_gateway_expired_session__', '1')
+      await seedGatewayCredentialState()
+      expect(getGatewayCredentialStatus()).toBe('expired')
+    })
+
+    it('restores a still-fresh local access token without a network request', async () => {
+      seedStoredTokens({ access_expires_at: Date.now() + 600_000 })
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      await seedGatewayCredentialState()
+      expect(getGatewayCredentialStatus()).toBe('valid')
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('does not declare a live refresh backup to be an authenticated session', async () => {
+      loadApiKeyMock.mockResolvedValue(JSON.stringify({ refresh_token: 'refresh', refresh_expires_at: Date.now() + 60_000 }))
+      await seedGatewayCredentialState()
+      expect(getGatewayCredentialStatus()).toBe('unknown')
+    })
+
+    it('reports an unreadable credential store as temporary', async () => {
+      loadApiKeyMock.mockRejectedValue(new Error('sqlite unavailable'))
+      await seedGatewayCredentialState()
+      const { credentialRegistry } = await import('@/agent/providers/credential-state')
+      expect(credentialRegistry.getState('llm-gateway').kind).toBe('temporary')
+    })
+
+    it('does not discard the seed when an unrelated provider changes', async () => {
+      let finish!: (value: string | null) => void
+      loadApiKeyMock.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+      const pending = seedGatewayCredentialState()
+      await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalled())
+      const { credentialRegistry } = await import('@/agent/providers/credential-state')
+      credentialRegistry.commit('openai', { kind: 'valid' })
+      finish(null)
+      await pending
+      expect(getGatewayCredentialStatus()).toBe('missing')
+    })
+
+    it('does not overwrite a login that commits while the backup is read', async () => {
+      let finish!: (value: string | null) => void
+      loadApiKeyMock.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+      const pending = seedGatewayCredentialState()
+      await vi.waitFor(() => expect(loadApiKeyMock).toHaveBeenCalled())
+      const { credentialRegistry } = await import('@/agent/providers/credential-state')
+      credentialRegistry.commit('llm-gateway', { kind: 'valid' })
+      finish(null)
+      await pending
+      expect(getGatewayCredentialStatus()).toBe('valid')
+    })
   })
 
   describe('refresh preserves the stored refresh token (real backend contract)', () => {
@@ -1078,7 +1138,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       // The wrapper's underlying-settled continuation must detect the fence
       // and escalate.
       await vi.waitFor(() => {
-        expect(settingsStoreState.modelCredentialStatus).toBe('expired')
+        expect(getGatewayCredentialStatus()).toBe('expired')
         expect(settingsStoreState.modelCredentialStatusError).not.toBeNull()
       })
       __resetGatewayCredentialFencingForTests()
@@ -1113,7 +1173,7 @@ describe('llm-gateway-auth token refresh hardening', () => {
       releaseWrite()
       await expect(op).rejects.toThrow(/key-store op fenced/)
       await vi.waitFor(() => {
-        expect(settingsStoreState.modelCredentialStatus).toBe('expired')
+        expect(getGatewayCredentialStatus()).toBe('expired')
         expect(settingsStoreState.modelCredentialStatusError).not.toBeNull()
       })
       __resetGatewayCredentialFencingForTests()
@@ -1622,23 +1682,17 @@ describe('credential status generation fence (#180)', () => {
       BASE_URL,
     )
     expect(localStorage.getItem(TOKENS_KEY)).toContain('new-session-refresh')
-    // The login flow reports 'valid' through its own settings write; the stale
-    // verdict must not overwrite that known status.
-    settingsStoreState.modelCredentialStatus = 'valid'
+    const { credentialRegistry } = await import('@/agent/providers/credential-state')
+    const subsequentVerdicts: string[] = []
+    const unsubscribe = credentialRegistry.subscribe('llm-gateway', state => subsequentVerdicts.push(state.kind))
 
     releaseLoad(null)
     await pending
 
-    // Synchronize on the WRITE PATH, not on a timer. A verdict produced under
-    // the CURRENT session travels the same dynamic import + `.then` chain and
-    // is registered behind the stale one, so once the current verdict has
-    // landed the stale chain has already settled — if it were going to write,
-    // it would be in the log first.
     expect(await getValidAccessToken(BASE_URL, CLIENT_ID)).toBeTruthy()
-    await vi.waitFor(() => expect(settingsStoreState.statusWrites).toEqual(['valid']))
-
-    // Without the fence the stale verdict lands as an extra 'missing' write.
-    expect(settingsStoreState.modelCredentialStatus).toBe('valid')
+    unsubscribe()
+    expect(subsequentVerdicts).not.toContain('missing')
+    expect(getGatewayCredentialStatus()).toBe('valid')
   })
 
   it('still applies a verdict produced under the current session', async () => {
@@ -1646,9 +1700,7 @@ describe('credential status generation fence (#180)', () => {
 
     expect(await getValidAccessToken(BASE_URL, CLIENT_ID)).toBeTruthy()
 
-    // The verdict lands through a dynamic settings-store import: wait for the
-    // write instead of racing a zero-delay timer.
-    await vi.waitFor(() => expect(settingsStoreState.modelCredentialStatus).toBe('valid'))
+    expect(getGatewayCredentialStatus()).toBe('valid')
   })
 
   it('reports valid after a successful refresh commit', async () => {
@@ -1660,7 +1712,7 @@ describe('credential status generation fence (#180)', () => {
 
     // The refresh's own commit advances the generation; the verdict must be
     // attributed to that commit, not to the pre-refresh snapshot.
-    await vi.waitFor(() => expect(settingsStoreState.modelCredentialStatus).toBe('valid'))
+    expect(getGatewayCredentialStatus()).toBe('valid')
   })
 
   it('treats the refreshed token as current and a replaced one as stale (#214)', async () => {

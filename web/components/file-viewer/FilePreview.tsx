@@ -25,6 +25,7 @@ import { useConversationStore } from '@/store/conversation.store'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 import { useAgentStore } from '@/store/agent.store'
 import { useSettingsStore } from '@/store/settings.store'
+import { isCredentialPending } from '@/agent/providers/credential-state'
 import { createUserMessage } from '@/agent/message-types'
 import type { ConversationStatus } from '@/agent/message-types'
 import { toast } from 'sonner'
@@ -481,7 +482,11 @@ export function FilePreview({ filePath, fileHandle, onClose, blob: externalBlob 
     const prompt = `Please review the following inline comments I left on the file:\n\n${payload}`
 
     const settings = useSettingsStore.getState()
-    if (!settings.hasApiKey) {
+    if (!settings.providerType || !settings.modelName) {
+      toast.error(t('conversation.toast.noModel'))
+      return
+    }
+    if (!settings.hasApiKey && !isCredentialPending(settings.providerType)) {
       toast.error(t('conversation.toast.noApiKey'))
       return
     }

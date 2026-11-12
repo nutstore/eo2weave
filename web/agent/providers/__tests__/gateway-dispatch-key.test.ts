@@ -11,7 +11,7 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
 }))
 
 const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
-const { GATEWAY_CREDENTIAL_KEY_ALIAS } = await import('@/agent/providers/gateway-credential-alias')
+const { getGatewayDispatchCredentialKey } = await import('@/agent/providers/gateway-credential-alias')
 
 describe('resolveDispatchApiKey (#277)', () => {
   beforeEach(() => {
@@ -40,7 +40,7 @@ describe('resolveDispatchApiKey (#277)', () => {
     resolveMock.mockResolvedValue({ ok: true, accessToken: 'session-token' })
 
     await expect(
-      resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, async () => 'stale-store-token'),
+      resolveDispatchApiKey(getGatewayDispatchCredentialKey(), async () => 'stale-store-token'),
     ).resolves.toEqual({ ok: true, apiKey: 'session-token' })
     expect(resolveMock).toHaveBeenCalledWith('https://gateway.test', 'client')
   })
@@ -48,7 +48,7 @@ describe('resolveDispatchApiKey (#277)', () => {
   it('resolves a gateway session without loading the obsolete key', async () => {
     resolveMock.mockResolvedValue({ ok: true, accessToken: 'session-token' })
     const loadKey = vi.fn(async () => { throw new Error('key store unavailable') })
-    await expect(resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, loadKey))
+    await expect(resolveDispatchApiKey(getGatewayDispatchCredentialKey(), loadKey))
       .resolves.toEqual({ ok: true, apiKey: 'session-token' })
     expect(loadKey).not.toHaveBeenCalled()
   })
@@ -67,7 +67,7 @@ describe('resolveDispatchApiKey (#277)', () => {
   it('propagates an expired session instead of sending without auth', async () => {
     resolveMock.mockResolvedValue({ ok: false, kind: 'expired' })
 
-    await expect(resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, async () => null)).resolves.toEqual({
+    await expect(resolveDispatchApiKey(getGatewayDispatchCredentialKey(), async () => null)).resolves.toEqual({
       ok: false,
       kind: 'expired',
       error: undefined,
@@ -78,7 +78,7 @@ describe('resolveDispatchApiKey (#277)', () => {
     const err = new Error('storage unavailable')
     resolveMock.mockResolvedValue({ ok: false, kind: 'temporary', error: err })
 
-    await expect(resolveDispatchApiKey(GATEWAY_CREDENTIAL_KEY_ALIAS, async () => null)).resolves.toEqual({
+    await expect(resolveDispatchApiKey(getGatewayDispatchCredentialKey(), async () => null)).resolves.toEqual({
       ok: false,
       kind: 'temporary',
       error: err,

@@ -38,7 +38,6 @@ const settingsStoreState = vi.hoisted(() => {
   const state = {
     modelCredentialStatus: 'unknown' as string,
     modelCredentialStatusError: null as string | null,
-    invalidateApiKeyCacheCalls: [] as Array<string | undefined>,
     checkHasApiKeyCalls: 0,
     triggerProviderRefreshCalls: 0,
   }
@@ -47,14 +46,11 @@ const settingsStoreState = vi.hoisted(() => {
 vi.mock('@/store/settings.store', () => ({
   useSettingsStore: {
     getState: () => ({
-      setModelCredentialStatus: (status: string) => {
+      setGatewayCredentialStatus: (status: string) => {
         settingsStoreState.modelCredentialStatus = status
       },
       setModelCredentialStatusError: (message: string | null) => {
         settingsStoreState.modelCredentialStatusError = message
-      },
-      invalidateApiKeyCache: (provider?: string) => {
-        settingsStoreState.invalidateApiKeyCacheCalls.push(provider)
       },
       checkHasApiKey: () => {
         settingsStoreState.checkHasApiKeyCalls++
@@ -143,7 +139,7 @@ import {
   setupGatewaySessionReconciler,
   whenGatewayReconcilerSettledForTests,
 } from '@/agent/providers/gateway-session-reconciler'
-import { getGatewayAuthSessionGeneration } from '@/agent/providers/llm-gateway-auth'
+import { getGatewayAuthSessionGeneration, getGatewayCredentialStatus } from '@/agent/providers/llm-gateway-auth'
 import {
   getModelsForProvider,
   getProviderConfig,
@@ -177,7 +173,6 @@ describe('gateway session reconciler', () => {
     localStorage.clear()
     settingsStoreState.modelCredentialStatus = 'unknown'
     settingsStoreState.modelCredentialStatusError = null
-    settingsStoreState.invalidateApiKeyCacheCalls = []
     settingsStoreState.checkHasApiKeyCalls = 0
     settingsStoreState.triggerProviderRefreshCalls = 0
     deleteApiKeyMock.mockReset()
@@ -285,7 +280,7 @@ describe('gateway session reconciler', () => {
     })
     dispose = setupGatewaySessionReconciler()
     await whenGatewayReconcilerSettledForTests()
-    expect(settingsStoreState.modelCredentialStatus).toBe('expired')
+    expect(getGatewayCredentialStatus()).toBe('expired')
     expect(getProviderConfigRegistered()).toBe(false)
   })
 
@@ -419,10 +414,10 @@ describe('gateway session reconciler', () => {
     await vi.waitFor(() => {
       expect(getLastGatewayReconcileOutcome()).not.toBeNull()
     })
-    // Let the queued logout job run to completion.
-    await vi.waitFor(() => {
-      expect(settingsStoreState.modelCredentialStatus).toBe('missing')
-    })
+    // Wait for the queued logout itself: the setup-only drain cannot wait
+    // for jobs added by later storage events.
+    await vi.waitFor(() => expect(getProviderConfigRegistered()).toBe(false))
+    expect(settingsStoreState.modelCredentialStatus).toBe('missing')
 
     // The stale job must not have restored the provider/catalog.
     expect(getProviderConfigRegistered()).toBe(false)

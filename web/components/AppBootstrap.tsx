@@ -349,6 +349,11 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
 
       try {
         const { useSettingsStore } = await import('@/store/settings.store')
+        const { isLLMGatewayConfigured } = await import('@/agent/providers/llm-gateway-provider')
+        if (isLLMGatewayConfigured() || useSettingsStore.getState().providerType === 'llm-gateway') {
+          const { seedGatewayCredentialState } = await import('@/agent/providers/llm-gateway-auth')
+          await runInitStep('seedGatewayCredentialState', seedGatewayCredentialState)
+        }
         await runInitStep('checkHasApiKey', () => useSettingsStore.getState().checkHasApiKey())
       } catch (err) {
         console.error('[App] Failed to check API key:', err)

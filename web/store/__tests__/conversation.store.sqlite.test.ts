@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { credentialRegistry } from '@/agent/providers/credential-state'
 import { createAssistantMessage, createToolMessage, createUserMessage } from '@/agent/message-types'
 import { useConversationRuntimeStore } from '../conversation-runtime.store'
 
@@ -1905,6 +1906,25 @@ describe('conversation.store.sqlite tool-call routing', () => {
       const projectBranch = await useConversationStore.getState().branchConversation(projectSource.id, projectMsg.id)
       expect(projectBranch.kind).toBeUndefined()
     })
+  })
+
+  it.each(['unknown', 'temporary'] as const)('allows %s credential status when manually compacting', async (kind) => {
+    const settings = (await import('../settings.store') as any).__mockSettingsState
+    settings.hasApiKey = false
+    credentialRegistry.commit('openai', { kind })
+    const compact = vi.fn(async (messages: any[]) => messages)
+    ;(globalThis as any).__conversationStoreCustomCompact = compact
+    const conv = useConversationStore.getState().createNew('temporary-key-compact', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('answer'))
+    try {
+      await useConversationStore.getState().compactConversation(conv.id)
+      expect(toastErrorMock.mock.calls).toEqual([])
+      expect(compact).toHaveBeenCalled()
+    } finally {
+      settings.hasApiKey = true
+      credentialRegistry.reset()
+    }
   })
 
   it('compaction consumes a queued rerunOnly trigger without creating a blank user message (#170 round 2)', async () => {
