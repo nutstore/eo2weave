@@ -1,4 +1,5 @@
 import { common } from './common'
+import { credential } from './credential'
 import { app } from './app'
 import { topbar } from './topbar'
 import { folderSelector } from './folderSelector'
@@ -42,6 +43,7 @@ import { skillInstall } from './skillInstall'
 
 export const enUS = {
   common,
+  credential,
   app,
   topbar,
   folderSelector,

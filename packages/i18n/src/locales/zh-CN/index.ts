@@ -1,4 +1,5 @@
 import { common } from './common'
+import { credential } from './credential'
 import { app } from './app'
 import { topbar } from './topbar'
 import { folderSelector } from './folderSelector'
@@ -41,6 +42,7 @@ import { chats } from './chats'
 import { skillInstall } from './skillInstall'
 export const zhCN = {
   common,
+  credential,
   app,
   topbar,
   folderSelector,

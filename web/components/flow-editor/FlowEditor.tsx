@@ -24,10 +24,11 @@ import { useFlowStore } from '@/store/flow.store'
 import { useSettingsStore } from '@/store/settings.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { isCustomProviderType } from '@/agent/providers/types'
+import { isGatewayCredentialKey } from '@/agent/providers/gateway-credential-alias'
+import { describeCredentialFailure } from '@/agent/providers/credential-failure'
 import { useAgentStore } from '@/store/agent.store'
 import type { FlowNode, FlowNodeKind } from '@/agent/flow/types'
 import type { ToolContext } from '@/agent/tools/tool-types'
-import { useT } from '@/i18n'
 
 // ---------------------------------------------------------------------------
 // Add-node toolbar items
@@ -270,8 +271,6 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
     onNodeStatusChange: setNodeStatuses,
   })
 
-  const t = useT()
-
   const handleRun = useCallback(async () => {
     if (!llmConfigBase || !toolContext) return
 
@@ -291,18 +290,14 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
     const credential = await resolveDispatchApiKey(
       effectiveConfig?.apiKeyProviderKey,
       () => apiKeyRepo.load(effectiveConfig?.apiKeyProviderKey ?? ''),
-    )
-    if (!credential.ok && providerType === 'llm-gateway') {
-      toast.error(t(credential.kind === 'temporary'
-        ? 'conversation.error.gatewayCredentialTemporary'
-        : 'conversation.toast.gatewayReauthRequired'))
+    ).catch(() => ({ ok: false, kind: 'temporary' } as const))
+    const keyless = isCustomProviderType(providerType) &&
+      !isGatewayCredentialKey(effectiveConfig?.apiKeyProviderKey)
+    if (!credential.ok && (credential.kind !== 'missing' || !keyless)) {
+      toast.error(describeCredentialFailure(credential, effectiveConfig?.apiKeyProviderKey ?? providerType).message)
       return
     }
     const apiKey = credential.ok ? credential.apiKey : null
-    if (!apiKey && !isCustomProviderType(providerType)) {
-      toast.error(t('workflowEditor.toast.apiKeyRequired'))
-      return
-    }
 
     // Inject the resolved config + key + user input into the run
     await flowRun.runWithConfig({
@@ -311,7 +306,7 @@ function FlowEditorInner({ isFullscreen }: { isFullscreen?: boolean }) {
       llm: { ...llmConfigBase, apiKey: apiKey || '' },
       userInput: userInput.trim() || undefined,
     })
-  }, [llmConfigBase, toolContext, flowRun, activeInstance, effectiveConfig, providerType, userInput, needsUserInput, t])
+  }, [llmConfigBase, toolContext, flowRun, activeInstance, effectiveConfig, providerType, userInput, needsUserInput])
 
   const canRun = !!(activeInstance && activeInstance.nodes.length > 0 && llmConfigBase && toolContext)
 

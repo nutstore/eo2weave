@@ -1,4 +1,5 @@
 import { common } from './common'
+import { credential } from './credential'
 import { app } from './app'
 import { topbar } from './topbar'
 import { folderSelector } from './folderSelector'
@@ -42,6 +43,7 @@ import { extension } from './extension'
 
 export const koKR = {
   common,
+  credential,
   app,
   topbar,
   folderSelector,

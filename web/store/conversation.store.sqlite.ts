@@ -10,6 +10,7 @@
  */
 
 import { credentialRegistry, isCredentialPending } from '@/agent/providers/credential-state'
+import { describeCredentialFailure } from '@/agent/providers/credential-failure'
 import { isConversationUserMessage, isHumanUserMessage } from '@/agent/message-types'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
@@ -298,9 +299,13 @@ interface ConversationState extends ConversationLoadState {
           | 'title_is_manual'
           | 'no_provider'
           | 'no_model'
-          | 'no_api_key'
           | 'model_returned_empty'
           | 'model_error'
+      }
+    | {
+        ok: false
+        reason: 'credential_unavailable'
+        failure: ReturnType<typeof describeCredentialFailure>
       }
   >
 
@@ -1557,19 +1562,23 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const apiKeyRepo = getApiKeyRepository()
       // The gateway's credential is the shared session (#277).
       const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
-      const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, () => apiKeyRepo.load(providerConfig.apiKeyProviderKey))
-      const apiKey = credential.ok ? credential.apiKey : null
+      const credential = await resolveDispatchApiKey(
+        providerConfig.apiKeyProviderKey,
+        () => apiKeyRepo.load(providerConfig.apiKeyProviderKey),
+      ).catch(() => ({ ok: false, kind: 'temporary' } as const))
       // A gateway without a live session is NOT keyless: sending would reach the
       // endpoint with no Authorization header (#172 finding 4).
       const { isGatewayCredentialKey } = await import('@/agent/providers/gateway-credential-alias')
-      if (!credential.ok && isGatewayCredentialKey(providerConfig.apiKeyProviderKey)) {
-        return { ok: false, reason: 'no_api_key' }
+      const keyless = isCustomProviderType(providerType) &&
+        !isGatewayCredentialKey(providerConfig.apiKeyProviderKey)
+      if (!credential.ok && (credential.kind !== 'missing' || !keyless)) {
+        return {
+          ok: false,
+          reason: 'credential_unavailable',
+          failure: describeCredentialFailure(credential, providerConfig.apiKeyProviderKey),
+        }
       }
-      // Custom providers may run keyless (e.g. Ollama) — an absent key only
-      // blocks title generation for built-in providers.
-      if (!apiKey && !isCustomProviderType(providerType)) {
-        return { ok: false, reason: 'no_api_key' }
-      }
+      const apiKey = credential.ok ? credential.apiKey : ''
 
       const title = await generateConversationTitle(
         conv.messages,
