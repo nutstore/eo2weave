@@ -4,7 +4,7 @@ export const projectHome = {
         cardTitle: "独立对话",
     },
     // 顶部品牌
-    brand: "怡氧知知",
+    brand: "怡氧®AI",
     openSettings: "打开设置",
     statsSummary: "{projects} 个项目",
     statsConversations: "{count} 个对话",
@@ -181,7 +181,7 @@ export const projectHome = {
       folderFieldTitle: "授权本地文件夹",
       folderFieldRecommended: "推荐",
       folderFieldHint:
-        "授权后，怡氧知知就能在您指定的文件夹中搜索、浏览、编辑和创建文件，帮您更高效地完成工作。",
+        "授权后，怡氧®AI 就能在您指定的文件夹中搜索、浏览、编辑和创建文件，帮您更高效地完成工作。",
       folderPickerUnsupported:
         "当前浏览器不支持选择本地目录，请使用 Chrome / Edge 最新版。",
       chooseLocalFolder: "选择本地文件夹",

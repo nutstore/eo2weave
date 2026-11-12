@@ -244,7 +244,7 @@ export default defineConfig({
   },
   // `manifest` as a function receives WXT's ConfigEnv (mode: 'development'
   // for `wxt`, 'production' for `wxt build`). We use it to give dev builds a
-  // distinct NAME — "EO2Weave Dev HH:mm:ss" / "怡氧知知 Dev HH:mm:ss"
+  // distinct NAME — "EO2Weave Dev HH:mm:ss" / "怡氧®AI Dev HH:mm:ss"
   // via __MSG_extensionNameDev__
   // — so chrome://extensions and the toolbar tooltip can tell the two unpacked
   // loads apart. Without this, both builds share the same pinned extension

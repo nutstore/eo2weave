@@ -8,9 +8,9 @@ export function HomeGlobalMarkup() {
 
 
 <main className="page">
-<section className="hero shell" id="top" aria-labelledby="hero-title">
+<section className="hero hero--global shell" id="top" aria-labelledby="hero-title">
 <div className="hero-copy">
-<h1 id="hero-title">Understand your goals&ensp;<em>Get things done</em>
+<h1 id="hero-title"><span>Understand your goals</span><em>Get things done</em>
 </h1>
 <p className="description">EO2Weave is an AI workspace in your browser, with no desktop app required. Choose an AI model in the sidebar and let EO2Weave work with websites and local files, within the permissions you grant, to help complete complex tasks.</p>
 <div className="actions">

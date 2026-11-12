@@ -1,5 +1,6 @@
 'use client'
 
+import { BrandName } from '@/components/BrandName'
 import './site-footer.css'
 
 export type FooterCopy = {
@@ -26,7 +27,7 @@ export function SiteFooter({ copy }: { copy: FooterCopy }) {
           <div className="top">
             <div className="brand">
               <img src="/marketing/logo.svg" alt="" />
-              <span>{copy.brand}</span>
+              <span><BrandName name={copy.brand} /></span>
             </div>
           </div>
           <div className="links">

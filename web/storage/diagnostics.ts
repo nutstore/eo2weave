@@ -418,7 +418,7 @@ export async function runDiagnostics(): Promise<DiagnosticReport> {
   // Build markdown
   const generatedAt = new Date().toISOString()
   const md: string[] = []
-  md.push(`# 怡氧知知诊断报告`)
+  md.push(`# 怡氧®AI 诊断报告`)
   md.push(`生成时间：${generatedAt}`)
   md.push('')
 

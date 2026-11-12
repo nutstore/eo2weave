@@ -1,3 +1,4 @@
+import { BrandName } from '@/components/BrandName'
 export function ExperienceDoubanMarkup() {
   return (
     <>
@@ -178,7 +179,7 @@ export function ExperienceDoubanMarkup() {
 <rect x="96" y="127" width="324" height="76" rx="10" fill="#F8FCFA" stroke="#D5E8DE" />
 <rect x="111" y="144" width="42" height="42" rx="9" fill="#2D9C8C" />
 <text x="132" y="172" textAnchor="middle" fill="white" fontFamily="Arial,sans-serif" fontSize="16" fontWeight="700">怡</text>
-<text x="168" y="158" fill="#20332F" fontFamily="Arial,sans-serif" fontSize="13" fontWeight="700">怡氧知知</text>
+<text x="168" y="158" fill="#20332F" fontFamily="Arial,sans-serif" fontSize="13" fontWeight="700">怡氧<tspan baselineShift="super" fontSize="7">®</tspan>AI</text>
 <text x="168" y="180" fill="#6D8479" fontFamily="Arial,sans-serif" fontSize="12">扩展程序已加载</text>
 <circle cx="393" cy="165" r="12" fill="#E1F2E8" />
 <path d="m387 165 4 4 8-9" stroke="#168477" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -208,7 +209,7 @@ export function ExperienceDoubanMarkup() {
 <span>只读浏览</span>
 </div>
 </div>
-<p>豆瓣电影汇集影片信息、类型、评分和观众口碑，无需登录即可浏览公开内容。该网站本身并不支持 WebMCP，体验中，怡氧知知会为当前页面注入 WebMCP 能力，让你直接向 AI 询问近期上映、年度好片或高分悬疑片。<span className="douban-inline-guide">只需三步：<span className="douban-inline-steps">① 打开豆瓣电影 ② 点击怡氧知知悬浮按钮 ③ 授权并提问</span>
+<p>豆瓣电影汇集影片信息、类型、评分和观众口碑，无需登录即可浏览公开内容。该网站本身并不支持 WebMCP，体验中，怡氧®AI 会为当前页面注入 WebMCP 能力，让你直接向 AI 询问近期上映、年度好片或高分悬疑片。<span className="douban-inline-guide">只需三步：<span className="douban-inline-steps">① 打开豆瓣电影 ② 点击怡氧®AI 悬浮按钮 ③ 授权并提问</span>
 </span>
 </p>
 </div>
@@ -218,7 +219,7 @@ export function ExperienceDoubanMarkup() {
 <a className="douban-action" href="https://movie.douban.com/" target="_blank" rel="noopener noreferrer" id="open-douban">打开豆瓣电影 <span aria-hidden="true">↗</span>
 </a>
 </div>
-<div className="douban-motion" role="img" aria-label="动画演示：点击打开豆瓣电影，点击怡氧知知悬浮按钮，授权当前页面，在输入框中输入问题并发送。">
+<div className="douban-motion" role="img" aria-label="动画演示：点击打开豆瓣电影，点击怡氧®AI 悬浮按钮，授权当前页面，在输入框中输入问题并发送。">
 <div className="douban-motion-browser" aria-hidden="true">
 <div className="douban-motion-toolbar">
 <span className="douban-motion-dots">
@@ -283,7 +284,7 @@ export function ExperienceDoubanMarkup() {
 </i>
 </div>
 </div>
-<span className="douban-motion-float-hint">打开怡氧知知</span>
+<span className="douban-motion-float-hint">打开怡氧®AI</span>
 <span className="douban-motion-float-focus">
 </span>
 <div className="douban-motion-float">
@@ -296,7 +297,7 @@ export function ExperienceDoubanMarkup() {
 <div className="douban-motion-panel">
 <div className="douban-motion-panel-head">
 <img src="/marketing/logo.svg" alt="" />
-<strong>怡氧知知</strong>
+<strong><BrandName name="怡氧®AI" /></strong>
 <span>×</span>
 </div>
 <div className="douban-motion-permission">
@@ -325,7 +326,7 @@ export function ExperienceDoubanMarkup() {
 </div>
 </div>
 <div className="douban-motion-input">
-<span className="douban-motion-placeholder">向怡氧知知提问</span>
+<span className="douban-motion-placeholder">向怡氧®AI 提问</span>
 <span className="douban-motion-typed">
 </span>
 <b>↑</b>

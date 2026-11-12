@@ -4,7 +4,7 @@ export const app = {
     preparing: "正在准备...",
     loadProgress: "加载进度",
     firstLoadHint: "首次加载可能需要几秒钟时间",
-    productName: "怡氧知知",
+    productName: "怡氧®AI",
     initComplete: "初始化完成",
     initFailed: "初始化失败",
     retry: "重试",

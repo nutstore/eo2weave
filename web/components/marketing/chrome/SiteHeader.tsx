@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { BrandName } from '@/components/BrandName'
 import { useEffect, useRef, useState } from 'react'
 import { ExtensionMenu } from './ExtensionMenu'
 import type { ExtensionCopy } from './ExtensionMenu'
@@ -113,7 +114,7 @@ export function SiteHeader({ page, region, copy }: { page: MarketingPageKey; reg
           onClick={onHomeClick}
         >
           <img src="/marketing/logo.svg" alt="" />
-          <span>{copy.brand}</span>
+          <span><BrandName name={copy.brand} /></span>
         </Link>
         <button
           className="nav-toggle"

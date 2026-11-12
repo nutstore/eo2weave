@@ -15,6 +15,7 @@ import {
 import { AlertTriangle, Database, Download, RefreshCw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useT } from '@/i18n'
+import { BrandName } from '@/components/BrandName'
 
 export interface StorageLoadingProps {
   /** Optional progress percentage (0-100) */
@@ -157,7 +158,7 @@ export function StorageLoading({
             </div>
           </BrandCard>
 
-          <p className="mt-4 text-center text-xs text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500">{t('app.productName')}</p>
+          <p className="mt-4 text-center text-xs text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500"><BrandName name={t('app.productName')} /></p>
         </div>
       </div>
     )
@@ -172,7 +173,7 @@ export function StorageLoading({
             {/* Logo */}
             <img src="/favicon.svg" alt="" className="mb-4 h-12 w-12" />
 
-            <BrandCardTitle className="text-xl">{t('app.productName')}</BrandCardTitle>
+            <BrandCardTitle className="text-xl"><BrandName name={t('app.productName')} /></BrandCardTitle>
             <BrandCardDescription className="mt-1">{t('app.initializing')}</BrandCardDescription>
           </BrandCardHeader>
 
@@ -195,7 +196,7 @@ export function StorageLoading({
           </div>
         </BrandCard>
 
-        <p className="mt-4 text-center text-xs text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500">{t('app.productName')}</p>
+        <p className="mt-4 text-center text-xs text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500"><BrandName name={t('app.productName')} /></p>
       </div>
     </div>
   )

@@ -4,7 +4,7 @@
 // Generic entry point for CreatorWeave's side panel feature — runs on
 // ALL URLs (matches <all_urls>) so users can invoke the side panel
 // from any page they're browsing. Injects a compact floating button
-// labeled "怡氧知知" that toggles the side panel on click.
+// labeled "怡氧®AI" that toggles the side panel on click.
 // The button is draggable: release snaps to the nearest screen edge.
 //
 // What this script needs from the page:
@@ -38,7 +38,7 @@ export default defineContentScript({
     const BUTTON_ID = 'cw-side-panel-btn'
 
     // Don't inject the button on CreatorWeave's own pages — the side
-    // panel *is* CreatorWeave, so having a "唤起怡氧知知" button there
+    // panel *is* CreatorWeave, so having a "唤起怡氧®AI" button there
     // is confusing and recursive.
     //
     // Detection: CreatorWeave sets `document.documentElement.dataset.creatorweave`

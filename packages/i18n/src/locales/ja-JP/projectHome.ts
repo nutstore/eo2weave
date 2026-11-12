@@ -4,7 +4,7 @@ export const projectHome = {
         cardTitle: "スタンドアロンチャット",
     },
     // ヘッダーブランド
-    brand: "怡氧知知",
+    brand: "怡氧®AI",
     openSettings: "設定を開く",
     statsSummary: "{projects} プロジェクト",
     statsConversations: "{count} 会話",

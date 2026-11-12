@@ -1,6 +1,6 @@
 {
-  "extensionName": { "message": "怡氧知知" },
-  "extensionNameDev": { "message": "怡氧知知 Dev" },
+  "extensionName": { "message": "怡氧®AI" },
+  "extensionNameDev": { "message": "怡氧®AI Dev" },
   "webmcpFoundSummary": {
     "message": "WebMCP：$HOSTS$ 个站点，$TOOLS$ 个工具可用",
     "placeholders": {
@@ -50,8 +50,8 @@
   "resetLogin": { "message": "重新开始（清除状态）" },
   "documentation": { "message": "使用文档" },
   "github": { "message": "GitHub" },
-  "sidePanelButtonLabel": { "message": "怡氧知知" },
-  "sidePanelButtonTitle": { "message": "点击唤起怡氧知知 AI 助手" },
+  "sidePanelButtonLabel": { "message": "怡氧®AI" },
+  "sidePanelButtonTitle": { "message": "点击唤起怡氧®AI 助手" },
   "resetCreditsAvailable": { "message": "手动重置额度" },
   "availableCount": { "message": "可用 $COUNT$ 次", "placeholders": { "count": { "content": "$1" } } },
   "resetCreditExpires": { "message": "有效期至 $DATE$", "placeholders": { "date": { "content": "$1" } } },

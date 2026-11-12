@@ -1,6 +1,6 @@
 // 欢迎页
 export const welcome = {
-    title: "怡氧知知",
+    title: "怡氧®AI",
     greeting: "有什么工作需要我处理？",
     tagline: "面向创作者的 AI 原生工作台",
     placeholder: "输入消息开始对话...",
@@ -30,7 +30,7 @@ export const welcome = {
     setupGuideLinkDesc: "三步完成：服务商 Key → 常用模型 → 默认模型",
     // Conditional onboarding labels (these are not a linear progress count)
     apiKeyLabel: "连接 AI",
-    welcomeHeading: "欢迎使用 怡氧知知",
+    welcomeHeading: "欢迎使用 怡氧®AI",
     welcomeSubtitle: "本地 AI 创作工坊，文件和代码都在浏览器中",
     continueButton: "继续",
     skipButton: "暂时跳过",

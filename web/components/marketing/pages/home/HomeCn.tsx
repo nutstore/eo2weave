@@ -20,7 +20,7 @@ export function HomeCn() {
   useHomeBehavior(root, copy)
   useExtensionMarkers(root)
   return (
-    <div ref={root} style={{ '--sidebar-placeholder': '"问问怡氧知知…"' } as CSSProperties}>
+    <div ref={root} style={{ '--sidebar-placeholder': '"问问怡氧®AI…"' } as CSSProperties}>
       <HomeCnMarkup />
     </div>
   )

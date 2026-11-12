@@ -19,6 +19,9 @@
     :where(.marketing-page-home) .hero-copy { position:relative; z-index:2; width:min(1180px,100%); }
     :where(.marketing-page-home) h1 { max-width:1100px; margin:0 auto; color:#172b27; font-size:clamp(56px,7vw,96px); font-weight:720; letter-spacing:.02em; line-height:1.08; white-space:nowrap; }
     :where(.marketing-page-home) h1 em { color:var(--brand-deep); font-style:normal; }
+    :where(.marketing-page-home) .hero--global h1 { font-size:clamp(32px,7vw,88px); letter-spacing:-.025em; white-space:normal; }
+    :where(.marketing-page-home) .hero--global h1 span,:where(.marketing-page-home) .hero--global h1 em { display:block; }
+    :where(.marketing-page-home) .hero--global .description { max-width:66ch; text-align:left; text-wrap:pretty; }
     :where(.marketing-page-home) .description { max-width:1180px; margin:31px auto 0; color:#3f5750; font-size:24px; letter-spacing:.005em; line-height:1.72; }
     :where(.marketing-page-home) .actions { display:flex; align-items:center; justify-content:center; gap:13px; margin-top:34px; }
     :where(.marketing-page-home) .button { display:inline-flex; min-height:60px; align-items:center; justify-content:center; gap:10px; border:1px solid transparent; border-radius:10px; padding:0 30px; font-size:20px; font-weight:700; letter-spacing:-.02em; transition:transform .2s ease,background .2s ease,border-color .2s ease; }
@@ -257,7 +260,7 @@
     :where(.marketing-page-home) .sidebar-input { position:absolute; right:11px; bottom:11px; left:11px; min-height:67px; border:1px solid #dcece2; border-radius:11px; background:#fff; padding:10px 10px 27px; box-shadow:0 4px 12px rgba(34,100,67,.04); color:#4a6858; font-size:10px; line-height:1.45; transition:border-color .25s ease,box-shadow .25s ease; }
     :where(.marketing-page-home) .sidebar-demo[data-step="typing"] .sidebar-input { border-color:#52b790; box-shadow:0 0 0 3px rgba(52,173,124,.1); }
     :where(.marketing-page-home) .sidebar-input.is-empty { color:#a4b5aa; }
-    :where(.marketing-page-home) .sidebar-input.is-empty::before { content:var(--sidebar-placeholder,"问问怡氧知知…"); }
+    :where(.marketing-page-home) .sidebar-input.is-empty::before { content:var(--sidebar-placeholder,"问问怡氧®AI…"); }
     :where(.marketing-page-home) .sidebar-input-caret { display:none; width:1px; height:10px; margin-left:1px; vertical-align:-2px; background:#278f70; animation:sidebar-caret .8s step-end infinite; }
     :where(.marketing-page-home) .sidebar-demo[data-step="typing"] .sidebar-input-caret { display:inline-block; }
     :where(.marketing-page-home) .sidebar-input-send { position:absolute; right:9px; bottom:7px; display:grid; width:18px; height:18px; place-items:center; border-radius:6px; background:#158e70; color:#fff; font-size:12px; }

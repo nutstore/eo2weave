@@ -1,4 +1,4 @@
-# EO2Weave (怡氧知知)
+# EO2Weave (怡氧®AI)
 
 > AI-native creator workspace with local-first files, knowledge workflows, and
 > multi-agent orchestration. Runs entirely in the browser as a PWA; files stay

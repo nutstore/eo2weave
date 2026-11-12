@@ -344,7 +344,7 @@ browser-extension/
 │   ├── webmcp.content.ts      # Content script — WebMCP relay (ISOLATED world, static)
 │   ├── webmcp-injected.content.ts # Content script — WebMCP page agent (MAIN world, static)
 │   ├── page-action-runner.content.ts # Bound page actions (ACT ON PAGES)
-│   ├── side-panel-button.content.ts  # Floating "唤起怡氧知知" button
+│   ├── side-panel-button.content.ts  # Floating "唤起怡氧®AI" button
 │   ├── popup/
 │   │   ├── index.html
 │   │   └── main.ts            # Popup: injection status, WebMCP site switches, Codex box (community version)

@@ -203,7 +203,7 @@
 }
 :where(.marketing-page-webmcp) .webmcp-explainer .em { color:var(--accent-light); font-weight:600; }
 
-/* 怡氧知知的四项作用 */
+/* Four roles of EO2Weave. */
 :where(.marketing-page-webmcp) #how.section { max-width: 1180px; padding-top: 88px; padding-bottom: 88px; }
 :where(.marketing-page-webmcp) #how .section-title { margin-bottom: 20px; font-size: 44px; }
 :where(.marketing-page-webmcp) #how .section-sub {
