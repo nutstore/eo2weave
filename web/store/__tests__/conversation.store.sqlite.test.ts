@@ -287,6 +287,41 @@ describe('conversation.store.sqlite tool-call routing', () => {
     delete (globalThis as any).__conversationStoreCustomCompact
   })
 
+  it.each(['temporary', 'expired', 'missing'] as const)(
+    'preserves a %s credential failure when generating a title',
+    async (kind) => {
+      const { useI18nStore } = await import('@/i18n/store')
+      const { describeCredentialFailure } = await import('@/agent/providers/credential-failure')
+      const types = await import('@/agent/providers/types')
+      const settings = (await import('../settings.store') as any).__mockSettingsState
+      const originalConfig = settings.getEffectiveProviderConfig.getMockImplementation()
+      const originalLocale = useI18nStore.getState().locale
+      const dispatch = await import('@/agent/providers/gateway-dispatch-key')
+      const resolver = vi.spyOn(dispatch, 'resolveDispatchApiKey').mockResolvedValue({ ok: false, kind })
+      settings.providerType = 'llm-gateway'
+      settings.getEffectiveProviderConfig.mockReturnValue({
+        apiKeyProviderKey: '__llm_gateway_token__', baseUrl: 'https://gateway.example/v1', modelName: 'model',
+      })
+      vi.mocked(types.isCustomProviderType).mockReturnValue(true)
+      useI18nStore.setState({ locale: 'en-US' })
+      try {
+        const conversation = useConversationStore.getState().createNew('title-test', { activate: false })
+        expect(await useConversationStore.getState().generateTitle(conversation.id, true)).toEqual({
+          ok: false,
+          reason: 'credential_unavailable',
+          failure: describeCredentialFailure({ ok: false, kind }, '__llm_gateway_token__'),
+        })
+        expect(useConversationStore.getState().conversations[0]?.title).toBe(conversation.title)
+      } finally {
+        resolver.mockRestore()
+        settings.providerType = 'openai'
+        settings.getEffectiveProviderConfig.mockImplementation(originalConfig)
+        vi.mocked(types.isCustomProviderType).mockReturnValue(false)
+        useI18nStore.setState({ locale: originalLocale })
+      }
+    },
+  )
+
   it('routes a subagent event to its owning spawn call instead of the active one', () => {
     const toolCallA = { id: 'spawn-a', type: 'function' as const, function: { name: 'spawn_subagent', arguments: '{}' } }
     const toolCallB = { id: 'spawn-b', type: 'function' as const, function: { name: 'spawn_subagent', arguments: '{}' } }

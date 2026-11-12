@@ -18,6 +18,7 @@ import { useSettingsStore } from '@/store/settings.store'
 import { normalizeBaseUrl } from '@/agent/llm/pi-ai-url-utils'
 import { getCachedModels } from '@/agent/providers/model-store'
 import type { LLMProviderType } from '@/agent/providers/types'
+import { describeCredentialFailure } from '@/agent/providers/credential-failure'
 
 //=============================================================================
 // Availability Check
@@ -171,15 +172,20 @@ export const imageGenExecutor: ToolExecutor = async (
   try {
     const { getApiKeyRepository } = await import('@/sqlite')
     const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
-    const credential = await resolveDispatchApiKey(effectiveConfig.apiKeyProviderKey, () => getApiKeyRepository().load(effectiveConfig.apiKeyProviderKey))
-    const apiKey = credential.ok ? credential.apiKey : null
-    if (!apiKey) {
+    const credential = await resolveDispatchApiKey(
+      effectiveConfig.apiKeyProviderKey,
+      () => getApiKeyRepository().load(effectiveConfig.apiKeyProviderKey),
+    ).catch(() => ({ ok: false, kind: 'temporary' } as const))
+    if (!credential.ok) {
+      const failure = describeCredentialFailure(credential, effectiveConfig.apiKeyProviderKey)
       return toolErrorJson(
         'generate_image',
-        'no_api_key',
-        'API Key not set. Please configure your API key in settings.',
+        failure.code,
+        failure.message,
+        { retryable: failure.retryable },
       )
     }
+    const apiKey = credential.apiKey
 
     // 2. Call generateImage (reuse existing function — zero new image gen code)
     const resolvedAspectRatio = aspectRatio || settingsState.imageGenAspectRatio || '1:1'

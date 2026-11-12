@@ -164,13 +164,13 @@ export function useConversationActions({
           // Model produced a valid title but it happens to equal the current one.
           toast.info(t('sidebar.titleUnchanged'), { id: toastId })
         }
+      } else if (result.reason === 'credential_unavailable') {
+        toast.error(result.failure.message, { id: toastId })
       } else {
         // Map every failure reason to a precise, actionable toast message.
         const messageKey =
           result.reason === 'no_provider' || result.reason === 'no_model'
             ? 'sidebar.titleGenerateNoProvider'
-            : result.reason === 'no_api_key'
-            ? 'sidebar.titleGenerateNoApiKey'
             : 'sidebar.titleGenerateFailed'
         toast.error(t(messageKey), { id: toastId })
       }

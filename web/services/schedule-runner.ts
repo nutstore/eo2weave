@@ -22,6 +22,7 @@ import type { PiAIProvider } from '@/agent/llm/pi-ai-provider'
 import { useSettingsStore } from '@/store/settings.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { LLM_PROVIDER_CONFIGS, isCustomProviderType, type LLMProviderType } from '@/agent/providers/types'
+import { describeCredentialFailure } from '@/agent/providers/credential-failure'
 
 const SCHEDULE_SYSTEM_PROMPT = `你是定时任务，每次按以下 prompt 执行。
 可参考项目文件以获取上下文。
@@ -194,9 +195,8 @@ export async function runSchedule(scheduleId: string, options?: { force?: boolea
     lastRunAt: endedAt,
     lastRunNumber: schedule.lastRunNumber + 1,
     error: runError ?? null,
-    // Keep enabled on LLM_NOT_AVAILABLE (user may not have configured keys yet).
-    // For other errors, keep enabled too — disabling on first error makes
-    // debugging painful. The heartbeat will retry on the next cron tick.
+    // Keep enabled so the next due run can retry after transient recovery,
+    // credential setup, or reauthentication.
     enabled: true,
     updatedAt: Date.now(),
   }
@@ -262,11 +262,13 @@ async function buildRuntimeDeps(schedule: NonNullable<Awaited<ReturnType<typeof 
   // shared session, so resolve it authoritatively (refresh included) instead of
   // reading a copy that may be stale or absent.
   const { resolveDispatchApiKey } = await import('@/agent/providers/gateway-dispatch-key')
-  const credential = await resolveDispatchApiKey(providerConfig.apiKeyProviderKey, () => getApiKeyRepository().load(providerConfig.apiKeyProviderKey))
+  const credential = await resolveDispatchApiKey(
+    providerConfig.apiKeyProviderKey,
+    () => getApiKeyRepository().load(providerConfig.apiKeyProviderKey),
+  ).catch(() => ({ ok: false, kind: 'temporary' } as const))
   if (!credential.ok) {
-    throw new Error(
-      `LLM_NOT_AVAILABLE: API key not configured for provider key "${providerConfig.apiKeyProviderKey}" (${credential.kind})`,
-    )
+    const failure = describeCredentialFailure(credential, providerConfig.apiKeyProviderKey)
+    throw new Error(`LLM_NOT_AVAILABLE: [${failure.code}] ${failure.message}`)
   }
   const apiKey = credential.apiKey
 
