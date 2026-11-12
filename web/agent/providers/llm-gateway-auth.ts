@@ -431,6 +431,12 @@ function loadStoredTokens(): StoredTokens | null {
   }
 }
 
+/** Remove the unused access-token shadow left by older releases (#283). */
+export async function cleanupLegacyGatewayCredential(): Promise<void> {
+  const { deleteApiKey } = await import('@/security/api-key-store')
+  await deleteApiKey(getGatewayDispatchCredentialKey())
+}
+
 /** Seed only locally provable gateway state before the first settings check. */
 export async function seedGatewayCredentialState(): Promise<void> {
   const initial = credentialRegistry.getState('llm-gateway')

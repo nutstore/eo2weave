@@ -389,7 +389,12 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       let gatewayRestoreGeneration: number | undefined
       try {
         const { registerLLMGatewayProvider, beginGatewayCatalogRefresh, updateGatewayModels, getLLMGatewayBaseURL, getLLMGatewayClientId, applyGatewayCredentialOutcome, isGatewayCredentialOutcomeCurrent } = await import('@/agent/providers/llm-gateway-provider')
-        const { resolveGatewayDispatchCredential, getGatewayAuthSessionGeneration } = await import('@/agent/providers/llm-gateway-auth')
+        const { resolveGatewayDispatchCredential, getGatewayAuthSessionGeneration, cleanupLegacyGatewayCredential } = await import('@/agent/providers/llm-gateway-auth')
+        // The obsolete shadow has no writers; remove it independently of
+        // session restoration so a failed cleanup cannot block startup.
+        void cleanupLegacyGatewayCredential().catch((err) => {
+          console.warn('[App] Failed to remove legacy gateway credential:', err)
+        })
         registerLLMGatewayProvider()
         const clientId = getLLMGatewayClientId()
         const baseURL = getLLMGatewayBaseURL()
