@@ -1,3 +1,4 @@
+import { unsupportedBrowser } from './unsupportedBrowser'
 import { common } from './common'
 import { credential } from './credential'
 import { app } from './app'
@@ -43,6 +44,7 @@ import { skillInstall } from './skillInstall'
 
 export const enUS = {
   common,
+  unsupportedBrowser,
   credential,
   app,
   topbar,
