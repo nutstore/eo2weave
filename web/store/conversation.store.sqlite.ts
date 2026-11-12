@@ -246,11 +246,16 @@ interface ConversationState extends ConversationLoadState {
   invalidateCompressionBaseline: (conv: Conversation, timestamp: number) => void
   deleteUserMessage: (conversationId: string, userMessageId: string) => boolean
   deleteAgentLoop: (conversationId: string, userMessageId: string) => boolean
-  regenerateUserMessage: (conversationId: string, userMessageId: string) => void
+  regenerateUserMessage: (
+    conversationId: string,
+    userMessageId: string,
+    pageContext?: Message['pageContext']
+  ) => void
   editAndResendUserMessage: (
     conversationId: string,
     userMessageId: string,
-    newContent: string
+    newContent: string,
+    pageContext?: Message['pageContext']
   ) => void
   deleteConversation: (id: string) => Promise<void>
   deleteConversations: (ids: string[]) => Promise<{
@@ -975,7 +980,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       return true
     },
 
-    regenerateUserMessage: (conversationId, userMessageId) => {
+    regenerateUserMessage: (conversationId, userMessageId, pageContext) => {
       const state = get()
       if (state.isConversationRunning(conversationId)) {
         toast.error(i18nText('conversation.toast.stopBeforeRegenerate', '请先停止当前运行，再重新生成'))
@@ -1033,6 +1038,13 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         if (idsToDelete.size > 0) {
           conv.messages = conv.messages.filter((m) => !idsToDelete.has(m.id))
         }
+        // A resend is a new turn: keep the snapshot the user is looking at now,
+        // not the one captured the first time this message was sent.
+        if (pageContext) {
+          conv.messages = conv.messages.map((m) =>
+            m.id === userMessageId ? { ...m, pageContext, pageContextDelivery: 'journal' as const } : m
+          )
+        }
         get().invalidateCompressionBaseline(conv, userMsgTimestamp)
         conv.status = 'idle'
         conv.error = null
@@ -1066,7 +1078,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       }
     },
 
-    editAndResendUserMessage: (conversationId, userMessageId, newContent) => {
+    editAndResendUserMessage: (conversationId, userMessageId, newContent, pageContext) => {
       const state = get()
       if (state.isConversationRunning(conversationId)) {
         toast.error(i18nText('conversation.toast.stopBeforeEditResend', '请先停止当前运行，再编辑发送'))
@@ -1123,6 +1135,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           ...conv.messages[userMsgIndex],
           content: newContent,
           timestamp: Date.now(),
+          ...(pageContext ? { pageContext, pageContextDelivery: 'journal' as const } : {}),
         }
 
         // Delete all non-user messages after this user message, before the

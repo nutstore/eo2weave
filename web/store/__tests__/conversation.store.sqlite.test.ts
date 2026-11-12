@@ -1342,6 +1342,71 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(updated?.messages[0]?.role).toBe('user')
   })
 
+  // Resending must not dispatch the agent: these tests only assert the stored
+  // message, and a real run consumes the mock queues the later tests rely on.
+  function withoutAgentRun(fn: () => void) {
+    const original = useConversationStore.getState().runAgent
+    useConversationStore.setState({ runAgent: (async () => {}) as any } as any)
+    try {
+      fn()
+    } finally {
+      useConversationStore.setState({ runAgent: original } as any)
+    }
+  }
+
+  it('replaces the page-context snapshot when a message is resent', () => {
+    withoutAgentRun(() => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('resend-refreshes-page-context')
+
+      const u1 = createUserMessage('u1', undefined, { hostname: 'first.example', url: 'https://first.example/a' })
+      const a1 = createAssistantMessage('a1')
+      useConversationStore.getState().updateMessages(conv.id, [u1, a1])
+
+      useConversationStore.getState().regenerateUserMessage(conv.id, u1.id, {
+        hostname: 'second.example',
+        url: 'https://second.example/b',
+      })
+
+      const updated = useConversationStore.getState().conversations.find((x) => x.id === conv.id)
+      expect(updated?.messages[0]?.pageContext?.hostname).toBe('second.example')
+      expect(updated?.messages[0]?.pageContextDelivery).toBe('journal')
+    })
+  })
+
+  it('keeps the stored page-context snapshot when a resend captures none', () => {
+    withoutAgentRun(() => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('resend-keeps-page-context')
+
+      const u1 = createUserMessage('u1', undefined, { hostname: 'first.example' })
+      useConversationStore.getState().updateMessages(conv.id, [u1, createAssistantMessage('a1')])
+
+      useConversationStore.getState().regenerateUserMessage(conv.id, u1.id)
+
+      const updated = useConversationStore.getState().conversations.find((x) => x.id === conv.id)
+      expect(updated?.messages[0]?.pageContext?.hostname).toBe('first.example')
+    })
+  })
+
+  it('replaces the page-context snapshot on edit-and-resend', () => {
+    withoutAgentRun(() => {
+      const store = useConversationStore.getState()
+      const conv = store.createNew('edit-resend-refreshes-page-context')
+
+      const u1 = createUserMessage('u1', undefined, { hostname: 'first.example' })
+      useConversationStore.getState().updateMessages(conv.id, [u1, createAssistantMessage('a1')])
+
+      useConversationStore.getState().editAndResendUserMessage(conv.id, u1.id, 'u1 edited', {
+        hostname: 'third.example',
+      })
+
+      const updated = useConversationStore.getState().conversations.find((x) => x.id === conv.id)
+      expect(updated?.messages[0]?.content).toBe('u1 edited')
+      expect(updated?.messages[0]?.pageContext?.hostname).toBe('third.example')
+    })
+  })
+
   it('keeps the runtime status pending when compression starts before content or tool streaming', async () => {
     const store = useConversationStore.getState()
     const conv = store.createNew('compression-pending')

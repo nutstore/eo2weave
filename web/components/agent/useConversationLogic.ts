@@ -53,6 +53,23 @@ export function selectMentionAgents(
   return filtered.length === 0 ? EMPTY_MENTION_AGENTS : filtered
 }
 
+/**
+ * Re-read the page snapshot for a turn that is being re-run (resend / edit-resend).
+ * Best-effort: a failing extension round-trip must never block the resend, and a
+ * null result means "not in side-panel mode" — the caller then keeps the stored snapshot.
+ */
+async function capturePageContextBestEffort(
+  reason: string
+): Promise<Awaited<ReturnType<(typeof import('@/agent/workspace-assistant-context'))['capturePageContext']>> | null> {
+  try {
+    const { capturePageContext } = await import('@/agent/workspace-assistant-context')
+    return await capturePageContext()
+  } catch (err) {
+    console.warn(`[useConversationLogic] page-context capture failed on ${reason}; keeping the stored snapshot:`, err)
+    return null
+  }
+}
+
 export function useConversationLogic() {
   const t = useT()
 
@@ -837,11 +854,12 @@ export function useConversationLogic() {
   }, [t])
 
   const handleEditAndResend = useCallback(
-    (userMessageId: string, newContent: string) => {
+    async (userMessageId: string, newContent: string) => {
       if (blockIfProviderUnregistered()) return
       const currentConvId = convIdRef.current
       if (!currentConvId) return
-      editAndResendUserMessage(currentConvId, userMessageId, newContent)
+      const pageContext = await capturePageContextBestEffort('edit-and-resend')
+      editAndResendUserMessage(currentConvId, userMessageId, newContent, pageContext ?? undefined)
     },
     [editAndResendUserMessage, blockIfProviderUnregistered]
   )
@@ -850,11 +868,14 @@ export function useConversationLogic() {
   // callback degrades to a no-op, matching the old conditional hook contract
   // (undefined) observed by consumers — they only invoke it with a message id.
   const handleRegenerate = useCallback(
-    (id: string) => {
+    async (id: string) => {
       if (blockIfProviderUnregistered()) return
       const currentConvId = convId
       if (!currentConvId) return
-      regenerateUserMessage(currentConvId, id)
+      // Resend is a new turn, so the page snapshot must be re-read: otherwise the
+      // model keeps seeing whatever page was open the first time this was sent.
+      const pageContext = await capturePageContextBestEffort('resend')
+      regenerateUserMessage(currentConvId, id, pageContext ?? undefined)
     },
     [convId, regenerateUserMessage, blockIfProviderUnregistered]
   )
