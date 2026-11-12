@@ -18,6 +18,15 @@ const ensureWorkspaceMock = vi.fn(() => Promise.resolve())
 // path is replaced, every other export stays real.
 const { peekSubagentRuntimeMock } = vi.hoisted(() => ({ peekSubagentRuntimeMock: vi.fn() }))
 
+vi.mock('@/sqlite/repositories/subagent.repository', () => ({
+  getSubagentRepository: () => ({ findByWorkspaceId: async () => [], deleteTask: async () => {} }),
+}))
+vi.mock('@/sqlite/repositories/subagent-completion.repository', () => ({
+  getSubagentCompletionRepository: () => ({
+    listRecoverable: async () => [], listProcessing: async () => [], cleanupConversation: async () => {},
+  }),
+}))
+
 vi.mock('@/agent/subagent/runtime', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>()
   return { ...actual, peekSubagentRuntime: peekSubagentRuntimeMock }

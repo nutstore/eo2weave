@@ -119,9 +119,11 @@ function createRuntime(
   workspaceId: string,
   notifications: (SubagentTaskNotification | SubagentStepNotification)[],
   onWorkspacePathsChanged?: (paths: readonly string[]) => void,
+  onAsyncWorkspacePathsChanged = onWorkspacePathsChanged,
 ): SubagentRuntime {
   return getOrCreateSubagentRuntime({
     workspaceId,
+    onAsyncWorkspacePathsChanged,
     provider: {} as any,
     toolRegistry: {} as any,
     contextManager: {
@@ -207,6 +209,20 @@ describe('subagent runtime', () => {
     await expect(runtime.start({ description: 'task', prompt: 'work' })).rejects.toThrow('disk full')
     expect((await runtime.list({})).total).toBe(0)
     expect(hoisted.loopConfigs).toHaveLength(0)
+  })
+
+  it('attributes async writes to the child instead of the parent auto-apply set', async () => {
+    const parentPaths = vi.fn(), childPaths = vi.fn()
+    hoisted.setRunImpl(async (_messages, config) => {
+      config.toolContext.onWorkspacePathsChanged(['child.md'])
+      return [createAssistantMessage('done')]
+    })
+    const runtime = createRuntime('async-path-owner', [], parentPaths, childPaths)
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await waitForStatusWithTimers(runtime, receipt.agentId, 'completed')
+    expect(parentPaths).not.toHaveBeenCalled()
+    expect(childPaths).toHaveBeenCalledWith(['child.md'])
+    expect(hoisted.repo.finishExecution.mock.calls[0][0].completion.changedPaths).toEqual(['child.md'])
   })
 
   it('freezes active execution callbacks when runtime dependencies change', async () => {

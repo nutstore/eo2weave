@@ -40,6 +40,15 @@ const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
 const messageRepoApplyDiffMock = vi.fn(() => Promise.resolve())
 const messageRepoInsertMock = vi.fn(() => Promise.resolve())
 
+vi.mock('@/sqlite/repositories/subagent.repository', () => ({
+  getSubagentRepository: () => ({ findByWorkspaceId: async () => [], deleteTask: async () => {} }),
+}))
+vi.mock('@/sqlite/repositories/subagent-completion.repository', () => ({
+  getSubagentCompletionRepository: () => ({
+    listRecoverable: async () => [], listProcessing: async () => [], cleanupConversation: async () => {},
+  }),
+}))
+
 vi.mock('sonner', () => ({
   toast: { error: vi.fn() },
 }))

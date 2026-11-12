@@ -52,6 +52,7 @@ export interface SubagentCompletion {
   parentToolCallId?: string
   continuation?: SubagentContinuation
   notificationMessageId: string
+  deliveryReserved?: boolean
   status: SubagentDeliveryPhase
   taskStatus: SubagentTaskStatus
   description: string

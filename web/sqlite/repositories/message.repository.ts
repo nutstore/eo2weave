@@ -274,6 +274,7 @@ export class MessageRepository {
       runChanges: meta.runChanges,
       readImageHandoff: meta.readImageHandoff,
       delegationNote: meta.delegationNote,
+      subagentCompletion: meta.subagentCompletion,
     }
   }
 

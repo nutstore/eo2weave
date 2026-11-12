@@ -27,6 +27,7 @@ describe('durable model context metadata', () => {
   it('preserves agent-input identity across reloads, including multimodal parts', async () => {
     const repository = new MessageRepository()
     const messages = [
+      { ...createUserMessage('child finished'), subagentCompletion: { eventIds: ['child:execution'] } },
       { ...createUserMessage('delegated task'), delegationNote: { fromAgentId: 'a', task: 'task', reason: 'specialist' } },
       createUserMessage('image', undefined, undefined, {
         readImageHandoff: { path: '/x.png', mimeType: 'image/png', ocrStatus: 'done' },

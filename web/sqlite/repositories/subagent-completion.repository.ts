@@ -15,6 +15,7 @@ function fromRow(row: CompletionRow): SubagentCompletion {
   return {
     ...parseJSON<SubagentCompletion>(row.snapshot_json, {} as SubagentCompletion),
     ...(row.notification_message_id ? { notificationMessageId: row.notification_message_id } : {}),
+    ...(row.notification_message_id ? { deliveryReserved: true } : {}),
     status: row.status,
     updatedAt: row.updated_at,
     ...(row.parent_run_id ? { parentRunId: row.parent_run_id } : {}),
@@ -111,7 +112,7 @@ export class SubagentCompletionRepository {
           [notificationMessageId, Date.now(), row.id]
         )
       }
-      return rows.map((row) => ({ ...fromRow(row), notificationMessageId }))
+      return rows.map((row) => ({ ...fromRow(row), notificationMessageId, deliveryReserved: true }))
     })
   }
 
@@ -127,8 +128,8 @@ export class SubagentCompletionRepository {
   markHandled(id: string, runId?: string): Promise<boolean> {
     return this.transition(id, ['processing'], 'handled', undefined, undefined, runId)
   }
-  suppress(id: string): Promise<boolean> {
-    return this.transition(id, ['pending', 'delivered', 'blocked', 'error'], 'suppressed')
+  suppress(id: string, expectedRunId?: string): Promise<boolean> {
+    return this.transition(id, ['pending', 'delivered', 'processing', 'blocked', 'error'], 'suppressed', undefined, undefined, expectedRunId)
   }
   markBlocked(id: string, error: string): Promise<boolean> {
     return this.transition(
@@ -139,13 +140,14 @@ export class SubagentCompletionRepository {
       error
     )
   }
-  markError(id: string, error: string): Promise<boolean> {
+  markError(id: string, error: string, expectedRunId?: string): Promise<boolean> {
     return this.transition(
       id,
       ['pending', 'delivered', 'processing', 'blocked', 'error'],
       'error',
       undefined,
-      error
+      error,
+      expectedRunId
     )
   }
 

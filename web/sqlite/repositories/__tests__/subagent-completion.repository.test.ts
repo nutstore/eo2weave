@@ -206,6 +206,18 @@ describe('durable subagent completions', () => {
     expect(await outbox.markDelivered('a1:e1')).toBe(true)
   })
 
+  it('fences processing error and suppression receipts to the actual owning run', async () => {
+    const outbox = new SubagentCompletionRepository()
+    await new SubagentRepository().saveBatch('c1', [task()])
+    await outbox.finishExecution({ task: task(), completion: completion() })
+    await outbox.markDelivered('a1:e1'); await outbox.claim('a1:e1', 'new-run')
+    expect(await outbox.markError('a1:e1', 'Old failure', 'old-run')).toBe(false)
+    expect(await outbox.suppress('a1:e1', 'old-run')).toBe(false)
+    expect((await outbox.find('a1:e1'))?.status).toBe('processing')
+    expect(await outbox.suppress('a1:e1', 'new-run')).toBe(true)
+    expect(await outbox.markHandled('a1:e1', 'new-run')).toBe(false)
+  })
+
   it('reserves a batch atomically when one completion was already consumed', async () => {
     const outbox = new SubagentCompletionRepository()
     await new SubagentRepository().saveBatch('c1', [task(), { ...task(), agentId: 'a2' }])

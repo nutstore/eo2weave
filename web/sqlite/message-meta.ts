@@ -22,6 +22,7 @@ const MESSAGE_META_FIELDS = [
   'runChanges',
   'readImageHandoff',
   'delegationNote',
+  'subagentCompletion',
 ] as const satisfies readonly (keyof Message)[]
 
 export type MessageMeta = Partial<Pick<Message, (typeof MESSAGE_META_FIELDS)[number]>>

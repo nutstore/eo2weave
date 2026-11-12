@@ -79,6 +79,7 @@ export type SubagentRuntimeDeps = {
   workspaceId: string
   continuation?: SubagentContinuation
   onCompletionReady?: (completion: SubagentCompletion) => void | Promise<void>
+  onAsyncWorkspacePathsChanged?: (paths: readonly string[]) => void
   provider: PiAIProvider
   toolRegistry: ToolRegistry
   contextManager: ContextManager
@@ -1093,7 +1094,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       onWorkspacePathsChanged: (paths) => {
         if (!this.isCurrentExecution(task, execution, lifecycleVersion)) return
         execution.changedPaths = [...new Set([...execution.changedPaths, ...paths])]
-        deps.baseToolContext.onWorkspacePathsChanged?.(paths)
+        if (execution.isAsync) deps.onAsyncWorkspacePathsChanged?.(paths)
+        else deps.baseToolContext.onWorkspacePathsChanged?.(paths)
       },
     }
     task.toolContext = taskContext
@@ -1889,6 +1891,7 @@ export function getOrCreateSubagentRuntime(input: SubagentRuntimeDeps): Subagent
     workspaceId: key,
     continuation: input.continuation,
     onCompletionReady: input.onCompletionReady,
+    onAsyncWorkspacePathsChanged: input.onAsyncWorkspacePathsChanged,
     provider: input.provider,
     toolRegistry: input.toolRegistry,
     contextManager: input.contextManager,

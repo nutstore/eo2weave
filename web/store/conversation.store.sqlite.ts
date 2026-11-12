@@ -1,3 +1,5 @@
+import { getSubagentContinuation, recoverSubagentContinuations, forgetSubagentContinuation } from './subagent-continuation'
+import { invalidateConversationRunClaim } from './conversation-agent-run'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Conversation Store
@@ -322,7 +324,7 @@ interface ConversationState extends ConversationLoadState {
     maxTokens: number,
     directoryHandle: FileSystemDirectoryHandle | null,
     agentOverrideId?: string | null,
-    options?: { background?: boolean; transient?: boolean }
+    options?: { background?: boolean; transient?: boolean; subagentContinuation?: boolean }
   ) => Promise<void>
   cancelAgent: (conversationId: string) => void
 
@@ -451,6 +453,30 @@ export async function waitForConversationWrites(conversationId: string): Promise
   while (unloadedWriteQueues.has(conversationId)) await unloadedWriteQueues.get(conversationId)
 }
 
+export async function loadConversationRunHistory(conversationId: string): Promise<void> {
+  writeWithMessagesLoaded(conversationId, () => {})
+  await waitForConversationWrites(conversationId)
+  const conv = useConversationStoreSQLite.getState().conversations.find(c => c.id === conversationId)
+  if (conv?.messagesLoaded === false) throw new Error('Original conversation history could not be loaded')
+}
+
+/** Reload-before-append and a durable barrier protect offscreen history. */
+export async function appendSubagentNotification(conversationId: string, message: Message, eligible: () => boolean): Promise<boolean> {
+  await waitForConversationWrites(conversationId)
+  if (!eligible()) return false
+  writeWithMessagesLoaded(conversationId, () => {
+    if (!eligible()) return
+    const conv = useConversationStoreSQLite.getState().conversations.find(c => c.id === conversationId)
+    if (conv && !conv.messages.some(m => m.id === message.id)) useConversationStoreSQLite.getState().addMessage(conversationId, message)
+  })
+  await waitForConversationWrites(conversationId)
+  if (!eligible()) return false
+  const conv = useConversationStoreSQLite.getState().conversations.find(c => c.id === conversationId)
+  if (!conv || conv.messagesLoaded === false || !conv.messages.some(m => m.id === message.id)) throw new Error('Original conversation history could not be loaded')
+  await persistMessageReplace(conversationId, conv.messages, true)
+  return eligible()
+}
+
 export const useConversationStoreSQLite = create<ConversationState>()(
   immer((set, get) => ({
     conversations: [],
@@ -521,7 +547,10 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     },
 
     loadFromDB: async () =>
-      withInflightLoad(() => runLoadFromDB(set, get)),
+      withInflightLoad(async () => {
+        await runLoadFromDB(set, get)
+        if (get().loaded) await recoverSubagentContinuations(get().conversations.map(c => c.id))
+      }),
 
     // Loaded transcript and workspace failures retry only the failed target,
     // preserving other conversations' cached messages and running state.
@@ -547,7 +576,10 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       // can still hold the same pending initPromise, so restart that worker
       // once it has exceeded the load deadline before starting a fresh run.
       getSQLiteDB().restartPendingInitialization(INITIAL_LOAD_TIMEOUT_MS)
-      return withInflightLoad(() => runLoadFromDB(set, get), { force: true })
+      return withInflightLoad(async () => {
+        await runLoadFromDB(set, get)
+        if (get().loaded) await recoverSubagentContinuations(get().conversations.map(c => c.id))
+      }, { force: true })
     },
 
     createNew: (title?: string, options?: { activate?: boolean; kind?: 'project' | 'direct' }) => {
@@ -1273,6 +1305,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     },
 
     deleteConversation: async (id) => {
+      invalidateConversationRunClaim(id)
+      forgetSubagentContinuation(id)
       const queues = getStreamingQueues(id)
       if (queues) {
         queues.reasoning.destroy()
@@ -1292,6 +1326,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       // it here and drop the per-agent drafts it owned, plus the conversation's
       // runtime entry itself.
       const subagentAgentIds = disposeSubagentRuntime(id)
+      const [{ getSubagentCompletionRepository }, { getSubagentRepository }] = await Promise.all([
+        import('@/sqlite/repositories/subagent-completion.repository'), import('@/sqlite/repositories/subagent.repository'),
+      ])
+      const subagentRepository = getSubagentRepository()
+      for (const task of await subagentRepository.findByWorkspaceId(id)) await subagentRepository.deleteTask(id, task.agentId)
+      await getSubagentCompletionRepository().cleanupConversation(id)
       useConversationRuntimeStore.setState((state) => {
         state.runtimes.delete(id)
         for (const agentId of subagentAgentIds) {
@@ -1631,11 +1671,12 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       maxTokens: number,
       directoryHandle: FileSystemDirectoryHandle | null,
       agentOverrideId?: string | null,
-      options?: { background?: boolean; transient?: boolean }
+      options?: { background?: boolean; transient?: boolean; subagentContinuation?: boolean }
     ) =>
       runAgentImpl(
         {
           handleSubagentStepNotification,
+          loadRunHistory: loadConversationRunHistory,
           scheduleConversationEviction,
           bumpTranscriptVersion,
         } as unknown as ConversationAgentRunInternals,
@@ -1651,6 +1692,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       ),
 
     cancelAgent: (conversationId: string) => {
+      getSubagentContinuation().stop(conversationId)
+      invalidateConversationRunClaim(conversationId)
       // Track the run being cancelled to suppress follow-up generation
       const convBeingCancelled = get().conversations.find((c) => c.id === conversationId)
       const runIdBeingCancelled = convBeingCancelled?.activeRunId
@@ -1758,7 +1801,25 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         scheduleConversationEviction(conversationId)
         return
       }
-
+      set((state) => {
+        const conv = state.conversations.find(c => c.id === conversationId)
+        if (conv && runIdBeingCancelled && conv.activeRunId === runIdBeingCancelled) {
+          state.cancelledRunIds.add(runIdBeingCancelled)
+          conv.activeRunId = null
+          conv.status = 'idle'
+          conv.runEpoch = (conv.runEpoch || 0) + 1
+          conv.draftAssistant = null
+        }
+      })
+      useConversationRuntimeStore.setState(state => {
+        const rt = state.runtimes.get(conversationId)
+        if (rt && runIdBeingCancelled && rt.activeRunId === runIdBeingCancelled) {
+          rt.activeRunId = null
+          rt.status = 'idle'
+          rt.runEpoch = (rt.runEpoch || 0) + 1
+          rt.draftAssistant = null
+        }
+      })
     },
 
     // ── Compact conversation ──
