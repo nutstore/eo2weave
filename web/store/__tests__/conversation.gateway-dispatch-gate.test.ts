@@ -660,6 +660,33 @@ describe('subagent notification owning-run receipts', () => {
     } finally { f.spy.mockRestore() }
   })
 
+  it('a stopped missing-key exit cannot overwrite a newer run after its credential await', async () => {
+    const f = await setupNotification()
+    let finishNew: ((messages: never[]) => void) | undefined
+    let newRun: Promise<void> | undefined
+    try {
+      let resolveOldKey!: (key: string | null) => void
+      loadCredentialMock.mockImplementationOnce(() => new Promise(resolve => { resolveOldKey = resolve }))
+      const oldRun = f.store.runAgent(f.conv.id, 'openai', 'saved-model', 1024, null, null, { background: true, subagentContinuation: true })
+      await vi.waitFor(() => expect(resolveOldKey).toBeDefined())
+      expect(f.claim).toHaveBeenCalledTimes(1)
+      f.store.cancelAgent(f.conv.id)
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      loopRunMock.mockImplementationOnce(() => new Promise(resolve => { finishNew = resolve }))
+      newRun = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      await vi.waitFor(() => expect(finishNew).toBeDefined())
+      const current = useConversationStore.getState().conversations.find(c => c.id === f.conv.id)!
+      const expected = { activeRunId: current.activeRunId, status: current.status, error: current.error }
+      expect(expected.activeRunId).toBeTruthy()
+      resolveOldKey(null); await oldRun
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)).toMatchObject(expected)
+      expect(useConversationRuntimeStore.getState().runtimes.get(f.conv.id)).toMatchObject(expected)
+      expect(f.row.status).toBe('suppressed')
+    } finally {
+      finishNew?.([]); await newRun; f.spy.mockRestore()
+    }
+  })
+
   it('an internally caught authentication failure never handles accepted input', async () => {
     const f = await setupNotification()
     try {

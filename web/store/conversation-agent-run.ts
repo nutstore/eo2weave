@@ -215,6 +215,10 @@ async function runAgentBody(
       }
       const failDispatchEarly = (message: string) => {
         failContinuation(message)
+        if (owningRunId && owningRunEpoch !== undefined) {
+          const owner = get().conversations.find(c => c.id === conversationId)
+          if (owner?.activeRunId !== owningRunId || owner.runEpoch !== owningRunEpoch) return
+        }
         drainStaleRerunTriggers()
         set((state) => {
           const c = state.conversations.find((c) => c.id === conversationId)
