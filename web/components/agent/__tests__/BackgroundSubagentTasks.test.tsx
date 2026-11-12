@@ -3,11 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { BackgroundSubagentTasks } from '../BackgroundSubagentTasks'
 import { useSubagentTaskStore, selectBackgroundSubagentCount, type SubagentTaskProjection } from '@/store/subagent-task.store'
 
-const fixtures = vi.hoisted(() => ({ stop: vi.fn(), stopAll: vi.fn(), acknowledge: vi.fn(), retry: vi.fn(), hasRuntime: true, savedAcknowledge: vi.fn() }))
+const fixtures = vi.hoisted(() => ({ stop: vi.fn(), stopAll: vi.fn(), acknowledge: vi.fn(), retry: vi.fn(), hasRuntime: true, savedAcknowledge: vi.fn(), stopPendingReturns: vi.fn() }))
 vi.mock('@/i18n', () => ({ useT: () => (key: string, params?: Record<string, unknown>) => key + (params?.count === undefined ? '' : ` ${params.count}`) }))
 vi.mock('@/agent/subagent/runtime', () => ({ peekSubagentRuntime: () => fixtures.hasRuntime ? ({ stop: fixtures.stop, stopAll: fixtures.stopAll, acknowledge: fixtures.acknowledge }) : undefined }))
 vi.mock('@/sqlite/repositories/subagent.repository', () => ({ getSubagentRepository: () => ({ acknowledge: fixtures.savedAcknowledge }) }))
-vi.mock('@/store/subagent-continuation', () => ({ retrySubagentContinuation: fixtures.retry }))
+vi.mock('@/store/subagent-continuation', () => ({ retrySubagentContinuation: fixtures.retry, stopPendingSubagentReturns: fixtures.stopPendingReturns }))
 vi.mock('../SubagentDetailPanel', () => ({ SubagentDetailPanel: ({ agentId }: { agentId: string }) => <div>trace:{agentId}</div> }))
 
 function task(overrides: Partial<SubagentTaskProjection> = {}): SubagentTaskProjection {
@@ -45,6 +45,29 @@ describe('BackgroundSubagentTasks', () => {
     await waitFor(() => expect(fixtures.stopAll).toHaveBeenCalledWith({ force: true, backgroundOnly: true }))
     fireEvent.click(screen.getByRole('button', { name: 'conversation.backgroundTasks.retry' }))
     await waitFor(() => expect(fixtures.retry).toHaveBeenCalledWith('original'))
+  })
+
+  it.each(['pending', 'delivered', 'blocked', 'error'] as const)('keeps stop-all available for terminal results awaiting %s return', async (deliveryPhase) => {
+    useSubagentTaskStore.getState().publish(task({ status: 'completed', deliveryPhase }))
+    render(<BackgroundSubagentTasks conversationId="original" />)
+    fireEvent.click(screen.getByRole('button', { name: 'conversation.backgroundTasks.stopAll' }))
+    await waitFor(() => expect(fixtures.stopAll).toHaveBeenCalledWith({ force: true, backgroundOnly: true }))
+  })
+
+  it('stops hydrated waiting results without constructing a runtime', async () => {
+    fixtures.hasRuntime = false
+    useSubagentTaskStore.getState().publish(task({ status: 'completed', deliveryPhase: 'pending' }))
+    render(<BackgroundSubagentTasks conversationId="original" />)
+    fireEvent.click(screen.getByRole('button', { name: 'conversation.backgroundTasks.stopAll' }))
+    await waitFor(() => expect(fixtures.stopPendingReturns).toHaveBeenCalledWith('original'))
+    expect(fixtures.stopAll).not.toHaveBeenCalled()
+  })
+
+  it('does not offer stop-all for historical failures or results already being processed', () => {
+    useSubagentTaskStore.getState().publish(task({ status: 'failed', deliveryPhase: 'handled' }))
+    useSubagentTaskStore.getState().publish(task({ agentId: 'processing', status: 'completed', deliveryPhase: 'processing' }))
+    render(<BackgroundSubagentTasks conversationId="original" />)
+    expect(screen.queryByRole('button', { name: 'conversation.backgroundTasks.stopAll' })).toBeNull()
   })
 
   it('acknowledges hydrated terminal tasks directly without constructing a runtime', async () => {

@@ -3,7 +3,7 @@ import type { SubagentCompletion } from '@/agent/subagent/async-types'
 import { getSubagentCompletionRepository } from '@/sqlite/repositories/subagent-completion.repository'
 import { getSubagentRepository } from '@/sqlite/repositories/subagent.repository'
 import { useConversationRuntimeStore } from './conversation-runtime.store'
-import { useSubagentTaskStore } from './subagent-task.store'
+import { hasPendingSubagentReturn, isSubagentActive, useSubagentTaskStore } from './subagent-task.store'
 import { isConversationDispatchBusy } from './conversation-agent-run'
 
 const localLocks = new Map<string, Promise<unknown>>()
@@ -128,6 +128,20 @@ export async function recoverSubagentContinuations(conversationIds: string[]): P
     }
     if (tasks.length) knownConversations.add(id)
     if (tasks.length && !isConversationDispatchBusy(id)) await getSubagentContinuation().recover(id)
+  }
+}
+
+/** Stop hydrated pending returns without constructing a provider or cancelling the main run. */
+export async function stopPendingSubagentReturns(conversationId: string): Promise<void> {
+  const repository = getSubagentCompletionRepository()
+  const tasks = Object.values(useSubagentTaskStore.getState().tasks).filter(
+    task => task.conversationId === conversationId && !isSubagentActive(task) && hasPendingSubagentReturn(task)
+  )
+  for (const task of tasks) {
+    if (!task.executionId) continue
+    await repository.suppressAgent(conversationId, task.agentId)
+    const completion = await repository.find(`${task.agentId}:${task.executionId}`)
+    if (completion) useSubagentTaskStore.getState().setDeliveryPhase(task.agentId, task.executionId, completion.status)
   }
 }
 

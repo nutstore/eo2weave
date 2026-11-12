@@ -71,6 +71,10 @@ export const selectSubagentTask = (agentId: string) => (state: SubagentTaskState
 export const isSubagentActive = (task: SubagentTaskProjection) =>
   task.status === 'pending' || task.status === 'running'
 
+export const hasPendingSubagentReturn = (task: SubagentTaskProjection) =>
+  task.isAsync && !task.acknowledged && task.deliveryPhase !== undefined &&
+  ['pending', 'delivered', 'blocked', 'error'].includes(task.deliveryPhase)
+
 /** Successful handled tasks remain available in history, without occupying the composer. */
 export function isBackgroundSubagentVisible(task: SubagentTaskProjection): boolean {
   if (!task.isAsync || task.acknowledged) return false

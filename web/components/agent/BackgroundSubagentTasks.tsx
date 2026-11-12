@@ -4,9 +4,10 @@ import { useShallow } from 'zustand/react/shallow'
 import { useT } from '@/i18n'
 import { peekSubagentRuntime } from '@/agent/subagent/runtime'
 import { getSubagentRepository } from '@/sqlite/repositories/subagent.repository'
-import { retrySubagentContinuation } from '@/store/subagent-continuation'
+import { retrySubagentContinuation, stopPendingSubagentReturns } from '@/store/subagent-continuation'
 import {
   isBackgroundSubagentVisible,
+  hasPendingSubagentReturn,
   isSubagentActive,
   selectSubagentTasks,
   useSubagentTaskStore,
@@ -104,6 +105,7 @@ export const BackgroundSubagentTasks = memo(function BackgroundSubagentTasks({ c
   const running = tasks.filter(task => task.status === 'running').length
   const queued = tasks.filter(task => task.status === 'pending').length
   const hasActive = running + queued > 0
+  const hasStoppableWork = hasActive || tasks.some(hasPendingSubagentReturn)
   useEffect(() => {
     if (!expanded || !hasActive) return
     let timer: ReturnType<typeof setInterval> | undefined
@@ -140,13 +142,14 @@ export const BackgroundSubagentTasks = memo(function BackgroundSubagentTasks({ c
           {running > 0 && <span className="text-neutral-500 dark:text-neutral-400">{t('conversation.backgroundTasks.runningCount', { count: running })}</span>}
           {queued > 0 && <span className="text-neutral-500 dark:text-neutral-400">{t('conversation.backgroundTasks.queuedCount', { count: queued })}</span>}
         </button>
-        {hasActive && <button type="button" className={buttonClass} disabled={busy}
+        {hasStoppableWork && <button type="button" className={buttonClass} disabled={busy}
           onClick={() => {
             setBusy(true)
             void onAction(async () => {
               const runtime = conversationId ? peekSubagentRuntime(conversationId) : undefined
-              if (!runtime) throw new Error(t('conversation.backgroundTasks.unavailable'))
-              await runtime.stopAll({ force: true, backgroundOnly: true })
+              if (runtime) await runtime.stopAll({ force: true, backgroundOnly: true })
+              else if (hasActive) throw new Error(t('conversation.backgroundTasks.unavailable'))
+              else if (conversationId) await stopPendingSubagentReturns(conversationId)
             }).finally(() => setBusy(false))
           }}>{t('conversation.backgroundTasks.stopAll')}</button>}
       </div>
