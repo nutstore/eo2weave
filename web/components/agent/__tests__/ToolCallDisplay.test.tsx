@@ -71,7 +71,8 @@ describe('ToolCallDisplay', () => {
       <ToolCallDisplay toolCall={toolCall} result={result} isExecuting={false} />
     )
 
-    expect(screen.getByText('Explorer')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /run task/ })).toBeInTheDocument()
+    expect(screen.queryByText('Explorer')).not.toBeInTheDocument()
     expect(screen.queryByText('spawn_subagent')).toBeNull()
 
     // Collapsed by default: markdown details should be hidden.
@@ -172,7 +173,7 @@ describe('ToolCallDisplay', () => {
     act(() => useSubagentTaskStore.getState().publish({ ...task, status: 'completed', deliveryPhase: 'handled' }))
     expect(screen.getByText('conversation.backgroundTasks.completed')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button'))
-    expect(screen.getByText('Inspect documents')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /conversation.backgroundTasks.details: Inspect documents/ })).toBeInTheDocument()
     expect(screen.queryByTestId('subagent-detail')).toBeNull()
   })
 

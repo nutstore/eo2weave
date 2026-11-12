@@ -31,6 +31,8 @@ export const conversation = {
         acknowledge: "通知を閉じる",
         unavailable: "このタスクは実行されていません。再読み込みで保存済みの状態を復元できます。",
         result: "バックグラウンドタスクの結果",
+        resultReceived: "バックグラウンドタスクの結果を受信",
+        viewResult: "結果を表示",
         rejected: "未送信",
         restoring: "保存済みの実行記録を復元中…",
         noTrace: "保存済みの実行記録はありません。",

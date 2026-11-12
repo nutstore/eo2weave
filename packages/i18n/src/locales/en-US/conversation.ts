@@ -30,6 +30,8 @@ export const conversation = {
         acknowledge: "Dismiss",
         unavailable: "This task is no longer running. Reload to restore its saved status.",
         result: "Background task result",
+        resultReceived: "Background task results received",
+        viewResult: "View results",
         rejected: "Not submitted",
         restoring: "Restoring saved execution…",
         noTrace: "No saved execution is available.",

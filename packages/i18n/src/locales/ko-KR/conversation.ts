@@ -31,6 +31,8 @@ export const conversation = {
         acknowledge: "알림 닫기",
         unavailable: "이 작업은 더 이상 실행 중이 아닙니다. 새로고침하여 저장된 상태를 복원하세요.",
         result: "백그라운드 작업 결과",
+        resultReceived: "백그라운드 작업 결과 수신",
+        viewResult: "결과 보기",
         rejected: "제출되지 않음",
         restoring: "저장된 실행 기록 복원 중…",
         noTrace: "저장된 실행 기록이 없습니다.",

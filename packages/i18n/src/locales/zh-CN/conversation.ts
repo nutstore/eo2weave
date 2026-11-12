@@ -31,6 +31,8 @@ export const conversation = {
         acknowledge: "关闭提醒",
         unavailable: "该任务已不在运行。请刷新页面恢复已保存的状态。",
         result: "后台任务结果",
+        resultReceived: "收到后台任务结果",
+        viewResult: "查看结果",
         rejected: "未提交",
         restoring: "正在恢复已保存的执行记录…",
         noTrace: "暂无已保存的执行记录。",

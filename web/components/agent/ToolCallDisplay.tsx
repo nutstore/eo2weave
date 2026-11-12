@@ -83,26 +83,12 @@ const SUBAGENT_TOOLS = new Set(['spawn_subagent', 'batch_spawn'])
 
 function SubagentStatusBadge({ status }: { status: string }) {
   const t = useT()
-  return <span className={`shrink-0 text-[11px] ${status === 'failed' || status === 'killed' || status === 'rejected' ? 'text-red-600 dark:text-red-400' : 'text-neutral-500 dark:text-neutral-400'}`}>{t(`conversation.backgroundTasks.${status}`)}</span>
-}
-
-function extractSubagentDescription(parsedArgs: Record<string, unknown>): string | undefined {
-  return typeof parsedArgs.description === 'string' ? parsedArgs.description : undefined
-}
-
-function getSubagentTitle(toolName: string, parsedArgs: Record<string, unknown>): string {
-  if (toolName === 'batch_spawn') return 'Subagents'
-
-  switch (parsedArgs.subagent_type) {
-    case 'explorer':
-      return 'Explorer'
-    case 'worker':
-      return 'Worker'
-    case 'awaiter':
-      return 'Awaiter'
-    default:
-      return 'Subagent'
-  }
+  const color = status === 'failed' || status === 'killed' || status === 'rejected'
+    ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400'
+    : status === 'completed'
+      ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-neutral-200'
+      : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300'
+  return <span className={`inline-flex shrink-0 items-center rounded-md px-1.5 py-0.5 text-xs leading-4 ${color}`}>{t(`conversation.backgroundTasks.${status}`)}</span>
 }
 
 function parseSpawnResult(result: string | undefined): { content?: string; agentId?: string; status?: string; usage?: { total_tokens?: number; duration_ms?: number } } | null {
@@ -402,8 +388,6 @@ function SubagentCard({
   conversationId?: string
   t: (key: string) => string
 }) {
-  const subagentDesc = extractSubagentDescription(ctx.args)
-  const subagentTitle = getSubagentTitle(ctx.toolName, ctx.args)
   const spawnResult = parseSpawnResult(ctx.rawResult)
   const projected = useSubagentTaskStore(useShallow(selectSubagentTasks(conversationId ?? '')))
   const resultTasks: Array<{ agentId: string; name?: string; status?: string }> = []
@@ -430,6 +414,9 @@ function SubagentCard({
     ...projected.filter(task => task.parentToolCallId === toolCallId).map(task => task.agentId),
   ]))
   const tasks = projected.filter(task => agentIds.includes(task.agentId))
+  const subagentTitle = typeof ctx.args.description === 'string' && ctx.args.description.trim()
+    ? ctx.args.description
+    : tasks.length === 1 ? tasks[0].description : t('conversation.backgroundTasks.label')
   const status = tasks.some(task => task.status === 'running') ? 'running'
     : tasks.some(task => task.status === 'pending') ? 'pending'
     : tasks.some(task => task.status === 'failed' || task.status === 'killed') ? 'failed'
@@ -440,7 +427,7 @@ function SubagentCard({
   const detailsId = useId()
 
   return (
-    <div className="my-1 min-w-0 overflow-hidden rounded border border-neutral-200 bg-neutral-50 text-sm dark:border-neutral-700 dark:bg-neutral-800">
+    <div className="my-1 min-w-0 overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50 text-sm dark:border-neutral-700 dark:bg-neutral-800">
       <button
         type="button"
         className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 dark:hover:bg-neutral-700"
@@ -453,11 +440,8 @@ function SubagentCard({
         ) : (
           <ChevronRight className="h-3.5 w-3.5 text-neutral-400" />
         )}
-        <Bot className="h-3.5 w-3.5 text-violet-500" />
-        <span className="shrink-0 font-medium text-neutral-700 dark:text-foreground">{subagentTitle}</span>
-        {subagentDesc && (
-          <span className="truncate text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500">&quot;{subagentDesc}&quot;</span>
-        )}
+        <Bot className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-400" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate font-medium text-neutral-700 dark:text-foreground" title={subagentTitle}>{subagentTitle}</span>
         <span className="ml-auto shrink-0">
           {status ? <SubagentStatusBadge status={status} /> : <StatusIcon ctx={ctx} executingText={t('toolCallDisplay.executing')} />}
         </span>

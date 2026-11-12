@@ -5,8 +5,8 @@
  * Streaming is just a transient state prop, not a different component.
  */
 
-import { useState, memo } from 'react'
-import { User, Bot, Trash2, Pencil, Download, Forward, Globe, ImageIcon } from 'lucide-react'
+import { useId, useState, memo } from 'react'
+import { User, Bot, Trash2, Pencil, Download, Forward, Globe, ImageIcon, ChevronDown, ChevronRight } from 'lucide-react'
 import type { Message } from '@/agent/message-types'
 import { ReasoningSection } from './ReasoningSection'
 import { MarkdownContent } from './MarkdownContent'
@@ -69,6 +69,31 @@ interface MessageBubbleProps {
   onPreviewAsset?: (name: string, blob: Blob) => void
 }
 
+function SubagentCompletionNotice({ message, showAvatar }: { message: Message; showAvatar: boolean }) {
+  const t = useT()
+  const [expanded, setExpanded] = useState(false)
+  const detailId = useId()
+  return (
+    <div className={showAvatar ? 'flex gap-3' : ''}>
+      {showAvatar && <div className="w-8 shrink-0" aria-hidden="true" />}
+      <div className={showAvatar ? 'w-[90%] min-w-0' : 'w-full min-w-0'}>
+        <button type="button" aria-expanded={expanded} aria-controls={detailId}
+          aria-label={expanded ? t('toolCallDisplay.collapse') : t('conversation.backgroundTasks.viewResult')}
+          onClick={() => setExpanded(!expanded)}
+          className="flex min-h-10 w-full min-w-0 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-500 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:text-neutral-400 dark:hover:bg-neutral-800">
+          <Bot className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate">{t('conversation.backgroundTasks.resultReceived')}</span>
+          <span className="shrink-0 text-xs">{expanded ? t('toolCallDisplay.collapse') : t('conversation.backgroundTasks.viewResult')}</span>
+          {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+        </button>
+        {expanded && <div id={detailId} className="mt-1 max-h-56 overflow-auto break-words rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+          <MarkdownContent content={message.content ?? ''} />
+        </div>}
+      </div>
+    </div>
+  )
+}
+
 export const MessageBubble = memo(function MessageBubble({
   message,
   conversationId,
@@ -114,17 +139,7 @@ export const MessageBubble = memo(function MessageBubble({
   }
 
   if (message.subagentCompletion) {
-    return (
-      <div className="my-2 min-w-0 rounded-lg border border-neutral-200 px-3 py-2 dark:border-neutral-700">
-        <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-neutral-500 dark:text-neutral-400">
-          <Bot className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>{t('conversation.backgroundTasks.result')}</span>
-        </div>
-        <div className="max-h-56 overflow-auto break-words text-sm text-neutral-700 dark:text-neutral-300">
-          <MarkdownContent content={message.content ?? ''} />
-        </div>
-      </div>
-    )
+    return <SubagentCompletionNotice message={message} showAvatar={showAvatar} />
   }
 
   // Delegation note: synthetic user-role message injected by delegate_to
