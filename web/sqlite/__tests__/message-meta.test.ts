@@ -25,7 +25,16 @@ describe('message metadata serialization', () => {
     expect(deserializeMessageMetadata(metaJson)).toEqual(message)
   })
 
-  it('omits empty metadata', () => {
+  it('round trips application completion provenance without classifying it as human input', async () => {
+    const { getMessageRecordType, isHumanUserMessage } = await import('@/agent/message-types')
+    const meta = deserializeMessageMetadata(serializeMessageMetadata({ subagentCompletion: { eventIds: ['child:attempt'] } }))
+    const message = { id: 'notice', role: 'user' as const, content: 'Child done', timestamp: 1, ...meta }
+    expect(message.subagentCompletion?.eventIds).toEqual(['child:attempt'])
+    expect(getMessageRecordType(message)).toBe('agent_input')
+    expect(isHumanUserMessage(message)).toBe(false)
+  })
+
+  it('omits empty metadata' , () => {
     expect(serializeMessageMetadata({})).toBeNull()
   })
 })

@@ -1,14 +1,8 @@
-/**
- * SubagentDetailPanel — Renders a subagent's internal execution steps
- * (reasoning, content, tool calls) in real-time.
- *
- * This component mirrors the main agent's draft step rendering but reads
- * from `subagentDrafts` in the runtime store instead of the main conversation's
- * draftAssistant. It uses the same ToolCallDisplay, ReasoningSection, etc.
- * components so the visual presentation is identical to the main agent.
- */
+/** Render live shared traces or saved execution messages using the main conversation renderers. */
 
 import { memo, useEffect, useMemo, useState } from 'react'
+import { useT } from '@/i18n'
+import { useSubagentTaskStore, selectSubagentTask } from '@/store/subagent-task.store'
 import { Loader2 } from 'lucide-react'
 import type { DraftAssistantStep, Message } from '@/agent/message-types'
 import { getSubagentRepository } from '@/sqlite'
@@ -56,7 +50,7 @@ function SubagentStreamingContent({
             <div className="max-w-prose whitespace-pre-wrap break-words">
               {content}
               {isStreamingContent && (
-                <span className="ml-0.5 inline-block h-3 w-[2px] animate-pulse bg-neutral-400 align-text-bottom" />
+                <span className="ml-0.5 inline-block h-3 w-[2px] animate-pulse motion-reduce:animate-none bg-neutral-400 align-text-bottom" />
               )}
             </div>
           )}
@@ -71,7 +65,7 @@ function SubagentCompressionCard({ text, streaming }: { text: string; streaming:
     <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
       <span>{text}</span>
       {streaming && (
-        <span className="ml-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-400 border-t-transparent align-text-bottom" />
+        <span className="ml-1 inline-block h-3 w-3 animate-spin motion-reduce:animate-none rounded-full border-2 border-slate-400 border-t-transparent align-text-bottom" />
       )}
     </div>
   )
@@ -80,6 +74,7 @@ function SubagentCompressionCard({ text, streaming }: { text: string; streaming:
 function renderSubagentStep(
   step: DraftAssistantStep,
   toolResults: Map<string, string>,
+  conversationId?: string,
 ): React.ReactNode {
   if (step.type === 'reasoning') {
     if (!step.content) return null
@@ -112,6 +107,7 @@ function renderSubagentStep(
   // tool_call — reuse the exact same ToolCallDisplay component as main agent
   return (
     <ToolCallDisplay
+      conversationId={conversationId}
       toolCall={step.toolCall}
       result={step.result ?? toolResults.get(step.toolCall.id)}
       isExecuting={step.streaming && !(step.result ?? toolResults.get(step.toolCall.id))}
@@ -180,6 +176,9 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   agentId,
   conversationId,
 }: SubagentDetailPanelProps) {
+  const t = useT()
+  const task = useSubagentTaskStore(selectSubagentTask(agentId))
+  const projection = task?.conversationId === conversationId ? task : undefined
   const draft = useConversationRuntimeStore(
     (state) => state.subagentDrafts.get(agentId)
   )
@@ -187,7 +186,8 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   const [isLoadingPersisted, setIsLoadingPersisted] = useState(false)
 
   useEffect(() => {
-    if (draft || !conversationId) return
+    if (draft || projection || !conversationId) return
+    setPersistedMessages(null)
 
     let cancelled = false
     setIsLoadingPersisted(true)
@@ -206,11 +206,11 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
       })
 
     return () => { cancelled = true }
-  }, [agentId, conversationId, draft])
+  }, [agentId, conversationId, draft, projection])
 
   const persisted = useMemo(
-    () => buildPersistedSteps(persistedMessages ?? []),
-    [persistedMessages]
+    () => buildPersistedSteps(projection?.messages ?? persistedMessages ?? []),
+    [projection?.messages, persistedMessages]
   )
 
   const steps = draft?.steps ?? persisted.steps
@@ -218,27 +218,27 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
     ? new Map(Object.entries(draft.toolResults))
     : persisted.toolResults
 
-  if (!draft && isLoadingPersisted) {
+  if (!draft && !projection && isLoadingPersisted) {
     return (
       <div className="flex items-center gap-2 px-3 py-2 text-xs text-neutral-400">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        <span>正在恢复已保存的执行记录...</span>
+        <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" />
+        <span>{t('conversation.backgroundTasks.restoring')}</span>
       </div>
     )
   }
 
-  if (!draft && persistedMessages === null) {
+  if (!draft && !projection && persistedMessages === null) {
     return (
       <div className="px-3 py-2 text-xs text-neutral-400">
-        （中间过程数据不可用——可能是页面刷新后运行时状态已清除）
+        {t('conversation.backgroundTasks.noTrace')}
       </div>
     )
   }
 
-  if (!draft && steps.length === 0) {
+  if (!draft && projection?.status !== 'running' && projection?.status !== 'pending' && steps.length === 0) {
     return (
       <div className="px-3 py-2 text-xs text-neutral-400">
-        （未找到该子代理的已保存执行记录）
+        {t('conversation.backgroundTasks.noTrace')}
       </div>
     )
   }
@@ -246,17 +246,17 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   if (steps.length === 0) {
     return (
       <div className="flex items-center gap-2 px-3 py-2 text-xs text-neutral-400">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        <span>等待响应...</span>
+        <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" />
+        <span>{t('conversation.backgroundTasks.waiting')}</span>
       </div>
     )
   }
 
   return (
-    <div className="space-y-1.5 px-1 py-1">
+    <div className="min-w-0 space-y-1.5 overflow-x-hidden px-1 py-1">
       {steps.map((step) => (
         <div key={step.id}>
-          {renderSubagentStep(step, toolResults)}
+          {renderSubagentStep(step, toolResults, conversationId)}
         </div>
       ))}
     </div>

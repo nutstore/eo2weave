@@ -124,6 +124,7 @@ const TurnRenderer = memo(function TurnRenderer({
     <div data-turn-index={turnIndex}>
       <MessageBubble
         message={turn.message}
+        conversationId={ctx.conversationId ?? undefined}
         onDeleteAgentLoop={onDeleteAgentLoop}
         onEditAndResend={onEditAndResend}
         onRegenerate={onRegenerate}

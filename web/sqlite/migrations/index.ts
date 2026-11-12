@@ -15,6 +15,7 @@
 
 import schemaSQL from '../sqlite-schema.sql?raw'
 import mcpTasksSQL from '../mcp-tasks-schema.sql?raw'
+import subagentCompletionsSQL from '../subagent-completions-schema.sql?raw'
 
 // Progress callback type
 export type MigrationProgressCallback = (progress: {
@@ -284,6 +285,14 @@ function repairSubagentTimeoutColumn(db: any): void {
   bumpUserVersionFloor(db, 20)
 }
 
+function repairSubagentExecutions(db: any): void {
+  if (!subagentTasksColumnExists(db, 'execution_json')) {
+    db.exec('ALTER TABLE subagent_tasks ADD COLUMN execution_json TEXT')
+  }
+  db.exec(subagentCompletionsSQL)
+  bumpUserVersionFloor(db, 22)
+}
+
 function verifySubagentTimeoutSchema(db: any): void {
   try {
     db.exec('SELECT timeout_ms FROM subagent_tasks LIMIT 0')
@@ -295,7 +304,7 @@ function verifySubagentTimeoutSchema(db: any): void {
 }
 
 // Base schema version
-export const BASE_SCHEMA_VERSION = 21
+export const BASE_SCHEMA_VERSION = 22
 
 // ============================================================================
 // Migration Registry
@@ -545,6 +554,7 @@ export const migrations: Migration[] = [
     name: 'add_managed_mcp_tasks',
     up: repairManagedMcpTasks,
   },
+  { version: 22, name: 'add_async_subagent_executions', up: repairSubagentExecutions },
 ]
 
 // ============================================================================
@@ -726,6 +736,7 @@ export async function initializeSchema(
 
   // Same guard for the v21 managed MCP task tables and mcp_servers.protocol_mode.
   repairManagedMcpTasks(db)
+  repairSubagentExecutions(db)
 
   // Version numbers alone are not enough: validate the physical columns after
   // migration so the app fails safely with an exportable database instead of

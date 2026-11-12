@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { MessageBubble } from '../MessageBubble'
 import type { Message } from '@/agent/message-types'
 
@@ -24,6 +24,25 @@ const asset = {
   createdAt: 1700000000000,
   direction: 'upload' as const,
 }
+
+it('renders a background result as an application event without human edit actions', () => {
+  const edit = vi.fn()
+  const content = 'Document inspection finished\n\nTrace: subagent child, execution attempt'
+  const { container } = render(<MessageBubble message={userMsg({ content, subagentCompletion: { eventIds: ['child:attempt'] } })} onEditAndResend={edit} />)
+  const disclosure = screen.getByRole('button', { name: 'conversation.backgroundTasks.viewResult' })
+  expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+  expect(screen.queryByText('Document inspection finished')).not.toBeInTheDocument()
+  expect(screen.queryByText(/Trace: subagent/)).not.toBeInTheDocument()
+  fireEvent.click(disclosure)
+  expect(disclosure).toHaveAttribute('aria-expanded', 'true')
+  expect(screen.getByText('Document inspection finished')).toBeInTheDocument()
+  expect(screen.getByText('Trace: subagent child, execution attempt')).toBeInTheDocument()
+  fireEvent.click(disclosure)
+  expect(screen.queryByText('Document inspection finished')).not.toBeInTheDocument()
+  expect(container.querySelector('.bg-primary-600')).toBeNull()
+  expect(container.querySelector('.lucide-user')).toBeNull()
+  expect(screen.queryByRole('button', { name: /edit/i })).toBeNull()
+})
 
 describe('MessageBubble — attachment-only user message (plan A)', () => {
   it('renders no text bubble when content is empty but assets exist', () => {

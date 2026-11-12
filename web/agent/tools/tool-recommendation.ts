@@ -226,15 +226,20 @@ const TOOL_METADATA: Record<
     displayName: 'Subagent Delegation',
     category: 'batch',
     intents: ['batch-operations', 'debugging', 'refactoring', 'documentation'],
-    description: 'Delegate independent subtasks for parallel execution',
+    description: 'Submit independent background subtasks and return accepted receipts',
     baseExample: 'spawn_subagent(description="Audit API handlers", prompt="Find all TODOs in api/** and summarize risk by file")',
+  },
+  wait_subagents: {
+    name: 'wait_subagents', displayName: 'Wait for Subagents', category: 'batch',
+    intents: ['batch-operations'], description: 'Retrieve results of submitted background subagents with a bounded wait',
+    baseExample: 'wait_subagents(agentIds=["subagent_1"], timeout_ms=60000, wait_for="any")',
   },
   batch_spawn: {
     name: 'batch_spawn',
     displayName: 'Batch Subagent Delegation',
     category: 'batch',
     intents: ['batch-operations', 'refactoring', 'documentation'],
-    description: 'Launch multiple independent subagent tasks in one call',
+    description: 'Submit background tasks with independent acceptance and rejection',
     baseExample:
       'batch_spawn(tasks=[{description:"Scan api",prompt:"..."},{description:"Scan ui",prompt:"..."}], max_concurrency=2)',
   },

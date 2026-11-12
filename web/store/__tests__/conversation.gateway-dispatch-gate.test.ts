@@ -23,6 +23,7 @@ const gatewayRegistered = vi.hoisted(() => ({ value: true }))
 // default). A test simulating a logout / newer login during resolution
 // mutates this.
 const storedAccessToken = vi.hoisted(() => ({ value: 'validated-token' as string | null }))
+const findHistoryMock = vi.hoisted(() => vi.fn(async () => [] as import('@/agent/message-types').Message[]))
 const replaceAllMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 
 vi.mock('@/services/favicon-indicator', () => ({ setFaviconState: setFaviconStateMock }))
@@ -48,6 +49,7 @@ vi.mock('@/store/conversation-context.store', () => ({
       workspaces: [],
       createWorkspace: vi.fn(() => Promise.resolve()),
       switchWorkspace: vi.fn(() => Promise.resolve()),
+      ensureWorkspace: vi.fn(() => Promise.resolve()),
       refreshWorkspaces: vi.fn(() => Promise.resolve()),
       refreshPendingChanges: vi.fn(() => Promise.resolve()),
       deleteWorkspace: vi.fn(() => Promise.resolve()),
@@ -60,7 +62,7 @@ const mockSettingsState = vi.hoisted(() => ({
   modelName: 'gateway-model',
   maxIterations: 20,
   customProviders: [],
-  getEffectiveProviderConfig: vi.fn(() => ({
+  getEffectiveProviderConfig: vi.fn((_providerTypeOverride?: string) => ({
     apiKeyProviderKey: '__llm_gateway_token__',
     baseUrl: 'https://ai.jianguoyun.com/v1',
     modelName: 'gateway-model',
@@ -87,9 +89,10 @@ vi.mock('@/sqlite', () => ({
     delete: vi.fn(() => Promise.resolve()),
   })),
   getMessageRepository: vi.fn(() => ({
-    findByConversation: vi.fn(() => Promise.resolve([])),
+    findByConversation: findHistoryMock,
     insert: vi.fn(() => Promise.resolve()),
     replaceAll: replaceAllMock,
+    applyDiff: vi.fn(async () => {}),
     migrateFromJsonBlob: vi.fn(() => Promise.resolve({ conversations: 0, messages: 0 })),
     recoverFromAppSessions: vi.fn(() =>
       Promise.resolve({ sessions: 0, conversations: 0, messages: 0 })
@@ -139,13 +142,14 @@ vi.mock('@/agent/providers/llm-gateway-provider', () => ({
   registerLLMGatewayProvider: registerProviderMock,
 }))
 
+const loopRunMock = vi.hoisted(() => vi.fn(async (_messages: unknown, _callbacks?: any) => []))
 const agentLoopConstructed = vi.hoisted(() => vi.fn())
 vi.mock('@/agent/agent-loop', () => ({
   AgentLoop: vi.fn().mockImplementation((...args: unknown[]) => {
     agentLoopConstructed(...args)
     return {
       cancel: () => {},
-      run: vi.fn(() => Promise.resolve([])),
+      run: loopRunMock,
     }
   }),
 }))
@@ -181,6 +185,7 @@ vi.mock('@/mcp/elicitation-handler.tsx', () => ({
 
 vi.mock('@/agent/subagent/runtime', () => ({
   getOrCreateSubagentRuntime: vi.fn(() => ({})),
+  peekSubagentRuntime: () => undefined,
 }))
 
 vi.mock('@/store/workspace-preferences.store', () => ({
@@ -459,4 +464,336 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
     expect(agentLoopConstructed).toHaveBeenCalled()
   })
 
+})
+
+// These exercise the actual store dispatch, including Promise<void> early exits.
+describe('subagent notification owning-run receipts', () => {
+  async function setupNotification(isBusy: (id: string) => boolean = () => false) {
+    const { CompletionDeliveryCoordinator } = await import('@/agent/subagent/completion-delivery')
+    const bridge = await import('@/store/subagent-continuation')
+    const row = { id: 'child:attempt', agentId: 'child', executionId: 'attempt', conversationId: '', notificationMessageId: 'notice', deliveryReserved: true, status: 'delivered', taskStatus: 'completed', description: 'Research', result: 'done', messages: [], changedPaths: [], createdAt: 1, updatedAt: 1 } as import('@/agent/subagent/async-types').SubagentCompletion
+    let readyRow: typeof row | undefined
+    const claim = vi.fn(async (_id: string, runId: string) => { row.status = 'processing'; row.parentRunId = runId; return true })
+    const handled = vi.fn(async (_id: string, runId?: string) => { if (row.status !== 'processing' || row.parentRunId !== runId) return false; row.status = 'handled'; return true })
+    const dispatch = vi.fn(async () => {})
+    const coordinator = new CompletionDeliveryCoordinator({ repository: {
+      listRecoverable: async () => [row, ...(readyRow ? [readyRow] : [])].filter(item => ['pending', 'delivered', 'blocked', 'error'].includes(item.status)),
+      listProcessing: async () => row.status === 'processing' ? [row] : [], reserveDelivery: async () => [],
+      claim, markHandled: handled, markDelivered: async (id) => { (id === row.id ? row : readyRow!).status = 'delivered'; return true }, markError: async () => { row.status = 'error'; return true }, markBlocked: async () => { row.status = 'blocked'; return true }, suppress: async () => { row.status = 'suppressed'; return true },
+    }, isBusy, validateOrigin: async () => true, appendNotification: async () => true, dispatch, withLock: async (_key, fn) => fn(), onError: vi.fn() })
+    const spy = vi.spyOn(bridge, 'getSubagentContinuation').mockReturnValue(coordinator)
+    const store = useConversationStore.getState()
+    const conv = store.createNew('notification')
+    row.conversationId = conv.id
+    store.addMessage(conv.id, { id: 'notice', role: 'user', content: 'Child done', timestamp: 1, subagentCompletion: { eventIds: [row.id] } })
+    return { row, claim, handled, spy, conv, store, coordinator, dispatch, queueReady: () => { readyRow = { ...row, id: 'next:attempt', agentId: 'next', notificationMessageId: 'next-notice', status: 'pending', continuation: { parentRunId: 'origin', providerType: 'llm-gateway', modelName: 'gateway-model', maxTokens: 1024 } } } }
+  }
+
+  it('reloads complete offscreen history before idempotent notification acceptance', async () => {
+    const f = await setupNotification()
+    try {
+      const original = createUserMessage('Full original history')
+      findHistoryMock.mockResolvedValueOnce([original])
+      useConversationStore.setState(state => ({ conversations: state.conversations.map(c => c.id === f.conv.id ? { ...c, messages: [], messagesLoaded: false } : c) }))
+      const { appendSubagentNotification } = await import('@/store/conversation.store.sqlite')
+      const notification = { id: 'durable', role: 'user' as const, content: 'Done', timestamp: 2, subagentCompletion: { eventIds: ['child:attempt'] } }
+      await appendSubagentNotification(f.conv.id, notification, () => true)
+      await appendSubagentNotification(f.conv.id, notification, () => true)
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.messages.map(m => m.id)).toEqual([original.id, 'durable'])
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('stop while offscreen history reloads preserves history without accepting the notification', async () => {
+    const f = await setupNotification()
+    try {
+      const original = createUserMessage('Full original history')
+      let resolve!: (messages: import('@/agent/message-types').Message[]) => void
+      findHistoryMock.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+      useConversationStore.setState(state => ({ conversations: state.conversations.map(c => c.id === f.conv.id ? { ...c, messages: [], messagesLoaded: false } : c) }))
+      const { appendSubagentNotification } = await import('@/store/conversation.store.sqlite')
+      let eligible = true
+      const accepting = appendSubagentNotification(f.conv.id, { id: 'cancelled', role: 'user', content: 'Done', timestamp: 2 }, () => eligible)
+      await vi.waitFor(() => expect(resolve).toBeDefined())
+      eligible = false; resolve([original])
+      expect(await accepting).toBe(false)
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.messages.map(m => m.id)).toEqual([original.id])
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('an already running conversation queues without claiming or handling the notification', async () => {
+    const f = await setupNotification()
+    try {
+      useConversationStore.setState(state => ({ conversations: state.conversations.map(c => c.id === f.conv.id ? { ...c, status: 'running' as const, activeRunId: 'owner' } : c) }))
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      expect(f.claim).not.toHaveBeenCalled(); expect(f.handled).not.toHaveBeenCalled(); expect(f.row.status).toBe('delivered')
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('automatic dispatch racing a parent parks without creating a continuation queue trigger', async () => {
+    const f = await setupNotification()
+    try {
+      const deferred = vi.spyOn(f.coordinator, 'deferDispatch')
+      useConversationStore.setState(state => ({ conversations: state.conversations.map(c => c.id === f.conv.id ? { ...c, status: 'running' as const, activeRunId: 'owner' } : c) }))
+      const depth = useConversationRuntimeStore.getState().getQueueDepth(f.conv.id)
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null, null, { background: true, subagentContinuation: true })
+      expect(f.claim).not.toHaveBeenCalled()
+      expect(deferred).toHaveBeenCalledWith(f.conv.id)
+      expect(useConversationRuntimeStore.getState().getQueueDepth(f.conv.id)).toBe(depth)
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('exposes retry after an automatic run claims no receipts and then handles the retry once', async () => {
+    const f = await setupNotification()
+    const initialLoops = agentLoopConstructed.mock.calls.length
+    try {
+      f.row.continuation = { parentRunId: 'origin', providerType: 'llm-gateway', modelName: 'gateway-model', maxTokens: 1024 }
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      f.claim.mockResolvedValueOnce(false)
+      f.dispatch.mockImplementation(async () => {
+        await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null, null, { background: true, subagentContinuation: true })
+      })
+      await f.coordinator.flush(f.conv.id)
+      expect(f.row.status).toBe('blocked')
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.status).toBe('idle')
+      expect(agentLoopConstructed).toHaveBeenCalledTimes(initialLoops)
+      await f.coordinator.flush(f.conv.id)
+      expect(f.dispatch).toHaveBeenCalledTimes(1)
+      await f.coordinator.retry(f.conv.id)
+      expect(f.dispatch).toHaveBeenCalledTimes(2)
+      expect(f.row.status).toBe('handled')
+      expect(f.handled).toHaveBeenCalledTimes(1)
+      expect(agentLoopConstructed).toHaveBeenCalledTimes(initialLoops + 1)
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.messages.filter(m => m.id === 'notice')).toHaveLength(1)
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('provider onError followed by a resolved loop promise leaves the notification failed', async () => {
+    const f = await setupNotification()
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      loopRunMock.mockImplementationOnce(async (_messages, callbacks) => { callbacks.onError(new Error('Provider failed')); return [] })
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      expect(f.claim).toHaveBeenCalledTimes(1); expect(f.handled).not.toHaveBeenCalled(); expect(f.row.status).toBe('error')
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('joins fire-and-forget onComplete finalization before releasing dispatch or acknowledging input', async () => {
+    const { isConversationDispatchBusy } = await import('@/store/conversation-agent-run')
+    const f = await setupNotification(isConversationDispatchBusy)
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      const { generateFollowUp } = await import('@/agent/follow-up-generator')
+      let release!: (text: string) => void
+      vi.mocked(generateFollowUp).mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+      loopRunMock.mockImplementationOnce(async (_messages, callbacks) => {
+        void callbacks.onComplete([])
+        return []
+      })
+      const loopCount = loopRunMock.mock.calls.length
+      let settled = false
+      const run = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      void run.then(() => { settled = true })
+      await vi.waitFor(() => expect(release).toBeDefined())
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.status).toBe('idle')
+      expect(isConversationDispatchBusy(f.conv.id)).toBe(true)
+      expect(settled).toBe(false)
+      expect(f.handled).not.toHaveBeenCalled()
+      f.queueReady(); await f.coordinator.flush(f.conv.id)
+      expect(f.dispatch).not.toHaveBeenCalled()
+      expect(loopRunMock.mock.calls.length).toBe(loopCount + 1)
+      release(''); await run
+      expect(isConversationDispatchBusy(f.conv.id)).toBe(false)
+      await f.coordinator.flush(f.conv.id)
+      expect(f.dispatch).toHaveBeenCalledTimes(1)
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('settles the original successful receipt after a newer user turn completes during its follow-up', async () => {
+    const f = await setupNotification()
+    let releaseOld: ((text: string) => void) | undefined
+    let oldRun: Promise<void> | undefined
+    const persistence = await import('@/store/conversation-persist')
+    const persistSpy = vi.spyOn(persistence, 'persistMessageReplace')
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      const { generateFollowUp } = await import('@/agent/follow-up-generator')
+      vi.mocked(generateFollowUp).mockImplementationOnce(() => new Promise(resolve => { releaseOld = resolve }))
+      loopRunMock.mockImplementationOnce(async (messages, callbacks) => {
+        const result = [...messages as import('@/agent/message-types').Message[], { id: 'original-answer', role: 'assistant' as const, content: 'Child result processed', timestamp: 2 }]
+        void callbacks.onComplete(result)
+        return result as never[]
+      })
+      oldRun = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null, null, { background: true, subagentContinuation: true })
+      await vi.waitFor(() => expect(releaseOld).toBeDefined())
+      const originalRunId = f.row.parentRunId
+      const nextMessage = createUserMessage('New user task')
+      const committedHistory = useConversationStore.getState().conversations.find(c => c.id === f.conv.id)!.messages
+      f.store.updateMessages(f.conv.id, [...committedHistory, nextMessage])
+      loopRunMock.mockImplementationOnce(async (messages, callbacks) => {
+        const result = [...messages as import('@/agent/message-types').Message[], { id: 'new-answer', role: 'assistant' as const, content: 'New turn completed', timestamp: 3 }]
+        void callbacks.onComplete(result)
+        return result as never[]
+      })
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      const current = useConversationStore.getState().conversations.find(c => c.id === f.conv.id)!
+      const historyIds = current.messages.map(m => m.id)
+      const epoch = current.runEpoch
+      expect(historyIds).toEqual(['notice', 'original-answer', nextMessage.id, 'new-answer'])
+      expect(f.row.status).toBe('processing')
+      const persistenceCount = persistSpy.mock.calls.length
+      releaseOld!(''); await oldRun
+      expect(f.handled).toHaveBeenCalledTimes(1)
+      expect(f.handled).toHaveBeenCalledWith(f.row.id, originalRunId)
+      expect(f.row.status).toBe('handled')
+      const latest = useConversationStore.getState().conversations.find(c => c.id === f.conv.id)!
+      expect(latest).toMatchObject({ status: 'idle', activeRunId: null, error: null, runEpoch: epoch })
+      expect(latest.messages.map(m => m.id)).toEqual(historyIds)
+      expect(persistSpy.mock.calls.length).toBe(persistenceCount)
+    } finally {
+      releaseOld?.(''); await oldRun; persistSpy.mockRestore(); f.spy.mockRestore()
+    }
+  })
+
+  it('does not handle a receipt stopped while its committed run awaits follow-up', async () => {
+    const f = await setupNotification()
+    let release: ((text: string) => void) | undefined
+    let run: Promise<void> | undefined
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      const { generateFollowUp } = await import('@/agent/follow-up-generator')
+      vi.mocked(generateFollowUp).mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+      loopRunMock.mockImplementationOnce(async (_messages, callbacks) => { void callbacks.onComplete([]); return [] })
+      run = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      await vi.waitFor(() => expect(release).toBeDefined())
+      expect(f.row.status).toBe('processing')
+      f.store.cancelAgent(f.conv.id)
+      await vi.waitFor(() => expect(f.row.status).toBe('suppressed'))
+      release!(''); await run
+      expect(f.handled).not.toHaveBeenCalled()
+      expect(f.row.status).toBe('suppressed')
+    } finally { release?.(''); await run; f.spy.mockRestore() }
+  })
+
+  it('automatic dispatch does not run a model when another owner already claimed its notification', async () => {
+    const f = await setupNotification()
+    try {
+      f.row.status = 'handled'
+      const before = createLLMProviderMock.mock.calls.length
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null, null, { background: true, subagentContinuation: true })
+      expect(createLLMProviderMock.mock.calls.length).toBe(before)
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.status).toBe('idle')
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('a stopped loop resolving late cannot unregister the newer owning loop', async () => {
+    const f = await setupNotification()
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      let finishOld!: (messages: never[]) => void, finishNew!: (messages: never[]) => void
+      loopRunMock.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+      const oldRun = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      await vi.waitFor(() => expect(finishOld).toBeDefined())
+      f.store.cancelAgent(f.conv.id)
+      loopRunMock.mockImplementationOnce(() => new Promise(resolve => { finishNew = resolve }))
+      const newRun = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      await vi.waitFor(() => expect(finishNew).toBeDefined())
+      const { getAgentLoop } = await import('@/store/agent-loop-registry')
+      const newLoop = getAgentLoop(f.conv.id)
+      finishOld([]); await oldRun
+      expect(getAgentLoop(f.conv.id)).toBe(newLoop)
+      finishNew([]); await newRun
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('a stopped provider failing after a newer run completes cannot replace its success state', async () => {
+    const f = await setupNotification()
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      let failOld!: (error: Error) => void
+      loopRunMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { failOld = reject }))
+      const oldRun = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      await vi.waitFor(() => expect(failOld).toBeDefined())
+      f.store.cancelAgent(f.conv.id)
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      failOld(new Error('Late stopped provider failure')); await oldRun
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.status).toBe('idle')
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('keeps a saved provider and model when global settings change before automatic continuation', async () => {
+    const f = await setupNotification()
+    const previousConfig = mockSettingsState.getEffectiveProviderConfig.getMockImplementation()!
+    const previousProvider = mockSettingsState.providerType, previousModel = mockSettingsState.modelName
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      mockSettingsState.providerType = 'openai'; mockSettingsState.modelName = 'new-model'
+      mockSettingsState.getEffectiveProviderConfig.mockImplementation((override) => override === 'llm-gateway'
+        ? { apiKeyProviderKey: '__llm_gateway_token__', baseUrl: 'https://original.example/v1', modelName: 'gateway-default' }
+        : { apiKeyProviderKey: 'openai', baseUrl: 'https://new.example/v1', modelName: 'new-model' })
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'saved-model', 1024, null, null, { background: true, subagentContinuation: true })
+      expect(createLLMProviderMock).toHaveBeenLastCalledWith(expect.objectContaining({ providerType: 'llm-gateway', model: 'saved-model', baseUrl: 'https://original.example/v1', apiKey: 'validated-token' }))
+      expect(mockSettingsState.getEffectiveProviderConfig).toHaveBeenCalledWith('llm-gateway')
+    } finally {
+      mockSettingsState.providerType = previousProvider; mockSettingsState.modelName = previousModel
+      mockSettingsState.getEffectiveProviderConfig.mockImplementation(previousConfig); f.spy.mockRestore()
+    }
+  })
+
+  it('settles a claimed missing-key failure and accepts immediate explicit retry without reload', async () => {
+    const f = await setupNotification()
+    try {
+      f.row.continuation = { parentRunId: 'origin', providerType: 'openai', modelName: 'saved-model', maxTokens: 1024 }
+      loadCredentialMock.mockResolvedValue(null)
+      await f.store.runAgent(f.conv.id, 'openai', 'saved-model', 1024, null, null, { background: true, subagentContinuation: true })
+      expect(f.claim).toHaveBeenCalledTimes(1); expect(f.row.status).toBe('error')
+      await f.coordinator.retry(f.conv.id)
+      expect(f.dispatch).toHaveBeenCalledTimes(1); expect(f.row.status).toBe('delivered')
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('a stopped missing-key exit cannot overwrite a newer run after its credential await', async () => {
+    const f = await setupNotification()
+    let finishNew: ((messages: never[]) => void) | undefined
+    let newRun: Promise<void> | undefined
+    try {
+      let resolveOldKey!: (key: string | null) => void
+      loadCredentialMock.mockImplementationOnce(() => new Promise(resolve => { resolveOldKey = resolve }))
+      const oldRun = f.store.runAgent(f.conv.id, 'openai', 'saved-model', 1024, null, null, { background: true, subagentContinuation: true })
+      await vi.waitFor(() => expect(resolveOldKey).toBeDefined())
+      expect(f.claim).toHaveBeenCalledTimes(1)
+      f.store.cancelAgent(f.conv.id)
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      loopRunMock.mockImplementationOnce(() => new Promise(resolve => { finishNew = resolve }))
+      newRun = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      await vi.waitFor(() => expect(finishNew).toBeDefined())
+      const current = useConversationStore.getState().conversations.find(c => c.id === f.conv.id)!
+      const expected = { activeRunId: current.activeRunId, status: current.status, error: current.error }
+      expect(expected.activeRunId).toBeTruthy()
+      resolveOldKey(null); await oldRun
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)).toMatchObject(expected)
+      expect(useConversationRuntimeStore.getState().runtimes.get(f.conv.id)).toMatchObject(expected)
+      expect(f.row.status).toBe('suppressed')
+    } finally {
+      finishNew?.([]); await newRun; f.spy.mockRestore()
+    }
+  })
+
+  it('an internally caught authentication failure never handles accepted input', async () => {
+    const f = await setupNotification()
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: false, kind: 'missing' })
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      expect(f.claim).toHaveBeenCalledTimes(1); expect(f.handled).not.toHaveBeenCalled(); expect(f.row.status).toBe('error')
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('ordinary manual retry claims accepted input and acknowledges its actual successful run', async () => {
+    const f = await setupNotification()
+    try {
+      f.row.status = 'error'
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      expect(f.claim).toHaveBeenCalledTimes(1); expect(f.handled).toHaveBeenCalledWith(f.row.id, f.row.parentRunId); expect(f.row.status).toBe('handled')
+    } finally { f.spy.mockRestore() }
+  })
 })

@@ -31,7 +31,7 @@ Available subagent types (use the subagent_type parameter to select):
 - general-purpose: Default subagent. Use when neither explorer nor worker fits.
 - explorer: Read-only investigation. Use for specific, well-scoped questions on the codebase. Explorers are fast and authoritative. They must be used to ask specific, well-scoped questions on the codebase. You are encouraged to spawn up multiple explorers in parallel when you have multiple distinct questions to ask about the codebase that can be answered independently. Reuse existing explorers for related questions.
 - worker: Code-changing subtasks. Use when the task involves modifying files. When delegating coding work, the subagent lists file paths it changed in the final answer. For coding tasks, prefer worker over explorer when the subagent can make a bounded patch in a clear write scope. Decompose work so each delegated task has a disjoint write set.
-- awaiter: For long-running commands. Note: spawn_subagent currently blocks until the subagent finishes, so awaiter mainly constrains subagent behavior (deterministic polling, no unrelated actions) rather than saving wall-clock time.`
+- awaiter: For long-running commands. Runs in the background with deterministic polling and no unrelated actions.`
 
 /**
  * Subagent output is no longer pre-emptively offloaded to asset files.
@@ -44,50 +44,6 @@ Available subagent types (use the subagent_type parameter to select):
  * the threshold should be derived from the active model's context window size,
  * not a fixed character count.
  */
-
-//-----------------------------------------------------------------------------
-// Subagent Health Detection
-//-----------------------------------------------------------------------------
-
-export interface SubagentHealth {
-  ok: boolean
-  reason?: string
-  message?: string
-  suggestion?: string
-}
-
-/**
- * Detect whether a completed subagent likely failed due to an API error.
- *
- * Heuristic: status is "completed" but the output is suspiciously short while
- * the agent already performed multiple tool calls — this pattern strongly
- * suggests the LLM response was truncated by an upstream error.
- */
-function detectSubagentHealth(result: {
-  content: string
-  status: string
-  usage?: { output_tokens?: number; tool_calls?: number }
-}): SubagentHealth {
-  const contentLength = (result.content || '').trim().length
-  const outputTokens = result.usage?.output_tokens ?? 0
-  const toolCalls = result.usage?.tool_calls ?? 0
-
-  if (
-    result.status === 'completed' &&
-    contentLength < 50 &&
-    outputTokens < 100 &&
-    toolCalls > 0
-  ) {
-    return {
-      ok: false,
-      reason: 'suspicious_low_output',
-      message: `Subagent completed but output is suspiciously short (output_tokens=${outputTokens}, tool_calls=${toolCalls}, content_length=${contentLength}). This likely indicates an API error interrupted the response. Try \`resume_subagent\` to continue.`,
-      suggestion: 'resume_subagent',
-    }
-  }
-
-  return { ok: true }
-}
 
 function runtimeMissing(tool: string): string {
   return toolErrorJson(
@@ -114,7 +70,7 @@ export const spawnSubagentDefinition: ToolDefinition = {
   function: {
     name: TOOL_NAME_SPAWN,
     description:
-      'Spawn a delegated subagent task that runs to completion. The tool blocks until the subagent finishes and returns the full result. Use for independent sub-tasks (analysis, searching, drafting).' +
+      'Submit a delegated subagent task in the background. Returns a durable accepted receipt immediately; pending/running means submitted, not completed. Continue independent work, or use wait_subagents to retrieve results.' +
       SUBAGENT_TYPE_DESCRIPTIONS,
     parameters: {
       type: 'object',
@@ -185,7 +141,7 @@ export const batchSpawnDefinition: ToolDefinition = {
   function: {
     name: TOOL_NAME_BATCH_SPAWN,
     description:
-      'Launch multiple independent subagent tasks in parallel. Blocks until all tasks complete. Useful for parallelizable subtasks.' +
+      'Submit multiple independent background tasks. Returns accepted receipts and per-member rejections immediately. Use wait_subagents to retrieve results.' +
       SUBAGENT_TYPE_DESCRIPTIONS,
     parameters: {
       type: 'object',
@@ -321,7 +277,7 @@ export const spawnSubagentExecutor: ToolExecutor = async (args, context) => {
     const name = validateName(args.name)
     const subagentType = validateSubagentType(args.subagent_type)
 
-    const result = await runtime.spawn({
+    const result = await runtime.start({
       description,
       prompt,
       name,
@@ -330,21 +286,7 @@ export const spawnSubagentExecutor: ToolExecutor = async (args, context) => {
       parentToolCallId: context.currentToolCallId,
     })
 
-    // Health check: detect suspicious low output that likely indicates an API error
-    const health = detectSubagentHealth(result)
-
-    // When subagent output looks like a failure, inject recovery guidance for the main agent.
-    // (spawn() already throws on hard failure / killed, so a non-throwing result with !health.ok
-    // means the subagent returned suspiciously low output — likely a soft error.)
-    const failureGuidance = !health.ok
-      ? { health, _recovery_hint: 'Subagent failed. As the main agent, you should now attempt the task yourself: start by probing the data source with a single request, then design a working strategy before scaling up.' }
-      : undefined
-
-    return toolOkJson(
-      TOOL_NAME_SPAWN,
-      result,
-      failureGuidance,
-    )
+    return toolOkJson(TOOL_NAME_SPAWN, result)
   } catch (error) {
     return formatError(TOOL_NAME_SPAWN, error)
   }
@@ -355,33 +297,70 @@ export const batchSpawnExecutor: ToolExecutor = async (args, context) => {
   if (!runtime) return runtimeMissing(TOOL_NAME_BATCH_SPAWN)
 
   try {
-    const tasks = Array.isArray(args.tasks)
-      ? (args.tasks as Array<Record<string, unknown>>).map((task) => ({
-          description: validateDescription(task.description),
-          prompt: validatePrompt(task.prompt),
-          name: validateName(task.name),
-          mode: (task.mode === 'plan' || task.mode === 'act' ? task.mode : undefined) as 'plan' | 'act' | undefined,
-          subagent_type: validateSubagentType(task.subagent_type),
-          parentToolCallId: context.currentToolCallId,
-        }))
-      : []
-    const max_concurrency = typeof args.max_concurrency === 'number' ? args.max_concurrency : undefined
-
-    const result = await runtime.batchSpawn({
-      tasks,
-      max_concurrency,
-    })
-    const healthCheckedCompleted = result.completed.map((item) => {
-      const health = detectSubagentHealth({ content: item.content, status: 'completed', usage: item.usage })
-      return {
-        ...item,
-        ...(health.ok ? {} : { health }),
+    const tasks: Array<import('./tool-types').SpawnSubagentInput> = []
+    const indices: number[] = []
+    const rejected: import('@/agent/subagent/async-types').SubagentBatchAcceptance['rejected'] = []
+    for (const [task_index, raw] of (Array.isArray(args.tasks) ? args.tasks : []).entries()) {
+      try {
+        const task = raw as Record<string, unknown>
+        tasks.push({ description: validateDescription(task.description), prompt: validatePrompt(task.prompt),
+          name: validateName(task.name), subagent_type: validateSubagentType(task.subagent_type),
+          mode: task.mode === 'plan' || task.mode === 'act' ? task.mode : undefined,
+          parentToolCallId: context.currentToolCallId })
+        indices.push(task_index)
+      } catch (error) {
+        rejected.push({ task_index, reason: error instanceof Error ? error.message : String(error),
+          error_code: error instanceof SubagentError ? error.code : 'INVALID_INPUT' })
       }
+    }
+    const result = await runtime.batchStart({ tasks,
+      max_concurrency: typeof args.max_concurrency === 'number' ? args.max_concurrency : undefined })
+    return toolOkJson(TOOL_NAME_BATCH_SPAWN, {
+      accepted: result.accepted.map((item) => ({ ...item, task_index: indices[item.task_index] })),
+      rejected: [...rejected, ...result.rejected.map((item) => ({ ...item, task_index: indices[item.task_index] }))]
+        .sort((a, b) => a.task_index - b.task_index),
     })
-    return toolOkJson(TOOL_NAME_BATCH_SPAWN, { ...result, completed: healthCheckedCompleted })
   } catch (error) {
     return formatError(TOOL_NAME_BATCH_SPAWN, error)
   }
+}
+
+export const waitSubagentsDefinition: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'wait_subagents',
+    description: 'Wait for current executions of submitted subagents. Returns completed results and pending IDs; timeout never cancels work. Explicitly received pending results are consumed to avoid later automatic redelivery.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentIds: { type: 'array', items: { type: 'string' }, description: 'Agent IDs or aliases to wait for.' },
+        timeout_ms: { type: 'number', minimum: 0, maximum: 60000, description: 'Bounded wait in milliseconds; default 60000, maximum 60000.' },
+        wait_for: { type: 'string', enum: ['any', 'all'], description: 'Return after any or all targets finish; default any.' },
+      },
+      required: ['agentIds'],
+    },
+  },
+}
+
+export const waitSubagentsExecutor: ToolExecutor = async (args, context) => {
+  if (!context.subagentRuntime) return runtimeMissing('wait_subagents')
+  try {
+    if (!Array.isArray(args.agentIds) || args.agentIds.length === 0) {
+      throw new Error('agentIds must contain at least one agent ID')
+    }
+    const agentIds = args.agentIds.map(validateAgentId)
+    const result = await context.subagentRuntime.wait({ agentIds,
+      timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+      wait_for: args.wait_for === 'all' ? 'all' : 'any', signal: context.abortSignal })
+    return toolOkJson('wait_subagents', {
+      ...result,
+      results: result.results.map((completion) => ({
+        agentId: completion.agentId, executionId: completion.executionId, status: completion.taskStatus,
+        result: completion.result, usage: completion.usage, error: completion.error,
+        changedPaths: completion.changedPaths, traceId: completion.id,
+      })),
+    })
+  } catch (error) { return formatError('wait_subagents', error) }
 }
 
 export const sendMessageToSubagentExecutor: ToolExecutor = async (args, context) => {
@@ -476,7 +455,9 @@ export const subagentPromptDoc: ToolPromptDoc = {
   category: 'subagent',
   section: '### Subagent Delegation',
   lines: [
-    '- `spawn_subagent(description, prompt, ...)` - Delegate an independent sub-task to a child agent',
+    '- `spawn_subagent(description, prompt, ...)` - Submit a background child task; receipt means accepted, not finished',
+    '- `batch_spawn(tasks, max_concurrency?)` - Submit independent children with per-member acceptance/rejection',
+    '- `wait_subagents(agentIds, timeout_ms?, wait_for?)` - Retrieve current child execution results; default any, maximum 60 seconds; timeout keeps work running',
     '- `send_message_to_subagent(to, message)` - Send follow-up instruction to a running/pending child',
     '- `stop_subagent(agentId)` - Stop a child task when scope changes',
     '- `resume_subagent(agentId, prompt)` - Resume a stopped/failed/completed child with new instructions',

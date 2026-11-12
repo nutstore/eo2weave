@@ -112,6 +112,7 @@ export interface Message {
    * "delegation note" card (rather than a user chat bubble) and lets
    * downstream logic distinguish it from real user input.
    */
+  subagentCompletion?: { eventIds: string[] }
   delegationNote?: {
     fromAgentId: string
     fromAgentName?: string
@@ -329,13 +330,13 @@ export type MessageRecordType =
 
 /** Derive application identity from persisted fields, including legacy records. */
 export function getMessageRecordType(message: Pick<Message,
-  'role' | 'kind' | 'delegationNote' | 'readImageHandoff'
+  'role' | 'kind' | 'delegationNote' | 'readImageHandoff' | 'subagentCompletion'
 >): MessageRecordType {
   if (message.kind === 'context_update' || message.kind === 'context_summary' || message.kind === 'run_changes') {
     return message.kind
   }
   if (message.role === 'user') {
-    return message.delegationNote || message.readImageHandoff ? 'agent_input' : 'user_input'
+    return message.delegationNote || message.readImageHandoff || message.subagentCompletion ? 'agent_input' : 'user_input'
   }
   if (message.role === 'assistant') return 'assistant_output'
   if (message.role === 'tool') return 'tool_result'
@@ -343,7 +344,7 @@ export function getMessageRecordType(message: Pick<Message,
 }
 
 export function isHumanUserMessage(message: Pick<Message,
-  'role' | 'kind' | 'delegationNote' | 'readImageHandoff'
+  'role' | 'kind' | 'delegationNote' | 'readImageHandoff' | 'subagentCompletion'
 >): boolean {
   return getMessageRecordType(message) === 'user_input'
 }

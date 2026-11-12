@@ -2,8 +2,8 @@
  * Delegate To Tool - allows the main agent to hand off the conversation
  * to another agent persona.
  *
- * Unlike spawn_subagent (which creates an isolated sub-agent that returns
- * a result back to the main agent), delegate_to performs a **one-way
+ * Unlike spawn_subagent (which submits an isolated background task and returns
+ * an accepted receipt, with results available through wait_subagents), delegate_to performs a **one-way
  * handoff**: the target agent takes over the next loop iteration with
  * the full conversation history and its own persona injected. The
  * originating agent does not regain control.
@@ -36,7 +36,7 @@ export const delegateToDefinition: ToolDefinition = {
       '',
       '## When NOT to use',
       '- You can complete the task yourself — just do it',
-      '- You only need a quick sub-result (use `spawn_subagent` instead — it returns the result to you)',
+      '- You only need a quick sub-result (use `spawn_subagent` and retrieve its background result with `wait_subagents`)',
       '- The user just @-mentioned another agent (the system already handles that)',
     ].join('\n'),
     parameters: {

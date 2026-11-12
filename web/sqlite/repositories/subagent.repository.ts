@@ -1,9 +1,12 @@
+import type { SubagentExecutionMetadata } from '@/agent/subagent/async-types'
+import type { SQLiteTransaction } from '../sqlite-database'
 import type { AgentMode } from '@/agent/agent-mode'
 import type { Message } from '@/agent/message-types'
 import type { SubagentTaskStatus, SubagentTaskUsage, SubagentType } from '@/agent/tools/tool-types'
 import { boolToInt, getSQLiteDB, intToBool, parseJSON, toJSON } from '../sqlite-database'
 
 interface SubagentTaskRow {
+  execution_json: string | null
   agent_id: string
   workspace_id: string
   name: string | null
@@ -24,6 +27,7 @@ interface SubagentTaskRow {
 }
 
 export interface StoredSubagentTask {
+  execution?: SubagentExecutionMetadata
   agentId: string
   workspaceId: string
   name?: string
@@ -76,6 +80,16 @@ export class SubagentRepository {
     return rows.map((row) => this.rowToTask(row))
   }
 
+  /** Acknowledge a single attempt without changing execution or result delivery. */
+  async acknowledge(workspaceId: string, agentId: string, executionId: string): Promise<void> {
+    const db = getSQLiteDB()
+    await db.execute(
+      `UPDATE subagent_tasks SET execution_json = json_set(execution_json, '$.acknowledged', json('true'))
+       WHERE workspace_id = ? AND agent_id = ? AND json_extract(execution_json, '$.executionId') = ?`,
+      [workspaceId, agentId, executionId]
+    )
+  }
+
   async getStatus(workspaceId: string, agentId: string): Promise<SubagentTaskStatus | null> {
     const db = getSQLiteDB()
     const row = await db.queryFirst<{ status: string }>(
@@ -92,50 +106,7 @@ export class SubagentRepository {
     const db = getSQLiteDB()
     await db.transaction(async (tx) => {
       for (const task of tasks) {
-        await tx.execute(
-          `INSERT INTO subagent_tasks (
-              agent_id, workspace_id, name, description, status, mode, subagent_type, parent_tool_call_id, timeout_ms,
-              messages_json, queue_json, usage_json, error_json, stopped,
-              created_at, updated_at, last_activity_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(agent_id) DO UPDATE SET
-             workspace_id = excluded.workspace_id,
-             name = excluded.name,
-             description = excluded.description,
-             status = excluded.status,
-             mode = excluded.mode,
-             subagent_type = excluded.subagent_type,
-             parent_tool_call_id = excluded.parent_tool_call_id,
-             timeout_ms = excluded.timeout_ms,
-             messages_json = excluded.messages_json,
-             queue_json = excluded.queue_json,
-             usage_json = excluded.usage_json,
-             error_json = excluded.error_json,
-             stopped = excluded.stopped,
-             created_at = excluded.created_at,
-             updated_at = excluded.updated_at,
-             last_activity_at = excluded.last_activity_at
-           WHERE excluded.updated_at >= subagent_tasks.updated_at`,
-          [
-            task.agentId,
-            workspaceId,
-            task.name || null,
-            task.description,
-            task.status,
-            task.mode,
-            task.subagent_type,
-            task.parentToolCallId || null,
-            task.timeout_ms ?? null,
-            toJSON(task.messages),
-            toJSON(task.queue),
-            toJSON(task.usage || null),
-            toJSON(task.error || null),
-            boolToInt(task.stopped),
-            task.created_at,
-            task.updated_at,
-            task.last_activity_at,
-          ]
-        )
+        await saveSubagentTask(tx, workspaceId, task)
       }
     })
   }
@@ -212,6 +183,7 @@ export class SubagentRepository {
 
   private rowToTask(row: SubagentTaskRow): StoredSubagentTask {
     return {
+      execution: parseJSON<SubagentExecutionMetadata | null>(row.execution_json || '', null) || undefined,
       agentId: row.agent_id,
       workspaceId: row.workspace_id,
       name: row.name || undefined,
@@ -231,6 +203,60 @@ export class SubagentRepository {
       last_activity_at: row.last_activity_at,
     }
   }
+}
+
+/** Shared transaction primitive for terminal task + completion atomicity. */
+export async function saveSubagentTask(tx: SQLiteTransaction, workspaceId: string, task: StoredSubagentTask): Promise<void> {
+  await tx.execute(
+    `INSERT INTO subagent_tasks (
+        agent_id, workspace_id, name, description, status, mode, subagent_type, parent_tool_call_id, timeout_ms,
+        messages_json, queue_json, usage_json, error_json, stopped,
+        created_at, updated_at, last_activity_at, execution_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(agent_id) DO UPDATE SET
+       workspace_id = excluded.workspace_id,
+       name = excluded.name,
+       description = excluded.description,
+       status = excluded.status,
+       mode = excluded.mode,
+       subagent_type = excluded.subagent_type,
+       parent_tool_call_id = excluded.parent_tool_call_id,
+       timeout_ms = excluded.timeout_ms,
+       messages_json = excluded.messages_json,
+       queue_json = excluded.queue_json,
+       usage_json = excluded.usage_json,
+       error_json = excluded.error_json,
+       stopped = excluded.stopped,
+       created_at = excluded.created_at,
+       updated_at = excluded.updated_at,
+       last_activity_at = excluded.last_activity_at,
+       execution_json = CASE
+         WHEN json_extract(subagent_tasks.execution_json, '$.executionId') = json_extract(excluded.execution_json, '$.executionId')
+           AND json_extract(subagent_tasks.execution_json, '$.acknowledged') = 1
+         THEN json_set(excluded.execution_json, '$.acknowledged', json('true'))
+         ELSE excluded.execution_json END
+     WHERE excluded.updated_at >= subagent_tasks.updated_at`,
+    [
+      task.agentId,
+      workspaceId,
+      task.name || null,
+      task.description,
+      task.status,
+      task.mode,
+      task.subagent_type,
+      task.parentToolCallId || null,
+      task.timeout_ms ?? null,
+      toJSON(task.messages),
+      toJSON(task.queue),
+      toJSON(task.usage || null),
+      toJSON(task.error || null),
+      boolToInt(task.stopped),
+      task.created_at,
+      task.updated_at,
+      task.last_activity_at,
+      toJSON(task.execution || null),
+    ]
+  )
 }
 
 let subagentRepoInstance: SubagentRepository | null = null

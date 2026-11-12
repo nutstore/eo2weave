@@ -67,3 +67,5 @@ export type { StoredMCPServer } from './repositories/mcp.repository'
 
 export { SubagentRepository, getSubagentRepository } from './repositories/subagent.repository'
 export type { StoredSubagentTask } from './repositories/subagent.repository'
+
+export { SubagentCompletionRepository, getSubagentCompletionRepository } from './repositories/subagent-completion.repository'

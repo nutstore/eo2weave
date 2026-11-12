@@ -1,3 +1,4 @@
+import { getSubagentContinuation, onSubagentCompletionReady, recordAsyncSubagentPaths, isAsyncSubagentPath, drainSubagentContinuations, hasRunningAsyncSubagents, retainPendingSubagentPaths } from './subagent-continuation'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Conversation Agent Run — extracted from conversation.store.sqlite.ts
@@ -72,7 +73,7 @@ type StoreGet = () => {
     maxTokens: number,
     directoryHandle: FileSystemDirectoryHandle | null,
     agentOverrideId?: string | null,
-    options?: { background?: boolean; transient?: boolean }
+    options?: { background?: boolean; transient?: boolean; subagentContinuation?: boolean }
   ): Promise<void>
   generateTitle(
     id: string,
@@ -93,6 +94,28 @@ type StoreSet = (updater: (state: AgentRunStoreDraft) => void) => void
  * threaded, so a synchronous map insert IS the atomic claim.
  */
 const runClaimSlots = new Map<string, { claimed: boolean; owner: string }>()
+
+const dispatchDepth = new Map<string, number>()
+export function isConversationDispatchBusy(id: string): boolean {
+  return runClaimSlots.has(id) || (dispatchDepth.get(id) ?? 0) > 0
+}
+export function invalidateConversationRunClaim(id: string): void {
+  runClaimSlots.delete(id)
+}
+export async function runAgentImpl(...args: Parameters<typeof runAgentBody>): Promise<void> {
+  const id = args[3]
+  dispatchDepth.set(id, (dispatchDepth.get(id) ?? 0) + 1)
+  try {
+    await runAgentBody(...args)
+  } finally {
+    const depth = (dispatchDepth.get(id) ?? 1) - 1
+    if (depth) dispatchDepth.set(id, depth)
+    else dispatchDepth.delete(id)
+    const conv = args[2]().conversations.find(c => c.id === id)
+    if (conv?.status === 'error') await getSubagentContinuation().blockUnstarted(id, conv.error ?? 'Model dispatch failed')
+    drainSubagentContinuations(id)
+  }
+}
 
 /**
  * Bridge onto the facade-module symbols runAgent touches. The delegate casts
@@ -117,6 +140,7 @@ export interface ConversationAgentRunInternals {
   /** Schedule a delayed memory-eviction check (facade-module fn; avoids a
    *  module cycle with conversation.store.sqlite.ts). */
   scheduleConversationEviction(conversationId: string): void
+  loadRunHistory?(conversationId: string): Promise<void>
 }
 
 /**
@@ -124,7 +148,7 @@ export interface ConversationAgentRunInternals {
  * conversation.store.sqlite.ts; `set`/`get` are the zustand closures passed
  * through by the facade delegate.
  */
-export async function runAgentImpl(
+async function runAgentBody(
   store: ConversationAgentRunInternals,
   set: StoreSet,
   get: StoreGet,
@@ -134,7 +158,7 @@ export async function runAgentImpl(
       maxTokens: number,
       directoryHandle: FileSystemDirectoryHandle | null,
       agentOverrideId?: string | null,
-      options?: { background?: boolean; transient?: boolean }
+      options?: { background?: boolean; transient?: boolean; subagentContinuation?: boolean }
 ): Promise<void> {
   const { handleSubagentStepNotification, bumpTranscriptVersion } = store
   // Background runs (external agents driving EO2Weave) must NOT steal the
@@ -145,7 +169,7 @@ export async function runAgentImpl(
   const transientAgent = options?.transient === true
 
       const state = get()
-      const conv = state.conversations.find((c) => c.id === conversationId)
+      let conv = state.conversations.find((c) => c.id === conversationId)
       if (!conv) return
 
       // Stale rerun triggers must die with THIS dispatch's failure — not
@@ -183,7 +207,18 @@ export async function runAgentImpl(
           useConversationRuntimeStore.getState().removeQueuedMessage(conversationId, i)
         }
       }
+      let owningRunId: string | undefined
+      let owningRunEpoch: number | undefined
+      let continuationFailure: Promise<void> | undefined
+      const failContinuation = (message: string) => {
+        if (owningRunId) continuationFailure ??= getSubagentContinuation().finishRun(conversationId, owningRunId, 'error', message).catch(console.error)
+      }
       const failDispatchEarly = (message: string) => {
+        failContinuation(message)
+        if (owningRunId && owningRunEpoch !== undefined) {
+          const owner = get().conversations.find(c => c.id === conversationId)
+          if (owner?.activeRunId !== owningRunId || owner.runEpoch !== owningRunEpoch) return
+        }
         drainStaleRerunTriggers()
         set((state) => {
           const c = state.conversations.find((c) => c.id === conversationId)
@@ -232,6 +267,10 @@ export async function runAgentImpl(
       // No trigger queued at this moment can belong to a live dispatch — the
       // conversation is running, so every overlap in flight goes through
       // this same guard or the claim-overlap branch below.
+      if (options?.subagentContinuation && (state.isConversationRunning(conversationId) || runClaimSlots.has(conversationId))) {
+        getSubagentContinuation().deferDispatch(conversationId)
+        return
+      }
       if (state.isConversationRunning(conversationId)) {
         // Stamp the trigger with the identity of the run that will consume it
         // (#170 review round 2): the pending claim's owner while setup is
@@ -463,7 +502,9 @@ export async function runAgentImpl(
         // The await above is the one window where a competing dispatch could
         // have taken over this conversation (had we not held the claim).
         // Bail out if the claim was lost or another run started meanwhile.
-        if (!claimIsOurs() || get().isConversationRunning(conversationId)) {
+        await store.loadRunHistory?.(conversationId)
+        conv = get().conversations.find(c => c.id === conversationId)
+        if (!conv || !claimIsOurs() || get().isConversationRunning(conversationId)) {
           releaseClaim()
           return
         }
@@ -490,6 +531,7 @@ export async function runAgentImpl(
         directoryHandle = resolvedDirHandle
 
         const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+        owningRunId = runId
         let runEpoch = 0
         // The synchronous start claim guaranteed no concurrent dispatch raced
         // us to this point; convert it into the real run lock now.
@@ -646,6 +688,7 @@ export async function runAgentImpl(
           }
         })
 
+        owningRunEpoch = runEpoch
         const isCurrentRun = () => {
           const rt = useConversationRuntimeStore.getState().runtimes.get(conversationId)
           return !!rt && rt.activeRunId === runId && (rt.runEpoch || 0) === runEpoch
@@ -656,7 +699,28 @@ export async function runAgentImpl(
           return !!rt && (rt.runEpoch || 0) === runEpoch
         }
 
+        if (!isCurrentRun()) return
+        await getSubagentContinuation().activate(conversationId)
+        if (!isCurrentRun()) return
+        const continuationClaims = await getSubagentContinuation().claimRun(conversationId, runId, get().conversations.find(c => c.id === conversationId)?.messages ?? [], !options?.subagentContinuation)
+        if (options?.subagentContinuation && continuationClaims === 0) {
+          set(state => {
+            const c = state.conversations.find(c => c.id === conversationId)
+            if (c?.activeRunId === runId) { c.activeRunId = null; c.status = 'idle'; c.draftAssistant = null }
+          })
+          useConversationRuntimeStore.setState(state => {
+            const rt = state.runtimes.get(conversationId)
+            if (rt?.activeRunId === runId) { rt.activeRunId = null; rt.status = 'idle'; rt.draftAssistant = null }
+          })
+          await getSubagentContinuation().blockUnstarted(
+            conversationId, 'No background result could be claimed. Retry to continue.'
+          )
+          return
+        }
+        let continuationOutcome: 'success' | 'error' = 'success'
+
         const failRunEarly = (message: string) => {
+          failContinuation(message)
           if (!isCurrentRun()) return
           set((state) => {
             const c = state.conversations.find((c) => c.id === conversationId)
@@ -825,10 +889,13 @@ export async function runAgentImpl(
 
         const apiKeyRepo = getApiKeyRepository()
         const settingsState = useSettingsStore.getState()
-        const effectiveConfig = settingsState.getEffectiveProviderConfig()
+        const effectiveConfig = settingsState.getEffectiveProviderConfig(providerType)
         const providerConfig =
           isCustomProviderType(providerType)
-            ? effectiveConfig
+            ? effectiveConfig && {
+                ...effectiveConfig,
+                modelName: options?.subagentContinuation ? modelName || effectiveConfig.modelName : effectiveConfig.modelName,
+              }
             : {
                 apiKeyProviderKey: providerType,
                 baseUrl: LLM_PROVIDER_CONFIGS[providerType].baseURL,
@@ -918,7 +985,7 @@ export async function runAgentImpl(
           // Ignore workspace lookup failures; agent prompt injection will be skipped without projectId.
         }
 
-        let activeAgentId = await resolveConversationAgentId(
+        const activeAgentId = await resolveConversationAgentId(
           resolvedProjectId, conversationId, agentOverrideId, lastUserMessage?.content,
           transientAgent ? { transient: true } : undefined,
         )
@@ -970,6 +1037,7 @@ export async function runAgentImpl(
             for (const change of workspace.getPendingChanges()) {
               pendingPathsAtRunStart.add(change.path)
             }
+            retainPendingSubagentPaths(conversationId, pendingPathsAtRunStart)
             runOwnershipReady = true
           }
         } catch (error) {
@@ -1007,10 +1075,14 @@ export async function runAgentImpl(
         }
 
         // `getOrCreateSubagentRuntime` keeps a workspace-scoped singleton.
-        // Refresh its base context for this run before any delegated task is
-        // started, so child writes contribute to the same ownership set.
+        // Capture this run configuration before async children outlive it.
+        // Child write ownership stays separate from parent auto-application.
+        if (!isCurrentRun()) return
         const subagentRuntime = getOrCreateSubagentRuntime({
           workspaceId: conversationId,
+          continuation: { parentRunId: runId, providerType, modelName: providerConfig.modelName, maxTokens, agentOverrideId: activeAgentId, projectId: resolvedProjectId },
+          onCompletionReady: onSubagentCompletionReady,
+          onAsyncWorkspacePathsChanged: paths => recordAsyncSubagentPaths(conversationId, paths),
           provider,
           toolRegistry,
           contextManager,
@@ -1202,12 +1274,13 @@ export async function runAgentImpl(
               // was already pending can contain unreviewed work from an earlier
               // run, even if this run updates the same overlay file.
               const eligiblePaths = [...runChangedPaths].filter(
-                (path) => !pendingPathsAtRunStart.has(path),
+                (path) => !pendingPathsAtRunStart.has(path) && !isAsyncSubagentPath(conversationId, path),
               )
 
               if (
                 isCurrentRun() &&
                 runOwnershipReady &&
+                !hasRunningAsyncSubagents(conversationId) &&
                 !wasCancelled &&
                 iterationLimitReached === null &&
                 !pendingDelegation &&
@@ -1319,19 +1392,17 @@ export async function runAgentImpl(
 
         setAgentLoop(conversationId, agentLoop)
 
-        const currentMessages = conv.messages
+        const currentMessages = get().conversations.find(c => c.id === conversationId)?.messages ?? conv.messages
 
-        const finalizeRun = async (
+        let finalizationPromise: Promise<void> | undefined
+        let finalizationPersistence: Promise<void> | undefined
+        const finalizeRunOnce = async (
           status: ConversationStatus,
           finalMessages?: Message[],
           error?: string
         ) => {
           // If already committed, nothing to do
           if (committed) return
-          // Unregister the live loop up front; the rest of finalize only
-          // touches persisted state.
-          deleteAgentLoop(conversationId)
-
           // Only the current run is allowed to commit message state.
           // Stale callbacks from prior runs (e.g. after project/workspace switch
           // or elicitation-triggered nested run) must never overwrite UI history.
@@ -1348,6 +1419,8 @@ export async function runAgentImpl(
             return
           }
 
+          // Only this owning epoch may unregister the live loop.
+          deleteAgentLoop(conversationId)
           committed = true
           const currentSnapshot = get().conversations.find((c) => c.id === conversationId)?.messages || []
           const targetMessages = reconcileMessageSnapshot(currentSnapshot, finalMessages || latestMessages)
@@ -1459,8 +1532,9 @@ export async function runAgentImpl(
           if (status === 'idle') {
             emitComplete()
             const finalConv = get().conversations.find((c) => c.id === conversationId)
-            if (finalConv)
-              persistMessageReplace(conversationId, finalConv.messages).catch((err) => {
+            if (finalConv) {
+              finalizationPersistence = persistMessageReplace(conversationId, finalConv.messages)
+              void finalizationPersistence.catch((err) => {
                 console.error(
                   '[conversation.store] Failed to persist conversation on complete:',
                   err
@@ -1469,6 +1543,7 @@ export async function runAgentImpl(
                   i18nText('conversation.toast.saveFailedContentLost', '对话保存失败，部分内容可能丢失')
                 )
               })
+            }
             if (finalConv) {
               persistConversationMeta(finalConv).catch((err) => {
                 console.warn(
@@ -1544,6 +1619,13 @@ export async function runAgentImpl(
           }
         }
 
+        // AgentLoop invokes onComplete without awaiting its async callback.
+        // The fallback caller must join the same finalization before releasing ownership.
+        const finalizeRun = (...args: Parameters<typeof finalizeRunOnce>): Promise<void> => {
+          finalizationPromise ??= finalizeRunOnce(...args)
+          return finalizationPromise
+        }
+
         // Reasoning streaming queue
         let fullReasoningAccumulator = ''
         const reasoningQueue = new StreamingQueue((_key: string, accumulated: string) => {
@@ -1599,6 +1681,7 @@ export async function runAgentImpl(
           }
         })
 
+        if (!isCurrentRun()) return
         const resultMessages = await agentLoop.run(currentMessages, {
           onMessageStart: () => {
             if (!isCurrentRun()) return
@@ -2268,7 +2351,7 @@ export async function runAgentImpl(
             // the user sees "what this run changed". onComplete runs right after
             // onLoopComplete (where auto-apply set runApplyResult), and is the
             // first/effective finalize point — the later finalizeRun call after
-            // agentLoop.run resolves is short-circuited by the `committed` guard.
+            // agentLoop.run resolves joins the same finalization promise.
             if (runApplyResult) {
               latestMessages = [...latestMessages, createRunChangesMessage(runApplyResult.snapshotId)]
             }
@@ -2279,6 +2362,8 @@ export async function runAgentImpl(
           },
           onError: (err: Error) => {
             if (!isCurrentRun()) return
+            continuationOutcome = 'error'
+            failContinuation(err.message)
             console.error('[#LoopStop] store_onError', {
               conversationId,
               runId,
@@ -2321,6 +2406,8 @@ export async function runAgentImpl(
           },
           onIterationLimitReached: (limit: number) => {
             if (!isCurrentRun()) return
+            continuationOutcome = 'error'
+            failContinuation('Iteration limit reached')
             console.info('[#LoopStop] iteration_limit_reached', {
               conversationId,
               runId,
@@ -2337,6 +2424,12 @@ export async function runAgentImpl(
         const previousMessages = get().conversations.find((x) => x.id === conversationId)?.messages || []
         latestMessages = reconcileMessageSnapshot(previousMessages, resultMessages)
         await finalizeRun('idle', latestMessages)
+        if (committed && !get().cancelledRunIds.has(runId)) {
+          // A newer user turn may already own the conversation. Join this run's
+          // original save, then settle only its run-fenced receipt without another history write.
+          if (currentMessages.some(m => m.subagentCompletion)) await finalizationPersistence
+          await getSubagentContinuation().finishRun(conversationId, runId, continuationOutcome)
+        }
 
         // ─── delegate_to handoff ───────────────────────────────────────────
         // If delegate_to was called during this run, restart the loop with the
@@ -2422,6 +2515,11 @@ export async function runAgentImpl(
           })
         }
       } catch (error) {
+        releaseClaim()
+        if (owningRunId) await getSubagentContinuation().finishRun(conversationId, owningRunId, error instanceof Error && error.name === 'AbortError' ? 'suppressed' : 'error', String(error))
+        const currentOwner = get().conversations.find(c => c.id === conversationId)
+        if (owningRunId && owningRunEpoch !== undefined && currentOwner?.runEpoch !== owningRunEpoch) return
+        if (owningRunId && currentOwner?.activeRunId && currentOwner.activeRunId !== owningRunId) return
         // Flush streaming queues BEFORE destroy so any buffered
         // reasoning/content deltas are applied to the draft before we commit.
         const queues = getStreamingQueues(conversationId)
@@ -2516,6 +2614,9 @@ export async function runAgentImpl(
             })
           }
         } // end else (non-AbortError path — errors do NOT consume queue)
+      } finally {
+        // Early configuration/auth exits and loop callbacks share the owning receipt.
+        await continuationFailure
       }
 
       // ── Consume queued messages ──

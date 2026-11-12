@@ -218,10 +218,10 @@ describe('AssistantTurnBubble timeline ordering', () => {
       />
     )
 
-    // batch_spawn renders as a "Subagents" card; assert on the card title
+    // batch_spawn renders with the localized background task title; assert on its
     // count so the raw tool name never appears as a duplicate either.
     const text = container.textContent || ''
-    const count = text.split('Subagents').length - 1
+    const count = text.split('conversation.backgroundTasks.label').length - 1
     expect(count).toBe(1)
   })
 
@@ -262,8 +262,8 @@ describe('AssistantTurnBubble timeline ordering', () => {
     )
 
     const text = container.textContent || ''
-    // batch_spawn renders as a "Subagents" card (see test above).
-    const count = text.split('Subagents').length - 1
+    // batch_spawn renders with the localized background task title (see above).
+    const count = text.split('conversation.backgroundTasks.label').length - 1
     expect(count).toBe(1)
   })
 

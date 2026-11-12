@@ -56,6 +56,7 @@ import { useAssetStore } from '@/store/asset.store'
 import { useGatewayReloginStore } from '@/store/gateway-relogin.store'
 import { PageScreenshotCropDialog } from './PageScreenshotCropDialog'
 import { FlowCanvasPanel } from './FlowCanvasPanel'
+import { BackgroundSubagentTasks } from './BackgroundSubagentTasks'
 
 /**
  * Memoized usage bar — the outer flex column re-renders while its scroll
@@ -475,6 +476,7 @@ export function ConversationView({
           />
           <div className="mx-auto flex max-w-3xl flex-col">
             {/* Keep progress in flow while task details float above the summary. */}
+            <BackgroundSubagentTasks key={`background-${convId ?? 'new'}`} conversationId={convId} />
             <MCPTaskCards key={`${convId ?? 'new'}`} conversationId={convId ?? undefined} viewportRef={messagesAreaRef} />
             {/* Quick chip — shares the generate_image availability gate, so it
                 only ever promises what the current provider can deliver. */}
