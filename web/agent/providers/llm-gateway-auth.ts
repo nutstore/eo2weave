@@ -575,7 +575,7 @@ async function loadStoredTokensWithFallback(): Promise<StoredTokens | null> {
     // restore write (inside it) would be silently undone — the logged-out
     // session would come back to life with the pre-logout credential. The
     // lock serializes read → re-check → restore against clearStoredTokens.
-    return await withGatewayCredentialLock(async () => {
+    return await withGatewayCredentialLock(async function restoreGatewayTokensLocked() {
       // A newer login may have committed while we waited for the lock.
       const current = loadStoredTokens()
       if (current) return current
@@ -647,7 +647,7 @@ function saveStoredTokens(tokens: StoredTokens): void {
   // credential lock must not block later logins/refreshes/logouts forever
   // (the lock-held fallback path in loadStoredTokensWithFallback gets the
   // same treatment via its bounded load).
-  void withGatewayCredentialLock(async () => {
+  void withGatewayCredentialLock(async function backupGatewayTokensLocked() {
     const current = loadStoredTokens()
     if (!current || JSON.stringify(current) !== JSON.stringify(tokens)) return
     // Await BOTH the raced result and the underlying settlement: releasing
@@ -881,7 +881,7 @@ async function clearStoredTokens(
   finalStatus?: 'expired' | 'missing',
   expectedAccessToken?: string,
 ): Promise<boolean> {
-  const cleared = await withGatewayCredentialLock(async () => {
+  const cleared = await withGatewayCredentialLock(async function purgeGatewayTokensLocked() {
     const current = loadStoredTokens()
     if (expectedRefreshToken && current?.refresh_token !== expectedRefreshToken) return false
     if (expectedAccessToken !== undefined && current?.access_token !== expectedAccessToken) return false
@@ -1048,7 +1048,7 @@ type PriorSessionInspection = 'had-session' | 'none' | 'error'
 
 async function inspectPriorSession(): Promise<PriorSessionInspection> {
   try {
-    return await withGatewayCredentialLock(async (): Promise<PriorSessionInspection> => {
+    return await withGatewayCredentialLock(async function inspectPriorGatewaySessionLocked(): Promise<PriorSessionInspection> {
       if (loadStoredTokens()) return 'none'
       // The refresh-token record is DELETED by the expired purge itself, so
       // its absence no longer proves "never logged in": a session that died
@@ -1751,7 +1751,7 @@ async function refreshAccessTokenWithStatusImpl(
       tokens.refresh_expires_in > 0
         ? tokens.refresh_expires_in
         : null
-    return await withGatewayCredentialLock(async (): Promise<RefreshResult> => {
+    return await withGatewayCredentialLock(async function commitRefreshedGatewayTokensLocked(): Promise<RefreshResult> {
       // The generation is tab-local; compare the shared refresh-token identity
       // under the same lock used by every device-login commit.
       const current = loadStoredTokens()

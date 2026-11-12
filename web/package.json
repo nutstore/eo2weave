@@ -22,8 +22,8 @@
     "test:e2e:webmcp": "playwright test --config playwright.webmcp.config.ts",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
-    "lint:fix": "eslint . --ext ts,tsx --fix",
+    "lint": "eslint . --rulesdir ./eslint-rules --ext ts,tsx --report-unused-disable-directives",
+    "lint:fix": "eslint . --rulesdir ./eslint-rules --ext ts,tsx --fix",
     "format": "prettier --write \"{app,agent,components,export,hooks,lib,opfs,pwa,python,router,services,shell,skills,sqlite,store,styles}/**/*.{ts,tsx,css}\" \"*.{ts,tsx,css}\"",
     "format:check": "prettier --check \"{app,agent,components,export,hooks,lib,opfs,pwa,python,router,services,shell,skills,sqlite,store,styles}/**/*.{ts,tsx,css}\" \"*.{ts,tsx,css}\"",
     "typecheck": "tsc --noEmit",
@@ -149,7 +149,7 @@
   },
   "lint-staged": {
     "*.{ts,tsx}": [
-      "eslint --fix",
+      "eslint --rulesdir ./eslint-rules --fix",
       "prettier --write"
     ],
     "*.{css,scss}": [
