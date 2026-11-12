@@ -216,7 +216,7 @@ interface SettingsState {
   setModelCredentialStatusError: (message: string | null) => void
   setAgentLoopNotificationsEnabled: (enabled: boolean) => void
   setAgentLoopNotificationsOnlyWhenHidden: (onlyWhenHidden: boolean) => void
-  getEffectiveProviderConfig: () => EffectiveProviderConfig | null
+  getEffectiveProviderConfig: (providerTypeOverride?: string) => EffectiveProviderConfig | null
 
   /**
    * Check if API key exists for current provider
@@ -1290,9 +1290,10 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         }))
       },
 
-      getEffectiveProviderConfig: () => {
+      getEffectiveProviderConfig: (providerTypeOverride) => {
         const state = get()
-        const config = getProviderConfig(state.providerType)
+        const providerType = providerTypeOverride ?? state.providerType
+        const config = getProviderConfig(providerType)
         if (!config) return null
 
         // The gateway has no key of its own (#277). This alias is a marker, not
@@ -1300,14 +1301,16 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         // hand it to `resolveDispatchApiKey`, which resolves the shared session
         // instead of reading the store.
         const apiKeyProviderKey =
-          state.providerType === 'llm-gateway'
+          providerType === 'llm-gateway'
             ? getGatewayDispatchCredentialKey()
-            : state.providerType
+            : providerType
 
         return {
           apiKeyProviderKey,
           baseUrl: config.baseURL,
-          modelName: state.modelName || config.modelName,
+          modelName: providerType === state.providerType
+            ? state.modelName || config.modelName
+            : config.modelName,
         }
       },
 
