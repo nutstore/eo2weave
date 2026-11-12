@@ -808,6 +808,44 @@ describe('llm-gateway-auth token refresh hardening', () => {
       __resetGatewayCredentialFencingForTests()
     })
 
+    it('preserves refreshed tokens when an older access-token rejection waits for the credential lock', async () => {
+      const stored = seedStoredTokens()
+      const { withGatewayCredentialLock, GATEWAY_CREDENTIAL_LOCK } = await import(
+        '@/agent/providers/gateway-credential-lock'
+      )
+      const requests = vi.spyOn(navigator.locks, 'request')
+      let release!: () => void
+      let entered!: () => void
+      const enteredPromise = new Promise<void>((resolve) => { entered = resolve })
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const holder = withGatewayCredentialLock(async () => {
+        entered()
+        await gate
+      })
+      await enteredPromise
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(refreshResponse('new-valid-access', 3600)))
+      try {
+        const refresh = refreshAccessTokenWithStatus(BASE_URL, CLIENT_ID)
+        await vi.waitFor(() => {
+          expect(requests.mock.calls.filter((call) => call[0] === GATEWAY_CREDENTIAL_LOCK)).toHaveLength(2)
+        })
+        const invalidation = invalidateGatewayAccessToken('stale-access-token')
+        release()
+        await holder
+        await expect(refresh).resolves.toMatchObject({ status: 'success', accessToken: 'new-valid-access' })
+        await invalidation
+        expect(JSON.parse(localStorage.getItem(TOKENS_KEY) || 'null')).toMatchObject({
+          access_token: 'new-valid-access',
+          refresh_token: stored.refresh_token,
+        })
+        expect(deleteApiKeyMock).not.toHaveBeenCalled()
+        expect(getGatewayCredentialStatus()).toBe('valid')
+      } finally {
+        release()
+        requests.mockRestore()
+      }
+    })
+
     it('invalidates only the access token rejected by the gateway', async () => {
       seedStoredTokens()
       await invalidateGatewayAccessToken('different-token')

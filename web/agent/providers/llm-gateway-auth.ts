@@ -879,10 +879,12 @@ function isTokenInvalidError(e: unknown): boolean {
 async function clearStoredTokens(
   expectedRefreshToken?: string,
   finalStatus?: 'expired' | 'missing',
+  expectedAccessToken?: string,
 ): Promise<boolean> {
   const cleared = await withGatewayCredentialLock(async () => {
     const current = loadStoredTokens()
     if (expectedRefreshToken && current?.refresh_token !== expectedRefreshToken) return false
+    if (expectedAccessToken !== undefined && current?.access_token !== expectedAccessToken) return false
     bumpAuthSessionGeneration()
     // An explicit logout removes the provider: a signed-out user must not keep
     // a dead entry in the switcher. An EXPIRED session is NOT a logout — the
@@ -2038,7 +2040,7 @@ export async function logoutGateway(): Promise<void> {
 export async function invalidateGatewayAccessToken(accessToken: string): Promise<void> {
   const stored = loadStoredTokens()
   if (stored?.access_token !== accessToken) return
-  await clearStoredTokens(stored.refresh_token, 'expired')
+  await clearStoredTokens(stored.refresh_token, 'expired', accessToken)
 }
 
 /**
