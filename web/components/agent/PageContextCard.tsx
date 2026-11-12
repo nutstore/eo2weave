@@ -1,3 +1,4 @@
+import { WEBMCP_AVAILABILITY_MESSAGE_KEYS } from '@/webmcp/availability'
 /**
  * PageContextCard — human-readable preview of a message's frozen page-context
  * snapshot (side-panel mode).
@@ -126,9 +127,7 @@ export function PageContextCard({ pageContext }: PageContextCardProps) {
         <div className="border-t border-neutral-200 px-3 py-1.5 text-[11px] text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
           <span className="inline-flex items-center gap-1.5">
             <Wrench className="h-3 w-3" />
-            {pageContext.webmcpStatus === 'host-disabled'
-              ? t('conversation.pageContextWebmcpHostDisabled')
-              : t('conversation.pageContextWebmcpNoTools')}
+            {t(WEBMCP_AVAILABILITY_MESSAGE_KEYS[pageContext.webmcpStatus])}
           </span>
         </div>
       )}

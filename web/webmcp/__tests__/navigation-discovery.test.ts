@@ -32,3 +32,28 @@ it('does not advertise an adapter if the exact tab navigates while being discove
   expect((await discoverWebMCPToolsInCurrentWindow()).tools).toEqual([])
   expect(mocks.register).not.toHaveBeenCalled()
 })
+it('reports unmatched pages in memory without persisting zero-tool registry entries', async () => {
+  const tab = { id: 7, windowId: 3, url: 'https://example.com/articles' }
+  vi.stubGlobal('chrome', { tabs: { query: vi.fn().mockResolvedValue([tab]), get: vi.fn().mockResolvedValue(tab) } })
+  installAdapterCatalog(async () => [], () => ({
+    catalogStatus: 'ready', rejected: [{ id: 'com.unrelated.bad', reason: 'Invalid source' }],
+    forUrl: () => ({ tools: [], packageIds: [], rejectedPackageIds: [] }),
+  }))
+  const response = await discoverWebMCPToolsInCurrentWindow(3)
+  expect(response.diagnostics).toEqual({
+    catalogStatus: 'ready', rejected: [{ id: 'com.unrelated.bad', reason: 'Invalid source' }],
+    tabs: [{ tabId: 7, url: tab.url, adapterCount: 0, toolCount: 0, rejectedPackageIds: [] }],
+  })
+  expect(mocks.register).not.toHaveBeenCalled()
+})
+it('does not attach a diagnostic to a tab that navigated during discovery', async () => {
+  vi.stubGlobal('chrome', { tabs: {
+    query: vi.fn().mockResolvedValue([{ id: 7, url: 'https://example.com/articles' }]),
+    get: vi.fn().mockResolvedValue({ id: 7, url: 'https://other.test/' }),
+  } })
+  installAdapterCatalog(async () => [], () => ({
+    catalogStatus: 'ready', rejected: [],
+    forUrl: () => ({ tools: [], packageIds: [], rejectedPackageIds: [] }),
+  }))
+  expect((await discoverWebMCPToolsInCurrentWindow()).diagnostics?.tabs).toEqual([])
+})

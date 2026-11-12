@@ -405,6 +405,18 @@
   "webmcpPackagesManagement": {
     "message": "WebMCP packages"
   },
+  "webmcpPackagesDiagnosticsTitle": {
+    "message": "Adapter diagnostics"
+  },
+  "webmcpPackagesDiagnosticsHint": {
+    "message": "Packages rejected by the adapter are not available on pages."
+  },
+  "webmcpPackagesDiagnosticsCatalogFailed": {
+    "message": "The latest adapter catalog refresh failed."
+  },
+  "webmcpPackagesDiagnosticsUnavailable": {
+    "message": "Adapter diagnostics could not be loaded"
+  },
   "webmcpPackagesSectionBuiltin": {
     "message": "Built-in packages"
   },

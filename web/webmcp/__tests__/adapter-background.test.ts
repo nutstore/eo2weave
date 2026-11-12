@@ -39,6 +39,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(createAdapterService).mockReturnValue({
     refresh,
+    snapshot: () => ({ catalogStatus: 'ready', rejected: [{ id: 'com.bad', reason: 'Invalid source' }] }),
   } as unknown as ReturnType<typeof createAdapterService>)
   vi.stubGlobal('chrome', {
     tabs: { onUpdated: { addListener: onUpdated }, onRemoved: { addListener: onRemoved } },
@@ -264,4 +265,14 @@ it('refreshes the catalog when a USER package activation sentinel changes', asyn
   listener({ 'some_other_key': { newValue: 1 } }, 'local')
   await new Promise(resolve => setTimeout(resolve, 10))
   expect(refresh).toHaveBeenCalledTimes(2)
+})
+
+it('restricts catalog diagnostics to the extension management page', () => {
+  const listener = onMessage.mock.calls[0][0]
+  const respond = vi.fn()
+  listener({ type: 'webmcp_packages_diagnostics' }, { id: 'test', url: 'https://weave.eo2suite.cn/' }, respond)
+  expect(respond).toHaveBeenCalledWith(expect.objectContaining({ ok: false, code: 'EACCES' }))
+  respond.mockClear()
+  listener({ type: 'webmcp_packages_diagnostics' }, { id: 'test', url: 'chrome-extension://test/packages.html' }, respond)
+  expect(respond).toHaveBeenCalledWith({ ok: true, catalogStatus: 'ready', rejected: [{ id: 'com.bad', reason: 'Invalid source' }] })
 })

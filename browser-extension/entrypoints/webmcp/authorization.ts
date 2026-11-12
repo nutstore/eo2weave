@@ -19,6 +19,8 @@
  * can be revoked at any time.
  */
 
+import type { WebMCPDiscoveryDiagnostics } from '@creatorweave/shared/webmcp-diagnostics'
+
 const STORAGE_KEY = 'webmcp_host_authorization'
 
 export interface WebMCPHostAuthorizationMap {
@@ -121,6 +123,17 @@ export function annotateToolsWithHostAuthorization<
     ...tool,
     hostEnabled: isHostEnabledSync(map, tool.hostname),
   }))
+}
+
+/** Diagnostics must respect the same site opt-out as the tool list. */
+export function filterDiagnosticsByHostAuthorization(
+  diagnostics: WebMCPDiscoveryDiagnostics,
+  map: WebMCPHostAuthorizationMap,
+): WebMCPDiscoveryDiagnostics {
+  return {
+    ...diagnostics,
+    tabs: diagnostics.tabs.filter(tab => isHostEnabledSync(map, new URL(tab.url).hostname)),
+  }
 }
 
 /** Subscribe to authorization changes (popup live-refresh). */

@@ -25,7 +25,7 @@ function setup(packages: WebMCPPackage[] = [pkg]) {
     })
   )
   const changed = vi.fn()
-  const service = createAdapterService({ readPackages, loadWasm, runBrowser, changed })
+  const service = createAdapterService({ readCatalog: async () => ({ packages: await readPackages(), rejected: [], complete: true }), loadWasm, runBrowser, changed })
   const request = (requestId = 'page-request') => ({
     requestId,
     routeId: service.catalog(sender)[0].routeId,
@@ -322,7 +322,7 @@ it('cancels promptly while WASM loading is pending', async () => {
   const loadWasm = vi.fn(() => new Promise<WebAssembly.Module>(() => {}))
   const pending = createAdapterService({
     loadWasm,
-    readPackages: async () => [pkg],
+    readCatalog: async () => ({ packages: [pkg], rejected: [], complete: true }),
     runBrowser: vi.fn(),
     changed: vi.fn(),
   })
@@ -335,4 +335,21 @@ it('cancels promptly while WASM loading is pending', async () => {
   pending.cancel(sender, 'page-request')
   expect(await result).toMatchObject({ ok: false, error: { code: 'JS_CANCELED' } })
   expect(runner).not.toHaveBeenCalled()
+})
+
+it('captures rejection reasons and catalog refresh status with immutable URL matching', async () => {
+  const { service, readPackages } = setup([pkg, { ...pkg, manifest: { ...pkg.manifest, id: 'com.example.bad' }, sources: {} }])
+  await service.refresh()
+  const snapshot = service.snapshot()
+  expect(snapshot.catalogStatus).toBe('ready')
+  expect(snapshot.rejected).toEqual([{ id: 'com.example.bad', reason: expect.stringContaining('Missing tool source') }])
+  expect(snapshot.forUrl(sender.url!).packageIds).toEqual(['com.example.tools'])
+  expect(snapshot.forUrl(sender.url!).rejectedPackageIds).toEqual(['com.example.bad'])
+  expect(snapshot.forUrl('https://other.test/').rejectedPackageIds).toEqual([])
+  readPackages.mockRejectedValueOnce(new Error('read failed'))
+  await expect(service.refresh()).rejects.toThrow('read failed')
+  expect(service.snapshot().catalogStatus).toBe('failed')
+  expect(snapshot.forUrl(sender.url!).tools).toHaveLength(1)
+  await service.refresh()
+  expect(service.snapshot().catalogStatus).toBe('ready')
 })

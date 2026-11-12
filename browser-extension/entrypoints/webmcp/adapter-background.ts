@@ -2,7 +2,7 @@ import { normalizeProviderPath } from '@creatorweave/fs-provider'
 import { getExtensionSkillStorage } from './skill-resources'
 import { isTrustedCreatorWeaveSenderUrl } from '@creatorweave/shared'
 import { validateAdapterDirectory } from './adapter-validation'
-import { getWebMCPMounts, readEnabledWebMCPPackages } from './package-repository'
+import { getWebMCPMounts, readEnabledWebMCPPackageSnapshot } from './package-repository'
 import { getBuiltinStorage, BUILTIN_CONFIG_STORAGE_KEY } from './builtin-storage'
 import { USER_PACKAGE_CONFIG_SENTINEL_PREFIX } from './package-optin-handler'
 import { createPackageManagement } from './package-management'
@@ -25,7 +25,7 @@ interface AdapterBackgroundOptions {
 export function installAdapterBackground({ runBrowser }: AdapterBackgroundOptions) {
   let wasm: Promise<WebAssembly.Module> | undefined
   const service = createAdapterService({
-    readPackages: readEnabledWebMCPPackages,
+    readCatalog: readEnabledWebMCPPackageSnapshot,
     runBrowser,
     loadWasm: () => wasm ??= fetch(chrome.runtime.getURL('/assets/quickjs/quickjs.wasm'))
       .then(async response => {
@@ -267,6 +267,11 @@ export function installAdapterBackground({ runBrowser }: AdapterBackgroundOption
       if (sender.id !== chrome.runtime.id || !allowed.includes(senderUrl) ||
         (message.type !== 'webmcp_packages_list' && senderUrl !== allowed[0])) {
         respond({ ok: false, code: 'EACCES', error: 'Package management requires the extension management page' })
+        return false
+      }
+      if (message.type === 'webmcp_packages_diagnostics') {
+        const { catalogStatus, rejected } = service.snapshot()
+        respond({ ok: true, catalogStatus, rejected })
         return false
       }
       void manage(message).then(respond)

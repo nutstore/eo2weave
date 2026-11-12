@@ -3,13 +3,14 @@
  *
  * One page, three source sections: built-in (read-only mount), registry
  * (install records / catalogs), mine (rw mount without an install record).
- * The two data loads run INDEPENDENTLY: a failing source renders only its own
+ * The data loads run INDEPENDENTLY: a failing source renders only its own
  * section's error — before the merge either failure blanked the whole page.
  */
 
-import { listManagedPackages, type ManagedWebMCPPackage } from '../webmcp/package-client'
+import { listManagedPackages, readAdapterDiagnostics, type ManagedWebMCPPackage } from '../webmcp/package-client'
 import { listRegistries, type RegistryListResult } from '../webmcp/registry-client-page'
 import { createBuiltinSection } from './builtin-section'
+import { createDiagnosticsSection } from './diagnostics-section'
 import { createMineSection } from './mine-section'
 import { createRegistrySection } from './registry-section'
 import { SECTION_LOAD_TIMEOUT_MS, t, withTimeout } from './shared'
@@ -42,6 +43,7 @@ const mine = createMineSection(
   refresh,
   document.getElementById('summaryMine')!,
 )
+const diagnostics = createDiagnosticsSection(document.getElementById('diagnosticsSection')!)
 
 let generation = 0
 
@@ -101,7 +103,22 @@ async function renderAll(): Promise<void> {
     },
   )
 
-  await Promise.allSettled([packagesSettled, registriesSettled])
+  const diagnosticsSettled = withTimeout(
+    readAdapterDiagnostics(),
+    SECTION_LOAD_TIMEOUT_MS,
+    'webmcpPackagesLoadTimeout',
+  ).then(
+    result => {
+      if (current !== generation) return
+      diagnostics.render(result)
+    },
+    error => {
+      if (current !== generation) return
+      diagnostics.fail(error)
+    },
+  )
+
+  await Promise.allSettled([packagesSettled, registriesSettled, diagnosticsSettled])
 }
 
 chrome.runtime.onMessage.addListener(message => {

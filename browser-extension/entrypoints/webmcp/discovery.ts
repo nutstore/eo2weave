@@ -1,4 +1,6 @@
 import type { WebMCPApiMode, WebMCPDiscoverResponse, WebMCPToolMeta } from './types'
+import type { AdapterCatalogSnapshot } from './adapter-service'
+import type { WebMCPDiscoveryDiagnostics } from '@creatorweave/shared/webmcp-diagnostics'
 import { runWebMCPPageProbe } from './page-api'
 import {
   entriesToDiscoveredTools,
@@ -9,8 +11,10 @@ import {
 
 // SW adapter descriptors remain discoverable even before destination proxies mount.
 let adapterCatalog: ((tabId: number) => Promise<WebMCPToolMeta[]>) | undefined
-export function installAdapterCatalog(provider: NonNullable<typeof adapterCatalog>): void {
+let adapterSnapshot: (() => AdapterCatalogSnapshot) | undefined
+export function installAdapterCatalog(provider: NonNullable<typeof adapterCatalog>, snapshot?: () => AdapterCatalogSnapshot): void {
   adapterCatalog = provider
+  adapterSnapshot = snapshot
 }
 
 // Legacy probe timeout — only used for registry-silent tabs (opened
@@ -144,18 +148,30 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
         ? (await getRegistryEntries()).filter((entry) => entry.windowId === windowId)
         : await getRegistryEntries()
 
+    const catalog = adapterSnapshot?.()
+    const diagnostics: WebMCPDiscoveryDiagnostics | undefined = catalog && {
+      catalogStatus: catalog.catalogStatus,
+      rejected: catalog.rejected,
+      tabs: [],
+    }
     if (adapterCatalog) {
       const tabs = await chrome.tabs.query(typeof windowId === 'number' ? { windowId } : {})
       const snapshots = await Promise.allSettled(tabs.map(async tab => {
         const origin = parseOrigin(tab.url || '')
         const hostname = parseHostname(tab.url || '')
-        if (!tab.id || !origin || !hostname) return null
-        const adapters = await adapterCatalog!(tab.id)
+        if (typeof tab.id !== 'number' || !origin || !hostname) return null
+        const matched = catalog?.forUrl(tab.url!)
+        const adapters = matched ? matched.tools : await adapterCatalog!(tab.id)
         const current = await chrome.tabs.get(tab.id)
-        if (current.url !== tab.url || !adapters.length) return null
+        if (current.url !== tab.url) return null
         const existing = registryEntries.find(entry => entry.tabId === tab.id)
         const tools = new Map((existing?.tools || []).map(tool => [tool.name, tool]))
         for (const tool of adapters) tools.set(tool.name, tool)
+        diagnostics?.tabs.push({
+          tabId: tab.id, url: tab.url!, adapterCount: matched?.packageIds.length ?? 0,
+          toolCount: tools.size, rejectedPackageIds: matched?.rejectedPackageIds ?? [],
+        })
+        if (!adapters.length) return null
         return { tabId: tab.id, origin, hostname, tabTitle: tab.title || '',
           tabUrl: tab.url!, windowId: tab.windowId, apiMode: 'documentModelContext' as const,
           tools: [...tools.values()], updatedAt: Date.now() }
@@ -181,6 +197,7 @@ export async function discoverWebMCPToolsInCurrentWindow(windowId?: number, forc
       scannedTabs: registryEntries.length,
       discoveredTabs: discoveredTabs.size,
       discoveredAt,
+      ...(diagnostics ? { diagnostics } : {}),
     }
   } catch (error: any) {
     return {
