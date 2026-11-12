@@ -1,3 +1,4 @@
+import type { SubagentAcceptedReceipt, SubagentBatchAcceptance, WaitSubagentsInput, WaitSubagentsResult } from '@/agent/subagent/async-types'
 /**
  * Tool system types for Agent tool calling.
  * Compatible with OpenAI function calling format.
@@ -167,6 +168,9 @@ export interface SpawnSubagentResult {
 }
 
 export interface SubagentRuntime {
+  start(input: SpawnSubagentInput): Promise<SubagentAcceptedReceipt>
+  batchStart(input: BatchSpawnSubagentInput): Promise<SubagentBatchAcceptance>
+  wait(input: WaitSubagentsInput): Promise<WaitSubagentsResult>
   spawn(input: SpawnSubagentInput): Promise<SpawnSubagentResult>
   sendMessage(input: {
     to: string
@@ -187,7 +191,7 @@ export interface SubagentRuntime {
     timeout_ms?: number
   }): Promise<{ success: boolean; already_stopped?: boolean }>
   /** Stop every pending/running task owned by this runtime. */
-  stopAll(input?: { force?: boolean }): Promise<{ stopped: string[] }>
+  stopAll(input?: { force?: boolean; backgroundOnly?: boolean }): Promise<{ stopped: string[] }>
   resume(input: {
     agentId: string
     prompt: string

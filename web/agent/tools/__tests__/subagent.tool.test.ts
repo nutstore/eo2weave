@@ -8,6 +8,8 @@ import {
   sendMessageToSubagentDefinition,
   spawnSubagentDefinition,
   spawnSubagentExecutor,
+  waitSubagentsDefinition,
+  waitSubagentsExecutor,
 } from '../subagent.tool'
 
 function parseJson(result: string): Record<string, unknown> {
@@ -16,6 +18,9 @@ function parseJson(result: string): Record<string, unknown> {
 
 function createMockRuntime(): SubagentRuntime {
   return {
+    start: vi.fn().mockResolvedValue({ agentId: 'subagent_1', status: 'pending', description: 'task' }),
+    batchStart: vi.fn().mockResolvedValue({ accepted: [{ task_index: 0, agentId: 'subagent_1', status: 'pending', description: 't1' }], rejected: [] }),
+    wait: vi.fn().mockResolvedValue({ results: [], pending: ['subagent_1'], timed_out: true }),
     spawn: vi.fn().mockResolvedValue({
       status: 'completed',
       agentId: 'subagent_1',
@@ -63,6 +68,7 @@ describe('subagent tools', () => {
     expect(batchSpawnDefinition.function.name).toBe('batch_spawn')
     expect(sendMessageToSubagentDefinition.function.name).toBe('send_message_to_subagent')
     expect(getSubagentStatusDefinition.function.name).toBe('get_subagent_status')
+    expect(waitSubagentsDefinition.function.name).toBe('wait_subagents')
   })
 
   it('caps batch concurrency at five in its public schema', () => {
@@ -87,10 +93,46 @@ describe('subagent tools', () => {
     )
     const parsed = parseJson(result)
     expect(parsed.ok).toBe(true)
-    expect((runtime.spawn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
-    expect((runtime.spawn as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({
+    expect((runtime.start as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
+    expect((runtime.start as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({
       parentToolCallId: 'spawn-call-a',
     })
+  })
+
+  it('returns an accepted receipt without applying completed-output health detection', async () => {
+    const runtime = createMockRuntime()
+    const result = parseJson(await spawnSubagentExecutor({ description: 'task', prompt: 'work' }, { directoryHandle: null, subagentRuntime: runtime }))
+    expect(result).toMatchObject({ ok: true, data: { status: 'pending', agentId: 'subagent_1' } })
+    expect(result.health).toBeUndefined()
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  it('passes the wait scope and abort signal to the runtime', async () => {
+    const runtime = createMockRuntime()
+    const controller = new AbortController()
+    const result = parseJson(await waitSubagentsExecutor({ agentIds: ['subagent_1'], timeout_ms: 10, wait_for: 'any' },
+      { directoryHandle: null, subagentRuntime: runtime, abortSignal: controller.signal }))
+    expect(result).toMatchObject({ ok: true, data: { pending: ['subagent_1'], timed_out: true } })
+    expect(runtime.wait).toHaveBeenCalledWith({ agentIds: ['subagent_1'], timeout_ms: 10, wait_for: 'any', signal: controller.signal })
+  })
+
+  it('returns compact wait results without child transcripts or continuation config', async () => {
+    const runtime = createMockRuntime()
+    vi.mocked(runtime.wait).mockResolvedValueOnce({ results: [{ id: 'a:e', agentId: 'a', executionId: 'e', taskStatus: 'completed',
+      result: 'finished', messages: [{ content: 'private detailed trace' }], continuation: { modelName: 'internal model' },
+      changedPaths: ['a.ts'] } as any], pending: [], timed_out: false })
+    const result = parseJson(await waitSubagentsExecutor({ agentIds: ['a'] }, { directoryHandle: null, subagentRuntime: runtime }))
+    const encoded = JSON.stringify(result)
+    expect(encoded).not.toContain('private detailed trace')
+    expect(encoded).not.toContain('internal model')
+    expect(result).toMatchObject({ data: { results: [{ agentId: 'a', result: 'finished', changedPaths: ['a.ts'] }] } })
+  })
+
+  it('keeps valid batch members when another member fails validation', async () => {
+    const runtime = createMockRuntime()
+    const result = parseJson(await batchSpawnExecutor({ tasks: [{ description: '', prompt: 'bad' }, { description: 'task', prompt: 'work' }] },
+      { directoryHandle: null, subagentRuntime: runtime }))
+    expect(result).toMatchObject({ ok: true, data: { accepted: [{ task_index: 1 }], rejected: [{ task_index: 0 }] } })
   })
 
   it('maps status query error to TASK_NOT_FOUND', async () => {
@@ -116,6 +158,6 @@ describe('subagent tools', () => {
     )
     const parsed = parseJson(result)
     expect(parsed.ok).toBe(true)
-    expect((runtime.batchSpawn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
+    expect((runtime.batchStart as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
   })
 })

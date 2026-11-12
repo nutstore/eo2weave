@@ -11,7 +11,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 20;
+PRAGMA user_version = 22;
 
 -- ============================================================================
 -- Projects Table (top-level container for workspaces)
@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS subagent_tasks (
     subagent_type TEXT NOT NULL DEFAULT 'general-purpose',
     parent_tool_call_id TEXT,
     timeout_ms INTEGER,
+    execution_json TEXT,
     messages_json TEXT NOT NULL DEFAULT '[]',
     queue_json TEXT NOT NULL DEFAULT '[]',
     usage_json TEXT,
@@ -541,3 +542,20 @@ CREATE TABLE IF NOT EXISTS mcp_task_inputs (
     PRIMARY KEY(task_id, input_id),
     FOREIGN KEY(task_id) REFERENCES mcp_tasks(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS subagent_completions (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  execution_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  parent_run_id TEXT,
+  notification_message_id TEXT,
+  delivery_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(agent_id, execution_id)
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_completions_recovery
+  ON subagent_completions(conversation_id, status, created_at);

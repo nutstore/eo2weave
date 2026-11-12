@@ -43,7 +43,7 @@ const MAX_ITERATIONS = 20
 const DEFAULT_SYSTEM_PROMPT = getUniversalSystemPrompt()
 const DEFAULT_TOOL_TIMEOUT = 30000
 const TOOL_TIMEOUT_EXEMPTIONS = new Set<string>([
-  'spawn_subagent', 'batch_spawn', 'ask_user_question', 'generate_image', 'search_tools',
+  'spawn_subagent', 'batch_spawn', 'wait_subagents', 'ask_user_question', 'generate_image', 'search_tools',
   // exec manages its own timeout internally (per-call override, default 120s,
   // hard cap 600s). The outer wrapper timer starts when the tool call begins —
   // before exec_auth queueing and the serializeExecExecution chain — so a 30s

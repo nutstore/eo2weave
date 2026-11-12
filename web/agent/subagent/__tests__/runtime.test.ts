@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useSubagentTaskStore } from '@/store/subagent-task.store'
 import type { Message } from '@/agent/message-types'
 import type {
   SubagentStepNotification,
   SubagentTaskNotification,
   SubagentRuntime,
 } from '@/agent/tools/tool-types'
-import { __resetSubagentRuntimeRegistryForTests, getOrCreateSubagentRuntime } from '@/agent/subagent/runtime'
+import { __resetSubagentRuntimeRegistryForTests, getOrCreateSubagentRuntime, disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 const hoisted = vi.hoisted(() => {
   const repo = {
@@ -13,15 +14,19 @@ const hoisted = vi.hoisted(() => {
     saveBatch: vi.fn(async () => {}),
     transitionStatus: vi.fn(async () => ({ applied: true })),
     getStatus: vi.fn(async () => null),
+    finishExecution: vi.fn(async (_input: { task: unknown; completion: import('@/agent/subagent/async-types').SubagentCompletion }) => {}),
+    suppressAgent: vi.fn(async () => {}),
+    consume: vi.fn(async () => true),
+    find: vi.fn(async () => null),
   }
 
   const loopConfigs: any[] = []
-  let runImpl: (messages: Message[], config: any) => Promise<Message[]> = async (messages) => messages
+  let runImpl: (messages: Message[], config: any, callbacks?: any) => Promise<Message[]> = async (messages) => messages
 
   return {
     repo,
     loopConfigs,
-    setRunImpl: (impl: (messages: Message[], config: any) => Promise<Message[]>) => {
+    setRunImpl: (impl: (messages: Message[], config: any, callbacks?: any) => Promise<Message[]>) => {
       runImpl = impl
     },
     getRunImpl: () => runImpl,
@@ -30,6 +35,7 @@ const hoisted = vi.hoisted(() => {
 
 vi.mock('@/sqlite', () => ({
   getSubagentRepository: () => hoisted.repo,
+  getSubagentCompletionRepository: () => hoisted.repo,
 }))
 
 vi.mock('@/agent/agent-loop', () => {
@@ -45,17 +51,18 @@ vi.mock('@/agent/agent-loop', () => {
       // no-op in tests; run completion is controlled by deferred promises
     }
 
-    async run(messages: Message[]): Promise<Message[]> {
-      return hoisted.getRunImpl()(messages, this.config)
+    async run(messages: Message[], callbacks?: any): Promise<Message[]> {
+      return hoisted.getRunImpl()(messages, this.config, callbacks)
     }
   }
 
   return { AgentLoop: MockAgentLoop }
 })
 
+let assistantMessageId = 0
 function createAssistantMessage(content: string): Message {
   return {
-    id: `assistant-${Date.now()}`,
+    id: `assistant-${Date.now()}-${assistantMessageId++}`,
     role: 'assistant',
     content,
     timestamp: Date.now(),
@@ -163,6 +170,7 @@ describe('subagent runtime', () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     __resetSubagentRuntimeRegistryForTests()
+    useSubagentTaskStore.setState({ tasks: {} })
     hoisted.loopConfigs.length = 0
     hoisted.repo.findByWorkspaceId.mockImplementation(async () => [])
     hoisted.repo.transitionStatus.mockImplementation(async () => ({ applied: true }))
@@ -172,6 +180,397 @@ describe('subagent runtime', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('accepts an async task durably before its deferred execution finishes', async () => {
+    let finish!: (messages: Message[]) => void
+    hoisted.setRunImpl(() => new Promise((resolve) => { finish = resolve }))
+    const events: (SubagentTaskNotification | SubagentStepNotification)[] = []
+    const runtime = createRuntime('async-accept', events)
+    const receipt = await runtime.start({ description: 'async task', prompt: 'work' })
+    expect(receipt).toMatchObject({ agentId: expect.any(String), description: 'async task' })
+    expect(['pending', 'running']).toContain(receipt.status)
+    expect(hoisted.repo.saveBatch).toHaveBeenCalled()
+    await waitForStatusWithTimers(runtime, receipt.agentId, 'running')
+    expect(events.filter((e) => e.event_type === 'task_notification' && e.status === 'completed')).toHaveLength(0)
+    finish([createAssistantMessage('durable result')])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(hoisted.repo.finishExecution).toHaveBeenCalledWith(expect.objectContaining({
+      task: expect.objectContaining({ messages: expect.arrayContaining([expect.objectContaining({ content: 'durable result' })]) }),
+      completion: expect.objectContaining({ result: 'durable result', status: 'pending' }),
+    }))
+  })
+
+  it('rejects async acceptance when initial persistence fails', async () => {
+    const runtime = createRuntime('async-persist-fail', [])
+    hoisted.repo.saveBatch.mockRejectedValueOnce(new Error('disk full'))
+    await expect(runtime.start({ description: 'task', prompt: 'work' })).rejects.toThrow('disk full')
+    expect((await runtime.list({})).total).toBe(0)
+    expect(hoisted.loopConfigs).toHaveLength(0)
+  })
+
+  it('freezes active execution callbacks when runtime dependencies change', async () => {
+    let finish!: (messages: Message[]) => void
+    hoisted.setRunImpl(() => new Promise((resolve) => { finish = resolve }))
+    const first = vi.fn()
+    const second = vi.fn()
+    const runtime = createRuntime('async-frozen', [], first)
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await waitForStatusWithTimers(runtime, receipt.agentId, 'running')
+    createRuntime('async-frozen', [], second)
+    hoisted.loopConfigs[0].toolContext.onWorkspacePathsChanged(['original.ts'])
+    expect(first).toHaveBeenCalledWith(['original.ts'])
+    expect(second).not.toHaveBeenCalled()
+    finish([createAssistantMessage('done')])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(hoisted.repo.finishExecution.mock.calls[0][0].completion.changedPaths).toEqual(['original.ts'])
+  })
+
+  it('wait times out without cancelling then atomically consumes its execution result', async () => {
+    let finish!: (messages: Message[]) => void
+    hoisted.setRunImpl(() => new Promise((resolve) => { finish = resolve }))
+    const runtime = createRuntime('async-wait', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    const waiting = runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 10, wait_for: 'all' })
+    await vi.advanceTimersByTimeAsync(10)
+    expect(await waiting).toMatchObject({ results: [], pending: [receipt.agentId], timed_out: true })
+    finish([createAssistantMessage('wait result')])
+    await vi.advanceTimersByTimeAsync(1)
+    const result = await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })
+    expect(result.results).toEqual([expect.objectContaining({ agentId: receipt.agentId, result: 'wait result' })])
+    expect(hoisted.repo.consume).toHaveBeenCalledWith(expect.any(String))
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].deliveryPhase).toBe('consumed')
+  })
+
+  it('retains the first completion and gives a queued follow-up its own execution identity', async () => {
+    const resolvers: Array<(messages: Message[]) => void> = []
+    hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
+    const runtime = createRuntime('async-followup', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'first' })
+    await waitForStatusWithTimers(runtime, receipt.agentId, 'running')
+    await runtime.sendMessage({ to: receipt.agentId, message: 'second' })
+    const waiting = runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 1 })
+    resolvers[0]([createAssistantMessage('first result')])
+    await vi.advanceTimersByTimeAsync(1)
+    expect((await waiting).pending).toEqual([receipt.agentId])
+    expect(resolvers).toHaveLength(2)
+    resolvers[1]([createAssistantMessage('second result')])
+    await vi.advanceTimersByTimeAsync(1)
+    const completions = hoisted.repo.finishExecution.mock.calls.map(([input]) => input.completion)
+    expect(completions).toHaveLength(2)
+    expect(completions[0].executionId).not.toBe(completions[1].executionId)
+    expect(completions.map((c) => c.result)).toEqual(['first result', 'second result'])
+  })
+
+  it('suppresses a finished async completion when explicitly stopped', async () => {
+    const runtime = createRuntime('async-stop-finished', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(1)
+    await runtime.stop({ agentId: receipt.agentId })
+    expect(hoisted.repo.suppressAgent).toHaveBeenCalledWith('async-stop-finished', receipt.agentId)
+  })
+
+  it('batch accepts valid members independently while enforcing the batch limit', async () => {
+    const resolvers: Array<(messages: Message[]) => void> = []
+    hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
+    const runtime = createRuntime('async-batch', [])
+    const result = await runtime.batchStart({ tasks: [
+      { description: 'one', prompt: 'work' },
+      { description: '', prompt: 'invalid' },
+      { description: 'two', prompt: 'work' },
+    ], max_concurrency: 1 })
+    expect(result.accepted.map((r) => r.task_index)).toEqual([0, 2])
+    expect(result.rejected.map((r) => r.task_index)).toEqual([1])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(resolvers).toHaveLength(1)
+    resolvers[0]([createAssistantMessage('one')])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(resolvers).toHaveLength(2)
+    resolvers[1]([createAssistantMessage('two')])
+    await vi.advanceTimersByTimeAsync(1)
+  })
+
+  it('defaults a multi-target wait to any and leaves the other execution pending', async () => {
+    const resolvers: Array<(messages: Message[]) => void> = []
+    hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
+    const runtime = createRuntime('async-wait-any', [])
+    const one = await runtime.start({ description: 'one', prompt: 'work' })
+    const two = await runtime.start({ description: 'two', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const waiting = runtime.wait({ agentIds: [one.agentId, two.agentId], timeout_ms: 100 })
+    resolvers[0]([createAssistantMessage('first')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await waiting).toMatchObject({ results: [{ agentId: one.agentId }], pending: [two.agentId], timed_out: false })
+    resolvers[1]([createAssistantMessage('second')])
+    await vi.advanceTimersByTimeAsync(0)
+  })
+
+  it('keeps the runtime cap of five across background batches and individual starts', async () => {
+    const resolvers: Array<(messages: Message[]) => void> = []
+    hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
+    const runtime = createRuntime('async-global-cap', [])
+    await runtime.batchStart({ tasks: Array.from({ length: 5 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
+    await runtime.start({ description: 'six', prompt: 'work' })
+    await runtime.start({ description: 'seven', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resolvers).toHaveLength(5)
+    resolvers[0]([createAssistantMessage('one')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resolvers).toHaveLength(6)
+    resolvers[1]([createAssistantMessage('two')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resolvers).toHaveLength(7)
+    resolvers.slice(2).forEach((finish) => finish([createAssistantMessage('done')]))
+    await vi.advanceTimersByTimeAsync(0)
+  })
+
+  it('captures queued provider/config/permissions before it waits for a slot', async () => {
+    const resolvers: Array<(messages: Message[]) => void> = []
+    hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
+    const runtime = createRuntime('async-queued-freeze', [])
+    await runtime.batchStart({ tasks: Array.from({ length: 6 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
+    await vi.advanceTimersByTimeAsync(0)
+    const originalProvider = hoisted.loopConfigs[0].provider
+    createRuntime('async-queued-freeze', [])
+    resolvers[0]([createAssistantMessage('done')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.loopConfigs[5].provider).toBe(originalProvider)
+    resolvers.slice(1).forEach((finish) => finish([createAssistantMessage('done')]))
+    await vi.advanceTimersByTimeAsync(0)
+  })
+
+  it('saves the latest child trace before stop and ignores late streaming snapshots', async () => {
+    let callbacks: any
+    let finish!: (messages: Message[]) => void
+    hoisted.setRunImpl((_messages, _config, currentCallbacks) => {
+      callbacks = currentCallbacks
+      return new Promise((resolve) => { finish = resolve })
+    })
+    const runtime = createRuntime('async-trace-stop', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const trace: Message[] = [createAssistantMessage('tool call trace'), { id: 'tool1', role: 'tool', content: 'tool output', timestamp: Date.now() }]
+    callbacks.onMessagesUpdated(trace)
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).toEqual(trace)
+    await runtime.stop({ agentId: receipt.agentId, force: true })
+    expect(hoisted.repo.finishExecution.mock.calls[0][0].completion.messages).toEqual(trace)
+    callbacks.onMessagesUpdated([createAssistantMessage('late callback')])
+    finish([createAssistantMessage('late result')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).toEqual(trace)
+  })
+
+  it('publishes hydrated async interrupted tasks without restarting or auto notifying', async () => {
+    hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([{
+      ...createStoredTask({ workspaceId: 'async-hydrate', agentId: 'persisted', status: 'running' }),
+      execution: { executionId: 'old-attempt', isAsync: true, conversationId: 'async-hydrate', suppressed: false, changedPaths: [] },
+    }] as never)
+    const runtime = createRuntime('async-hydrate', [])
+    await runtime.list({})
+    expect(useSubagentTaskStore.getState().tasks.persisted).toMatchObject({ status: 'failed', isAsync: true,
+      executionId: 'old-attempt', error: { code: 'SESSION_INTERRUPTED' } })
+    expect(hoisted.loopConfigs).toHaveLength(0)
+    expect(hoisted.repo.finishExecution).not.toHaveBeenCalled()
+  })
+
+  it('uses a fresh origin and execution identity on resume and excludes prior usage', async () => {
+    const runtime = createRuntime('async-resume-origin', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'first' })
+    await vi.advanceTimersByTimeAsync(0)
+    getOrCreateSubagentRuntime({ workspaceId: 'async-resume-origin', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null, workspaceId: 'async-resume-origin' },
+      continuation: { parentRunId: 'run2', providerType: 'test', modelName: 'model2', maxTokens: 1000, projectId: 'p2' } })
+    await runtime.resume({ agentId: receipt.agentId, prompt: 'second' })
+    await vi.advanceTimersByTimeAsync(0)
+    const [first, second] = hoisted.repo.finishExecution.mock.calls.map(([input]) => input.completion)
+    expect(first.executionId).not.toBe(second.executionId)
+    expect(second.continuation).toMatchObject({ parentRunId: 'run2', modelName: 'model2', projectId: 'p2' })
+    expect(first.usage?.total_tokens).toBe(30)
+    expect(second.usage?.total_tokens).toBe(30)
+    expect(second.messages.filter((message) => message.role === 'assistant')).toHaveLength(2)
+  })
+
+  it('notifies ready only after terminal trace and usage are durable', async () => {
+    let finishPersist!: () => void
+    hoisted.repo.finishExecution.mockImplementationOnce(() => new Promise((resolve) => { finishPersist = resolve }))
+    const ready = vi.fn()
+    const runtime = createRuntime('async-ready-order', [])
+    getOrCreateSubagentRuntime({ workspaceId: 'async-ready-order', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null }, onCompletionReady: ready })
+    await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ready).not.toHaveBeenCalled()
+    const snapshot = hoisted.repo.finishExecution.mock.calls[0][0].completion
+    expect(snapshot.messages.at(-1)?.content).toBe('ok')
+    expect(snapshot.usage?.total_tokens).toBe(30)
+    finishPersist()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ready).toHaveBeenCalledWith(expect.objectContaining({ id: snapshot.id }))
+  })
+
+  it('suppresses a ready notification when stop races terminal persistence', async () => {
+    let finishPersist!: () => void
+    hoisted.repo.finishExecution.mockImplementationOnce(() => new Promise((resolve) => { finishPersist = resolve }))
+    const ready = vi.fn()
+    const runtime = createRuntime('async-stop-race', [])
+    getOrCreateSubagentRuntime({ workspaceId: 'async-stop-race', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null }, onCompletionReady: ready })
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    await runtime.stop({ agentId: receipt.agentId, force: true })
+    finishPersist()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ready).not.toHaveBeenCalled()
+  })
+
+  it('waits on a hydrated completed execution using its durable completion', async () => {
+    const stored = createStoredTask({ workspaceId: 'async-hydrated-wait', agentId: 'persisted', status: 'completed' })
+    const execution = { executionId: 'e1', isAsync: true, conversationId: 'async-hydrated-wait', suppressed: false, changedPaths: [] }
+    const completion = { id: 'persisted:e1', agentId: 'persisted', executionId: 'e1', status: 'pending', result: 'saved result' }
+    hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([{ ...stored, execution }] as never)
+    hoisted.repo.find.mockResolvedValueOnce(completion as never)
+    const runtime = createRuntime('async-hydrated-wait', [])
+    const result = await runtime.wait({ agentIds: ['persisted'], timeout_ms: 0 })
+    expect(result.results).toEqual([expect.objectContaining({ result: 'saved result' })])
+    expect(hoisted.repo.consume).toHaveBeenCalledWith('persisted:e1')
+  })
+
+  it('returns a hydrated interrupted outcome immediately without creating a wakeup', async () => {
+    const execution = { executionId: 'e1', isAsync: true, conversationId: 'async-interrupted-wait', suppressed: false, changedPaths: [] }
+    hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([{
+      ...createStoredTask({ workspaceId: 'async-interrupted-wait', agentId: 'persisted', status: 'running' }), execution,
+    }] as never)
+    const runtime = createRuntime('async-interrupted-wait', [])
+    const result = await runtime.wait({ agentIds: ['persisted'], timeout_ms: 0 })
+    expect(result.results).toEqual([expect.objectContaining({ taskStatus: 'failed', error: { code: 'SESSION_INTERRUPTED', message: expect.any(String) } })])
+    expect(result.pending).toEqual([])
+    expect(hoisted.repo.finishExecution).not.toHaveBeenCalled()
+  })
+
+  it('never serializes provider secrets or callback dependencies in queued task persistence', async () => {
+    hoisted.setRunImpl(() => new Promise(() => {}))
+    const runtime = getOrCreateSubagentRuntime({ workspaceId: 'async-no-secrets', provider: { apiKey: 'secret-provider' } as any,
+      toolRegistry: {} as any, contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null, workspaceId: 'async-no-secrets' },
+      continuation: { parentRunId: 'r1', providerType: 'test', modelName: 'model', maxTokens: 1000, apiKey: 'secret-origin' } as any })
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await runtime.sendMessage({ to: receipt.agentId, message: 'next' })
+    await vi.advanceTimersByTimeAsync(0)
+    const serialized = JSON.stringify(hoisted.repo.saveBatch.mock.calls)
+    expect(serialized).not.toContain('secret-provider')
+    expect(serialized).not.toContain('secret-origin')
+    expect(serialized).not.toContain('baseToolContext')
+    await runtime.stop({ agentId: receipt.agentId, force: true })
+  })
+
+  it('persists a queued follow-up as unfinished when the previous attempt completes', async () => {
+    const resolvers: Array<(messages: Message[]) => void> = []
+    hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
+    const runtime = createRuntime('async-followup-snapshot', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'first' })
+    await vi.advanceTimersByTimeAsync(0)
+    await runtime.sendMessage({ to: receipt.agentId, message: 'second' })
+    resolvers[0]([createAssistantMessage('first result')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.repo.finishExecution.mock.calls[0][0].task).toMatchObject({ status: 'pending', queue: [{ message: 'second' }] })
+    resolvers[1]([createAssistantMessage('second result')])
+    await vi.advanceTimersByTimeAsync(0)
+  })
+
+  it('shows terminal persistence failure and never announces an undurable completion', async () => {
+    const ready = vi.fn()
+    hoisted.repo.finishExecution.mockRejectedValueOnce(new Error('disk unavailable'))
+    const runtime = createRuntime('async-terminal-persist-failure', [])
+    getOrCreateSubagentRuntime({ workspaceId: 'async-terminal-persist-failure', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null }, onCompletionReady: ready })
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ready).not.toHaveBeenCalled()
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId]).toMatchObject({ status: 'failed', error: { code: 'TERMINAL_PERSISTENCE_FAILED' } })
+    const genericSnapshots = hoisted.repo.saveBatch.mock.calls.flatMap((call: any) => call[1])
+    expect(genericSnapshots.some((task: any) => task.status === 'completed')).toBe(false)
+  })
+
+  it('returns stopped outcomes for queued execution identities', async () => {
+    hoisted.setRunImpl(() => new Promise(() => {}))
+    const runtime = createRuntime('async-stop-queued', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'first' })
+    await runtime.sendMessage({ to: receipt.agentId, message: 'second' })
+    await runtime.stop({ agentId: receipt.agentId, force: true })
+    const result = await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })
+    expect(result.pending).toEqual([])
+    expect(result.results).toEqual([expect.objectContaining({ taskStatus: 'killed', status: 'suppressed' })])
+  })
+
+  it('persists partial usage and trace on unexpected failure', async () => {
+    hoisted.setRunImpl(async (_messages, _config, callbacks) => {
+      callbacks.onMessagesUpdated([createAssistantMessage('partial result')])
+      throw new Error('provider failed')
+    })
+    const runtime = createRuntime('async-failure-usage', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const completion = hoisted.repo.finishExecution.mock.calls[0][0].completion
+    expect(completion).toMatchObject({ taskStatus: 'failed', error: { code: 'SUBAGENT_FAILED' }, usage: { total_tokens: 30 } })
+    expect((await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })).pending).toEqual([])
+  })
+
+  it('does not hold execution slots while the ready callback dispatches a parent run', async () => {
+    const ready = vi.fn(() => new Promise<void>(() => {}))
+    const runtime = createRuntime('async-callback-slots', [])
+    getOrCreateSubagentRuntime({ workspaceId: 'async-callback-slots', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null }, onCompletionReady: ready })
+    await runtime.batchStart({ tasks: Array.from({ length: 6 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ready).toHaveBeenCalledTimes(6)
+  })
+
+  it('does not recreate deleted task rows from a disposed runtime after a late result', async () => {
+    let finish!: (messages: Message[]) => void
+    hoisted.setRunImpl(() => new Promise((resolve) => { finish = resolve }))
+    const runtime = createRuntime('async-dispose', [])
+    await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    disposeSubagentRuntime('async-dispose')
+    hoisted.repo.saveBatch.mockClear()
+    finish([createAssistantMessage('late result')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.repo.saveBatch).not.toHaveBeenCalled()
+    expect(hoisted.repo.finishExecution).not.toHaveBeenCalled()
+  })
+
+  it('keeps externally delivered phase during progress and publishes suppression on stop', async () => {
+    const runtime = createRuntime('async-store-phase', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const executionId = useSubagentTaskStore.getState().tasks[receipt.agentId].executionId!
+    useSubagentTaskStore.getState().setDeliveryPhase(receipt.agentId, executionId, 'delivered')
+    await runtime.stop({ agentId: receipt.agentId })
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].deliveryPhase).toBe('suppressed')
+  })
+
+  it('disposes wait timers and abort listeners without stopping the child', async () => {
+    hoisted.setRunImpl(() => new Promise(() => {}))
+    const runtime = createRuntime('async-wait-abort', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const controller = new AbortController()
+    const remove = vi.spyOn(controller.signal, 'removeEventListener')
+    const timerCount = vi.getTimerCount()
+    const waiting = runtime.wait({ agentIds: [receipt.agentId], signal: controller.signal })
+    await Promise.resolve()
+    await Promise.resolve()
+    controller.abort()
+    expect(await waiting).toMatchObject({ results: [], pending: [receipt.agentId], timed_out: false })
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(vi.getTimerCount()).toBe(timerCount)
+    expect((await runtime.getStatus({ agentId: receipt.agentId })).status).toBe('running')
+    await runtime.stop({ agentId: receipt.agentId, force: true })
   })
 
   it('spawn blocks until completion and returns result', async () => {
@@ -586,6 +985,7 @@ describe('subagent runtime', () => {
 
     await runtime.resume({ agentId: 'subagent_persisted_parent', prompt: 'continue' })
     await waitForStatus(runtime, 'subagent_persisted_parent', 'completed')
+    await vi.advanceTimersByTimeAsync(0)
 
     expect(taskNotifications(notifications).at(-1)).toMatchObject({
       parentToolCallId: 'persisted-tool-call',
@@ -684,8 +1084,9 @@ describe('subagent runtime', () => {
     hoisted.setRunImpl(() => new Promise<Message[]>(() => {}))
     runtime.spawn({ description: 'active-1', prompt: 'run', name: 'stop-all-1' }).catch(() => {})
     runtime.spawn({ description: 'active-2', prompt: 'run', name: 'stop-all-2' }).catch(() => {})
-    await waitForStatusWithTimers(runtime, 'stop-all-1', 'running').catch(() => {})
-    await waitForStatusWithTimers(runtime, 'stop-all-2', 'running').catch(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    await waitForStatusWithTimers(runtime, 'stop-all-1', 'running')
+    await waitForStatusWithTimers(runtime, 'stop-all-2', 'running')
     expect(['pending', 'running']).toContain((await runtime.getStatus({ agentId: 'stop-all-1' })).status)
     expect(['pending', 'running']).toContain((await runtime.getStatus({ agentId: 'stop-all-2' })).status)
 
