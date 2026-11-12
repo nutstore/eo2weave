@@ -911,14 +911,16 @@ async function clearStoredTokens(
       // they chose to end.
       clearExpiredSessionMarker()
     }
-    // Record the logout timestamp so a login attempt that was pending
+    // Record explicit logout so a login attempt that was pending
     // (device-code approval / model preparation) in another tab cannot
     // commit AFTER this logout: gateway-login's commit re-checks this
     // marker and refuses to persist a session that predates it.
-    try {
-      localStorage.setItem(LOGOUT_MARKER_KEY, String(Date.now()))
-    } catch {
-      // Non-fatal: the marker is a cross-tab heuristic, not a guarantee.
+    if (finalStatus === 'missing') {
+      try {
+        localStorage.setItem(LOGOUT_MARKER_KEY, String(Date.now()))
+      } catch {
+        // Non-fatal: the marker is a cross-tab heuristic, not a guarantee.
+      }
     }
     // Purge both SQLite-side credentials before releasing the lock, so a
     // later login cannot have its new access key deleted by this logout.

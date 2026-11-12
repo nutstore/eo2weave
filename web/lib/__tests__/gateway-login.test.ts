@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { provider, keyStore, settings } = vi.hoisted(() => ({
   provider: {
@@ -46,14 +46,25 @@ import { applyGatewayLoginTokens } from '@/lib/gateway-login'
 
 import {
   __resetGatewayCredentialFencingForTests,
+  withGatewayCredentialLock,
 } from '@/agent/providers/gateway-credential-lock'
+import { credentialRegistry } from '@/agent/providers/credential-state'
+import {
+  getGatewayCredentialStatus,
+  getLastLogoutTimestamp,
+  logoutGateway,
+  persistDeviceLoginTokens,
+  resolveGatewayDispatchCredential,
+} from '@/agent/providers/llm-gateway-auth'
 
-describe('applyGatewayLoginTokens cancellation', () => {
+describe('applyGatewayLoginTokens', () => {
   let savedKey: string | null
 
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.clear()
     __resetGatewayCredentialFencingForTests()
+    credentialRegistry.reset()
     // Reset the shared settings mock: mutations from an earlier test
     // (cleared pins, ad-hoc vi.fn()s) must not leak into later ones.
     ;(settings as any).pinnedModelsByProvider = { 'llm-gateway': ['old-model'] }
@@ -65,6 +76,97 @@ describe('applyGatewayLoginTokens cancellation', () => {
     keyStore.delete.mockImplementation(async () => { savedKey = null })
     provider.update.mockResolvedValue([{ id: 'new-model', name: 'New' }])
     provider.prepare.mockResolvedValue({ models: [{ id: 'new-model', name: 'New' }], status: 'ready' })
+  })
+
+  afterEach(async () => {
+    // Drain the token commit's queued refresh-token backup before resetting storage.
+    await withGatewayCredentialLock(async () => {})
+    vi.restoreAllMocks()
+    localStorage.clear()
+    credentialRegistry.reset()
+    __resetGatewayCredentialFencingForTests()
+  })
+
+  it.each([
+    { history: 'without a prior logout', priorLogout: false },
+    { history: 'after a historical logout', priorLogout: true },
+  ])('commits an approved login when the old session expires $history', async ({ priorLogout }) => {
+    let now = 1_800_000_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    if (priorLogout) await logoutGateway()
+    const lastLogout = priorLogout ? now : null
+
+    now += 1000
+    const attemptStartedAt = Date.now()
+    localStorage.setItem('llm-gateway-tokens', JSON.stringify({
+      access_token: 'expired-access', refresh_token: 'expired-refresh',
+      access_expires_at: now - 2000, refresh_expires_at: now - 1000,
+      client_id: 'client', base_url: 'https://gateway.example',
+    }))
+
+    now += 1000
+    await expect(resolveGatewayDispatchCredential('https://gateway.example', 'client')).resolves.toMatchObject({ ok: false, kind: 'expired' })
+    expect(localStorage.getItem('llm-gateway-tokens')).toBeNull()
+    expect(localStorage.getItem('__llm_gateway_expired_session__')).toBe(String(now))
+    expect(getGatewayCredentialStatus()).toBe('expired')
+
+    now += 1000
+    await expect(applyGatewayLoginTokens('approved-new-access', {
+      attemptStartedAt,
+      onCommit: () => persistDeviceLoginTokens({
+        access_token: 'approved-new-access', token_type: 'Bearer', expires_in: 3600,
+        refresh_token: 'approved-new-refresh', refresh_expires_in: 86400,
+      }, 'client', 'https://gateway.example'),
+    })).resolves.toMatchObject({ ok: true })
+    expect(JSON.parse(localStorage.getItem('llm-gateway-tokens')!)).toMatchObject({
+      access_token: 'approved-new-access',
+      refresh_token: 'approved-new-refresh',
+    })
+    expect(getGatewayCredentialStatus()).toBe('valid')
+    expect(localStorage.getItem('__llm_gateway_expired_session__')).toBeNull()
+    expect(getLastLogoutTimestamp()).toBe(lastLogout)
+  })
+
+  it('rejects an attempt superseded by explicit logout and accepts a later attempt', async () => {
+    let now = 1_800_000_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const attemptStartedAt = Date.now()
+
+    now += 1000
+    await logoutGateway()
+    const lastLogout = Date.now()
+    expect(getLastLogoutTimestamp()).toBe(lastLogout)
+    expect(getGatewayCredentialStatus()).toBe('missing')
+
+    now += 1000
+    const supersededCommit = vi.fn(() => persistDeviceLoginTokens({
+      access_token: 'superseded-access', token_type: 'Bearer', expires_in: 3600,
+      refresh_token: 'superseded-refresh', refresh_expires_in: 86400,
+    }, 'client', 'https://gateway.example'))
+    await expect(applyGatewayLoginTokens('superseded-access', {
+      attemptStartedAt,
+      onCommit: supersededCommit,
+    })).rejects.toThrow('logout superseded this attempt')
+    expect(supersededCommit).not.toHaveBeenCalled()
+    expect(localStorage.getItem('llm-gateway-tokens')).toBeNull()
+    expect(getGatewayCredentialStatus()).toBe('missing')
+
+    now += 1000
+    const laterAttemptStartedAt = Date.now()
+    now += 1000
+    await expect(applyGatewayLoginTokens('later-access', {
+      attemptStartedAt: laterAttemptStartedAt,
+      onCommit: () => persistDeviceLoginTokens({
+        access_token: 'later-access', token_type: 'Bearer', expires_in: 3600,
+        refresh_token: 'later-refresh', refresh_expires_in: 86400,
+      }, 'client', 'https://gateway.example'),
+    })).resolves.toMatchObject({ ok: true })
+    expect(JSON.parse(localStorage.getItem('llm-gateway-tokens')!)).toMatchObject({
+      access_token: 'later-access',
+      refresh_token: 'later-refresh',
+    })
+    expect(getGatewayCredentialStatus()).toBe('valid')
+    expect(getLastLogoutTimestamp()).toBe(lastLogout)
   })
 
   it('does not persist a credential when cancelled during model preparation', async () => {
