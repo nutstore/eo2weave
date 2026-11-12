@@ -42,6 +42,7 @@ function fixture() {
   const dispatch = vi.fn(
     async (_id: string, _origin: NonNullable<SubagentCompletion['continuation']>) => {}
   )
+  const onPhase = vi.fn()
   const coordinator = new CompletionDeliveryCoordinator({
     repository,
     isBusy: () => busy,
@@ -54,6 +55,7 @@ function fixture() {
     },
     dispatch,
     withLock: async (_key, fn) => fn(),
+    onPhase,
     onError: vi.fn(),
   })
   const add = (id: string, overrides: Partial<SubagentCompletion> = {}) => {
@@ -84,6 +86,7 @@ function fixture() {
   }
   return {
     coordinator,
+    onPhase,
     add,
     rows,
     history,
@@ -221,6 +224,68 @@ describe('durable completion delivery', () => {
     })
     await f.coordinator.claimRun('conv', 'automatic-run', f.history, false)
     expect(f.rows.get('one')!.status).toBe('error')
+  })
+  it.each(['history', 'dispatch'] as const)(
+    'publishes the current %s failure in a new completion snapshot',
+    async (failure) => {
+      const f = fixture()
+      const original = f.add('one', { deliveryError: 'Old diagnostic' })
+      if (failure === 'history')
+        f.beforeAppend(() => {
+          throw new Error('Current history failure')
+        })
+      else f.dispatch.mockRejectedValueOnce(new Error('Current dispatch failure'))
+      await f.coordinator.flush('conv')
+      const phase = failure === 'history' ? 'error' : 'blocked'
+      const [published, publishedPhase] = f.onPhase.mock.calls.at(-1)!
+      expect(publishedPhase).toBe(phase)
+      expect(published).toMatchObject({
+        status: phase,
+        deliveryError: `Error: Current ${failure} failure`,
+      })
+      expect(published).not.toBe(original)
+      expect(original.deliveryError).toBe('Old diagnostic')
+    }
+  )
+  it('clears old explanations as a recovered delivery progresses', async () => {
+    const f = fixture()
+    const original = f.add('one', {
+      status: 'error',
+      deliveryReserved: true,
+      deliveryError: 'Old diagnostic',
+    })
+    await f.coordinator.retry('conv')
+    const [delivered, deliveredPhase] = f.onPhase.mock.calls.at(-1)!
+    expect(deliveredPhase).toBe('delivered')
+    expect(delivered.status).toBe('delivered')
+    expect(delivered.deliveryError).toBeUndefined()
+    await f.coordinator.claimRun('conv', 'actual', f.history)
+    const [processing] = f.onPhase.mock.calls.at(-1)!
+    expect(processing.status).toBe('processing')
+    expect(processing.deliveryError).toBeUndefined()
+    await f.coordinator.finishRun('conv', 'actual', 'success')
+    const [handled, handledPhase] = f.onPhase.mock.calls.at(-1)!
+    expect(handledPhase).toBe('handled')
+    expect(handled.status).toBe('handled')
+    expect(handled.deliveryError).toBeUndefined()
+    expect(handled).not.toBe(original)
+    expect(original.deliveryError).toBe('Old diagnostic')
+  })
+  it('publishes a new owning-run failure instead of the pre-retry diagnostic', async () => {
+    const f = fixture()
+    const original = f.add('one', {
+      status: 'error',
+      deliveryReserved: true,
+      deliveryError: 'Old diagnostic',
+    })
+    await f.coordinator.retry('conv')
+    await f.coordinator.claimRun('conv', 'actual', f.history)
+    await f.coordinator.finishRun('conv', 'actual', 'error', 'Current model failure')
+    const [failed, failedPhase] = f.onPhase.mock.calls.at(-1)!
+    expect(failedPhase).toBe('error')
+    expect(failed).toMatchObject({ status: 'error', deliveryError: 'Current model failure' })
+    expect(failed).not.toBe(original)
+    expect(original.deliveryError).toBe('Old diagnostic')
   })
   it('provider failure and interrupted processing require explicit retry', async () => {
     const f = fixture()

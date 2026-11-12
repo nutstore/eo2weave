@@ -161,7 +161,7 @@ export class CompletionDeliveryCoordinator {
         await this.phase(row, 'delivered')
       }
       if (await this.deps.repository.claim(row.id, runId)) {
-        this.deps.onPhase?.(row, 'processing')
+        this.publishPhase(row, 'processing')
         claimed.push(row)
       }
     }
@@ -179,14 +179,15 @@ export class CompletionDeliveryCoordinator {
     this.claims.delete(runId)
     for (const row of rows) {
       if (outcome === 'success') {
-        if (await this.deps.repository.markHandled(row.id, runId))
-          this.deps.onPhase?.(row, 'handled')
+        if (await this.deps.repository.markHandled(row.id, runId)) this.publishPhase(row, 'handled')
       } else {
+        const deliveryError = error ?? 'Continuation failed'
         const changed =
           outcome === 'suppressed'
             ? await this.deps.repository.suppress(row.id, runId)
-            : await this.deps.repository.markError(row.id, error ?? 'Continuation failed', runId)
-        if (changed) this.deps.onPhase?.(row, outcome)
+            : await this.deps.repository.markError(row.id, deliveryError, runId)
+        if (changed)
+          this.publishPhase(row, outcome, outcome === 'error' ? deliveryError : undefined)
       }
       this.requested.delete(row.id)
     }
@@ -252,6 +253,14 @@ export class CompletionDeliveryCoordinator {
     }
   }
 
+  private publishPhase(
+    row: SubagentCompletion,
+    phase: SubagentDeliveryPhase,
+    deliveryError?: string
+  ): void {
+    this.deps.onPhase?.({ ...row, status: phase, deliveryError }, phase)
+  }
+
   private async phase(
     row: SubagentCompletion,
     phase: 'delivered' | 'blocked' | 'error' | 'suppressed',
@@ -265,7 +274,8 @@ export class CompletionDeliveryCoordinator {
           : phase === 'blocked'
             ? await this.deps.repository.markBlocked(row.id, error)
             : await this.deps.repository.markError(row.id, error)
-    if (changed) this.deps.onPhase?.(row, phase)
+    if (changed)
+      this.publishPhase(row, phase, phase === 'blocked' || phase === 'error' ? error : undefined)
   }
 }
 
