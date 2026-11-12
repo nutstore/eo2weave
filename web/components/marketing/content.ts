@@ -1,5 +1,5 @@
 const content = {
-  cn: { brand: '怡氧知知', homeTitle: '浏览器里的 AI 工作空间', homeText: '怡氧知知是一款运行在浏览器中的 AI 工作空间：在侧边栏中选用不同模型，让 AI 理解网页、操作网站并处理本地文件。', mcpLead: '了解 WebMCP 如何让 AI 使用网站工具。', downloadTitle: '把怡氧知知装进浏览器', downloadText: '安装浏览器扩展，在网站中随时唤起怡氧知知。', experienceTitle: '亲手体验怡氧知知', experienceText: '在真实网站上体验 WebMCP。' },
+  cn: { brand: '怡氧®AI', homeTitle: '浏览器里的 AI 工作空间', homeText: '怡氧®AI 是一款运行在浏览器中的 AI 工作空间：在侧边栏中选用不同模型，让 AI 理解网页、操作网站并处理本地文件。', mcpLead: '了解 WebMCP 如何让 AI 使用网站工具。', downloadTitle: '把怡氧®AI 装进浏览器', downloadText: '安装浏览器扩展，在网站中随时唤起怡氧®AI。', experienceTitle: '亲手体验怡氧®AI', experienceText: '在真实网站上体验 WebMCP。' },
   global: { brand: 'EO2Weave', homeTitle: 'The AI workspace in your browser', homeText: 'EO2Weave is an AI workspace that runs in your browser: pick a model in the side panel and let it read pages, operate sites and work with local files.', mcpLead: 'Discover how WebMCP lets AI use website tools.', downloadTitle: 'Bring EO2Weave to your browser', downloadText: 'Install the browser extension and open EO2Weave while browsing.', experienceTitle: 'Try EO2Weave', experienceText: 'Experience WebMCP on a real website.' },
 } as const
 export function getMarketingContent(region: 'cn' | 'global') { return content[region] }

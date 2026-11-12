@@ -38,6 +38,7 @@ import { useAssetStore } from '@/store/asset.store'
 import { useProjectStore } from '@/store/project.store'
 import { useInputDraftStore } from '@/store/input-draft.store'
 import { useT } from '@/i18n'
+import { BrandName } from '@/components/BrandName'
 import { isPotentiallyDynamicProviderType, getProviderConfig, subscribeToProviderRegistry, getProviderRegistryVersion } from '@/agent/providers/types'
 import { useI18nStore } from '@/i18n/store'
 import { docsPath } from '@/lib/route-paths'
@@ -492,7 +493,7 @@ export function WelcomeScreen({ onStartConversation, onOpenSettings }: WelcomeSc
               Primary action is the inverted button, secondary a text link. */
           <div className="mb-6 rounded-xl border border-border bg-card px-6 py-5 text-center">
             <h2 className="mb-1.5 text-lg font-semibold text-foreground">
-              {t('welcome.welcomeHeading')}
+              <BrandName name={t('welcome.welcomeHeading')} />
             </h2>
             <p className="mb-5 text-sm text-neutral-500 dark:text-neutral-400">
               {t('welcome.welcomeSubtitle')}

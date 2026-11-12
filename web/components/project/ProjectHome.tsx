@@ -13,6 +13,7 @@ import {
 import { Plus, Settings as SettingsIcon } from 'lucide-react'
 import type { Project, ProjectStats } from '@/sqlite/repositories/project.repository'
 import { useT } from '@/i18n'
+import { BrandName } from '@/components/BrandName'
 import { useExtensionStore } from '@/store/extension.store'
 import { ExtensionBanner } from '@/components/extension'
 import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
@@ -250,7 +251,7 @@ export function ProjectHome({
               aria-hidden
               className="h-7 w-7"
             />
-            <span>{t('projectHome.brand')}</span>
+            <span><BrandName name={t('projectHome.brand')} /></span>
           </div>
           {/* Standalone-chats entry (◇) beside the help/settings button group.
               No overflow-hidden on the settings group: HelpPopover's dropdown is

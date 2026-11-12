@@ -1,6 +1,7 @@
 import { ExtensionMenu } from '../../chrome/ExtensionMenu'
 import { chromeCopy } from '../../chrome/copy'
 import type { CSSProperties } from 'react'
+import { BrandName } from '@/components/BrandName'
 
 export function HomeCnMarkup() {
   return (
@@ -12,7 +13,7 @@ export function HomeCnMarkup() {
 <div className="hero-copy">
 <h1 id="hero-title">知你所想&ensp;<em>成你所愿</em>
 </h1>
-<p className="description">怡氧知知是一款运行在浏览器中的 AI 工作空间，无需安装桌面客户端。你可以在侧边栏选用不同的 AI 模型，让怡氧知知在授权范围内理解网页、完成网站操作，并处理本地文件，帮你完成复杂任务。</p>
+<p className="description">怡氧®AI 是一款运行在浏览器中的 AI 工作空间，无需安装桌面客户端。你可以在侧边栏选用不同的 AI 模型，让怡氧®AI 在授权范围内理解网页、完成网站操作，并处理本地文件，帮你完成复杂任务。</p>
 <div className="actions">
 <ExtensionMenu variant="hero" copy={chromeCopy.cn.header} />
 <a className="button primary" href="/projects" data-extension-not-detected target="_blank" rel="noopener noreferrer">在线使用</a>
@@ -28,7 +29,7 @@ export function HomeCnMarkup() {
 <h3>让 AI 替你<span className="primary-work-accent">操作网站</span>
 </h3>
 <p>在网站中查找信息、填写表单并执行相应操作，给你实际处理结果，而不只是一份操作建议。</p>
-<div className="primary-work-visual work-preview" role="img" aria-label="邮件网页与怡氧知知协作流程：查询项目进度、起草进度汇报邮件并经确认后发送">
+<div className="primary-work-visual work-preview" role="img" aria-label="邮件网页与怡氧®AI 协作流程：查询项目进度、起草进度汇报邮件并经确认后发送">
 <div className="work-preview-web-body">
 <div className="work-preview-page">
 <div className="work-preview-email-list">
@@ -98,7 +99,7 @@ export function HomeCnMarkup() {
 </div>
 </div>
 <div className="work-preview-assistant">
-<div className="work-preview-assistant-name">怡氧知知</div>
+<div className="work-preview-assistant-name"><BrandName name="怡氧®AI" /></div>
 <div className="local-files-query work-preview-question work-preview-question--one">
 <span className="local-files-query-label" aria-hidden="true">
 </span>
@@ -209,7 +210,7 @@ export function HomeCnMarkup() {
 </li>
 </ul>
 </div>
-<div className="sidebar-demo" role="img" aria-label="演示：在网站上打开怡氧知知侧边栏，询问网站摘要和类似产品；AI 打开相关网站后，切换标签页仍保留同一段对话" data-step="idle">
+<div className="sidebar-demo" role="img" aria-label="演示：在网站上打开怡氧®AI 侧边栏，询问网站摘要和类似产品；AI 打开相关网站后，切换标签页仍保留同一段对话" data-step="idle">
 <div className="sidebar-art" aria-hidden="true">
 <div className="sidebar-browser">
 <div className="sidebar-browser-top">
@@ -397,7 +398,7 @@ export function HomeCnMarkup() {
 </span>
 <div className="sidebar-pane">
 <div className="sidebar-pane-head">
-<img src="/marketing/logo.svg" alt="" />怡氧知知</div>
+<img src="/marketing/logo.svg" alt="" /><BrandName name="怡氧®AI" /></div>
 <div className="sidebar-pane-chat">
 <div className="sidebar-user-message">总结当前网站，并找出类似产品，打开相关网站。</div>
 <div className="sidebar-ai-message">
@@ -500,7 +501,7 @@ export function HomeCnMarkup() {
 </div>
 <div className="workflow-assistant">
 <div className="workflow-assistant-head">
-<img src="/marketing/logo.svg" alt="" />怡氧知知</div>
+<img src="/marketing/logo.svg" alt="" /><BrandName name="怡氧®AI" /></div>
 <div className="workflow-chat">
 <div className="workflow-thread">
 <div className="workflow-user-message">
@@ -557,8 +558,8 @@ export function HomeCnMarkup() {
 <div className="workflow-chat-reply workflow-reply-email">邮件草稿：</div>
 <div className="workflow-email-card">
 <div className="workflow-email-heading">邮件草稿</div>
-<div className="workflow-email-meta">收件人　Leader</div>
-<div className="workflow-email-meta">主题　　上周工作周报（10.12–10.16）</div>
+<div className="workflow-email-meta">收件人&emsp;Leader</div>
+<div className="workflow-email-meta">主题&emsp;&emsp;上周工作周报（10.12–10.16）</div>
 <div className="workflow-email-body">Leader，您好：上周工作已整理成周报，详见附件。重点进展包括完成 12 款商品上架、提交 SKU-1042 库存差异复核，以及推进双 11 会场素材确认。</div>
 <div className="workflow-email-attachment">
 <span className="workflow-email-attachment-type">PDF</span>
@@ -799,8 +800,8 @@ export function HomeCnMarkup() {
 <div className="webmcp-ambient" aria-hidden="true">
 </div>
 <div className="webmcp-content">
-<h2 id="webmcp-title">怡氧知知操作网站，更快更稳</h2>
-<p className="webmcp-lead">怡氧知知能通过 WebMCP 直接使用网站开放的操作。WebMCP 会把网站能做什么、操作需要哪些信息告诉 AI，减少反复查找和尝试。对于尚未接入 WebMCP 的网站，怡氧知知仍可通过页面理解和常规交互继续处理任务。<a className="webmcp-more" href="#webmcp" aria-label="了解 WebMCP">了解 WebMCP <span aria-hidden="true">→</span>
+<h2 id="webmcp-title">怡氧®AI 操作网站，更快更稳</h2>
+<p className="webmcp-lead">怡氧®AI 能通过 WebMCP 直接使用网站开放的操作。WebMCP 会把网站能做什么、操作需要哪些信息告诉 AI，减少反复查找和尝试。对于尚未接入 WebMCP 的网站，怡氧®AI 仍可通过页面理解和常规交互继续处理任务。<a className="webmcp-more" href="#webmcp" aria-label="了解 WebMCP">了解 WebMCP <span aria-hidden="true">→</span>
 </a>
 </p>
 </div>
@@ -1105,11 +1106,11 @@ export function HomeCnMarkup() {
 <div className="closing-panel">
 <div className="closing-content">
 <h2 id="closing-title">
-<span data-extension-not-detected>把怡氧知知<br />添加到你的浏览器</span>
-<span data-extension-connected hidden>开始使用怡氧知知</span>
+<span data-extension-not-detected>把怡氧®AI<br />添加到你的浏览器</span>
+<span data-extension-connected hidden>开始使用怡氧®AI</span>
 </h2>
-<p data-extension-not-detected>安装浏览器插件后，在支持的网站中随时唤起怡氧知知；也可以选择在线使用。</p>
-<p data-extension-connected hidden>已检测到浏览器插件，可以直接使用怡氧知知。</p>
+<p data-extension-not-detected>安装浏览器插件后，在支持的网站中随时唤起怡氧®AI；也可以选择在线使用。</p>
+<p data-extension-connected hidden>已检测到浏览器插件，可以直接使用怡氧®AI。</p>
 <div className="closing-actions">
 <ExtensionMenu variant="hero" copy={chromeCopy.cn.header} />
 <a className="button secondary" id="web-app" data-extension-not-detected href="https://weave.eo2suite.cn/projects" target="_blank" rel="noopener noreferrer">在线使用</a>

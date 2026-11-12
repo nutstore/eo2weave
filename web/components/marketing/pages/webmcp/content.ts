@@ -54,9 +54,9 @@ export const webMcpCopy: Record<'cn' | 'global', WebMcpCopy> = {
       { icon: 'hgi-cpu', title: '降低消耗', desc: '减少反复解析页面，节省 Token，让任务处理更高效。' },
       { icon: 'hgi-shield-01', title: '执行更稳定', desc: '按明确的操作信息执行，降低页面变化的影响。' },
     ],
-    howTitle: '怡氧知知在其中做什么？',
+    howTitle: '怡氧®AI 在其中做什么？',
     howSub:
-      '怡氧知知在浏览器侧边栏连接 AI 对话、网站和本地文件，帮你处理内容、操作网站。通过 WebMCP，它能发现网站开放的工具，让 AI 按网站提供的方式完成任务。',
+      '怡氧®AI 在浏览器侧边栏连接 AI 对话、网站和本地文件，帮你处理内容、操作网站。通过 WebMCP，它能发现网站开放的工具，让 AI 按网站提供的方式完成任务。',
     steps: [
       { title: '发现网站能力', desc: '自动识别当前网站通过 WebMCP 提供的工具，让 AI 知道这个网站能做什么、该如何调用。' },
       { title: '补充适配能力', desc: '对于尚未原生支持 WebMCP 的指定网站，也可以通过专门适配补充可调用的工具。' },

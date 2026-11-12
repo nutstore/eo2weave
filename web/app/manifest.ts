@@ -2,7 +2,7 @@ import type { MetadataRoute } from 'next'
 
 /**
  * Deployment-region locale switch — build-time inlined (see app/layout.tsx).
- * CN build → 怡氧知知, international build → EO2Weave. Keep the PWA install
+ * CN build → 怡氧®AI, international build → EO2Weave. Keep the PWA install
  * name in sync with the document title.
  */
 const IS_CN_BUILD = process.env.NEXT_PUBLIC_DEPLOY_REGION === 'cn'
@@ -12,8 +12,8 @@ export const dynamic = 'force-static'
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: IS_CN_BUILD ? '怡氧知知' : 'EO2Weave',
-    short_name: IS_CN_BUILD ? '怡氧知知' : 'EO2Weave',
+    name: IS_CN_BUILD ? '怡氧®AI' : 'EO2Weave',
+    short_name: IS_CN_BUILD ? '怡氧®AI' : 'EO2Weave',
     description: IS_CN_BUILD
       ? '面向创作者的 AI 原生工作台：本地优先的文件、知识工作流与多智能体编排'
       : 'AI-native creator workspace with local-first files, knowledge workflows, and multi-agent orchestration',

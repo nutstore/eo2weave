@@ -4,7 +4,7 @@ export const projectHome = {
         cardTitle: "독립 대화",
     },
     // 헤더 브랜드
-    brand: "怡氧知知",
+    brand: "怡氧®AI",
     openSettings: "설정 열기",
     statsSummary: "{projects} 프로젝트",
     statsConversations: "{count} 대화",

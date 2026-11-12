@@ -9,7 +9,7 @@
 #
 # Region is a BUILD-TIME switch (NEXT_PUBLIC_DEPLOY_REGION=global), so this
 # deployment is hard-pinned to global-region images. A cn image (Chinese
-# privacy policy / 怡氧知知 branding) must never roll out here — the pod
+# privacy policy / 怡氧®AI branding) must never roll out here — the pod
 # label + selector below enforce that at the k8s level.
 #
 # The REPLACE_IMAGE marker is substituted by the Jenkins pipeline before

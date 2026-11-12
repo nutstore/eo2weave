@@ -60,8 +60,8 @@ export function DownloadCn() {
 <div className="intro-region">
 <section className="hero">
 <div className="shell">
-<h1>把怡氧知知装进浏览器</h1>
-<p className="hero-copy">安装后，可以在任意网站中随时唤起怡氧知知。</p>
+<h1>把怡氧®AI 装进浏览器</h1>
+<p className="hero-copy">安装后，可以在任意网站中随时唤起怡氧®AI。</p>
 </div>
 </section>
 <section className="download-section shell" id="download-options" aria-label="浏览器扩展安装入口">
@@ -249,7 +249,7 @@ export function DownloadCn() {
 <rect x="96" y="127" width="324" height="76" rx="10" fill="#F8FCFA" stroke="#D5E8DE" />
 <rect x="111" y="144" width="42" height="42" rx="9" fill="#2D9C8C" />
 <text x="132" y="172" textAnchor="middle" fill="white" fontFamily="Arial,sans-serif" fontSize="16" fontWeight="700">怡</text>
-<text x="168" y="158" fill="#20332F" fontFamily="Arial,sans-serif" fontSize="13" fontWeight="700">怡氧知知</text>
+<text x="168" y="158" fill="#20332F" fontFamily="Arial,sans-serif" fontSize="13" fontWeight="700">怡氧<tspan baselineShift="super" fontSize="7">®</tspan>AI</text>
 <text x="168" y="180" fill="#6D8479" fontFamily="Arial,sans-serif" fontSize="12">扩展程序已加载</text>
 <circle cx="393" cy="165" r="12" fill="#E1F2E8" />
 <path d="m387 165 4 4 8-9" stroke="#168477" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />

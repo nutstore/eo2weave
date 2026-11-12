@@ -7,7 +7,7 @@ export const topbar = {
     directChat: {
         convertTooltip: "独立对话——点击转换为项目对话（需授权文件夹）",
     },
-    productName: "怡氧知知",
+    productName: "怡氧®AI",
     openFolder: "打开文件夹",
     switchFolder: "切换项目文件夹",
     noApiKey: "未配置 API Key",

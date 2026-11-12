@@ -99,7 +99,7 @@ describe('storage diagnostics', () => {
   it('renders markdown with all sections', async () => {
     const { runDiagnostics } = await import('@/storage/diagnostics')
     const report = await runDiagnostics()
-    expect(report.markdown).toContain('# 怡氧知知诊断报告')
+    expect(report.markdown).toContain('# 怡氧®AI 诊断报告')
     expect(report.markdown).toContain('## SQLite')
     expect(report.markdown).toContain('## Project Store Init')
     expect(report.markdown).toContain('## Browser Runtime')

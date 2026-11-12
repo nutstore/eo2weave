@@ -75,7 +75,7 @@ export const mcp = {
     title: "MCP 服务器",
     description: "管理外部 MCP 服务连接",
     extensionRequired: "需要安装浏览器扩展",
-    extensionRequiredHint: "MCP 服务连接需要安装 怡氧知知 浏览器扩展。请在设置的「扩展」标签页中安装。",
+    extensionRequiredHint: "MCP 服务连接需要安装 怡氧®AI 浏览器扩展。请在设置的「扩展」标签页中安装。",
     addServer: "添加 MCP 服务器",
     editServer: "编辑服务器",
     add: "添加",

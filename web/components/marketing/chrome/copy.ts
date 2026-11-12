@@ -28,7 +28,7 @@ export const chromeCopy: Record<'cn' | 'global', ChromeCopy> = {
   cn: {
     header: {
       ...extension.cn,
-      brand: '怡氧知知',
+      brand: '怡氧®AI',
       home: '首页',
       webmcp: 'WebMCP',
       pricing: '定价',
@@ -39,7 +39,7 @@ export const chromeCopy: Record<'cn' | 'global', ChromeCopy> = {
       closeMenu: '关闭导航菜单',
     },
     footer: {
-      brand: '怡氧知知',
+      brand: '怡氧®AI',
       copyright: '© 2026 上海奕惟网络科技有限公司',
       privacyHref: '/help/privacy',
       privacy: '隐私政策',

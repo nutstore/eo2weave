@@ -18,13 +18,13 @@ const SITE_URL = IS_CN_BUILD ? 'https://weave.eo2suite.cn' : 'https://weave.eo2s
 
 const metadataByRegion: Metadata = IS_CN_BUILD
   ? {
-      title: '怡氧知知',
+      title: '怡氧®AI',
       description: '面向创作者的 AI 原生工作台：本地优先的文件、知识工作流与多智能体编排',
       alternates: { canonical: SITE_URL },
       openGraph: {
         type: 'website',
-        siteName: '怡氧知知',
-        title: '怡氧知知 — AI 原生创作工作台',
+        siteName: '怡氧®AI',
+        title: '怡氧®AI — AI 原生创作工作台',
         description: '本地优先的文件、知识工作流与多智能体编排。数据保存在用户本机，PWA 离线可用。',
         url: SITE_URL,
         locale: 'zh_CN',
@@ -51,7 +51,7 @@ export const metadata: Metadata = {
   // file convention (region-aware via NEXT_PUBLIC_DEPLOY_REGION).
   twitter: {
     card: 'summary_large_image',
-    title: IS_CN_BUILD ? '怡氧知知 — AI 原生创作工作台' : 'EO2Weave — AI-native creator workspace',
+    title: IS_CN_BUILD ? '怡氧®AI — AI 原生创作工作台' : 'EO2Weave — AI-native creator workspace',
     description: IS_CN_BUILD
       ? '本地优先的文件、知识工作流与多智能体编排。数据保存在用户本机，PWA 离线可用。'
       : 'Local-first files, knowledge workflows, and multi-agent orchestration. Your data stays on your machine; PWA offline-ready.',
@@ -109,7 +109,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 ? {
                     '@context': 'https://schema.org',
                     '@type': 'SoftwareApplication',
-                    name: '怡氧知知',
+                    name: '怡氧®AI',
                     applicationCategory: 'BusinessApplication',
                     operatingSystem: 'Web',
                     url: SITE_URL,

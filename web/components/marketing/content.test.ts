@@ -3,7 +3,7 @@ import { getExperienceSite, getMarketingContent } from './content'
 
 describe('regional marketing metadata', () => {
   it('selects the appropriate brand for each region', () => {
-    expect(getMarketingContent('cn').brand).toBe('怡氧知知')
+    expect(getMarketingContent('cn').brand).toBe('怡氧®AI')
     expect(getMarketingContent('global').brand).toBe('EO2Weave')
   })
 })

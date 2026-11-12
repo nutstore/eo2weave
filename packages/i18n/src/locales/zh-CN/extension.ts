@@ -7,7 +7,7 @@ export const extension = {
   bannerDismiss: "以后再说",
 
   // Install Guide Dialog
-  guideTitle: "安装 怡氧知知 浏览器扩展",
+  guideTitle: "安装 怡氧®AI 浏览器扩展",
   guideSubtitle: "让你的 AI 助手连接互联网",
   estimatedTime: "预计安装时间：3-5 分钟",
   prerequisite: "你需要准备：Chrome 或 Edge 浏览器",
@@ -40,7 +40,7 @@ export const extension = {
   storeInstallStepADesc: "按钮位于商店页面右上角",
   storeInstallStepB: "在浏览器弹窗中点击“添加扩展程序”确认",
   storeInstallStepBDesc: "无需开启开发者模式，插件会自动安装并自动更新",
-  storeInstallHint: "安装成功后，扩展列表中会出现“怡氧知知”",
+  storeInstallHint: "安装成功后，扩展列表中会出现“怡氧®AI”",
 
   // Edge 加载项流程（Edge 浏览器用户）
   edgeStepStoreOpen: "打开 Edge 加载项",
@@ -80,7 +80,7 @@ export const extension = {
   installStepB: "打开右上角「开发者模式」开关",
   installStepC: "点击「加载已解压的扩展程序」",
   installStepCSelect: "选择刚才解压出来的 chrome-extension 文件夹",
-  installSuccessHint: "看到扩展列表中出现 \"怡氧知知\" 即安装成功",
+  installSuccessHint: "看到扩展列表中出现 \"怡氧®AI\" 即安装成功",
 
   // Verify step (kept for backwards compat)
 

@@ -130,7 +130,7 @@ describe('marketing navigation', () => {
 
   it('uses client navigation for the logo and home link on the WebMCP page', () => {
     render(<SiteHeader page="webmcp" region="cn" copy={chromeCopy.cn.header} />)
-    expect(screen.getByRole('link', { name: '怡氧知知' }).getAttribute('data-client-link')).toBe('true')
+    expect(screen.getByRole('link', { name: '怡氧®AI' }).getAttribute('data-client-link')).toBe('true')
     expect(screen.getByRole('link', { name: '首页' }).getAttribute('data-client-link')).toBe('true')
   })
 
