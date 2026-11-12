@@ -26,7 +26,6 @@ import {
   getLLMGatewayBaseURL,
   getLLMGatewayClientId,
 } from '@/lib/gateway-login'
-import { useSettingsStore } from '@/store/settings.store'
 import { useT } from '@/i18n'
 import { isLLMGatewayConfigured } from '@/agent/providers/llm-gateway-provider'
 
@@ -100,14 +99,8 @@ export function useGatewayLogin(): UseGatewayLoginResult {
     } catch (e) {
       if (attempt.signal.aborted || attemptRef.current !== attempt) return false
       console.error('[useGatewayLogin] FAILED:', e)
-      const errorCode = (e as Error & { code?: string }).code
-      // Only gateway-issued terminal codes prove stored credentials are bad.
-      // Local device-flow failures now use their own code (device_flow_timeout)
-      // and never reach this branch as 'expired_token'.
-      const credentialInvalid = errorCode === 'invalid_grant' || errorCode === 'expired_token'
-      if (credentialInvalid) {
-        useSettingsStore.getState().setGatewayCredentialStatus('expired')
-      }
+      // Device authorization errors describe this attempt, not the stored
+      // session: another login may already have committed valid credentials.
       if (mountedRef.current) {
         setAuthState({
           status: 'error',

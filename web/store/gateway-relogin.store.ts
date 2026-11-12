@@ -106,13 +106,8 @@ export const useGatewayReloginStore = create<GatewayReloginState>()((set) => ({
     } catch (e) {
       console.error('[gateway-relogin] FAILED:', e)
       const message = (e as Error).message || tr('conversation.error.gatewayLoginFailed')
-      const errorCode = (e as Error & { code?: string }).code
-      // Only gateway-issued terminal codes prove stored credentials are bad
-      // (same distinction useGatewayLogin makes).
-      if (errorCode === 'invalid_grant' || errorCode === 'expired_token') {
-        const { useSettingsStore } = await import('@/store/settings.store')
-        useSettingsStore.getState().setGatewayCredentialStatus('expired')
-      }
+      // A failed device authorization cannot invalidate an existing session
+      // or a newer login that completed while this attempt was pending.
       running = false
       set({ phase: 'error', authState: { status: 'error', error: message }, error: message })
       return false

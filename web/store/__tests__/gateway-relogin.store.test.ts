@@ -1,7 +1,7 @@
 /**
  * Tests for the gateway re-login flow (issue #75): the credential-expired
  * error card's Re-login entry — the store phase machine, the success
- * callback (regenerate), and the error-path credential status handling.
+ * callback (regenerate), and the error-state handling.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,7 +9,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const performDeviceCodeFlowMock = vi.hoisted(() => vi.fn())
 const persistDeviceLoginTokensMock = vi.hoisted(() => vi.fn())
 const applyGatewayLoginTokensMock = vi.hoisted(() => vi.fn())
-const setModelCredentialStatusMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/agent/providers/llm-gateway-auth', () => ({
   performDeviceCodeFlow: performDeviceCodeFlowMock,
@@ -20,12 +19,6 @@ vi.mock('@/lib/gateway-login', () => ({
   applyGatewayLoginTokens: applyGatewayLoginTokensMock,
   getLLMGatewayBaseURL: () => 'https://ai.jianguoyun.com',
   getLLMGatewayClientId: () => 'test-client-id',
-}))
-
-vi.mock('@/store/settings.store', () => ({
-  useSettingsStore: {
-    getState: () => ({ setGatewayCredentialStatus: setModelCredentialStatusMock }),
-  },
 }))
 
 import { useGatewayReloginStore } from '@/store/gateway-relogin.store'
@@ -39,7 +32,6 @@ describe('gateway-relogin.store', () => {
       options.onCommit()
       return { ok: true, accessToken: 'tok', models: [] }
     })
-    setModelCredentialStatusMock.mockReset()
     useGatewayReloginStore.setState({ phase: 'idle', authState: null, error: null })
   })
 
@@ -91,20 +83,19 @@ describe('gateway-relogin.store', () => {
     await promise
   })
 
-  it('reports a terminal credential error and marks the credential expired', async () => {
-    const err = Object.assign(new Error('token revoked'), { code: 'invalid_grant' })
+  it('reports a terminal device authorization error', async () => {
+    const err = Object.assign(new Error('Device authorization rejected'), { code: 'invalid_grant' })
     performDeviceCodeFlowMock.mockRejectedValue(err)
 
     const ok = await useGatewayReloginStore.getState().start()
 
     expect(ok).toBe(false)
     expect(useGatewayReloginStore.getState().phase).toBe('error')
-    expect(useGatewayReloginStore.getState().error).toBe('token revoked')
+    expect(useGatewayReloginStore.getState().error).toBe('Device authorization rejected')
     expect(useGatewayReloginStore.getState().authState?.status).toBe('error')
-    expect(setModelCredentialStatusMock).toHaveBeenCalledWith('expired')
   })
 
-  it('does not mark the credential expired for local device-flow failures', async () => {
+  it('reports a local device-flow timeout', async () => {
     performDeviceCodeFlowMock.mockRejectedValue(
       Object.assign(new Error('Device authorization session expired'), { code: 'device_flow_timeout' })
     )
@@ -112,7 +103,7 @@ describe('gateway-relogin.store', () => {
     await useGatewayReloginStore.getState().start()
 
     expect(useGatewayReloginStore.getState().phase).toBe('error')
-    expect(setModelCredentialStatusMock).not.toHaveBeenCalled()
+    expect(useGatewayReloginStore.getState().error).toBe('Device authorization session expired')
   })
 
   it('ignores concurrent start() calls while a flow is running', async () => {
