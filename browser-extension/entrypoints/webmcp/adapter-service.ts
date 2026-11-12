@@ -1,11 +1,14 @@
 import { failure, jsonText, type ExecutionResult, type JsonValue } from '@creatorweave/quickjs-runtime'
 import { parseWorkflow, validatePackageSnapshotWithDiagnostics, type WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
 import { ADAPTER_TIMEOUT_MS, ADAPTER_TRANSFER_BYTES, isRecord, type AdapterDescriptor } from '@creatorweave/shared/webmcp-adapter-protocol'
-import { matchesToolUrl } from '@creatorweave/shared/webmcp-url'
+import { matchesToolUrl, validateUrlRegex } from '@creatorweave/shared/webmcp-url'
+import type { WebMCPCatalogDiagnostics } from '@creatorweave/shared/webmcp-diagnostics'
+import type { AdapterPackageSnapshot } from './package-repository'
 import type { BrowserRequest } from '../../lib/bash-commands/browser/command'
 import { executeAdapterWorkflow } from './adapter-runtime'
 
 interface Route {
+  packageId: string
   descriptor: AdapterDescriptor
   source: string
   fingerprint: string
@@ -22,9 +25,20 @@ interface Execution {
 
 interface Dependencies {
   loadWasm(): Promise<WebAssembly.Module>
-  readPackages(): Promise<WebMCPPackage[]>
+  readCatalog(): Promise<AdapterPackageSnapshot>
   runBrowser(owner: string, request: BrowserRequest, signal: AbortSignal): Promise<unknown>
   changed(): void
+}
+
+export interface AdapterCatalogSnapshot extends WebMCPCatalogDiagnostics {
+  forUrl(url: string): { tools: AdapterDescriptor[]; packageIds: string[]; rejectedPackageIds: string[] }
+}
+
+/** Rejected source/config data must not bypass the URL regex safety checks. */
+function safePatterns(patterns: unknown[]): string[] {
+  return patterns.flatMap(pattern => {
+    try { return [validateUrlRegex(pattern)] } catch { return [] }
+  })
 }
 
 /** Bound WASM loading as well as VM execution to explicit cancellation. */
@@ -49,6 +63,8 @@ export function createAdapterService(deps: Dependencies) {
   let routeSnapshot = ''
   /** Packages dropped by validation, kept so the failure is not silent. */
   let rejectedPackages: Array<{ id: string; reason: string }> = []
+  let rejectedScopes: Array<{ id: string; patterns: string[] }> = []
+  let catalogStatus: WebMCPCatalogDiagnostics['catalogStatus'] = 'loading'
   const executions = new Map<string, Execution>()
 
   const withdraw = (retained: Set<Route>) => {
@@ -81,6 +97,7 @@ export function createAdapterService(deps: Dependencies) {
       const old = previous.get(name)
       if (old?.fingerprint === fingerprint) return old
       return {
+        packageId: pkg.manifest.id,
         source,
         fingerprint,
         descriptor: {
@@ -104,24 +121,44 @@ export function createAdapterService(deps: Dependencies) {
   }
 
   return {
-    /** Packages this catalog dropped, with the reason (empty when healthy). */
-    diagnostics(): Array<{ id: string; reason: string }> {
-      return rejectedPackages
+    /** Capture all fields once so a concurrent refresh cannot mix scans. */
+    snapshot(): AdapterCatalogSnapshot {
+      const capturedRoutes = routes
+      const capturedScopes = rejectedScopes
+      return {
+        catalogStatus,
+        rejected: rejectedPackages.map(entry => ({ ...entry })),
+        forUrl(url) {
+          const matched = capturedRoutes.filter(route => matchesToolUrl(route.descriptor.urlRegex, url))
+          return {
+            tools: matched.map(route => route.descriptor),
+            packageIds: [...new Set(matched.map(route => route.packageId))],
+            rejectedPackageIds: [...new Set(capturedScopes.filter(entry => entry.patterns.some(pattern => matchesToolUrl(pattern, url))).map(entry => entry.id))],
+          }
+        },
+      }
     },
-
     refresh(): Promise<void> {
       return catalogTask(async () => {
         try {
-          const mounted = await deps.readPackages()
+          const mounted = await deps.readCatalog()
           // Per-package isolation (issue #237): one bad package must not take
           // the whole adapter catalog down. Symptom that motivated it: a
           // 35-tool package pushed the aggregate size cap over the limit, the
           // snapshot threw, `withdraw(new Set())` removed every route, and
           // every site silently lost its WebMCP tools.
           const { packages, rejected } = validatePackageSnapshotWithDiagnostics(
-            mounted.map(({ manifest, sources }) => ({ manifest, sources })),
+            mounted.packages.map(({ manifest, sources }) => ({ manifest, sources })),
           )
-          rejectedPackages = rejected
+          rejectedPackages = [...mounted.rejected, ...rejected].map(({ id, reason }) => ({ id, reason }))
+          rejectedScopes = [
+            ...mounted.rejected.map(entry => ({ id: entry.id, patterns: safePatterns(entry.urlRegexes ?? []) })),
+            ...rejected.map(entry => ({ id: entry.id, patterns: safePatterns(
+              mounted.packages.filter(pkg => pkg.manifest.id === entry.id)
+                .flatMap(pkg => Array.isArray(pkg.manifest.tools) ? pkg.manifest.tools.map(tool => tool.urlRegex) : []),
+            ) })),
+          ]
+          catalogStatus = mounted.complete ? 'ready' : 'failed'
           for (const entry of rejected) {
             console.warn(`[WebMCP adapters] Package ${entry.id} rejected: ${entry.reason}`)
           }
@@ -138,6 +175,8 @@ export function createAdapterService(deps: Dependencies) {
           // longer meaningful: leaving them would report reasons for packages
           // the current (empty) catalog never looked at.
           rejectedPackages = []
+          rejectedScopes = []
+          catalogStatus = 'failed'
           if (routes.length !== 0 || routeSnapshot !== '[]') {
             routes = []
             routeSnapshot = '[]'

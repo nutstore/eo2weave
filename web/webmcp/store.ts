@@ -1,21 +1,23 @@
 import { create } from 'zustand'
 import { buildHostCatalog } from './catalog-normalizer'
-import type {
-  WebMCPDiscoveredTool,
-  WebMCPHostCatalog,
-  WebMCPRegisteredTool,
-} from './types'
+import type { WebMCPDiscoveryDiagnostics } from '@creatorweave/shared/webmcp-diagnostics'
+import type { WebMCPDiscoveredTool, WebMCPHostCatalog, WebMCPRegisteredTool } from './types'
 
 interface WebMCPState {
   enabledByHost: Record<string, boolean>
   catalogByHost: Record<string, WebMCPHostCatalog>
   discoveredTools: WebMCPDiscoveredTool[]
   lastScanAt: number | null
+  diagnostics: WebMCPDiscoveryDiagnostics | null
 
   setHostEnabled: (hostname: string, enabled: boolean) => void
   setAuthorizationMirror: (enabledByHost: Record<string, boolean>) => void
   isHostEnabled: (hostname: string) => boolean
-  setDiscoveredTools: (tools: WebMCPDiscoveredTool[], scannedAt: number) => void
+  setDiscoveredTools: (
+    tools: WebMCPDiscoveredTool[],
+    scannedAt: number,
+    diagnostics?: WebMCPDiscoveryDiagnostics
+  ) => void
   clearCatalog: () => void
   getAllTools: () => WebMCPRegisteredTool[]
   getEnabledTools: () => WebMCPRegisteredTool[]
@@ -27,6 +29,7 @@ export const useWebMCPStore = create<WebMCPState>()((set, get) => ({
   catalogByHost: {},
   discoveredTools: [],
   lastScanAt: null,
+  diagnostics: null,
 
   setHostEnabled: (hostname, enabled) => {
     const normalized = hostname.trim().toLowerCase()
@@ -48,22 +51,24 @@ export const useWebMCPStore = create<WebMCPState>()((set, get) => ({
     return get().enabledByHost[normalized] !== false
   },
 
-  setDiscoveredTools: (tools, scannedAt) => {
+  setDiscoveredTools: (tools, scannedAt, diagnostics) => {
     set({
       discoveredTools: tools,
       catalogByHost: buildHostCatalog(tools),
       lastScanAt: scannedAt,
+      diagnostics: diagnostics ?? null,
     })
   },
 
-  clearCatalog: () => set({
-    catalogByHost: {},
-    discoveredTools: [],
-    lastScanAt: null,
-  }),
+  clearCatalog: () =>
+    set({
+      catalogByHost: {},
+      discoveredTools: [],
+      lastScanAt: null,
+      diagnostics: null,
+    }),
 
-  getAllTools: () =>
-    Object.values(get().catalogByHost).flatMap((host) => host.registeredTools),
+  getAllTools: () => Object.values(get().catalogByHost).flatMap((host) => host.registeredTools),
 
   getEnabledTools: () => {
     const state = get()
@@ -73,5 +78,7 @@ export const useWebMCPStore = create<WebMCPState>()((set, get) => ({
   },
 
   getToolByCallName: (fullName) =>
-    get().getEnabledTools().find((tool) => tool.fullName === fullName),
+    get()
+      .getEnabledTools()
+      .find((tool) => tool.fullName === fullName),
 }))

@@ -1,6 +1,7 @@
 import type { WebMCPPackageEntry } from '@creatorweave/shared/webmcp-package-catalog'
 import type { WebMCPPackageManifest } from '@creatorweave/shared/webmcp-adapter'
 import type { WebMCPConfig } from '@creatorweave/shared/webmcp-config'
+import type { WebMCPCatalogDiagnostics } from '@creatorweave/shared/webmcp-diagnostics'
 export type ManagedWebMCPPackage = Omit<WebMCPPackageEntry, 'package'> & { manifest: WebMCPPackageManifest | null }
 
 export interface ManagedPackageCatalog {
@@ -11,6 +12,14 @@ export interface ManagedPackageCatalog {
    * unavailable, not empty.
    */
   userMountComplete: boolean
+}
+
+export type AdapterDiagnostics = WebMCPCatalogDiagnostics
+
+export async function readAdapterDiagnostics(): Promise<AdapterDiagnostics> {
+  const response = await chrome.runtime.sendMessage({ type: 'webmcp_packages_diagnostics' })
+  if (!response?.ok) throw new Error(response?.error ?? 'Adapter diagnostics unavailable')
+  return { catalogStatus: response.catalogStatus, rejected: response.rejected }
 }
 
 export async function listManagedPackages(): Promise<ManagedPackageCatalog> {

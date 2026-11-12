@@ -28,6 +28,7 @@ export interface WebMCPDiscoveredTool extends WebMCPToolDefinition, WebMCPToolMe
 }
 
 export interface WebMCPDiscoverResponse {
+  diagnostics?: import('@creatorweave/shared/webmcp-diagnostics').WebMCPDiscoveryDiagnostics
   ok: boolean
   tools: WebMCPDiscoveredTool[]
   scannedTabs: number

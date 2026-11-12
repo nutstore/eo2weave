@@ -16,6 +16,8 @@ export interface WebMCPPackageEntry {
   config: WebMCPConfig | null
   activation: WebMCPActivation | null
   diagnostics: string[]
+  /** Validated scopes survive source errors; never taken from a malformed manifest. */
+  urlRegexes?: string[]
   package: WebMCPPackage | null
 }
 
@@ -34,7 +36,11 @@ export async function readMountedWebMCPCatalog(mounts: WebMCPMount[]): Promise<W
         entry.config = parseWebMCPConfig(config)
         entry.activation = resolveWebMCPConfig(entry.config).activation
       } catch (error) { entry.diagnostics.push(`config.json: ${error instanceof Error ? error.message : String(error)}`) }
-      try { entry.package = await readPackage(mount.files, directory) }
+      try {
+        entry.package = await readPackage(mount.files, directory, manifest => {
+          entry.urlRegexes = manifest.tools.map(tool => tool.urlRegex)
+        })
+      }
       catch (error) { entry.diagnostics.push(error instanceof Error ? error.message : String(error)) }
       entries.push(entry)
     }

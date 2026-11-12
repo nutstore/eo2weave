@@ -1,13 +1,18 @@
-import { validateManifest, validatePackage, type WebMCPPackage } from './webmcp-adapter'
+import { validateManifest, validatePackage, type WebMCPPackage, type WebMCPPackageManifest } from './webmcp-adapter'
 
 export interface PackageFiles {
   readFile(path: string): Promise<string>
 }
 
-export async function readPackage(files: PackageFiles, directory: string): Promise<WebMCPPackage> {
+export async function readPackage(
+  files: PackageFiles,
+  directory: string,
+  onManifest?: (manifest: WebMCPPackageManifest) => void,
+): Promise<WebMCPPackage> {
   const root = directory.replace(/\/+$/, '')
   const id = root.split('/').pop()!
   const manifest = validateManifest(JSON.parse(await files.readFile(`${root}/manifest.json`)), id)
+  onManifest?.(manifest)
   const sources: Record<string, string> = Object.create(null)
   for (const tool of manifest.tools) sources[tool.path] = await files.readFile(`${root}/${tool.path}`)
   return validatePackage(manifest, sources, id)

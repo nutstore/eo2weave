@@ -2,6 +2,14 @@ import { FsError, type FsProvider } from '@creatorweave/fs-provider'
 import { activeWebMCPPackages, readMountedWebMCPCatalog, type WebMCPMount, type WebMCPPackageEntry } from '@creatorweave/shared/webmcp-package-catalog'
 import { getAdapterStorage } from './provider-storage'
 import { getBuiltinStorage } from './builtin-storage'
+import type { WebMCPPackage } from '@creatorweave/shared/webmcp-adapter'
+import type { WebMCPRejectedPackage } from '@creatorweave/shared/webmcp-diagnostics'
+
+export interface AdapterPackageSnapshot {
+  packages: WebMCPPackage[]
+  rejected: Array<WebMCPRejectedPackage & { urlRegexes?: string[] }>
+  complete: boolean
+}
 
 export function providerMount(name: string, provider: FsProvider): WebMCPMount {
   return {
@@ -78,7 +86,22 @@ export async function readBuiltinWebMCPCatalog() {
   return readMountedWebMCPCatalog([providerMount('builtin-webmcp', await getBuiltinStorage())])
 }
 export async function readEnabledWebMCPPackages() {
-  const entries = await readWebMCPCatalog()
+  return (await readEnabledWebMCPPackageSnapshot()).packages
+}
+
+export async function readEnabledWebMCPPackageSnapshot(): Promise<AdapterPackageSnapshot> {
+  const [entries, { userMountComplete }] = await readWebMCPCatalogDetailed()
   const uriByPackage = new Map(entries.map(entry => [entry.package, entry.uri]))
-  return activeWebMCPPackages(entries).map(pkg => ({ ...pkg, rootUri: uriByPackage.get(pkg)! }))
+  return {
+    packages: activeWebMCPPackages(entries).map(pkg => ({ ...pkg, rootUri: uriByPackage.get(pkg)! })),
+    complete: userMountComplete,
+    rejected: entries.filter(entry => entry.diagnostics.length > 0).map(entry => ({
+      id: entry.package?.manifest.id ?? entry.directory,
+      reason: entry.diagnostics.join('; '),
+      // Only validated manifest scopes can tie a rejection to a page. A
+      // disabled package is not expected to supply tools, even if invalid.
+      urlRegexes: entry.activation !== 'disabled'
+        ? entry.urlRegexes : undefined,
+    })),
+  }
 }

@@ -1,3 +1,5 @@
+import type { WebMCPDiscoveryDiagnostics } from '@creatorweave/shared/webmcp-diagnostics'
+import type { WebmcpAvailabilityState } from '@/webmcp/availability'
 /**
  * Workspace Assistant — Side Panel Context
  *
@@ -408,7 +410,7 @@ export interface PageContextSnapshot {
   selectedText?: string | null
   providerContext?: unknown
   webmcpTools?: Array<{ name: string; description: string; fullName: string }>
-  webmcpStatus?: 'ok' | 'host-disabled' | 'unavailable'
+  webmcpStatus?: WebmcpAvailabilityState
 }
 
 /**
@@ -427,16 +429,18 @@ export interface PageContextSnapshot {
  * the message-send path and must stay fast; the agent loop refreshes the
  * catalog right before tool use anyway.
  */
-async function readWebmcpToolsForHost(
+async function readWebmcpPageSnapshot(
   hostname: string | null,
   tabId: number | null,
-): Promise<
-  Array<{ name: string; description: string; fullName: string }>
-> {
-  if (!hostname) return []
+): Promise<{
+  tools: Array<{ name: string; description: string; fullName: string }>
+  diagnostics: WebMCPDiscoveryDiagnostics | null
+}> {
+  if (!hostname) return { tools: [], diagnostics: null }
   const { useWebMCPStore } = await import('@/webmcp/store')
-  const collect = (): Array<{ name: string; description: string; fullName: string }> => {
-    const tools = useWebMCPStore.getState().getAllTools()
+  const collect = () => {
+    const state = useWebMCPStore.getState()
+    const tools = state.getAllTools()
     const host = hostname.trim().toLowerCase()
     const seen = new Set<string>()
     const out: Array<{ name: string; description: string; fullName: string }> = []
@@ -453,11 +457,11 @@ async function readWebmcpToolsForHost(
         fullName: tool.fullName,
       })
     }
-    return out
+    return { tools: out, diagnostics: state.diagnostics ?? null }
   }
   try {
-    let tools = collect()
-    if (tools.length === 0) {
+    let snapshot = collect()
+    if (snapshot.tools.length === 0) {
       // Cold start: the message-send path runs BEFORE the agent loop's
       // buildRuntimeEnhancedPrompt() discovery. Trigger one discovery
       // (TTL-cached + inflight-deduped, so warm turns never re-pay this)
@@ -468,15 +472,15 @@ async function readWebmcpToolsForHost(
           discoverWebMCPCatalog(),
           new Promise((r) => setTimeout(r, 1500)),
         ])
-        tools = collect()
+        snapshot = collect()
       } catch {
         // bridge unavailable — keep the empty list
       }
     }
-    return tools
+    return snapshot
   } catch {
     // store unavailable (early boot / non-extension context) — degrade to empty
-    return []
+    return { tools: [], diagnostics: null }
   }
 }
 
@@ -524,11 +528,9 @@ export async function capturePageContext(): Promise<PageContextSnapshot | null> 
     // Scope tools to the BOUND TAB, not just the hostname: same-hostname
     // tabs in different apps (jmail.world / vs /messages) expose disjoint
     // toolsets and hostname-only filtering merges them into garbage.
-    const webmcpTools = await readWebmcpToolsForHost(hostname, boundTabId)
-    // Freeze WHY the list is empty next to the list itself (#239). Only the
-    // two app-side states are knowable today; the reason a package did not
-    // match needs extension diagnostics (#273).
-    let webmcpStatus: 'ok' | 'host-disabled' | 'unavailable' = 'unavailable'
+    const { tools: webmcpTools, diagnostics } = await readWebmcpPageSnapshot(hostname, boundTabId)
+    // Freeze the reason from the same discovery snapshot as the tool list.
+    let webmcpStatus: WebmcpAvailabilityState = 'unavailable'
     if (hostname) {
       try {
         const [{ useSettingsStore }, { useWebMCPStore }, { deriveWebmcpAvailability }] = await Promise.all([
@@ -540,6 +542,9 @@ export async function capturePageContext(): Promise<PageContextSnapshot | null> 
           globalEnabled: useSettingsStore.getState().enableWebMCP,
           hostEnabled: useWebMCPStore.getState().isHostEnabled(hostname),
           toolCount: webmcpTools.length,
+          diagnostics,
+          tabId: boundTabId,
+          url: pick<string>('url'),
         })
       } catch {
         // Status is decorative: a store read failure must not drop the snapshot.

@@ -87,7 +87,7 @@ async function discoverAndCacheTools(force = false): Promise<WebMCPRegisteredToo
       a.fullName.localeCompare(b.fullName),
     )
     syncAuthorizationFromTools(tools)
-    useWebMCPStore.getState().setDiscoveredTools(tools, response.discoveredAt || Date.now())
+    useWebMCPStore.getState().setDiscoveredTools(tools, response.discoveredAt || Date.now(), response.diagnostics)
     lastDiscoveryAt = Date.now()
     return useWebMCPStore.getState().getAllTools()
   })()

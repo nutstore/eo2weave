@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   discover: vi.fn(),
   tools: [] as Array<Record<string, unknown>>,
+  writes: [] as unknown[],
   bridgeAvailable: true,
   enabled: true,
 }))
@@ -15,7 +16,8 @@ vi.mock('../store', () => ({
     getState: () => ({
       getAllTools: () => mocks.tools,
       getEnabledTools: () => mocks.tools,
-      setDiscoveredTools: (tools: Array<Record<string, unknown>>) => {
+      setDiscoveredTools: (tools: Array<Record<string, unknown>>, _at: number, diagnostics?: unknown) => {
+        mocks.writes.push(diagnostics)
         mocks.tools = tools.map((tool) => ({
           ...tool,
           tabs: [{ tabId: tool.tabId, groupKey: tool.groupKey }],
@@ -137,4 +139,20 @@ describe('WebMCP catalog refresh', () => {
     await Promise.all([first, second])
     expect(mocks.discover).toHaveBeenCalledOnce()
   })
+})
+
+
+it('forwards diagnostics with the successful tool snapshot, without guessing on transport errors', async () => {
+  expireWebMCPDiscovery()
+  mocks.enabled = true
+  mocks.bridgeAvailable = true
+  mocks.tools = []
+  mocks.writes = []
+  const diagnostics = { catalogStatus: 'ready', rejected: [], tabs: [] }
+  mocks.discover.mockResolvedValueOnce({ ok: true, tools: [], discoveredAt: 1, diagnostics })
+  await discoverWebMCPCatalog(true)
+  expect(mocks.writes).toEqual([diagnostics])
+  mocks.discover.mockResolvedValueOnce({ ok: false, tools: [], error: 'Bridge unavailable' })
+  await discoverWebMCPCatalog(true)
+  expect(mocks.writes).toEqual([diagnostics])
 })

@@ -1,3 +1,4 @@
+import type { WebmcpAvailabilityState } from '@/webmcp/availability'
 /**
  * Agent message types for AI conversation system.
  * Compatible with OpenAI chat completion format.
@@ -157,7 +158,7 @@ export interface Message {
     webmcpTools?: Array<{ name: string; description: string; fullName: string }>
     /** Why the tool list is empty (frozen with it). Only present on snapshots
      *  captured after the field existed; older messages render nothing. */
-    webmcpStatus?: 'ok' | 'host-disabled' | 'unavailable'
+    webmcpStatus?: WebmcpAvailabilityState
   }
 }
 

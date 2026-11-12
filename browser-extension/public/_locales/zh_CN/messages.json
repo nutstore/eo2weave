@@ -130,6 +130,18 @@
   "webmcpPackagesManagement": {
     "message": "WebMCP 包管理"
   },
+  "webmcpPackagesDiagnosticsTitle": {
+    "message": "适配器诊断"
+  },
+  "webmcpPackagesDiagnosticsHint": {
+    "message": "被适配器拒绝的包无法在页面中使用。"
+  },
+  "webmcpPackagesDiagnosticsCatalogFailed": {
+    "message": "最近一次适配器目录刷新失败。"
+  },
+  "webmcpPackagesDiagnosticsUnavailable": {
+    "message": "无法加载适配器诊断信息"
+  },
   "webmcpPackagesSectionBuiltin": {
     "message": "内置包"
   },

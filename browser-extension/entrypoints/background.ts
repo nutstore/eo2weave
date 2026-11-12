@@ -124,6 +124,7 @@ import {
   getHostAuthorizationMap,
   setHostEnabled as setWebMCPHostEnabled,
   annotateToolsWithHostAuthorization,
+  filterDiagnosticsByHostAuthorization,
 } from './webmcp/authorization'
 import {
   streamPluginDownload,
@@ -1220,7 +1221,7 @@ export default defineBackground(() => {
       return runBrowserRequest(owner, request, signal, tabWebMCP)
     },
   })
-  installAdapterCatalog(tabId => adapterService.listForTab(tabId))
+  installAdapterCatalog(tabId => adapterService.listForTab(tabId), () => adapterService.snapshot())
   tabWebMCP = createTabWebMCPApi(adapterService)
   installAdapterInvoker((tabId, name, args, signal) => adapterService.invokeForTab(tabId, name, args, signal))
   const browserTasks = new Map<string, AbortController>()
@@ -2806,6 +2807,9 @@ export default defineBackground(() => {
             (response as any).tools = includeDisabled
               ? annotated
               : annotated.filter((tool: any) => tool.hostEnabled !== false);
+            if (response.diagnostics && !includeDisabled) {
+              response.diagnostics = filterDiagnosticsByHostAuthorization(response.diagnostics, hostMap);
+            }
           }
           sendResponse(response);
           return;
