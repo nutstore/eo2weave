@@ -36,6 +36,7 @@ interface StreamingState {
 interface MessageBubbleProps {
   /** The message to display */
   message: Message
+  conversationId?: string
 
   /** Optional streaming state (only applies when processing this message) */
   streaming?: StreamingState
@@ -70,6 +71,7 @@ interface MessageBubbleProps {
 
 export const MessageBubble = memo(function MessageBubble({
   message,
+  conversationId,
   streaming,
   showAvatar = true,
   reasoningCollapsed = true,
@@ -109,6 +111,20 @@ export const MessageBubble = memo(function MessageBubble({
       onEditAndResend(message.id, trimmed)
     }
     setIsEditing(false)
+  }
+
+  if (message.subagentCompletion) {
+    return (
+      <div className="my-2 min-w-0 rounded-lg border border-neutral-200 px-3 py-2 dark:border-neutral-700">
+        <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-neutral-500 dark:text-neutral-400">
+          <Bot className="h-3.5 w-3.5" aria-hidden="true" />
+          <span>{t('conversation.backgroundTasks.result')}</span>
+        </div>
+        <div className="max-h-56 overflow-auto break-words text-sm text-neutral-700 dark:text-neutral-300">
+          <MarkdownContent content={message.content ?? ''} />
+        </div>
+      </div>
+    )
   }
 
   // Delegation note: synthetic user-role message injected by delegate_to
@@ -369,7 +385,7 @@ export const MessageBubble = memo(function MessageBubble({
         {hasToolCalls && (
           <div className="space-y-1">
             {message.toolCalls!.map((tc) => (
-              <ToolCallDisplay key={tc.id} toolCall={tc} result={toolResults?.get(tc.id)} />
+              <ToolCallDisplay key={tc.id} conversationId={conversationId} toolCall={tc} result={toolResults?.get(tc.id)} />
             ))}
           </div>
         )}

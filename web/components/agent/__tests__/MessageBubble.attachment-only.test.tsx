@@ -25,6 +25,16 @@ const asset = {
   direction: 'upload' as const,
 }
 
+it('renders a background result as an application event without human edit actions', () => {
+  const edit = vi.fn()
+  const { container } = render(<MessageBubble message={userMsg({ content: 'Document inspection finished', subagentCompletion: { eventIds: ['child:attempt'] } })} onEditAndResend={edit} />)
+  expect(screen.getByText('conversation.backgroundTasks.result')).toBeInTheDocument()
+  expect(screen.getByText('Document inspection finished')).toBeInTheDocument()
+  expect(container.querySelector('.bg-primary-600')).toBeNull()
+  expect(container.querySelector('.lucide-user')).toBeNull()
+  expect(screen.queryByRole('button', { name: /edit/i })).toBeNull()
+})
+
 describe('MessageBubble — attachment-only user message (plan A)', () => {
   it('renders no text bubble when content is empty but assets exist', () => {
     const { container } = render(<MessageBubble message={userMsg({ assets: [asset] })} />)

@@ -77,8 +77,13 @@ export function getSubagentContinuation(): CompletionDeliveryCoordinator {
       if (conv?.status === 'error')
         await getSubagentContinuation().blockUnstarted(id, conv.error ?? 'Model dispatch failed')
     },
-    onPhase: (row, phase) =>
-      useSubagentTaskStore.getState().setDeliveryPhase(row.agentId, row.executionId, phase),
+    onPhase: (row, phase) => {
+      const store = useSubagentTaskStore.getState()
+      store.setDeliveryPhase(row.agentId, row.executionId, phase)
+      const task = store.tasks[row.agentId]
+      if (task?.executionId === row.executionId)
+        useSubagentTaskStore.getState().publish({ ...useSubagentTaskStore.getState().tasks[row.agentId], deliveryError: row.deliveryError })
+    },
     onError: (error) => console.error('[subagent] Completion delivery failed:', error),
   }))
 }
@@ -115,6 +120,8 @@ export async function recoverSubagentContinuations(conversationIds: string[]): P
         usage: task.usage,
         isAsync: task.execution?.isAsync ?? false,
         executionId: task.execution?.executionId,
+        acknowledged: task.execution?.acknowledged,
+        deliveryError: completion?.deliveryError,
         deliveryPhase: completion?.status,
         messages: task.messages,
       })

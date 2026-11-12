@@ -99,6 +99,20 @@ function completion(): SubagentCompletion {
 }
 
 describe('durable subagent completions', () => {
+  it('persists acknowledgement per attempt without changing completion delivery or losing it to a later save', async () => {
+    const tasks = new SubagentRepository()
+    const outbox = new SubagentCompletionRepository()
+    await tasks.saveBatch('c1', [task()])
+    await outbox.finishExecution({ task: task(), completion: completion() })
+    await tasks.acknowledge('c1', 'a1', 'e1')
+    await tasks.saveBatch('c1', [{ ...task(), updated_at: 3 }])
+    expect((await tasks.findByWorkspaceId('c1'))[0].execution?.acknowledged).toBe(true)
+    expect((await outbox.find('a1:e1'))?.status).toBe('pending')
+    await tasks.saveBatch('c1', [{ ...task(), updated_at: 4, execution: { ...task().execution!, executionId: 'e2' } }])
+    await tasks.acknowledge('c1', 'a1', 'e1')
+    expect((await tasks.findByWorkspaceId('c1'))[0].execution?.acknowledged).toBeUndefined()
+  })
+
   it('atomically saves full trace and one idempotent completion', async () => {
     const tasks = new SubagentRepository()
     const outbox = new SubagentCompletionRepository()

@@ -408,6 +408,18 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
   }
 
+  /** Dismiss an attempt from the task strip without triggering result delivery. */
+  async acknowledge(input: { agentId: string; executionId: string }): Promise<void> {
+    await this.ensureHydrated()
+    const task = this.tasks.get(input.agentId)
+    const execution = task?.latestExecution
+    if (!task || !execution || execution.executionId !== input.executionId) return
+    const { getSubagentRepository } = await this.repositories
+    await getSubagentRepository().acknowledge(this.deps.workspaceId, input.agentId, input.executionId)
+    execution.acknowledged = true
+    if (task.latestExecution === execution) this.publishTask(task)
+  }
+
   async stop(input: {
     agentId: string
     force?: boolean
@@ -467,10 +479,16 @@ class SubagentRuntimeImpl implements SubagentRuntime {
    */
   async stopAll(input: { force?: boolean; backgroundOnly?: boolean } = {}): Promise<{ stopped: string[] }> {
     await this.ensureHydrated()
-    const targets = Array.from(this.tasks.values()).filter(
-      (task) => (!input.backgroundOnly || task.latestExecution?.isAsync) &&
-        (task.status === 'pending' || task.status === 'running' || task.latestExecution?.isAsync)
-    )
+    const targets = Array.from(this.tasks.values()).filter((task) => {
+      if (input.backgroundOnly && !task.latestExecution?.isAsync) return false
+      if (task.status === 'pending' || task.status === 'running') return true
+      const execution = task.latestExecution
+      const projection = useSubagentTaskStore.getState().tasks[task.agentId]
+      const current = projection?.executionId === execution?.executionId ? projection : undefined
+      const phase = current?.deliveryPhase ?? execution?.completion?.status
+      return execution?.isAsync && !execution.acknowledged && !current?.acknowledged &&
+        phase !== undefined && ['pending', 'delivered', 'blocked', 'error'].includes(phase)
+    })
     for (const task of targets) {
       task.stopped = true
       task.running_notification_armed = false
@@ -479,7 +497,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
     await Promise.all(targets.map((task) => this.suppressTask(task)))
     await Promise.all(
-      targets.map((task) =>
+      targets.filter((task) => task.status === 'pending' || task.status === 'running').map((task) =>
         this.killTask(task, {
           code: input.force ? 'STOPPED_FORCE' : 'STOPPED',
           message: input.force ? 'Subagent stopped by force.' : 'Subagent stopped.',
@@ -1519,8 +1537,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   }
 
   private executionMetadata(execution: SubagentExecution): SubagentExecutionMetadata {
-    const { executionId, isAsync, conversationId, continuation, suppressed, changedPaths } = execution
-    return { executionId, isAsync, conversationId, continuation, suppressed, changedPaths: [...changedPaths] }
+    const { executionId, isAsync, conversationId, continuation, suppressed, acknowledged, changedPaths } = execution
+    return { executionId, isAsync, conversationId, continuation, suppressed, acknowledged, changedPaths: [...changedPaths] }
   }
 
   private collectUsage(task: SubagentTaskInternal, execution: SubagentExecution): void {
@@ -1640,7 +1658,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       parentToolCallId: task.parentToolCallId, name: task.name, description: task.description,
       role: task.subagent_type, status: task.status, createdAt: task.created_at, updatedAt: task.updated_at,
       lastActivity: task.last_activity_at, recentActivity: recentActivity ?? previous?.recentActivity, usage: task.usage, error: task.error,
-      isAsync: execution?.isAsync ?? false, executionId: execution?.executionId,
+      isAsync: execution?.isAsync ?? false, executionId: execution?.executionId, acknowledged: execution?.acknowledged,
+      deliveryError: previous?.executionId === execution?.executionId ? previous?.deliveryError : execution?.completion?.deliveryError,
       deliveryPhase: deliveryPhase === 'processing' || deliveryPhase === 'handled'
         ? deliveryPhase
         : execution?.completion?.status === 'pending'

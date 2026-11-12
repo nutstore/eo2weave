@@ -168,6 +168,7 @@ export interface SpawnSubagentResult {
 }
 
 export interface SubagentRuntime {
+  acknowledge(input: { agentId: string; executionId: string }): Promise<void>
   start(input: SpawnSubagentInput): Promise<SubagentAcceptedReceipt>
   batchStart(input: BatchSpawnSubagentInput): Promise<SubagentBatchAcceptance>
   wait(input: WaitSubagentsInput): Promise<WaitSubagentsResult>

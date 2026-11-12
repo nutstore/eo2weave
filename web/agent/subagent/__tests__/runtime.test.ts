@@ -10,6 +10,7 @@ import { __resetSubagentRuntimeRegistryForTests, getOrCreateSubagentRuntime, dis
 
 const hoisted = vi.hoisted(() => {
   const repo = {
+    acknowledge: vi.fn(async () => {}),
     findByWorkspaceId: vi.fn(async () => []),
     saveBatch: vi.fn(async () => {}),
     transitionStatus: vi.fn(async () => ({ applied: true })),
@@ -284,6 +285,55 @@ describe('subagent runtime', () => {
     await vi.advanceTimersByTimeAsync(1)
     await runtime.stop({ agentId: receipt.agentId })
     expect(hoisted.repo.suppressAgent).toHaveBeenCalledWith('async-stop-finished', receipt.agentId)
+  })
+
+  it('background stop-all preserves handled history and suppresses waiting results without changing their execution outcome', async () => {
+    const runtime = createRuntime('background-stop-history', [])
+    const done = await runtime.start({ description: 'handled success', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(1)
+    const doneProjection = useSubagentTaskStore.getState().tasks[done.agentId]
+    useSubagentTaskStore.getState().setDeliveryPhase(done.agentId, doneProjection.executionId!, 'handled')
+    hoisted.setRunImpl(async () => { throw new Error('Original child failure') })
+    const failed = await runtime.start({ description: 'handled failure', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(1)
+    const failedProjection = useSubagentTaskStore.getState().tasks[failed.agentId]
+    useSubagentTaskStore.getState().setDeliveryPhase(failed.agentId, failedProjection.executionId!, 'handled')
+    useSubagentTaskStore.getState().acknowledge(failed.agentId, failedProjection.executionId!)
+    hoisted.setRunImpl(async (messages) => [...messages, createAssistantMessage('waiting result')])
+    const waiting = await runtime.start({ description: 'waiting result', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(1)
+    hoisted.setRunImpl(() => new Promise<Message[]>(() => {}))
+    const active = await runtime.start({ description: 'active child', prompt: 'work' })
+    runtime.spawn({ description: 'synchronous task', prompt: 'work', name: 'unrelated-sync' }).catch(() => {})
+    await vi.advanceTimersByTimeAsync(1)
+    const result = await runtime.stopAll({ force: true, backgroundOnly: true })
+    expect(new Set(result.stopped)).toEqual(new Set([waiting.agentId, active.agentId]))
+    expect(await runtime.getStatus({ agentId: done.agentId })).toMatchObject({ status: 'completed' })
+    expect((await runtime.getStatus({ agentId: done.agentId })).error).toBeUndefined()
+    expect(await runtime.getStatus({ agentId: failed.agentId })).toMatchObject({ status: 'failed', error: { message: 'Original child failure' } })
+    expect(await runtime.getStatus({ agentId: waiting.agentId })).toMatchObject({ status: 'completed' })
+    expect((await runtime.getStatus({ agentId: waiting.agentId })).error).toBeUndefined()
+    expect(await runtime.getStatus({ agentId: active.agentId })).toMatchObject({ status: 'killed' })
+    expect(await runtime.getStatus({ agentId: 'unrelated-sync' })).toMatchObject({ status: 'running' })
+    expect(hoisted.repo.suppressAgent).not.toHaveBeenCalledWith('background-stop-history', done.agentId)
+    expect(hoisted.repo.suppressAgent).not.toHaveBeenCalledWith('background-stop-history', failed.agentId)
+  })
+
+  it('acknowledges only the selected execution without stopping it or scheduling result return', async () => {
+    const runtime = createRuntime('acknowledge-attempt', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(1)
+    const first = useSubagentTaskStore.getState().tasks[receipt.agentId]
+    await runtime.acknowledge({ agentId: receipt.agentId, executionId: first.executionId! })
+    expect(hoisted.repo.acknowledge).toHaveBeenCalledWith('acknowledge-attempt', receipt.agentId, first.executionId)
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId]).toMatchObject({ acknowledged: true, deliveryPhase: 'pending', status: 'completed' })
+    expect(hoisted.repo.suppressAgent).not.toHaveBeenCalled()
+    hoisted.setRunImpl(() => new Promise<Message[]>(() => {}))
+    await runtime.resume({ agentId: receipt.agentId, prompt: 'try again' })
+    await vi.advanceTimersByTimeAsync(1)
+    await runtime.acknowledge({ agentId: receipt.agentId, executionId: first.executionId! })
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].acknowledged).not.toBe(true)
+    expect(hoisted.repo.acknowledge).toHaveBeenCalledTimes(1)
   })
 
   it('batch accepts valid members independently while enforcing the batch limit', async () => {

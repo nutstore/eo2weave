@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToolCallDisplay } from '../ToolCallDisplay'
+import { useSubagentTaskStore } from '@/store/subagent-task.store'
 import type { ToolCall } from '@/agent/message-types'
 
 vi.mock('@/i18n', () => ({
@@ -19,6 +20,8 @@ vi.mock('../SubagentDetailPanel', () => ({
     <div data-testid="subagent-detail">{agentId}:{conversationId}</div>
   ),
 }))
+
+beforeEach(() => useSubagentTaskStore.setState({ tasks: {} }))
 
 describe('ToolCallDisplay', () => {
   it('renders explicit run_code output images and retains text on script failure', () => {
@@ -119,6 +122,8 @@ describe('ToolCallDisplay', () => {
 
     fireEvent.click(screen.getByRole('button'))
 
+    expect(screen.queryByTestId('subagent-detail')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /conversation.backgroundTasks.details/ }))
     expect(await screen.findByTestId('subagent-detail')).toHaveTextContent('subagent-1:conversation-1')
   })
 
@@ -139,9 +144,36 @@ describe('ToolCallDisplay', () => {
 
     fireEvent.click(screen.getByRole('button'))
 
+    fireEvent.click(screen.getByRole('button', { name: /conversation.backgroundTasks.details/ }))
     expect(await screen.findByTestId('subagent-detail')).toHaveTextContent(
       'subagent-failed-1:conversation-2'
     )
+  })
+
+  it('shows accepted async work as submitted and keeps every trace closed initially', async () => {
+    const toolCall: ToolCall = { id: 'accepted', type: 'function', function: { name: 'batch_spawn', arguments: '{}' } }
+    const result = JSON.stringify({ ok: true, data: { accepted: [{ agentId: 'new-child', description: 'Inspect docs', status: 'pending' }], rejected: [] } })
+    const { container } = render(<ToolCallDisplay toolCall={toolCall} result={result} conversationId="original" />)
+    expect(container.querySelector('svg.text-green-500')).toBeNull()
+    expect(screen.getByText('conversation.backgroundTasks.submitted')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.queryByTestId('subagent-detail')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /conversation.backgroundTasks.details/ }))
+    expect(await screen.findByTestId('subagent-detail')).toHaveTextContent('new-child:original')
+  })
+
+  it('updates accepted receipts from the independent task projection after the parent stops', () => {
+    const toolCall: ToolCall = { id: 'async-card', type: 'function', function: { name: 'spawn_subagent', arguments: '{}' } }
+    render(<ToolCallDisplay toolCall={toolCall} result={JSON.stringify({ data: { agentId: 'async-child', status: 'pending' } })} conversationId="original" />)
+    expect(screen.getByText('conversation.backgroundTasks.submitted')).toBeInTheDocument()
+    const task = { agentId: 'async-child', conversationId: 'original', description: 'Inspect documents', role: 'worker' as const, status: 'running' as const, createdAt: 1, updatedAt: 2, lastActivity: 2, isAsync: true, executionId: 'one', messages: [] }
+    act(() => useSubagentTaskStore.getState().publish(task))
+    expect(screen.getByText('conversation.backgroundTasks.running')).toBeInTheDocument()
+    act(() => useSubagentTaskStore.getState().publish({ ...task, status: 'completed', deliveryPhase: 'handled' }))
+    expect(screen.getByText('conversation.backgroundTasks.completed')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.getByText('Inspect documents')).toBeInTheDocument()
+    expect(screen.queryByTestId('subagent-detail')).toBeNull()
   })
 
   // ─── Failure-badge regression coverage ───────────────────────

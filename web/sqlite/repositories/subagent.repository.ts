@@ -80,6 +80,16 @@ export class SubagentRepository {
     return rows.map((row) => this.rowToTask(row))
   }
 
+  /** Acknowledge a single attempt without changing execution or result delivery. */
+  async acknowledge(workspaceId: string, agentId: string, executionId: string): Promise<void> {
+    const db = getSQLiteDB()
+    await db.execute(
+      `UPDATE subagent_tasks SET execution_json = json_set(execution_json, '$.acknowledged', json('true'))
+       WHERE workspace_id = ? AND agent_id = ? AND json_extract(execution_json, '$.executionId') = ?`,
+      [workspaceId, agentId, executionId]
+    )
+  }
+
   async getStatus(workspaceId: string, agentId: string): Promise<SubagentTaskStatus | null> {
     const db = getSQLiteDB()
     const row = await db.queryFirst<{ status: string }>(
@@ -220,7 +230,11 @@ export async function saveSubagentTask(tx: SQLiteTransaction, workspaceId: strin
        created_at = excluded.created_at,
        updated_at = excluded.updated_at,
        last_activity_at = excluded.last_activity_at,
-       execution_json = excluded.execution_json
+       execution_json = CASE
+         WHEN json_extract(subagent_tasks.execution_json, '$.executionId') = json_extract(excluded.execution_json, '$.executionId')
+           AND json_extract(subagent_tasks.execution_json, '$.acknowledged') = 1
+         THEN json_set(excluded.execution_json, '$.acknowledged', json('true'))
+         ELSE excluded.execution_json END
      WHERE excluded.updated_at >= subagent_tasks.updated_at`,
     [
       task.agentId,

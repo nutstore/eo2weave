@@ -27,6 +27,7 @@ export interface SubagentExecutionMetadata {
   conversationId: string
   continuation?: SubagentContinuation
   suppressed: boolean
+  acknowledged?: boolean
   changedPaths: string[]
 }
 

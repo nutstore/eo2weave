@@ -18,6 +18,7 @@ function parseJson(result: string): Record<string, unknown> {
 
 function createMockRuntime(): SubagentRuntime {
   return {
+    acknowledge: vi.fn().mockResolvedValue(undefined),
     start: vi.fn().mockResolvedValue({ agentId: 'subagent_1', status: 'pending', description: 'task' }),
     batchStart: vi.fn().mockResolvedValue({ accepted: [{ task_index: 0, agentId: 'subagent_1', status: 'pending', description: 't1' }], rejected: [] }),
     wait: vi.fn().mockResolvedValue({ results: [], pending: ['subagent_1'], timed_out: true }),

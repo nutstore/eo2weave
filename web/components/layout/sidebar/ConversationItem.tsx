@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import Link from 'next/link'
+import { useSubagentTaskStore, selectBackgroundSubagentCount } from '@/store/subagent-task.store'
 import {
   Plus,
   Trash2,
@@ -129,6 +130,7 @@ export const ConversationItem = memo(function ConversationItem({
   workspaceLabel,
   t,
 }: ConversationItemProps) {
+  const backgroundCount = useSubagentTaskStore(selectBackgroundSubagentCount(id))
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -163,6 +165,12 @@ export const ConversationItem = memo(function ConversationItem({
           {/* Running status indicator */}
           {isRunning && (
             <span role="status" aria-label={t('sidebar.running')} className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-warning" />
+          )}
+
+          {!isRunning && backgroundCount > 0 && (
+            <span className="shrink-0 text-[10px] tabular-nums text-neutral-500 dark:text-neutral-400"
+              aria-label={t('conversation.backgroundTasks.summary', { count: backgroundCount })}
+              title={t('conversation.backgroundTasks.summary', { count: backgroundCount })}>↳ {backgroundCount}</span>
           )}
 
           {/* Action buttons - visible on hover */}

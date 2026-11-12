@@ -13,7 +13,9 @@ import { isCodeRunResult } from '@creatorweave/shared/code-output'
  * which calls registerRenderer() at module load time.
  */
 
-import { useState, memo, lazy, Suspense } from 'react'
+import { useId, useState, memo, lazy, Suspense } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { selectSubagentTasks, selectSubagentTask, useSubagentTaskStore } from '@/store/subagent-task.store'
 import { ChevronDown, ChevronRight, Wrench, CheckCircle2, XCircle, Loader2, Bot } from 'lucide-react'
 import { parse as bestEffortParse } from 'best-effort-json-parser'
 import type { ToolCall } from '@/agent/message-types'
@@ -80,45 +82,8 @@ interface ToolCallDisplayProps {
 const SUBAGENT_TOOLS = new Set(['spawn_subagent', 'batch_spawn'])
 
 function SubagentStatusBadge({ status }: { status: string }) {
-  const base = 'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium'
-  switch (status) {
-    case 'running':
-      return <span className={`${base} bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300`}>running</span>
-    case 'completed':
-      return <span className={`${base} bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300`}>completed</span>
-    case 'failed':
-      return <span className={`${base} bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300`}>failed</span>
-    case 'killed':
-      return <span className={`${base} bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300`}>killed</span>
-    default:
-      return <span className={`${base} bg-neutral-100 text-neutral-600 dark:bg-neutral-700 text-neutral-300 text-neutral-300 dark:text-neutral-300`}>{status}</span>
-  }
-}
-
-function SubagentProgressSection({ events }: { events: SubagentEvent[] }) {
-  if (events.length === 0) return null
-  const latestByAgent = new Map<string, SubagentEvent>()
-  for (const ev of events) {
-    latestByAgent.set(ev.agentId, ev)
-  }
-  const uniqueEvents = Array.from(latestByAgent.values())
-  return (
-    <div className="mb-2 rounded border border-neutral-200 bg-white p-2 dark:border-neutral-600 dark:bg-neutral-850">
-      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-neutral-500 text-neutral-400 text-neutral-400 dark:text-neutral-400">
-        <Bot className="h-3 w-3" />
-        <span>SubAgent</span>
-      </div>
-      <div className="space-y-1">
-        {uniqueEvents.map((ev) => (
-          <div key={ev.agentId} className="flex items-center gap-2 text-xs">
-            <SubagentStatusBadge status={ev.status} />
-            {ev.status === 'running' && <Loader2 className="h-3 w-3 animate-spin text-blue-500" />}
-            <span className="truncate text-neutral-600 text-neutral-300 text-neutral-300 dark:text-neutral-300">{ev.summary}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
+  const t = useT()
+  return <span className={`shrink-0 text-[11px] ${status === 'failed' || status === 'killed' || status === 'rejected' ? 'text-red-600 dark:text-red-400' : 'text-neutral-500 dark:text-neutral-400'}`}>{t(`conversation.backgroundTasks.${status}`)}</span>
 }
 
 function extractSubagentDescription(parsedArgs: Record<string, unknown>): string | undefined {
@@ -140,7 +105,7 @@ function getSubagentTitle(toolName: string, parsedArgs: Record<string, unknown>)
   }
 }
 
-function parseSpawnResult(result: string | undefined): { content?: string; agentId?: string; usage?: { total_tokens?: number; duration_ms?: number } } | null {
+function parseSpawnResult(result: string | undefined): { content?: string; agentId?: string; status?: string; usage?: { total_tokens?: number; duration_ms?: number } } | null {
   if (!result) return null
   try {
     const parsed = JSON.parse(result) as Record<string, unknown>
@@ -148,6 +113,7 @@ function parseSpawnResult(result: string | undefined): { content?: string; agent
     return {
       content: typeof data.content === 'string' ? data.content : undefined,
       agentId: typeof data.agentId === 'string' ? data.agentId : undefined,
+      status: typeof data.status === 'string' ? data.status : undefined,
       usage: data.usage as { total_tokens?: number; duration_ms?: number } | undefined,
     }
   } catch {
@@ -227,24 +193,9 @@ function StatusIcon({ ctx, executingText }: { ctx: ToolRenderCtx; executingText?
 export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisplayProps) {
   const t = useT()
   const { toolCall, result, subagentEvents, conversationId } = props
-  // Auto-expand spawn_subagent / batch_spawn while executing so users can
-  // see the live subagent step details without manual interaction.
-  // Also keep expanded after a cancel-induced synthetic [Interrupted] result
-  // because the subagent may still be running in the background.
-  const isSubagentTool = toolCall.function.name === 'spawn_subagent' || toolCall.function.name === 'batch_spawn'
-  const isInterruptedResult = (() => {
-    if (!result) return false
-    try {
-      const parsed = JSON.parse(result) as Record<string, unknown>
-      const data = (parsed.data ?? parsed) as Record<string, unknown>
-      return data?.interrupted === true
-    } catch { return false }
-  })()
-
   const ctx = buildCtx(props)
   const toolName = toolCall.function.name
   const [expanded, setExpanded] = useState(
-    (isSubagentTool && (!result || isInterruptedResult)) ||
     toolName === 'page_screenshot' ||
     toolName === 'read_image'
   )
@@ -302,6 +253,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
     return (
       <SubagentCard
         ctx={ctx}
+        toolCallId={toolCall.id}
         expanded={expanded}
         onToggle={() => setExpanded(!expanded)}
         subagentEvents={subagentEvents}
@@ -348,10 +300,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
 
   // ── 5. Fallback: generic JSON card (original behavior) ──
   return (
-    <div className="my-1 rounded border border-neutral-200 bg-neutral-50 text-sm dark:border-neutral-700 dark:bg-neutral-800">
+    <div className="my-1 min-w-0 overflow-hidden rounded border border-neutral-200 bg-neutral-50 text-sm dark:border-neutral-700 dark:bg-neutral-800">
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-neutral-700"
+        className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 dark:hover:bg-neutral-700"
         onClick={() => setExpanded(!expanded)}
       >
         {expanded ? (
@@ -401,7 +353,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
   )
 })
 
-// ─── Subagent card (extracted from original, unchanged logic) ──
+// ─── Subagent card with individual execution disclosure ──────
 
 // Lazy load SubagentDetailPanel to avoid circular dependency
 // (SubagentDetailPanel imports ToolCallDisplay, which imports SubagentDetailPanel)
@@ -409,8 +361,33 @@ const SubagentDetailPanel = lazy(() =>
   import('./SubagentDetailPanel').then((m) => ({ default: m.SubagentDetailPanel }))
 )
 
+function SubagentHistoryRow({ agentId, conversationId, name, status }: { agentId: string; conversationId?: string; name?: string; status?: string }) {
+  const t = useT()
+  const task = useSubagentTaskStore(selectSubagentTask(agentId))
+  const [expanded, setExpanded] = useState(false)
+  const detailId = useId()
+  const label = task?.name || task?.description || name || agentId
+  return <div className="min-w-0">
+    <button type="button" aria-expanded={expanded} aria-controls={detailId}
+      aria-label={`${t('conversation.backgroundTasks.details')}: ${label}`}
+      className="flex w-full min-w-0 items-center gap-2 rounded py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+      onClick={() => setExpanded(!expanded)}>
+      {expanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+      <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
+      {(task?.status || status) && <SubagentStatusBadge status={task?.status || status!} />}
+    </button>
+    {expanded && <div id={detailId} className="min-w-0 overflow-x-hidden">
+      <Suspense fallback={<div className="py-2 text-xs text-neutral-400">{t('common.loading')}</div>}>
+        <SubagentDetailPanel agentId={agentId} conversationId={conversationId} />
+        {task?.error && <p className="break-words py-1 text-xs text-red-600 dark:text-red-400">{task.error.message}</p>}
+      </Suspense>
+    </div>}
+  </div>
+}
+
 function SubagentCard({
   ctx,
+  toolCallId,
   expanded,
   onToggle,
   subagentEvents,
@@ -418,6 +395,7 @@ function SubagentCard({
   t,
 }: {
   ctx: ToolRenderCtx
+  toolCallId: string
   expanded: boolean
   onToggle: () => void
   subagentEvents?: SubagentEvent[]
@@ -427,13 +405,48 @@ function SubagentCard({
   const subagentDesc = extractSubagentDescription(ctx.args)
   const subagentTitle = getSubagentTitle(ctx.toolName, ctx.args)
   const spawnResult = parseSpawnResult(ctx.rawResult)
+  const projected = useSubagentTaskStore(useShallow(selectSubagentTasks(conversationId ?? '')))
+  const resultTasks: Array<{ agentId: string; name?: string; status?: string }> = []
+  const rejected: Array<{ task_index?: number; reason: string }> = []
+  let submitted = spawnResult?.status === 'pending' || spawnResult?.status === 'running'
+  if (spawnResult?.agentId) resultTasks.push({ agentId: spawnResult.agentId, status: submitted ? 'submitted' : undefined })
+  if (ctx.rawResult) {
+    try {
+      const parsed = JSON.parse(ctx.rawResult) as Record<string, unknown>
+      const data = (parsed.data ?? parsed) as Record<string, unknown>
+      if (Array.isArray(data.accepted)) submitted = data.accepted.length > 0
+      for (const [group, status] of [[data.accepted, 'submitted'], [data.completed, 'completed'], [data.failed, 'failed']] as const) {
+        if (!Array.isArray(group)) continue
+        for (const item of group as Array<{ agentId?: string; name?: string; description?: string }>) {
+          if (item.agentId) resultTasks.push({ agentId: item.agentId, name: item.name || item.description, status })
+        }
+      }
+      if (Array.isArray(data.rejected)) rejected.push(...data.rejected as typeof rejected)
+    } catch { /* Legacy text results have no task receipts. */ }
+  }
+  const agentIds = Array.from(new Set([
+    ...(subagentEvents ?? []).map(event => event.agentId),
+    ...resultTasks.map(task => task.agentId),
+    ...projected.filter(task => task.parentToolCallId === toolCallId).map(task => task.agentId),
+  ]))
+  const tasks = projected.filter(task => agentIds.includes(task.agentId))
+  const status = tasks.some(task => task.status === 'running') ? 'running'
+    : tasks.some(task => task.status === 'pending') ? 'pending'
+    : tasks.some(task => task.status === 'failed' || task.status === 'killed') ? 'failed'
+    : tasks.length > 0 && tasks.length === agentIds.length ? 'completed'
+    : submitted ? 'submitted'
+    : rejected.length > 0 ? 'rejected'
+    : resultTasks.some(task => task.status === 'failed') ? 'failed' : undefined
+  const detailsId = useId()
 
   return (
-    <div className="my-1 rounded border border-neutral-200 bg-neutral-50 text-sm dark:border-neutral-700 dark:bg-neutral-800">
+    <div className="my-1 min-w-0 overflow-hidden rounded border border-neutral-200 bg-neutral-50 text-sm dark:border-neutral-700 dark:bg-neutral-800">
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-neutral-700"
+        className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 dark:hover:bg-neutral-700"
         onClick={onToggle}
+        aria-expanded={expanded}
+        aria-controls={detailsId}
       >
         {expanded ? (
           <ChevronDown className="h-3.5 w-3.5 text-neutral-400" />
@@ -441,67 +454,22 @@ function SubagentCard({
           <ChevronRight className="h-3.5 w-3.5 text-neutral-400" />
         )}
         <Bot className="h-3.5 w-3.5 text-violet-500" />
-        <span className="font-medium text-neutral-700 dark:text-foreground">{subagentTitle}</span>
+        <span className="shrink-0 font-medium text-neutral-700 dark:text-foreground">{subagentTitle}</span>
         {subagentDesc && (
           <span className="truncate text-neutral-400 text-neutral-500 text-neutral-500 dark:text-neutral-500">&quot;{subagentDesc}&quot;</span>
         )}
-        <span className="ml-auto">
-          <StatusIcon ctx={ctx} executingText={t('toolCallDisplay.executing')} />
+        <span className="ml-auto shrink-0">
+          {status ? <SubagentStatusBadge status={status} /> : <StatusIcon ctx={ctx} executingText={t('toolCallDisplay.executing')} />}
         </span>
       </button>
 
       {expanded && (
-        <div className="border-t border-neutral-200 px-3 py-2 dark:border-neutral-700">
-          {subagentEvents && subagentEvents.length > 0 ? (
-            <SubagentProgressSection events={subagentEvents} />
-          ) : (
-            /* When subagentEvents is missing (committed message after cancel),
-               show an interrupted status badge if the result indicates interruption. */
-            ctx.isError && spawnResult?.agentId && (
-              <div className="mb-2 flex items-center gap-2 text-xs text-neutral-500">
-                <SubagentStatusBadge status="killed" />
-                <span className="text-neutral-400">已中断（用户取消运行）</span>
-              </div>
-            )
-          )}
-          {/* Render detailed step panels for each subagent.
-              During the run, agentIds come from subagentEvents (live status updates).
-              After the run completes, subagentEvents is gone (draftAssistant cleared),
-              so we fall back to parsing agentIds from the committed tool result. */}
-          {(() => {
-            const liveAgentIds = subagentEvents
-              ? Array.from(new Set(subagentEvents.map((e) => e.agentId)))
-              : []
-            // Fallback: extract agentId(s) from the spawn result JSON.
-            // spawn_subagent → { agentId: "..." }
-            // batch_spawn   → { completed: [{ agentId: "..." }, ...] }
-            const resultAgentIds: string[] = []
-            if (spawnResult?.agentId) {
-              resultAgentIds.push(spawnResult.agentId)
-            }
-            // Also check for batch_spawn completed array
-            if (ctx.rawResult) {
-              try {
-                const parsed = JSON.parse(ctx.rawResult) as Record<string, unknown>
-                const data = (parsed.data ?? parsed) as Record<string, unknown>
-                for (const batchResult of [data.completed, data.failed]) {
-                  if (Array.isArray(batchResult)) {
-                    for (const item of batchResult) {
-                      const aid = (item as Record<string, unknown>)?.agentId
-                      if (typeof aid === 'string') resultAgentIds.push(aid)
-                    }
-                  }
-                }
-              } catch { /* non-JSON result, skip */ }
-            }
-            const allAgentIds = Array.from(new Set([...liveAgentIds, ...resultAgentIds]))
-            if (allAgentIds.length === 0) return null
-            return allAgentIds.map((agentId) => (
-              <Suspense key={agentId} fallback={<div className="py-2 text-xs text-neutral-400">{t('common.loading')}</div>}>
-                <SubagentDetailPanel agentId={agentId} conversationId={conversationId} />
-              </Suspense>
-            ))
-          })()}
+        <div id={detailsId} className="min-w-0 border-t border-neutral-200 px-3 py-2 dark:border-neutral-700">
+          {agentIds.map(agentId => <SubagentHistoryRow key={agentId} agentId={agentId} conversationId={conversationId}
+            name={resultTasks.find(task => task.agentId === agentId)?.name} status={resultTasks.find(task => task.agentId === agentId)?.status} />)}
+          {rejected.map((item, index) => <p key={item.task_index ?? index} className="break-words py-1 text-xs text-red-600 dark:text-red-400">
+            {t('conversation.backgroundTasks.rejected')}: {item.reason}
+          </p>)}
         </div>
       )}
 
