@@ -1,4 +1,19 @@
-/** One origin-wide commit lock for gateway login, refresh and credential repair. */
+/**
+ * One origin-wide commit lock for gateway login, refresh and credential repair.
+ *
+ * Resolve/refresh credentials and prepare commit data before taking this lock.
+ * Inside a commit, use the resolved data and local reads; never await or return
+ * another acquisition of this same non-reentrant Web Lock. This also applies to
+ * auth/provider helpers that acquire it internally. Name commit operations
+ * `*Locked` so their boundary remains visible during review and static checks.
+ *
+ * Deliberately queued work (`void withGatewayCredentialLock(...).catch(...)`)
+ * may run after the current commit releases the lock, including token backups.
+ * Nested requests must use this explicit void form; do not save or combine their
+ * promises inside a commit.
+ * The local ESLint rule catches a finite set of direct entry points. It is not
+ * a universal runtime detector: indirect helper calls still require review.
+ */
 export const GATEWAY_CREDENTIAL_LOCK = 'eo2weave-gateway-credential-commit'
 
 interface GatewayWebLocks {

@@ -92,7 +92,8 @@ export interface GatewayLoginResult {
 export interface GatewayLoginApplyOptions {
   signal?: AbortSignal
   /**
-   * Synchronous token-pair commit, called only after every cancellable step.
+   * Synchronous token-pair commit with prepared data, called after every cancellable
+   * step. Must not resolve credentials or return another credential-lock acquisition.
    */
   onCommit?: () => void
   /**
@@ -168,7 +169,7 @@ async function applyGatewayLoginTokensInner(
   // (The logout-supersedes guard below compares against `attemptStartedAt`,
   // captured BEFORE the device-code approval / model preparation waits —
   // see the comment at the top of this function.)
-  return withGatewayCredentialLock(async () => {
+  return withGatewayCredentialLock(async function commitGatewayLoginLocked() {
     signal?.throwIfAborted()
     // Logout-supersedes-pending-login: if the user logged out (any tab)
     // while this attempt was pending — device-code approval or model

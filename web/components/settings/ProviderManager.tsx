@@ -1573,7 +1573,7 @@ export function LLMGatewayCard({
       // access-token shadow under this lock, so its commit orders BEFORE our
       // in-lock re-read and we keep its verdict instead of overwriting it
       // with our confirmation.
-      await withGatewayCredentialLock(async () => {
+      await withGatewayCredentialLock(async function commitGatewayLoginCardLocked() {
         // The shared credential is the token pair alone (#277): `clearStoredTokens`
         // clears it under this same lock, which is what orders a concurrent
         // logout against this commit. The api-key shadow used to be an extra
@@ -1707,7 +1707,7 @@ export function LLMGatewayCard({
     // commits and what a logout purges, in every tab. An empty token cache
     // cannot come from a concurrent login (its commit repopulates it inside
     // this lock); clearing our own logged-out UI remains correct for it.
-    await withGatewayCredentialLock(async () => {
+    await withGatewayCredentialLock(async function commitGatewayLogoutCardLocked() {
       // Same ordering as the login guard: the token pair is the shared
       // credential state a concurrent login commits and a logout purges.
       const concurrentLoginAlive = hasStoredTokens()
