@@ -77,9 +77,6 @@ export const workflowEditor = {
     updateFailed: "ワークフローの更新に失敗しました",
     deleteFailed: "ワークフローの削除に失敗しました",
     importFailed: "ワークフローのインポートに失敗しました",
-    toast: {
-        apiKeyRequired: "先に設定で API キーを構成してください",
-    },
 } as const
 
 export const customWorkflowManager = {
