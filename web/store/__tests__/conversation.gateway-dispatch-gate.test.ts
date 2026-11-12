@@ -62,7 +62,7 @@ const mockSettingsState = vi.hoisted(() => ({
   modelName: 'gateway-model',
   maxIterations: 20,
   customProviders: [],
-  getEffectiveProviderConfig: vi.fn(() => ({
+  getEffectiveProviderConfig: vi.fn((_providerTypeOverride?: string) => ({
     apiKeyProviderKey: '__llm_gateway_token__',
     baseUrl: 'https://ai.jianguoyun.com/v1',
     modelName: 'gateway-model',
@@ -468,22 +468,25 @@ describe('llm-gateway dispatch credential gate (issue #172)', () => {
 
 // These exercise the actual store dispatch, including Promise<void> early exits.
 describe('subagent notification owning-run receipts', () => {
-  async function setupNotification() {
+  async function setupNotification(isBusy: (id: string) => boolean = () => false) {
     const { CompletionDeliveryCoordinator } = await import('@/agent/subagent/completion-delivery')
     const bridge = await import('@/store/subagent-continuation')
     const row = { id: 'child:attempt', agentId: 'child', executionId: 'attempt', conversationId: '', notificationMessageId: 'notice', deliveryReserved: true, status: 'delivered', taskStatus: 'completed', description: 'Research', result: 'done', messages: [], changedPaths: [], createdAt: 1, updatedAt: 1 } as import('@/agent/subagent/async-types').SubagentCompletion
+    let readyRow: typeof row | undefined
     const claim = vi.fn(async (_id: string, runId: string) => { row.status = 'processing'; row.parentRunId = runId; return true })
     const handled = vi.fn(async (_id: string, runId?: string) => { if (row.status !== 'processing' || row.parentRunId !== runId) return false; row.status = 'handled'; return true })
+    const dispatch = vi.fn(async () => {})
     const coordinator = new CompletionDeliveryCoordinator({ repository: {
-      listRecoverable: async () => ['delivered', 'error'].includes(row.status) ? [row] : [], listProcessing: async () => row.status === 'processing' ? [row] : [], reserveDelivery: async () => [],
-      claim, markHandled: handled, markDelivered: async () => { row.status = 'delivered'; return true }, markError: async () => { row.status = 'error'; return true }, markBlocked: async () => { row.status = 'blocked'; return true }, suppress: async () => { row.status = 'suppressed'; return true },
-    }, isBusy: () => false, validateOrigin: async () => true, appendNotification: async () => true, dispatch: async () => {}, withLock: async (_key, fn) => fn(), onError: vi.fn() })
+      listRecoverable: async () => [row, ...(readyRow ? [readyRow] : [])].filter(item => ['pending', 'delivered', 'blocked', 'error'].includes(item.status)),
+      listProcessing: async () => row.status === 'processing' ? [row] : [], reserveDelivery: async () => [],
+      claim, markHandled: handled, markDelivered: async (id) => { (id === row.id ? row : readyRow!).status = 'delivered'; return true }, markError: async () => { row.status = 'error'; return true }, markBlocked: async () => { row.status = 'blocked'; return true }, suppress: async () => { row.status = 'suppressed'; return true },
+    }, isBusy, validateOrigin: async () => true, appendNotification: async () => true, dispatch, withLock: async (_key, fn) => fn(), onError: vi.fn() })
     const spy = vi.spyOn(bridge, 'getSubagentContinuation').mockReturnValue(coordinator)
     const store = useConversationStore.getState()
     const conv = store.createNew('notification')
     row.conversationId = conv.id
     store.addMessage(conv.id, { id: 'notice', role: 'user', content: 'Child done', timestamp: 1, subagentCompletion: { eventIds: [row.id] } })
-    return { row, claim, handled, spy, conv, store, coordinator }
+    return { row, claim, handled, spy, conv, store, coordinator, dispatch, queueReady: () => { readyRow = { ...row, id: 'next:attempt', agentId: 'next', notificationMessageId: 'next-notice', status: 'pending', continuation: { parentRunId: 'origin', providerType: 'llm-gateway', modelName: 'gateway-model', maxTokens: 1024 } } } }
   }
 
   it('reloads complete offscreen history before idempotent notification acceptance', async () => {
@@ -549,20 +552,34 @@ describe('subagent notification owning-run receipts', () => {
     } finally { f.spy.mockRestore() }
   })
 
-  it('keeps dispatch busy while successful finalization awaits follow-up generation', async () => {
-    const f = await setupNotification()
+  it('joins fire-and-forget onComplete finalization before releasing dispatch or acknowledging input', async () => {
+    const { isConversationDispatchBusy } = await import('@/store/conversation-agent-run')
+    const f = await setupNotification(isConversationDispatchBusy)
     try {
       resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
       const { generateFollowUp } = await import('@/agent/follow-up-generator')
       let release!: (text: string) => void
       vi.mocked(generateFollowUp).mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+      loopRunMock.mockImplementationOnce(async (_messages, callbacks) => {
+        void callbacks.onComplete([])
+        return []
+      })
+      const loopCount = loopRunMock.mock.calls.length
+      let settled = false
       const run = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      void run.then(() => { settled = true })
       await vi.waitFor(() => expect(release).toBeDefined())
-      const { isConversationDispatchBusy } = await import('@/store/conversation-agent-run')
       expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.status).toBe('idle')
       expect(isConversationDispatchBusy(f.conv.id)).toBe(true)
+      expect(settled).toBe(false)
+      expect(f.handled).not.toHaveBeenCalled()
+      f.queueReady(); await f.coordinator.flush(f.conv.id)
+      expect(f.dispatch).not.toHaveBeenCalled()
+      expect(loopRunMock.mock.calls.length).toBe(loopCount + 1)
       release(''); await run
       expect(isConversationDispatchBusy(f.conv.id)).toBe(false)
+      await f.coordinator.flush(f.conv.id)
+      expect(f.dispatch).toHaveBeenCalledTimes(1)
     } finally { f.spy.mockRestore() }
   })
 
@@ -609,6 +626,37 @@ describe('subagent notification owning-run receipts', () => {
       await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
       failOld(new Error('Late stopped provider failure')); await oldRun
       expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.status).toBe('idle')
+    } finally { f.spy.mockRestore() }
+  })
+
+  it('keeps a saved provider and model when global settings change before automatic continuation', async () => {
+    const f = await setupNotification()
+    const previousConfig = mockSettingsState.getEffectiveProviderConfig.getMockImplementation()!
+    const previousProvider = mockSettingsState.providerType, previousModel = mockSettingsState.modelName
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      mockSettingsState.providerType = 'openai'; mockSettingsState.modelName = 'new-model'
+      mockSettingsState.getEffectiveProviderConfig.mockImplementation((override) => override === 'llm-gateway'
+        ? { apiKeyProviderKey: '__llm_gateway_token__', baseUrl: 'https://original.example/v1', modelName: 'gateway-default' }
+        : { apiKeyProviderKey: 'openai', baseUrl: 'https://new.example/v1', modelName: 'new-model' })
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'saved-model', 1024, null, null, { background: true, subagentContinuation: true })
+      expect(createLLMProviderMock).toHaveBeenLastCalledWith(expect.objectContaining({ providerType: 'llm-gateway', model: 'saved-model', baseUrl: 'https://original.example/v1', apiKey: 'validated-token' }))
+      expect(mockSettingsState.getEffectiveProviderConfig).toHaveBeenCalledWith('llm-gateway')
+    } finally {
+      mockSettingsState.providerType = previousProvider; mockSettingsState.modelName = previousModel
+      mockSettingsState.getEffectiveProviderConfig.mockImplementation(previousConfig); f.spy.mockRestore()
+    }
+  })
+
+  it('settles a claimed missing-key failure and accepts immediate explicit retry without reload', async () => {
+    const f = await setupNotification()
+    try {
+      f.row.continuation = { parentRunId: 'origin', providerType: 'openai', modelName: 'saved-model', maxTokens: 1024 }
+      loadCredentialMock.mockResolvedValue(null)
+      await f.store.runAgent(f.conv.id, 'openai', 'saved-model', 1024, null, null, { background: true, subagentContinuation: true })
+      expect(f.claim).toHaveBeenCalledTimes(1); expect(f.row.status).toBe('error')
+      await f.coordinator.retry(f.conv.id)
+      expect(f.dispatch).toHaveBeenCalledTimes(1); expect(f.row.status).toBe('delivered')
     } finally { f.spy.mockRestore() }
   })
 

@@ -209,7 +209,12 @@ async function runAgentBody(
       }
       let owningRunId: string | undefined
       let owningRunEpoch: number | undefined
+      let continuationFailure: Promise<void> | undefined
+      const failContinuation = (message: string) => {
+        if (owningRunId) continuationFailure ??= getSubagentContinuation().finishRun(conversationId, owningRunId, 'error', message).catch(console.error)
+      }
       const failDispatchEarly = (message: string) => {
+        failContinuation(message)
         drainStaleRerunTriggers()
         set((state) => {
           const c = state.conversations.find((c) => c.id === conversationId)
@@ -708,7 +713,7 @@ async function runAgentBody(
         let continuationOutcome: 'success' | 'error' = 'success'
 
         const failRunEarly = (message: string) => {
-          void getSubagentContinuation().finishRun(conversationId, runId, 'error', message).catch(console.error)
+          failContinuation(message)
           if (!isCurrentRun()) return
           set((state) => {
             const c = state.conversations.find((c) => c.id === conversationId)
@@ -877,10 +882,13 @@ async function runAgentBody(
 
         const apiKeyRepo = getApiKeyRepository()
         const settingsState = useSettingsStore.getState()
-        const effectiveConfig = settingsState.getEffectiveProviderConfig()
+        const effectiveConfig = settingsState.getEffectiveProviderConfig(providerType)
         const providerConfig =
           isCustomProviderType(providerType)
-            ? effectiveConfig
+            ? effectiveConfig && {
+                ...effectiveConfig,
+                modelName: options?.subagentContinuation ? modelName || effectiveConfig.modelName : effectiveConfig.modelName,
+              }
             : {
                 apiKeyProviderKey: providerType,
                 baseUrl: LLM_PROVIDER_CONFIGS[providerType].baseURL,
@@ -1379,7 +1387,8 @@ async function runAgentBody(
 
         const currentMessages = get().conversations.find(c => c.id === conversationId)?.messages ?? conv.messages
 
-        const finalizeRun = async (
+        let finalizationPromise: Promise<void> | undefined
+        const finalizeRunOnce = async (
           status: ConversationStatus,
           finalMessages?: Message[],
           error?: string
@@ -1598,6 +1607,13 @@ async function runAgentBody(
             }
             // Clean up cancelled run ID tracking (moved inside set() above)
           }
+        }
+
+        // AgentLoop invokes onComplete without awaiting its async callback.
+        // The fallback caller must join the same finalization before releasing ownership.
+        const finalizeRun = (...args: Parameters<typeof finalizeRunOnce>): Promise<void> => {
+          finalizationPromise ??= finalizeRunOnce(...args)
+          return finalizationPromise
         }
 
         // Reasoning streaming queue
@@ -2325,7 +2341,7 @@ async function runAgentBody(
             // the user sees "what this run changed". onComplete runs right after
             // onLoopComplete (where auto-apply set runApplyResult), and is the
             // first/effective finalize point — the later finalizeRun call after
-            // agentLoop.run resolves is short-circuited by the `committed` guard.
+            // agentLoop.run resolves joins the same finalization promise.
             if (runApplyResult) {
               latestMessages = [...latestMessages, createRunChangesMessage(runApplyResult.snapshotId)]
             }
@@ -2337,7 +2353,7 @@ async function runAgentBody(
           onError: (err: Error) => {
             if (!isCurrentRun()) return
             continuationOutcome = 'error'
-            void getSubagentContinuation().finishRun(conversationId, runId, 'error', err.message).catch(console.error)
+            failContinuation(err.message)
             console.error('[#LoopStop] store_onError', {
               conversationId,
               runId,
@@ -2381,7 +2397,7 @@ async function runAgentBody(
           onIterationLimitReached: (limit: number) => {
             if (!isCurrentRun()) return
             continuationOutcome = 'error'
-            void getSubagentContinuation().finishRun(conversationId, runId, 'error', 'Iteration limit reached').catch(console.error)
+            failContinuation('Iteration limit reached')
             console.info('[#LoopStop] iteration_limit_reached', {
               conversationId,
               runId,
@@ -2587,6 +2603,9 @@ async function runAgentBody(
             })
           }
         } // end else (non-AbortError path — errors do NOT consume queue)
+      } finally {
+        // Early configuration/auth exits and loop callbacks share the owning receipt.
+        await continuationFailure
       }
 
       // ── Consume queued messages ──
