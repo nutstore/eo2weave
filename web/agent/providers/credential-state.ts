@@ -388,3 +388,10 @@ export class CredentialRegistry {
 
 /** The app-wide registry. Providers register their resolvers at module init. */
 export const credentialRegistry = new CredentialRegistry()
+
+/** A selected provider with no definitive verdict can still resolve at dispatch. */
+export function isCredentialPending(providerKey: string | null | undefined): boolean {
+  if (!providerKey) return false
+  const { kind } = credentialRegistry.getState(providerKey)
+  return kind === 'unknown' || kind === 'temporary'
+}

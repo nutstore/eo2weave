@@ -1,3 +1,4 @@
+import { isCredentialPending } from '@/agent/providers/credential-state'
 import type { ManagedMCPTask } from './task-types'
 import { getMCPTaskManager } from './task-manager'
 
@@ -59,7 +60,8 @@ export async function continueMCPTask(
     if (!fromQueue && useProjectStore.getState().activeProjectId !== task.context.projectId)
       throw new Error('Open the original project before continuing')
     const settings = useSettingsStore.getState()
-    if (!settings.providerType || !settings.modelName || !settings.hasApiKey)
+    if (!settings.providerType || !settings.modelName ||
+        (!settings.hasApiKey && !isCredentialPending(settings.providerType)))
       throw new Error('Configure a model before continuing')
     const runtime = useConversationRuntimeStore.getState()
     const { ownMCPTaskQueue, removeMCPTaskFromQueue } = await import('./task-queue')

@@ -18,7 +18,7 @@
  */
 
 import { APP_TOOLS } from './schemas'
-import { credentialRegistry } from '@/agent/providers/credential-state'
+import { isCredentialPending } from '@/agent/providers/credential-state'
 import type { Message } from '@/agent/message-types'
 import { createUserMessage, getMessageRecordType } from '@/agent/message-types'
 import { selectConversationExportMessages, selectConversationTranscript } from '@/agent/message-projections'
@@ -542,7 +542,7 @@ export const handlers: Record<string, Handler> = {
     // Guard the startup race: hasApiKey is false until the async key check
     // completes; only treat it as "missing" once that check has run.
     if (settings.hasApiKeyLoaded && !settings.hasApiKey &&
-        credentialRegistry.getState(settings.providerType).kind !== 'temporary') {
+        !isCredentialPending(settings.providerType)) {
       return err('No API key configured — set up a provider in EO2Weave settings first')
     }
     const conv = findConv(store, conversationId)

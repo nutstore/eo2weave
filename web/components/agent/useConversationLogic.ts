@@ -28,7 +28,7 @@ import { performOcr, isOcrCompatibleImage, fileToBase64 } from '@/services/ocr.s
 import { supportsImageInput } from '@/agent/llm/pi-ai-model-resolver'
 import { isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { getGatewayCredentialStatus } from '@/agent/providers/llm-gateway-auth'
-import { credentialRegistry } from '@/agent/providers/credential-state'
+import { isCredentialPending } from '@/agent/providers/credential-state'
 import { useInputDraftStore } from '@/store/input-draft.store'
 import { VIRTUALIZATION_THRESHOLD } from '@/components/agent/virtualization-constants'
 import { useActiveConversation } from './useActiveConversation'
@@ -441,7 +441,7 @@ export function useConversationLogic() {
       const gatewayStatus = pType === 'llm-gateway' ? getGatewayCredentialStatus() : null
       const missingCredential = gatewayStatus
         ? gatewayStatus === 'missing' || gatewayStatus === 'expired'
-        : !hasKey && credentialRegistry.getState(pType).kind !== 'temporary'
+        : !hasKey && !isCredentialPending(pType)
       if (providerUnregistered || missingCredential || modelCredentialStatus === 'expired' || !pType || !mName) {
         toast.error(
           providerUnregistered || gatewayStatus === 'missing'

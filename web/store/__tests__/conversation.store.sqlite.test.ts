@@ -1908,10 +1908,10 @@ describe('conversation.store.sqlite tool-call routing', () => {
     })
   })
 
-  it('retries a temporary credential when manually compacting', async () => {
+  it.each(['unknown', 'temporary'] as const)('allows %s credential status when manually compacting', async (kind) => {
     const settings = (await import('../settings.store') as any).__mockSettingsState
     settings.hasApiKey = false
-    credentialRegistry.commit('openai', { kind: 'temporary' })
+    credentialRegistry.commit('openai', { kind })
     const compact = vi.fn(async (messages: any[]) => messages)
     ;(globalThis as any).__conversationStoreCustomCompact = compact
     const conv = useConversationStore.getState().createNew('temporary-key-compact', { activate: false })

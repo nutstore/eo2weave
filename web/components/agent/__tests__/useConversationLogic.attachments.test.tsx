@@ -298,6 +298,17 @@ describe('pending attachment sending', () => {
     expect(conversationStoreModule.getState().updateMessages).toHaveBeenCalled()
   })
 
+  it('accepts a message while the selected provider credential is being checked', async () => {
+    const { credentialRegistry } = await import('@/agent/providers/credential-state')
+    credentialRegistry.commit('openai', { kind: 'unknown' })
+    Object.assign(settingsState, { providerType: 'openai', modelName: 'gpt-5.4', hasApiKey: false, hasApiKeyLoaded: false })
+    try {
+      const { result } = renderHook(() => useConversationLogic())
+      await act(async () => { await result.current.sendMessage('hello') })
+      expect(conversationStoreModule.getState().updateMessages).toHaveBeenCalled()
+    } finally { credentialRegistry.reset() }
+  })
+
   it('defers a temporary API key read failure to dispatch', async () => {
     const { credentialRegistry } = await import('@/agent/providers/credential-state')
     credentialRegistry.commit('openai', { kind: 'temporary' })

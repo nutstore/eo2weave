@@ -9,7 +9,7 @@
  * and not persisted to SQLite.
  */
 
-import { credentialRegistry } from '@/agent/providers/credential-state'
+import { credentialRegistry, isCredentialPending } from '@/agent/providers/credential-state'
 import { isConversationUserMessage, isHumanUserMessage } from '@/agent/message-types'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
@@ -1800,7 +1800,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
       const settingsState = useSettingsStore.getState()
       const { hasApiKey: hasKey, providerType: pType, modelName: mName } = settingsState
       const credentialKind = credentialRegistry.getState(pType).kind
-      if (!hasKey && credentialKind !== 'temporary') {
+      if (!hasKey && !isCredentialPending(pType)) {
         const message = pType === 'llm-gateway' && credentialKind === 'expired'
           ? i18nText('conversation.error.gatewayCredentialExpired', 'Nutstore AI login has expired. Please log in again.')
           : pType === 'llm-gateway' && credentialKind === 'missing'

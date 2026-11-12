@@ -16,8 +16,8 @@ import { ReviewErrorKey, sendChangeReviewToConversation } from '../review-reques
 
 describe('change review credential checks', () => {
   afterEach(() => credentialRegistry.reset())
-  it('passes a temporary verdict through to the normal dispatch path', async () => {
-    credentialRegistry.commit('llm-gateway', { kind: 'temporary' })
+  it.each(['unknown', 'temporary'] as const)('passes a %s verdict through to the normal dispatch path', async (kind) => {
+    credentialRegistry.commit('llm-gateway', { kind })
     await expect(sendChangeReviewToConversation([{ path: 'test' } as any]))
       .rejects.toThrow(ReviewErrorKey.NO_ACTIVE_WORKSPACE)
   })

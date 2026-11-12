@@ -12,6 +12,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react'
 import { type FileChange, type SyncResult } from '@/opfs/types/opfs-types'
 import { useConversationContextStore, getActiveConversation } from '@/store/conversation-context.store'
 import { useSettingsStore } from '@/store/settings.store'
+import { isCredentialPending } from '@/agent/providers/credential-state'
 import { BrandButton } from '@creatorweave/ui'
 import { Badge } from '@/components/ui/badge'
 import { PendingFileList } from './PendingFileList'
@@ -439,7 +440,11 @@ export const SyncPreviewPanel: React.FC<SyncPreviewPanelProps> = ({
     const prompt = `Please review the following inline comments I left on the diff:\n\n${payload}`
 
     const settings = useSettingsStore.getState()
-    if (!settings.hasApiKey) {
+    if (!settings.providerType || !settings.modelName) {
+      toast.error(t('conversation.toast.noModel'))
+      return
+    }
+    if (!settings.hasApiKey && !isCredentialPending(settings.providerType)) {
       toast.error(t('conversation.toast.noApiKey'))
       return
     }
