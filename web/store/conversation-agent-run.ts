@@ -1392,6 +1392,7 @@ async function runAgentBody(
         const currentMessages = get().conversations.find(c => c.id === conversationId)?.messages ?? conv.messages
 
         let finalizationPromise: Promise<void> | undefined
+        let finalizationPersistence: Promise<void> | undefined
         const finalizeRunOnce = async (
           status: ConversationStatus,
           finalMessages?: Message[],
@@ -1528,8 +1529,9 @@ async function runAgentBody(
           if (status === 'idle') {
             emitComplete()
             const finalConv = get().conversations.find((c) => c.id === conversationId)
-            if (finalConv)
-              persistMessageReplace(conversationId, finalConv.messages).catch((err) => {
+            if (finalConv) {
+              finalizationPersistence = persistMessageReplace(conversationId, finalConv.messages)
+              void finalizationPersistence.catch((err) => {
                 console.error(
                   '[conversation.store] Failed to persist conversation on complete:',
                   err
@@ -1538,6 +1540,7 @@ async function runAgentBody(
                   i18nText('conversation.toast.saveFailedContentLost', '对话保存失败，部分内容可能丢失')
                 )
               })
+            }
             if (finalConv) {
               persistConversationMeta(finalConv).catch((err) => {
                 console.warn(
@@ -2418,9 +2421,10 @@ async function runAgentBody(
         const previousMessages = get().conversations.find((x) => x.id === conversationId)?.messages || []
         latestMessages = reconcileMessageSnapshot(previousMessages, resultMessages)
         await finalizeRun('idle', latestMessages)
-        if (isCurrentRunEpoch() && !get().cancelledRunIds.has(runId)) {
-          const finalMessages = get().conversations.find(c => c.id === conversationId)?.messages
-          if (finalMessages && currentMessages.some(m => m.subagentCompletion)) await persistMessageReplace(conversationId, finalMessages, true)
+        if (committed && !get().cancelledRunIds.has(runId)) {
+          // A newer user turn may already own the conversation. Join this run's
+          // original save, then settle only its run-fenced receipt without another history write.
+          if (currentMessages.some(m => m.subagentCompletion)) await finalizationPersistence
           await getSubagentContinuation().finishRun(conversationId, runId, continuationOutcome)
         }
 

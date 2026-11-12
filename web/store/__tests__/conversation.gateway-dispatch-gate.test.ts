@@ -583,6 +583,72 @@ describe('subagent notification owning-run receipts', () => {
     } finally { f.spy.mockRestore() }
   })
 
+  it('settles the original successful receipt after a newer user turn completes during its follow-up', async () => {
+    const f = await setupNotification()
+    let releaseOld: ((text: string) => void) | undefined
+    let oldRun: Promise<void> | undefined
+    const persistence = await import('@/store/conversation-persist')
+    const persistSpy = vi.spyOn(persistence, 'persistMessageReplace')
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      const { generateFollowUp } = await import('@/agent/follow-up-generator')
+      vi.mocked(generateFollowUp).mockImplementationOnce(() => new Promise(resolve => { releaseOld = resolve }))
+      loopRunMock.mockImplementationOnce(async (messages, callbacks) => {
+        const result = [...messages as import('@/agent/message-types').Message[], { id: 'original-answer', role: 'assistant' as const, content: 'Child result processed', timestamp: 2 }]
+        void callbacks.onComplete(result)
+        return result as never[]
+      })
+      oldRun = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null, null, { background: true, subagentContinuation: true })
+      await vi.waitFor(() => expect(releaseOld).toBeDefined())
+      const originalRunId = f.row.parentRunId
+      const nextMessage = createUserMessage('New user task')
+      const committedHistory = useConversationStore.getState().conversations.find(c => c.id === f.conv.id)!.messages
+      f.store.updateMessages(f.conv.id, [...committedHistory, nextMessage])
+      loopRunMock.mockImplementationOnce(async (messages, callbacks) => {
+        const result = [...messages as import('@/agent/message-types').Message[], { id: 'new-answer', role: 'assistant' as const, content: 'New turn completed', timestamp: 3 }]
+        void callbacks.onComplete(result)
+        return result as never[]
+      })
+      await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      const current = useConversationStore.getState().conversations.find(c => c.id === f.conv.id)!
+      const historyIds = current.messages.map(m => m.id)
+      const epoch = current.runEpoch
+      expect(historyIds).toEqual(['notice', 'original-answer', nextMessage.id, 'new-answer'])
+      expect(f.row.status).toBe('processing')
+      const persistenceCount = persistSpy.mock.calls.length
+      releaseOld!(''); await oldRun
+      expect(f.handled).toHaveBeenCalledTimes(1)
+      expect(f.handled).toHaveBeenCalledWith(f.row.id, originalRunId)
+      expect(f.row.status).toBe('handled')
+      const latest = useConversationStore.getState().conversations.find(c => c.id === f.conv.id)!
+      expect(latest).toMatchObject({ status: 'idle', activeRunId: null, error: null, runEpoch: epoch })
+      expect(latest.messages.map(m => m.id)).toEqual(historyIds)
+      expect(persistSpy.mock.calls.length).toBe(persistenceCount)
+    } finally {
+      releaseOld?.(''); await oldRun; persistSpy.mockRestore(); f.spy.mockRestore()
+    }
+  })
+
+  it('does not handle a receipt stopped while its committed run awaits follow-up', async () => {
+    const f = await setupNotification()
+    let release: ((text: string) => void) | undefined
+    let run: Promise<void> | undefined
+    try {
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      const { generateFollowUp } = await import('@/agent/follow-up-generator')
+      vi.mocked(generateFollowUp).mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+      loopRunMock.mockImplementationOnce(async (_messages, callbacks) => { void callbacks.onComplete([]); return [] })
+      run = f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null)
+      await vi.waitFor(() => expect(release).toBeDefined())
+      expect(f.row.status).toBe('processing')
+      f.store.cancelAgent(f.conv.id)
+      await vi.waitFor(() => expect(f.row.status).toBe('suppressed'))
+      release!(''); await run
+      expect(f.handled).not.toHaveBeenCalled()
+      expect(f.row.status).toBe('suppressed')
+    } finally { release?.(''); await run; f.spy.mockRestore() }
+  })
+
   it('automatic dispatch does not run a model when another owner already claimed its notification', async () => {
     const f = await setupNotification()
     try {
