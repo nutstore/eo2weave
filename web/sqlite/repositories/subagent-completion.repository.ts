@@ -131,10 +131,10 @@ export class SubagentCompletionRepository {
   suppress(id: string, expectedRunId?: string): Promise<boolean> {
     return this.transition(id, ['pending', 'delivered', 'processing', 'blocked', 'error'], 'suppressed', undefined, undefined, expectedRunId)
   }
-  markBlocked(id: string, error: string): Promise<boolean> {
+  markBlocked(id: string, error: string, expectedStatus?: 'delivered'): Promise<boolean> {
     return this.transition(
       id,
-      ['pending', 'delivered', 'blocked', 'error'],
+      expectedStatus ? [expectedStatus] : ['pending', 'delivered', 'blocked', 'error'],
       'blocked',
       undefined,
       error

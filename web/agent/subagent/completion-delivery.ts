@@ -165,7 +165,7 @@ export class CompletionDeliveryCoordinator {
         claimed.push(row)
       }
     }
-    this.claims.set(runId, claimed)
+    if (claimed.length) this.claims.set(runId, claimed)
     return claimed.length
   }
 
@@ -247,9 +247,13 @@ export class CompletionDeliveryCoordinator {
 
   async blockUnstarted(id: string, error: string): Promise<void> {
     if (!this.requested.size) return
+    const eventIds = new Set(this.dispatchRequests.get(id) ?? this.requested)
     for (const row of await this.deps.repository.listRecoverable(id)) {
-      if (row.status === 'delivered' && this.requested.has(row.id))
-        await this.phase(row, 'blocked', error)
+      if (row.status !== 'delivered' || !eventIds.has(row.id) || !this.requested.has(row.id)) continue
+      // A different run may claim or settle the receipt during this read.
+      if (await this.deps.repository.markBlocked(row.id, error, 'delivered'))
+        this.publishPhase(row, 'blocked', error)
+      this.requested.delete(row.id)
     }
   }
 

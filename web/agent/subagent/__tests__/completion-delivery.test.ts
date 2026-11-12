@@ -126,6 +126,44 @@ describe('durable completion delivery', () => {
     await f.coordinator.flush('conv')
     expect(f.dispatch).toHaveBeenCalledTimes(1)
   })
+  it('makes a zero-claim dispatch retryable without automatic redispatch or duplicate history', async () => {
+    const f = fixture()
+    f.add('one')
+    f.dispatch.mockImplementationOnce(async () => {
+      expect(await f.coordinator.claimRun('conv', 'empty', [])).toBe(0)
+      await f.coordinator.blockUnstarted('conv', 'No receipt could be claimed')
+      f.coordinator.schedule('conv')
+    })
+    await f.coordinator.flush('conv')
+    expect(f.rows.get('one')!.status).toBe('blocked')
+    expect(f.onPhase).toHaveBeenLastCalledWith(
+      expect.objectContaining({ deliveryError: 'No receipt could be claimed' }), 'blocked'
+    )
+    await f.coordinator.flush('conv')
+    expect(f.dispatch).toHaveBeenCalledTimes(1)
+    f.dispatch.mockImplementationOnce(async () => {
+      await f.coordinator.claimRun('conv', 'retry', f.history)
+      await f.coordinator.finishRun('conv', 'retry', 'success')
+    })
+    await f.coordinator.retry('conv')
+    expect(f.rows.get('one')!.status).toBe('handled')
+    expect(f.dispatch).toHaveBeenCalledTimes(2)
+    expect(f.history).toHaveLength(2)
+  })
+  it.each(['processing', 'handled', 'consumed', 'suppressed'] as const)(
+    'leaves an already %s receipt unchanged when a dispatch claims nothing', async status => {
+      const f = fixture()
+      const row = f.add('one')
+      f.dispatch.mockImplementationOnce(async () => {
+        row.status = status
+        expect(await f.coordinator.claimRun('conv', 'empty', f.history)).toBe(0)
+        await f.coordinator.blockUnstarted('conv', 'No receipt could be claimed')
+      })
+      await f.coordinator.flush('conv')
+      expect(row.status).toBe(status)
+      expect(f.onPhase.mock.calls.some(([, phase]) => phase === 'blocked')).toBe(false)
+    }
+  )
   it('never infers success from queued or internally caught dispatch resolution; binds actual run only', async () => {
     const f = fixture()
     f.add('one')

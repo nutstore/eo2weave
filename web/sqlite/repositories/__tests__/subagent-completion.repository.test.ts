@@ -99,6 +99,18 @@ function completion(): SubagentCompletion {
 }
 
 describe('durable subagent completions', () => {
+  it('blocks only a still-delivered receipt when recovering an unclaimed dispatch', async () => {
+    const outbox = new SubagentCompletionRepository()
+    await new SubagentRepository().saveBatch('c1', [task()])
+    await outbox.finishExecution({ task: task(), completion: completion() })
+    await outbox.markDelivered('a1:e1')
+    expect(await outbox.markBlocked('a1:e1', 'No receipt claimed', 'delivered')).toBe(true)
+    await outbox.markDelivered('a1:e1')
+    await outbox.claim('a1:e1', 'other-owner')
+    await outbox.markError('a1:e1', 'Actual provider failure', 'other-owner')
+    expect(await outbox.markBlocked('a1:e1', 'No receipt claimed', 'delivered')).toBe(false)
+    expect(await outbox.find('a1:e1')).toMatchObject({ status: 'error', deliveryError: 'Actual provider failure' })
+  })
   it('scopes suppression to the selected execution while preserving a later attempt and other task results', async () => {
     const tasks = new SubagentRepository()
     const outbox = new SubagentCompletionRepository()

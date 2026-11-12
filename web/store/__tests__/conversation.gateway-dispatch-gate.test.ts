@@ -542,6 +542,31 @@ describe('subagent notification owning-run receipts', () => {
     } finally { f.spy.mockRestore() }
   })
 
+  it('exposes retry after an automatic run claims no receipts and then handles the retry once', async () => {
+    const f = await setupNotification()
+    const initialLoops = agentLoopConstructed.mock.calls.length
+    try {
+      f.row.continuation = { parentRunId: 'origin', providerType: 'llm-gateway', modelName: 'gateway-model', maxTokens: 1024 }
+      resolveCredentialMock.mockResolvedValue({ ok: true, accessToken: 'validated-token' })
+      f.claim.mockResolvedValueOnce(false)
+      f.dispatch.mockImplementation(async () => {
+        await f.store.runAgent(f.conv.id, 'llm-gateway' as never, 'gateway-model', 1024, null, null, { background: true, subagentContinuation: true })
+      })
+      await f.coordinator.flush(f.conv.id)
+      expect(f.row.status).toBe('blocked')
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.status).toBe('idle')
+      expect(agentLoopConstructed).toHaveBeenCalledTimes(initialLoops)
+      await f.coordinator.flush(f.conv.id)
+      expect(f.dispatch).toHaveBeenCalledTimes(1)
+      await f.coordinator.retry(f.conv.id)
+      expect(f.dispatch).toHaveBeenCalledTimes(2)
+      expect(f.row.status).toBe('handled')
+      expect(f.handled).toHaveBeenCalledTimes(1)
+      expect(agentLoopConstructed).toHaveBeenCalledTimes(initialLoops + 1)
+      expect(useConversationStore.getState().conversations.find(c => c.id === f.conv.id)?.messages.filter(m => m.id === 'notice')).toHaveLength(1)
+    } finally { f.spy.mockRestore() }
+  })
+
   it('provider onError followed by a resolved loop promise leaves the notification failed', async () => {
     const f = await setupNotification()
     try {

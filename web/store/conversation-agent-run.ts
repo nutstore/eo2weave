@@ -712,6 +712,9 @@ async function runAgentBody(
             const rt = state.runtimes.get(conversationId)
             if (rt?.activeRunId === runId) { rt.activeRunId = null; rt.status = 'idle'; rt.draftAssistant = null }
           })
+          await getSubagentContinuation().blockUnstarted(
+            conversationId, 'No background result could be claimed. Retry to continue.'
+          )
           return
         }
         let continuationOutcome: 'success' | 'error' = 'success'
