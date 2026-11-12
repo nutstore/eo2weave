@@ -152,16 +152,16 @@ export class SubagentCompletionRepository {
   }
 
   /** The task flag and existing outbox rows change together; a later finish sees the flag. */
-  async suppressAgent(conversationId: string, agentId: string): Promise<void> {
+  async suppressAgent(conversationId: string, agentId: string, executionId?: string): Promise<void> {
     await getSQLiteDB().transaction(async (tx) => {
       await tx.execute(
-        'UPDATE subagent_tasks SET stopped = 1 WHERE workspace_id = ? AND agent_id = ?',
-        [conversationId, agentId]
+        `UPDATE subagent_tasks SET stopped = 1 WHERE workspace_id = ? AND agent_id = ?${executionId ? " AND json_extract(execution_json, '$.executionId') = ?" : ''}`,
+        executionId ? [conversationId, agentId, executionId] : [conversationId, agentId]
       )
       await tx.execute(
         `UPDATE subagent_completions SET status = 'suppressed', updated_at = ?
-         WHERE conversation_id = ? AND agent_id = ? AND status IN ('pending', 'delivered', 'blocked', 'error')`,
-        [Date.now(), conversationId, agentId]
+         WHERE conversation_id = ? AND agent_id = ? AND status IN ('pending', 'delivered', 'blocked', 'error')${executionId ? ' AND execution_id = ?' : ''}`,
+        executionId ? [Date.now(), conversationId, agentId, executionId] : [Date.now(), conversationId, agentId]
       )
     })
   }

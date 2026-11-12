@@ -65,9 +65,21 @@ it('suppresses only unhandled terminal background returns in the original conver
   ]
   tasks.forEach(task => useSubagentTaskStore.getState().publish(task))
   await stopPendingSubagentReturns('original')
-  expect(fixture.suppressAgent.mock.calls).toEqual([['original', 'waiting'], ['original', 'blocked']])
+  expect(fixture.suppressAgent.mock.calls).toEqual([['original', 'waiting', 'attempt'], ['original', 'blocked', 'attempt']])
   expect(useSubagentTaskStore.getState().tasks.waiting.deliveryPhase).toBe('suppressed')
   expect(useSubagentTaskStore.getState().tasks.blocked.deliveryPhase).toBe('suppressed')
   expect(useSubagentTaskStore.getState().tasks.processing.deliveryPhase).toBe('processing')
   expect(useSubagentTaskStore.getState().tasks.handled.deliveryPhase).toBe('handled')
+})
+
+it('suppresses just the selected execution and ignores a stale task selection', async () => {
+  const base: SubagentTaskProjection = { agentId: 'selected', conversationId: 'original', description: 'Inspect', role: 'worker', status: 'completed', createdAt: 1, updatedAt: 2, lastActivity: 2, isAsync: true, executionId: 'attempt', deliveryPhase: 'pending', messages: [] }
+  useSubagentTaskStore.getState().publish(base)
+  useSubagentTaskStore.getState().publish({ ...base, agentId: 'other' })
+  await stopPendingSubagentReturns('original', { agentId: 'selected', executionId: 'old-attempt' })
+  expect(fixture.suppressAgent).not.toHaveBeenCalled()
+  await stopPendingSubagentReturns('original', { agentId: 'selected', executionId: 'attempt' })
+  expect(fixture.suppressAgent.mock.calls).toEqual([['original', 'selected', 'attempt']])
+  expect(useSubagentTaskStore.getState().tasks.selected.deliveryPhase).toBe('suppressed')
+  expect(useSubagentTaskStore.getState().tasks.other.deliveryPhase).toBe('pending')
 })

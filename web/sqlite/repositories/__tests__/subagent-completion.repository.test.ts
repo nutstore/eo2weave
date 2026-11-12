@@ -99,6 +99,24 @@ function completion(): SubagentCompletion {
 }
 
 describe('durable subagent completions', () => {
+  it('scopes suppression to the selected execution while preserving a later attempt and other task results', async () => {
+    const tasks = new SubagentRepository()
+    const outbox = new SubagentCompletionRepository()
+    await tasks.saveBatch('c1', [task()])
+    await outbox.finishExecution({ task: task(), completion: completion() })
+    const later = { ...task(), updated_at: 3, execution: { ...task().execution!, executionId: 'e2' } }
+    await tasks.saveBatch('c1', [later])
+    await outbox.finishExecution({ task: later, completion: { ...completion(), id: 'a1:e2', executionId: 'e2' } })
+    const other = { ...task(), agentId: 'other' }
+    await tasks.saveBatch('c1', [other])
+    await outbox.finishExecution({ task: other, completion: { ...completion(), agentId: 'other', id: 'other:e1' } })
+    await outbox.suppressAgent('c1', 'a1', 'e1')
+    expect((await outbox.find('a1:e1'))?.status).toBe('suppressed')
+    expect((await outbox.find('a1:e2'))?.status).toBe('pending')
+    expect((await outbox.find('other:e1'))?.status).toBe('pending')
+    expect((await tasks.findByWorkspaceId('c1')).find(row => row.agentId === 'a1')?.stopped).toBe(false)
+  })
+
   it('persists acknowledgement per attempt without changing completion delivery or losing it to a later save', async () => {
     const tasks = new SubagentRepository()
     const outbox = new SubagentCompletionRepository()

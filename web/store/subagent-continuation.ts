@@ -132,14 +132,18 @@ export async function recoverSubagentContinuations(conversationIds: string[]): P
 }
 
 /** Stop hydrated pending returns without constructing a provider or cancelling the main run. */
-export async function stopPendingSubagentReturns(conversationId: string): Promise<void> {
+export async function stopPendingSubagentReturns(
+  conversationId: string,
+  selection?: { agentId: string; executionId: string }
+): Promise<void> {
   const repository = getSubagentCompletionRepository()
   const tasks = Object.values(useSubagentTaskStore.getState().tasks).filter(
-    task => task.conversationId === conversationId && !isSubagentActive(task) && hasPendingSubagentReturn(task)
+    task => task.conversationId === conversationId && !isSubagentActive(task) && hasPendingSubagentReturn(task) &&
+      (!selection || (task.agentId === selection.agentId && task.executionId === selection.executionId))
   )
   for (const task of tasks) {
     if (!task.executionId) continue
-    await repository.suppressAgent(conversationId, task.agentId)
+    await repository.suppressAgent(conversationId, task.agentId, task.executionId)
     const completion = await repository.find(`${task.agentId}:${task.executionId}`)
     if (completion) useSubagentTaskStore.getState().setDeliveryPhase(task.agentId, task.executionId, completion.status)
   }

@@ -58,13 +58,14 @@ function TaskRow({ task, now, onAction }: {
           {t(`conversation.backgroundTasks.${task.status}`)}
         </span>
         <span className="shrink-0 text-[11px] tabular-nums text-neutral-400">{t('conversation.backgroundTasks.elapsed', { seconds: elapsed })}</span>
-        {active && (
+        {(active || hasPendingSubagentReturn(task)) && (
           <button type="button" className={buttonClass} disabled={busy}
             aria-label={`${t('conversation.backgroundTasks.stop')}: ${name}`}
             onClick={() => void run(async () => {
               const runtime = peekSubagentRuntime(task.conversationId)
-              if (!runtime) throw new Error(t('conversation.backgroundTasks.unavailable'))
-              await runtime.stop({ agentId: task.agentId, force: true })
+              if (runtime) await runtime.stop({ agentId: task.agentId, force: true })
+              else if (active) throw new Error(t('conversation.backgroundTasks.unavailable'))
+              else if (task.executionId) await stopPendingSubagentReturns(task.conversationId, { agentId: task.agentId, executionId: task.executionId })
             })}>
             <Square className="inline h-2.5 w-2.5" aria-hidden="true" /> {t('conversation.backgroundTasks.stop')}
           </button>

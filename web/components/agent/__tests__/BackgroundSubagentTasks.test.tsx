@@ -54,6 +54,28 @@ describe('BackgroundSubagentTasks', () => {
     await waitFor(() => expect(fixtures.stopAll).toHaveBeenCalledWith({ force: true, backgroundOnly: true }))
   })
 
+  it.each([true, false])('stops one waiting return while preserving others with runtime=%s', async (hasRuntime) => {
+    fixtures.hasRuntime = hasRuntime
+    useSubagentTaskStore.getState().publish(task({ status: 'completed', deliveryPhase: 'pending' }))
+    useSubagentTaskStore.getState().publish(task({ agentId: 'other-child', description: 'Other work', status: 'completed', deliveryPhase: 'pending' }))
+    render(<BackgroundSubagentTasks conversationId="original" />)
+    fireEvent.click(screen.getByRole('button', { name: /conversation.backgroundTasks.summary/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'conversation.backgroundTasks.stop: Inspect documents' }))
+    if (hasRuntime) await waitFor(() => expect(fixtures.stop).toHaveBeenCalledWith({ agentId: 'child', force: true }))
+    else await waitFor(() => expect(fixtures.stopPendingReturns).toHaveBeenCalledWith('original', { agentId: 'child', executionId: 'attempt-1' }))
+    expect(fixtures.stopAll).not.toHaveBeenCalled()
+    expect(useSubagentTaskStore.getState().tasks['other-child'].deliveryPhase).toBe('pending')
+  })
+
+  it('does not expose individual stop for processing or historical returns', () => {
+    useSubagentTaskStore.getState().publish(task({ status: 'completed', deliveryPhase: 'processing' }))
+    useSubagentTaskStore.getState().publish(task({ agentId: 'history', status: 'failed', deliveryPhase: 'handled' }))
+    useSubagentTaskStore.getState().publish(task({ agentId: 'acknowledged', status: 'failed', deliveryPhase: 'pending', acknowledged: true }))
+    render(<BackgroundSubagentTasks conversationId="original" />)
+    fireEvent.click(screen.getByRole('button', { name: /conversation.backgroundTasks.summary/ }))
+    expect(screen.queryByRole('button', { name: /^conversation.backgroundTasks.stop:/ })).toBeNull()
+  })
+
   it('stops hydrated waiting results without constructing a runtime', async () => {
     fixtures.hasRuntime = false
     useSubagentTaskStore.getState().publish(task({ status: 'completed', deliveryPhase: 'pending' }))
