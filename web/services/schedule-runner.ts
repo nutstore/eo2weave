@@ -232,12 +232,12 @@ async function buildRuntimeDeps(schedule: NonNullable<Awaited<ReturnType<typeof 
 }> {
   // ── Provider ─────────────────────────────────────────────────────────
   // Resolve the effective provider configuration for scheduled execution:
-  //   1. getEffectiveProviderConfig() → { apiKeyProviderKey, baseUrl, modelName }
+  //   1. getEffectiveProviderConfig(schedule.llm?.provider) → { apiKeyProviderKey, baseUrl, modelName }
   //   2. getApiKeyRepository().load(apiKeyProviderKey) → apiKey
   //   3. createLLMProvider({ apiKey, providerType, baseUrl, model, apiMode })
   const settingsState = useSettingsStore.getState()
   const providerType = (schedule.llm?.provider ?? settingsState.providerType) as LLMProviderType
-  const effectiveConfig = settingsState.getEffectiveProviderConfig()
+  const effectiveConfig = settingsState.getEffectiveProviderConfig(schedule.llm?.provider)
   if (!effectiveConfig) {
     throw new Error('LLM_NOT_AVAILABLE: no effective provider config found')
   }
@@ -245,7 +245,7 @@ async function buildRuntimeDeps(schedule: NonNullable<Awaited<ReturnType<typeof 
   // Resolve baseUrl/model: custom providers use effectiveConfig directly;
   // built-in providers use LLM_PROVIDER_CONFIGS
   const providerConfig = isCustomProviderType(providerType)
-    ? effectiveConfig
+    ? { ...effectiveConfig, modelName: schedule.llm?.model ?? effectiveConfig.modelName }
     : {
         apiKeyProviderKey: providerType,
         baseUrl: LLM_PROVIDER_CONFIGS[providerType]?.baseURL ?? effectiveConfig.baseUrl,
@@ -281,7 +281,7 @@ async function buildRuntimeDeps(schedule: NonNullable<Awaited<ReturnType<typeof 
     apiKey,
     providerType,
     baseUrl: providerConfig.baseUrl,
-    model: schedule.llm?.model ?? providerConfig.modelName,
+    model: providerConfig.modelName,
     apiMode: apiMode as 'chat-completions' | 'responses' | undefined,
   })
 

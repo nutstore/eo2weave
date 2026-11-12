@@ -29,9 +29,11 @@ export interface Schedule {
     type: 'cron'
     expression: string
   }
-  /** Optional LLM override */
+  /** Optional LLM override; resolve URL, credentials, and model defaults from this provider. */
   llm?: {
+    /** Provider ID; an unavailable provider fails the run without falling back to current settings. */
     provider: string
+    /** Model to use instead of the provider default. */
     model: string
   }
   /** Optional output directory pattern */
