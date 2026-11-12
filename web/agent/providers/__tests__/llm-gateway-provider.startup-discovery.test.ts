@@ -14,12 +14,11 @@ const mocks = vi.hoisted(() => ({
   fetchGatewayModels: vi.fn(),
   refreshAccessTokenWithStatus: vi.fn(),
   generation: 0,
-  credentialStatus: 'expired' as 'valid' | 'expired',
 }))
 
 vi.mock('@/agent/providers/llm-gateway-auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/agent/providers/llm-gateway-auth')>()
-  return { ...actual, fetchGatewayModels: mocks.fetchGatewayModels, refreshAccessTokenWithStatus: mocks.refreshAccessTokenWithStatus, getGatewayAuthSessionGeneration: () => mocks.generation, getGatewayCredentialStatus: () => mocks.credentialStatus }
+  return { ...actual, fetchGatewayModels: mocks.fetchGatewayModels, refreshAccessTokenWithStatus: mocks.refreshAccessTokenWithStatus, getGatewayAuthSessionGeneration: () => mocks.generation }
 })
 
 // AbortSignal.timeout is backed by a real (unfakeable) timer; substitute a
@@ -43,7 +42,6 @@ describe('updateGatewayModels startup discovery deadline', () => {
     mocks.fetchGatewayModels.mockReset()
     mocks.refreshAccessTokenWithStatus.mockReset()
     mocks.generation = 0
-    mocks.credentialStatus = 'expired'
     unregisterDynamicProvider('llm-gateway')
   })
 
