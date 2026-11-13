@@ -8,8 +8,6 @@ import {
   sendMessageToSubagentDefinition,
   spawnSubagentDefinition,
   spawnSubagentExecutor,
-  waitSubagentsDefinition,
-  waitSubagentsExecutor,
 } from '../subagent.tool'
 
 function parseJson(result: string): Record<string, unknown> {
@@ -21,7 +19,6 @@ function createMockRuntime(): SubagentRuntime {
     acknowledge: vi.fn().mockResolvedValue(undefined),
     start: vi.fn().mockResolvedValue({ agentId: 'subagent_1', status: 'pending', description: 'task' }),
     batchStart: vi.fn().mockResolvedValue({ accepted: [{ task_index: 0, agentId: 'subagent_1', status: 'pending', description: 't1' }], rejected: [] }),
-    wait: vi.fn().mockResolvedValue({ results: [], pending: ['subagent_1'], timed_out: true }),
     spawn: vi.fn().mockResolvedValue({
       status: 'completed',
       agentId: 'subagent_1',
@@ -69,7 +66,6 @@ describe('subagent tools', () => {
     expect(batchSpawnDefinition.function.name).toBe('batch_spawn')
     expect(sendMessageToSubagentDefinition.function.name).toBe('send_message_to_subagent')
     expect(getSubagentStatusDefinition.function.name).toBe('get_subagent_status')
-    expect(waitSubagentsDefinition.function.name).toBe('wait_subagents')
   })
 
   it('caps batch concurrency at five in its public schema', () => {
@@ -106,27 +102,6 @@ describe('subagent tools', () => {
     expect(result).toMatchObject({ ok: true, data: { status: 'pending', agentId: 'subagent_1' } })
     expect(result.health).toBeUndefined()
     expect(runtime.spawn).not.toHaveBeenCalled()
-  })
-
-  it('passes the wait scope and abort signal to the runtime', async () => {
-    const runtime = createMockRuntime()
-    const controller = new AbortController()
-    const result = parseJson(await waitSubagentsExecutor({ agentIds: ['subagent_1'], timeout_ms: 10, wait_for: 'any' },
-      { directoryHandle: null, subagentRuntime: runtime, abortSignal: controller.signal }))
-    expect(result).toMatchObject({ ok: true, data: { pending: ['subagent_1'], timed_out: true } })
-    expect(runtime.wait).toHaveBeenCalledWith({ agentIds: ['subagent_1'], timeout_ms: 10, wait_for: 'any', signal: controller.signal })
-  })
-
-  it('returns compact wait results without child transcripts or continuation config', async () => {
-    const runtime = createMockRuntime()
-    vi.mocked(runtime.wait).mockResolvedValueOnce({ results: [{ id: 'a:e', agentId: 'a', executionId: 'e', taskStatus: 'completed',
-      result: 'finished', messages: [{ content: 'private detailed trace' }], continuation: { modelName: 'internal model' },
-      changedPaths: ['a.ts'] } as any], pending: [], timed_out: false })
-    const result = parseJson(await waitSubagentsExecutor({ agentIds: ['a'] }, { directoryHandle: null, subagentRuntime: runtime }))
-    const encoded = JSON.stringify(result)
-    expect(encoded).not.toContain('private detailed trace')
-    expect(encoded).not.toContain('internal model')
-    expect(result).toMatchObject({ data: { results: [{ agentId: 'a', result: 'finished', changedPaths: ['a.ts'] }] } })
   })
 
   it('keeps valid batch members when another member fails validation', async () => {

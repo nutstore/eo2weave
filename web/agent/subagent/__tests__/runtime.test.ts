@@ -212,6 +212,24 @@ describe('subagent runtime', () => {
     expect(hoisted.loopConfigs).toHaveLength(0)
   })
 
+  it('persists an async result and announces completion automatically without a parent wait API', async () => {
+    const ready = vi.fn()
+    const runtime = getOrCreateSubagentRuntime({
+      workspaceId: 'async-automatic-completion', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null }, onCompletionReady: ready,
+    })
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const completion = hoisted.repo.finishExecution.mock.calls[0][0].completion
+    expect(completion).toMatchObject({ agentId: receipt.agentId, result: 'ok', taskStatus: 'completed', status: 'pending' })
+    expect(ready).toHaveBeenCalledTimes(1)
+    expect(ready).toHaveBeenCalledWith(completion)
+    expect(hoisted.repo.consume).not.toHaveBeenCalled()
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].deliveryPhase).toBe('pending')
+    expect(runtime).not.toHaveProperty('wait')
+  })
+
   it('attributes async writes to the child instead of the parent auto-apply set', async () => {
     const parentPaths = vi.fn(), childPaths = vi.fn()
     hoisted.setRunImpl(async (_messages, config) => {
@@ -243,22 +261,6 @@ describe('subagent runtime', () => {
     expect(hoisted.repo.finishExecution.mock.calls[0][0].completion.changedPaths).toEqual(['original.ts'])
   })
 
-  it('wait times out without cancelling then atomically consumes its execution result', async () => {
-    let finish!: (messages: Message[]) => void
-    hoisted.setRunImpl(() => new Promise((resolve) => { finish = resolve }))
-    const runtime = createRuntime('async-wait', [])
-    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
-    const waiting = runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 10, wait_for: 'all' })
-    await vi.advanceTimersByTimeAsync(10)
-    expect(await waiting).toMatchObject({ results: [], pending: [receipt.agentId], timed_out: true })
-    finish([createAssistantMessage('wait result')])
-    await vi.advanceTimersByTimeAsync(1)
-    const result = await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })
-    expect(result.results).toEqual([expect.objectContaining({ agentId: receipt.agentId, result: 'wait result' })])
-    expect(hoisted.repo.consume).toHaveBeenCalledWith(expect.any(String))
-    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].deliveryPhase).toBe('consumed')
-  })
-
   it('retains the first completion and gives a queued follow-up its own execution identity', async () => {
     const resolvers: Array<(messages: Message[]) => void> = []
     hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
@@ -266,10 +268,11 @@ describe('subagent runtime', () => {
     const receipt = await runtime.start({ description: 'task', prompt: 'first' })
     await waitForStatusWithTimers(runtime, receipt.agentId, 'running')
     await runtime.sendMessage({ to: receipt.agentId, message: 'second' })
-    const waiting = runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 1 })
     resolvers[0]([createAssistantMessage('first result')])
     await vi.advanceTimersByTimeAsync(1)
-    expect((await waiting).pending).toEqual([receipt.agentId])
+    expect(hoisted.repo.finishExecution).toHaveBeenCalledTimes(1)
+    expect(hoisted.repo.finishExecution.mock.calls[0][0].completion.result).toBe('first result')
+    expect((await runtime.getStatus({ agentId: receipt.agentId })).status).toBe('running')
     expect(resolvers).toHaveLength(2)
     resolvers[1]([createAssistantMessage('second result')])
     await vi.advanceTimersByTimeAsync(1)
@@ -354,21 +357,6 @@ describe('subagent runtime', () => {
     expect(resolvers).toHaveLength(2)
     resolvers[1]([createAssistantMessage('two')])
     await vi.advanceTimersByTimeAsync(1)
-  })
-
-  it('defaults a multi-target wait to any and leaves the other execution pending', async () => {
-    const resolvers: Array<(messages: Message[]) => void> = []
-    hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
-    const runtime = createRuntime('async-wait-any', [])
-    const one = await runtime.start({ description: 'one', prompt: 'work' })
-    const two = await runtime.start({ description: 'two', prompt: 'work' })
-    await vi.advanceTimersByTimeAsync(0)
-    const waiting = runtime.wait({ agentIds: [one.agentId, two.agentId], timeout_ms: 100 })
-    resolvers[0]([createAssistantMessage('first')])
-    await vi.advanceTimersByTimeAsync(0)
-    expect(await waiting).toMatchObject({ results: [{ agentId: one.agentId }], pending: [two.agentId], timed_out: false })
-    resolvers[1]([createAssistantMessage('second')])
-    await vi.advanceTimersByTimeAsync(0)
   })
 
   it('keeps the runtime cap of five across background batches and individual starts', async () => {
@@ -492,27 +480,30 @@ describe('subagent runtime', () => {
     expect(ready).not.toHaveBeenCalled()
   })
 
-  it('waits on a hydrated completed execution using its durable completion', async () => {
-    const stored = createStoredTask({ workspaceId: 'async-hydrated-wait', agentId: 'persisted', status: 'completed' })
-    const execution = { executionId: 'e1', isAsync: true, conversationId: 'async-hydrated-wait', suppressed: false, changedPaths: [] }
+  it('publishes a hydrated completed execution using its durable completion without consuming it', async () => {
+    const stored = createStoredTask({ workspaceId: 'async-hydrated-completion', agentId: 'persisted', status: 'completed' })
+    const execution = { executionId: 'e1', isAsync: true, conversationId: 'async-hydrated-completion', suppressed: false, changedPaths: [] }
     const completion = { id: 'persisted:e1', agentId: 'persisted', executionId: 'e1', status: 'pending', result: 'saved result' }
     hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([{ ...stored, execution }] as never)
     hoisted.repo.find.mockResolvedValueOnce(completion as never)
-    const runtime = createRuntime('async-hydrated-wait', [])
-    const result = await runtime.wait({ agentIds: ['persisted'], timeout_ms: 0 })
-    expect(result.results).toEqual([expect.objectContaining({ result: 'saved result' })])
-    expect(hoisted.repo.consume).toHaveBeenCalledWith('persisted:e1')
+    const runtime = createRuntime('async-hydrated-completion', [])
+    expect(await runtime.getStatus({ agentId: 'persisted' })).toMatchObject({ status: 'completed' })
+    expect(hoisted.repo.find).toHaveBeenCalledWith('persisted:e1')
+    expect(useSubagentTaskStore.getState().tasks.persisted).toMatchObject({ executionId: 'e1', deliveryPhase: 'pending' })
+    expect(hoisted.repo.consume).not.toHaveBeenCalled()
+    expect(hoisted.repo.finishExecution).not.toHaveBeenCalled()
   })
 
-  it('returns a hydrated interrupted outcome immediately without creating a wakeup', async () => {
-    const execution = { executionId: 'e1', isAsync: true, conversationId: 'async-interrupted-wait', suppressed: false, changedPaths: [] }
+  it('publishes a hydrated interrupted outcome without creating a wakeup', async () => {
+    const execution = { executionId: 'e1', isAsync: true, conversationId: 'async-interrupted-completion', suppressed: false, changedPaths: [] }
     hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([{
-      ...createStoredTask({ workspaceId: 'async-interrupted-wait', agentId: 'persisted', status: 'running' }), execution,
+      ...createStoredTask({ workspaceId: 'async-interrupted-completion', agentId: 'persisted', status: 'running' }), execution,
     }] as never)
-    const runtime = createRuntime('async-interrupted-wait', [])
-    const result = await runtime.wait({ agentIds: ['persisted'], timeout_ms: 0 })
-    expect(result.results).toEqual([expect.objectContaining({ taskStatus: 'failed', error: { code: 'SESSION_INTERRUPTED', message: expect.any(String) } })])
-    expect(result.pending).toEqual([])
+    const runtime = createRuntime('async-interrupted-completion', [])
+    expect(await runtime.getStatus({ agentId: 'persisted' })).toMatchObject({ status: 'failed',
+      error: { code: 'SESSION_INTERRUPTED', message: expect.any(String) } })
+    expect(useSubagentTaskStore.getState().tasks.persisted).toMatchObject({ executionId: 'e1', deliveryPhase: 'suppressed' })
+    expect(hoisted.loopConfigs).toHaveLength(0)
     expect(hoisted.repo.finishExecution).not.toHaveBeenCalled()
   })
 
@@ -561,15 +552,18 @@ describe('subagent runtime', () => {
     expect(genericSnapshots.some((task: any) => task.status === 'completed')).toBe(false)
   })
 
-  it('returns stopped outcomes for queued execution identities', async () => {
+  it('persists stopped outcomes for queued execution identities', async () => {
     hoisted.setRunImpl(() => new Promise(() => {}))
     const runtime = createRuntime('async-stop-queued', [])
     const receipt = await runtime.start({ description: 'task', prompt: 'first' })
     await runtime.sendMessage({ to: receipt.agentId, message: 'second' })
     await runtime.stop({ agentId: receipt.agentId, force: true })
-    const result = await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })
-    expect(result.pending).toEqual([])
-    expect(result.results).toEqual([expect.objectContaining({ taskStatus: 'killed', status: 'suppressed' })])
+    const completions = hoisted.repo.finishExecution.mock.calls.map(([input]) => input.completion)
+    expect(completions).toHaveLength(2)
+    expect(completions[0].executionId).not.toBe(completions[1].executionId)
+    for (const completion of completions) {
+      expect(completion).toMatchObject({ agentId: receipt.agentId, taskStatus: 'killed', status: 'suppressed' })
+    }
   })
 
   it('persists partial usage and trace on unexpected failure', async () => {
@@ -582,7 +576,7 @@ describe('subagent runtime', () => {
     await vi.advanceTimersByTimeAsync(0)
     const completion = hoisted.repo.finishExecution.mock.calls[0][0].completion
     expect(completion).toMatchObject({ taskStatus: 'failed', error: { code: 'SUBAGENT_FAILED' }, usage: { total_tokens: 30 } })
-    expect((await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })).pending).toEqual([])
+    expect((await runtime.getStatus({ agentId: receipt.agentId })).status).toBe('failed')
   })
 
   it('does not hold execution slots while the ready callback dispatches a parent run', async () => {
@@ -618,25 +612,6 @@ describe('subagent runtime', () => {
     useSubagentTaskStore.getState().setDeliveryPhase(receipt.agentId, executionId, 'delivered')
     await runtime.stop({ agentId: receipt.agentId })
     expect(useSubagentTaskStore.getState().tasks[receipt.agentId].deliveryPhase).toBe('suppressed')
-  })
-
-  it('disposes wait timers and abort listeners without stopping the child', async () => {
-    hoisted.setRunImpl(() => new Promise(() => {}))
-    const runtime = createRuntime('async-wait-abort', [])
-    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
-    await vi.advanceTimersByTimeAsync(0)
-    const controller = new AbortController()
-    const remove = vi.spyOn(controller.signal, 'removeEventListener')
-    const timerCount = vi.getTimerCount()
-    const waiting = runtime.wait({ agentIds: [receipt.agentId], signal: controller.signal })
-    await Promise.resolve()
-    await Promise.resolve()
-    controller.abort()
-    expect(await waiting).toMatchObject({ results: [], pending: [receipt.agentId], timed_out: false })
-    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
-    expect(vi.getTimerCount()).toBe(timerCount)
-    expect((await runtime.getStatus({ agentId: receipt.agentId })).status).toBe('running')
-    await runtime.stop({ agentId: receipt.agentId, force: true })
   })
 
   it('saves partial streamed reasoning, content, and tool arguments when stopped before message_end', async () => {
@@ -812,11 +787,9 @@ describe('subagent runtime', () => {
     })
     await runtime.resume({ agentId: receipt.agentId, prompt: 'follow-up' })
     await vi.advanceTimersByTimeAsync(0)
-    const result = await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })
-    expect(result.results).toEqual([expect.objectContaining({ taskStatus: 'failed', result: output,
-      error: { code: 'SUBAGENT_FAILED', message: 'follow-up provider failure' } })])
     const completion = hoisted.repo.finishExecution.mock.calls[1][0].completion
-    expect(completion.result).toBe(output)
+    expect(completion).toMatchObject({ taskStatus: 'failed', result: output,
+      error: { code: 'SUBAGENT_FAILED', message: 'follow-up provider failure' } })
     expect(completion.messages).toEqual(expect.arrayContaining([expect.objectContaining({ content: 'earlier successful answer' })]))
   })
 
@@ -837,8 +810,8 @@ describe('subagent runtime', () => {
     expect(prompts).toEqual(['first', 'durable follow-up'])
     finishes[1]([createAssistantMessage('follow-up answer')])
     await vi.advanceTimersByTimeAsync(0)
-    expect(await runtime.wait({ agentIds: [receipt.agentId], timeout_ms: 0 })).toMatchObject({
-      results: [{ taskStatus: 'completed', result: 'follow-up answer' }], pending: [], timed_out: false,
+    expect(hoisted.repo.finishExecution.mock.calls[1][0].completion).toMatchObject({
+      agentId: receipt.agentId, taskStatus: 'completed', result: 'follow-up answer',
     })
     expect(hoisted.repo.finishExecution).toHaveBeenCalledTimes(2)
   })

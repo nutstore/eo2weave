@@ -68,16 +68,3 @@ export interface SubagentCompletion {
   parentRunId?: string
   deliveryError?: string
 }
-
-export interface WaitSubagentsInput {
-  agentIds: string[]
-  timeout_ms?: number
-  wait_for?: 'any' | 'all'
-  signal?: AbortSignal
-}
-
-export interface WaitSubagentsResult {
-  results: SubagentCompletion[]
-  pending: string[]
-  timed_out: boolean
-}

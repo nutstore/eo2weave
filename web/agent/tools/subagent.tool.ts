@@ -70,7 +70,7 @@ export const spawnSubagentDefinition: ToolDefinition = {
   function: {
     name: TOOL_NAME_SPAWN,
     description:
-      'Submit a delegated subagent task in the background. Returns a durable accepted receipt immediately; pending/running means submitted, not completed. Continue independent work, or use wait_subagents to retrieve results.' +
+      'Submit a delegated subagent task in the background. Returns a durable accepted receipt immediately; pending/running means submitted, not completed. Completion arrives automatically as a notification in a new parent turn. Continue independent work, or finish the current turn when nothing else remains.' +
       SUBAGENT_TYPE_DESCRIPTIONS,
     parameters: {
       type: 'object',
@@ -141,7 +141,7 @@ export const batchSpawnDefinition: ToolDefinition = {
   function: {
     name: TOOL_NAME_BATCH_SPAWN,
     description:
-      'Submit multiple independent background tasks. Returns accepted receipts and per-member rejections immediately. Use wait_subagents to retrieve results.' +
+      'Submit multiple independent background tasks. Returns accepted receipts and per-member rejections immediately. Completion arrives automatically as notifications in new parent turns. Continue independent work, or finish the current turn when nothing else remains.' +
       SUBAGENT_TYPE_DESCRIPTIONS,
     parameters: {
       type: 'object',
@@ -325,44 +325,6 @@ export const batchSpawnExecutor: ToolExecutor = async (args, context) => {
   }
 }
 
-export const waitSubagentsDefinition: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'wait_subagents',
-    description: 'Wait for current executions of submitted subagents. Returns completed results and pending IDs; timeout never cancels work. Explicitly received pending results are consumed to avoid later automatic redelivery.',
-    parameters: {
-      type: 'object',
-      properties: {
-        agentIds: { type: 'array', items: { type: 'string' }, description: 'Agent IDs or aliases to wait for.' },
-        timeout_ms: { type: 'number', minimum: 0, maximum: 60000, description: 'Bounded wait in milliseconds; default 60000, maximum 60000.' },
-        wait_for: { type: 'string', enum: ['any', 'all'], description: 'Return after any or all targets finish; default any.' },
-      },
-      required: ['agentIds'],
-    },
-  },
-}
-
-export const waitSubagentsExecutor: ToolExecutor = async (args, context) => {
-  if (!context.subagentRuntime) return runtimeMissing('wait_subagents')
-  try {
-    if (!Array.isArray(args.agentIds) || args.agentIds.length === 0) {
-      throw new Error('agentIds must contain at least one agent ID')
-    }
-    const agentIds = args.agentIds.map(validateAgentId)
-    const result = await context.subagentRuntime.wait({ agentIds,
-      timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-      wait_for: args.wait_for === 'all' ? 'all' : 'any', signal: context.abortSignal })
-    return toolOkJson('wait_subagents', {
-      ...result,
-      results: result.results.map((completion) => ({
-        agentId: completion.agentId, executionId: completion.executionId, status: completion.taskStatus,
-        result: completion.result, usage: completion.usage, error: completion.error,
-        changedPaths: completion.changedPaths, traceId: completion.id,
-      })),
-    })
-  } catch (error) { return formatError('wait_subagents', error) }
-}
-
 export const sendMessageToSubagentExecutor: ToolExecutor = async (args, context) => {
   const runtime = context.subagentRuntime
   if (!runtime) return runtimeMissing(TOOL_NAME_SEND)
@@ -457,7 +419,7 @@ export const subagentPromptDoc: ToolPromptDoc = {
   lines: [
     '- `spawn_subagent(description, prompt, ...)` - Submit a background child task; receipt means accepted, not finished',
     '- `batch_spawn(tasks, max_concurrency?)` - Submit independent children with per-member acceptance/rejection',
-    '- `wait_subagents(agentIds, timeout_ms?, wait_for?)` - Retrieve current child execution results; default any, maximum 60 seconds; timeout keeps work running',
+    '- Completion results arrive automatically as notifications in new parent turns; do not poll to keep the current turn alive',
     '- `send_message_to_subagent(to, message)` - Send follow-up instruction to a running/pending child',
     '- `stop_subagent(agentId)` - Stop a child task when scope changes',
     '- `resume_subagent(agentId, prompt)` - Resume a stopped/failed/completed child with new instructions',
