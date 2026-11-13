@@ -15,6 +15,7 @@ export const common = {
     success: "成功",
     copy: "复制",
     copied: "已复制",
+    quote: "引用",
     expanded: "已展开",
     summary: "摘要",
     collapse: "点击收起",

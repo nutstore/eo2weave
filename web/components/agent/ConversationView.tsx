@@ -360,6 +360,11 @@ export function ConversationView({
     richInputRef.current?.setText(text)
   }, [])
 
+  // ── Quote a selected passage into the composer (issue #276) ──
+  const handleInsertQuote = useCallback((lines: string[]) => {
+    richInputRef.current?.insertQuote(lines)
+  }, [])
+
   // ── Stable error handler for ErrorBoundary ──
   const handleErrorBoundaryError = useCallback(
     (error: Error) => {
@@ -379,7 +384,10 @@ export function ConversationView({
   }, [handleSend])
 
   // Memoize the context value to avoid unnecessary re-renders
-  const actionContextValue = useMemo(() => ({ setInput, sendMessage: logic.sendMessage }), [setInput, logic.sendMessage])
+  const actionContextValue = useMemo(
+    () => ({ setInput, insertQuote: handleInsertQuote, sendMessage: logic.sendMessage }),
+    [setInput, handleInsertQuote, logic.sendMessage]
+  )
 
   return (
     <ConversationActionContext.Provider value={actionContextValue}>

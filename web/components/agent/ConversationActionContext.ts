@@ -4,6 +4,7 @@
  *
  * Currently exposes:
  * - setInput: set the conversation input text (for "follow up" from selection)
+ * - insertQuote: insert a quoted selection into the composer as a quote block
  * - sendMessage: send a user message and trigger AI response
  */
 
@@ -12,6 +13,8 @@ import { createContext, useContext } from 'react'
 export interface ConversationActionContextValue {
   /** Set the conversation input text */
   setInput: (text: string) => void
+  /** Insert a quoted selection into the composer, below any existing draft */
+  insertQuote: (lines: string[]) => void
   /** Send a user message and trigger AI response */
   sendMessage: (text: string) => void
 }

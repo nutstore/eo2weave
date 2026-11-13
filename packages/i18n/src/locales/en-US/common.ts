@@ -14,6 +14,7 @@ export const common = {
     success: "Success",
     copy: "Copy",
     copied: "Copied",
+    quote: "Quote",
     expanded: "Expanded",
     summary: "Summary",
     collapse: "Click to collapse",

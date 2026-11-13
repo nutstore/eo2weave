@@ -79,7 +79,9 @@ const mockSendMessage = vi.fn()
 
 function renderBubble() {
   return render(
-    <ConversationActionContext.Provider value={{ setInput: vi.fn(), sendMessage: mockSendMessage }}>
+    <ConversationActionContext.Provider
+      value={{ setInput: vi.fn(), insertQuote: vi.fn(), sendMessage: mockSendMessage }}
+    >
       <AssistantTurnBubble
         turn={makeTurn()}
         toolResults={new Map()}
