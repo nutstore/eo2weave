@@ -22,11 +22,9 @@
  *     in store/extension.store.ts (RECOMMENDED_FIRST).
  *   - custom-* providers: user-defined catalogs.
  *
- * 火山方舟 Coding (volcengine-coding) has an empty static list too, but IS
- * listed: its catalog is fetched from the ARK API at key-save time and the
- * helper intersects, so a curated id only pins when actually served. The
- * id follows ByteDance's Doubao Seed naming; dated variants (e.g.
- * `seed-2.0-code-20260730`) are matched via the dated-suffix rule below.
+ * 火山方舟 Coding (volcengine-coding) defaults to the console-managed
+ * ark-code-latest alias. It is included in the static fallback catalog;
+ * when live discovery succeeds, the same catalog intersection applies.
  */
 
 export const DEFAULT_PINNED_MODELS: Partial<Record<string, readonly string[]>> = {
@@ -46,8 +44,8 @@ export const DEFAULT_PINNED_MODELS: Partial<Record<string, readonly string[]>> =
   minimax: ['MiniMax-M3.1-Flash'],
   'minimax-cn': ['MiniMax-M3.1-Flash'],
   qwen: ['qwen-turbo'],
-  // 火山方舟 Coding — ARK coding endpoint; Doubao Seed Code is the value pick.
-  'volcengine-coding': ['doubao-seed-2.0-code'],
+  // Use the model selected in the user's Ark console, without a dated id.
+  'volcengine-coding': ['ark-code-latest'],
 
   // ── Dynamic providers ──
   // Nutstore AI (坚果云 AI) gateway — catalog comes from GET /v1/models;

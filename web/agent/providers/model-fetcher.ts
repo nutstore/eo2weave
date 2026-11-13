@@ -5,7 +5,7 @@
  * Falls back to static PROVIDER_META models if the API call fails.
  *
  * Supported providers:
- * - OpenAI-compatible: OpenAI, Groq, Mistral, GLM, Kimi, MiniMax, Qwen, Custom
+ * - OpenAI-compatible: OpenAI, Groq, Mistral, GLM, Kimi, MiniMax, Qwen, Volcengine Coding, Custom
  * - Google Gemini: uses /v1beta/models endpoint with API key auth
  * - Anthropic: no list models API → always falls back to static list
  */
@@ -14,6 +14,7 @@ import type { LLMProviderType, ModelInfo, ModelCapability } from './types'
 import { LLM_PROVIDER_CONFIGS, PROVIDER_META, getModelsForProvider, isCustomProviderType } from './types'
 import { getOpenRouterContextWindow } from './openrouter-pricing'
 import { assertHeaderAscii } from '../llm/http-headers'
+import { llmFetch } from '@/agent/llm/llm-fetch'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,7 @@ const OPENAI_COMPATIBLE_PROVIDERS: LLMProviderType[] = [
   'minimax-cn',
   'qwen',
   'deepseek',
+  'volcengine-coding',
   'custom',
 ]
 
@@ -96,7 +98,7 @@ async function fetchOpenAICompatibleModels(
   }
   assertHeaderAscii(headers, 'model list request headers')
 
-  const response = await fetch(url, {
+  const response = await llmFetch(url, {
     method: 'GET',
     headers,
     signal: AbortSignal.timeout(10000), // 10s timeout
@@ -169,7 +171,7 @@ async function fetchOpenAICompatibleModels(
 async function fetchGoogleModels(apiKey: string): Promise<ModelInfo[]> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
 
-  const response = await fetch(url, {
+  const response = await llmFetch(url, {
     method: 'GET',
     signal: AbortSignal.timeout(10000),
   })

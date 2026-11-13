@@ -18,6 +18,7 @@ import {
   withGatewayCredentialLock,
 } from '@/agent/providers/gateway-credential-lock'
 import { useI18nStore } from '@/i18n/store'
+import { llmFetch } from '@/agent/llm/llm-fetch'
 import { unregisterDynamicProvider, type ProviderCatalogStatus } from '@/agent/providers/types'
 
 // ── Types ──
@@ -1076,7 +1077,7 @@ async function gatewayFetch<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${baseURL}${path}`
-  const res = await fetch(url, {
+  const res = await llmFetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -1154,7 +1155,7 @@ export async function pollDeviceToken(
   signal?: AbortSignal,
 ): Promise<TokenResponse | null> {
   try {
-    const res = await fetch(`${baseURL}/v1/auth/device/token`, {
+    const res = await llmFetch(`${baseURL}/v1/auth/device/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ device_code: deviceCode, user_code: userCode }),
@@ -2068,7 +2069,7 @@ export async function fetchGatewayModels(
 ): Promise<{ models: Array<{ id: string; name: string }>; status: ProviderCatalogStatus; authRejected?: boolean }> {
   let res: Response
   try {
-    res = await fetch(`${baseURL}/v1/models`, {
+    res = await llmFetch(`${baseURL}/v1/models`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       signal,
     })
@@ -2143,7 +2144,7 @@ export async function fetchRateLimits(
   baseURL: string,
   accessToken: string
 ): Promise<RateLimitsResponse> {
-  const res = await fetch(`${baseURL}/v1/rate-limits`, {
+  const res = await llmFetch(`${baseURL}/v1/rate-limits`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
 

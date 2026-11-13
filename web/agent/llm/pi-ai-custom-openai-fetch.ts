@@ -16,6 +16,7 @@ import '@earendil-works/pi-ai/openai-responses'
 import { normalizeBaseUrl } from './pi-ai-url-utils'
 import { assertHeaderAscii } from './http-headers'
 import { isPotentiallyDynamicProviderType } from '@/agent/providers/types'
+import { llmFetch } from '@/agent/llm/llm-fetch'
 
 export const CW_OPENAI_FETCH_API = 'cw-openai-fetch' as const
 
@@ -130,7 +131,7 @@ function streamCwOpenAIChatCompletions(
       const doFetch = (token: string | null) => {
         const headers = buildHeaders(token)
         assertHeaderAscii(headers, 'LLM request headers')
-        return fetch(requestUrl, {
+        return llmFetch(requestUrl, {
           method: 'POST',
           headers,
           body: JSON.stringify(payload),

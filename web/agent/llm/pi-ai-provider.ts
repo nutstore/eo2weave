@@ -12,6 +12,7 @@ import type { LLMProviderType } from '@/agent/providers/types'
 import { resolvePiAIModel } from './pi-ai-model-resolver'
 import { detectThinkingFormat, ensurePiAICustomProvidersRegistered, stripDeveloperRoleForDynamicProviders } from './pi-ai-custom-openai-fetch'
 import { extractTextContent } from '../loop/message-mappers'
+import { installLlmBridgeFetch } from './llm-fetch'
 
 const MAX_CONTEXT_TOKENS = 128000
 
@@ -35,6 +36,7 @@ export class PiAIProvider implements LLMProvider {
     ensurePiAICustomProvidersRegistered()
     this.apiKey = config.apiKey
     this.model = resolvePiAIModel(config.providerType, config.model, config.baseUrl, config.apiMode)
+    installLlmBridgeFetch(config.providerType === 'codex-oauth' ? undefined : this.model.baseUrl)
     this.maxContextTokens = this.model.contextWindow || MAX_CONTEXT_TOKENS
   }
 

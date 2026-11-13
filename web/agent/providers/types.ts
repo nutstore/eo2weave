@@ -184,8 +184,8 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProviderType, Omit<LLMProviderConfi
     headers: {},
   },
   'volcengine-coding': {
-    baseURL: 'https://ark.cn-beijing.volces.com/api/coding',
-    modelName: '',
+    baseURL: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+    modelName: 'ark-code-latest',
     headers: {},
   },
 }
@@ -618,7 +618,26 @@ export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
     category: 'chinese',
     displayName: '火山方舟 Coding',
     website: 'https://console.volcengine.com/ark',
-    models: [],
+    // Fallback candidates from the Coding Plan quickstart (2026-11-13):
+    // https://docs.volcengine.com/docs/ark/coding-plan-personal-get-started?lang=zh
+    // Availability depends on the plan/region. Do not guess context or vision
+    // metadata, especially for the console-managed ark-code-latest alias.
+    models: [
+      { id: 'ark-code-latest', name: 'Ark Code Latest', capabilities: ['code', 'writing'] },
+      { id: 'doubao-seed-evolving', name: 'Doubao Seed Evolving', capabilities: ['code', 'writing'] },
+      { id: 'doubao-seed-2.1-pro', name: 'Doubao Seed 2.1 Pro', capabilities: ['code', 'writing'] },
+      { id: 'doubao-seed-2.1-lite', name: 'Doubao Seed 2.1 Lite', capabilities: ['code', 'writing'] },
+      { id: 'doubao-seed-2.0-mini', name: 'Doubao Seed 2.0 Mini', capabilities: ['code', 'writing'] },
+      { id: 'glm-5.3', name: 'GLM 5.3', capabilities: ['code', 'writing'] },
+      { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash', capabilities: ['code', 'writing'] },
+      { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', capabilities: ['code', 'writing'] },
+      { id: 'deepseek-v4.1-flash-economy', name: 'DeepSeek V4.1 Flash Economy', capabilities: ['code', 'writing'] },
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', capabilities: ['code', 'writing'] },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', capabilities: ['code', 'writing'] },
+      { id: 'kimi-k2.8-preview', name: 'Kimi K2.8 Preview', capabilities: ['code', 'writing'] },
+      { id: 'kimi-k3', name: 'Kimi K3', capabilities: ['code', 'writing'] },
+      { id: 'kimi-k3.1-pro', name: 'Kimi K3.1 Pro', capabilities: ['code', 'writing'] },
+    ],
   },
 }
 
