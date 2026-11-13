@@ -449,6 +449,10 @@ export const questionCard = {
     customInputHint: "직접 답변 입력",
     userAnswer: "사용자 답변",
     recommended: "추천",
+    skip: "이 질문 건너뛰기",
+    skipped: "건너뜀",
+    timedOut: "시간 초과",
+    noAnswer: "응답하지 않았습니다 — 에이전트가 그대로 진행했습니다.",
 } as const
 
 // Run changes card (auto-applied run summary)

@@ -325,5 +325,6 @@ export const askUserQuestionPromptDoc: ToolPromptDoc = {
   section: '### User Interaction',
   lines: [
     '- `ask_user_question(question, type?, options?, ...)` - Ask the user a question and wait for their response within the current loop',
+    '- `confirmed: false` means no answer was recorded: either the user skipped the prompt or it timed out (`timed_out: true` = they never answered). Do not silently pick an option for them; proceed with the safest default and say so, or stop and ask again in plain chat — after a timeout, do not re-ask the same question.',
   ],
 }
