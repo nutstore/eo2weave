@@ -260,7 +260,7 @@ const internalMessages = new WeakMap<object, Message>()
 
 /** Materialize the same text and media as normal requests, retaining canonical source metadata. */
 export function materializeProviderHistory(messages: Message[], model: Model<Api>, prefix: string): Message[] {
-  return messages.flatMap(source => mapInternalToPiMessage(source, model, prefix).map(mapped => {
+  return normalizeProviderHistory(messages).flatMap(source => mapInternalToPiMessage(source, model, prefix).map(mapped => {
     const contentParts = Array.isArray(mapped.content)
       ? mapped.content.filter((part): part is NonNullable<Message['contentParts']>[number] => part.type === 'text' || part.type === 'image')
       : undefined
@@ -308,9 +308,13 @@ function toProviderHistory(messages: Message[]): Message[] {
   )
 }
 
+function normalizeProviderHistory(messages: Message[]): Message[] {
+  return ensureToolCallResults(toProviderHistory(messages))
+}
+
 export function internalToPiMessages(messages: Message[], model: Model<Api>, prefix: string): PiMessage[] {
   const visible = projectCompressionHistory(messages)
-  return ensureToolCallResults(toProviderHistory(visible)).flatMap(message => {
+  return normalizeProviderHistory(visible).flatMap(message => {
     const mapped = mapInternalToPiMessage(message, model, prefix)
     for (const item of mapped) {
       internalMessages.set(item, message)

@@ -115,6 +115,38 @@ describe('context admission at model call boundaries', () => {
     expect(dispatched).not.toHaveBeenCalled()
   })
 
+  it('compresses older history to admit a newly enabled skill and commits the complete checkpoint once', async () => {
+    const history: Message[] = [user, {
+      id: 'older-work', role: 'assistant', content: 'old '.repeat(3500), timestamp: 2,
+      usage: { promptTokens: 6000, completionTokens: 1000, totalTokens: 7000 },
+    }, { id: 'followup', role: 'user', content: 'Use the newly enabled skill', timestamp: 3 }]
+    const manual = 'manual '.repeat(1900)
+    const summary = vi.fn(async () => ({ summary: 'Earlier task and verified work', mode: 'llm' as const }))
+    const commits: Message[][] = []
+    let persisted = false
+    let sent: PiMessage[] = []
+    hooks.run.mockImplementation((context: { messages: AgentMessage[] }, config: Convert) => (async function* () {
+      sent = await config.convertToLlm(context.messages)
+    })())
+    const base = options(history)
+    const result = await executePiCoreLoop({ ...base,
+      contextManager: { getConfig: () => ({ systemPrompt: 'fixed', maxContextTokens: 10000, reserveTokens: 1000 }) } as ExecutePiCoreLoopInput['contextManager'],
+      generateContextSummaryWithLLM: summary,
+      collectContext: async () => [{ sourceId: 'skill', entries: { manual } }],
+      callbacks: {
+        onContextCommit: async messages => { commits.push(messages); persisted = true },
+        onMessagesUpdated: () => { expect(persisted).toBe(true) },
+      },
+    })
+    expect(summary).toHaveBeenCalledOnce()
+    expect(commits).toHaveLength(1)
+    expect(commits[0].some(message => message.kind === 'context_summary')).toBe(true)
+    expect(commits[0].some(message => message.kind === 'context_update')).toBe(true)
+    expect(foldContext(result.allMessages).get('skill')!.entries.manual).toBe(manual)
+    expect(JSON.stringify(sent)).toContain('Earlier task and verified work')
+    expect(JSON.stringify(sent)).toContain(manual)
+  })
+
   it('reintroduces a full baseline after a persisted summary without replaying old patches', async () => {
     let history: Message[] = []
     hooks.run.mockImplementation((context: { messages: AgentMessage[] }, config: Convert) => (async function* () {
@@ -130,5 +162,28 @@ describe('context admission at model call boundaries', () => {
     expect(sent).toHaveLength(2)
     expect(result.allMessages.at(-1)!.contextCommit!.changes[0].snapshot).toEqual({ a: 'A' })
     expect(result.allMessages.at(-1)!.contextCommit!.epoch).not.toBe(first.allMessages.at(-1)!.contextCommit!.epoch)
+  })
+
+  it('retains the fitting journal patch when proactive compression fails', async () => {
+    const entries = { manual: 'original manual '.repeat(350) }
+    let sent: PiMessage[] = []
+    hooks.run.mockImplementation((context: { messages: AgentMessage[] }, config: Convert) => (async function* () {
+      sent = await config.convertToLlm(context.messages)
+    })())
+    const first = await executePiCoreLoop({ ...options(), collectContext: async () => [{ sourceId: 'skill', entries }] })
+    const olderWork = 'earlier work '.repeat(1000)
+    const history: Message[] = [...first.allMessages, {
+      id: 'work-before-failed-summary', role: 'assistant', content: olderWork, timestamp: Date.now(),
+      usage: { promptTokens: 8900, completionTokens: 100, totalTokens: 9000 },
+    }, { id: 'next-task', role: 'user', content: 'Continue', timestamp: Date.now() }]
+    const summary = vi.fn(async () => { throw new Error('summary unavailable') })
+    const collectContext = vi.fn(async () => [{ sourceId: 'skill', entries: { ...entries, added: 'new rule' } }])
+    const result = await executePiCoreLoop({ ...options(history), generateContextSummaryWithLLM: summary, collectContext })
+    expect(summary).toHaveBeenCalledTimes(2)
+    expect(collectContext).toHaveBeenCalledOnce()
+    expect(result.allMessages.some(message => message.kind === 'context_summary')).toBe(false)
+    expect(result.allMessages.at(-1)!.contextCommit!.changes[0].snapshot).toBeUndefined()
+    expect(foldContext(result.allMessages).get('skill')!.entries).toEqual({ ...entries, added: 'new rule' })
+    expect(JSON.stringify(sent)).toContain(olderWork)
   })
 })

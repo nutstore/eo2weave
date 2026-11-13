@@ -111,6 +111,30 @@ export class SubagentRepository {
     })
   }
 
+  /** Commit a canonical checkpoint without changing the task's execution or lifecycle. */
+  async commitMessages(input: {
+    workspaceId: string
+    agentId: string
+    executionId: string
+    messages: Message[]
+  }): Promise<{ applied: boolean }> {
+    const db = getSQLiteDB()
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        `UPDATE subagent_tasks
+            SET messages_json = ?
+          WHERE workspace_id = ?
+            AND agent_id = ?
+            AND json_extract(execution_json, '$.executionId') = ?
+            AND status IN ('pending', 'running')
+            AND stopped = 0`,
+        [toJSON(input.messages), input.workspaceId, input.agentId, input.executionId]
+      )
+      const changed = await tx.queryFirst<{ count: number }>('SELECT changes() as count')
+      return { applied: (changed?.count || 0) > 0 }
+    })
+  }
+
   async deleteTask(workspaceId: string, agentId: string): Promise<void> {
     const db = getSQLiteDB()
     await db.execute(

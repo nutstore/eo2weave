@@ -31,6 +31,26 @@ describe('SubagentRepository', () => {
     hoisted.db.transaction.mockImplementation(async (callback: (tx: typeof hoisted.db) => Promise<void>) => callback(hoisted.db))
   })
 
+  it.each([1, 0])('reports whether the owned checkpoint update applies (%s rows)', async (count) => {
+    hoisted.db.queryFirst.mockResolvedValueOnce({ count })
+    const messages = [{ id: 'checkpoint', role: 'assistant' as const, content: 'summary', timestamp: 1 }]
+    const result = await new SubagentRepository().commitMessages({
+      workspaceId: 'parent', agentId: 'child', executionId: 'latest-accepted-execution', messages,
+    })
+
+    expect(result).toEqual({ applied: count === 1 })
+    expect(hoisted.db.transaction).toHaveBeenCalledOnce()
+    const [sql, params] = hoisted.db.execute.mock.calls[0] as [string, unknown[]]
+    expect(sql).toMatch(/SET\s+messages_json = \?\s+WHERE/)
+    expect(sql).toContain('workspace_id = ?')
+    expect(sql).toContain('agent_id = ?')
+    expect(sql).toContain("json_extract(execution_json, '$.executionId') = ?")
+    expect(sql).toContain("status IN ('pending', 'running')")
+    expect(sql).toContain('stopped = 0')
+    expect(params).toEqual([JSON.stringify(messages), 'parent', 'child', 'latest-accepted-execution'])
+    expect(hoisted.db.queryFirst).toHaveBeenCalledWith('SELECT changes() as count')
+  })
+
   it('returns applied=true when CAS transition updates one row', async () => {
     hoisted.db.queryFirst
       .mockResolvedValueOnce({ count: 1 }) // SELECT changes()

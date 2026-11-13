@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Message } from '../message-types'
 import { compressHistory } from '../loop/compression-runner'
+import { estimateCompressionTokens, serializeCompressionHistory } from '../loop/compression-history'
+import { internalToPiMessages } from '../loop/message-mappers'
 
 const history: Message[] = [
   { id: 'task', role: 'user', content: 'x'.repeat(1200) + ' FINAL_CONSTRAINT', timestamp: 1 },
@@ -8,6 +10,30 @@ const history: Message[] = [
   { id: 'tail', role: 'assistant', content: 'recent work', timestamp: 3 },
 ]
 describe('shared compression runner', () => {
+  it('compresses reasoning-heavy tool rounds while preserving the complete retained thinking block', async () => {
+    const reasoning = 'reason '.repeat(1500)
+    const task: Message = { id: 'task', role: 'user', content: 'Read all six files', timestamp: 1 }
+    const rounds = Array.from({ length: 6 }, (_, index): Message[] => [
+      { id: `call-${index}`, role: 'assistant', content: null, reasoning, timestamp: index * 2 + 2,
+        toolCalls: [{ id: `read-${index}`, type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: `${index}.txt` }) } }] },
+      { id: `result-${index}`, role: 'tool', toolCallId: `read-${index}`, name: 'read', content: 'file contents', timestamp: index * 2 + 3 },
+    ]).flat()
+    const messages = [task, ...rounds]
+    const generate = vi.fn(async (_content: string, _tokens: number, _messages?: Message[]) => ({ summary: 'Five files read; read the final file and continue.', mode: 'llm' as const }))
+    const result = await compressHistory({ messages, effectiveCapacityTokens: 8000, generateContextSummaryWithLLM: generate })
+
+    expect(result).not.toBeNull()
+    expect(generate).toHaveBeenCalledOnce()
+    expect(result!.messages.slice(1)).toEqual([task, ...rounds.slice(-2)])
+    expect(estimateCompressionTokens(result!.messages)).toBeLessThan(8000)
+    const replay = internalToPiMessages(result!.messages, { api: 'openai-completions', provider: 'openai', id: 'test', input: ['text'] } as never, 'Memory:')
+    const thinking = replay.flatMap(message => message.role === 'assistant' ? message.content.filter(part => part.type === 'thinking') : [])
+    expect(thinking).toEqual([{ type: 'thinking', thinking: reasoning }])
+    expect(serializeCompressionHistory(messages)).not.toContain(reasoning)
+    expect(generate.mock.calls[0][0]).not.toContain(reasoning)
+    expect(rounds.filter(message => message.role === 'assistant').every(message => message.reasoning === reasoning)).toBe(true)
+  })
+
   it('passes full typed source and preserves the user anchor and recent tail', async () => {
     const generate = vi.fn(async (_content: string, _tokens: number, _messages?: Message[]) => ({ summary: 'Goal and progress', mode: 'llm' as const }))
     const result = await compressHistory({ messages: history, effectiveCapacityTokens: 3000, generateContextSummaryWithLLM: generate })

@@ -57,4 +57,22 @@ describe('read_conversation_history', () => {
     expect(result.ok).toBe(false)
     expect(findByConversation).not.toHaveBeenCalled()
   })
+
+  it('recovers child source messages from the runtime-bound transcript without reading the parent', async () => {
+    const readHistory = vi.fn(async () => [{ id: 'child-result', role: 'tool' as const, toolCallId: 'child-call',
+      name: 'read', content: 'exact child evidence', timestamp: 1 }])
+    const result = JSON.parse(await readConversationHistoryExecutor({ message_id: 'child-result', conversation_id: 'other-chat' }, {
+      ...context, isSubagent: true, conversationHistory: { id: 'child-agent', read: readHistory },
+    }))
+    expect(result.data.conversationId).toBe('child-agent')
+    expect(JSON.parse(result.data.records[0].text)).toMatchObject({ id: 'child-result', content: 'exact child evidence' })
+    expect(readHistory).toHaveBeenCalledOnce()
+    expect(findByConversation).not.toHaveBeenCalled()
+  })
+
+  it('does not query the parent when a child lacks a bound transcript', async () => {
+    const result = JSON.parse(await readConversationHistoryExecutor({}, { ...context, isSubagent: true }))
+    expect(result.ok).toBe(false)
+    expect(findByConversation).not.toHaveBeenCalled()
+  })
 })

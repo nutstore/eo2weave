@@ -15,6 +15,8 @@ export interface ConvertAgentMessagesToLlmInput {
   signal?: AbortSignal
   systemPrompt?: string
   tools?: ToolDefinition[]
+  /** Current runtime state, staged before admission and rebuilt after compaction. */
+  getContextUpdate?: (visibleMessages: Message[], afterCompression: boolean) => Message | null
   agentMessages: PiAgentMessage[]
   model: Model<Api>
   provider: PiAIProvider
@@ -40,6 +42,7 @@ export interface ConvertAgentMessagesToLlmInput {
 
 export interface ConvertAgentMessagesToLlmResult {
   piMessages: PiMessage[]
+  contextUpdate?: Message | null
   convertCallCount: number
   lastSummaryConvertCall: number
   compressionBaseline: CompressionBaselineState | null
@@ -173,15 +176,19 @@ export async function convertAgentMessagesToLlm(
   })
 
   const availableInputTokens = resolveCompressionInputBudget(maxContextTokens, reserveTokens, input.systemPrompt, input.tools)
-  const requiresOverflowRecovery = estimateCompressionTokens(internalMessages) > availableInputTokens
+  let contextUpdate = input.getContextUpdate?.(internalMessages, false) ?? null
+  const initialCandidate = contextUpdate ? [...internalMessages, contextUpdate] : internalMessages
+  const requiresOverflowRecovery = estimateCompressionTokens(initialCandidate) > availableInputTokens
   let outputMessages = internalMessages
   // The real-usage gate controls proactive compression. Newly added content
   // still needs a fit check before dispatch, including during cooldown.
   if (shouldAllowCompression || (requiresOverflowRecovery && input.compressionEnabled !== false)) {
     try {
+      const rebuiltContext = input.getContextUpdate?.(internalMessages, true) ?? null
+      const contextTokens = rebuiltContext ? estimateCompressionTokens([rebuiltContext]) : 0
       const compressed = await compressHistory({
         messages: internalMessages,
-        effectiveCapacityTokens: Math.min(availableInputTokens, compressionTriggerThreshold),
+        effectiveCapacityTokens: Math.min(availableInputTokens - contextTokens, compressionTriggerThreshold),
         modelMaxOutputTokens: input.model.maxTokens,
         signal: input.signal,
         callbacks: input.callbacks,
@@ -189,23 +196,29 @@ export async function convertAgentMessagesToLlm(
       })
       input.signal?.throwIfAborted()
       if (compressed) {
+        assertCompressionInputFits(rebuiltContext ? [...compressed.messages, rebuiltContext] : compressed.messages, availableInputTokens)
         compressionBaseline = compressed.baseline
         outputMessages = compressed.messages
+        contextUpdate = rebuiltContext
         lastSummaryConvertCall = convertCallCount
         input.onSummaryInjected?.(compressed.summary, compressionBaseline.cutoffTimestamp, compressionBaseline.throughMessageId, compressionBaseline.preservedMessageIds)
       }
     } catch (error) {
       input.signal?.throwIfAborted()
       // Preserve every source message on failure; an oversized request must fail visibly.
-      if (estimateCompressionTokens(internalMessages) > availableInputTokens) throw error
+      if (requiresOverflowRecovery) throw error
       console.error('[AgentLoop] Context compression failed; retaining the complete transcript', error)
     }
   }
 
-  assertCompressionInputFits(outputMessages, availableInputTokens)
+  assertCompressionInputFits(contextUpdate ? [...outputMessages, contextUpdate] : outputMessages, availableInputTokens)
   input.signal?.throwIfAborted()
   return {
-    piMessages: internalToPiMessages(outputMessages, input.model, input.compressedMemoryPrefix),
+    piMessages: [
+      ...internalToPiMessages(outputMessages, input.model, input.compressedMemoryPrefix),
+      ...(contextUpdate ? internalToPiMessages([contextUpdate], input.model, input.compressedMemoryPrefix) : []),
+    ],
+    contextUpdate,
     convertCallCount,
     lastSummaryConvertCall,
     compressionBaseline,

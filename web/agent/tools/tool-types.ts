@@ -5,6 +5,7 @@ import type { SubagentAcceptedReceipt, SubagentBatchAcceptance } from '@/agent/s
  */
 
 import type { PiAIProvider } from '../llm/pi-ai-provider'
+import type { Message } from '../message-types'
 import type { CodeToolCapabilities } from '@/services/code-execution'
 
 /** JSON Schema subset for tool parameter definitions */
@@ -273,6 +274,8 @@ export interface ToolContext {
   /** Workspace ID bound to the current agent run */
   toolCallId?: string
   workspaceId?: string | null
+  /** Canonical transcript bound by the runtime, including delegated child histories. */
+  conversationHistory?: { id: string; read: () => Promise<readonly Message[]> }
   /** Active project ID for cross-namespace VFS routing */
   projectId?: string | null
   /**

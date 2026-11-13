@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { generateContextSummaryWithLLM } from '../loop/context-summary'
 import type { ChatCompletionRequest } from '../llm/llm-provider'
 import type { Message } from '../message-types'
+import { internalToPiMessages, materializeProviderHistory, piToInternalMessage } from '../loop/message-mappers'
 
 const response = (finish_reason = 'stop', content = 'checkpoint') => ({ choices: [{ message: { content }, finish_reason }] })
 const source: Message[] = [
@@ -10,6 +11,47 @@ const source: Message[] = [
   { id: 'result-id', role: 'tool', name: 'read', toolCallId: 'tool-id', content: 'all results', timestamp: 3 },
 ]
 describe('typed context summarizer', () => {
+  it.each(['aborted', 'error'] as const)('uses normal provider ownership and pairing for a canonical %s turn', async (kind) => {
+    const model = { api: 'openai-completions', provider: 'openai', id: 'test', input: ['text', 'image'] } as never
+    const rawArguments = '{ "path" : "precise/path.txt", "id": "argument-id" }'
+    const canonical: Message[] = [
+      { id: 'task', role: 'user', content: 'Continue from the screenshot', timestamp: 1,
+        assets: [{ name: 'reference.png', mimeType: 'image/png', size: 10, ocrBase64: 'UPLOADED_PIXELS' }] as never,
+        pageContext: { title: 'Source page', selectedText: 'EXACT_SELECTED_REQUIREMENT' } },
+      { id: 'failed', role: 'assistant', kind, content: 'partial work', timestamp: 2,
+        toolCalls: [{ id: 'failed-read', type: 'function', function: { name: 'read', arguments: '{}' } }] },
+      { id: 'failed-result', role: 'tool', toolCallId: 'failed-read', name: 'read', content: '{"status":"interrupted"}', timestamp: 3 },
+      { id: 'valid', role: 'assistant', content: 'Read evidence', timestamp: 4,
+        toolCalls: [{ id: 'valid-read', type: 'function', function: { name: 'read', arguments: rawArguments } }] },
+      { id: 'evidence-result', role: 'tool', toolCallId: 'valid-read', name: 'read', content: 'Verified file evidence', timestamp: 5 },
+      { id: 'generated', role: 'assistant', content: null, timestamp: 6, images: [{ mimeType: 'image/png', data: 'GENERATED_PIXELS' }] },
+    ]
+    const original = structuredClone(canonical)
+    const normal = internalToPiMessages(canonical, model, 'Memory:')
+    const expectedSources = normal.map(piToInternalMessage)
+    const materialized = materializeProviderHistory(canonical, model, 'Memory:')
+    const chat = vi.fn(async (_request: ChatCompletionRequest) => response())
+    await generateContextSummaryWithLLM({ provider: { chat, maxContextTokens: 50000, getModel: () => model } as never,
+      droppedContent: '', messages: canonical, maxSummaryTokens: 1000, compressedMemoryPrefix: 'Memory:' })
+    const request = chat.mock.calls[0][0]
+
+    expect(materialized.map(message => message.id)).toEqual(expectedSources.map(message => message!.id))
+    expect(materialized.find(message => message.id === 'valid')?.toolCalls?.[0].function.arguments).toBe(rawArguments)
+    const replay = request.messages.slice(1, -1)
+    expect(replay.filter(message => message.role === 'tool').map(message => message.tool_call_id)).toEqual(
+      normal.filter(message => message.role === 'toolResult').map(message => message.toolCallId)
+    )
+    const callIndex = replay.findIndex(message => message.tool_calls?.some(call => call.id === 'valid-read'))
+    expect(replay[callIndex + 1]).toMatchObject({ role: 'tool', tool_call_id: 'valid-read', content: 'Verified file evidence' })
+    expect(replay[callIndex].tool_calls?.[0].function.arguments).toBe(rawArguments)
+    expect(JSON.stringify(replay)).not.toContain('failed-read')
+    expect(JSON.stringify(request.messages)).toContain('UPLOADED_PIXELS')
+    expect(JSON.stringify(request.messages)).toContain('GENERATED_PIXELS')
+    expect(JSON.stringify(request.messages)).toContain('EXACT_SELECTED_REQUIREMENT')
+    expect(request.messages.at(-1)?.content).toContain('evidence-result')
+    expect(canonical).toEqual(original)
+  })
+
   it('replays uploaded and generated image pixels and captured page context', async () => {
     const chat = vi.fn(async (_request: ChatCompletionRequest) => response())
     const images: Message[] = [

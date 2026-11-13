@@ -53,10 +53,15 @@ export function serializeCompressionHistory(messages: Message[]): string {
 }
 
 export function estimateCompressionTokens(messages: Message[]): number {
-  return Math.ceil(new TextEncoder().encode(serializeCompressionHistory(messages)).length / 3) + messages.reduce((count, message) => {
+  const encoder = new TextEncoder()
+  return Math.ceil(encoder.encode(serializeCompressionHistory(messages)).length / 3) + messages.reduce((count, message) => {
     const inputImages = message.contentParts?.filter(part => part.type === 'image').length
       || message.assets?.filter(asset => asset.mimeType.startsWith('image/') && asset.ocrBase64).length || 0
-    return count + 16 + 4096 * (inputImages + (message.images?.length ?? 0))
+    // Thinking blocks consume replay capacity but are not factual summary evidence.
+    const reasoningTokens = message.role === 'assistant' && message.reasoning
+      && !['context_summary', 'run_changes', 'empty', 'error', 'aborted'].includes(message.kind ?? '')
+      ? Math.ceil(encoder.encode(message.reasoning).length / 3) : 0
+    return count + 16 + reasoningTokens + 4096 * (inputImages + (message.images?.length ?? 0))
   }, 0)
 }
 

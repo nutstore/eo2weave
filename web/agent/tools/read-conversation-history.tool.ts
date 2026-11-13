@@ -48,13 +48,15 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
 }
 
 export const readConversationHistoryExecutor: ToolExecutor = async (args, context) => {
-  const conversationId = context.workspaceId
+  const conversationId = context.conversationHistory?.id ?? (context.isSubagent ? null : context.workspaceId)
   if (!conversationId) return toolErrorJson('read_conversation_history', 'invalid_arguments', 'No current conversation is available.')
   try {
     const messageId = typeof args.message_id === 'string' ? args.message_id : ''
     const query = typeof args.query === 'string' ? args.query.trim().toLowerCase() : ''
-    const scope = JSON.stringify([messageId, query])
-    const all = await getMessageRepository().findByConversation(conversationId)
+    const scope = JSON.stringify([conversationId, messageId, query])
+    const all = context.conversationHistory
+      ? await context.conversationHistory.read()
+      : await getMessageRepository().findByConversation(conversationId)
     const source = all.filter(message => message.kind !== 'context_update' && message.kind !== 'run_changes')
       .map(message => ({ id: message.id, text: historyRecord(message) }))
       .filter(record => (!messageId || record.id === messageId) && (!query || record.text.toLowerCase().includes(query)))
