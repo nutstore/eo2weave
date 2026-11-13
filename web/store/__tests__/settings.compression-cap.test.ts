@@ -35,7 +35,7 @@ describe('absolute compression cap settings (#104)', () => {
 
     const state = useSettingsStore.getState()
     expect(state.compressionAbsoluteCapEnabled).toBe(true)
-    expect(state.compressionAbsoluteCap).toBe(200_000)
+    expect(state.compressionAbsoluteCap).toBe(400_000)
     // Unrelated settings still hydrate.
     expect(state.temperature).toBe(0.7)
   })
@@ -53,7 +53,7 @@ describe('absolute compression cap settings (#104)', () => {
     seedStorage({ compressionAbsoluteCap: 'not-a-number' }, 4)
     const { useSettingsStore } = await importStore()
 
-    expect(useSettingsStore.getState().compressionAbsoluteCap).toBe(200_000)
+    expect(useSettingsStore.getState().compressionAbsoluteCap).toBe(400_000)
   })
 
   it('falls back to the default cap for a non-positive stored value', async () => {
@@ -62,7 +62,7 @@ describe('absolute compression cap settings (#104)', () => {
     seedStorage({ compressionAbsoluteCap: null }, 4)
     const { useSettingsStore } = await importStore()
 
-    expect(useSettingsStore.getState().compressionAbsoluteCap).toBe(200_000)
+    expect(useSettingsStore.getState().compressionAbsoluteCap).toBe(400_000)
   })
 
   it('leaves a current-version snapshot untouched', async () => {
@@ -70,6 +70,15 @@ describe('absolute compression cap settings (#104)', () => {
     const { useSettingsStore } = await importStore()
 
     expect(useSettingsStore.getState().compressionAbsoluteCap).toBe(45_000)
+  })
+
+  it('defaults new installs to 400K without changing an explicitly saved 200K cap', async () => {
+    const { useSettingsStore } = await importStore()
+    expect(useSettingsStore.getState().compressionAbsoluteCap).toBe(400_000)
+
+    seedStorage({ compressionAbsoluteCapEnabled: true, compressionAbsoluteCap: 200_000 }, 5)
+    await useSettingsStore.persist.rehydrate()
+    expect(useSettingsStore.getState().compressionAbsoluteCap).toBe(200_000)
   })
 
   it('clamps writes and ignores a cleared input', async () => {

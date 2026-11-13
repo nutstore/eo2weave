@@ -445,12 +445,13 @@ export const settings = {
       "대화가 모델의 컨텍스트 윈도에 가까워지면 오래된 메시지가 자동으로 요약됩니다.",
     compressionRatioTrigger: "비율 트리거",
     compressionRatioFixed: "85%(고정)",
-    compressionAbsoluteCap: "절대 상한",
-    compressionAbsoluteCapHint: "컨텍스트가 이 토큰 수를 넘으면 비율과 관계없이 압축합니다",
+    compressionAbsoluteCap: "조기 압축 기준",
+    compressionAbsoluteCapHint: "이 토큰 수에서 미리 압축합니다. 기본값은 400k이며 변경하거나 끌 수 있습니다.",
     compressionTriggerExplain:
-      "트리거는 둘 중 작은 값이며 대화마다 계산됩니다.",
+      "모델 윈도의 85%와 조기 기준 중 작은 값을 사용하며 출력 공간을 예약합니다.",
+    compressionEffectiveTrigger: "현재 모델의 예상 압축 기준: {tokens} tokens.",
     compressionAbsoluteCapOffWarning:
-      "절대 상한이 꺼져 있습니다: 윈도의 85%에 도달할 때만 압축되므로 매우 긴 대화는 모델의 한도를 초과해 실패할 수 있습니다.",
+      "조기 압축 기준이 꺼져 있습니다. 모델 윈도와 출력 예약 공간에 따라 자동 압축합니다.",
 
     // 사고 모드
     thinkingMode: "사고 모드",

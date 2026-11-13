@@ -1,6 +1,5 @@
 import { reconcileContext, type ContextObservation } from '@/agent/context/journal'
 import { bashCommandRegistry } from '@/agent/bash-commands/registry'
-import { produce } from 'immer'
 import type { StreamFn } from '@earendil-works/pi-agent-core'
 import { streamSimple as piAiStreamSimple } from '@earendil-works/pi-ai'
 import { useSettingsStore } from '@/store/settings.store'
@@ -10,6 +9,7 @@ import type { PiAIProvider } from '../llm/pi-ai-provider'
 import { applyMaxThinkingOverride, stripDeveloperRoleForDynamicProviders, type ExtendedThinkingLevel } from '../llm/pi-ai-custom-openai-fetch'
 import { generateId, type Message } from '../message-types'
 import type { ToolRegistry } from '../tool-registry'
+import type { ToolDefinition } from '../tools/tool-types'
 import type { ToolContext } from '../tools/tool-types'
 import type { CompressionBaselineState } from './context-compression'
 import { buildAgentTools } from './build-agent-tools'
@@ -95,7 +95,9 @@ export interface ExecutePiCoreLoopInput {
   compressedMemoryPrefix: string
   generateContextSummaryWithLLM: (
     droppedContent: string,
-    maxSummaryTokens: number
+    maxSummaryTokens: number,
+    messages?: Message[],
+    replay?: { systemPrompt: string; tools: ToolDefinition[] }
   ) => Promise<{ summary: string | null; mode: CompressionSummaryMode }>
   onAbortRequested?: () => void
   /** Restored compression baseline from a previous run's persisted state. */
@@ -344,8 +346,31 @@ export async function executePiCoreLoop(
       convertToLlm: async (agentMessages) => {
         await bashCommandRegistry.refresh()
         const contextConfig = input.contextManager.getConfig()
+        const summaryTools: ToolDefinition[] = agentTools.map(tool => ({ type: 'function', function: {
+          name: tool.name, description: tool.description, parameters: tool.parameters as never,
+        } }))
+        const observations = await input.collectContext?.()
+        input.signal?.throwIfAborted()
+        const history = messageState.allMessages
+        const summaryIndex = history.map(message => message.kind).lastIndexOf('context_summary')
+        const contextIndex = history.map(message => message.kind).lastIndexOf('context_update')
+        const envelope = JSON.stringify({
+          version: 1, provider: model.provider, model: model.id, api: model.api, baseUrl: model.baseUrl,
+          system: context.systemPrompt,
+          tools: agentTools.map(({ name, description, parameters }) => ({ name, description, parameters })),
+        })
+        let pendingSummary: Message | undefined
         const converted = await convertAgentMessagesToLlm({
           sessionId: input.sessionId,
+          signal: input.signal,
+          systemPrompt: context.systemPrompt,
+          tools: summaryTools,
+          getContextUpdate: observations ? (visibleMessages, afterCompression) => {
+            const latestCommit = history[contextIndex]
+            const latestCommitVisible = !latestCommit || visibleMessages.some(message => message.id === latestCommit.id)
+            return reconcileContext(history, observations, envelope,
+              afterCompression || summaryIndex > contextIndex || !latestCommitVisible) ?? null
+          } : undefined,
           agentMessages,
           model,
           provider: input.provider,
@@ -359,62 +384,30 @@ export async function executePiCoreLoop(
           compressionEnabled: contextConfig.enableSummarization,
           compressionAbsoluteCapEnabled: contextConfig.compressionAbsoluteCapEnabled,
           compressionAbsoluteCap: contextConfig.compressionAbsoluteCap,
-          generateContextSummaryWithLLM: input.generateContextSummaryWithLLM,
-          onSummaryInjected: (summary, cutoffTimestamp, throughMessageId) => {
-            // Create context_summary as a user-role message so the LLM always
-            // receives it as role='user'.  The kind flag lets the UI render it
-            // with the amber summary styling and lets internalToPiMessages()
-            // prepend the compressed-memory prefix for the LLM.
-            const summaryMsg: Message = {
-              id: generateId(),
-              role: 'user',
-              content: summary,
-              kind: 'context_summary',
-              ...(throughMessageId ? { compressionBoundary: { throughMessageId, cutoffTimestamp } } : {}),
+          generateContextSummaryWithLLM: (content, budget, messages) => input.generateContextSummaryWithLLM(
+            content, budget, messages, { systemPrompt: context.systemPrompt, tools: summaryTools }),
+          onSummaryInjected: (summary, cutoffTimestamp, throughMessageId, preservedMessageIds) => {
+            pendingSummary = {
+              id: generateId(), role: 'user', content: summary, kind: 'context_summary',
+              ...(throughMessageId ? { compressionBoundary: { throughMessageId, cutoffTimestamp, preservedMessageIds } } : {}),
               timestamp: Math.max(0, cutoffTimestamp - 1),
             }
-            const nextMessages = produce(messageState.allMessages, (draft) => {
-              draft.push(summaryMsg)
-            })
-            messageState.allMessages = nextMessages
-            allMessages = nextMessages
-            input.callbacks?.onMessagesUpdated?.(nextMessages)
           },
         })
+        const update = converted.contextUpdate
+        if (pendingSummary || update) {
+          const nextMessages = [...messageState.allMessages, ...(pendingSummary ? [pendingSummary] : []), ...(update ? [update] : [])]
+          await input.callbacks?.onContextCommit?.(nextMessages)
+          input.signal?.throwIfAborted()
+          messageState.allMessages = nextMessages
+          allMessages = nextMessages
+          input.callbacks?.onMessagesUpdated?.(nextMessages)
+          if (update) agentMessages.push(...internalToPiMessages([update], model, input.compressedMemoryPrefix))
+        }
 
         convertCallCount = converted.convertCallCount
         lastSummaryConvertCall = converted.lastSummaryConvertCall
         compressionBaseline = converted.compressionBaseline
-        if (input.collectContext) {
-          const observations = await input.collectContext()
-          input.signal?.throwIfAborted()
-          const history = messageState.allMessages
-          const summaryIndex = history.map(message => message.kind).lastIndexOf('context_summary')
-          const contextIndex = history.map(message => message.kind).lastIndexOf('context_update')
-          const envelope = JSON.stringify({
-            version: 1, provider: model.provider, model: model.id, api: model.api, baseUrl: model.baseUrl,
-            system: context.systemPrompt,
-            tools: agentTools.map(({ name, description, parameters }) => ({ name, description, parameters })),
-          })
-          const latestCommit = history[contextIndex]
-          const latestCommitVisible = !latestCommit || converted.piMessages.some(message =>
-            piToInternalMessage(message)?.id === latestCommit.id)
-          const update = reconcileContext(history, observations, envelope,
-            summaryIndex > contextIndex || !latestCommitVisible)
-          if (update) {
-            const next = [...history, update]
-            await input.callbacks?.onContextCommit?.(next)
-            input.signal?.throwIfAborted()
-            messageState.allMessages = next
-            allMessages = next
-            input.callbacks?.onMessagesUpdated?.(next)
-            const mapped = internalToPiMessages([update], model, input.compressedMemoryPrefix)
-            // Commit to both histories: the library owns tool execution while the
-            // application owns durable/UI state. Retries reuse these same records.
-            agentMessages.push(...mapped)
-            converted.piMessages.push(...mapped)
-          }
-        }
         return converted.piMessages
       },
     },

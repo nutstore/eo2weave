@@ -43,6 +43,7 @@ type SubagentTaskInternal = {
   latestExecution?: SubagentExecution
   agentId: string
   accepted: boolean
+  persistence?: Promise<void>
   terminalPersisting?: boolean
   name?: string
   description: string
@@ -371,9 +372,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           message: enqueue.message,
         }
       }
-      task.updated_at = enqueue.queued_at
-      task.last_activity_at = enqueue.queued_at
-      this.persistToSQLite()
       this.detach(task)
       return {
         success: true,
@@ -394,9 +392,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         message: enqueue.message,
       }
     }
-    task.updated_at = enqueue.queued_at
-    task.last_activity_at = enqueue.queued_at
-    this.persistToSQLite()
     this.detach(task)
     return {
       success: true,
@@ -537,21 +532,23 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       }
     }
     const transcriptRecovered = task.messages.length
-    if (typeof input.timeout_ms === 'number') {
-      task.timeout_ms = this.parseExecutionTimeout(input.timeout_ms)
-    }
-    if (!task.processing) {
-      this.setStatus(task, 'pending')
-      task.error = undefined
-      this.clearRunTimeout(task)
-    }
-    task.stopped = false
-    const execution = this.createExecution(task.latestExecution?.isAsync ?? false)
-    task.latestExecution = execution
-    task.queue.push({ message: prompt, enqueued_at: Date.now(), execution })
-    task.updated_at = Date.now()
-    task.last_activity_at = task.updated_at
-    this.persistToSQLite()
+    await this.withTaskPersistence(task, async () => {
+      if (typeof input.timeout_ms === 'number') {
+        task.timeout_ms = this.parseExecutionTimeout(input.timeout_ms)
+      }
+      if (!task.processing) {
+        this.setStatus(task, 'pending')
+        task.error = undefined
+        this.clearRunTimeout(task)
+      }
+      task.stopped = false
+      const execution = this.createExecution(task.latestExecution?.isAsync ?? false)
+      task.latestExecution = execution
+      task.queue.push({ message: prompt, enqueued_at: Date.now(), execution })
+      task.updated_at = Date.now()
+      task.last_activity_at = task.updated_at
+      await this.writeTask(task)
+    })
     this.detach(task)
     return {
       status: 'resumed',
@@ -844,6 +841,28 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         let currentToolCallId: string | undefined
         const toolArgBuffers = new Map<string, string>()
         const resultMessages = await loop.run(task.messages, {
+          onContextCommit: async (messages) => {
+            if (!isCurrent()) throw new Error('Subagent execution is no longer active.')
+            await this.withTaskPersistence(task, async () => {
+              if (!isCurrent()) throw new Error('Subagent execution is no longer active.')
+              const { getSubagentRepository } = await this.repositories
+              if (!isCurrent()) throw new Error('Subagent execution is no longer active.')
+              // Earlier queue writes have durably saved the latest accepted identity.
+              const result = await getSubagentRepository().commitMessages({
+                workspaceId: this.deps.workspaceId,
+                agentId: task.agentId,
+                executionId: task.latestExecution!.executionId,
+                messages,
+              })
+              if (!result.applied || !isCurrent()) {
+                throw new Error('Subagent context checkpoint was not committed by the active execution.')
+              }
+              trace.replaceMessages(messages)
+              task.messages = trace.messages()
+              task.last_activity_at = Date.now()
+              this.publishTask(task)
+            })
+          },
           onMessagesUpdated: (messages) => {
             if (!isCurrent()) return
             trace.replaceMessages(messages)
@@ -1057,6 +1076,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     const taskContext: ToolContext = {
       ...deps.baseToolContext,
       isSubagent: true,
+      conversationHistory: { id: task.agentId, read: async () => [...task.messages] },
       agentMode: task.mode,
       subagentRuntime: undefined,
       readFileState: new Map(),
@@ -1332,30 +1352,26 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     | { success: true; queue_position: number; queued_at: number }
     | { success: false; message: 'QUEUE_FULL' | 'TASK_ALREADY_COMPLETED' }
   > {
-    if (options.overflow_action === 'drop_oldest') {
-      const queuedAt = Date.now()
-      const enqueue = this.enqueueMessage(task, message, queuedAt, {
-        overflow_action: options.overflow_action,
-      })
-      if (!enqueue.success) {
-        return { success: false, message: enqueue.message }
-      }
-      return { success: true, queue_position: enqueue.queue_position, queued_at: queuedAt }
-    }
-
     const deadline = Date.now() + options.timeout_ms
     // eslint-disable-next-line no-constant-condition -- bounded polling loop, exits via return on completion, successful enqueue, or deadline
     while (true) {
-      if (task.status === 'completed') {
-        return { success: false, message: 'TASK_ALREADY_COMPLETED' }
-      }
-      const queuedAt = Date.now()
-      const enqueue = this.enqueueMessage(task, message, queuedAt, {
-        overflow_action: 'reject',
+      // Capacity polling stays outside the write lane so the active child can
+      // checkpoint and finish while a sender waits for room in its queue.
+      const enqueue = await this.withTaskPersistence(task, async () => {
+        if (task.status === 'completed') {
+          return { success: false as const, message: 'TASK_ALREADY_COMPLETED' as const }
+        }
+        const queuedAt = Date.now()
+        const result = this.enqueueMessage(task, message, queuedAt, {
+          overflow_action: options.overflow_action,
+        })
+        if (!result.success) return result
+        task.updated_at = queuedAt
+        task.last_activity_at = queuedAt
+        await this.writeTask(task)
+        return { ...result, queued_at: queuedAt }
       })
-      if (enqueue.success) {
-        return { success: true, queue_position: enqueue.queue_position, queued_at: queuedAt }
-      }
+      if (enqueue.success || enqueue.message === 'TASK_ALREADY_COMPLETED') return enqueue
       if (Date.now() >= deadline) {
         return { success: false, message: 'QUEUE_FULL' }
       }
@@ -1567,7 +1583,12 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       const { getSubagentCompletionRepository } = await this.repositories
       const persisted = await getSubagentCompletionRepository().finishExecution({ task: this.toStoredTask(task), completion })
       if (persisted) completion.status = persisted.status
-    } else await this.persistToSQLiteAsync()
+    } else if (task.stopped) {
+      // A stop must invalidate a pending checkpoint without waiting for its lane.
+      await this.writeTask(task)
+    } else {
+      await this.withTaskPersistence(task, () => this.writeTask(task))
+    }
     if (execution.suppressed || task.stopped) completion.status = 'suppressed'
     task.terminalPersisting = false
     execution.completion = completion
@@ -1625,20 +1646,32 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     void this.persistToSQLiteInternal()
   }
 
-  /** Awaitable version — use when subsequent CAS depends on the row existing. */
-  private async persistToSQLiteAsync(): Promise<void> {
+  /** Serialize identity changes, checkpoint commits and snapshots for one child. */
+  private withTaskPersistence<T>(task: SubagentTaskInternal, operation: () => Promise<T>): Promise<T> {
+    const result = (task.persistence ?? Promise.resolve()).then(() => {
+      if (this.disposed) throw new Error('Subagent runtime is disposed.')
+      return operation()
+    })
+    task.persistence = result.then(() => {}, () => {})
+    return result
+  }
+
+  /** Capture the current row only after entering its persistence lane. */
+  private async writeTask(task: SubagentTaskInternal): Promise<void> {
     const { getSubagentRepository } = await this.repositories
-    await getSubagentRepository().saveBatch(this.deps.workspaceId, Array.from(this.tasks.values()).filter((task) => task.accepted && !task.terminalPersisting).map((task) => this.toStoredTask(task)))
+    if (this.disposed) throw new Error('Subagent runtime is disposed.')
+    await getSubagentRepository().saveBatch(this.deps.workspaceId, [this.toStoredTask(task)])
   }
 
   private async persistToSQLiteInternal(): Promise<void> {
     if (this.disposed) return
     try {
-      const { getSubagentRepository } = await this.repositories
-      const repo = getSubagentRepository()
-      if (this.disposed) return
-      const serializable = Array.from(this.tasks.values()).filter((task) => task.accepted && !task.terminalPersisting).map((task) => this.toStoredTask(task))
-      await repo.saveBatch(this.deps.workspaceId, serializable)
+      await Promise.all(Array.from(this.tasks.values(), task => this.withTaskPersistence(task, async () => {
+        if (this.disposed || !task.accepted || task.terminalPersisting) return
+        const { getSubagentRepository } = await this.repositories
+        if (this.disposed) return
+        await getSubagentRepository().saveBatch(this.deps.workspaceId, [this.toStoredTask(task)])
+      })))
     } catch {
       // ignore persistence failures for runtime continuity
     }

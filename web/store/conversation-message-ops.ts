@@ -1,3 +1,4 @@
+import { restoreCompressionBaseline } from '@/agent/loop/context-compression'
 //=============================================================================
 // Conversation message operations — pure helpers extracted from
 // conversation.store.sqlite.ts (Task B2, docs/plans/2026-09-19-split-large-files.md).
@@ -475,14 +476,8 @@ export function deriveContextUsageFromAssistantUsage(
  * so we add 1 to recover the original cutoff.
  */
 export function healCompressionBaseline(conv: Conversation): void {
-  if (conv.compressedContextSummary) return // already has baseline
-  const summaryMsg = [...conv.messages].reverse().find((m) => m.kind === 'context_summary')
-  if (!summaryMsg?.content || typeof summaryMsg.timestamp !== 'number') return
-  conv.compressedContextSummary = summaryMsg.content
-  conv.compressedContextCutoffTimestamp = summaryMsg.timestamp + 1
-  console.info('[conversation.store] Healed compression baseline from messages', {
-    conversationId: conv.id,
-    summaryChars: summaryMsg.content.length,
-    cutoffTimestamp: conv.compressedContextCutoffTimestamp,
-  })
+  const baseline = restoreCompressionBaseline(conv.messages)
+  if (!baseline) return
+  conv.compressedContextSummary = baseline.summary
+  conv.compressedContextCutoffTimestamp = baseline.cutoffTimestamp
 }

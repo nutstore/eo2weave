@@ -1,5 +1,6 @@
+import { projectCompressionHistory } from './compression-history'
 import type { ChatMessage } from '../llm/llm-provider'
-import { generateId, type Message } from '../message-types'
+import type { Message } from '../message-types'
 
 /**
  * Compression trigger threshold as a fraction of the model's context window.
@@ -8,17 +9,14 @@ import { generateId, type Message } from '../message-types'
  */
 export const COMPRESSION_TRIGGER_RATIO = 0.85
 
-/**
- * Default for the absolute compression cap (Settings → Advanced → context
- * compression). 200K matches the context window of the models this app
- * targets most, so the cap only binds when a model advertises a larger
- * window than the user is willing to pay for per turn.
- */
-export const DEFAULT_COMPRESSION_ABSOLUTE_CAP = 200_000
+/** Default optional early-compression threshold, independent of model capacity. */
+export const DEFAULT_COMPRESSION_ABSOLUTE_CAP = 400_000
 
 export interface CompressionTriggerInput {
   /** The model's advertised context window. */
   maxContextTokens: number
+  /** Capacity reserved for the next model response. */
+  reserveTokens?: number
   /**
    * Whether the absolute cap is enabled (Settings toggle). Only an EXPLICIT
    * `false` turns it off: `undefined` means "on", so a caller that predates the
@@ -37,7 +35,9 @@ export interface CompressionTriggerInput {
  * leaves a path that grows unbounded on models with very large windows.
  */
 export function resolveCompressionTriggerTokens(input: CompressionTriggerInput): number {
-  const ratioTrigger = Math.floor(input.maxContextTokens * COMPRESSION_TRIGGER_RATIO)
+  const safetyTokens = Math.ceil(input.maxContextTokens * 0.05)
+  const inputLimit = Math.max(1, input.maxContextTokens - Math.max(0, input.reserveTokens ?? 0) - safetyTokens)
+  const ratioTrigger = Math.min(Math.floor(input.maxContextTokens * COMPRESSION_TRIGGER_RATIO), inputLimit)
   if (input.absoluteCapEnabled === false) return ratioTrigger
   const cap = Math.floor(input.absoluteCap ?? DEFAULT_COMPRESSION_ABSOLUTE_CAP)
   if (!Number.isFinite(cap) || cap <= 0) return ratioTrigger
@@ -48,6 +48,7 @@ export interface CompressionBaselineState {
   summary: string
   cutoffTimestamp: number
   throughMessageId?: string
+  preservedMessageIds?: string[]
 }
 
 export function injectSummaryMessage(
@@ -91,28 +92,17 @@ export function applyCompressionBaseline(
   baseline: CompressionBaselineState,
   _compressedMemoryPrefix: string
 ): Message[] {
-  const boundaryIndex = baseline.throughMessageId
-    ? messages.findIndex(message => message.id === baseline.throughMessageId) : -1
-  const latestSummary = messages.map(message => message.kind).lastIndexOf('context_summary')
-  const retained = boundaryIndex >= 0 ? messages.slice(boundaryIndex + 1)
-    : latestSummary >= 0 ? messages.slice(latestSummary + 1) : messages.filter(
-    (msg) => typeof msg.timestamp === 'number' && msg.timestamp >= baseline.cutoffTimestamp
-  )
+  return projectCompressionHistory(messages, baseline)
+}
 
-  // Create the summary as a user-role message with kind='context_summary'.
-  // Using role='user' ensures that regardless of which conversion path the
-  // message takes (messagesToChatMessages → trimmed → internalToPiMessages, or
-  // direct internalToPiMessages), it always reaches the LLM as a user message.
-  // Previously this used createAssistantMessage which set role='assistant';
-  // that role leaked through when the conversion pipeline lost the `kind` field.
-  const summaryMessage: Message = {
-    id: generateId(),
-    role: 'user',
-    // Store raw summary without prefix — internalToPiMessages() will prepend
-    // the prefix when mapping to PiMessage for the LLM.
-    content: baseline.summary,
-    kind: 'context_summary',
-    timestamp: Math.max(0, baseline.cutoffTimestamp - 1),
+/** Restore the authoritative checkpoint boundary, independently of its UI timestamp. */
+export function restoreCompressionBaseline(messages: Message[]): CompressionBaselineState | null {
+  const marker = messages.findLast(message => message.kind === 'context_summary')
+  if (!marker?.content) return null
+  return {
+    summary: marker.content,
+    cutoffTimestamp: marker.compressionBoundary?.cutoffTimestamp ?? marker.timestamp + 1,
+    throughMessageId: marker.compressionBoundary?.throughMessageId,
+    preservedMessageIds: marker.compressionBoundary?.preservedMessageIds,
   }
-  return [summaryMessage, ...retained]
 }

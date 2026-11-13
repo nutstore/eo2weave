@@ -452,12 +452,13 @@ export const settings = {
       "会話がモデルのコンテキストウィンドウに近づくと、古いメッセージは自動的に要約されます。",
     compressionRatioTrigger: "比率トリガー",
     compressionRatioFixed: "85%（固定）",
-    compressionAbsoluteCap: "絶対上限",
-    compressionAbsoluteCapHint: "コンテキストがこのトークン数を超えたら、比率に関係なく圧縮します",
+    compressionAbsoluteCap: "早期圧縮のしきい値",
+    compressionAbsoluteCapHint: "このトークン数で早期圧縮します。既定は400kで、変更や無効化ができます。",
     compressionTriggerExplain:
-      "トリガーは両者の小さい方で、会話ごとに計算されます。",
+      "モデルウィンドウの85%と早期しきい値の小さい方を使用し、出力用の領域を確保します。",
+    compressionEffectiveTrigger: "現在のモデルの予想トリガー：{tokens} tokens。",
     compressionAbsoluteCapOffWarning:
-      "絶対上限がオフです：コンテキストウィンドウの 85% に達したときだけ圧縮されるため、非常に長い会話はモデルの上限を超えてエラーになる可能性があります。",
+      "早期しきい値は無効です。モデルウィンドウと出力用の領域に応じて自動圧縮します。",
 
     // 思考モード
     thinkingMode: "思考モード",

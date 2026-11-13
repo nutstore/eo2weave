@@ -471,6 +471,7 @@ export class ContextManager {
   private getCompressionTriggerTokens(): number {
     return resolveCompressionTriggerTokens({
       maxContextTokens: this.maxTokens,
+      reserveTokens: this.reserveTokens,
       absoluteCapEnabled: this.compressionAbsoluteCapEnabled,
       absoluteCap: this.compressionAbsoluteCap,
     })

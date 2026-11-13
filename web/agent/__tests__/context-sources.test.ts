@@ -48,3 +48,19 @@ it('keeps provider skills with the same name distinct in Agent context', async (
   expect(Object.keys(observations[0].entries)).toEqual(['provider:one:same', 'provider:two:same', 'same'])
   expect(observations[0].entries['provider:one:same']).toContain('<name>provider:one:same</name>')
 })
+
+it('rebuilds active subagent identities after compaction without relying on the summary', async () => {
+  let running = true
+  const runtime = { list: vi.fn(async ({ status }: { status: string }) => ({
+    agents: running && status === 'running' ? [{ agentId: 'worker-1', name: 'investigate', description: 'Inspect project proj-1', status: 'running' }] : [], total: 0,
+  })) }
+  const source = createRuntimeContextSources(() => ({ ...input, toolContext: { ...input.toolContext, subagentRuntime: runtime as never } }))
+    .find(source => source.id === 'background-tasks')!
+  const first = await source.collect()
+  expect(first!['worker-1']).toContain('proj-1')
+  expect(first!['worker-1']).toContain('running')
+  const initial = reconcileContext([], [{ sourceId: source.id, entries: first! }], 'fixed')!
+  running = false
+  const done = reconcileContext([initial], [{ sourceId: source.id, entries: (await source.collect())! }], 'fixed')!
+  expect(done.contextCommit!.changes[0].removed).toContain('worker-1')
+})

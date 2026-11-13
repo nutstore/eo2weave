@@ -436,12 +436,13 @@ export const settings = {
     contextCompressionHint: "对话接近模型上下文窗口时，旧消息会被自动摘要。",
     compressionRatioTrigger: "比例触发",
     compressionRatioFixed: "85%（固定）",
-    compressionAbsoluteCap: "绝对上限",
-    compressionAbsoluteCapHint: "上下文超过该 token 数时立即压缩，不受比例影响",
+    compressionAbsoluteCap: "提前压缩阈值",
+    compressionAbsoluteCapHint: "达到该 token 数时提前压缩。默认 400k，可调整或关闭。",
     compressionTriggerExplain:
-      "触发点取两者较小值，按每个对话的实际上下文计算。",
+      "触发点取模型窗口的 85% 与提前压缩阈值中较小者，并为输出预留空间。",
+    compressionEffectiveTrigger: "当前模型预计触发点：{tokens} tokens。",
     compressionAbsoluteCapOffWarning:
-      "绝对上限已关闭：只在达到上下文窗口的 85% 时压缩，超长对话可能超出模型的硬上限而报错。",
+      "已关闭提前压缩阈值，将根据模型窗口和输出预留空间自动压缩。",
 
     // 思考模式
     thinkingMode: "思考模式",

@@ -449,13 +449,14 @@ export const settings = {
       "Older messages are summarized automatically as the conversation approaches the model's context window.",
     compressionRatioTrigger: "Ratio trigger",
     compressionRatioFixed: "85% (fixed)",
-    compressionAbsoluteCap: "Absolute cap",
+    compressionAbsoluteCap: "Early compression threshold",
     compressionAbsoluteCapHint:
-      "Compress as soon as the context exceeds this many tokens, regardless of the ratio",
+      "Compress earlier at this token count. Defaults to 400k; adjustable or optional.",
     compressionTriggerExplain:
-      "The trigger is the smaller of the two, evaluated per conversation.",
+      "Uses the lower of 85% of the model window and the early threshold, with space reserved for output.",
+    compressionEffectiveTrigger: "Estimated trigger for this model: {tokens} tokens.",
     compressionAbsoluteCapOffWarning:
-      "Absolute cap is off: compression only starts at 85% of the window, so very long conversations can exceed the model's hard limit and fail.",
+      "Early compression threshold is off. Compression follows the model window and output reservation.",
 
     // Thinking Mode
     thinkingMode: "Thinking Mode",

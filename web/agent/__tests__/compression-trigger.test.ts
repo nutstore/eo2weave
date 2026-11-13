@@ -37,6 +37,18 @@ describe('resolveCompressionTriggerTokens', () => {
     expect(resolveCompressionTriggerTokens({ maxContextTokens: 128_000 })).toBe(108_800)
   })
 
+  it('defaults a 1M model to an early 400K trigger', () => {
+    expect(resolveCompressionTriggerTokens({ maxContextTokens: 1_000_000 })).toBe(400_000)
+  })
+
+  it('reserves response capacity and a safety margin even with the early cap off', () => {
+    expect(resolveCompressionTriggerTokens({
+      maxContextTokens: 128_000,
+      reserveTokens: 32_000,
+      absoluteCapEnabled: false,
+    })).toBe(89_600)
+  })
+
   it('ignores a non-positive cap instead of compressing immediately', () => {
     expect(
       resolveCompressionTriggerTokens({ maxContextTokens: 200_000, absoluteCapEnabled: true, absoluteCap: 0 })

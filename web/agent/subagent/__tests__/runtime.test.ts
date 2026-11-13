@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useSubagentTaskStore } from '@/store/subagent-task.store'
 import type { Message } from '@/agent/message-types'
+import { readConversationHistoryExecutor } from '@/agent/tools/read-conversation-history.tool'
+import type { StoredSubagentTask } from '@/sqlite/repositories/subagent.repository'
 import type {
   SubagentStepNotification,
   SubagentTaskNotification,
@@ -12,7 +14,8 @@ const hoisted = vi.hoisted(() => {
   const repo = {
     acknowledge: vi.fn(async () => {}),
     findByWorkspaceId: vi.fn(async () => []),
-    saveBatch: vi.fn(async () => {}),
+    saveBatch: vi.fn(async (_workspaceId: string, _tasks: StoredSubagentTask[]) => {}),
+    commitMessages: vi.fn(async (_input: { workspaceId: string; agentId: string; executionId: string; messages: Message[] }) => ({ applied: true })),
     transitionStatus: vi.fn(async () => ({ applied: true })),
     getStatus: vi.fn(async () => null),
     finishExecution: vi.fn(async (_input: { task: unknown; completion: import('@/agent/subagent/async-types').SubagentCompletion }) => {}),
@@ -26,6 +29,7 @@ const hoisted = vi.hoisted(() => {
 
   return {
     repo,
+    parentHistory: vi.fn(async () => [createAssistantMessage('parent-only history')]),
     loopConfigs,
     setRunImpl: (impl: (messages: Message[], config: any, callbacks?: any) => Promise<Message[]>) => {
       runImpl = impl
@@ -37,6 +41,10 @@ const hoisted = vi.hoisted(() => {
 vi.mock('@/sqlite', () => ({
   getSubagentRepository: () => hoisted.repo,
   getSubagentCompletionRepository: () => hoisted.repo,
+}))
+
+vi.mock('@/sqlite/repositories/message.repository', () => ({
+  getMessageRepository: () => ({ findByConversation: hoisted.parentHistory }),
 }))
 
 vi.mock('@/agent/agent-loop', () => {
@@ -176,6 +184,8 @@ describe('subagent runtime', () => {
     useSubagentTaskStore.setState({ tasks: {} })
     hoisted.loopConfigs.length = 0
     hoisted.repo.findByWorkspaceId.mockImplementation(async () => [])
+    hoisted.repo.saveBatch.mockReset().mockResolvedValue(undefined)
+    hoisted.repo.commitMessages.mockReset().mockResolvedValue({ applied: true })
     hoisted.repo.transitionStatus.mockImplementation(async () => ({ applied: true }))
     hoisted.repo.getStatus.mockImplementation(async () => null)
     hoisted.setRunImpl(async (messages) => [...messages, createAssistantMessage('ok')])
@@ -183,6 +193,226 @@ describe('subagent runtime', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('binds history recall to the child canonical source IDs across checkpoint updates', async () => {
+    const source = createAssistantMessage('child-only original requirement')
+    const checkpoint: Message = {
+      id: 'child-checkpoint', role: 'assistant', kind: 'context_summary',
+      content: `Source: ${source.id}`, timestamp: Date.now(),
+      compressionBoundary: { throughMessageId: source.id, cutoffTimestamp: source.timestamp },
+    }
+    let readBefore: any
+    let readAfter: any
+    hoisted.setRunImpl(async (messages, config, callbacks) => {
+      const context = config.toolContext
+      readBefore = JSON.parse(await readConversationHistoryExecutor({ query: 'run child' }, context))
+      callbacks.onMessagesUpdated([...messages, source])
+      const candidate = [...messages, source, checkpoint]
+      await callbacks.onContextCommit(candidate)
+      callbacks.onMessagesUpdated(candidate)
+      readAfter = JSON.parse(await readConversationHistoryExecutor({ message_id: source.id }, context))
+      return candidate
+    })
+    const runtime = createRuntime('parent-conversation-history', [])
+    const result = await runtime.spawn({ description: 'child history', prompt: 'run child' })
+
+    expect(readBefore.data).toMatchObject({ conversationId: result.agentId, records: [expect.objectContaining({ id: expect.any(String) })] })
+    expect(readAfter.data).toMatchObject({ conversationId: result.agentId, records: [expect.objectContaining({ id: source.id })] })
+    expect(JSON.parse(readAfter.data.records[0].text)).toMatchObject({ id: source.id, content: source.content })
+    expect(hoisted.parentHistory).not.toHaveBeenCalled()
+  })
+
+  it('awaits checkpoint persistence before publishing canonical messages or dispatching again', async () => {
+    let acknowledge!: (result: { applied: boolean }) => void
+    hoisted.repo.commitMessages.mockImplementationOnce(() => new Promise(resolve => { acknowledge = resolve }))
+    const dispatch = vi.fn()
+    const checkpoint = { ...createAssistantMessage('durable checkpoint'), kind: 'context_summary' as const }
+    hoisted.setRunImpl(async (messages, _config, callbacks) => {
+      const candidate = [...messages, checkpoint]
+      await callbacks.onContextCommit(candidate)
+      callbacks.onMessagesUpdated(candidate)
+      dispatch()
+      return candidate
+    })
+    const runtime = createRuntime('child-delayed-checkpoint', [])
+    const receipt = await runtime.start({ description: 'child', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'child-delayed-checkpoint', agentId: receipt.agentId,
+      executionId: useSubagentTaskStore.getState().tasks[receipt.agentId].executionId,
+      messages: expect.arrayContaining([checkpoint]),
+    }))
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).not.toContainEqual(checkpoint)
+    expect(await hoisted.loopConfigs[0].toolContext.conversationHistory.read()).not.toContainEqual(checkpoint)
+    expect(dispatch).not.toHaveBeenCalled()
+
+    acknowledge({ applied: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).toContainEqual(checkpoint)
+    expect(dispatch).toHaveBeenCalledOnce()
+  })
+
+  it.each(['rejected', 'error'])('blocks checkpoint publication and dispatch when persistence returns %s', async (failure) => {
+    if (failure === 'rejected') hoisted.repo.commitMessages.mockResolvedValueOnce({ applied: false })
+    else hoisted.repo.commitMessages.mockRejectedValueOnce(new Error('checkpoint disk full'))
+    const checkpoint = createAssistantMessage('uncommitted checkpoint')
+    const dispatch = vi.fn()
+    let commitError: unknown
+    hoisted.setRunImpl(async (messages, _config, callbacks) => {
+      try {
+        await callbacks.onContextCommit([...messages, checkpoint])
+      } catch (error) {
+        commitError = error
+        throw error
+      }
+      callbacks.onMessagesUpdated([...messages, checkpoint])
+      dispatch()
+      return [...messages, checkpoint]
+    })
+    const runtime = createRuntime(`child-checkpoint-${failure}`, [])
+    const receipt = await runtime.start({ description: 'child', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(commitError).toBeInstanceOf(Error)
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledOnce()
+    if (failure === 'error') expect((commitError as Error).message).toBe('checkpoint disk full')
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).not.toContainEqual(checkpoint)
+    expect((await runtime.getStatus({ agentId: receipt.agentId })).status).toBe('failed')
+  })
+
+  it('uses the latest accepted execution identity while checkpointing the still active child', async () => {
+    let checkpoint!: () => Promise<void>
+    let finish!: (messages: Message[]) => void
+    const marker = createAssistantMessage('active execution checkpoint')
+    hoisted.setRunImpl((messages, _config, callbacks) => {
+      checkpoint = () => callbacks.onContextCommit([...messages, marker])
+      return new Promise(resolve => { finish = resolve })
+    })
+    const runtime = createRuntime('child-queued-checkpoint', [])
+    const receipt = await runtime.start({ description: 'child', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const activeExecutionId = useSubagentTaskStore.getState().tasks[receipt.agentId].executionId
+    await runtime.sendMessage({ to: receipt.agentId, message: 'next work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const saved = hoisted.repo.saveBatch.mock.calls.at(-1) as unknown as [string, Array<{ execution: { executionId: string } }>]
+    const latestExecutionId = saved[1][0].execution.executionId
+    expect(latestExecutionId).not.toBe(activeExecutionId)
+
+    await checkpoint()
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledWith(expect.objectContaining({ executionId: latestExecutionId, messages: expect.arrayContaining([marker]) }))
+    expect(await hoisted.loopConfigs[0].toolContext.conversationHistory.read()).toContainEqual(marker)
+    await runtime.stopAll({ force: true })
+    finish([])
+  })
+
+  it.each(['sendMessage', 'resume'] as const)('serializes a concurrent %s identity save before checkpointing the active child', async (method) => {
+    let persisted: StoredSubagentTask | undefined
+    let holdQueuedWrite = false
+    let releaseQueuedWrite!: () => void
+    let notifyQueuedWrite!: () => void
+    const queuedWriteStarted = new Promise<void>(resolve => { notifyQueuedWrite = resolve })
+    hoisted.repo.saveBatch.mockImplementation(async (_workspaceId, tasks) => {
+      for (const task of tasks) {
+        const snapshot = structuredClone(task)
+        if (holdQueuedWrite && task.queue.length > 0) {
+          holdQueuedWrite = false
+          notifyQueuedWrite()
+          await new Promise<void>(resolve => { releaseQueuedWrite = resolve })
+        }
+        persisted = snapshot
+      }
+    })
+    hoisted.repo.commitMessages.mockImplementation(async (input) => {
+      if (persisted?.execution?.executionId !== input.executionId) return { applied: false }
+      persisted.messages = structuredClone(input.messages)
+      return { applied: true }
+    })
+    let checkpoint!: () => Promise<void>
+    let finish!: (messages: Message[]) => void
+    const marker = createAssistantMessage('concurrent durable checkpoint')
+    hoisted.setRunImpl((messages, _config, callbacks) => {
+      checkpoint = () => callbacks.onContextCommit([...messages, marker])
+      return new Promise(resolve => { finish = resolve })
+    })
+    const runtime = createRuntime(`child-concurrent-${method}`, [])
+    const receipt = await runtime.start({ description: 'child', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const activeExecutionId = persisted?.execution?.executionId
+    holdQueuedWrite = true
+
+    const sending = method === 'sendMessage'
+      ? runtime.sendMessage({ to: receipt.agentId, message: 'next work' })
+      : runtime.resume({ agentId: receipt.agentId, prompt: 'next work' })
+    await Promise.resolve()
+    await queuedWriteStarted
+    let checkpointError: unknown
+    const committing = checkpoint().catch(error => { checkpointError = error })
+    for (let i = 0; i < 10; i += 1) await Promise.resolve()
+
+    expect(hoisted.repo.commitMessages).not.toHaveBeenCalled()
+    expect(persisted?.execution?.executionId).toBe(activeExecutionId)
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).not.toContainEqual(marker)
+    releaseQueuedWrite()
+    await Promise.all([sending, committing])
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkpointError).toBeUndefined()
+    expect(persisted?.execution?.executionId).not.toBe(activeExecutionId)
+    expect(persisted?.messages).toContainEqual(marker)
+    expect(await hoisted.loopConfigs[0].toolContext.conversationHistory.read()).toContainEqual(marker)
+    await runtime.stopAll({ force: true })
+    finish([])
+  })
+
+  it('rejects a checkpoint acknowledgement after stop takes execution ownership', async () => {
+    let acknowledge!: (result: { applied: boolean }) => void
+    let commit!: (messages: Message[]) => Promise<void>
+    hoisted.repo.commitMessages.mockImplementationOnce(() => new Promise(resolve => { acknowledge = resolve }))
+    const checkpoint = createAssistantMessage('stale checkpoint')
+    const dispatch = vi.fn()
+    hoisted.setRunImpl(async (messages, _config, callbacks) => {
+      commit = callbacks.onContextCommit
+      await callbacks.onContextCommit([...messages, checkpoint])
+      dispatch()
+      return [...messages, checkpoint]
+    })
+    const runtime = createRuntime('child-stopped-checkpoint', [])
+    const receipt = await runtime.start({ description: 'child', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledOnce()
+    await runtime.stopAll({ force: true })
+    await expect(commit([checkpoint])).rejects.toThrow('no longer active')
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledOnce()
+    acknowledge({ applied: true })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).not.toContainEqual(checkpoint)
+    expect((await runtime.getStatus({ agentId: receipt.agentId })).status).toBe('killed')
+  })
+
+  it('force-stops a synchronous child without waiting for its pending checkpoint write', async () => {
+    let acknowledge!: (result: { applied: boolean }) => void
+    hoisted.repo.commitMessages.mockImplementationOnce(() => new Promise(resolve => { acknowledge = resolve }))
+    hoisted.setRunImpl(async (messages, _config, callbacks) => {
+      await callbacks.onContextCommit([...messages, createAssistantMessage('pending checkpoint')])
+      return messages
+    })
+    const runtime = createRuntime('sync-stop-checkpoint', [])
+    const spawning = runtime.spawn({ description: 'child', prompt: 'work', name: 'sync-child' }).catch(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledOnce()
+    let stopped = false
+    const stopping = runtime.stop({ agentId: 'sync-child', force: true }).then(() => { stopped = true })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(stopped).toBe(true)
+    acknowledge({ applied: true })
+    await Promise.all([stopping, spawning])
+    expect((await runtime.getStatus({ agentId: 'sync-child' })).status).toBe('killed')
   })
 
   it('accepts an async task durably before its deferred execution finishes', async () => {
@@ -588,6 +818,72 @@ describe('subagent runtime', () => {
     await runtime.batchStart({ tasks: Array.from({ length: 6 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
     await vi.advanceTimersByTimeAsync(0)
     expect(ready).toHaveBeenCalledTimes(6)
+  })
+
+  it('drops a background save queued behind a checkpoint when its conversation is disposed', async () => {
+    let callbacks: any
+    let messages!: Message[]
+    let finish!: (messages: Message[]) => void
+    let acknowledge!: (result: { applied: boolean }) => void
+    hoisted.repo.commitMessages.mockImplementationOnce(() => new Promise(resolve => { acknowledge = resolve }))
+    hoisted.setRunImpl((currentMessages, _config, currentCallbacks) => {
+      messages = currentMessages
+      callbacks = currentCallbacks
+      return new Promise(resolve => { finish = resolve })
+    })
+    const workspaceId = 'dispose-queued-background-save'
+    const runtime = createRuntime(workspaceId, [])
+    await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const committing = callbacks.onContextCommit([...messages, createAssistantMessage('checkpoint')]).catch(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledOnce()
+    callbacks.onMessagesUpdated(messages)
+    disposeSubagentRuntime(workspaceId)
+    hoisted.repo.saveBatch.mockClear()
+
+    acknowledge({ applied: true })
+    await committing
+    finish(messages)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.repo.saveBatch).not.toHaveBeenCalled()
+  })
+
+  it.each(['sendMessage', 'resume'] as const)('rejects a queued %s before mutating a disposed child', async (method) => {
+    let callbacks: any
+    let messages!: Message[]
+    let finish!: (messages: Message[]) => void
+    let acknowledge!: (result: { applied: boolean }) => void
+    hoisted.repo.commitMessages.mockImplementationOnce(() => new Promise(resolve => { acknowledge = resolve }))
+    hoisted.setRunImpl((currentMessages, _config, currentCallbacks) => {
+      messages = currentMessages
+      callbacks = currentCallbacks
+      return new Promise(resolve => { finish = resolve })
+    })
+    const workspaceId = `dispose-queued-${method}`
+    const runtime = createRuntime(workspaceId, [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    const committing = callbacks.onContextCommit([...messages, createAssistantMessage('checkpoint')]).catch(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledOnce()
+    const accepting = (method === 'sendMessage'
+      ? runtime.sendMessage({ to: receipt.agentId, message: 'next work' })
+      : runtime.resume({ agentId: receipt.agentId, prompt: 'next work' })).catch(error => error)
+    for (let i = 0; i < 10; i += 1) await Promise.resolve()
+    disposeSubagentRuntime(workspaceId)
+    hoisted.repo.saveBatch.mockClear()
+
+    acknowledge({ applied: true })
+    await committing
+    const result = await accepting
+    expect(result).toBeInstanceOf(Error)
+    expect(result.message).toContain('disposed')
+    expect((await runtime.getStatus({ agentId: receipt.agentId })).queue_depth).toBe(0)
+    expect(hoisted.repo.saveBatch).not.toHaveBeenCalled()
+    finish(messages)
+    await vi.advanceTimersByTimeAsync(0)
+    expect((await runtime.getStatus({ agentId: receipt.agentId })).status).toBe('failed')
   })
 
   it('does not recreate deleted task rows from a disposed runtime after a late result', async () => {
