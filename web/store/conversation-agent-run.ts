@@ -1337,8 +1337,14 @@ async function runAgentBody(
             // === Notification handling ===
             // Only notify when the user is NOT actively looking at this conversation.
             try {
-              const hash = window.location.hash
-              const match = hash.match(/\/workspaces?\/([^/?]+)/)
+              // The app routes via PATH (/projects/:id/workspaces/:conversationId);
+              // hash routes only exist in legacy/standalone mode. Checking the
+              // hash alone made isViewingConversation always false, so every
+              // completed run attempted a notification even while the user was
+              // watching the conversation — and the notify path can hang
+              // (see agent-notification.ts serviceWorker.ready guard).
+              const route = `${window.location.pathname}${window.location.hash}`
+              const match = route.match(/\/workspaces?\/([^/?]+)/)
               const activeWorkspaceId = match ? decodeURIComponent(match[1]) : null
               const isVisible = document.visibilityState === 'visible'
               const isViewingConversation = activeWorkspaceId === conversationId && isVisible
@@ -1373,7 +1379,10 @@ async function runAgentBody(
                 ? summarizeForNotification(lastAssistant.content ?? '')
                 : '已完成'
 
-              await notifyAgentComplete({
+              // Fire-and-forget: the notification is a pure side effect and
+              // must never block loop completion (a hung notify previously
+              // stalled the whole run before finalize could set idle).
+              void notifyAgentComplete({
                 conversationId,
                 projectId: notifProjectId,
                 title: currentConv.title ?? 'EO2Weave Agent',
