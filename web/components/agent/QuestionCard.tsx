@@ -58,6 +58,8 @@ export interface QuestionCardProps {
   resultWarning?: string
   /** Callback when user submits an answer */
   onAnswer?: (answer: string) => void
+  /** Declining the question: ends it with confirmed=false, the run continues */
+  onSkip?: () => void
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +76,7 @@ export function QuestionCard({
   resultAnswer,
   resultWarning,
   onAnswer,
+  onSkip,
 }: QuestionCardProps) {
   const t = useT()
   const normalizedOptions = (options ?? []).map(normalizeOption)
@@ -207,6 +210,20 @@ export function QuestionCard({
         )}
         {type === 'free_text' && (
           <FreeTextInput defaultAnswer={defaultAnswer} onAnswer={onAnswer} />
+        )}
+
+        {/* Shared escape hatch: no answer fits. Ends this question only — the
+            run continues with confirmed=false so the model does not guess. */}
+        {onSkip && !answered && (
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              onClick={onSkip}
+              className="rounded-md px-2 py-1 text-xs text-tertiary underline-offset-2 hover:bg-neutral-100 hover:text-secondary hover:underline dark:hover:bg-neutral-700"
+            >
+              {t('questionCard.skip')}
+            </button>
+          </div>
         )}
       </div>
     </div>

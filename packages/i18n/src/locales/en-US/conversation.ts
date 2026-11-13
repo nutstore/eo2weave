@@ -481,6 +481,7 @@ export const questionCard = {
     customInputHint: "Type your own answer",
     userAnswer: "Your answer",
     recommended: "Recommended",
+    skip: "Skip this question",
 } as const
 
 // Run changes card (auto-applied run summary)

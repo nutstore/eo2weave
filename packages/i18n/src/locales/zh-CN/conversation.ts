@@ -483,6 +483,7 @@ export const questionCard = {
     customInputHint: "自己填写回答",
     userAnswer: "用户回答",
     recommended: "推荐",
+    skip: "跳过这个问题",
 } as const
 
 // Run changes card (auto-applied run summary)

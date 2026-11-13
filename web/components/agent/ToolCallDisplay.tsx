@@ -208,6 +208,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
           }
         }
       : undefined
+    const handleSkip = conversationId
+      ? () => {
+          const q = getPendingQuestion(conversationId, toolCallId)
+          if (q) {
+            const fallback = typeof ctx.args.default_answer === 'string' ? ctx.args.default_answer : 'skipped'
+            q.resolve({ answer: fallback, confirmed: false, timed_out: false })
+            removePendingQuestion(conversationId, toolCallId)
+          }
+        }
+      : undefined
 
     return (
       <QuestionCard
@@ -220,6 +230,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
         resultAnswer={resultAnswer}
         resultWarning={resultWarning}
         onAnswer={handleAnswer}
+        onSkip={handleSkip}
       />
     )
   }

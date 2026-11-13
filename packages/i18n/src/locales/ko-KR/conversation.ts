@@ -449,6 +449,7 @@ export const questionCard = {
     customInputHint: "직접 답변 입력",
     userAnswer: "사용자 답변",
     recommended: "추천",
+    skip: "이 질문 건너뛰기",
 } as const
 
 // Run changes card (auto-applied run summary)

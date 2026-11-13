@@ -450,6 +450,7 @@ export const questionCard = {
     customInputHint: "自分で回答を入力",
     userAnswer: "あなたの回答",
     recommended: "推奨",
+    skip: "この質問をスキップ",
 } as const
 
 // Run changes card (auto-applied run summary)
