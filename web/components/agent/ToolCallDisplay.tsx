@@ -190,11 +190,15 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
   if (toolName === 'ask_user_question') {
     let resultAnswer: string | undefined
     let resultWarning: string | undefined
+    let resultConfirmed: boolean | undefined
+    let resultTimedOut = false
     if (result) {
       try {
         const parsed = JSON.parse(result) as Record<string, unknown>
         const data = parsed.data as Record<string, unknown> | undefined
         if (data && typeof data.answer === 'string') resultAnswer = data.answer
+        if (data && typeof data.confirmed === 'boolean') resultConfirmed = data.confirmed
+        if (data && data.timed_out === true) resultTimedOut = true
         if (typeof parsed.warning === 'string') resultWarning = parsed.warning
       } catch { /* ignore */ }
     }
@@ -229,6 +233,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
         answered={!!result}
         resultAnswer={resultAnswer}
         resultWarning={resultWarning}
+        resultConfirmed={resultConfirmed}
+        resultTimedOut={resultTimedOut}
         onAnswer={handleAnswer}
         onSkip={handleSkip}
       />

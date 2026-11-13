@@ -56,6 +56,14 @@ export interface QuestionCardProps {
   resultAnswer?: string
   /** Optional warning (e.g. "[Interrupted] 页面刷新" — explains why the answer was synthetic) */
   resultWarning?: string
+  /**
+   * Whether the recorded result is a real user answer. `false` means the question
+   * was declined (Skip / timeout / abort) and the card must not present the
+   * fallback answer as something the user chose.
+   */
+  resultConfirmed?: boolean
+  /** Whether the question ended by timeout (only meaningful when declined) */
+  resultTimedOut?: boolean
   /** Callback when user submits an answer */
   onAnswer?: (answer: string) => void
   /** Declining the question: ends it with confirmed=false, the run continues */
@@ -75,21 +83,49 @@ export function QuestionCard({
   answered,
   resultAnswer,
   resultWarning,
+  resultConfirmed,
+  resultTimedOut,
   onAnswer,
   onSkip,
 }: QuestionCardProps) {
   const t = useT()
   const normalizedOptions = (options ?? []).map(normalizeOption)
+  // Declined = the run got a result without the user choosing anything (skip,
+  // timeout, abort). Older transcript rows have no `confirmed` field at all —
+  // those keep rendering as an ordinary answer.
+  const declined = answered && resultConfirmed === false
 
   // Already answered — show question + answer for context
   if (answered) {
     return (
       <div className="my-1 max-w-full overflow-hidden rounded-xl border border-neutral-200 bg-white text-sm dark:border-neutral-700 dark:bg-neutral-800">
         {/* Header — subtle tint marks it as completed */}
-        <div className="flex items-center gap-2 border-b border-primary-100 bg-primary-50 px-3 py-2 dark:border-primary-100/20 dark:bg-primary-100/10">
-          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary-600 dark:text-primary-400" />
-          <span className="break-words text-xs font-medium text-primary-700 dark:text-primary-300">
-            {t('questionCard.answered')}
+        <div
+          className={
+            'flex items-center gap-2 border-b px-3 py-2 ' +
+            (declined
+              ? 'border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-700/40'
+              : 'border-primary-100 bg-primary-50 dark:border-primary-100/20 dark:bg-primary-100/10')
+          }
+        >
+          {declined ? (
+            <Clock className="h-3.5 w-3.5 shrink-0 text-tertiary" />
+          ) : (
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary-600 dark:text-primary-400" />
+          )}
+          <span
+            className={
+              'break-words text-xs font-medium ' +
+              (declined
+                ? 'text-tertiary'
+                : 'text-primary-700 dark:text-primary-300')
+            }
+          >
+            {declined
+              ? resultTimedOut
+                ? t('questionCard.timedOut')
+                : t('questionCard.skipped')
+              : t('questionCard.answered')}
           </span>
         </div>
 
@@ -130,15 +166,21 @@ export function QuestionCard({
           </div>
         )}
 
-        {/* User's answer */}
+        {/* Resolution: the user's answer, or a note when they declined */}
         {resultAnswer && (
           <div className="px-3 py-2">
-            <div className="text-xs font-medium text-tertiary">
-              {t('questionCard.userAnswer')}
-            </div>
-            <div className="mt-1 break-words rounded-lg bg-primary-50 px-2 py-1.5 text-sm text-secondary ring-1 ring-primary-100 dark:bg-primary-100/15 dark:ring-primary-100/20">
-              {resultAnswer}
-            </div>
+            {declined ? (
+              <div className="text-xs text-tertiary">{t('questionCard.noAnswer')}</div>
+            ) : (
+              <>
+                <div className="text-xs font-medium text-tertiary">
+                  {t('questionCard.userAnswer')}
+                </div>
+                <div className="mt-1 break-words rounded-lg bg-primary-50 px-2 py-1.5 text-sm text-secondary ring-1 ring-primary-100 dark:bg-primary-100/15 dark:ring-primary-100/20">
+                  {resultAnswer}
+                </div>
+              </>
+            )}
             {resultWarning && (
               <div className="mt-1.5 flex items-start gap-1 break-words rounded bg-warning-bg px-2 py-1.5 text-xs text-warning ring-1 ring-warning/20">
                 <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />

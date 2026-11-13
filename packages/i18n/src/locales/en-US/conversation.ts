@@ -482,6 +482,9 @@ export const questionCard = {
     userAnswer: "Your answer",
     recommended: "Recommended",
     skip: "Skip this question",
+    skipped: "Skipped",
+    timedOut: "Timed out",
+    noAnswer: "No answer was given — the agent continued without one.",
 } as const
 
 // Run changes card (auto-applied run summary)

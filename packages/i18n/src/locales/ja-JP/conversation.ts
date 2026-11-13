@@ -451,6 +451,9 @@ export const questionCard = {
     userAnswer: "あなたの回答",
     recommended: "推奨",
     skip: "この質問をスキップ",
+    skipped: "スキップ済み",
+    timedOut: "タイムアウト",
+    noAnswer: "回答はありません — エージェントがそのまま続行しました。",
 } as const
 
 // Run changes card (auto-applied run summary)
