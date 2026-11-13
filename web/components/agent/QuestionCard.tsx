@@ -242,30 +242,16 @@ export function QuestionCard({
 
         {/* Question type-specific input */}
         {type === 'yes_no' && (
-          <YesNoInput defaultAnswer={defaultAnswer} onAnswer={onAnswer} />
+          <YesNoInput defaultAnswer={defaultAnswer} onAnswer={onAnswer} onSkip={onSkip} />
         )}
         {type === 'single_choice' && (
-          <SingleChoiceInput options={normalizedOptions} defaultAnswer={defaultAnswer} onAnswer={onAnswer} />
+          <SingleChoiceInput options={normalizedOptions} defaultAnswer={defaultAnswer} onAnswer={onAnswer} onSkip={onSkip} />
         )}
         {type === 'multi_choice' && (
-          <MultiChoiceInput options={normalizedOptions} defaultAnswer={defaultAnswer} onAnswer={onAnswer} />
+          <MultiChoiceInput options={normalizedOptions} defaultAnswer={defaultAnswer} onAnswer={onAnswer} onSkip={onSkip} />
         )}
         {type === 'free_text' && (
-          <FreeTextInput defaultAnswer={defaultAnswer} onAnswer={onAnswer} />
-        )}
-
-        {/* Shared escape hatch: no answer fits. Ends this question only — the
-            run continues with confirmed=false so the model does not guess. */}
-        {onSkip && !answered && (
-          <div className="mt-2 flex justify-end">
-            <button
-              type="button"
-              onClick={onSkip}
-              className="rounded-md px-2 py-1 text-xs text-tertiary underline-offset-2 hover:bg-neutral-100 hover:text-secondary hover:underline dark:hover:bg-neutral-700"
-            >
-              {t('questionCard.skip')}
-            </button>
-          </div>
+          <FreeTextInput defaultAnswer={defaultAnswer} onAnswer={onAnswer} onSkip={onSkip} />
         )}
       </div>
     </div>
@@ -301,6 +287,25 @@ function OptionContent({ option }: { option: NormalizedOption }) {
   )
 }
 
+/**
+ * Shared skip action: a text button appended to each question type's main
+ * button row. Ends this question only — the run continues with confirmed=false
+ * so the model does not guess.
+ */
+function SkipButton({ onSkip }: { onSkip?: () => void }) {
+  const t = useT()
+  if (!onSkip) return null
+  return (
+    <button
+      type="button"
+      onClick={onSkip}
+      className="rounded-md bg-neutral-100 px-3 py-1.5 text-sm text-secondary focus:outline-none focus:ring-2 focus:ring-offset-1 hover:bg-neutral-200 focus:ring-neutral-400 dark:bg-neutral-800 dark:hover:bg-neutral-700"
+    >
+      {t('questionCard.skip')}
+    </button>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components for each question type
 // ---------------------------------------------------------------------------
@@ -308,9 +313,11 @@ function OptionContent({ option }: { option: NormalizedOption }) {
 function YesNoInput({
   defaultAnswer,
   onAnswer,
+  onSkip,
 }: {
   defaultAnswer?: string
   onAnswer?: (answer: string) => void
+  onSkip?: () => void
 }) {
   const t = useT()
   const [showCustom, setShowCustom] = useState(false)
@@ -380,6 +387,7 @@ function YesNoInput({
         >
           <PencilLine className="h-4 w-4" />
         </button>
+        <SkipButton onSkip={onSkip} />
       </div>
       {showCustom && (
         <div className="mt-2">
@@ -414,10 +422,12 @@ function SingleChoiceInput({
   options,
   defaultAnswer,
   onAnswer,
+  onSkip,
 }: {
   options: NormalizedOption[]
   defaultAnswer?: string
   onAnswer?: (answer: string) => void
+  onSkip?: () => void
 }) {
   const t = useT()
   const radioName = useId()
@@ -508,14 +518,17 @@ function SingleChoiceInput({
           />
         </div>
       )}
-      <button
-        type="button"
-        disabled={selected === CUSTOM_VALUE ? !customText.trim() : !selected}
-        onClick={handleSubmit}
-        className="mt-2 rounded-md bg-primary-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-primary-500 dark:hover:bg-primary-600"
-      >
-        {t('questionCard.submit')}
-      </button>
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={selected === CUSTOM_VALUE ? !customText.trim() : !selected}
+          onClick={handleSubmit}
+          className="rounded-md bg-primary-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-primary-500 dark:hover:bg-primary-600"
+        >
+          {t('questionCard.submit')}
+        </button>
+        <SkipButton onSkip={onSkip} />
+      </div>
     </div>
   )
 }
@@ -524,10 +537,12 @@ function MultiChoiceInput({
   options,
   defaultAnswer,
   onAnswer,
+  onSkip,
 }: {
   options: NormalizedOption[]
   defaultAnswer?: string
   onAnswer?: (answer: string) => void
+  onSkip?: () => void
 }) {
   const t = useT()
   // Parse default answer: comma-separated labels (trimmed).
@@ -629,14 +644,17 @@ function MultiChoiceInput({
           />
         </div>
       )}
-      <button
-        type="button"
-        disabled={!canSubmit}
-        onClick={handleSubmit}
-        className="mt-2 rounded-md bg-primary-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-primary-500 dark:hover:bg-primary-600"
-      >
-        {t('questionCard.submit')}
-      </button>
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={!canSubmit}
+          onClick={handleSubmit}
+          className="rounded-md bg-primary-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-primary-500 dark:hover:bg-primary-600"
+        >
+          {t('questionCard.submit')}
+        </button>
+        <SkipButton onSkip={onSkip} />
+      </div>
     </div>
   )
 }
@@ -644,9 +662,11 @@ function MultiChoiceInput({
 function FreeTextInput({
   defaultAnswer,
   onAnswer,
+  onSkip,
 }: {
   defaultAnswer?: string
   onAnswer?: (answer: string) => void
+  onSkip?: () => void
 }) {
   const t = useT()
   const [text, setText] = useState(defaultAnswer ?? '')
@@ -680,14 +700,17 @@ function FreeTextInput({
         <span className="text-[10px] text-tertiary">
           {t('questionCard.submitHint')}
         </span>
-        <button
-          type="button"
-          disabled={!text.trim()}
-          onClick={handleSubmit}
-          className="rounded-md bg-primary-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-primary-500 dark:hover:bg-primary-600"
-        >
-          {t('questionCard.submit')}
-        </button>
+        <div className="flex items-center gap-2">
+          <SkipButton onSkip={onSkip} />
+          <button
+            type="button"
+            disabled={!text.trim()}
+            onClick={handleSubmit}
+            className="rounded-md bg-primary-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-primary-500 dark:hover:bg-primary-600"
+          >
+            {t('questionCard.submit')}
+          </button>
+        </div>
       </div>
     </div>
   )
