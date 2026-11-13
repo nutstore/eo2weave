@@ -572,7 +572,7 @@ export const AssistantTurnBubble = memo(function AssistantTurnBubble({
             {conversationActions?.sendMessage && (
               <button
                 type="button"
-                onClick={() => conversationActions.sendMessage!('继续')}
+                onClick={() => conversationActions.sendMessage!('继续', { consumePendingAssets: false })}
                 className="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800/30 dark:hover:text-neutral-300"
               >
                 {t('conversation.iterationLimit.continue')}

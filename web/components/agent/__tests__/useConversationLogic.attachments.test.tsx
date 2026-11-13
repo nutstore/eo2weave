@@ -342,4 +342,37 @@ describe('pending attachment sending', () => {
     expect(conversationStoreModule.getState().updateMessages).not.toHaveBeenCalled()
   })
 
+  // ── #307: internal resume sends must not consume composer-staged assets ──
+
+  it('resume send with consumePendingAssets:false leaves staged assets in the composer', async () => {
+    const first = new File(['pasted content'], 'first.txt', { type: 'text/plain' })
+    useAssetStore.getState().addFiles([first])
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => {
+      await result.current.sendMessage('继续', { consumePendingAssets: false })
+    })
+    await waitFor(() =>
+      expect(conversationStoreModule.getState().updateMessages).toHaveBeenCalledWith(
+        CONV_ID,
+        expect.arrayContaining([expect.objectContaining({ content: '继续' })]),
+      ),
+    )
+    // The staged file was neither written to OPFS nor removed from the store —
+    // it stays staged for the user's next real message.
+    expect(writeAssets).not.toHaveBeenCalled()
+    expect(useAssetStore.getState().pendingAssets.map((a) => a.name)).toEqual(['first.txt'])
+  })
+
+  it('plain sendMessage still consumes the staged assets (resume opt-out is not global)', async () => {
+    const first = new File(['pasted content'], 'first.txt', { type: 'text/plain' })
+    writeAssets.mockResolvedValue([{ name: 'first.txt', mimeType: 'text/plain', size: first.size }])
+    useAssetStore.getState().addFiles([first])
+    const { result } = renderHook(() => useConversationLogic())
+    await act(async () => {
+      await result.current.sendMessage('继续')
+    })
+    await waitFor(() => expect(writeAssets).toHaveBeenCalled())
+    expect(writeAssets.mock.calls[0][0][0].file).toBe(first)
+    expect(useAssetStore.getState().pendingAssets).toHaveLength(0)
+  })
 })
