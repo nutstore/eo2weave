@@ -9,6 +9,7 @@ import Mention from '@tiptap/extension-mention'
 import { findAgentMentionCandidates } from '@/agent/agent-mention'
 import { FileMention, type FileMentionItem } from './FileMentionExtension'
 import { SlashCommandExtension, type SlashCommandItem } from './SlashCommandExtension'
+import { QuoteBlock, quoteBlockContent, quoteBlockToText } from './QuoteBlockExtension'
 import { resolveSlashCommandDescription } from '@/skills/slash-command-registry'
 import { FileIcon, FolderIcon, Paperclip, X, Loader2, FileText, AtSign, Hash, SlashSquare, ArrowUp, Square } from 'lucide-react'
 import { useT } from '@/i18n'
@@ -49,6 +50,11 @@ export interface AgentRichInputHandle {
   focus: () => void
   /** Programmatically replace the editor content (e.g. quick-chip prefill). */
   setText: (text: string) => void
+  /**
+   * Append a quoted selection after the existing draft, leaving the caret
+   * in a fresh paragraph below it.
+   */
+  insertQuote: (lines: string[]) => void
 }
 
 interface AgentRichInputProps {
@@ -283,7 +289,7 @@ function appendToHistory(history: string[], text: string): string[] {
  * mention node is rendered as `@<id>`.  This keeps the output compatible
  * with the downstream `extractFirstMentionedAgentId` / regex-based consumers.
  */
-function getPlainText(editor: Editor): string {
+export function getPlainText(editor: Editor): string {
   const { doc } = editor.state
   const lines: string[] = []
   let lineBuf = ''
@@ -307,12 +313,25 @@ function getPlainText(editor: Editor): string {
       lineBuf += `#${path}`
     } else if (node.type.name === 'hardBreak') {
       lineBuf += '\n'
+    } else if (node.type.name === 'quoteBlock') {
+      // Serialize the quote card back into markdown blockquote text: the model
+      // receives the quote in-band, never as structured metadata.
+      if (lineBuf) {
+        lines.push(lineBuf)
+        lineBuf = ''
+      }
+      // Blank lines prevent surrounding prose from becoming part of the quote
+      // through Markdown's lazy continuation rules.
+      if (lines.length > 0 && lines[lines.length - 1] !== '') lines.push('')
+      lines.push(quoteBlockToText(node), '')
+      return false
     } else if (node.type.isBlock && lineBuf) {
       lines.push(lineBuf)
       lineBuf = ''
     }
   })
   if (lineBuf) lines.push(lineBuf)
+  if (lines[lines.length - 1] === '') lines.pop()
   return lines.join('\n')
 }
 
@@ -514,6 +533,7 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
       Paragraph,
       Text,
       HardBreak,
+      QuoteBlock,
       History,
       Mention.configure({
         HTMLAttributes: {
@@ -982,6 +1002,21 @@ export const AgentRichInput = forwardRef<AgentRichInputHandle, AgentRichInputPro
       // (we do not merge with existing user text).
       editor.commands.setContent(text)
       editor.commands.focus('end')
+      emitValue(editor)
+    },
+    // insertQuote merges into the existing document (unlike setText): the user
+    // may already be mid-sentence, and the quote must not replace their text.
+    insertQuote: (lines: string[]) => {
+      if (!editor || editor.isDestroyed || lines.length === 0) return
+      editor
+        .chain()
+        .focus('end')
+        .insertContent([
+          { type: 'quoteBlock', content: quoteBlockContent(lines) },
+          // Trailing empty paragraph so the user can comment under the quote.
+          { type: 'paragraph' },
+        ])
+        .run()
       emitValue(editor)
     },
   }), [editor, emitValue])

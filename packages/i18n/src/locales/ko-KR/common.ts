@@ -15,6 +15,7 @@ export const common = {
     success: "성공",
     copy: "복사",
     copied: "복사됨",
+    quote: "인용",
     expanded: "펼쳐짐",
     summary: "요약",
     collapse: "접기",

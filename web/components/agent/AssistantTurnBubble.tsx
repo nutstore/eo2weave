@@ -873,6 +873,7 @@ const AssistantStep = memo(function AssistantStep({
   onImageClick?: (src: string) => void
 }) {
   const t = useT()
+  const conversationActions = useContext(ConversationActionContext)
   const contentRef = useRef<HTMLDivElement>(null)
   const hasReasoning = !!message.reasoning
   const hasContent = !!message.content
@@ -940,7 +941,10 @@ const AssistantStep = memo(function AssistantStep({
               {!isContextSummary && (
                 <div ref={contentRef} className="prose max-w-prose overflow-x-auto break-words select-text">
                   <MarkdownContent content={message.content!} />
-                  <TextSelectionToolbar containerRef={contentRef} />
+                  <TextSelectionToolbar
+                    containerRef={contentRef}
+                    onQuote={conversationActions?.insertQuote}
+                  />
                 </div>
               )}
             </div>
