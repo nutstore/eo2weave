@@ -157,9 +157,11 @@ export function ConversationView({
       : t('conversation.error.emptyTurn')
 
   // ── Retry handler for error banner: send "继续" to start a new loop ──
+  // consumePendingAssets: false — the retry must not swallow the composer's
+  // staged files (#307, same defect as the iteration-limit continue button).
   const handleRetry = useCallback(() => {
     if (!convId) return
-    sendMessage('继续')
+    sendMessage('继续', { consumePendingAssets: false })
   }, [convId, sendMessage])
 
   const hasImageModels = useHasImageModels()

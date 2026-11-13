@@ -420,6 +420,10 @@ export function useConversationLogic() {
       options?: {
         agentOverrideId?: string | null
         assets?: import('@/types/asset').AssetMeta[]
+        /** Internal resume sends (iteration-limit continue, error-banner retry)
+         *  set this to false: the composer's staged files are NOT the resume
+         *  message's payload and must stay staged for the user's next send. */
+        consumePendingAssets?: boolean
         /** Called when the send was rejected and `text` was NOT delivered —
          *  lets the input UI restore what the user typed (optimistic clear). */
         onInputRejected?: (text: string) => void
@@ -474,9 +478,11 @@ export function useConversationLogic() {
       }
 
       // Capture the files belonging to this send before any async work.
-      // Files added later belong to the next message.
+      // Files added later belong to the next message. Internal resume sends
+      // (#307) opt out: the composer's staged files stay staged.
       const pendingSnapshot =
-        options?.assets && options.assets.length > 0
+        options?.consumePendingAssets === false ||
+        (options?.assets && options.assets.length > 0)
           ? []
           : [...useAssetStore.getState().pendingAssets]
       // Move only this send's snapshot out of the composer synchronously.

@@ -15,8 +15,9 @@ export interface ConversationActionContextValue {
   setInput: (text: string) => void
   /** Insert a quoted selection into the composer, below any existing draft */
   insertQuote: (lines: string[]) => void
-  /** Send a user message and trigger AI response */
-  sendMessage: (text: string) => void
+  /** Send a user message and trigger AI response; `consumePendingAssets: false`
+   *  for internal resume sends keeps the composer's staged files intact */
+  sendMessage: (text: string, options?: { consumePendingAssets?: boolean }) => void
 }
 
 export const ConversationActionContext = createContext<ConversationActionContextValue | null>(null)

@@ -209,7 +209,7 @@ describe('AssistantTurnBubble iteration-limit stepper', () => {
     await user.click(screen.getByRole('button', { name: 'conversation.iterationLimit.increase' }))
     // ...then continue
     await user.click(screen.getByRole('button', { name: 'conversation.iterationLimit.continue' }))
-    expect(mockSendMessage).toHaveBeenCalledWith('继续')
+    expect(mockSendMessage).toHaveBeenCalledWith('继续', { consumePendingAssets: false })
     expect(getStoreValue()).toBe(25)
   })
 })
