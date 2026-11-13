@@ -1,4 +1,6 @@
 import { restoreCompressionBaseline } from '@/agent/loop/context-compression'
+import { isViewingConversation } from '@/lib/conversation-view'
+import { useConversationStoreSQLite } from './conversation.store.sqlite'
 import { getSubagentContinuation, onSubagentCompletionReady, recordAsyncSubagentPaths, isAsyncSubagentPath, drainSubagentContinuations, hasRunningAsyncSubagents, retainPendingSubagentPaths } from './subagent-continuation'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
@@ -1337,20 +1339,18 @@ async function runAgentBody(
             // === Notification handling ===
             // Only notify when the user is NOT actively looking at this conversation.
             try {
-              // The app routes via PATH (/projects/:id/workspaces/:conversationId);
-              // hash routes only exist in legacy/standalone mode. Checking the
-              // hash alone made isViewingConversation always false, so every
-              // completed run attempted a notification even while the user was
-              // watching the conversation — and the notify path can hang
-              // (see agent-notification.ts serviceWorker.ready guard).
-              const route = `${window.location.pathname}${window.location.hash}`
-              const match = route.match(/\/workspaces?\/([^/?]+)/)
-              const activeWorkspaceId = match ? decodeURIComponent(match[1]) : null
-              const isVisible = document.visibilityState === 'visible'
-              const isViewingConversation = activeWorkspaceId === conversationId && isVisible
+              // Ask the store which conversation the UI is showing rather than
+              // parsing the URL: /projects/:id/workspaces/:conversationId and
+              // /chats/:chatId both exist, and a URL regex misses whichever route
+              // it was not written for (direct chats were notified every time).
+              const viewing = isViewingConversation(
+                useConversationStoreSQLite.getState().activeConversationId,
+                conversationId,
+                document.visibilityState
+              )
 
               // User is viewing this conversation — don't notify.
-              if (isViewingConversation) return
+              if (viewing) return
 
               const { notifyAgentComplete } = await import('@/services/agent-notification')
               const currentConv = get().conversations.find((c) => c.id === conversationId)
