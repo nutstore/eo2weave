@@ -1,4 +1,6 @@
 import { restoreCompressionBaseline } from '@/agent/loop/context-compression'
+import { isViewingConversation } from '@/lib/conversation-view'
+import { useConversationStoreSQLite } from './conversation.store.sqlite'
 import { getSubagentContinuation, onSubagentCompletionReady, recordAsyncSubagentPaths, isAsyncSubagentPath, drainSubagentContinuations, hasRunningAsyncSubagents, retainPendingSubagentPaths } from './subagent-continuation'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
@@ -1337,14 +1339,18 @@ async function runAgentBody(
             // === Notification handling ===
             // Only notify when the user is NOT actively looking at this conversation.
             try {
-              const hash = window.location.hash
-              const match = hash.match(/\/workspaces?\/([^/?]+)/)
-              const activeWorkspaceId = match ? decodeURIComponent(match[1]) : null
-              const isVisible = document.visibilityState === 'visible'
-              const isViewingConversation = activeWorkspaceId === conversationId && isVisible
+              // Ask the store which conversation the UI is showing rather than
+              // parsing the URL: /projects/:id/workspaces/:conversationId and
+              // /chats/:chatId both exist, and a URL regex misses whichever route
+              // it was not written for (direct chats were notified every time).
+              const viewing = isViewingConversation(
+                useConversationStoreSQLite.getState().activeConversationId,
+                conversationId,
+                document.visibilityState
+              )
 
               // User is viewing this conversation — don't notify.
-              if (isViewingConversation) return
+              if (viewing) return
 
               const { notifyAgentComplete } = await import('@/services/agent-notification')
               const currentConv = get().conversations.find((c) => c.id === conversationId)
@@ -1373,7 +1379,10 @@ async function runAgentBody(
                 ? summarizeForNotification(lastAssistant.content ?? '')
                 : '已完成'
 
-              await notifyAgentComplete({
+              // Fire-and-forget: the notification is a pure side effect and
+              // must never block loop completion (a hung notify previously
+              // stalled the whole run before finalize could set idle).
+              void notifyAgentComplete({
                 conversationId,
                 projectId: notifProjectId,
                 title: currentConv.title ?? 'EO2Weave Agent',

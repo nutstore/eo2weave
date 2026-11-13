@@ -413,3 +413,21 @@ describe('_resetClientIdCache', () => {
     expect((window as unknown as { __agentClientId?: unknown }).__agentClientId).toBeUndefined()
   })
 })
+
+
+  it('skips the notification when serviceWorker.ready never resolves', async () => {
+    vi.useFakeTimers()
+    try {
+      Object.defineProperty(globalThis.navigator, 'serviceWorker', {
+        value: { controller: null, ready: new Promise(() => {}), getRegistrations: vi.fn(async () => []) },
+        writable: true,
+        configurable: true,
+      })
+      const pending = notifyAgentComplete({ conversationId: 'c1', projectId: 'p1', title: 't', body: 'b' })
+      await vi.advanceTimersByTimeAsync(3000)
+      await expect(pending).resolves.toBeUndefined()
+      expect(mockShowNotification).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })

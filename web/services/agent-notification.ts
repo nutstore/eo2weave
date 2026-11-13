@@ -125,7 +125,18 @@ export async function notifyAgentComplete(params: NotifyAgentCompleteParams): Pr
     // It is the officially recommended way to get a usable registration.
     if (typeof navigator === 'undefined' || !navigator.serviceWorker) return
 
-    const registration = await navigator.serviceWorker.ready
+    // navigator.serviceWorker.ready can stay pending forever when no SW ever
+    // activates for this origin (dev servers without /sw.js, sandboxed frames).
+    // Race it with a timeout so a missing service worker can never stall the
+    // completion path — the notification is simply skipped instead.
+    let readyTimer: ReturnType<typeof setTimeout> | undefined
+    const registration = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<ServiceWorkerRegistration | null>((resolve) => {
+        readyTimer = setTimeout(() => resolve(null), 3000)
+      }),
+    ]).finally(() => clearTimeout(readyTimer))
+    if (!registration) return
 
     const clientId = await getCachedClientId()
 
