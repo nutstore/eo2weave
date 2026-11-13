@@ -385,14 +385,15 @@ describe('AgentLoop', () => {
     it('should call LLM to summarize dropped context when compression occurs', async () => {
       let convertedMessages: any[] | null = null
       ;(mockProvider.chat as any).mockResolvedValue({
-        choices: [{ message: { content: 'Earlier requirement implemented with fallback.' } }],
+        choices: [{ message: { content: 'Earlier requirement implemented with fallback.' }, finish_reason: 'stop' }],
       })
 
       mockAgentLoopContinue.mockImplementation((_context: any, config: any) => {
         return (async function* () {
           convertedMessages = await config.convertToLlm([
             { role: 'user', content: 'earlier requirement', timestamp: Date.now() - 2_000 },
-            { ...assistantMessage('earlier implementation'), usage: { input: 90_000, output: 1, totalTokens: 110_000 }, timestamp: Date.now() - 1_000 },
+            { ...assistantMessage('earlier implementation '.repeat(4000)), usage: { input: 90_000, output: 1, totalTokens: 110_000 }, timestamp: Date.now() - 1_000 },
+            { role: 'user', content: 'Continue with the original requirement', timestamp: Date.now() },
           ])
           yield { type: 'message_start', message: assistantMessage('') }
           yield { type: 'message_end', message: assistantMessage('Hello!') }
@@ -433,14 +434,15 @@ describe('AgentLoop', () => {
       expect(mockProvider.chat).not.toHaveBeenCalled()
     })
 
-    it('falls back to a truncated summary instead of failing the run when the LLM summary call fails', async () => {
+    it('keeps the complete fitting transcript when both summary attempts fail', async () => {
       ;(mockProvider.chat as any).mockRejectedValue(new Error('network failed'))
 
       mockAgentLoopContinue.mockImplementation((_context: any, config: any) => {
         return (async function* () {
           await config.convertToLlm([
             { role: 'user', content: 'critical requirement', timestamp: Date.now() - 2_000 },
-            { ...assistantMessage('implementation detail'), usage: { input: 90_000, output: 1, totalTokens: 110_000 }, timestamp: Date.now() - 1_000 },
+            { ...assistantMessage('implementation detail '.repeat(4000)), usage: { input: 90_000, output: 1, totalTokens: 110_000 }, timestamp: Date.now() - 1_000 },
+            { role: 'user', content: 'Continue with the original requirement', timestamp: Date.now() },
           ])
           yield { type: 'message_start', message: assistantMessage('') }
           yield { type: 'message_end', message: assistantMessage('Hello!') }
@@ -846,8 +848,8 @@ describe('AgentLoop', () => {
       }) as any
       mockContextManager.getConfig.mockReturnValue({
         systemPrompt: 'sys',
-        maxContextTokens: 200,
-        reserveTokens: 20,
+        maxContextTokens: 10000,
+        reserveTokens: 1000,
       })
 
       mockAgentLoopContinue.mockImplementation((_context: any, config: any) => {
@@ -940,5 +942,42 @@ describe('AgentLoop', () => {
       expect(callbacks.onIterationLimitReached).not.toHaveBeenCalled()
       expect(callbacks.onComplete).toHaveBeenCalledOnce()
     })
+  })
+})
+
+describe('manual compression continuity', () => {
+  it('keeps the latest request and recent tool exchange while summarizing complete older evidence', async () => {
+    const provider = createMockProvider()
+    vi.mocked(provider.chat).mockResolvedValue({ id: 'summary', choices: [{ index: 0,
+      message: { role: 'assistant', content: 'Created project proj-kept; read the latest result and continue.' }, finish_reason: 'stop' }] })
+    const loop = new AgentLoop({ provider, toolRegistry: createMockToolRegistry(),
+      contextManager: createMockContextManager(), toolContext: createMockToolContext(), skipEnhancements: true })
+    const source: Message[] = [
+      { id: 'task', role: 'user', content: 'x'.repeat(1100) + 'MUST_NOT_CHANGE_PROJECT', timestamp: 1 },
+      { id: 'old-call', role: 'assistant', content: null, timestamp: 2,
+        toolCalls: [{ id: 'create', type: 'function', function: { name: 'create_project', arguments: '{"projectId":"proj-kept"}' } }] },
+      { id: 'old-result', role: 'tool', name: 'create_project', toolCallId: 'create', content: 'old evidence '.repeat(8000) + 'FINAL_VERIFIED_RESULT', timestamp: 3 },
+      { id: 'recent-call', role: 'assistant', content: null, timestamp: 4,
+        toolCalls: [{ id: 'read', type: 'function', function: { name: 'read', arguments: '{"path":"active.ts"}' } }] },
+      { id: 'recent-result', role: 'tool', name: 'read', toolCallId: 'read', content: 'LATEST_TOOL_RESULT', timestamp: 5 },
+      { id: 'compact', role: 'user', content: '/compact', timestamp: 6 },
+    ]
+    const commits: string[] = []
+    const result = await loop.runCompactOnly(source, {
+      onContextCommit: async () => { commits.push('persist') },
+      onMessagesUpdated: () => { commits.push('publish') },
+    })
+    const summary = result.findLast(message => message.kind === 'context_summary')!
+    expect(summary.compressionBoundary).toMatchObject({ throughMessageId: 'old-result', preservedMessageIds: ['task'] })
+    const { internalToPiMessages } = await import('../loop/message-mappers')
+    const restored = internalToPiMessages(JSON.parse(JSON.stringify(result)), provider.getModel(), 'Memory:')
+    const serialized = JSON.stringify(restored)
+    expect(serialized).toContain('MUST_NOT_CHANGE_PROJECT')
+    expect(serialized).toContain('LATEST_TOOL_RESULT')
+    expect(serialized).not.toContain('old evidence '.repeat(10))
+    expect(JSON.stringify(vi.mocked(provider.chat).mock.calls[0][0])).toContain('FINAL_VERIFIED_RESULT')
+    expect(JSON.stringify(vi.mocked(provider.chat).mock.calls[0][0])).toContain('proj-kept')
+    expect(commits).toEqual(['persist', 'publish'])
+    expect(result.slice(0, source.length)).toEqual(source)
   })
 })

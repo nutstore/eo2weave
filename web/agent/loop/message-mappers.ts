@@ -5,6 +5,7 @@ import type { DeferredContext } from '../deferred-context'
 import { createUsageSnapshot } from '../usage-cost'
 import { renderPageContextBlock } from '../workspace-assistant-context'
 import { ensureToolCallResults } from './tool-call-results'
+import { projectCompressionHistory } from './compression-history'
 
 /** Format file size for display in asset metadata */
 function formatAssetSize(bytes: number): string {
@@ -257,6 +258,20 @@ function mapInternalToPiMessage(
 /** Keep internal provenance through pi-agent's conversion without putting it in provider payloads. */
 const internalMessages = new WeakMap<object, Message>()
 
+/** Materialize the same text and media as normal requests, retaining canonical source metadata. */
+export function materializeProviderHistory(messages: Message[], model: Model<Api>, prefix: string): Message[] {
+  return messages.flatMap(source => mapInternalToPiMessage(source, model, prefix).map(mapped => {
+    const contentParts = Array.isArray(mapped.content)
+      ? mapped.content.filter((part): part is NonNullable<Message['contentParts']>[number] => part.type === 'text' || part.type === 'image')
+      : undefined
+    return {
+      ...source,
+      content: typeof mapped.content === 'string' ? mapped.content : contentParts?.filter(part => part.type === 'text').map(part => part.text).join('') ?? null,
+      contentParts: contentParts?.some(part => part.type === 'image') ? contentParts : undefined,
+    }
+  }))
+}
+
 /**
  * The provider-history view of the canonical transcript: incomplete assistant
  * turns (empty/error/aborted — issue #158) are excluded, ALONG WITH the tool
@@ -294,8 +309,7 @@ function toProviderHistory(messages: Message[]): Message[] {
 }
 
 export function internalToPiMessages(messages: Message[], model: Model<Api>, prefix: string): PiMessage[] {
-  const lastSummary = messages.map(message => message.kind).lastIndexOf('context_summary')
-  const visible = lastSummary < 0 ? messages : messages.slice(lastSummary)
+  const visible = projectCompressionHistory(messages)
   return ensureToolCallResults(toProviderHistory(visible)).flatMap(message => {
     const mapped = mapInternalToPiMessage(message, model, prefix)
     for (const item of mapped) {

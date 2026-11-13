@@ -124,6 +124,12 @@ import {
   changesetPromptDoc,
 } from './tools/changeset.tool'
 
+import {
+  readConversationHistoryDefinition,
+  readConversationHistoryExecutor,
+  readConversationHistoryPromptDoc,
+} from './tools/read-conversation-history.tool'
+
 // Cross-workspace conversation search
 import {
   searchConversationsDefinition,
@@ -256,6 +262,7 @@ const BUILTIN_TOOLS: Array<{ definition: ToolDefinition; executor: ToolExecutor 
   // Changeset & sync tools (detect_conflicts always available; checkpoint tools registered dynamically)
   { definition: detectConflictsDefinition, executor: detectConflictsExecutor },
   // Cross-workspace conversation search
+  { definition: readConversationHistoryDefinition, executor: readConversationHistoryExecutor },
   { definition: searchConversationsDefinition, executor: searchConversationsExecutor },
   // Meta tools
   { definition: switchAgentModeDefinition, executor: createSwitchModeExecutor() },
@@ -295,6 +302,7 @@ const ALL_PROMPT_DOCS: ToolPromptDoc[] = [
   snapshotPromptDoc,
   changesetPromptDoc,
   searchConversationsPromptDoc,
+  readConversationHistoryPromptDoc,
   subagentPromptDoc,
   switchModePromptDoc,
   askUserQuestionPromptDoc,

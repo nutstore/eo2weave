@@ -29,6 +29,8 @@ import {
 import type { ExtendedThinkingLevel } from '@/agent/llm/pi-ai-custom-openai-fetch'
 import type { LLMProviderType, ModelCapability } from '@/agent/providers/types'
 import { useT } from '@/i18n'
+import { getModelContextWindow } from '@/agent/providers/model-store'
+import { resolveCompressionTriggerTokens } from '@/agent/loop/context-compression'
 import { resolveModelOutputCap } from '@/agent/llm/pi-ai-model-resolver'
 import { BrandSlider } from '@creatorweave/ui'
 import { BrandSwitch } from '@creatorweave/ui'
@@ -290,6 +292,12 @@ export function ModelSettings({ open }: ModelSettingsProps) {
     () => resolveModelOutputCap(providerType, modelName),
     [providerType, modelName]
   )
+  const compressionTriggerTokens = resolveCompressionTriggerTokens({
+    maxContextTokens: getModelContextWindow(providerType, modelName),
+    reserveTokens: maxTokensDisplay,
+    absoluteCapEnabled: compressionAbsoluteCapEnabled,
+    absoluteCap: compressionAbsoluteCap,
+  })
   const handleTemperatureChange = useCallback(
     (value: number[]) => {
       setTemperature(value[0] / 100)
@@ -516,10 +524,11 @@ export function ModelSettings({ open }: ModelSettingsProps) {
 
               <p className="text-[10px] text-tertiary">
                 {t('settings.compressionTriggerExplain')}
+                {' '}{t('settings.compressionEffectiveTrigger', { tokens: compressionTriggerTokens.toLocaleString() })}
               </p>
 
               {!compressionAbsoluteCapEnabled && (
-                <p className="rounded-md border border-warning/30 bg-warning-bg px-2 py-1.5 text-[10px] text-warning">
+                <p className="text-[10px] text-tertiary">
                   {t('settings.compressionAbsoluteCapOffWarning')}
                 </p>
               )}

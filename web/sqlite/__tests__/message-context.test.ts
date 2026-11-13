@@ -58,7 +58,7 @@ describe('durable model context metadata', () => {
   it('preserves page capture delivery and exact compression boundary', async () => {
     const repository = new MessageRepository()
     const message = { ...createUserMessage('this', undefined, { url: 'https://example.com', selectedText: 'A' }),
-      compressionBoundary: { throughMessageId: 'previous', cutoffTimestamp: 10 } }
+      compressionBoundary: { throughMessageId: 'previous', cutoffTimestamp: 10, preservedMessageIds: ['human-task'] } }
     await repository.insert('conversation', message, 0)
     db.queryAll.mockResolvedValueOnce([rowFromLastInsert()])
     const [restored] = await repository.findByConversation('conversation')

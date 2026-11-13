@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { credentialRegistry } from '@/agent/providers/credential-state'
 import { createAssistantMessage, createToolMessage, createUserMessage } from '@/agent/message-types'
 import { useConversationRuntimeStore } from '../conversation-runtime.store'
+import { invalidatePersistBaseline } from '../conversation-persist'
 
 const deleteWorkspaceMock = vi.fn(() => Promise.resolve())
 const conversationRepoDeleteMock = vi.fn(() => Promise.resolve())
@@ -1060,6 +1061,30 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(secondRunConfig?.initialLastSummaryConvertCall).toBe(9)
   })
 
+  it('persists messages appended during an automatic context checkpoint', async () => {
+    const conv = useConversationStore.getState().createNew('checkpoint-concurrent-append')
+    const task = createUserMessage('original task')
+    const correction = createUserMessage('keep this additional requirement')
+    useConversationStore.getState().updateMessages(conv.id, [task])
+    let committedMessages: unknown[] = []
+
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[], callbacks: any) => {
+      useConversationStore.getState().addMessage(conv.id, correction)
+      const summary = { id: 'automatic-checkpoint', role: 'user', kind: 'context_summary', content: 'memory', timestamp: Date.now() }
+      messageRepoReplaceAllMock.mockClear()
+      invalidatePersistBaseline(conv.id)
+      await callbacks.onContextCommit([...messages, summary])
+      committedMessages = (messageRepoReplaceAllMock.mock.calls as unknown as [string, unknown[]][]).at(-1)?.[1] || []
+      callbacks.onMessagesUpdated([...messages, summary])
+      return [...messages, summary]
+    }
+
+    await useConversationStore.getState().runAgent(conv.id, 'openai' as any, 'mock-model', 1024, null)
+    expect(committedMessages).toEqual(expect.arrayContaining([correction]))
+    expect(useConversationStore.getState().conversations.find((item) => item.id === conv.id)?.messages)
+      .toEqual(expect.arrayContaining([correction]))
+  })
+
   it('should reflect onMessagesUpdated into store messages during an active run', async () => {
     const store = useConversationStore.getState()
     const conv = store.createNew('live-messages-during-run')
@@ -2034,6 +2059,40 @@ describe('conversation.store.sqlite tool-call routing', () => {
       settings.hasApiKey = true
       credentialRegistry.reset()
     }
+  })
+
+  it('keeps messages appended while a manual checkpoint is being generated', async () => {
+    const conv = useConversationStore.getState().createNew('compact-concurrent-append', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('original task'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('earlier answer'))
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => {
+      useConversationStore.getState().addMessage(conv.id, createUserMessage('new correction while compressing'))
+      return [...messages, { id: 'new-checkpoint', role: 'user', kind: 'context_summary', content: 'old work', timestamp: Date.now(),
+        compressionBoundary: { throughMessageId: messages[1].id, cutoffTimestamp: messages[1].timestamp + 1, preservedMessageIds: [messages[0].id] } }]
+    }
+    await useConversationStore.getState().compactConversation(conv.id)
+    const messages = useConversationStore.getState().conversations.find(c => c.id === conv.id)!.messages
+    expect(messages.some(message => message.content === 'new correction while compressing')).toBe(true)
+    expect(messages.filter(message => message.id === 'new-checkpoint')).toHaveLength(1)
+  })
+
+  it('does not let an old manual compression failure overwrite a newer run', async () => {
+    const conv = useConversationStore.getState().createNew('compact-new-owner', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('task'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('answer'))
+    ;(globalThis as any).__conversationStoreCustomCompact = async () => {
+      useConversationStore.getState().cancelAgent(conv.id)
+      useConversationStore.setState(state => {
+        const current = state.conversations.find(c => c.id === conv.id)!
+        current.activeRunId = 'new-owner'
+        current.status = 'streaming'
+      })
+      throw new Error('old summary failed')
+    }
+    await useConversationStore.getState().compactConversation(conv.id)
+    const current = useConversationStore.getState().conversations.find(c => c.id === conv.id)!
+    expect(current.activeRunId).toBe('new-owner')
+    expect(current.status).toBe('streaming')
   })
 
   it('compaction consumes a queued rerunOnly trigger without creating a blank user message (#170 round 2)', async () => {

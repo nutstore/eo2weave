@@ -33,7 +33,7 @@ function setup(): ExecutePiCoreLoopInput {
     baseURL: 'https://chatgpt.com/backend-api/codex', modelName: 'codex-test', headers: {},
   }, {
     category: 'custom', displayName: 'Codex', models: [{
-      id: 'codex-test', name: 'Codex test', contextWindow: 1000, capabilities: ['code', 'reasoning'],
+      id: 'codex-test', name: 'Codex test', contextWindow: 10000, capabilities: ['code', 'reasoning'],
     }],
   })
   const provider = new PiAIProvider({
@@ -42,14 +42,16 @@ function setup(): ExecutePiCoreLoopInput {
   })
   return {
     signal: new AbortController().signal,
-    initialMessages: [{ id: 'u', role: 'user', content: 'Read the file and continue', timestamp: 1 }],
+    initialMessages: [{ id: 'old-u', role: 'user', content: 'Earlier task', timestamp: -2 },
+      { id: 'old-a', role: 'assistant', content: 'Earlier verified evidence '.repeat(500), timestamp: -1 },
+      { id: 'u', role: 'user', content: 'Read the file and continue', timestamp: 1 }],
     baseSystemPrompt: 'Assistant', mode: 'act', toolRegistry: {} as never,
     getToolContext: () => ({ directoryHandle: null }), provider,
-    contextManager: { getConfig: () => ({ systemPrompt: 'Assistant', maxContextTokens: 1000, reserveTokens: 100 }) } as never,
+    contextManager: { getConfig: () => ({ systemPrompt: 'Assistant', maxContextTokens: 10000, reserveTokens: 1000 }) } as never,
     toolExecutionTimeout: 1000, toolTimeoutExemptions: new Set(), maxIterations: 10,
     convertCallCount: 0, lastSummaryConvertCall: -Infinity, compressedMemoryPrefix: 'Memory:',
-    generateContextSummaryWithLLM: (droppedContent, maxSummaryTokens) => generateContextSummaryWithLLM({
-      provider, droppedContent, maxSummaryTokens, compressedMemoryPrefix: 'Memory:',
+    generateContextSummaryWithLLM: (droppedContent, maxSummaryTokens, messages) => generateContextSummaryWithLLM({
+      provider, droppedContent, maxSummaryTokens, messages, systemPrompt: 'Assistant', compressedMemoryPrefix: 'Memory:',
     }),
   }
 }
@@ -76,8 +78,8 @@ describe('Codex context compression through the real Pi loop and Responses parse
     let turn = 0
     vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
       const body = JSON.parse(init.body)
-      if (body.instructions.startsWith('You are compressing')) return response('Read the file; continue the task.')
-      return ++turn === 1 ? response('', 980, true) : response('Done')
+      if (JSON.stringify(body).includes('You are compressing')) return response('Read the file; continue the task.')
+      return ++turn === 1 ? response('', 9800, true) : response('Done')
     }))
     const onContextCompressionComplete = vi.fn()
     const result = await executePiCoreLoop({ ...input, callbacks: { onContextCompressionComplete } })
@@ -92,11 +94,11 @@ describe('Codex context compression through the real Pi loop and Responses parse
     const input = setup()
     input.initialMessages.push({
       id: 'previous', role: 'assistant', content: 'Earlier answer', timestamp: 2,
-      usage: { promptTokens: 10, completionTokens: 10, cacheReadTokens: 960, totalTokens: 0 },
+      usage: { promptTokens: 10, completionTokens: 10, cacheReadTokens: 9600, totalTokens: 0 },
     }, { id: 'continue', role: 'user', content: 'Continue', timestamp: 3 })
     vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
       const body = JSON.parse(init.body)
-      return response(body.instructions.startsWith('You are compressing') ? 'Earlier task summary' : 'Done')
+      return response(JSON.stringify(body).includes('You are compressing') ? 'Earlier task summary' : 'Done')
     }))
     const result = await executePiCoreLoop(input)
     expect(result.allMessages.some(message => message.kind === 'context_summary')).toBe(true)
@@ -109,12 +111,12 @@ describe('Codex context compression through the real Pi loop and Responses parse
     let turn = 0
     vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
       const body = JSON.parse(init.body)
-      if (body.instructions.startsWith('You are compressing')) return response('Earlier task summary')
-      return response('Done', ++turn === 1 ? 980 : 100)
+      if (JSON.stringify(body).includes('You are compressing')) return response('Earlier task summary')
+      return response('Done', ++turn === 1 ? 9800 : 100)
     }))
     const onContextCompressionComplete = vi.fn()
     const first = await executePiCoreLoop({ ...input, callbacks: { onContextCompressionComplete } })
-    expect(first.allMessages.at(-1)?.usage?.totalTokens).toBe(980)
+    expect(first.allMessages.at(-1)?.usage?.totalTokens).toBe(9800)
     expect(onContextCompressionComplete).not.toHaveBeenCalled()
 
     // A follow-up dispatched off-screen uses the same compression gate as a UI send.
@@ -155,7 +157,7 @@ describe('Codex context compression through the real Pi loop and Responses parse
     const input = setup()
     input.initialMessages.push({
       id: 'previous', role: 'assistant', content: 'Earlier answer', timestamp: 2,
-      usage: { promptTokens: 970, completionTokens: 10, totalTokens: 980 },
+      usage: { promptTokens: 9700, completionTokens: 10, totalTokens: 9800 },
     }, { id: 'continue', role: 'user', content: 'Continue', timestamp: 3 })
     // Two failed summary attempts (initial + retry), then the turn itself.
     let calls = 0

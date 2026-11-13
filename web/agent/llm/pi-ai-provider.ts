@@ -10,7 +10,7 @@ import { complete, stream, type Api, type Context, type Message, type Model, typ
 import { estimateMessagesTokens } from './token-counter'
 import type { LLMProviderType } from '@/agent/providers/types'
 import { resolvePiAIModel } from './pi-ai-model-resolver'
-import { detectThinkingFormat, ensurePiAICustomProvidersRegistered, stripDeveloperRoleForDynamicProviders } from './pi-ai-custom-openai-fetch'
+import { CW_OPENAI_FETCH_API, detectThinkingFormat, ensurePiAICustomProvidersRegistered, stripDeveloperRoleForDynamicProviders } from './pi-ai-custom-openai-fetch'
 import { extractTextContent } from '../loop/message-mappers'
 import { installLlmBridgeFetch } from './llm-fetch'
 
@@ -54,9 +54,14 @@ export class PiAIProvider implements LLMProvider {
       apiKey: this.apiKey,
       temperature: request.temperature,
       maxTokens: request.maxTokens,
+      toolChoice: request.toolChoice,
       signal,
       onPayload: (payload: unknown) => {
         const p = payload as Record<string, unknown>
+        // The custom fetch and Responses adapters do not project toolChoice themselves.
+        if (request.toolChoice && (this.model.api === CW_OPENAI_FETCH_API || this.model.api === 'openai-responses')) {
+          p.tool_choice = request.toolChoice
+        }
         // openai-responses API: 'instructions' is required
         // chat-completions API does NOT support 'instructions' — uses system message instead
         if (this.model.api === 'openai-responses' && !p.instructions && context.systemPrompt) {

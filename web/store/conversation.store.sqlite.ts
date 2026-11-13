@@ -1,3 +1,4 @@
+import { restoreCompressionBaseline } from '@/agent/loop/context-compression'
 import { getSubagentContinuation, recoverSubagentContinuations, forgetSubagentContinuation } from './subagent-continuation'
 import { invalidateConversationRunClaim } from './conversation-agent-run'
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -1983,10 +1984,11 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         maxIterations: 1,
         initialConvertCallCount: conv.compressionConvertCallCount ?? 0,
         initialLastSummaryConvertCall: conv.compressionLastSummaryConvertCall ?? Number.NEGATIVE_INFINITY,
-        initialCompressionBaseline:
+        initialCompressionBaseline: restoreCompressionBaseline(conv.messages) ?? (
           conv.compressedContextSummary && conv.compressedContextCutoffTimestamp
             ? { summary: conv.compressedContextSummary, cutoffTimestamp: conv.compressedContextCutoffTimestamp }
-            : null,
+            : null
+        ),
         onCompressionStateUpdate: (compressionState) => {
           set((state) => {
             const c = state.conversations.find((x) => x.id === conversationId)
@@ -2112,6 +2114,17 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               }
             })
           },
+          onContextCommit: async (messages) => {
+            if (!isCurrentRun()) throw new Error('Compression belongs to a stale run')
+            const current = get().conversations.find(c => c.id === conversationId)
+            if (!current || !messagesBeforeCompact.every(source => current.messages.some(message =>
+              message.id === source.id && JSON.stringify(message) === JSON.stringify(source)))) {
+              throw new Error('Conversation changed while compression was running. Please retry.')
+            }
+            const summary = messages.findLast(message => message.kind === 'context_summary' && !messagesBeforeCompact.some(source => source.id === message.id))
+            if (summary) await persistMessageReplace(conversationId, [...current.messages, summary], true)
+            if (!isCurrentRun()) throw new Error('Compression belongs to a stale run')
+          },
           onMessagesUpdated: (msgs) => {
             // Do NOT replace c.messages — only update compression baseline state.
             // The compacted message list is for the LLM, not for the UI.
@@ -2121,30 +2134,31 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               const c = state.conversations.find((x) => x.id === conversationId)
               if (!c || (c.runEpoch || 0) !== runEpoch) return
               // Only update compression metadata — keep original messages intact
-              const summaryMsg = [...msgs].reverse().find((msg) => msg.kind === 'context_summary')
-              if (summaryMsg) {
-                c.compressedContextSummary = summaryMsg.content || c.compressedContextSummary || null
-                c.compressedContextCutoffTimestamp =
-                  typeof summaryMsg.timestamp === 'number' ? summaryMsg.timestamp : c.compressedContextCutoffTimestamp || null
+              const baseline = restoreCompressionBaseline(msgs)
+              if (baseline) {
+                c.compressedContextSummary = baseline.summary
+                c.compressedContextCutoffTimestamp = baseline.cutoffTimestamp
               }
               c.updatedAt = Date.now()
             })
           },
           onError: (error) => {
+            if (!isCurrentRun()) return
             console.error('[conversation.store] compactConversation error:', error)
             toast.error(i18nText('conversation.toast.compactFailed', '压缩失败：') + error.message)
           },
         })
 
-        // 5. Finalize — keep original messages + append a visible summary message
+        // 5. Finalize against the latest transcript so concurrent appends survive.
+        if (!isCurrentRun()) return
         if (!committed) {
           committed = true
           // Extract the summary message from resultMessages to show in UI.
           // Keep ALL original messages intact (no history loss), just add the summary at the end.
-          const summaryMsg = [...resultMessages].reverse().find((m) => m.kind === 'context_summary')
-          const finalMessages = summaryMsg
-            ? [...messagesBeforeCompact, summaryMsg]
-            : messagesBeforeCompact
+          const summaryMsg = [...resultMessages].reverse().find(m => m.kind === 'context_summary' && !messagesBeforeCompact.some(source => source.id === m.id))
+          const currentMessages = get().conversations.find(c => c.id === conversationId)?.messages ?? messagesBeforeCompact
+          const finalMessages = summaryMsg && !currentMessages.some(message => message.id === summaryMsg.id)
+            ? [...currentMessages, summaryMsg] : currentMessages
           deleteAgentLoop(conversationId)
           set((state) => {
             const c = state.conversations.find((c) => c.id === conversationId)
@@ -2174,6 +2188,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           scheduleConversationEviction(conversationId)
         }
       } catch (error) {
+        if (!isCurrentRun()) return
         if (!committed) {
           committed = true
           const errorMsg = error instanceof Error ? error.message : String(error)

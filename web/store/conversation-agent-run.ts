@@ -1,3 +1,4 @@
+import { restoreCompressionBaseline } from '@/agent/loop/context-compression'
 import { getSubagentContinuation, onSubagentCompletionReady, recordAsyncSubagentPaths, isAsyncSubagentPath, drainSubagentContinuations, hasRunningAsyncSubagents, retainPendingSubagentPaths } from './subagent-continuation'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
@@ -1226,10 +1227,11 @@ async function runAgentBody(
           initialConvertCallCount: conv.compressionConvertCallCount ?? 0,
           initialLastSummaryConvertCall:
             conv.compressionLastSummaryConvertCall ?? Number.NEGATIVE_INFINITY,
-          initialCompressionBaseline:
+          initialCompressionBaseline: restoreCompressionBaseline(conv.messages) ?? (
             conv.compressedContextSummary && conv.compressedContextCutoffTimestamp
-              ? { summary: conv.compressedContextSummary, cutoffTimestamp: conv.compressedContextCutoffTimestamp, throughMessageId: [...conv.messages].reverse().find(message => message.kind === 'context_summary')?.compressionBoundary?.throughMessageId }
-              : null,
+              ? { summary: conv.compressedContextSummary, cutoffTimestamp: conv.compressedContextCutoffTimestamp }
+              : null
+          ),
           onCompressionStateUpdate: (compressionState) => {
             if (!isCurrentRun()) return
             set((state) => {
@@ -2202,7 +2204,9 @@ async function runAgentBody(
           },
           onContextCommit: async (messages: Message[]) => {
             if (!isCurrentRun() || !isCurrentRunEpoch()) throw new Error('Context commit belongs to a stale run')
-            await persistMessageReplace(conversationId, messages, true)
+            const current = get().conversations.find((item) => item.id === conversationId)?.messages || []
+            await persistMessageReplace(conversationId, reconcileMessageSnapshot(current, messages), true)
+            if (!isCurrentRun() || !isCurrentRunEpoch()) throw new Error('Context commit belongs to a stale run')
           },
           onMessagesUpdated: (msgs: Message[]) => {
             if (!isCurrentRun() && !isCurrentRunEpoch()) return
@@ -2219,12 +2223,11 @@ async function runAgentBody(
               // finalize install (PR #152 review, "Recent transcript changes
               // disappear").
               bumpTranscriptVersion(conversationId)
-              c.compressedContextSummary =
-                [...reconciled].reverse().find((msg) => msg.kind === 'context_summary')?.content || c.compressedContextSummary || null
-              c.compressedContextCutoffTimestamp =
-                [...reconciled].reverse().find((msg) => msg.kind === 'context_summary')?.timestamp ||
-                c.compressedContextCutoffTimestamp ||
-                null
+              const baseline = restoreCompressionBaseline(reconciled)
+              if (baseline) {
+                c.compressedContextSummary = baseline.summary
+                c.compressedContextCutoffTimestamp = baseline.cutoffTimestamp
+              }
               c.updatedAt = Date.now()
               // Evict draft entries already committed to messages.
               // This prevents commitDraftToMessages (cancel path) from duplicating them.

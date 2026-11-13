@@ -1,20 +1,20 @@
 import type { AgentMessage as PiAgentMessage } from '@earendil-works/pi-agent-core'
 import type { Api, Message as PiMessage, Model } from '@earendil-works/pi-ai'
-import {
-  applyCompressionBaseline,
-  getCompressionCutoffTimestamp,
-  injectSummaryMessage,
-  resolveCompressionTriggerTokens,
-  type CompressionBaselineState,
-} from './context-compression'
-import { internalToPiMessages, piToInternalMessage, extractTextContent } from './message-mappers'
+import { resolveCompressionTriggerTokens, type CompressionBaselineState } from './context-compression'
+import { projectCompressionHistory, estimateCompressionTokens } from './compression-history'
+import { compressHistory } from './compression-runner'
+import { internalToPiMessages, piToInternalMessage } from './message-mappers'
 import { messagesToChatMessages } from '../llm/llm-provider'
-import { generateId, type Message } from '../message-types'
+import type { Message } from '../message-types'
+import type { ToolDefinition } from '../tools/tool-types'
 import type { AgentCallbacks, CompressionSummaryMode } from './types'
 import type { PiAIProvider } from '../llm/pi-ai-provider'
 
 export interface ConvertAgentMessagesToLlmInput {
   sessionId?: string
+  signal?: AbortSignal
+  systemPrompt?: string
+  tools?: ToolDefinition[]
   agentMessages: PiAgentMessage[]
   model: Model<Api>
   provider: PiAIProvider
@@ -32,9 +32,10 @@ export interface ConvertAgentMessagesToLlmInput {
   compressionAbsoluteCap?: number
   generateContextSummaryWithLLM: (
     droppedContent: string,
-    maxSummaryTokens: number
+    maxSummaryTokens: number,
+    messages?: Message[]
   ) => Promise<{ summary: string | null; mode: CompressionSummaryMode }>
-  onSummaryInjected?: (summary: string, cutoffTimestamp: number, throughMessageId?: string) => void
+  onSummaryInjected?: (summary: string, cutoffTimestamp: number, throughMessageId?: string, preservedMessageIds?: string[]) => void
 }
 
 export interface ConvertAgentMessagesToLlmResult {
@@ -42,6 +43,22 @@ export interface ConvertAgentMessagesToLlmResult {
   convertCallCount: number
   lastSummaryConvertCall: number
   compressionBaseline: CompressionBaselineState | null
+}
+
+export function resolveCompressionInputBudget(
+  maxContextTokens: number,
+  reserveTokens: number,
+  systemPrompt = '',
+  tools: ToolDefinition[] = []
+): number {
+  const fixedOverheadTokens = Math.ceil(new TextEncoder().encode(JSON.stringify({ system: systemPrompt, tools })).length / 2)
+  return Math.max(1, maxContextTokens - reserveTokens) - fixedOverheadTokens - Math.ceil(maxContextTokens * 0.05)
+}
+
+export function assertCompressionInputFits(messages: Message[], availableInputTokens: number): void {
+  if (estimateCompressionTokens(messages) > availableInputTokens) {
+    throw new Error('The complete conversation and current instructions cannot fit the available model context capacity.')
+  }
 }
 
 /**
@@ -74,47 +91,10 @@ function extractLastTurnUsedTokens(agentMessages: PiAgentMessage[]): number | nu
   return null
 }
 
-/**
- * When the summarizer is unavailable the transcript must survive (#268): dropping
- * it would make the model forget the task. Shrink the bulky parts instead —
- * old long tool outputs and assistant dumps carry most of the tokens, while the
- * first user message (the task) and the recent tail stay intact.
- */
-const SHRINK_KEEP_TAIL = 6
-const SHRINK_LIMITS: Record<string, number> = { assistant: 4000, tool: 1200, user: 4000, system: 4000 }
-
-function shrinkOversizedHistory(messages: Message[]): Message[] {
-  const keepFrom = messages.length - SHRINK_KEEP_TAIL
-  return messages.map((message, index) => {
-    if (index === 0 || index >= keepFrom) return message
-    const limit = SHRINK_LIMITS[message.role] ?? SHRINK_LIMITS.user
-
-    if (message.contentParts?.length) {
-      let changed = false
-      const parts = message.contentParts.map(part => {
-        if (part.type !== 'text' || part.text.length <= limit) return part
-        changed = true
-        return {
-          type: 'text' as const,
-          text: `${part.text.slice(0, limit)}\n…[truncated ${part.text.length - limit} chars]`,
-        }
-      })
-      return changed ? { ...message, contentParts: parts } : message
-    }
-
-    if (typeof message.content === 'string' && message.content.length > limit) {
-      return {
-        ...message,
-        content: `${message.content.slice(0, limit)}\n…[truncated ${message.content.length - limit} chars]`,
-      }
-    }
-    return message
-  })
-}
-
 export async function convertAgentMessagesToLlm(
   input: ConvertAgentMessagesToLlmInput
 ): Promise<ConvertAgentMessagesToLlmResult> {
+  input.signal?.throwIfAborted()
   const convertCallCount = input.convertCallCount + 1
   let lastSummaryConvertCall = input.lastSummaryConvertCall
   let compressionBaseline = input.compressionBaseline
@@ -122,9 +102,7 @@ export async function convertAgentMessagesToLlm(
   const internalMessagesRaw = input.agentMessages
     .map((m) => piToInternalMessage(m))
     .filter((m): m is NonNullable<typeof m> => m !== null)
-  const internalMessages = compressionBaseline
-    ? applyCompressionBaseline(internalMessagesRaw, compressionBaseline, input.compressedMemoryPrefix)
-    : internalMessagesRaw
+  const internalMessages = projectCompressionHistory(internalMessagesRaw, compressionBaseline)
   if (compressionBaseline) {
     console.info('[AgentLoop] Using compression baseline', {
       convertCallCount,
@@ -135,7 +113,7 @@ export async function convertAgentMessagesToLlm(
     })
   }
 
-  const maxContextTokens = input.maxContextTokens || input.provider.maxContextTokens || 128000
+  const maxContextTokens = Math.min(input.maxContextTokens || Infinity, input.model.contextWindow || input.provider.maxContextTokens || 128000)
   const reserveTokens = input.reserveTokens ?? 0
   const inputBudget = Math.max(1, maxContextTokens - reserveTokens)
   const chatMessages = messagesToChatMessages(internalMessages)
@@ -150,6 +128,7 @@ export async function convertAgentMessagesToLlm(
 
   const compressionTriggerThreshold = resolveCompressionTriggerTokens({
     maxContextTokens,
+    reserveTokens,
     absoluteCapEnabled: input.compressionAbsoluteCapEnabled,
     absoluteCap: input.compressionAbsoluteCap,
   })
@@ -180,7 +159,7 @@ export async function convertAgentMessagesToLlm(
     input.compressionEnabled !== false &&
     !summarizedLastCall &&
     typeof usedRealTokens === 'number' && usedRealTokens >= compressionTriggerThreshold &&
-    (!compressionBaseline || internalMessagesRaw.some(message => message.role === 'assistant' && message.timestamp >= compressionBaseline!.cutoffTimestamp))
+    (!compressionBaseline || internalMessages.some(message => message.kind !== 'context_summary' && message.role === 'assistant'))
   console.info('[AgentLoop] Compression gate evaluation', {
     sessionId: input.sessionId,
     provider: input.model.provider,
@@ -193,143 +172,38 @@ export async function convertAgentMessagesToLlm(
     allowCompression: shouldAllowCompression,
   })
 
-  const summaryTokenBudget = Math.min(2400, Math.max(500, Math.floor(maxContextTokens * 0.02)))
-
-  // No silent trimming.  When compression is not triggered, send all messages
-  // as-is.  When compression IS triggered, the summary replaces all old
-  // messages — no trimming needed either.
-  //
-  // We track the output as `Message[]` (NOT ChatMessage[]) because
-  // messagesToChatMessages() strips `contentParts` (image data), which
-  // destroys multimodal context.  The output path must stay in Message-space
-  // to preserve user-uploaded images across LLM rounds.
-  let outputMessages: Message[] = internalMessages
-  let trimmed = chatMessages // ChatMessage-space mirror, used only for token metrics
-
-  if (shouldAllowCompression) {
-    // Compression: generate summary via LLM, then replace all messages with [summary].
-    // Recompression must not forget what the previous summary already covers:
-    // the summarizer receives it as context, otherwise each round keeps only the
-    // messages since the last cutoff and the original task is lost.
-    const previousSummary = compressionBaseline?.summary?.trim()
-    const droppedContent = internalMessages
-      .filter((msg) => msg.kind !== 'context_summary' && msg.kind !== 'run_changes' && msg.kind !== 'context_update')
-      .map((msg) => {
-        // For multimodal messages (with images), use the extracted text only.
-        // The LLM doing compression can't see the images anyway, so this is safe.
-        const text = extractTextContent(msg.contentParts ?? msg.content)
-        if (msg.role === 'user') return `User: ${(text || '').slice(0, 800)}`
-        if (msg.role === 'assistant') return `Assistant: ${(text || '').slice(0, 800)}`
-        if (msg.role === 'tool') return `Tool result: ${(text || '').slice(0, 600)}`
-        return ''
+  const availableInputTokens = resolveCompressionInputBudget(maxContextTokens, reserveTokens, input.systemPrompt, input.tools)
+  const requiresOverflowRecovery = estimateCompressionTokens(internalMessages) > availableInputTokens
+  let outputMessages = internalMessages
+  // The real-usage gate controls proactive compression. Newly added content
+  // still needs a fit check before dispatch, including during cooldown.
+  if (shouldAllowCompression || (requiresOverflowRecovery && input.compressionEnabled !== false)) {
+    try {
+      const compressed = await compressHistory({
+        messages: internalMessages,
+        effectiveCapacityTokens: Math.min(availableInputTokens, compressionTriggerThreshold),
+        modelMaxOutputTokens: input.model.maxTokens,
+        signal: input.signal,
+        callbacks: input.callbacks,
+        generateContextSummaryWithLLM: input.generateContextSummaryWithLLM,
       })
-      .filter(Boolean)
-      .join('\n')
-    const droppedContentWithHistory = previousSummary
-      ? `Earlier summary:\n${previousSummary}\n\nNewer messages:\n${droppedContent}`
-      : droppedContent
-
-    const summarizeInput = droppedContentWithHistory
-    // Metrics report what was actually dropped this round; the carried-over
-    // summary is input context, not dropped content.
-    const droppedContentChars = droppedContent.length
-    const droppedGroups = internalMessages.length
-
-    if (droppedContent.length > 0) {
-      input.callbacks?.onContextCompressionStart?.({ droppedGroups, droppedContentChars })
-      const startedAt = Date.now()
-      let summary: string | null = null
-      let mode: CompressionSummaryMode = 'llm'
-      try {
-        const generated = await input.generateContextSummaryWithLLM(summarizeInput, summaryTokenBudget)
-        summary = generated.summary
-        mode = generated.mode
-      } catch (firstError) {
-        // One retry: most empty/failed summaries are transient. If it fails
-        // again the turn must still run with the transcript intact — dropping
-        // history would silently make the model forget the task (#268).
-        try {
-          const retried = await input.generateContextSummaryWithLLM(summarizeInput, summaryTokenBudget)
-          summary = retried.summary
-          mode = retried.mode
-        } catch (retryError) {
-          console.error('[AgentLoop] Context compression failed twice; keeping the transcript and shrinking oversized messages', {
-            sessionId: input.sessionId,
-            provider: input.model.provider,
-            model: input.model.id,
-            error: retryError instanceof Error ? retryError.message : String(retryError),
-            firstError: firstError instanceof Error ? firstError.message : String(firstError),
-            droppedGroups,
-            droppedContentChars,
-          })
-          // No baseline is written: the conversation stays whole and the next
-          // turn retries compression once the transient cause is gone.
-          outputMessages = shrinkOversizedHistory(internalMessages)
-          trimmed = messagesToChatMessages(outputMessages)
-          mode = 'skip'
-          summary = null
-        }
-      }
-      const latencyMs = Date.now() - startedAt
-
-      if (summary) {
+      input.signal?.throwIfAborted()
+      if (compressed) {
+        compressionBaseline = compressed.baseline
+        outputMessages = compressed.messages
         lastSummaryConvertCall = convertCallCount
-        const cutoffTimestamp = getCompressionCutoffTimestamp(internalMessagesRaw)
-        if (typeof cutoffTimestamp === 'number') {
-          compressionBaseline = { summary, cutoffTimestamp, throughMessageId: internalMessagesRaw.at(-1)?.id }
-        }
-
-        // Build the summary in Message-space (preserving kind='context_summary'
-        // so internalToPiMessages emits a stable system-context block instead
-        // of being treated as a fresh user turn).  Mirror into ChatMessage-space
-        // only for token-counting metrics below.
-        outputMessages = [
-          {
-            id: generateId(),
-            role: 'user',
-            content: summary,
-            kind: 'context_summary',
-            timestamp:
-              typeof cutoffTimestamp === 'number'
-                ? Math.max(0, cutoffTimestamp - 1)
-                : Date.now(),
-          },
-        ]
-        trimmed = injectSummaryMessage([], summary, input.compressedMemoryPrefix)
-
-        if (typeof cutoffTimestamp === 'number') {
-          input.onSummaryInjected?.(summary, cutoffTimestamp, compressionBaseline?.throughMessageId)
-        }
+        input.onSummaryInjected?.(compressed.summary, compressionBaseline.cutoffTimestamp, compressionBaseline.throughMessageId, compressionBaseline.preservedMessageIds)
       }
-
-      const postCompressionTokens = input.provider.estimateTokens(trimmed)
-      const postCompressionUsagePercent = Math.max(
-        0,
-        Math.min(100, (postCompressionTokens / inputBudget) * 100)
-      )
-      console.info('[AgentLoop] Context compression complete', {
-        sessionId: input.sessionId,
-        convertCallCount,
-        mode,
-        droppedGroups,
-        droppedContentChars,
-        summaryChars: summary?.length || 0,
-        compressionBaselineCutoff: compressionBaseline?.cutoffTimestamp ?? null,
-        postCompressionTokens,
-        inputBudget,
-        postCompressionUsagePercent: Number(postCompressionUsagePercent.toFixed(2)),
-      })
-      input.callbacks?.onContextCompressionComplete?.({
-        mode,
-        summary,
-        droppedGroups,
-        droppedContentChars,
-        summaryChars: summary?.length || 0,
-        latencyMs,
-      })
+    } catch (error) {
+      input.signal?.throwIfAborted()
+      // Preserve every source message on failure; an oversized request must fail visibly.
+      if (estimateCompressionTokens(internalMessages) > availableInputTokens) throw error
+      console.error('[AgentLoop] Context compression failed; retaining the complete transcript', error)
     }
   }
 
+  assertCompressionInputFits(outputMessages, availableInputTokens)
+  input.signal?.throwIfAborted()
   return {
     piMessages: internalToPiMessages(outputMessages, input.model, input.compressedMemoryPrefix),
     convertCallCount,

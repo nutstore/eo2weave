@@ -61,6 +61,7 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
   ['ask_user_question', { name: 'ask_user_question', category: 'read' }],
   ['delegate_to', { name: 'delegate_to', category: 'read' }],
   // Subagent orchestration tools (read-only orchestration surface)
+  ['read_conversation_history', { name: 'read_conversation_history', category: 'read' }],
   ['search_conversations', { name: 'search_conversations', category: 'read' }],
   // Unified external tool bridge (search + call)
   ['search_tools', { name: 'search_tools', category: 'read' }],

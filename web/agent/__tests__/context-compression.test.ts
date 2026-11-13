@@ -3,6 +3,7 @@ import type { Message } from '../message-types'
 import {
   applyCompressionBaseline,
   getCompressionCutoffTimestamp,
+  restoreCompressionBaseline,
 } from '../loop/context-compression'
 
 describe('context-compression helpers', () => {
@@ -14,6 +15,13 @@ describe('context-compression helpers', () => {
       { id: '4', role: 'tool', content: 'result', toolCallId: 'tc1', name: 'read', timestamp: 43 },
     ]
     expect(getCompressionCutoffTimestamp(messages)).toBe(44)
+  })
+
+  it('restores explicit checkpoint metadata instead of its display timestamp', () => {
+    const baseline = restoreCompressionBaseline([{ id: 'summary', role: 'user', kind: 'context_summary',
+      content: 'Checkpoint', timestamp: 999,
+      compressionBoundary: { throughMessageId: 'covered', cutoffTimestamp: 12, preservedMessageIds: ['human-task'] } }])
+    expect(baseline).toEqual({ summary: 'Checkpoint', throughMessageId: 'covered', cutoffTimestamp: 12, preservedMessageIds: ['human-task'] })
   })
 
   it('uses the committed boundary rather than timestamps when messages share a millisecond', () => {

@@ -99,6 +99,15 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
       ? Object.fromEntries([...bashCommandRegistry.snapshot()].map(([name, command]) => [
           name, `Description: ${command.manifest.description}\nManual:\n${command.manifest.manual}`,
         ])) : {} },
+    { id: 'background-tasks', collect: async () => {
+      const runtime = input().toolContext.subagentRuntime
+      if (!runtime) return {}
+      const active = await Promise.all(['pending', 'running'].map(status => runtime.list({ status, limit: 200 })))
+      return Object.fromEntries(active.flatMap(result => result.agents).map(task => [task.agentId,
+        JSON.stringify({ name: task.name, description: task.description, status: task.status,
+          guidance: 'This task is already submitted. Reuse its identity and await its automatic notification; do not spawn a duplicate.' }),
+      ]))
+    } },
     { id: 'conversation', collect: () => {
       const { toolContext } = input()
       if (!toolContext.workspaceId) return {}

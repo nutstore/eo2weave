@@ -84,7 +84,7 @@ export interface Message {
   errorMessage?: string
   /** Immutable context journal record, committed before model dispatch. */
   contextCommit?: ContextCommit
-  compressionBoundary?: { throughMessageId: string; cutoffTimestamp: number }
+  compressionBoundary?: { throughMessageId: string; cutoffTimestamp: number; preservedMessageIds?: string[]; retainedMessageIds?: string[] }
   /**
    * Present only on `kind === 'run_changes'` assistant records. Points at the
    * auto-apply snapshot that captured everything this agent run changed, so

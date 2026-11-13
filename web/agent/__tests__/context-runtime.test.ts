@@ -63,9 +63,9 @@ describe('context admission at model call boundaries', () => {
     })())
     const first = await executePiCoreLoop({ ...options(), collectContext: async () => [{ sourceId: 'x', entries: { a: 'A' } }] })
     const history: Message[] = [...first.allMessages, {
-      id: 'large-assistant', role: 'assistant', content: 'Earlier answer', timestamp: Date.now() + 10,
+      id: 'large-assistant', role: 'assistant', content: 'Earlier answer '.repeat(500), timestamp: Date.now() + 10,
       usage: { promptTokens: 8900, completionTokens: 100, totalTokens: 9000 },
-    }]
+    }, { id: 'followup', role: 'user', content: 'Continue', timestamp: Date.now() + 11 }]
     const requests: PiMessage[][] = []
     hooks.run.mockImplementation((context: { messages: AgentMessage[] }, config: Convert) => (async function* () {
       requests.push(await config.convertToLlm(context.messages))
@@ -77,7 +77,7 @@ describe('context admission at model call boundaries', () => {
       collectContext: async () => [{ sourceId: 'x', entries: { a: 'A', b: 'B' } }],
     })
     expect(summary).toHaveBeenCalledOnce()
-    expect(requests[0]).toHaveLength(2)
+    expect(requests[0]).toHaveLength(3)
     // Summary metadata can be rebuilt, but the complete model-visible prefix is unchanged.
     expect(requests[1]).toEqual(requests[0])
     expect(result.allMessages.at(-1)!.contextCommit!.changes[0].snapshot).toEqual({ a: 'A', b: 'B' })
@@ -95,6 +95,24 @@ describe('context admission at model call boundaries', () => {
     })).rejects.toThrow('disk full')
     expect(dispatched).not.toHaveBeenCalled()
     expect(onMessagesUpdated).not.toHaveBeenCalled()
+  })
+
+  it('rejects an oversized runtime snapshot before persisting or dispatching it', async () => {
+    const dispatched = vi.fn()
+    const onContextCommit = vi.fn(async () => {})
+    const onMessagesUpdated = vi.fn()
+    hooks.run.mockImplementation((context: { messages: AgentMessage[] }, config: Convert) => (async function* () {
+      await config.convertToLlm(context.messages)
+      dispatched()
+    })())
+    await expect(executePiCoreLoop({
+      ...options(),
+      collectContext: async () => [{ sourceId: 'skill', entries: { manual: 'x'.repeat(40000) } }],
+      callbacks: { onContextCommit, onMessagesUpdated },
+    })).rejects.toThrow('cannot fit')
+    expect(onContextCommit).not.toHaveBeenCalled()
+    expect(onMessagesUpdated).not.toHaveBeenCalled()
+    expect(dispatched).not.toHaveBeenCalled()
   })
 
   it('reintroduces a full baseline after a persisted summary without replaying old patches', async () => {

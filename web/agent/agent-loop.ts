@@ -20,11 +20,12 @@ import { getUniversalSystemPrompt } from './prompts/universal-system-prompt'
 import { PiAIProvider } from './llm/pi-ai-provider'
 import { type AgentMode } from './agent-mode'
 import { generateContextSummaryWithLLM } from './loop/context-summary'
-import { getCompressionCutoffTimestamp, type CompressionBaselineState } from './loop/context-compression'
+import { resolveCompressionTriggerTokens, restoreCompressionBaseline, type CompressionBaselineState } from './loop/context-compression'
 import { buildRuntimeEnhancedPrompt, triggerPrefetchForMessages } from './loop/enhancements'
 import { executePiCoreLoop } from './loop/pi-core-runner'
 import { abortReasonMessage, createAgentAbortReason, AgentAbortReasonName } from '@/lib/agent-abort'
-import { extractTextContent } from './loop/message-mappers'
+import { compressHistory } from './loop/compression-runner'
+import { estimateCompressionTokens } from './loop/compression-history'
 import type { AgentCallbacks, AgentLoopConfig } from './loop/types'
 import { generateId } from './message-types'
 import { ensureToolCallResults } from './loop/tool-call-results'
@@ -178,10 +179,14 @@ export class AgentLoop {
         convertCallCount: invocationCompression ? invocationCompression.convertCallCount : this.convertCallCount,
         lastSummaryConvertCall: invocationCompression ? invocationCompression.lastSummaryConvertCall : this.lastSummaryConvertCall,
         compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
-        generateContextSummaryWithLLM: (droppedContent, maxSummaryTokens) =>
+        generateContextSummaryWithLLM: (droppedContent, maxSummaryTokens, sourceMessages, replay) =>
           generateContextSummaryWithLLM({
             provider: this.provider,
             droppedContent,
+            messages: sourceMessages,
+            systemPrompt: replay?.systemPrompt ?? this.contextManager.getConfig().systemPrompt ?? this.baseSystemPrompt,
+            tools: replay?.tools ?? this.toolRegistry.getToolDefinitionsForMode(this.mode, { directMode: this.toolContext.directMode }),
+            signal,
             maxSummaryTokens,
             compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
           }),
@@ -279,106 +284,55 @@ export class AgentLoop {
     const signal = controller.signal
 
     try {
-      // Extract content from non-summary messages for summarization
-      const nonSummaryMessages = messages.filter((msg) => msg.kind !== 'context_summary' && msg.kind !== 'context_update')
-      const droppedContent = nonSummaryMessages
-        .map((msg) => {
-          // For multimodal messages, use the text representation for compression.
-          const text = extractTextContent(msg.contentParts ?? msg.content)
-          if (msg.role === 'user') return `User: ${(text || '').slice(0, 800)}`
-          if (msg.role === 'assistant') return `Assistant: ${(text || '').slice(0, 800)}`
-          if (msg.role === 'tool') return `Tool result: ${(text || '').slice(0, 600)}`
-          return ''
-        })
-        .filter(Boolean)
-        .join('\n')
-
-      const droppedContentChars = droppedContent.length
-      const droppedGroups = nonSummaryMessages.length
-
-      if (droppedContent.length === 0) {
-        // Nothing to compress
-        callbacks?.onComplete?.(messages)
-        return messages
-      }
-
-      // Notify compression start
-      callbacks?.onContextCompressionStart?.({ droppedGroups, droppedContentChars })
-
-      // Generate summary via LLM
-      const summaryTokenBudget = Math.min(
-        2400,
-        Math.max(500, Math.floor((this.contextManager.getConfig().maxContextTokens || 128000) * 0.02)),
-      )
-      const startedAt = Date.now()
-      const { summary, mode } = await generateContextSummaryWithLLM({
-        provider: this.provider,
-        droppedContent,
-        maxSummaryTokens: summaryTokenBudget,
-        compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX,
+      const config = this.contextManager.getConfig()
+      const model = this.provider.getModel()
+      const tools = this.toolRegistry.getToolDefinitionsForMode(this.mode, { directMode: this.toolContext.directMode })
+      const systemPrompt = config.systemPrompt || this.baseSystemPrompt
+      const capacity = Math.min(config.maxContextTokens, this.provider.maxContextTokens)
+      const fixedTokens = Math.ceil(new TextEncoder().encode(JSON.stringify({ systemPrompt, tools })).length / 2)
+      const available = Math.max(1, capacity - (config.reserveTokens ?? 0) - fixedTokens - Math.ceil(capacity * 0.05))
+      const compressed = await compressHistory({
+        messages,
+        effectiveCapacityTokens: Math.min(available, resolveCompressionTriggerTokens({
+          maxContextTokens: capacity,
+          reserveTokens: config.reserveTokens,
+          absoluteCapEnabled: config.compressionAbsoluteCapEnabled,
+          absoluteCap: config.compressionAbsoluteCap,
+        })),
+        modelMaxOutputTokens: model.maxTokens,
         signal,
+        callbacks,
+        generateContextSummaryWithLLM: (droppedContent, maxSummaryTokens, sourceMessages) => generateContextSummaryWithLLM({
+          provider: this.provider, droppedContent, messages: sourceMessages, systemPrompt, tools,
+          maxSummaryTokens, compressedMemoryPrefix: COMPRESSED_MEMORY_PREFIX, signal,
+        }),
       })
-
-      // Check for cancellation
-      if (signal.aborted) {
+      if (!compressed) {
         callbacks?.onComplete?.(messages)
         return messages
       }
-
-      const latencyMs = Date.now() - startedAt
-
-      let resultMessages = messages
-
-      if (summary) {
-        // Compute cutoff timestamp — this determines what the compression baseline
-        // covers.  The full message list is NOT modified; only the baseline metadata
-        // is persisted so that the next LLM call uses the trimmed context.
-        const cutoffTimestamp = getCompressionCutoffTimestamp(messages)
-        // Commit only while this compaction still owns the loop — an older
-        // runCompactOnly finishing after a newer run must not overwrite the
-        // newer run's baseline or counters.
-        if (this.abortController === controller) {
-          if (typeof cutoffTimestamp === 'number') {
-            this.compressionBaseline = { summary, cutoffTimestamp, throughMessageId: messages.at(-1)?.id }
-          }
-
-          // Update compression state counters
-          this.convertCallCount++
-          this.lastSummaryConvertCall = this.convertCallCount
-          this.onCompressionStateUpdate?.({
-            convertCallCount: this.convertCallCount,
-            lastSummaryConvertCall: this.lastSummaryConvertCall,
-          })
-        }
-
-        // Build result for compression baseline only (NOT used to replace UI messages)
-        const summaryMessage: Message = {
-          id: generateId(),
-          role: 'user',
-          content: summary,
-          kind: 'context_summary',
-          ...(messages.at(-1) && cutoffTimestamp != null ? { compressionBoundary: { throughMessageId: messages.at(-1)!.id, cutoffTimestamp } } : {}),
-          timestamp: Math.max(0, (cutoffTimestamp ?? Date.now()) - 1),
-        }
-
-        // Include original messages so the store can extract the summary.
-        // The store's onMessagesUpdated will ONLY read the summary metadata,
-        // not replace c.messages.
-        resultMessages = [...messages, summaryMessage]
-
-        // Notify messages updated so the store can persist the summary
-        callbacks?.onMessagesUpdated?.(resultMessages)
+      if (estimateCompressionTokens(compressed.messages) > available) {
+        throw new Error('The compressed conversation still exceeds the model input budget.')
       }
-
-      // Notify compression complete
-      callbacks?.onContextCompressionComplete?.({
-        mode,
-        summary,
-        droppedGroups,
-        droppedContentChars,
-        summaryChars: summary?.length || 0,
-        latencyMs,
-      })
+      signal.throwIfAborted()
+      const summaryMessage: Message = {
+        id: generateId(), role: 'user', kind: 'context_summary', content: compressed.summary,
+        compressionBoundary: {
+          throughMessageId: compressed.baseline.throughMessageId!,
+          cutoffTimestamp: compressed.baseline.cutoffTimestamp,
+          preservedMessageIds: compressed.baseline.preservedMessageIds,
+        },
+        timestamp: Math.max(0, compressed.baseline.cutoffTimestamp - 1),
+      }
+      const resultMessages = [...messages, summaryMessage]
+      await callbacks?.onContextCommit?.(resultMessages)
+      signal.throwIfAborted()
+      if (this.abortController !== controller) return messages
+      this.compressionBaseline = compressed.baseline
+      this.convertCallCount++
+      this.lastSummaryConvertCall = this.convertCallCount
+      this.onCompressionStateUpdate?.({ convertCallCount: this.convertCallCount, lastSummaryConvertCall: this.lastSummaryConvertCall })
+      callbacks?.onMessagesUpdated?.(resultMessages)
 
       if (this.onLoopComplete) {
         try { await this.onLoopComplete() } catch { /* ignore: best-effort notification, never fail the loop */ }
@@ -415,14 +369,7 @@ export class AgentLoop {
     const signal = controller.signal
     // Capture ALL per-invocation state BEFORE the first await so an
     // overlapping run's commits can never leak into this invocation.
-    const latestSummary = [...messages].reverse().find(message => message.kind === 'context_summary')
-    if (latestSummary?.content) {
-      this.compressionBaseline = {
-        summary: latestSummary.content,
-        cutoffTimestamp: latestSummary.compressionBoundary?.cutoffTimestamp ?? latestSummary.timestamp + 1,
-        throughMessageId: latestSummary.compressionBoundary?.throughMessageId,
-      }
-    }
+    this.compressionBaseline = restoreCompressionBaseline(messages) ?? this.compressionBaseline
     const invocationCompression = {
       baseline: this.compressionBaseline,
       convertCallCount: this.convertCallCount,
