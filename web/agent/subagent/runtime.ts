@@ -2,7 +2,7 @@ import { SubagentStreamTrace } from './stream-trace'
 import type { DraftAssistantEvent } from '@/store/draft-assistant'
 import type {
   SubagentAcceptedReceipt, SubagentBatchAcceptance, SubagentCompletion,
-  SubagentContinuation, SubagentExecutionMetadata, WaitSubagentsInput, WaitSubagentsResult,
+  SubagentContinuation, SubagentExecutionMetadata,
 } from './async-types'
 import { useSubagentTaskStore } from '@/store/subagent-task.store'
 import { type AgentMode } from '@/agent/agent-mode'
@@ -107,7 +107,6 @@ const SUBAGENT_CONTROL_TOOLS = new Set([
   'resume_subagent',
   'get_subagent_status',
   'list_subagents',
-  'wait_subagents',
 ])
 
 // A subagent without an explicit deadline used to run until the tab closed: the
@@ -135,7 +134,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   private hydrationPromise: Promise<void>
   private activeExecutionSlots = 0
   private executionWaiters: Array<() => void> = []
-  private completionListeners = new Set<() => void>()
   private completions = new Map<string, SubagentCompletion>()
   private disposed = false
 
@@ -671,53 +669,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         error_code: task.error?.code || 'SUBAGENT_FAILED' })
     }
     return { completed, failed: failed.sort((a, b) => a.task_index - b.task_index) }
-  }
-
-  async wait(input: WaitSubagentsInput): Promise<WaitSubagentsResult> {
-    await this.ensureHydrated()
-    const timeout = input.timeout_ms ?? 60000
-    if (!Number.isFinite(timeout) || timeout < 0 || timeout > 60000) {
-      throw new SubagentError(SubagentErrorCode.INVALID_INPUT, 'timeout_ms must be between 0 and 60000')
-    }
-    const targets = [...new Set(input.agentIds)].map((id) => {
-      const task = this.getByIdOrName(id)
-      if (!task) throw new SubagentError(SubagentErrorCode.TASK_NOT_FOUND, `subagent ${id} not found`)
-      return { agentId: task.agentId, executionId: task.latestExecution?.executionId }
-    })
-    const completed = () => targets.map(({ agentId, executionId }) => executionId
-      ? this.completions.get(`${agentId}:${executionId}`) : undefined).filter((item): item is SubagentCompletion => Boolean(item))
-    const ready = () => input.wait_for === 'all' ? completed().length === targets.length : completed().length > 0
-    let timedOut = false
-    if (!ready() && timeout > 0 && !input.signal?.aborted) {
-      await new Promise<void>((resolve) => {
-        const finish = () => {
-          clearTimeout(timer)
-          this.completionListeners.delete(onChange)
-          input.signal?.removeEventListener('abort', finish)
-          resolve()
-        }
-        const onChange = () => { if (ready()) finish() }
-        const timer = setTimeout(() => { timedOut = true; finish() }, timeout)
-        this.completionListeners.add(onChange)
-        input.signal?.addEventListener('abort', finish, { once: true })
-        onChange()
-      })
-    } else if (!ready() && !input.signal?.aborted) timedOut = true
-    const results = completed()
-    if (results.length) {
-      const { getSubagentCompletionRepository } = await this.repositories
-      for (const result of results) {
-        const durable = await getSubagentCompletionRepository().find(result.id)
-        if (durable) Object.assign(result, durable)
-        if (result.status === 'pending' && await getSubagentCompletionRepository().consume(result.id)) {
-          result.status = 'consumed'
-          const task = this.tasks.get(result.agentId)
-          if (task) this.publishTask(task)
-        }
-      }
-    }
-    const done = new Set(results.map((result) => result.agentId))
-    return { results, pending: targets.filter((target) => !done.has(target.agentId)).map((target) => target.agentId), timed_out: timedOut }
   }
 
   private async killTask(
@@ -1584,7 +1535,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       execution.completion = completion
       this.completions.set(completion.id, completion)
       this.publishTask(task, 'Terminal persistence failed; resume to retry.', true)
-      for (const notify of this.completionListeners) notify()
       throw error
     })
     return execution.terminalPromise
@@ -1623,7 +1573,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     execution.completion = completion
     this.completions.set(id, completion)
     this.publishTask(task)
-    for (const notify of this.completionListeners) notify()
     if (completion.status === 'pending') {
       try {
         void Promise.resolve(execution.deps.onCompletionReady?.(completion)).catch((error) => {

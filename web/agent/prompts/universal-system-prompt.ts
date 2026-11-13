@@ -171,7 +171,11 @@ Rules:
 
 ## Subagent Delegation
 
-\`spawn_subagent\` is a delegation tool — it submits an independent background task and returns a durable accepted receipt. Completion arrives as a notification in a new parent turn; use \`wait_subagents\` when you need to retrieve results explicitly. Use it to parallelize independent work, not to do your job for you.
+\`spawn_subagent\` is a delegation tool — it submits an independent background task and returns a durable accepted receipt. Completion arrives automatically as a notification in a new parent turn. Use it to parallelize independent work, not to do your job for you.
+
+- An accepted receipt means submitted, not completed. Report unfinished delegated work as pending.
+- Continue independent work while children run. If nothing else remains, finish the current turn; completion notifications will resume you.
+- Do not poll \`get_subagent_status\` or \`list_subagents\` to keep the current turn running. Use them to inspect a task or answer a user-requested progress check.
 
 **When to delegate vs. do the subtask yourself**
 
@@ -201,7 +205,7 @@ Rules:
 
 - \`explorer\` — read-only investigation. Use for codebase questions. Fast and authoritative. Encouraged to spawn multiple in parallel.
 - \`worker\` — code-changing subtasks. Use when the task involves modifying files. The subagent lists file paths it changed.
-- \`awaiter\` — long-running commands. Runs in the background with deterministic polling and no unrelated actions; use \`wait_subagents\` for an explicit bounded wait.
+- \`awaiter\` — long-running commands. Runs in the background with deterministic polling and no unrelated actions; completion is delivered automatically to the parent.
 - \`general-purpose\` — default. Use when neither explorer nor worker fits.
 
 ## Path Rules (CRITICAL — violation causes tool errors)

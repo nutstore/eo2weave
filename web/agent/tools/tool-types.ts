@@ -1,4 +1,4 @@
-import type { SubagentAcceptedReceipt, SubagentBatchAcceptance, WaitSubagentsInput, WaitSubagentsResult } from '@/agent/subagent/async-types'
+import type { SubagentAcceptedReceipt, SubagentBatchAcceptance } from '@/agent/subagent/async-types'
 /**
  * Tool system types for Agent tool calling.
  * Compatible with OpenAI function calling format.
@@ -171,7 +171,6 @@ export interface SubagentRuntime {
   acknowledge(input: { agentId: string; executionId: string }): Promise<void>
   start(input: SpawnSubagentInput): Promise<SubagentAcceptedReceipt>
   batchStart(input: BatchSpawnSubagentInput): Promise<SubagentBatchAcceptance>
-  wait(input: WaitSubagentsInput): Promise<WaitSubagentsResult>
   spawn(input: SpawnSubagentInput): Promise<SpawnSubagentResult>
   sendMessage(input: {
     to: string

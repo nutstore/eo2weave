@@ -111,8 +111,6 @@ import {
   stopSubagentDefinition,
   stopSubagentExecutor,
   subagentPromptDoc,
-  waitSubagentsDefinition,
-  waitSubagentsExecutor,
 } from './tools/subagent.tool'
 
 // Changeset tools (checkpoint, sync, conflicts)
@@ -264,7 +262,6 @@ const BUILTIN_TOOLS: Array<{ definition: ToolDefinition; executor: ToolExecutor 
   { definition: askUserQuestionDefinition, executor: askUserQuestionExecutor },
   { definition: delegateToDefinition, executor: delegateToExecutor },
   { definition: spawnSubagentDefinition, executor: spawnSubagentExecutor },
-  { definition: waitSubagentsDefinition, executor: waitSubagentsExecutor },
   { definition: batchSpawnDefinition, executor: batchSpawnExecutor },
   { definition: sendMessageToSubagentDefinition, executor: sendMessageToSubagentExecutor },
   { definition: stopSubagentDefinition, executor: stopSubagentExecutor },

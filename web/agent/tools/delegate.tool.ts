@@ -3,7 +3,7 @@
  * to another agent persona.
  *
  * Unlike spawn_subagent (which submits an isolated background task and returns
- * an accepted receipt, with results available through wait_subagents), delegate_to performs a **one-way
+ * an accepted receipt, with results delivered by automatic notifications), delegate_to performs a **one-way
  * handoff**: the target agent takes over the next loop iteration with
  * the full conversation history and its own persona injected. The
  * originating agent does not regain control.
@@ -36,7 +36,7 @@ export const delegateToDefinition: ToolDefinition = {
       '',
       '## When NOT to use',
       '- You can complete the task yourself — just do it',
-      '- You only need a quick sub-result (use `spawn_subagent` and retrieve its background result with `wait_subagents`)',
+      '- You only need a sub-result (use `spawn_subagent`; its completion notification resumes you automatically)',
       '- The user just @-mentioned another agent (the system already handles that)',
     ].join('\n'),
     parameters: {
