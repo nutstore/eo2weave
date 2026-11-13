@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { RESOLUTION_COUNTS, resetResolutionCounts, resolvePiAIModel } from '@/agent/llm/pi-ai-model-resolver'
 import { getOpenRouterInputModalities } from '@/agent/providers/openrouter-pricing'
+import { LLM_PROVIDER_CONFIGS } from '@/agent/providers/types'
 
 // setCachedModels seeds a module-level memory cache that removeItem alone
 // cannot clear (Sourcery: "Cached fixture leaks between tests") — reset the
@@ -106,7 +107,11 @@ describe('resolvePiAIModel', () => {
   })
 
   it('should declare volcengine-coding fallback models as not supporting developer role', () => {
-    const model = resolvePiAIModel('volcengine-coding', 'kimi-k2', 'https://ark.cn-beijing.volces.com/api/coding')
+    const config = LLM_PROVIDER_CONFIGS['volcengine-coding']
+    const model = resolvePiAIModel('volcengine-coding', config.modelName, config.baseURL)
+    expect(model.baseUrl).toBe('https://ark.cn-beijing.volces.com/api/coding/v3')
+    expect(model.id).toBe('ark-code-latest')
+    expect(model.api).toBe('openai-completions')
     const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined
     expect(compat?.supportsDeveloperRole).toBe(false)
   })

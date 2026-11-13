@@ -28,6 +28,7 @@
 // which doesn't directly satisfy the relaxed `Record<string, string>`
 // pricing shape we read.
 import orSnapshotRaw from '@/data/openrouter-models.json'
+import { llmFetch } from '@/agent/llm/llm-fetch'
 
 interface ORSnapshotShape {
   data?: Array<{
@@ -167,7 +168,7 @@ export function refreshOpenRouterModelsNow(): Promise<boolean> {
 
 async function doRefreshOpenRouterModels(): Promise<boolean> {
   try {
-    const res = await fetch(MODELS_ENDPOINT, {
+    const res = await llmFetch(MODELS_ENDPOINT, {
       headers: { Accept: 'application/json' },
       // Same 10s bound as every other provider fetch (model-fetcher,
       // deepseek-provider): a hung gateway must not spin the manual refresh

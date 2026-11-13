@@ -10,6 +10,7 @@
  */
 
 import { getProviderConfig } from './types'
+import { llmFetch } from '@/agent/llm/llm-fetch'
 
 export const DEEPSEEK_PROVIDER_TYPE = 'deepseek'
 
@@ -58,7 +59,7 @@ export async function fetchDeepSeekBalance(
   const cleanBase = configuredBase.replace(/\/+$/, '').replace(/\/v1$/i, '')
 
   const url = `${cleanBase}/user/balance`
-  const response = await fetch(url, {
+  const response = await llmFetch(url, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${apiKey}`,

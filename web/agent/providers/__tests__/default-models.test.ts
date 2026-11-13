@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PINNED_MODELS, getDefaultPinnedModels } from '../default-models'
-import { PROVIDER_META } from '../types'
+import { LLM_PROVIDER_CONFIGS, PROVIDER_META } from '../types'
 
 describe('getDefaultPinnedModels', () => {
   it('returns curated defaults as-is when no catalog is given (blind seed)', () => {
@@ -64,15 +64,22 @@ describe('getDefaultPinnedModels', () => {
     )
   })
 
-  it('matches dated-suffix catalog variants (doubao seed snapshots)', () => {
+  it('seeds the console-managed Volcengine Coding default from its fallback catalog', () => {
+    const served = PROVIDER_META['volcengine-coding'].models.map((model) => model.id)
+    expect(LLM_PROVIDER_CONFIGS['volcengine-coding'].modelName).toBe('ark-code-latest')
+    expect(getDefaultPinnedModels('volcengine-coding', served)).toEqual(['ark-code-latest'])
+    expect(getDefaultPinnedModels('volcengine-coding', ['glm-5.3-flash'])).toEqual([])
+  })
+
+  it('matches dated-suffix catalog variants', () => {
     // Exact id served → pinned as-is.
-    expect(getDefaultPinnedModels('volcengine-coding', ['doubao-seed-2.0-code', 'doubao-seed-2.0-mini']))
-      .toEqual(['doubao-seed-2.0-code'])
+    expect(getDefaultPinnedModels('glm', ['glm-5.3-flash', 'glm-5.1']))
+      .toEqual(['glm-5.3-flash'])
     // Only the dated snapshot is served → the DATED variant is pinned.
-    expect(getDefaultPinnedModels('volcengine-coding', ['doubao-seed-2.0-code-20260730']))
-      .toEqual(['doubao-seed-2.0-code-20260730'])
+    expect(getDefaultPinnedModels('glm', ['glm-5.3-flash-20260730']))
+      .toEqual(['glm-5.3-flash-20260730'])
     // Unrelated families sharing the prefix must NOT match.
-    expect(getDefaultPinnedModels('volcengine-coding', ['doubao-seed-2.0-code-pro', 'doubao-seed-2.0-codex']))
+    expect(getDefaultPinnedModels('glm', ['glm-5.3-flash-pro', 'glm-5.3-flash-codex']))
       .toEqual([])
   })
 })
