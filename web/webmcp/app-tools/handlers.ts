@@ -682,8 +682,8 @@ export const handlers: Record<string, AppToolHandler> = {
         text: content,
         background: true,
         enqueuedAt: Date.now(),
-        // The dequeue consumer reuses this record, so the message appended and
-        // persisted below and the one the follow-up turn uses are the same.
+        // The dequeue consumer reuses this record (id + timestamp), so the turn
+        // that eventually runs and the durable row written below are one message.
         persistedMessage: queuedMsg,
       })
       if (!result?.enqueued) {
@@ -691,23 +691,18 @@ export const handlers: Record<string, AppToolHandler> = {
       }
       rec.status = 'queued'
       rec.queuePosition = result.position
-      // Append synchronously, before any await: the queue preserves enqueue
-      // order, so the transcript must too. Awaiting the SQLite insert first let
-      // a finishing run's update — and a second queued prompt's insert — land
-      // in insert-completion order, and made the append race the run's own.
-      const liveStore = d().getConversationStore()
-      const liveConv = findConv(liveStore, conversationId)
-      const liveMessages = liveConv?.messages ?? []
-      const queuedSeq = liveMessages.length + 1
-      if (liveConv && !liveMessages.some((m) => m.id === queuedMsg.id)) {
-        liveStore.updateMessages(conversationId, [...liveMessages, queuedMsg])
-      }
-      // Persist durably: on refresh the queue is lost but the message survives
-      // in SQLite and shows up in the conversation history (no silent loss).
+      // Persist durably, and ONLY that: the queued card is this prompt's single
+      // on-screen copy until it runs — the same contract as the in-app send path
+      // when the conversation is busy. Appending it to the transcript here gave
+      // the user two copies of one prompt (queued card + normal bubble) and
+      // raced the active run's own writes.
       // Report a failed write instead of claiming durability that is not there.
       let persisted = true
       try {
-        await d().getMessageRepository().insert(conversationId, queuedMsg, queuedSeq)
+        // Seq from the LIVE message count, not the pre-await snapshot: the
+        // active run keeps appending while this write is in flight.
+        const liveCount = findConv(d().getConversationStore(), conversationId)?.messages.length ?? 0
+        await d().getMessageRepository().insert(conversationId, queuedMsg, liveCount + 1)
       } catch (e) {
         persisted = false
         console.warn('[app-tools] queued message persist failed:', e)
