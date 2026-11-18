@@ -328,7 +328,11 @@ describe('app-tools handlers', () => {
     // The send is queued and visible in the transcript, but the caller must not
     // be told it is durable.
     expect(r).toMatchObject({ status: 'queued', persisted: false })
+    // One write, and it must carry the prompt: a call count alone passes even
+    // when the appended list never gained the queued message.
     expect(vi.mocked(store.updateMessages)).toHaveBeenCalledTimes(1)
+    const [, appended] = vi.mocked(store.updateMessages).mock.calls[0]
+    expect(appended.some((m) => m.content === 'queued text')).toBe(true)
   })
 
   it('send_message does not finalize a claim-overlap run while its trigger is queued (#170 round 2)', async () => {
