@@ -69,6 +69,14 @@ describe('list_models cache handling', () => {
     expect(result.models.map((m: { id: string }) => m.id)).toEqual(['scoped-model'])
   })
 
+  it('falls through an empty scoped entry to the unqualified one', async () => {
+    cache.scoped['codex-oauth:codex-oauth'] = { models: [], source: 'dynamic', fetchedAt: 1 }
+    cache.unscoped = dynamicEntry(['unqualified-model'])
+    const result = await listModels()
+    expect(result.source).toBe('dynamic')
+    expect(result.models.map((m: { id: string }) => m.id)).toEqual(['unqualified-model'])
+  })
+
   it('serves the unqualified cached catalog when there is no scoped entry', async () => {
     cache.unscoped = dynamicEntry(['cached-model'])
     const result = await listModels()

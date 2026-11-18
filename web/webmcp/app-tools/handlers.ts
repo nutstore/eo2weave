@@ -966,14 +966,15 @@ export const handlers: Record<string, AppToolHandler> = {
     // provider's catalog under a provider-scoped key (`providerType:providerKey`
     // with providerKey === providerType, see useDynamicModels), so read that
     // entry first and then the unqualified one — the same order image-gen uses.
+    // Take the first entry that is actually usable: a scoped entry that is
+    // empty (or malformed, e.g. persisted without an array-valued `models`)
+    // must not shadow a valid unqualified one, and neither may shadow the
+    // static catalog.
     const cached =
-      getCachedModelsResult(providerId, providerId) ?? getCachedModelsResult(providerId)
-    // A malformed persisted entry (models not an array) must degrade to the
-    // static catalog instead of throwing.
-    const cachedModels: ModelInfo[] = Array.isArray(cached?.models) ? cached.models : []
-    const useCached = cachedModels.length > 0
-    const models: ModelInfo[] = useCached ? cachedModels : staticModels
-    const source: 'dynamic' | 'static' = useCached && cached ? cached.source : 'static'
+      [getCachedModelsResult(providerId, providerId), getCachedModelsResult(providerId)]
+        .find((entry) => Array.isArray(entry?.models) && entry.models.length > 0) ?? null
+    const models: ModelInfo[] = cached ? cached.models : staticModels
+    const source: 'dynamic' | 'static' = cached ? cached.source : 'static'
     const pinned = settings.pinnedModelsByProvider[providerId] ?? []
     return ok({
       models: models.map((m) => ({
