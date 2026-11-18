@@ -528,6 +528,49 @@ describe('app-tools handlers', () => {
     expect(r).toEqual({ providerId: 'deepseek', modelId: 'deepseek-chat' })
   })
 
+
+  it('does not overwrite messages appended while a queued message is being persisted', async () => {
+    const d2 = makeDeps()
+    let releaseInsert!: () => void
+    const pendingInsert = new Promise<void>((resolve) => {
+      releaseInsert = resolve
+    })
+    const store = d2.getConversationStore()
+    store.isConversationRunning = () => true
+    const updateMessages = vi.fn()
+    store.updateMessages = updateMessages
+
+    initAppToolDeps({
+      ...d2,
+      getMessageRepository: () => ({
+        findByConversation: async () => [],
+        insert: vi.fn(async () => pendingInsert),
+      }),
+    })
+
+    const sending = handlers.send_message({ conversationId: 'c_1', content: 'queued text' })
+    // The active run finishes and dequeues this message before SQLite resolves,
+    // appending to the live conversation (the stale-snapshot hazard).
+    // The store replaces the conversation object (immutable update), so the
+    // record this handler captured before the await keeps the old messages.
+    const live = store.conversations[0]
+    store.conversations[0] = {
+      ...live,
+      messages: [
+        ...live.messages,
+        { id: 'm-followup', role: 'assistant', content: 'follow-up answer', timestamp: 200 },
+      ],
+    }
+    releaseInsert()
+    const r = JSON.parse((await sending).content)
+    expect(r.status).toBe('queued')
+
+    const written = updateMessages.mock.calls.at(-1)?.[1] as Array<{ id: string; role: string }>
+    expect(written.map((m) => m.id)).toContain('m-followup')
+    expect(written.at(-1)).toMatchObject({ role: 'user' })
+    expect(written).toHaveLength(store.conversations[0].messages.length + 1)
+  })
+
 describe('list_models cache handling', () => {
   const entry = (models: Array<{ id: string }>, source: 'dynamic' | 'static', error?: string) => ({
     models: models.map((m) => ({ id: m.id, name: m.id, capabilities: [] })),

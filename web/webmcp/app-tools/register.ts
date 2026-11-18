@@ -12,7 +12,7 @@
 import { installWebMCP } from '@mcp-b/webmcp-polyfill'
 import { APP_TOOLS } from './schemas'
 import { buildToolExecutors, initAppToolDeps } from './handlers'
-import { runAppTool } from './parse-args'
+import { runAppTool } from '@/webmcp/app-tools/parse-args'
 
 declare global {
   interface Window {

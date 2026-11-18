@@ -5,8 +5,8 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { APP_TOOLS } from '../schemas'
-import { parseToolArgs, runAppTool } from '../parse-args'
+import { APP_TOOLS } from '@/webmcp/app-tools/schemas'
+import { parseToolArgs, runAppTool } from '@/webmcp/app-tools/parse-args'
 
 function tool(name: string) {
   const def = APP_TOOLS.find((t) => t.name === name)
@@ -104,5 +104,18 @@ describe('runAppTool', () => {
       // parser cannot normalize would fail here rather than at call time.
       expect(parseToolArgs(def, {}).ok).toBe(def.inputSchema.required == null || def.inputSchema.required.length === 0)
     }
+  })
+})
+
+describe('registration wiring', () => {
+  it('routes every registered tool through runAppTool', async () => {
+    // Guard against the callback being rewired to `handler(args)` directly,
+    // which would silently drop the boundary validation above. A behavioural
+    // test cannot observe this through modelContext without booting the app's
+    // stores, so assert the call site itself.
+    const { readFileSync } = await import('node:fs')
+    const { resolve } = await import('node:path')
+    const source = readFileSync(resolve(process.cwd(), 'webmcp/app-tools/register.ts'), 'utf8')
+    expect(source).toContain('runAppTool(def, execute, args)')
   })
 })

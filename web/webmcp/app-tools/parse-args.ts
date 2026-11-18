@@ -11,7 +11,7 @@
  * schemas do not forbid them, and handlers ignore what they do not read.
  */
 
-import type { AppToolDefinition } from './schemas'
+import type { AppToolDefinition } from '@/webmcp/app-tools/schemas'
 
 export type ToolArgs = Record<string, unknown>
 
