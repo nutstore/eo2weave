@@ -15,7 +15,7 @@ import { APP_TOOLS } from '../schemas'
 import type { AppToolDefinition } from '../schemas'
 import { parseToolArguments } from '../validate-args'
 import { buildToolExecutors, initAppToolDeps } from '../handlers'
-import { makeDeps } from './fixtures'
+import { makeConversation, makeDeps } from './fixtures'
 
 function tool(name: string): AppToolDefinition {
   const def = APP_TOOLS.find((t) => t.name === name)
@@ -156,8 +156,16 @@ describe('tool argument boundary wiring', () => {
     expect(blank.error).toMatch(/name is required/)
 
     // An over-cap limit is a valid *shape*; the handler still applies its cap.
+    const crowded = makeDeps()
+    crowded.getConversationStore().conversations.push(
+      ...Array.from({ length: 149 }, (_, i) =>
+        makeConversation({ id: `c_extra_${i}`, title: `Extra ${i}`, messages: [], updatedAt: i + 1 }),
+      ),
+    )
+    initAppToolDeps(crowded)
     const capped = JSON.parse((await executors.get('list_conversations')?.({ limit: 5000 }))?.content ?? '{}')
     expect(capped.error).toBeUndefined()
-    expect(capped.conversations).toHaveLength(1)
+    expect(capped.conversations).toHaveLength(100)
+    expect(capped.hasMore).toBe(true)
   })
 })
