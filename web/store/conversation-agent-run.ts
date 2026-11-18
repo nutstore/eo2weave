@@ -2665,13 +2665,16 @@ async function runAgentBody(
               )
             })
           } else {
-            // A caller that persisted this message at enqueue time owns the
-            // whole record (id AND timestamp): reuse it instead of minting a
-            // second copy of the same prompt.
-            const userMsg = nextMsg.persistedMessage ?? createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
-              contentParts: nextMsg.contentParts,
-              readImageHandoff: nextMsg.readImageHandoff,
-            })
+            // A caller that persisted this message at enqueue time owns its
+            // identity (id AND timestamp): reuse that record instead of minting
+            // a second copy of the same prompt. Content and assets come from the
+            // queue entry, so a later edit still reaches the turn.
+            const userMsg = nextMsg.persistedMessage
+              ? { ...nextMsg.persistedMessage, content: nextMsg.text, assets: nextMsg.assets ?? nextMsg.persistedMessage.assets }
+              : createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
+                  contentParts: nextMsg.contentParts,
+                  readImageHandoff: nextMsg.readImageHandoff,
+                })
             const currentConv = get().conversations.find((c) => c.id === conversationId)
             if (currentConv) {
               // Only append when the transcript does not already carry it —

@@ -2218,10 +2218,13 @@ describe('conversation.store.sqlite tool-call routing', () => {
     useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
     useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
 
+    // persistedMessage carries the enqueue-time identity; its content is stale
+    // because the user edited the queued prompt afterwards.
     const queued = { ...createUserMessage('queued prompt'), timestamp: 1_000 }
     useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
-      text: 'queued prompt',
+      text: 'queued prompt (edited)',
       enqueuedAt: 1_000,
+      background: true,
       persistedMessage: queued,
     })
 
@@ -2242,6 +2245,10 @@ describe('conversation.store.sqlite tool-call routing', () => {
       .conversations.find((c) => c.id === conv.id)
       ?.messages.find((m) => m.id === queued.id)
     expect(appended?.timestamp).toBe(1_000)
+    // Identity comes from the persisted record, content from the queue entry —
+    // an edited queued prompt must reach the turn, not its stale copy.
+    expect(appended?.content).toBe('queued prompt (edited)')
+    expect(loopRuns[0].filter((m: any) => m.role === 'user').map((m: any) => m.content)).toContain('queued prompt (edited)')
   })
 
   // ── Branch conversation persistence (issue #259) ───────────────────────
