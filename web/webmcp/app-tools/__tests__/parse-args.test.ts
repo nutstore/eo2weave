@@ -59,6 +59,16 @@ describe('parseToolArgs', () => {
     if (!limit.ok) expect(limit.error).toContain('"limit" must be a number')
   })
 
+  it('rejects an explicitly null optional field', () => {
+    const parsed = parseToolArgs(tool('send_message'), {
+      conversationId: 'c_1',
+      content: 'x',
+      wait: null,
+    })
+    expect(parsed.ok).toBe(false)
+    if (!parsed.ok) expect(parsed.error).toContain('"wait" must be a boolean')
+  })
+
   it('accepts optional fields omitted and keeps additional fields', () => {
     const parsed = parseToolArgs(tool('list_conversations'), { limit: 5, extra: 'ignored' })
     expect(parsed).toEqual({ ok: true, value: { limit: 5, extra: 'ignored' } })

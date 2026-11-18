@@ -12,6 +12,14 @@ import { handlers, initAppToolDeps, type AppToolDeps } from '../handlers'
 
 type RuntimeStoreDep = ReturnType<AppToolDeps['getRuntimeStore']>
 
+// Controlled model cache: the handler imports the store dynamically, so this
+// mock decides exactly which entry (keyed / unkeyed / failed) it observes.
+const modelCache = vi.hoisted(() => new Map<string, unknown>())
+vi.mock('@/agent/providers/model-store', () => ({
+  getCachedModelsResult: (providerType: string, providerKey?: string) =>
+    modelCache.get(providerKey ? `${providerType}:${providerKey}` : providerType) ?? null,
+}))
+
 /** Full Workspace row — the repository returns real rows, not partial ones. */
 function makeWorkspace(overrides: Partial<Workspace> & { id: string }): Workspace {
   return {
@@ -161,14 +169,14 @@ describe('app-tools handlers', () => {
 
   it('creates projects through the app store so they are initialized and visible', async () => {
     const createProject = vi.fn(async (name: string) => ({ id: 'p_new', name }))
-    initAppToolDeps({ ...deps, createProject } as AppToolDeps)
+    initAppToolDeps({ ...deps, createProject } )
     const result = JSON.parse((await handlers.create_project({ name: ' X ' })).content)
     expect(createProject).toHaveBeenCalledWith('X')
     expect(result.project).toEqual({ id: 'p_new', name: 'X' })
   })
 
   it('does not report a successful project when initialization fails', async () => {
-    initAppToolDeps({ ...deps, createProject: vi.fn(async () => null) } as AppToolDeps)
+    initAppToolDeps({ ...deps, createProject: vi.fn(async () => null) } )
     const result = JSON.parse((await handlers.create_project({ name: 'X' })).content)
     expect(result.error).toBeTruthy()
     expect(result.project).toBeUndefined()
@@ -519,4 +527,36 @@ describe('app-tools handlers', () => {
     const r = JSON.parse((await handlers.set_default_model({ providerId: 'deepseek', modelId: 'deepseek-chat' })).content)
     expect(r).toEqual({ providerId: 'deepseek', modelId: 'deepseek-chat' })
   })
+
+describe('list_models cache handling', () => {
+  const entry = (models: Array<{ id: string }>, source: 'dynamic' | 'static', error?: string) => ({
+    models: models.map((m) => ({ id: m.id, name: m.id, capabilities: [] })),
+    source,
+    fetchedAt: 1,
+    ...(error ? { error } : {}),
+  })
+
+  beforeEach(() => modelCache.clear())
+
+  it('uses the keyed catalog the UI writes', async () => {
+    modelCache.set('codex-oauth:codex-oauth', entry([{ id: 'cached-model' }], 'dynamic'))
+    const r = JSON.parse((await handlers.list_models({ providerId: 'codex-oauth' })).content)
+    expect(r.models.map((m: { id: string }) => m.id)).toEqual(['cached-model'])
+    expect(r.source).toBe('dynamic')
+  })
+
+  it('falls back to an older unkeyed catalog when the keyed refresh failed', async () => {
+    modelCache.set('codex-oauth:codex-oauth', entry([], 'dynamic', 'catalog refresh failed'))
+    modelCache.set('codex-oauth', entry([{ id: 'older-model' }], 'dynamic'))
+    const r = JSON.parse((await handlers.list_models({ providerId: 'codex-oauth' })).content)
+    expect(r.models.map((m: { id: string }) => m.id)).toEqual(['older-model'])
+    expect(r.source).toBe('dynamic')
+  })
+
+  it('reports static models as static when no cache entry holds any', async () => {
+    const r = JSON.parse((await handlers.list_models({ providerId: 'deepseek' })).content)
+    expect(r.source).toBe('static')
+    expect(r.models.length).toBeGreaterThan(0)
+  })
+})
 })

@@ -50,7 +50,9 @@ export function parseToolArgs(def: AppToolDefinition, raw: unknown): ParsedToolA
 
   for (const [field, schema] of Object.entries(def.inputSchema.properties)) {
     const value = args[field]
-    if (value == null) continue
+    // `undefined` means the optional field was omitted; an explicit `null` is
+    // a supplied value and must match the declared type (JSON has no undefined).
+    if (value === undefined) continue
     const expected = declaredType(schema)
     if (expected && !matchesType(value, expected)) {
       return { ok: false, error: `${def.name}: field "${field}" must be a ${expected}` }

@@ -937,12 +937,17 @@ export const handlers: Record<string, Handler> = {
     const settings = d().getSettingsStore()
     const providerType = providerId as LLMProviderType
     // The UI caches the catalog under `${providerType}:${providerType}` (see
-    // useDynamicModels' providerKey in ProviderManager); read that entry first,
-    // then the unkeyed one older builds wrote. Fall back to the static list.
+    // useDynamicModels' providerKey in ProviderManager); older builds wrote the
+    // unkeyed entry. Use the first entry that actually holds models — a failed
+    // refresh must not hide a usable older catalog — and only report `source`
+    // for the entry the models came from, so a static fallback never claims to
+    // be dynamic.
     const cached =
-      getCachedModelsResult(providerType, providerType) ?? getCachedModelsResult(providerType)
+      [getCachedModelsResult(providerType, providerType), getCachedModelsResult(providerType)].find(
+        (entry) => entry?.models.length,
+      ) ?? null
     const staticModels = getModelsForProvider(providerType)
-    const models = cached?.models.length ? cached.models : staticModels
+    const models = cached?.models ?? staticModels
     const pinned = settings.pinnedModelsByProvider[providerId] ?? []
     return ok({
       models: models.map((m) => ({
