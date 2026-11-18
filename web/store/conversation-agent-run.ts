@@ -2679,9 +2679,21 @@ async function runAgentBody(
             if (currentConv) {
               // Only append when the transcript does not already carry it —
               // appending unconditionally duplicates the prompt and rewrites
-              // the timestamp stored at enqueue time.
-              if (!currentConv.messages.some((m) => m.id === userMsg.id)) {
+              // the timestamp stored at enqueue time. When it IS already
+              // there, that record is the enqueue-time copy: an edit made
+              // through the queue card never reached it, so replace the
+              // content before the turn reads the transcript.
+              const existingIndex = currentConv.messages.findIndex((m) => m.id === userMsg.id)
+              if (existingIndex === -1) {
                 get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+              } else if (currentConv.messages[existingIndex].content !== userMsg.content) {
+                const replaced = currentConv.messages.slice()
+                replaced[existingIndex] = {
+                  ...currentConv.messages[existingIndex],
+                  content: userMsg.content,
+                  assets: userMsg.assets,
+                }
+                get().updateMessages(conversationId, replaced)
               }
               // Schedule the next run on the next microtask to avoid re-entrancy.
               // FIX (parallel isolation): Pass null — runAgent now resolves the

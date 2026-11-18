@@ -2211,6 +2211,45 @@ describe('conversation.store.sqlite tool-call routing', () => {
     expect(messages.filter((m) => m.role === 'user' && m.content === 'queued prompt')).toHaveLength(1)
     // The follow-up turn still sees the prompt it was dequeued for.
     expect(loopRuns[0].filter((m: any) => m.role === 'user').map((m: any) => m.content)).toContain('queued prompt')
+    // …and the consumer consumed the queue entry instead of starting the
+    // follow-up from the transcript alone.
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(0)
+  })
+
+  it('compaction replaces an already-appended queued message with its edited text', async () => {
+    const conv = useConversationStore.getState().createNew('compact-queued-edited', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
+
+    // What app-tools send_message does: the record is appended at enqueue
+    // time, then the user edits the queued prompt through the queue card.
+    const queued = createUserMessage('queued prompt')
+    useConversationStore.getState().addMessage(conv.id, queued)
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued prompt (edited)',
+      enqueuedAt: queued.timestamp,
+      persistedMessage: queued,
+    })
+
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => messages
+    const loopRuns: any[][] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[]) => {
+      loopRuns.push(messages)
+      return [{ id: `assistant-queued-edited-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() }]
+    }
+
+    await useConversationStore.getState().compactConversation(conv.id)
+
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBe(1)
+    })
+    // One message, carrying the edit — the enqueue-time text is gone.
+    const messages = useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages ?? []
+    const queuedCopies = messages.filter((m) => m.id === queued.id)
+    expect(queuedCopies).toHaveLength(1)
+    expect(queuedCopies[0].content).toBe('queued prompt (edited)')
+    // The turn reads the transcript, so it must see the edit too.
+    expect(loopRuns[0].filter((m: any) => m.id === queued.id).map((m: any) => m.content)).toEqual(['queued prompt (edited)'])
   })
 
   it('compaction keeps the queued message timestamp when it appends it', async () => {
