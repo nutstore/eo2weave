@@ -17,7 +17,7 @@ import { getOpenRouterContextWindow } from './openrouter-pricing'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface CachedModels {
+export interface CachedModels {
   models: ModelInfo[]
   source: 'dynamic' | 'static'
   fetchedAt: number

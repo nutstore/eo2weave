@@ -6,28 +6,54 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createConversation, createUserMessage } from '@/agent/message-types'
+import type { Workspace } from '@/sqlite/repositories/workspace.repository'
 import { handlers, initAppToolDeps, type AppToolDeps } from '../handlers'
 
+type RuntimeStoreDep = ReturnType<AppToolDeps['getRuntimeStore']>
+
+/** Full Workspace row — the repository returns real rows, not partial ones. */
+function makeWorkspace(overrides: Partial<Workspace> & { id: string }): Workspace {
+  return {
+    rootDirectory: '/tmp',
+    name: overrides.id,
+    status: 'active',
+    cacheSize: 0,
+    pendingCount: 0,
+    modifiedFiles: 0,
+    createdAt: 0,
+    lastAccessedAt: 0,
+    ...overrides,
+  }
+}
+
+function makeRuntimeStore(overrides: Partial<RuntimeStoreDep> = {}): RuntimeStoreDep {
+  return {
+    runtimes: new Map(),
+    pendingMessageQueues: new Map(),
+    enqueueMessage: vi.fn(() => ({ enqueued: true, position: 1 })),
+    getQueuedMessage: vi.fn(() => undefined),
+    removeQueuedMessage: vi.fn(),
+    ...overrides,
+  }
+}
+
 function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
-  const conversations: any[] = [
-    {
-      id: 'c_1',
-      title: 'Fix login timeout',
-      projectId: 'p_1',
-      status: 'idle',
-      updatedAt: 100,
-      messages: [
-        { role: 'user', content: 'fix it', messageId: 'm1', timestamp: 90 },
-        { role: 'assistant', content: 'done, changed src/a.ts', messageId: 'm2', timestamp: 95 },
-      ],
-      activeToolCalls: [{ id: 't1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
-      currentToolCall: { id: 't2', type: 'function', function: { name: 'write_file', arguments: '{"path":"src/b.ts"}' } },
-      streamingContent: 'partial output...',
-      runChangesMeta: { snapshotId: 'snap_1' },
-    },
+  const conversation = createConversation('Fix login timeout', { kind: 'project' })
+  conversation.id = 'c_1'
+  conversation.updatedAt = 100
+  conversation.messages = [
+    createUserMessage('fix it'),
+    { role: 'assistant', content: 'done, changed src/a.ts', id: 'm2', timestamp: 95 } as never,
   ]
+  conversation.activeToolCalls = [{ id: 't1', type: 'function', function: { name: 'read_file', arguments: '{}' } }]
+  conversation.currentToolCall = { id: 't2', type: 'function', function: { name: 'write_file', arguments: '{"path":"src/b.ts"}' } }
+  conversation.streamingContent = 'partial output...'
+  const conversations = [conversation]
   const settings = {
     hasApiKey: true,
+    hasApiKeyLoaded: true,
+    customProviders: [],
     providerType: 'codex-oauth',
     modelName: 'gpt-5.4',
     maxTokens: 32000,
@@ -82,17 +108,17 @@ function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
     getProjectRepository: () => ({
       findAllProjects: async () => [{ id: 'p_1', name: 'P1' }],
       findProjectStats: async () => [{ projectId: 'p_1', workspaceCount: 1, lastWorkspaceAccessAt: 100 }],
-      createProject: async (input: any) => ({ id: 'p_new', name: input.name }),
     }),
     getWorkspaceRepository: () => ({
-      findWorkspacesByProject: async () => [{ id: 'c_1', projectId: 'p_1' }],
-      findAllWorkspaces: async () => [{ id: 'c_1', projectId: 'p_1' }],
+      findWorkspacesByProject: async () => [makeWorkspace({ id: 'c_1', projectId: 'p_1' })],
+      findAllWorkspaces: async () => [makeWorkspace({ id: 'c_1', projectId: 'p_1' })],
     }),
     getMessageRepository: () => ({
       findByConversation: async () => conversations[0].messages,
+      insert: vi.fn(async () => {}),
     }),
     searchConversations: async (args) => JSON.stringify({ results: [{ conversationId: 'c_1', title: 'Fix login timeout' }], args }),
-    getRuntimeStore: () => ({ runtimes: new Map() }),
+    getRuntimeStore: () => makeRuntimeStore(),
     getFSOverlayRepository: () => ({
       listSnapshotFiles: async () => [{ path: 'src/a.ts', opType: 'upsert', createdAt: 1 }],
     }),
@@ -165,7 +191,6 @@ describe('app-tools handlers', () => {
     resolve({ projectId: 'p_1' })
     expect(await creating).toEqual({ conversation: { id: 'c_new', title: 't', workspaceId: 'c_new', projectId: 'p_1', agentId: 'default' } })
     expect(deps.setConversationAgent).toHaveBeenCalledWith('c_new', 'default')
-    expect(deps.getConversationStore().setActive).not.toHaveBeenCalled()
   })
 
   it('create_conversation does not report success when workspace initialization fails', async () => {
@@ -229,21 +254,32 @@ describe('app-tools handlers', () => {
 
   it('filters conversations by project ID, excluding standalone chats and other projects', async () => {
     const store = deps.getConversationStore()
-    store.conversations.push(
-      { id: 'c_2', title: 'Other project', kind: 'project', updatedAt: 200 },
-      { id: 'c_direct', title: 'Standalone', kind: 'direct', updatedAt: 300 },
-    )
+    const other = createConversation('Other project', { kind: 'project' })
+    other.id = 'c_2'
+    other.updatedAt = 200
+    const direct = createConversation('Standalone', { kind: 'direct' })
+    direct.id = 'c_direct'
+    direct.updatedAt = 300
+    store.conversations.push(other, direct)
     initAppToolDeps({ ...deps, getWorkspaceRepository: () => ({
-      findWorkspacesByProject: vi.fn(async () => [{ id: 'c_1' }, { id: 'c_direct' }]),
-    }) } as AppToolDeps)
+      findWorkspacesByProject: vi.fn(async () => [makeWorkspace({ id: 'c_1' }), makeWorkspace({ id: 'c_direct' })]),
+      findAllWorkspaces: vi.fn(async () => []),
+    }) })
     const result = JSON.parse((await handlers.list_conversations({ projectId: 'p_1' })).content)
     expect(result.conversations.map((c: any) => c.id)).toEqual(['c_1'])
   })
 
   it('returns conversation kind and project ID without exposing standalone host projects', async () => {
-    deps.getConversationStore().conversations.push({ id: 'c_direct', title: 'Standalone', kind: 'direct', updatedAt: 300 })
+    const direct = createConversation('Standalone', { kind: 'direct' })
+    direct.id = 'c_direct'
+    direct.updatedAt = 300
+    deps.getConversationStore().conversations.push(direct)
     initAppToolDeps({ ...deps, getWorkspaceRepository: () => ({
-      findAllWorkspaces: async () => [{ id: 'c_1', projectId: 'p_1' }, { id: 'c_direct', projectId: 'p_1' }],
+      findAllWorkspaces: async () => [
+        makeWorkspace({ id: 'c_1', projectId: 'p_1' }),
+        makeWorkspace({ id: 'c_direct', projectId: 'p_1' }),
+      ],
+      findWorkspacesByProject: async () => [],
     }) })
     const result = JSON.parse((await handlers.list_conversations({})).content)
     expect(result.conversations).toEqual(expect.arrayContaining([
@@ -278,9 +314,9 @@ describe('app-tools handlers', () => {
 
   it('get_messages filters internal records before pagination and preserves synthetic identity', async () => {
     deps.getConversationStore().conversations[0].messages.push(
-      { role: 'user', content: 'PRIVATE_STATE', kind: 'context_update', timestamp: 96 },
-      { role: 'user', content: 'delegated task', delegationNote: { fromAgentId: 'a', task: 'task' }, timestamp: 97 },
-      { role: 'assistant', content: 'change card', kind: 'run_changes', timestamp: 98 },
+      { id: 'm3', role: 'user', content: 'PRIVATE_STATE', kind: 'context_update', timestamp: 96 },
+      { id: 'm4', role: 'user', content: 'delegated task', delegationNote: { fromAgentId: 'a', task: 'task' }, timestamp: 97 },
+      { id: 'm5', role: 'assistant', content: 'change card', kind: 'run_changes', timestamp: 98 },
     )
     const r = JSON.parse((await handlers.get_messages({ conversationId: 'c_1', pageSize: 1 })).content)
     expect(r.totalMessages).toBe(3)
@@ -331,10 +367,7 @@ describe('app-tools handlers', () => {
     const d2 = makeDeps()
     initAppToolDeps({
       ...d2,
-      getRuntimeStore: () => ({
-        runtimes: new Map(),
-        enqueueMessage: vi.fn(() => ({ enqueued: true, position: 1 })),
-      }),
+      getRuntimeStore: () => makeRuntimeStore(),
       getConversationStore: () => {
         const s = d2.getConversationStore()
         s.isConversationRunning = () => true
@@ -355,10 +388,9 @@ describe('app-tools handlers', () => {
     const d2 = makeDeps()
     initAppToolDeps({
       ...d2,
-      getRuntimeStore: () => ({
-        runtimes: new Map(),
-        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '' }].filter(() => pendingTrigger)]]),
-        getQueuedMessage: vi.fn(() => (pendingTrigger ? { rerunOnly: true, text: '' } : undefined)),
+      getRuntimeStore: () => makeRuntimeStore({
+        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '', enqueuedAt: 0 }].filter(() => pendingTrigger)]]),
+        getQueuedMessage: vi.fn(() => (pendingTrigger ? { rerunOnly: true, text: '', enqueuedAt: 0 } : undefined)),
       }),
       getConversationStore: () => {
         const s = d2.getConversationStore()
@@ -395,10 +427,9 @@ describe('app-tools handlers', () => {
     const d2 = makeDeps()
     initAppToolDeps({
       ...d2,
-      getRuntimeStore: () => ({
-        runtimes: new Map(),
-        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '' }]]]),
-        getQueuedMessage: vi.fn(() => ({ rerunOnly: true, text: '' })),
+      getRuntimeStore: () => makeRuntimeStore({
+        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '', enqueuedAt: 0 }]]]),
+        getQueuedMessage: vi.fn(() => ({ rerunOnly: true, text: '', enqueuedAt: 0 })),
       }),
       getConversationStore: () => {
         const s = d2.getConversationStore()
@@ -446,7 +477,7 @@ describe('app-tools handlers', () => {
   it('read_folder_file errors when no workspace', async () => {
     initAppToolDeps({
       ...deps,
-      getRuntimeStore: () => ({ runtimes: new Map() }),
+      getRuntimeStore: () => makeRuntimeStore(),
       getWorkspaceManager: async () => ({ getWorkspace: async () => undefined }),
     })
     const r = JSON.parse((await handlers.read_folder_file({ conversationId: 'ghost', path: 'x' })).content)

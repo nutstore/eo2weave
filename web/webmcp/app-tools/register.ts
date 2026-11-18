@@ -9,12 +9,17 @@
  * - Wires the real store/service dependencies into handlers once.
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-// document.modelContext is a runtime-injected API (native Chrome 140+ or the
-// @mcp-b polyfill) — its shape can't be imported statically, hence the casts.
 import { installWebMCP } from '@mcp-b/webmcp-polyfill'
 import { APP_TOOLS } from './schemas'
 import { buildToolExecutors, initAppToolDeps } from './handlers'
+import { runAppTool } from './parse-args'
+
+declare global {
+  interface Window {
+    /** Annotations the polyfill's getTools() projection drops (upstream gap). */
+    __eo2weaveToolAnnotations?: Record<string, NonNullable<(typeof APP_TOOLS)[number]['annotations']>>
+  }
+}
 
 let registered = false
 let registerPromise: Promise<void> | null = null
@@ -77,6 +82,7 @@ export async function registerAppTools(): Promise<void> {
       validatePath: (path: string) => {
         // validatePathImpl is a pure path normalizer over the runtime bridge —
         // call it with a minimal stub since it only reads rt for project roots.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return validatePathImpl({} as any, path)
       },
       getWorkspaceManager: async () => {
@@ -89,6 +95,7 @@ export async function registerAppTools(): Promise<void> {
       searchConversations: async (args) => {
         const result = await searchConversationsExecutor(args, {
           directoryHandle: null,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any)
         return result
       },
@@ -96,7 +103,7 @@ export async function registerAppTools(): Promise<void> {
     })
 
     const executors = buildToolExecutors()
-    const modelContext = (document as any)?.modelContext
+    const modelContext = document.modelContext
     if (!modelContext?.registerTool) {
       console.warn('[app-tools] document.modelContext unavailable — app tools not registered')
       return
@@ -105,24 +112,15 @@ export async function registerAppTools(): Promise<void> {
     for (const def of APP_TOOLS) {
       const execute = executors.get(def.name)!
       try {
-        await modelContext.registerTool(
-          {
-            name: def.name,
-            description: def.description,
-            inputSchema: def.inputSchema,
-            annotations: def.annotations,
-            execute: async (args: Record<string, any>) => {
-              try {
-                const out = await execute(args ?? {})
-                return out.content
-              } catch (e) {
-                return JSON.stringify({ error: e instanceof Error ? e.message : String(e) })
-              }
-            },
-          },
-          // Re-registering the same name throws in the polyfill — tolerate that
-          // on hot-reload by ignoring the specific error.
-        )
+        await modelContext.registerTool({
+          name: def.name,
+          description: def.description,
+          inputSchema: def.inputSchema,
+          annotations: def.annotations,
+          execute: (args) => runAppTool(def, execute, args),
+        })
+        // Re-registering the same name throws in the polyfill — tolerate that
+        // on hot-reload by ignoring the specific error.
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         if (!msg.includes('already registered')) throw e
@@ -134,7 +132,7 @@ export async function registerAppTools(): Promise<void> {
     // injected agent can merge them back into its tool snapshot. Native
     // modelContext (Chrome 140+) forwards annotations itself; this global is
     // then simply redundant.
-    (window as any).__eo2weaveToolAnnotations = Object.fromEntries(
+    window.__eo2weaveToolAnnotations = Object.fromEntries(
       APP_TOOLS.map((t) => [t.name, t.annotations ?? {}]),
     )
 

@@ -9,7 +9,7 @@ import { create } from 'zustand'
 import { toast } from 'sonner'
 import { i18nText } from './conversation-message-ops'
 
-interface AgentState {
+export interface AgentState {
   /** @deprecated 使用 folder-access.store */
   activeProjectId: string
   /** @deprecated 使用 folder-access.store */

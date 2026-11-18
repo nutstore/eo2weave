@@ -5,10 +5,9 @@
  * repositories, WorkspaceManager, WorkspaceRuntime) — the same code paths the
  * UI uses. Nothing here bypasses permissions or state management.
  *
- * The dependency-injected deps are intentionally `any`-typed: they wrap
- * dynamic zustand store snapshots and repository classes whose concrete types
- * live across the app. Typing them precisely would couple this module to half
- * the codebase; tests inject mocks instead. All other `any`s flow from these.
+ * Dependencies are narrow projections (`Pick`) of the app's real store and
+ * repository types: a handler can only reach the members it actually uses, and
+ * tests can double those members without constructing whole stores.
  *
  * Run lifecycle: the ONLY terminal signal for a run is the runAgent promise
  * resolving/rejecting (`.then`/`.catch` in send_message). isConversationRunning()
@@ -19,10 +18,16 @@
 
 import { APP_TOOLS } from './schemas'
 import { isCredentialPending } from '@/agent/providers/credential-state'
-import type { Message } from '@/agent/message-types'
+import type { Conversation, Message, ToolCall } from '@/agent/message-types'
 import { createUserMessage, getMessageRecordType } from '@/agent/message-types'
 import { selectConversationExportMessages, selectConversationTranscript } from '@/agent/message-projections'
 import type { ConversationTarget, ConversationTargetInput } from '@/services/conversation-target'
+import type { ConversationRuntimeState } from '@/store/conversation-runtime.store'
+import type { SettingsState } from '@/store/settings.store'
+import type { AgentState } from '@/store/agent.store'
+import type { WorkspaceRepository } from '@/sqlite/repositories/workspace.repository'
+import type { MessageRepository } from '@/sqlite/repositories/message.repository'
+import type { LLMProviderType } from '@/agent/providers/types'
 
 // ─── Run registry ─────────────────────────────────────────────────────────────
 
@@ -38,6 +43,8 @@ export interface AppRunRecord {
     | 'timeout'
     | 'cancelled'
   startedAt: number
+  /** 1-based position in the conversation's message queue while status === 'queued'. */
+  queuePosition?: number
   finishedAt?: number
   /** First N chars of the sent message — queue-entry identity check on cancel. */
   messageText?: string
@@ -88,20 +95,94 @@ export function getRunRecord(runId: string): AppRunRecord | undefined {
 
 // ─── Dependency injection (wired by register.ts, overridden in tests) ────────
 
+/**
+ * Narrow projections of the app state each handler reads. Using `Pick` keeps
+ * the contract honest (a handler cannot reach a member it never declared) while
+ * letting tests double only those members.
+ */
+type ConversationStoreDep = {
+  conversations: Conversation[]
+  loaded: boolean
+  isConversationRunning: (conversationId: string) => boolean
+  /** Handlers only need identity + title from the created conversation. */
+  createNew: (
+    title?: string,
+    options?: { activate?: boolean; kind?: 'project' | 'direct' },
+  ) => { id: string; title: string }
+  deleteConversation: (conversationId: string) => Promise<void>
+  updateMessages: (conversationId: string, messages: Message[]) => void
+  updateTitle: (conversationId: string, title: string) => void
+  runAgent: (
+    conversationId: string,
+    providerType: LLMProviderType,
+    modelName: string,
+    maxTokens: number,
+    directoryHandle: FileSystemDirectoryHandle | null,
+    agentOverrideId?: string | null,
+    options?: { background?: boolean; transient?: boolean; subagentContinuation?: boolean },
+  ) => Promise<void>
+  cancelAgent: (conversationId: string) => void
+}
+
+type RuntimeStoreDep = Pick<
+  ConversationRuntimeState,
+  | 'runtimes'
+  | 'pendingMessageQueues'
+  | 'enqueueMessage'
+  | 'getQueuedMessage'
+  | 'removeQueuedMessage'
+>
+
+type SettingsStoreDep = Pick<
+  SettingsState,
+  | 'hasApiKey'
+  | 'hasApiKeyLoaded'
+  | 'providerType'
+  | 'modelName'
+  | 'maxTokens'
+  | 'pinnedModelsByProvider'
+  | 'pinModel'
+  | 'unpinModel'
+  | 'switchProviderAndModel'
+  | 'customProviders'
+>
+
+type AgentStoreDep = Pick<AgentState, 'directoryHandle'>
+
+type ProjectRepositoryDep = {
+  findAllProjects: () => Promise<Array<{ id: string; name: string }>>
+  findProjectStats: () => Promise<
+    Array<{ projectId: string; workspaceCount: number; lastWorkspaceAccessAt?: number }>
+  >
+}
+type WorkspaceRepositoryDep = Pick<WorkspaceRepository, 'findWorkspacesByProject' | 'findAllWorkspaces'>
+type MessageRepositoryDep = Pick<MessageRepository, 'findByConversation' | 'insert'>
+type FSOverlayRepositoryDep = {
+  listSnapshotFiles: (snapshotId: string) => Promise<Array<{ path: string }>>
+}
+type WorkspaceRuntimeDep = {
+  readFile: (path: string) => Promise<{ content: unknown; metadata?: { size?: number } }>
+  writeFile: (path: string, content: string) => Promise<void>
+  scanFiles: () => Promise<Map<string, { path: string; size: number }>>
+}
+type WorkspaceManagerDep = {
+  getWorkspace: (workspaceId: string) => Promise<WorkspaceRuntimeDep | undefined>
+}
+
 export interface AppToolDeps {
-  getConversationStore: () => any
-  getRuntimeStore: () => any
-  getSettingsStore: () => any
-  getAgentStore: () => any
-  getWorkspaceManager: () => Promise<any>
+  getConversationStore: () => ConversationStoreDep
+  getRuntimeStore: () => RuntimeStoreDep
+  getSettingsStore: () => SettingsStoreDep
+  getAgentStore: () => AgentStoreDep
+  getWorkspaceManager: () => Promise<WorkspaceManagerDep>
   ensureConversationWorkspace: (conversationId: string, title?: string, projectId?: string) => Promise<{ projectId?: string }>
   resolveConversationTarget: (input: ConversationTargetInput) => Promise<ConversationTarget>
   setConversationAgent: (conversationId: string, agentId: string) => void
   createProject: (name: string) => Promise<{ id: string; name: string } | null>
-  getProjectRepository: () => any
-  getWorkspaceRepository: () => any
-  getMessageRepository: () => any
-  getFSOverlayRepository: () => any
+  getProjectRepository: () => ProjectRepositoryDep
+  getWorkspaceRepository: () => WorkspaceRepositoryDep
+  getMessageRepository: () => MessageRepositoryDep
+  getFSOverlayRepository: () => FSOverlayRepositoryDep
   searchConversations: (args: Record<string, unknown>) => Promise<string>
   validatePath: (path: string) => string
   wait: (ms: number) => Promise<void>
@@ -141,8 +222,8 @@ function truncateContent(content: string): { content: string; truncated: boolean
   return { content, truncated: false }
 }
 
-function findConv(store: any, conversationId: string): any | null {
-  return store.conversations.find((c: any) => c.id === conversationId) ?? null
+function findConv(store: ConversationStoreDep, conversationId: string): Conversation | null {
+  return store.conversations.find((c) => c.id === conversationId) ?? null
 }
 
 function targetInput(args: Record<string, unknown>): ConversationTargetInput {
@@ -161,7 +242,7 @@ function targetInput(args: Record<string, unknown>): ConversationTargetInput {
  * assistant message when the run produced none (e.g. instant failure — the
  * error is surfaced via rec.error instead).
  */
-function summaryForRun(store: any, rec: AppRunRecord): string {
+function summaryForRun(store: ConversationStoreDep, rec: AppRunRecord): string {
   const conv = findConv(store, rec.conversationId)
   const msgs = selectConversationTranscript(conv?.messages ?? [])
   // m-6: prefer message-ORDER scoping. The run's user message is the last user
@@ -196,7 +277,7 @@ function summaryForRun(store: any, rec: AppRunRecord): string {
   return lastAssistantSummary(store, rec.conversationId)
 }
 
-function lastAssistantSummary(store: any, conversationId: string): string {
+function lastAssistantSummary(store: ConversationStoreDep, conversationId: string): string {
   const conv = findConv(store, conversationId)
   const msgs = selectConversationTranscript(conv?.messages ?? [])
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -211,9 +292,9 @@ function lastAssistantSummary(store: any, conversationId: string): string {
  * timestamp >= startedAt) and read its snapshotId. Null when the run produced
  * no snapshot (pure chat / read-only run / auto-apply skipped).
  */
-function snapshotIdForRun(store: any, rec: AppRunRecord): string | null {
+function snapshotIdForRun(store: ConversationStoreDep, rec: AppRunRecord): string | null {
   const conv = findConv(store, rec.conversationId)
-  const msgs: any[] = conv?.messages ?? []
+  const msgs = conv?.messages ?? []
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (m.kind !== 'run_changes') continue
@@ -234,18 +315,18 @@ async function changedFilesForRun(rec: AppRunRecord): Promise<string[]> {
   if (!snapshotId) return []
   const overlay = d().getFSOverlayRepository()
   const files = await overlay.listSnapshotFiles(snapshotId)
-  return (files ?? []).map((f: any) => f.path)
+  return files.map((f) => f.path)
 }
 
 /** Conversation-level terminal status ('error' etc.) for a finished run. */
-function conversationError(store: any, rec: AppRunRecord): string | null {
+function conversationError(store: ConversationStoreDep, rec: AppRunRecord): string | null {
   const conv = findConv(store, rec.conversationId)
   if (conv?.status === 'error') return conv.error ?? 'Agent run failed'
   return null
 }
 
 /** Finalize a finished run: map the conversation terminal status to run status. */
-function finalizeFromStore(store: any, rec: AppRunRecord): AppRunRecord {
+function finalizeFromStore(store: ConversationStoreDep, rec: AppRunRecord): AppRunRecord {
   const errMsg = conversationError(store, rec)
   if (errMsg) {
     rec.status = 'failed'
@@ -269,7 +350,7 @@ function finalizeFromStore(store: any, rec: AppRunRecord): AppRunRecord {
  * handoff record's terminal transition no longer comes from the runAgent
  * promise, so something must drive the state machine between polls.
  */
-function advanceFromStore(store: any, rec: AppRunRecord): void {
+function advanceFromStore(store: ConversationStoreDep, rec: AppRunRecord): void {
   if (rec.status !== 'queued' && rec.status !== 'running') return
   const running = store.isConversationRunning(rec.conversationId)
   if (rec.status === 'queued' && running) {
@@ -279,11 +360,11 @@ function advanceFromStore(store: any, rec: AppRunRecord): void {
     // the run now executing. A parked rerunOnly trigger (claim-overlap
     // handoff) counts as still queued regardless of position bookkeeping.
     const runtimeStore = d().getRuntimeStore()
-    const pos = (rec as any).queuePosition
-    const queue = runtimeStore?.pendingMessageQueues?.get?.(rec.conversationId)
+    const pos = rec.queuePosition
+    const queue = runtimeStore.pendingMessageQueues.get(rec.conversationId)
     const stillQueued =
-      (typeof pos === 'number' && runtimeStore?.getQueuedMessage?.(rec.conversationId, pos - 1)) ||
-      !!queue?.some?.((m: { rerunOnly?: boolean }) => m.rerunOnly)
+      (typeof pos === 'number' && runtimeStore.getQueuedMessage(rec.conversationId, pos - 1)) ||
+      !!queue?.some((m) => m.rerunOnly)
     if (!stillQueued) rec.status = 'running'
     return
   }
@@ -293,8 +374,8 @@ function advanceFromStore(store: any, rec: AppRunRecord): void {
     // which would report completed before the message is ever answered.
     // Any other queued-and-idle state keeps the C-1 behavior (finalize with
     // the scoped summary instead of sticking at "queued" forever).
-    const queue = d().getRuntimeStore()?.pendingMessageQueues?.get?.(rec.conversationId)
-    const handoffParked = !!queue?.some?.((m: { rerunOnly?: boolean }) => m.rerunOnly)
+    const queue = d().getRuntimeStore().pendingMessageQueues.get(rec.conversationId)
+    const handoffParked = !!queue?.some((m) => m.rerunOnly)
     if (!handoffParked || conversationError(store, rec)) {
       finalizeFromStore(store, rec)
     }
@@ -310,7 +391,7 @@ function advanceFromStore(store: any, rec: AppRunRecord): void {
  * when the record is parked behind an active run (claim-overlap handoff) —
  * the caller should poll get_run_status instead of blocking to the timeout.
  */
-async function waitForRun(store: any, rec: AppRunRecord, timeoutMs: number): Promise<AppRunRecord> {
+async function waitForRun(store: ConversationStoreDep, rec: AppRunRecord, timeoutMs: number): Promise<AppRunRecord> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await d().wait(POLL_INTERVAL_MS)
@@ -344,19 +425,19 @@ async function withChangedFiles(rec: AppRunRecord): Promise<AppRunRecord> {
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
-type Handler = (args: Record<string, any>) => Promise<{ content: string }>
+type Handler = (args: Record<string, unknown>) => Promise<{ content: string }>
 
 export const handlers: Record<string, Handler> = {
   // ── Projects ──
   list_projects: async () => {
     const repo = d().getProjectRepository()
-    const [projects, stats] = (await Promise.all([
+    const [projects, stats] = await Promise.all([
       repo.findAllProjects(),
       repo.findProjectStats(),
-    ])) as any[]
-    const statMap = new Map((stats as any[]).map((s: any) => [s.projectId, s]))
+    ])
+    const statMap = new Map(stats.map((s) => [s.projectId, s]))
     return ok({
-      projects: projects.map((p: any) => ({
+      projects: projects.map((p) => ({
         id: p.id,
         name: p.name,
         workspaceCount: statMap.get(p.id)?.workspaceCount ?? 0,
@@ -376,8 +457,8 @@ export const handlers: Record<string, Handler> = {
   // ── Folders ──
   list_mounted_folders: async () => {
     const { useFolderAccessStore } = await import('@/store/folder-access.store')
-    const records = (useFolderAccessStore.getState() as any).records ?? {}
-    const folders = Object.values(records as Record<string, any>)
+    const records = useFolderAccessStore.getState().records
+    const folders = Object.values(records)
       .filter((r) => r.folderName || r.handle || r.persistedHandle)
       .map((r) => ({
         folderId: `${r.projectId}:${r.rootName ?? r.projectId}`,
@@ -396,7 +477,7 @@ export const handlers: Record<string, Handler> = {
     if (!store.loaded) return ok({ loading: true, conversations: [], hasMore: false })
     const limit = Math.min(Math.max(1, Number(args.limit ?? 20)), 100)
     const offset = Math.max(0, Number(args.offset ?? 0))
-    let list: any[] = store.conversations ?? []
+    let list = store.conversations ?? []
     const requestedProjectId = typeof args.projectId === 'string' ? args.projectId.trim() : ''
     const folderProjectId = typeof args.folderId === 'string' ? args.folderId.split(':')[0].trim() : ''
     if (args.projectId != null && !requestedProjectId) return err('projectId must be a non-empty string')
@@ -410,16 +491,16 @@ export const handlers: Record<string, Handler> = {
       // SQLite contains every project's workspaces, not just those loaded in
       // the current WorkspaceManager. Standalone chats have a hidden host row.
       const workspaces = await d().getWorkspaceRepository().findWorkspacesByProject(projectId)
-      const wsIds = new Set(workspaces.map((workspace: { id: string }) => workspace.id))
-      list = list.filter((c: any) => c.kind !== 'direct' && wsIds.has(c.id))
+      const wsIds = new Set(workspaces.map((workspace) => workspace.id))
+      list = list.filter((c) => c.kind !== 'direct' && wsIds.has(c.id))
     } else {
       const workspaces = await d().getWorkspaceRepository().findAllWorkspaces()
-      projectByWorkspace = new Map(workspaces.map((workspace: { id: string; projectId?: string }) => [workspace.id, workspace.projectId ?? '']))
+      projectByWorkspace = new Map(workspaces.map((workspace) => [workspace.id, workspace.projectId ?? '']))
     }
-    list = [...list].sort((a: any, b: any) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    list = [...list].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     const page = list.slice(offset, offset + limit)
     return ok({
-      conversations: page.map((c: any) => ({
+      conversations: page.map((c) => ({
         id: c.id,
         title: c.title,
         kind: c.kind === 'direct' ? 'direct' : 'project',
@@ -488,7 +569,7 @@ export const handlers: Record<string, Handler> = {
     if (!title) return err('title is required')
     if (title.length > 200) return err('title must be at most 200 characters')
     const store = d().getConversationStore()
-    const conv = store.conversations?.find((c: any) => c.id === conversationId)
+    const conv = store.conversations?.find((c) => c.id === conversationId)
     if (!conv) return err(`Conversation not found: ${conversationId}`)
     store.updateTitle(conversationId, title)
     return ok({ conversationId, title })
@@ -569,12 +650,16 @@ export const handlers: Record<string, Handler> = {
       // (no UI workspace steal). The queue itself is in-memory: the message is
       // ALSO persisted below so a refresh cannot silently lose it.
       const runtimeStore = d().getRuntimeStore()
-      const result = runtimeStore.enqueueMessage(conversationId, { text: content, background: true })
+      const result = runtimeStore.enqueueMessage(conversationId, {
+        text: content,
+        enqueuedAt: Date.now(),
+        background: true,
+      })
       if (!result?.enqueued) {
         return err('Conversation is running and its queue is full')
       }
       rec.status = 'queued'
-      ;(rec as any).queuePosition = result.position
+      rec.queuePosition = result.position
       // Persist durably: on refresh the queue is lost but the message survives
       // in SQLite and shows up in the conversation history (no silent loss).
       try {
@@ -621,7 +706,7 @@ export const handlers: Record<string, Handler> = {
           // Trigger still in the queue (follow-up not started): defer
           // finalization to get_run_status.
           rec.status = 'queued'
-          ;(rec as any).queuePosition = 1
+          rec.queuePosition = 1
           return
         }
         if (store.isConversationRunning(conversationId)) {
@@ -673,9 +758,9 @@ export const handlers: Record<string, Handler> = {
     // running (the active run belongs to a previous message; elapsedMs would
     // silently count from enqueue time).
     if (rec.status === 'queued') {
-      const pos = (rec as any).queuePosition
+      const pos = rec.queuePosition
       const entry =
-        typeof pos === 'number' ? d().getRuntimeStore()?.getQueuedMessage?.(rec.conversationId, pos - 1) : null
+        typeof pos === 'number' ? d().getRuntimeStore().getQueuedMessage(rec.conversationId, pos - 1) : null
       if (entry) {
         return ok({ status: 'queued', queuePosition: pos, elapsedMs: Date.now() - rec.startedAt })
       }
@@ -690,7 +775,7 @@ export const handlers: Record<string, Handler> = {
     const mainConv = findConv(store, rec.conversationId)
     const current = rt?.currentToolCall ?? mainConv?.currentToolCall ?? null
     const streaming: string = rt?.streamingContent ?? mainConv?.streamingContent ?? ''
-    const activeToolCalls: any[] = rt?.activeToolCalls ?? mainConv?.activeToolCalls ?? []
+    const activeToolCalls: ToolCall[] = rt?.activeToolCalls ?? mainConv?.activeToolCalls ?? []
     return ok({
       status: 'running',
       elapsedMs: Date.now() - rec.startedAt,
@@ -716,16 +801,16 @@ export const handlers: Record<string, Handler> = {
       // instead of killing whatever run IS active on the conversation (M2).
       // enqueueMessage returns a 1-based position (array length after push);
       // removeQueuedMessage takes a 0-based index.
-      const pos = (rec as any).queuePosition
+      const pos = rec.queuePosition
       const runtimeStore = d().getRuntimeStore()
       let removed = false
       if (typeof pos === 'number' && pos >= 1) {
         const idx = pos - 1
-        const entry = runtimeStore?.getQueuedMessage?.(rec.conversationId, idx)
+        const entry = runtimeStore.getQueuedMessage(rec.conversationId, idx)
         // Indices drift when the user reorders/deletes other queued messages —
         // only remove when the entry still matches this run's message (m-5).
         if (!entry || entry.text === rec.messageText) {
-          runtimeStore?.removeQueuedMessage?.(rec.conversationId, idx)
+          runtimeStore.removeQueuedMessage(rec.conversationId, idx)
           removed = true
         }
       }
@@ -848,14 +933,19 @@ export const handlers: Record<string, Handler> = {
     const providerId = String(args.providerId ?? '')
     if (!providerId) return err('providerId is required')
     const { getModelsForProvider } = await import('@/agent/providers/types')
-    const { getCachedModels } = await import('@/agent/providers/model-store')
+    const { getCachedModelsResult } = await import('@/agent/providers/model-store')
     const settings = d().getSettingsStore()
-    const staticModels: any[] = getModelsForProvider(providerId)
-    const cached = getCachedModels(providerId) as any
-    const models: any[] = cached?.models?.length ? cached.models : staticModels
+    const providerType = providerId as LLMProviderType
+    // The UI caches the catalog under `${providerType}:${providerType}` (see
+    // useDynamicModels' providerKey in ProviderManager); read that entry first,
+    // then the unkeyed one older builds wrote. Fall back to the static list.
+    const cached =
+      getCachedModelsResult(providerType, providerType) ?? getCachedModelsResult(providerType)
+    const staticModels = getModelsForProvider(providerType)
+    const models = cached?.models.length ? cached.models : staticModels
     const pinned = settings.pinnedModelsByProvider[providerId] ?? []
     return ok({
-      models: models.map((m: any) => ({
+      models: models.map((m) => ({
         id: m.id,
         name: m.name,
         contextWindow: m.contextWindow ?? null,
@@ -895,12 +985,12 @@ export const handlers: Record<string, Handler> = {
     const known =
       isCurrent ||
       (settings.pinnedModelsByProvider[providerId]?.length ?? 0) > 0 ||
-      (settings as any).customProviders?.some?.((cp: any) => cp.id === providerId) ||
+      settings.customProviders.some((cp) => cp.id === providerId) ||
       ['openai', 'anthropic', 'deepseek', 'openrouter', 'codex-oauth'].includes(providerId)
     if (!known) {
       return err(`Provider ${providerId} is not configured — set it up in EO2Weave settings first`)
     }
-    settings.switchProviderAndModel(providerId, modelId)
+    settings.switchProviderAndModel(providerId as LLMProviderType, modelId)
     return ok({ providerId, modelId })
   },
 }
