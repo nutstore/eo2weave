@@ -249,15 +249,21 @@ describe('app-tools handlers', () => {
 
   it('does not overwrite messages appended while a queued message is being persisted', async () => {
     const d2 = makeDeps()
+    const store = d2.getConversationStore()
+    store.isConversationRunning = () => true
+    // Production wires getConversationStore() to zustand's getState(): every
+    // call returns a snapshot, and an immutable update swaps the conversation
+    // object, leaving earlier snapshots stale.
+    const snapshot = () => ({ ...store, conversations: [...store.conversations] })
+
     let releaseInsert!: () => void
     const pendingInsert = new Promise<void>((resolve) => {
       releaseInsert = resolve
     })
-    const store = d2.getConversationStore()
-    store.isConversationRunning = () => true
 
     initAppToolDeps({
       ...d2,
+      getConversationStore: snapshot,
       getMessageRepository: () => ({
         findByConversation: async () => [],
         insert: vi.fn(async () => {
@@ -268,8 +274,6 @@ describe('app-tools handlers', () => {
 
     const sending = handlers.send_message({ conversationId: 'c_1', content: 'queued text' })
     // The active run finishes and appends its answer before SQLite resolves.
-    // The store replaces the conversation object (immutable update), so the
-    // record the handler captured before the await keeps the old messages.
     const live = store.conversations[0]
     store.conversations[0] = {
       ...live,
@@ -287,6 +291,55 @@ describe('app-tools handlers', () => {
     expect(written.map((m) => m.id)).toContain('m-followup')
     expect(written.at(-1)).toMatchObject({ role: 'user' })
     expect(written).toHaveLength(store.conversations[0].messages.length + 1)
+  })
+
+  it('does not duplicate a queued message the dequeue consumer already appended', async () => {
+    const d2 = makeDeps()
+    const store = d2.getConversationStore()
+    store.isConversationRunning = () => true
+    const snapshot = () => ({ ...store, conversations: [...store.conversations] })
+
+    let releaseInsert!: () => void
+    const pendingInsert = new Promise<void>((resolve) => {
+      releaseInsert = resolve
+    })
+    let persistedId = ''
+
+    initAppToolDeps({
+      ...d2,
+      getConversationStore: snapshot,
+      getRuntimeStore: () => makeRuntimeStore({
+        enqueueMessage: vi.fn((_convId: string, message) => {
+          // The dequeue consumer reuses this id for the follow-up user message.
+          persistedId = message.persistedMessageId ?? ''
+          return { enqueued: true, position: 1 }
+        }),
+      }),
+      getMessageRepository: () => ({
+        findByConversation: async () => [],
+        insert: vi.fn(async () => {
+          await pendingInsert
+        }),
+      }),
+    })
+
+    const sending = handlers.send_message({ conversationId: 'c_1', content: 'queued text' })
+    expect(persistedId).not.toBe('')
+    // The active run finishes and its dequeue consumer appends the same
+    // prompt (same id) while the SQLite insert is still pending.
+    const live = store.conversations[0]
+    store.conversations[0] = {
+      ...live,
+      messages: [
+        ...live.messages,
+        { id: persistedId, role: 'user', content: 'queued text', timestamp: 200 },
+      ],
+    }
+    releaseInsert()
+
+    const r = JSON.parse((await sending).content)
+    expect(r.status).toBe('queued')
+    expect(vi.mocked(store.updateMessages)).not.toHaveBeenCalled()
   })
 
   it('send_message does not finalize a claim-overlap run while its trigger is queued (#170 round 2)', async () => {

@@ -2245,6 +2245,9 @@ export const useConversationStoreSQLite = create<ConversationState>()(
               contentParts: nextMsg.contentParts,
               readImageHandoff: nextMsg.readImageHandoff,
             })
+            // A caller that persisted this message at enqueue time owns its id;
+            // reusing it keeps the follow-up turn from duplicating the prompt.
+            if (nextMsg.persistedMessageId) userMsg.id = nextMsg.persistedMessageId
             const currentConv = get().conversations.find((c) => c.id === conversationId)
             if (currentConv) {
               get().updateMessages(conversationId, [...currentConv.messages, userMsg])

@@ -47,6 +47,13 @@ export interface QueuedMessage {
    */
   rerunOnly?: boolean
   /**
+   * Id of the user message already persisted for this queued entry. Set by
+   * callers that write the message to SQLite at enqueue time (app-tools
+   * `send_message`) so the dequeue consumer reuses that identity instead of
+   * minting a second copy of the same prompt.
+   */
+  persistedMessageId?: string
+  /**
    * Identity of the run this trigger is parked on (the dispatch that was
    * holding the start claim or owned the active run when the trigger was
    * enqueued). The queue-full drain uses it to tell ACCEPTED triggers —
