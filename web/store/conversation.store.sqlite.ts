@@ -207,7 +207,7 @@ import {
 // Store Definition
 //=============================================================================
 
-interface ConversationState extends ConversationLoadState {
+export interface ConversationState extends ConversationLoadState {
 
   // Live AgentLoop instances live in `@/store/agent-loop-registry` rather
   // than in this state. They are service objects with private fields that

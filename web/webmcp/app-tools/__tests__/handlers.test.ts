@@ -3,112 +3,12 @@
  *
  * handlers.ts is fully dependency-injected (initAppToolDeps) so these tests
  * exercise the real handler logic against mock stores/repositories.
+ * Argument validation is covered separately in tool-arguments.test.ts.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { handlers, initAppToolDeps, type AppToolDeps } from '../handlers'
-
-function makeDeps(overrides: Partial<AppToolDeps> = {}): AppToolDeps {
-  const conversations: any[] = [
-    {
-      id: 'c_1',
-      title: 'Fix login timeout',
-      projectId: 'p_1',
-      status: 'idle',
-      updatedAt: 100,
-      messages: [
-        { role: 'user', content: 'fix it', messageId: 'm1', timestamp: 90 },
-        { role: 'assistant', content: 'done, changed src/a.ts', messageId: 'm2', timestamp: 95 },
-      ],
-      activeToolCalls: [{ id: 't1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
-      currentToolCall: { id: 't2', type: 'function', function: { name: 'write_file', arguments: '{"path":"src/b.ts"}' } },
-      streamingContent: 'partial output...',
-      runChangesMeta: { snapshotId: 'snap_1' },
-    },
-  ]
-  const settings = {
-    hasApiKey: true,
-    providerType: 'codex-oauth',
-    modelName: 'gpt-5.4',
-    maxTokens: 32000,
-    pinnedModelsByProvider: { 'codex-oauth': ['gpt-5.4'] } as Record<string, string[]>,
-    switchProviderAndModel: vi.fn(),
-    pinModel: vi.fn((provider: string, model: string) => {
-      const list = settings.pinnedModelsByProvider[provider] ?? (settings.pinnedModelsByProvider[provider] = [])
-      if (!list.includes(model)) list.push(model)
-    }),
-    unpinModel: vi.fn((provider: string, model: string) => {
-      const list = settings.pinnedModelsByProvider[provider] ?? []
-      settings.pinnedModelsByProvider[provider] = list.filter((m: string) => m !== model)
-    }),
-  }
-  const agentStore = { directoryHandle: null }
-  const manager = {
-    getAllWorkspaces: () => [{ workspaceId: 'c_1', projectId: 'p_1' }],
-    getWorkspace: async () => ({
-      readFile: async () => ({ content: 'file content', metadata: { size: 12 } }),
-      writeFile: async () => {},
-      scanFiles: async () => new Map([['src/a.ts', { path: 'src/a.ts', mtime: 1, size: 5 }]]),
-    }),
-  }
-  const conversationStore = {
-    conversations,
-    loaded: true,
-    updateTitle: vi.fn((id: string, title: string) => {
-      const c = conversations.find((x: any) => x.id === id)
-      if (c) c.title = title
-    }),
-    isConversationRunning: () => false,
-    enqueueMessage: vi.fn(() => ({ enqueued: true })),
-    updateMessages: vi.fn(),
-    runAgent: vi.fn(async () => {}),
-    cancelAgent: vi.fn(),
-    createNew: vi.fn(() => ({ id: 'c_new', title: 't' })),
-    deleteConversation: vi.fn(async () => {}),
-    setActive: vi.fn(),
-  }
-  return {
-    getConversationStore: () => conversationStore,
-    getSettingsStore: () => ({ ...settings }),
-    getAgentStore: () => agentStore,
-    createProject: async (name) => ({ id: 'p_new', name }),
-    getWorkspaceManager: async () => manager,
-    ensureConversationWorkspace: vi.fn(async () => ({ projectId: 'p_1' })),
-    resolveConversationTarget: vi.fn(async () => ({
-      projectId: 'p_1', projectName: 'P1', workspaceId: 'c_1', agentId: 'default',
-      agents: [{ id: 'default', name: 'Default' }, { id: 'resource-loop', name: 'Resource Loop' }],
-    })),
-    setConversationAgent: vi.fn(),
-    getProjectRepository: () => ({
-      findAllProjects: async () => [{ id: 'p_1', name: 'P1' }],
-      findProjectStats: async () => [{ projectId: 'p_1', workspaceCount: 1, lastWorkspaceAccessAt: 100 }],
-      createProject: async (input: any) => ({ id: 'p_new', name: input.name }),
-    }),
-    getWorkspaceRepository: () => ({
-      findWorkspacesByProject: async () => [{ id: 'c_1', projectId: 'p_1' }],
-      findAllWorkspaces: async () => [{ id: 'c_1', projectId: 'p_1' }],
-    }),
-    getMessageRepository: () => ({
-      findByConversation: async () => conversations[0].messages,
-    }),
-    searchConversations: async (args) => JSON.stringify({ results: [{ conversationId: 'c_1', title: 'Fix login timeout' }], args }),
-    getRuntimeStore: () => ({ runtimes: new Map() }),
-    getFSOverlayRepository: () => ({
-      listSnapshotFiles: async () => [{ path: 'src/a.ts', opType: 'upsert', createdAt: 1 }],
-    }),
-    validatePath: (path: string) => {
-      if (!path || !path.trim()) throw new Error('empty path')
-      if (path.split('/').some((seg) => seg === '..' || seg === '.')) {
-        throw new Error(`Invalid path: ${path}`)
-      }
-      // mirror real contract: requires leading '/' then strips it
-      if (!path.startsWith('/')) throw new Error('must start with /')
-      return path.replace(/^\/+/, '')
-    },
-    wait: async () => {},
-    ...overrides,
-  }
-}
+import { makeConversation, makeDeps, makeRuntimeStore } from './fixtures'
 
 describe('app-tools handlers', () => {
   let deps: AppToolDeps
@@ -135,14 +35,14 @@ describe('app-tools handlers', () => {
 
   it('creates projects through the app store so they are initialized and visible', async () => {
     const createProject = vi.fn(async (name: string) => ({ id: 'p_new', name }))
-    initAppToolDeps({ ...deps, createProject } as AppToolDeps)
+    initAppToolDeps({ ...deps, createProject })
     const result = JSON.parse((await handlers.create_project({ name: ' X ' })).content)
     expect(createProject).toHaveBeenCalledWith('X')
     expect(result.project).toEqual({ id: 'p_new', name: 'X' })
   })
 
   it('does not report a successful project when initialization fails', async () => {
-    initAppToolDeps({ ...deps, createProject: vi.fn(async () => null) } as AppToolDeps)
+    initAppToolDeps({ ...deps, createProject: vi.fn(async () => null) })
     const result = JSON.parse((await handlers.create_project({ name: 'X' })).content)
     expect(result.error).toBeTruthy()
     expect(result.project).toBeUndefined()
@@ -165,7 +65,8 @@ describe('app-tools handlers', () => {
     resolve({ projectId: 'p_1' })
     expect(await creating).toEqual({ conversation: { id: 'c_new', title: 't', workspaceId: 'c_new', projectId: 'p_1', agentId: 'default' } })
     expect(deps.setConversationAgent).toHaveBeenCalledWith('c_new', 'default')
-    expect(deps.getConversationStore().setActive).not.toHaveBeenCalled()
+    // createNew is the only store surface involved — activation is off by
+    // construction (asserted above via { activate: false }).
   })
 
   it('create_conversation does not report success when workspace initialization fails', async () => {
@@ -230,20 +131,22 @@ describe('app-tools handlers', () => {
   it('filters conversations by project ID, excluding standalone chats and other projects', async () => {
     const store = deps.getConversationStore()
     store.conversations.push(
-      { id: 'c_2', title: 'Other project', kind: 'project', updatedAt: 200 },
-      { id: 'c_direct', title: 'Standalone', kind: 'direct', updatedAt: 300 },
+      makeConversation({ id: 'c_2', title: 'Other project', messages: [], updatedAt: 200 }),
+      makeConversation({ id: 'c_direct', title: 'Standalone', kind: 'direct', messages: [], updatedAt: 300 }),
     )
     initAppToolDeps({ ...deps, getWorkspaceRepository: () => ({
       findWorkspacesByProject: vi.fn(async () => [{ id: 'c_1' }, { id: 'c_direct' }]),
-    }) } as AppToolDeps)
+      findAllWorkspaces: vi.fn(async () => []),
+    }) })
     const result = JSON.parse((await handlers.list_conversations({ projectId: 'p_1' })).content)
     expect(result.conversations.map((c: any) => c.id)).toEqual(['c_1'])
   })
 
   it('returns conversation kind and project ID without exposing standalone host projects', async () => {
-    deps.getConversationStore().conversations.push({ id: 'c_direct', title: 'Standalone', kind: 'direct', updatedAt: 300 })
+    deps.getConversationStore().conversations.push(makeConversation({ id: 'c_direct', title: 'Standalone', kind: 'direct', messages: [], updatedAt: 300 }))
     initAppToolDeps({ ...deps, getWorkspaceRepository: () => ({
       findAllWorkspaces: async () => [{ id: 'c_1', projectId: 'p_1' }, { id: 'c_direct', projectId: 'p_1' }],
+      findWorkspacesByProject: async () => [],
     }) })
     const result = JSON.parse((await handlers.list_conversations({})).content)
     expect(result.conversations).toEqual(expect.arrayContaining([
@@ -278,9 +181,9 @@ describe('app-tools handlers', () => {
 
   it('get_messages filters internal records before pagination and preserves synthetic identity', async () => {
     deps.getConversationStore().conversations[0].messages.push(
-      { role: 'user', content: 'PRIVATE_STATE', kind: 'context_update', timestamp: 96 },
-      { role: 'user', content: 'delegated task', delegationNote: { fromAgentId: 'a', task: 'task' }, timestamp: 97 },
-      { role: 'assistant', content: 'change card', kind: 'run_changes', timestamp: 98 },
+      { id: 'm3', role: 'user', content: 'PRIVATE_STATE', kind: 'context_update', timestamp: 96 },
+      { id: 'm4', role: 'user', content: 'delegated task', delegationNote: { fromAgentId: 'a', task: 'task' }, timestamp: 97 },
+      { id: 'm5', role: 'assistant', content: 'change card', kind: 'run_changes', timestamp: 98 },
     )
     const r = JSON.parse((await handlers.get_messages({ conversationId: 'c_1', pageSize: 1 })).content)
     expect(r.totalMessages).toBe(3)
@@ -331,8 +234,7 @@ describe('app-tools handlers', () => {
     const d2 = makeDeps()
     initAppToolDeps({
       ...d2,
-      getRuntimeStore: () => ({
-        runtimes: new Map(),
+      getRuntimeStore: () => makeRuntimeStore({
         enqueueMessage: vi.fn(() => ({ enqueued: true, position: 1 })),
       }),
       getConversationStore: () => {
@@ -355,10 +257,9 @@ describe('app-tools handlers', () => {
     const d2 = makeDeps()
     initAppToolDeps({
       ...d2,
-      getRuntimeStore: () => ({
-        runtimes: new Map(),
-        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '' }].filter(() => pendingTrigger)]]),
-        getQueuedMessage: vi.fn(() => (pendingTrigger ? { rerunOnly: true, text: '' } : undefined)),
+      getRuntimeStore: () => makeRuntimeStore({
+        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '', enqueuedAt: 1 }].filter(() => pendingTrigger)]]),
+        getQueuedMessage: vi.fn(() => (pendingTrigger ? { rerunOnly: true, text: '', enqueuedAt: 1 } : undefined)),
       }),
       getConversationStore: () => {
         const s = d2.getConversationStore()
@@ -395,10 +296,9 @@ describe('app-tools handlers', () => {
     const d2 = makeDeps()
     initAppToolDeps({
       ...d2,
-      getRuntimeStore: () => ({
-        runtimes: new Map(),
-        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '' }]]]),
-        getQueuedMessage: vi.fn(() => ({ rerunOnly: true, text: '' })),
+      getRuntimeStore: () => makeRuntimeStore({
+        pendingMessageQueues: new Map([['c_1', [{ rerunOnly: true, text: '', enqueuedAt: 1 }]]]),
+        getQueuedMessage: vi.fn(() => ({ rerunOnly: true, text: '', enqueuedAt: 1 })),
       }),
       getConversationStore: () => {
         const s = d2.getConversationStore()
@@ -446,7 +346,7 @@ describe('app-tools handlers', () => {
   it('read_folder_file errors when no workspace', async () => {
     initAppToolDeps({
       ...deps,
-      getRuntimeStore: () => ({ runtimes: new Map() }),
+      getRuntimeStore: () => makeRuntimeStore(),
       getWorkspaceManager: async () => ({ getWorkspace: async () => undefined }),
     })
     const r = JSON.parse((await handlers.read_folder_file({ conversationId: 'ghost', path: 'x' })).content)

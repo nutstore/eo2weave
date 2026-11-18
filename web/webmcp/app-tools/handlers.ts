@@ -5,10 +5,16 @@
  * repositories, WorkspaceManager, WorkspaceRuntime) — the same code paths the
  * UI uses. Nothing here bypasses permissions or state management.
  *
- * The dependency-injected deps are intentionally `any`-typed: they wrap
- * dynamic zustand store snapshots and repository classes whose concrete types
- * live across the app. Typing them precisely would couple this module to half
- * the codebase; tests inject mocks instead. All other `any`s flow from these.
+ * The injected deps are typed as NARROW PROJECTIONS of the real application
+ * contracts (`Pick<>` of the store state, projections of the repository and
+ * workspace-runtime members app-tools actually reads). That keeps this module
+ * honest about the interfaces it consumes — a store rename shows up as a
+ * typecheck error here — while still letting tests inject partial doubles
+ * instead of constructing whole stores.
+ *
+ * Arguments reach these handlers as a plain `Record<string, unknown>`.
+ * Handler-level business validation (trimming, defaults, pagination caps,
+ * path validation) lives here.
  *
  * Run lifecycle: the ONLY terminal signal for a run is the runAgent promise
  * resolving/rejecting (`.then`/`.catch` in send_message). isConversationRunning()
@@ -18,11 +24,21 @@
  */
 
 import { APP_TOOLS } from './schemas'
+import type { AppToolDefinition } from './schemas'
 import { isCredentialPending } from '@/agent/providers/credential-state'
-import type { Message } from '@/agent/message-types'
+import type { Conversation, Message, ToolCall } from '@/agent/message-types'
 import { createUserMessage, getMessageRecordType } from '@/agent/message-types'
+import type { ModelInfo } from '@/agent/providers/types'
 import { selectConversationExportMessages, selectConversationTranscript } from '@/agent/message-projections'
 import type { ConversationTarget, ConversationTargetInput } from '@/services/conversation-target'
+import type { ConversationState } from '@/store/conversation.store.sqlite'
+import type { ConversationRuntime, ConversationRuntimeState } from '@/store/conversation-runtime.store'
+import type { SettingsState } from '@/store/settings.store'
+import type { AgentState } from '@/store/agent.store'
+import type { Project, ProjectStats } from '@/sqlite/repositories/project.repository'
+import type { Workspace } from '@/sqlite/repositories/workspace.repository'
+import type { SnapshotFileMetaRecord } from '@/sqlite/repositories/fs-overlay.repository'
+import type { FileScanItem } from '@/opfs/types/opfs-types'
 
 // ─── Run registry ─────────────────────────────────────────────────────────────
 
@@ -41,6 +57,12 @@ export interface AppRunRecord {
   finishedAt?: number
   /** First N chars of the sent message — queue-entry identity check on cancel. */
   messageText?: string
+  /**
+   * 1-based position of this run's message in the runtime store's per-
+   * conversation queue (mirrors enqueueMessage's return value). Only set for
+   * queued/handoff runs; used to locate — and cancel — exactly this entry.
+   */
+  queuePosition?: number
   /** Set when the run finishes; scoped to THIS run (messages after startedAt). */
   result?: {
     summary: string
@@ -88,20 +110,103 @@ export function getRunRecord(runId: string): AppRunRecord | undefined {
 
 // ─── Dependency injection (wired by register.ts, overridden in tests) ────────
 
+/**
+ * The conversation-store members app-tools consumes. A projection of the real
+ * `ConversationState`, so a renamed/removed store member fails typecheck here.
+ */
+export type AppToolConversationStore = Pick<
+  ConversationState,
+  | 'conversations'
+  | 'loaded'
+  | 'isConversationRunning'
+  | 'createNew'
+  | 'deleteConversation'
+  | 'updateMessages'
+  | 'updateTitle'
+  | 'runAgent'
+  | 'cancelAgent'
+>
+
+/** Projection of the runtime store: only the queue/progress surface app-tools reads. */
+export type AppToolRuntimeStore = Pick<
+  ConversationRuntimeState,
+  'runtimes' | 'pendingMessageQueues' | 'enqueueMessage' | 'removeQueuedMessage' | 'getQueuedMessage'
+>
+
+/** Projection of the settings store: only what provider/model tools read or call. */
+export type AppToolSettingsStore = Pick<
+  SettingsState,
+  | 'providerType'
+  | 'modelName'
+  | 'maxTokens'
+  | 'hasApiKey'
+  | 'hasApiKeyLoaded'
+  | 'pinnedModelsByProvider'
+  | 'customProviders'
+  | 'pinModel'
+  | 'unpinModel'
+  | 'switchProviderAndModel'
+>
+
+/** Projection of the agent store: the legacy directory handle passed into runAgent. */
+export type AppToolAgentStore = Pick<AgentState, 'directoryHandle'>
+
+/**
+ * Projection of `WorkspaceRuntime` — readFolderFile only needs the text
+ * content and size, write_folder_file needs the write, and list_folder_files
+ * needs the scan. Narrowing the read result keeps the projection free of the
+ * full FileMetadata contract while staying assignable from the real runtime.
+ */
+export interface AppToolWorkspaceRuntime {
+  readFile: (path: string) => Promise<{ content: unknown; metadata?: { size?: number } | null }>
+  writeFile: (path: string, content: string) => Promise<void>
+  scanFiles: () => Promise<Map<string, FileScanItem>>
+}
+
+/** Projection of `WorkspaceManager`. */
+export interface AppToolWorkspaceManager {
+  getWorkspace: (workspaceId: string) => Promise<AppToolWorkspaceRuntime | undefined>
+}
+
+/** Projection of `ProjectRepository` (read-only members used here). */
+export interface AppToolProjectRepository {
+  findAllProjects: () => Promise<Array<Pick<Project, 'id' | 'name'>>>
+  findProjectStats: () => Promise<
+    Array<Pick<ProjectStats, 'projectId' | 'workspaceCount' | 'lastWorkspaceAccessAt'>>
+  >
+}
+
+/** Projection of `WorkspaceRepository` (the id/project pair is all that is read). */
+export interface AppToolWorkspaceRepository {
+  findWorkspacesByProject: (projectId: string) => Promise<Array<Pick<Workspace, 'id' | 'projectId'>>>
+  findAllWorkspaces: () => Promise<Array<Pick<Workspace, 'id' | 'projectId'>>>
+}
+
+/** Projection of `MessageRepository`. */
+export interface AppToolMessageRepository {
+  findByConversation: (conversationId: string) => Promise<Message[]>
+  insert: (conversationId: string, message: Message, seq: number) => Promise<void>
+}
+
+/** Projection of `FsOverlayRepository` — only the file paths are surfaced. */
+export interface AppToolFsOverlayRepository {
+  listSnapshotFiles: (snapshotId: string) => Promise<Array<Pick<SnapshotFileMetaRecord, 'path'>>>
+}
+
 export interface AppToolDeps {
-  getConversationStore: () => any
-  getRuntimeStore: () => any
-  getSettingsStore: () => any
-  getAgentStore: () => any
-  getWorkspaceManager: () => Promise<any>
+  getConversationStore: () => AppToolConversationStore
+  getRuntimeStore: () => AppToolRuntimeStore
+  getSettingsStore: () => AppToolSettingsStore
+  getAgentStore: () => AppToolAgentStore
+  getWorkspaceManager: () => Promise<AppToolWorkspaceManager>
   ensureConversationWorkspace: (conversationId: string, title?: string, projectId?: string) => Promise<{ projectId?: string }>
   resolveConversationTarget: (input: ConversationTargetInput) => Promise<ConversationTarget>
   setConversationAgent: (conversationId: string, agentId: string) => void
   createProject: (name: string) => Promise<{ id: string; name: string } | null>
-  getProjectRepository: () => any
-  getWorkspaceRepository: () => any
-  getMessageRepository: () => any
-  getFSOverlayRepository: () => any
+  getProjectRepository: () => AppToolProjectRepository
+  getWorkspaceRepository: () => AppToolWorkspaceRepository
+  getMessageRepository: () => AppToolMessageRepository
+  getFSOverlayRepository: () => AppToolFsOverlayRepository
   searchConversations: (args: Record<string, unknown>) => Promise<string>
   validatePath: (path: string) => string
   wait: (ms: number) => Promise<void>
@@ -141,8 +246,8 @@ function truncateContent(content: string): { content: string; truncated: boolean
   return { content, truncated: false }
 }
 
-function findConv(store: any, conversationId: string): any | null {
-  return store.conversations.find((c: any) => c.id === conversationId) ?? null
+function findConv(store: AppToolConversationStore, conversationId: string): Conversation | null {
+  return store.conversations.find((c) => c.id === conversationId) ?? null
 }
 
 function targetInput(args: Record<string, unknown>): ConversationTargetInput {
@@ -161,7 +266,7 @@ function targetInput(args: Record<string, unknown>): ConversationTargetInput {
  * assistant message when the run produced none (e.g. instant failure — the
  * error is surfaced via rec.error instead).
  */
-function summaryForRun(store: any, rec: AppRunRecord): string {
+function summaryForRun(store: AppToolConversationStore, rec: AppRunRecord): string {
   const conv = findConv(store, rec.conversationId)
   const msgs = selectConversationTranscript(conv?.messages ?? [])
   // m-6: prefer message-ORDER scoping. The run's user message is the last user
@@ -196,7 +301,7 @@ function summaryForRun(store: any, rec: AppRunRecord): string {
   return lastAssistantSummary(store, rec.conversationId)
 }
 
-function lastAssistantSummary(store: any, conversationId: string): string {
+function lastAssistantSummary(store: AppToolConversationStore, conversationId: string): string {
   const conv = findConv(store, conversationId)
   const msgs = selectConversationTranscript(conv?.messages ?? [])
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -211,9 +316,9 @@ function lastAssistantSummary(store: any, conversationId: string): string {
  * timestamp >= startedAt) and read its snapshotId. Null when the run produced
  * no snapshot (pure chat / read-only run / auto-apply skipped).
  */
-function snapshotIdForRun(store: any, rec: AppRunRecord): string | null {
+function snapshotIdForRun(store: AppToolConversationStore, rec: AppRunRecord): string | null {
   const conv = findConv(store, rec.conversationId)
-  const msgs: any[] = conv?.messages ?? []
+  const msgs: Message[] = conv?.messages ?? []
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (m.kind !== 'run_changes') continue
@@ -234,18 +339,18 @@ async function changedFilesForRun(rec: AppRunRecord): Promise<string[]> {
   if (!snapshotId) return []
   const overlay = d().getFSOverlayRepository()
   const files = await overlay.listSnapshotFiles(snapshotId)
-  return (files ?? []).map((f: any) => f.path)
+  return files.map((f) => f.path)
 }
 
 /** Conversation-level terminal status ('error' etc.) for a finished run. */
-function conversationError(store: any, rec: AppRunRecord): string | null {
+function conversationError(store: AppToolConversationStore, rec: AppRunRecord): string | null {
   const conv = findConv(store, rec.conversationId)
   if (conv?.status === 'error') return conv.error ?? 'Agent run failed'
   return null
 }
 
 /** Finalize a finished run: map the conversation terminal status to run status. */
-function finalizeFromStore(store: any, rec: AppRunRecord): AppRunRecord {
+function finalizeFromStore(store: AppToolConversationStore, rec: AppRunRecord): AppRunRecord {
   const errMsg = conversationError(store, rec)
   if (errMsg) {
     rec.status = 'failed'
@@ -269,7 +374,7 @@ function finalizeFromStore(store: any, rec: AppRunRecord): AppRunRecord {
  * handoff record's terminal transition no longer comes from the runAgent
  * promise, so something must drive the state machine between polls.
  */
-function advanceFromStore(store: any, rec: AppRunRecord): void {
+function advanceFromStore(store: AppToolConversationStore, rec: AppRunRecord): void {
   if (rec.status !== 'queued' && rec.status !== 'running') return
   const running = store.isConversationRunning(rec.conversationId)
   if (rec.status === 'queued' && running) {
@@ -279,11 +384,11 @@ function advanceFromStore(store: any, rec: AppRunRecord): void {
     // the run now executing. A parked rerunOnly trigger (claim-overlap
     // handoff) counts as still queued regardless of position bookkeeping.
     const runtimeStore = d().getRuntimeStore()
-    const pos = (rec as any).queuePosition
-    const queue = runtimeStore?.pendingMessageQueues?.get?.(rec.conversationId)
+    const pos = rec.queuePosition
+    const queue = runtimeStore.pendingMessageQueues.get(rec.conversationId)
     const stillQueued =
-      (typeof pos === 'number' && runtimeStore?.getQueuedMessage?.(rec.conversationId, pos - 1)) ||
-      !!queue?.some?.((m: { rerunOnly?: boolean }) => m.rerunOnly)
+      (typeof pos === 'number' && runtimeStore.getQueuedMessage(rec.conversationId, pos - 1)) ||
+      !!queue?.some((m) => m.rerunOnly)
     if (!stillQueued) rec.status = 'running'
     return
   }
@@ -293,8 +398,8 @@ function advanceFromStore(store: any, rec: AppRunRecord): void {
     // which would report completed before the message is ever answered.
     // Any other queued-and-idle state keeps the C-1 behavior (finalize with
     // the scoped summary instead of sticking at "queued" forever).
-    const queue = d().getRuntimeStore()?.pendingMessageQueues?.get?.(rec.conversationId)
-    const handoffParked = !!queue?.some?.((m: { rerunOnly?: boolean }) => m.rerunOnly)
+    const queue = d().getRuntimeStore().pendingMessageQueues.get(rec.conversationId)
+    const handoffParked = !!queue?.some((m) => m.rerunOnly)
     if (!handoffParked || conversationError(store, rec)) {
       finalizeFromStore(store, rec)
     }
@@ -310,7 +415,7 @@ function advanceFromStore(store: any, rec: AppRunRecord): void {
  * when the record is parked behind an active run (claim-overlap handoff) —
  * the caller should poll get_run_status instead of blocking to the timeout.
  */
-async function waitForRun(store: any, rec: AppRunRecord, timeoutMs: number): Promise<AppRunRecord> {
+async function waitForRun(store: AppToolConversationStore, rec: AppRunRecord, timeoutMs: number): Promise<AppRunRecord> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await d().wait(POLL_INTERVAL_MS)
@@ -344,19 +449,23 @@ async function withChangedFiles(rec: AppRunRecord): Promise<AppRunRecord> {
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
-type Handler = (args: Record<string, any>) => Promise<{ content: string }>
+/**
+ * A handler: it receives the (already normalized) argument object and returns
+ * the tool's JSON payload.
+ */
+export type AppToolHandler = (args: Record<string, unknown>) => Promise<{ content: string }>
 
-export const handlers: Record<string, Handler> = {
+export const handlers: Record<string, AppToolHandler> = {
   // ── Projects ──
   list_projects: async () => {
     const repo = d().getProjectRepository()
-    const [projects, stats] = (await Promise.all([
+    const [projects, stats] = await Promise.all([
       repo.findAllProjects(),
       repo.findProjectStats(),
-    ])) as any[]
-    const statMap = new Map((stats as any[]).map((s: any) => [s.projectId, s]))
+    ])
+    const statMap = new Map(stats.map((s) => [s.projectId, s]))
     return ok({
-      projects: projects.map((p: any) => ({
+      projects: projects.map((p) => ({
         id: p.id,
         name: p.name,
         workspaceCount: statMap.get(p.id)?.workspaceCount ?? 0,
@@ -376,8 +485,8 @@ export const handlers: Record<string, Handler> = {
   // ── Folders ──
   list_mounted_folders: async () => {
     const { useFolderAccessStore } = await import('@/store/folder-access.store')
-    const records = (useFolderAccessStore.getState() as any).records ?? {}
-    const folders = Object.values(records as Record<string, any>)
+    const records = useFolderAccessStore.getState().records ?? {}
+    const folders = Object.values(records)
       .filter((r) => r.folderName || r.handle || r.persistedHandle)
       .map((r) => ({
         folderId: `${r.projectId}:${r.rootName ?? r.projectId}`,
@@ -396,7 +505,7 @@ export const handlers: Record<string, Handler> = {
     if (!store.loaded) return ok({ loading: true, conversations: [], hasMore: false })
     const limit = Math.min(Math.max(1, Number(args.limit ?? 20)), 100)
     const offset = Math.max(0, Number(args.offset ?? 0))
-    let list: any[] = store.conversations ?? []
+    let list: Conversation[] = store.conversations ?? []
     const requestedProjectId = typeof args.projectId === 'string' ? args.projectId.trim() : ''
     const folderProjectId = typeof args.folderId === 'string' ? args.folderId.split(':')[0].trim() : ''
     if (args.projectId != null && !requestedProjectId) return err('projectId must be a non-empty string')
@@ -410,16 +519,16 @@ export const handlers: Record<string, Handler> = {
       // SQLite contains every project's workspaces, not just those loaded in
       // the current WorkspaceManager. Standalone chats have a hidden host row.
       const workspaces = await d().getWorkspaceRepository().findWorkspacesByProject(projectId)
-      const wsIds = new Set(workspaces.map((workspace: { id: string }) => workspace.id))
-      list = list.filter((c: any) => c.kind !== 'direct' && wsIds.has(c.id))
+      const wsIds = new Set(workspaces.map((workspace) => workspace.id))
+      list = list.filter((c) => c.kind !== 'direct' && wsIds.has(c.id))
     } else {
       const workspaces = await d().getWorkspaceRepository().findAllWorkspaces()
-      projectByWorkspace = new Map(workspaces.map((workspace: { id: string; projectId?: string }) => [workspace.id, workspace.projectId ?? '']))
+      projectByWorkspace = new Map(workspaces.map((workspace) => [workspace.id, workspace.projectId ?? '']))
     }
-    list = [...list].sort((a: any, b: any) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    list = [...list].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     const page = list.slice(offset, offset + limit)
     return ok({
-      conversations: page.map((c: any) => ({
+      conversations: page.map((c) => ({
         id: c.id,
         title: c.title,
         kind: c.kind === 'direct' ? 'direct' : 'project',
@@ -488,7 +597,7 @@ export const handlers: Record<string, Handler> = {
     if (!title) return err('title is required')
     if (title.length > 200) return err('title must be at most 200 characters')
     const store = d().getConversationStore()
-    const conv = store.conversations?.find((c: any) => c.id === conversationId)
+    const conv = store.conversations.find((c) => c.id === conversationId)
     if (!conv) return err(`Conversation not found: ${conversationId}`)
     store.updateTitle(conversationId, title)
     return ok({ conversationId, title })
@@ -569,12 +678,16 @@ export const handlers: Record<string, Handler> = {
       // (no UI workspace steal). The queue itself is in-memory: the message is
       // ALSO persisted below so a refresh cannot silently lose it.
       const runtimeStore = d().getRuntimeStore()
-      const result = runtimeStore.enqueueMessage(conversationId, { text: content, background: true })
+      const result = runtimeStore.enqueueMessage(conversationId, {
+        text: content,
+        background: true,
+        enqueuedAt: Date.now(),
+      })
       if (!result?.enqueued) {
         return err('Conversation is running and its queue is full')
       }
       rec.status = 'queued'
-      ;(rec as any).queuePosition = result.position
+      rec.queuePosition = result.position
       // Persist durably: on refresh the queue is lost but the message survives
       // in SQLite and shows up in the conversation history (no silent loss).
       try {
@@ -609,10 +722,8 @@ export const handlers: Record<string, Handler> = {
     // 'queued' and let get_run_status drive the queued→running→terminal
     // transitions off the live queue/conversation state.
     const handoffToQueue = (): boolean => {
-      const queued = d()
-        .getRuntimeStore()
-        ?.pendingMessageQueues?.get?.(conversationId)
-      return !!queued?.some?.((m: { rerunOnly?: boolean }) => m.rerunOnly)
+      const queued = d().getRuntimeStore().pendingMessageQueues.get(conversationId)
+      return !!queued?.some((m) => m.rerunOnly)
     }
     void store
       .runAgent(conversationId, settings.providerType, settings.modelName, settings.maxTokens, directoryHandle, null, { background: true })
@@ -621,7 +732,7 @@ export const handlers: Record<string, Handler> = {
           // Trigger still in the queue (follow-up not started): defer
           // finalization to get_run_status.
           rec.status = 'queued'
-          ;(rec as any).queuePosition = 1
+          rec.queuePosition = 1
           return
         }
         if (store.isConversationRunning(conversationId)) {
@@ -673,9 +784,9 @@ export const handlers: Record<string, Handler> = {
     // running (the active run belongs to a previous message; elapsedMs would
     // silently count from enqueue time).
     if (rec.status === 'queued') {
-      const pos = (rec as any).queuePosition
+      const pos = rec.queuePosition
       const entry =
-        typeof pos === 'number' ? d().getRuntimeStore()?.getQueuedMessage?.(rec.conversationId, pos - 1) : null
+        typeof pos === 'number' ? d().getRuntimeStore().getQueuedMessage(rec.conversationId, pos - 1) : undefined
       if (entry) {
         return ok({ status: 'queued', queuePosition: pos, elapsedMs: Date.now() - rec.startedAt })
       }
@@ -686,11 +797,11 @@ export const handlers: Record<string, Handler> = {
     // Streaming content lives in the RUNTIME store (M5) — the main store's
     // conversation field is legacy and is not written by the agent loop.
     const runtimeStore = d().getRuntimeStore()
-    const rt = runtimeStore?.runtimes?.get?.(rec.conversationId) ?? null
+    const rt: ConversationRuntime | null = runtimeStore.runtimes.get(rec.conversationId) ?? null
     const mainConv = findConv(store, rec.conversationId)
     const current = rt?.currentToolCall ?? mainConv?.currentToolCall ?? null
     const streaming: string = rt?.streamingContent ?? mainConv?.streamingContent ?? ''
-    const activeToolCalls: any[] = rt?.activeToolCalls ?? mainConv?.activeToolCalls ?? []
+    const activeToolCalls: ToolCall[] = rt?.activeToolCalls ?? mainConv?.activeToolCalls ?? []
     return ok({
       status: 'running',
       elapsedMs: Date.now() - rec.startedAt,
@@ -716,16 +827,16 @@ export const handlers: Record<string, Handler> = {
       // instead of killing whatever run IS active on the conversation (M2).
       // enqueueMessage returns a 1-based position (array length after push);
       // removeQueuedMessage takes a 0-based index.
-      const pos = (rec as any).queuePosition
+      const pos = rec.queuePosition
       const runtimeStore = d().getRuntimeStore()
       let removed = false
       if (typeof pos === 'number' && pos >= 1) {
         const idx = pos - 1
-        const entry = runtimeStore?.getQueuedMessage?.(rec.conversationId, idx)
+        const entry = runtimeStore.getQueuedMessage(rec.conversationId, idx)
         // Indices drift when the user reorders/deletes other queued messages —
         // only remove when the entry still matches this run's message (m-5).
         if (!entry || entry.text === rec.messageText) {
-          runtimeStore?.removeQueuedMessage?.(rec.conversationId, idx)
+          runtimeStore.removeQueuedMessage(rec.conversationId, idx)
           removed = true
         }
       }
@@ -848,20 +959,24 @@ export const handlers: Record<string, Handler> = {
     const providerId = String(args.providerId ?? '')
     if (!providerId) return err('providerId is required')
     const { getModelsForProvider } = await import('@/agent/providers/types')
-    const { getCachedModels } = await import('@/agent/providers/model-store')
+    const { getCachedModelsResult } = await import('@/agent/providers/model-store')
     const settings = d().getSettingsStore()
-    const staticModels: any[] = getModelsForProvider(providerId)
-    const cached = getCachedModels(providerId) as any
-    const models: any[] = cached?.models?.length ? cached.models : staticModels
+    const staticModels: ModelInfo[] = getModelsForProvider(providerId)
+    // getCachedModelsResult() is the API that carries { models, source } —
+    // getCachedModels() only returns the model list. Read the cached entry
+    // when it actually has models; otherwise fall back to the static catalog.
+    const cached = getCachedModelsResult(providerId)
+    const usableCached = cached && cached.models.length > 0 ? cached : null
+    const models: ModelInfo[] = usableCached ? usableCached.models : staticModels
     const pinned = settings.pinnedModelsByProvider[providerId] ?? []
     return ok({
-      models: models.map((m: any) => ({
+      models: models.map((m) => ({
         id: m.id,
         name: m.name,
         contextWindow: m.contextWindow ?? null,
         pinned: pinned.includes(m.id),
       })),
-      source: cached?.source ?? 'static',
+      source: usableCached ? usableCached.source : 'static',
     })
   },
 
@@ -895,7 +1010,7 @@ export const handlers: Record<string, Handler> = {
     const known =
       isCurrent ||
       (settings.pinnedModelsByProvider[providerId]?.length ?? 0) > 0 ||
-      (settings as any).customProviders?.some?.((cp: any) => cp.id === providerId) ||
+      settings.customProviders.some((cp) => cp.id === providerId) ||
       ['openai', 'anthropic', 'deepseek', 'openrouter', 'codex-oauth'].includes(providerId)
     if (!known) {
       return err(`Provider ${providerId} is not configured — set it up in EO2Weave settings first`)
@@ -907,8 +1022,12 @@ export const handlers: Record<string, Handler> = {
 
 // ─── Executor map builder ─────────────────────────────────────────────────────
 
-export function buildToolExecutors(): Map<string, Handler> {
-  const map = new Map<string, Handler>()
+/**
+ * Build the name → handler map. A declared tool without a handler is a
+ * developer configuration error, not a runtime condition.
+ */
+export function buildToolExecutors(): Map<string, AppToolHandler> {
+  const map = new Map<string, AppToolHandler>()
   for (const def of APP_TOOLS) {
     const h = handlers[def.name]
     if (!h) throw new Error(`[app-tools] missing handler for ${def.name}`)
