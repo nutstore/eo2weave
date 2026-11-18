@@ -698,7 +698,11 @@ export const handlers: Record<string, AppToolHandler> = {
       const liveStore = d().getConversationStore()
       const liveConv = findConv(liveStore, conversationId)
       const liveMessages = liveConv?.messages ?? []
-      const queuedSeq = liveMessages.length + 1
+      // Zero-based transcript index: the persist diff writes every message
+      // with its transcript index as `seq`, so a first-write that used
+      // `length + 1` would leave the queued row sharing a sequence with the
+      // message appended right after it.
+      const queuedSeq = liveMessages.length
       if (liveConv && !liveMessages.some((m) => m.id === queuedMsg.id)) {
         liveStore.updateMessages(conversationId, [...liveMessages, queuedMsg])
       }

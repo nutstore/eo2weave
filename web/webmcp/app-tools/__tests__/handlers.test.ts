@@ -252,8 +252,19 @@ describe('app-tools handlers', () => {
     const store = d2.getConversationStore()
     store.isConversationRunning = () => true
     // Production wires getConversationStore() to zustand's getState(): every
-    // call returns a snapshot, and a write swaps the conversation object.
-    const snapshot = () => ({ ...store, conversations: [...store.conversations] })
+    // call returns a fresh snapshot, and a write swaps the message array.
+    // Route updateMessages into live state as well, so an append built from
+    // the entry-time snapshot drops a concurrent write instead of passing on
+    // the mock's call log alone.
+    const snapshot = () => ({
+      ...store,
+      conversations: store.conversations.map((c) => ({ ...c, messages: [...c.messages] })),
+    })
+    type Messages = (typeof store.conversations)[number]['messages']
+    vi.mocked(store.updateMessages).mockImplementation((id: string, messages: Messages) => {
+      const index = store.conversations.findIndex((c) => c.id === id)
+      if (index !== -1) store.conversations[index] = { ...store.conversations[index], messages }
+    })
 
     let releaseInsert!: () => void
     const pendingInsert = new Promise<void>((resolve) => {
@@ -278,10 +289,24 @@ describe('app-tools handlers', () => {
     expect(insert).toHaveBeenCalledTimes(1)
     expect(insert.mock.calls[0][1].id).toBe(written.at(-1)?.id)
 
+    // A finishing run appends its answer while the insert is still pending.
+    // The queued prompt must survive that write — and the answer must survive
+    // the handler.
+    const live = store.conversations[0].messages
+    store.updateMessages('c_1', [
+      ...live,
+      { id: 'm_answer', role: 'assistant', content: 'answer', timestamp: 200 } as Messages[number],
+    ])
+
     releaseInsert()
     const r = JSON.parse((await sending).content)
     expect(r).toMatchObject({ status: 'queued', persisted: true })
-    expect(vi.mocked(store.updateMessages)).toHaveBeenCalledTimes(1)
+    const finalMessages = store.conversations[0].messages
+    expect(finalMessages.filter((m) => m.id === 'm_answer')).toHaveLength(1)
+    expect(finalMessages.filter((m) => m.content === 'queued text')).toHaveLength(1)
+    // Two writes total: the handler's append and the run's answer. The handler
+    // must not write again after the insert resolves.
+    expect(vi.mocked(store.updateMessages)).toHaveBeenCalledTimes(2)
   })
 
   it('reports a queued message whose durable write failed', async () => {
