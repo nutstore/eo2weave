@@ -247,6 +247,94 @@ describe('app-tools handlers', () => {
     expect(r.status).toBe('queued')
   })
 
+  it('appends a queued message before its SQLite insert resolves', async () => {
+    const d2 = makeDeps()
+    const store = d2.getConversationStore()
+    store.isConversationRunning = () => true
+    // Production wires getConversationStore() to zustand's getState(): every
+    // call returns a fresh snapshot, and a write swaps the message array.
+    // Route updateMessages into live state as well, so an append built from
+    // the entry-time snapshot drops a concurrent write instead of passing on
+    // the mock's call log alone.
+    const snapshot = () => ({
+      ...store,
+      conversations: store.conversations.map((c) => ({ ...c, messages: [...c.messages] })),
+    })
+    type Messages = (typeof store.conversations)[number]['messages']
+    vi.mocked(store.updateMessages).mockImplementation((id: string, messages: Messages) => {
+      const index = store.conversations.findIndex((c) => c.id === id)
+      if (index !== -1) store.conversations[index] = { ...store.conversations[index], messages }
+    })
+
+    let releaseInsert!: () => void
+    const pendingInsert = new Promise<void>((resolve) => {
+      releaseInsert = resolve
+    })
+    const insert = vi.fn(async (_convId: string, _message: { id: string }, _seq: number) => {
+      await pendingInsert
+    })
+
+    initAppToolDeps({
+      ...d2,
+      getConversationStore: snapshot,
+      getMessageRepository: () => ({ findByConversation: async () => [], insert }),
+    })
+
+    const sending = handlers.send_message({ conversationId: 'c_1', content: 'queued text' })
+
+    // The transcript must already show the prompt while the write is pending —
+    // queue order survives a slow or failing insert.
+    const written = vi.mocked(store.updateMessages).mock.calls[0]?.[1] as Array<{ id: string; role: string }>
+    expect(written.at(-1)).toMatchObject({ role: 'user', content: 'queued text' })
+    expect(insert).toHaveBeenCalledTimes(1)
+    expect(insert.mock.calls[0][1].id).toBe(written.at(-1)?.id)
+
+    // A finishing run appends its answer while the insert is still pending.
+    // The queued prompt must survive that write — and the answer must survive
+    // the handler.
+    const live = store.conversations[0].messages
+    store.updateMessages('c_1', [
+      ...live,
+      { id: 'm_answer', role: 'assistant', content: 'answer', timestamp: 200 } as Messages[number],
+    ])
+
+    releaseInsert()
+    const r = JSON.parse((await sending).content)
+    expect(r).toMatchObject({ status: 'queued', persisted: true })
+    const finalMessages = store.conversations[0].messages
+    expect(finalMessages.filter((m) => m.id === 'm_answer')).toHaveLength(1)
+    expect(finalMessages.filter((m) => m.content === 'queued text')).toHaveLength(1)
+    // Two writes total: the handler's append and the run's answer. The handler
+    // must not write again after the insert resolves.
+    expect(vi.mocked(store.updateMessages)).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a queued message whose durable write failed', async () => {
+    const d2 = makeDeps()
+    const store = d2.getConversationStore()
+    store.isConversationRunning = () => true
+
+    initAppToolDeps({
+      ...d2,
+      getMessageRepository: () => ({
+        findByConversation: async () => [],
+        insert: vi.fn(async () => {
+          throw new Error('sqlite unavailable')
+        }),
+      }),
+    })
+
+    const r = JSON.parse((await handlers.send_message({ conversationId: 'c_1', content: 'queued text' })).content)
+    // The send is queued and visible in the transcript, but the caller must not
+    // be told it is durable.
+    expect(r).toMatchObject({ status: 'queued', persisted: false })
+    // One write, and it must carry the prompt: a call count alone passes even
+    // when the appended list never gained the queued message.
+    expect(vi.mocked(store.updateMessages)).toHaveBeenCalledTimes(1)
+    const [, appended] = vi.mocked(store.updateMessages).mock.calls[0]
+    expect(appended.some((m) => m.content === 'queued text')).toBe(true)
+  })
+
   it('send_message does not finalize a claim-overlap run while its trigger is queued (#170 round 2)', async () => {
     // Claim-overlap: the conversation is NOT yet running when send_message
     // enters (the owning dispatch is still inside its start claim), runAgent

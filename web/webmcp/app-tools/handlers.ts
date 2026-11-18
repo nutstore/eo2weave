@@ -677,29 +677,47 @@ export const handlers: Record<string, AppToolHandler> = {
       // (no UI workspace steal). The queue itself is in-memory: the message is
       // ALSO persisted below so a refresh cannot silently lose it.
       const runtimeStore = d().getRuntimeStore()
+      const queuedMsg = createUserMessage(content)
       const result = runtimeStore.enqueueMessage(conversationId, {
         text: content,
         background: true,
         enqueuedAt: Date.now(),
+        // The dequeue consumer reuses this record, so the message appended and
+        // persisted below and the one the follow-up turn uses are the same.
+        persistedMessage: queuedMsg,
       })
       if (!result?.enqueued) {
         return err('Conversation is running and its queue is full')
       }
       rec.status = 'queued'
       rec.queuePosition = result.position
+      // Append synchronously, before any await: the queue preserves enqueue
+      // order, so the transcript must too. Awaiting the SQLite insert first let
+      // a finishing run's update — and a second queued prompt's insert — land
+      // in insert-completion order, and made the append race the run's own.
+      const liveStore = d().getConversationStore()
+      const liveConv = findConv(liveStore, conversationId)
+      const liveMessages = liveConv?.messages ?? []
+      // Zero-based transcript index: the persist diff writes every message
+      // with its transcript index as `seq`, so a first-write that used
+      // `length + 1` would leave the queued row sharing a sequence with the
+      // message appended right after it.
+      const queuedSeq = liveMessages.length
+      if (liveConv && !liveMessages.some((m) => m.id === queuedMsg.id)) {
+        liveStore.updateMessages(conversationId, [...liveMessages, queuedMsg])
+      }
       // Persist durably: on refresh the queue is lost but the message survives
       // in SQLite and shows up in the conversation history (no silent loss).
+      // Report a failed write instead of claiming durability that is not there.
+      let persisted = true
       try {
-        const msgRepo = d().getMessageRepository()
-        const userMsg = createUserMessage(content)
-        const seq = (conv.messages?.length ?? 0) + 1
-        await msgRepo.insert(conversationId, userMsg, seq)
-        store.updateMessages(conversationId, [...(conv.messages ?? []), userMsg])
+        await d().getMessageRepository().insert(conversationId, queuedMsg, queuedSeq)
       } catch (e) {
+        persisted = false
         console.warn('[app-tools] queued message persist failed:', e)
       }
       recordRun(rec)
-      return ok({ runId, status: 'queued', queuePosition: result.position })
+      return ok({ runId, status: 'queued', queuePosition: result.position, persisted })
     }
 
     // All validations passed — only now publish the run record (M3: failure

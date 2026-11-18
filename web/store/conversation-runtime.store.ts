@@ -47,6 +47,13 @@ export interface QueuedMessage {
    */
   rerunOnly?: boolean
   /**
+   * The user message a caller already appended and persisted for this queued
+   * entry (app-tools `send_message`). The dequeue consumer reuses this record
+   * — id and timestamp — instead of minting a second copy of the same prompt,
+   * and skips appending when the transcript already carries it.
+   */
+  persistedMessage?: Message
+  /**
    * Identity of the run this trigger is parked on (the dispatch that was
    * holding the start claim or owned the active run when the trigger was
    * enqueued). The queue-full drain uses it to tell ACCEPTED triggers —

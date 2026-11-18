@@ -2237,17 +2237,46 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                 maxTokens,
                 null,
                 nextMsg.agentOverrideId ?? null,
+                nextMsg.background ? { background: true } : undefined,
               )
             })
           } else {
             const { createUserMessage: createMsg } = await import('@/agent/message-types')
-            const userMsg = createMsg(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
-              contentParts: nextMsg.contentParts,
-              readImageHandoff: nextMsg.readImageHandoff,
-            })
+            // A caller that persisted this message at enqueue time owns its
+            // identity (id AND timestamp): reuse that record instead of minting
+            // a second copy of the same prompt. Content and assets come from the
+            // queue entry, so a later edit still reaches the turn.
+            const userMsg = nextMsg.persistedMessage
+              ? { ...nextMsg.persistedMessage, content: nextMsg.text, assets: nextMsg.assets ?? nextMsg.persistedMessage.assets }
+              : createMsg(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
+                  contentParts: nextMsg.contentParts,
+                  readImageHandoff: nextMsg.readImageHandoff,
+                })
             const currentConv = get().conversations.find((c) => c.id === conversationId)
             if (currentConv) {
-              get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+              // Only append when the transcript does not already carry it —
+              // appending unconditionally duplicates the prompt and rewrites
+              // the timestamp stored at enqueue time. When it IS already
+              // there, that record is the enqueue-time copy: an edit made
+              // through the queue card never reached it, so replace the
+              // content before the turn reads the transcript.
+              const existingIndex = currentConv.messages.findIndex((m) => m.id === userMsg.id)
+              if (existingIndex === -1) {
+                get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+              } else {
+                const existing = currentConv.messages[existingIndex]
+                // An edit can touch only the attachments: the queue card edits
+                // text and assets separately. Compare asset ids rather than the
+                // objects themselves (an asset can carry OCR base64).
+                const sameAssets =
+                  (existing.assets ?? []).map((a) => a.id).join() ===
+                  (userMsg.assets ?? []).map((a) => a.id).join()
+                if (existing.content !== userMsg.content || !sameAssets) {
+                  const replaced = currentConv.messages.slice()
+                  replaced[existingIndex] = { ...existing, content: userMsg.content, assets: userMsg.assets }
+                  get().updateMessages(conversationId, replaced)
+                }
+              }
               queueMicrotask(() => {
                 get().runAgent(
                   conversationId,
@@ -2256,6 +2285,9 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                   maxTokens,
                   null,
                   nextMsg.agentOverrideId ?? null,
+                  // A queued background send (app-tools) must not steal the
+                  // user's active workspace on this consumer either.
+                  nextMsg.background ? { background: true } : undefined,
                 )
               })
             }

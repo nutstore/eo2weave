@@ -2179,6 +2179,156 @@ describe('conversation.store.sqlite tool-call routing', () => {
     })
   })
 
+  it('compaction does not append a second copy of an already-appended queued message', async () => {
+    const conv = useConversationStore.getState().createNew('compact-dedupe-queued', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
+
+    // What app-tools send_message does: append the queued prompt at enqueue
+    // time and hand the same record to the queue.
+    const queued = createUserMessage('queued prompt')
+    useConversationStore.getState().addMessage(conv.id, queued)
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued prompt',
+      enqueuedAt: Date.now(),
+      persistedMessage: queued,
+    })
+
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => messages
+    const loopRuns: any[][] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[]) => {
+      loopRuns.push(messages)
+      return [{ id: `assistant-after-queued-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() }]
+    }
+
+    await useConversationStore.getState().compactConversation(conv.id)
+
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBe(1)
+    })
+    const messages = useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages ?? []
+    expect(messages.filter((m) => m.id === queued.id)).toHaveLength(1)
+    expect(messages.filter((m) => m.role === 'user' && m.content === 'queued prompt')).toHaveLength(1)
+    // The follow-up turn still sees the prompt it was dequeued for.
+    expect(loopRuns[0].filter((m: any) => m.role === 'user').map((m: any) => m.content)).toContain('queued prompt')
+    // …and the consumer consumed the queue entry instead of starting the
+    // follow-up from the transcript alone.
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(0)
+  })
+
+  it('compaction replaces an already-appended queued message with its edited text', async () => {
+    const conv = useConversationStore.getState().createNew('compact-queued-edited', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
+
+    // What app-tools send_message does: the record is appended at enqueue
+    // time, then the user edits the queued prompt through the queue card.
+    const queued = createUserMessage('queued prompt')
+    useConversationStore.getState().addMessage(conv.id, queued)
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued prompt (edited)',
+      enqueuedAt: queued.timestamp,
+      persistedMessage: queued,
+    })
+
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => messages
+    const loopRuns: any[][] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[]) => {
+      loopRuns.push(messages)
+      return [{ id: `assistant-queued-edited-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() }]
+    }
+
+    await useConversationStore.getState().compactConversation(conv.id)
+
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBe(1)
+    })
+    // One message, carrying the edit — the enqueue-time text is gone.
+    const messages = useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages ?? []
+    const queuedCopies = messages.filter((m) => m.id === queued.id)
+    expect(queuedCopies).toHaveLength(1)
+    expect(queuedCopies[0].content).toBe('queued prompt (edited)')
+    // The turn reads the transcript, so it must see the edit too.
+    expect(loopRuns[0].filter((m: any) => m.id === queued.id).map((m: any) => m.content)).toEqual(['queued prompt (edited)'])
+  })
+
+  it('compaction replaces an already-appended queued message when only its attachments changed', async () => {
+    const conv = useConversationStore.getState().createNew('compact-queued-assets', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
+
+    // What app-tools send_message does: the record is appended at enqueue
+    // time, then the user swaps an attachment through the queue card while the
+    // prompt text stays the same.
+    const queued = createUserMessage('queued prompt')
+    useConversationStore.getState().addMessage(conv.id, queued)
+    const asset = { id: 'asset-new', name: 'chart.png', size: 10, mimeType: 'image/png', direction: 'upload' as const, createdAt: 1_000 }
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued prompt',
+      enqueuedAt: queued.timestamp,
+      persistedMessage: queued,
+      assets: [asset],
+    })
+
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => messages
+    const loopRuns: any[][] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[]) => {
+      loopRuns.push(messages)
+      return [{ id: `assistant-queued-assets-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() }]
+    }
+
+    await useConversationStore.getState().compactConversation(conv.id)
+
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBe(1)
+    })
+    // The record keeps its identity but carries the edited attachments.
+    const messages = useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages ?? []
+    const queuedCopies = messages.filter((m) => m.id === queued.id)
+    expect(queuedCopies).toHaveLength(1)
+    expect(queuedCopies[0].assets?.map((a) => a.id)).toEqual(['asset-new'])
+    expect(loopRuns[0].filter((m: any) => m.id === queued.id).map((m: any) => (m.assets ?? []).map((a: any) => a.id)))
+      .toEqual([['asset-new']])
+  })
+
+  it('compaction keeps the queued message timestamp when it appends it', async () => {
+    const conv = useConversationStore.getState().createNew('compact-queued-timestamp', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
+
+    // persistedMessage carries the enqueue-time identity; its content is stale
+    // because the user edited the queued prompt afterwards.
+    const queued = { ...createUserMessage('queued prompt'), timestamp: 1_000 }
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued prompt (edited)',
+      enqueuedAt: 1_000,
+      background: true,
+      persistedMessage: queued,
+    })
+
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => messages
+    const loopRuns: any[][] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[]) => {
+      loopRuns.push(messages)
+      return [{ id: `assistant-queued-ts-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: 2_000 }]
+    }
+
+    await useConversationStore.getState().compactConversation(conv.id)
+
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBe(1)
+    })
+    const appended = useConversationStore
+      .getState()
+      .conversations.find((c) => c.id === conv.id)
+      ?.messages.find((m) => m.id === queued.id)
+    expect(appended?.timestamp).toBe(1_000)
+    // Identity comes from the persisted record, content from the queue entry —
+    // an edited queued prompt must reach the turn, not its stale copy.
+    expect(appended?.content).toBe('queued prompt (edited)')
+    expect(loopRuns[0].filter((m: any) => m.role === 'user').map((m: any) => m.content)).toContain('queued prompt (edited)')
+  })
+
   // ── Branch conversation persistence (issue #259) ───────────────────────
   // messages.conversation_id has a FK onto conversations(id) and foreign_keys
   // is ON, so the conversations row must exist before the branch's messages
