@@ -2686,14 +2686,19 @@ async function runAgentBody(
               const existingIndex = currentConv.messages.findIndex((m) => m.id === userMsg.id)
               if (existingIndex === -1) {
                 get().updateMessages(conversationId, [...currentConv.messages, userMsg])
-              } else if (currentConv.messages[existingIndex].content !== userMsg.content) {
-                const replaced = currentConv.messages.slice()
-                replaced[existingIndex] = {
-                  ...currentConv.messages[existingIndex],
-                  content: userMsg.content,
-                  assets: userMsg.assets,
+              } else {
+                const existing = currentConv.messages[existingIndex]
+                // An edit can touch only the attachments: the queue card edits
+                // text and assets separately. Compare asset ids rather than the
+                // objects themselves (an asset can carry OCR base64).
+                const sameAssets =
+                  (existing.assets ?? []).map((a) => a.id).join() ===
+                  (userMsg.assets ?? []).map((a) => a.id).join()
+                if (existing.content !== userMsg.content || !sameAssets) {
+                  const replaced = currentConv.messages.slice()
+                  replaced[existingIndex] = { ...existing, content: userMsg.content, assets: userMsg.assets }
+                  get().updateMessages(conversationId, replaced)
                 }
-                get().updateMessages(conversationId, replaced)
               }
               // Schedule the next run on the next microtask to avoid re-entrancy.
               // FIX (parallel isolation): Pass null — runAgent now resolves the
