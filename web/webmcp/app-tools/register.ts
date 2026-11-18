@@ -111,9 +111,11 @@ export async function registerAppTools(): Promise<void> {
             description: def.description,
             inputSchema: def.inputSchema,
             annotations: def.annotations,
-            execute: async (args: Record<string, any>) => {
+            // Callers hand us an unvalidated payload: the executor validates it
+            // against this tool's inputSchema before any handler runs.
+            execute: async (args: unknown) => {
               try {
-                const out = await execute(args ?? {})
+                const out = await execute(args)
                 return out.content
               } catch (e) {
                 return JSON.stringify({ error: e instanceof Error ? e.message : String(e) })

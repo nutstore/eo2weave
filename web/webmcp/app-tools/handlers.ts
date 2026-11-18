@@ -12,9 +12,10 @@
  * typecheck error here — while still letting tests inject partial doubles
  * instead of constructing whole stores.
  *
- * Arguments reach these handlers as a plain `Record<string, unknown>`.
- * Handler-level business validation (trimming, defaults, pagination caps,
- * path validation) lives here.
+ * Untrusted arguments are validated at the public execution boundary
+ * (buildToolExecutors → parseToolArguments) and reach these handlers as a
+ * plain `Record<string, unknown>`. Handler-level business validation
+ * (trimming, defaults, pagination caps, path validation) still lives here.
  *
  * Run lifecycle: the ONLY terminal signal for a run is the runAgent promise
  * resolving/rejecting (`.then`/`.catch` in send_message). isConversationRunning()
@@ -25,6 +26,7 @@
 
 import { APP_TOOLS } from './schemas'
 import type { AppToolDefinition } from './schemas'
+import { parseToolArguments } from './validate-args'
 import { isCredentialPending } from '@/agent/providers/credential-state'
 import type { Conversation, Message, ToolCall } from '@/agent/message-types'
 import { createUserMessage, getMessageRecordType } from '@/agent/message-types'
@@ -449,10 +451,7 @@ async function withChangedFiles(rec: AppRunRecord): Promise<AppRunRecord> {
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
-/**
- * A handler: it receives the (already normalized) argument object and returns
- * the tool's JSON payload.
- */
+/** Arguments reach a handler already shape-validated (see validate-args.ts). */
 export type AppToolHandler = (args: Record<string, unknown>) => Promise<{ content: string }>
 
 export const handlers: Record<string, AppToolHandler> = {
@@ -1023,15 +1022,27 @@ export const handlers: Record<string, AppToolHandler> = {
 // ─── Executor map builder ─────────────────────────────────────────────────────
 
 /**
- * Build the name → handler map. A declared tool without a handler is a
- * developer configuration error, not a runtime condition.
+ * A tool executor as registered with `document.modelContext`: it receives the
+ * raw (untrusted) argument object supplied by the caller and returns the
+ * handler's JSON payload. Argument validation happens HERE, before a single
+ * business dependency is touched.
  */
-export function buildToolExecutors(): Map<string, AppToolHandler> {
-  const map = new Map<string, AppToolHandler>()
+export type AppToolExecutor = (args?: unknown) => Promise<{ content: string }>
+
+function validatedExecutor(def: AppToolDefinition, handler: AppToolHandler): AppToolExecutor {
+  return async (raw?: unknown) => {
+    const parsed = parseToolArguments(def, raw)
+    if (!parsed.ok) return err(parsed.error)
+    return handler(parsed.args)
+  }
+}
+
+export function buildToolExecutors(): Map<string, AppToolExecutor> {
+  const map = new Map<string, AppToolExecutor>()
   for (const def of APP_TOOLS) {
     const h = handlers[def.name]
     if (!h) throw new Error(`[app-tools] missing handler for ${def.name}`)
-    map.set(def.name, h)
+    map.set(def.name, validatedExecutor(def, h))
   }
   return map
 }
