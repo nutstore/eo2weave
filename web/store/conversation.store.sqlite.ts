@@ -2237,6 +2237,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                 maxTokens,
                 null,
                 nextMsg.agentOverrideId ?? null,
+                nextMsg.background ? { background: true } : undefined,
               )
             })
           } else {
@@ -2264,6 +2265,9 @@ export const useConversationStoreSQLite = create<ConversationState>()(
                   maxTokens,
                   null,
                   nextMsg.agentOverrideId ?? null,
+                  // A queued background send (app-tools) must not steal the
+                  // user's active workspace on this consumer either.
+                  nextMsg.background ? { background: true } : undefined,
                 )
               })
             }
