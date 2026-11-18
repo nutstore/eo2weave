@@ -247,6 +247,48 @@ describe('app-tools handlers', () => {
     expect(r.status).toBe('queued')
   })
 
+  it('does not overwrite messages appended while a queued message is being persisted', async () => {
+    const d2 = makeDeps()
+    let releaseInsert!: () => void
+    const pendingInsert = new Promise<void>((resolve) => {
+      releaseInsert = resolve
+    })
+    const store = d2.getConversationStore()
+    store.isConversationRunning = () => true
+
+    initAppToolDeps({
+      ...d2,
+      getMessageRepository: () => ({
+        findByConversation: async () => [],
+        insert: vi.fn(async () => {
+          await pendingInsert
+        }),
+      }),
+    })
+
+    const sending = handlers.send_message({ conversationId: 'c_1', content: 'queued text' })
+    // The active run finishes and appends its answer before SQLite resolves.
+    // The store replaces the conversation object (immutable update), so the
+    // record the handler captured before the await keeps the old messages.
+    const live = store.conversations[0]
+    store.conversations[0] = {
+      ...live,
+      messages: [
+        ...live.messages,
+        { id: 'm-followup', role: 'assistant', content: 'follow-up answer', timestamp: 200 },
+      ],
+    }
+    releaseInsert()
+
+    const r = JSON.parse((await sending).content)
+    expect(r.status).toBe('queued')
+
+    const written = vi.mocked(store.updateMessages).mock.calls.at(-1)?.[1] as Array<{ id: string }>
+    expect(written.map((m) => m.id)).toContain('m-followup')
+    expect(written.at(-1)).toMatchObject({ role: 'user' })
+    expect(written).toHaveLength(store.conversations[0].messages.length + 1)
+  })
+
   it('send_message does not finalize a claim-overlap run while its trigger is queued (#170 round 2)', async () => {
     // Claim-overlap: the conversation is NOT yet running when send_message
     // enters (the owning dispatch is still inside its start claim), runAgent

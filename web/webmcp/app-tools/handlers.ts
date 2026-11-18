@@ -692,9 +692,17 @@ export const handlers: Record<string, AppToolHandler> = {
       try {
         const msgRepo = d().getMessageRepository()
         const userMsg = createUserMessage(content)
-        const seq = (conv.messages?.length ?? 0) + 1
-        await msgRepo.insert(conversationId, userMsg, seq)
-        store.updateMessages(conversationId, [...(conv.messages ?? []), userMsg])
+        const latest = findConv(store, conversationId) ?? conv
+        await msgRepo.insert(conversationId, userMsg, (latest.messages?.length ?? 0) + 1)
+        // Re-read after the await: the active run may have finished and
+        // dequeued this message meanwhile, appending to the conversation.
+        // Appending to the snapshot captured before the await would overwrite
+        // those messages.
+        const current = findConv(store, conversationId) ?? latest
+        const messages = current.messages ?? []
+        if (!messages.some((m) => m.id === userMsg.id)) {
+          store.updateMessages(conversationId, [...messages, userMsg])
+        }
       } catch (e) {
         console.warn('[app-tools] queued message persist failed:', e)
       }
