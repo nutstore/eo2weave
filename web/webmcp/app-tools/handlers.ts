@@ -682,36 +682,38 @@ export const handlers: Record<string, AppToolHandler> = {
         text: content,
         background: true,
         enqueuedAt: Date.now(),
-        // The dequeue consumer reuses this id, so the message persisted below
-        // and the one the follow-up turn appends are the same message.
-        persistedMessageId: queuedMsg.id,
+        // The dequeue consumer reuses this record, so the message appended and
+        // persisted below and the one the follow-up turn uses are the same.
+        persistedMessage: queuedMsg,
       })
       if (!result?.enqueued) {
         return err('Conversation is running and its queue is full')
       }
       rec.status = 'queued'
       rec.queuePosition = result.position
+      // Append synchronously, before any await: the queue preserves enqueue
+      // order, so the transcript must too. Awaiting the SQLite insert first let
+      // a finishing run's update — and a second queued prompt's insert — land
+      // in insert-completion order, and made the append race the run's own.
+      const liveStore = d().getConversationStore()
+      const liveConv = findConv(liveStore, conversationId)
+      const liveMessages = liveConv?.messages ?? []
+      const queuedSeq = liveMessages.length + 1
+      if (liveConv && !liveMessages.some((m) => m.id === queuedMsg.id)) {
+        liveStore.updateMessages(conversationId, [...liveMessages, queuedMsg])
+      }
       // Persist durably: on refresh the queue is lost but the message survives
       // in SQLite and shows up in the conversation history (no silent loss).
+      // Report a failed write instead of claiming durability that is not there.
+      let persisted = true
       try {
-        const msgRepo = d().getMessageRepository()
-        await msgRepo.insert(conversationId, queuedMsg, (conv.messages?.length ?? 0) + 1)
-        // Re-read after the await: getConversationStore() returns a state
-        // snapshot, and the active run may have finished and dequeued this
-        // message meanwhile, appending to the live conversation. Appending to
-        // the snapshot captured before the await would overwrite those
-        // messages; appending again would duplicate this prompt.
-        const live = d().getConversationStore()
-        const current = findConv(live, conversationId)
-        const messages = current?.messages ?? []
-        if (!messages.some((m) => m.id === queuedMsg.id)) {
-          live.updateMessages(conversationId, [...messages, queuedMsg])
-        }
+        await d().getMessageRepository().insert(conversationId, queuedMsg, queuedSeq)
       } catch (e) {
+        persisted = false
         console.warn('[app-tools] queued message persist failed:', e)
       }
       recordRun(rec)
-      return ok({ runId, status: 'queued', queuePosition: result.position })
+      return ok({ runId, status: 'queued', queuePosition: result.position, persisted })
     }
 
     // All validations passed — only now publish the run record (M3: failure

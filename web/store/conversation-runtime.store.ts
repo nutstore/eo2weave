@@ -47,12 +47,12 @@ export interface QueuedMessage {
    */
   rerunOnly?: boolean
   /**
-   * Id of the user message already persisted for this queued entry. Set by
-   * callers that write the message to SQLite at enqueue time (app-tools
-   * `send_message`) so the dequeue consumer reuses that identity instead of
-   * minting a second copy of the same prompt.
+   * The user message a caller already appended and persisted for this queued
+   * entry (app-tools `send_message`). The dequeue consumer reuses this record
+   * — id and timestamp — instead of minting a second copy of the same prompt,
+   * and skips appending when the transcript already carries it.
    */
-  persistedMessageId?: string
+  persistedMessage?: Message
   /**
    * Identity of the run this trigger is parked on (the dispatch that was
    * holding the start claim or owned the active run when the trigger was

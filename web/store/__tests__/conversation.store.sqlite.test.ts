@@ -2179,6 +2179,71 @@ describe('conversation.store.sqlite tool-call routing', () => {
     })
   })
 
+  it('compaction does not append a second copy of an already-appended queued message', async () => {
+    const conv = useConversationStore.getState().createNew('compact-dedupe-queued', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
+
+    // What app-tools send_message does: append the queued prompt at enqueue
+    // time and hand the same record to the queue.
+    const queued = createUserMessage('queued prompt')
+    useConversationStore.getState().addMessage(conv.id, queued)
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued prompt',
+      enqueuedAt: Date.now(),
+      persistedMessage: queued,
+    })
+
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => messages
+    const loopRuns: any[][] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[]) => {
+      loopRuns.push(messages)
+      return [{ id: `assistant-after-queued-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: Date.now() }]
+    }
+
+    await useConversationStore.getState().compactConversation(conv.id)
+
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBe(1)
+    })
+    const messages = useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages ?? []
+    expect(messages.filter((m) => m.id === queued.id)).toHaveLength(1)
+    expect(messages.filter((m) => m.role === 'user' && m.content === 'queued prompt')).toHaveLength(1)
+    // The follow-up turn still sees the prompt it was dequeued for.
+    expect(loopRuns[0].filter((m: any) => m.role === 'user').map((m: any) => m.content)).toContain('queued prompt')
+  })
+
+  it('compaction keeps the queued message timestamp when it appends it', async () => {
+    const conv = useConversationStore.getState().createNew('compact-queued-timestamp', { activate: false })
+    useConversationStore.getState().addMessage(conv.id, createUserMessage('hello'))
+    useConversationStore.getState().addMessage(conv.id, createAssistantMessage('first answer'))
+
+    const queued = { ...createUserMessage('queued prompt'), timestamp: 1_000 }
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued prompt',
+      enqueuedAt: 1_000,
+      persistedMessage: queued,
+    })
+
+    ;(globalThis as any).__conversationStoreCustomCompact = async (messages: any[]) => messages
+    const loopRuns: any[][] = []
+    ;(globalThis as any).__conversationStoreCustomRun = async (messages: any[]) => {
+      loopRuns.push(messages)
+      return [{ id: `assistant-queued-ts-${loopRuns.length}`, role: 'assistant', content: 'done', timestamp: 2_000 }]
+    }
+
+    await useConversationStore.getState().compactConversation(conv.id)
+
+    await vi.waitFor(() => {
+      expect(loopRuns.length).toBe(1)
+    })
+    const appended = useConversationStore
+      .getState()
+      .conversations.find((c) => c.id === conv.id)
+      ?.messages.find((m) => m.id === queued.id)
+    expect(appended?.timestamp).toBe(1_000)
+  })
+
   // ── Branch conversation persistence (issue #259) ───────────────────────
   // messages.conversation_id has a FK onto conversations(id) and foreign_keys
   // is ON, so the conversations row must exist before the branch's messages

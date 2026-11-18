@@ -2665,16 +2665,21 @@ async function runAgentBody(
               )
             })
           } else {
-            const userMsg = createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
+            // A caller that persisted this message at enqueue time owns the
+            // whole record (id AND timestamp): reuse it instead of minting a
+            // second copy of the same prompt.
+            const userMsg = nextMsg.persistedMessage ?? createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
               contentParts: nextMsg.contentParts,
               readImageHandoff: nextMsg.readImageHandoff,
             })
-            // A caller that persisted this message at enqueue time owns its id;
-            // reusing it keeps the follow-up turn from duplicating the prompt.
-            if (nextMsg.persistedMessageId) userMsg.id = nextMsg.persistedMessageId
             const currentConv = get().conversations.find((c) => c.id === conversationId)
             if (currentConv) {
-              get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+              // Only append when the transcript does not already carry it —
+              // appending unconditionally duplicates the prompt and rewrites
+              // the timestamp stored at enqueue time.
+              if (!currentConv.messages.some((m) => m.id === userMsg.id)) {
+                get().updateMessages(conversationId, [...currentConv.messages, userMsg])
+              }
               // Schedule the next run on the next microtask to avoid re-entrancy.
               // FIX (parallel isolation): Pass null — runAgent now resolves the
               // directoryHandle from conversationId internally, so the global
