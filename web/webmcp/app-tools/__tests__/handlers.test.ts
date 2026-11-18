@@ -247,7 +247,7 @@ describe('app-tools handlers', () => {
     expect(r.status).toBe('queued')
   })
 
-  it('persists a queued message without adding a second copy to the transcript', async () => {
+  it('appends a queued message before its SQLite insert resolves', async () => {
     const d2 = makeDeps()
     const store = d2.getConversationStore()
     store.isConversationRunning = () => true
@@ -263,34 +263,25 @@ describe('app-tools handlers', () => {
       await pendingInsert
     })
 
-    const enqueue = vi.fn((_convId: string, _msg: { background?: boolean; persistedMessage?: { id: string } }) => ({
-      enqueued: true,
-      position: 1,
-    }))
     initAppToolDeps({
       ...d2,
       getConversationStore: snapshot,
-      getRuntimeStore: () => makeRuntimeStore({ enqueueMessage: enqueue }),
       getMessageRepository: () => ({ findByConversation: async () => [], insert }),
     })
 
     const sending = handlers.send_message({ conversationId: 'c_1', content: 'queued text' })
 
-    // The queued card is the prompt's single on-screen copy until it runs — the
-    // transcript must NOT gain a bubble for a message that has not been sent to
-    // the model yet (that rendered the same prompt twice).
-    expect(vi.mocked(store.updateMessages)).not.toHaveBeenCalled()
+    // The transcript must already show the prompt while the write is pending —
+    // queue order survives a slow or failing insert.
+    const written = vi.mocked(store.updateMessages).mock.calls[0]?.[1] as Array<{ id: string; role: string }>
+    expect(written.at(-1)).toMatchObject({ role: 'user', content: 'queued text' })
     expect(insert).toHaveBeenCalledTimes(1)
-    // One record carries both: the durable row and the turn's user message.
-    expect(enqueue.mock.calls[0][1]).toMatchObject({
-      background: true,
-      persistedMessage: { id: insert.mock.calls[0][1].id },
-    })
+    expect(insert.mock.calls[0][1].id).toBe(written.at(-1)?.id)
 
     releaseInsert()
     const r = JSON.parse((await sending).content)
     expect(r).toMatchObject({ status: 'queued', persisted: true })
-    expect(vi.mocked(store.updateMessages)).not.toHaveBeenCalled()
+    expect(vi.mocked(store.updateMessages)).toHaveBeenCalledTimes(1)
   })
 
   it('reports a queued message whose durable write failed', async () => {
@@ -309,9 +300,10 @@ describe('app-tools handlers', () => {
     })
 
     const r = JSON.parse((await handlers.send_message({ conversationId: 'c_1', content: 'queued text' })).content)
-    // The send is queued, but the caller must not be told it is durable.
+    // The send is queued and visible in the transcript, but the caller must not
+    // be told it is durable.
     expect(r).toMatchObject({ status: 'queued', persisted: false })
-    expect(vi.mocked(store.updateMessages)).not.toHaveBeenCalled()
+    expect(vi.mocked(store.updateMessages)).toHaveBeenCalledTimes(1)
   })
 
   it('send_message does not finalize a claim-overlap run while its trigger is queued (#170 round 2)', async () => {
