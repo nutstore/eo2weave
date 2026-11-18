@@ -93,7 +93,7 @@ interface ModelOverrideWithLegacyCustom extends WorkspaceModelOverride {
   activeCustomProviderId?: string
 }
 
-interface SettingsState {
+export interface SettingsState {
   // LLM settings
   providerType: LLMProviderType
   modelName: string
