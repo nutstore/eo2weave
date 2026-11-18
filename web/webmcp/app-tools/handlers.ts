@@ -962,11 +962,18 @@ export const handlers: Record<string, AppToolHandler> = {
     const settings = d().getSettingsStore()
     const staticModels: ModelInfo[] = getModelsForProvider(providerId)
     // getCachedModelsResult() is the API that carries { models, source } —
-    // getCachedModels() only returns the model list. Read the cached entry
-    // when it actually has models; otherwise fall back to the static catalog.
-    const cached = getCachedModelsResult(providerId)
-    const usableCached = cached && cached.models.length > 0 ? cached : null
-    const models: ModelInfo[] = usableCached ? usableCached.models : staticModels
+    // getCachedModels() only returns the model list. The settings UI caches a
+    // provider's catalog under a provider-scoped key (`providerType:providerKey`
+    // with providerKey === providerType, see useDynamicModels), so read that
+    // entry first and then the unqualified one — the same order image-gen uses.
+    const cached =
+      getCachedModelsResult(providerId, providerId) ?? getCachedModelsResult(providerId)
+    // A malformed persisted entry (models not an array) must degrade to the
+    // static catalog instead of throwing.
+    const cachedModels: ModelInfo[] = Array.isArray(cached?.models) ? cached.models : []
+    const useCached = cachedModels.length > 0
+    const models: ModelInfo[] = useCached ? cachedModels : staticModels
+    const source: 'dynamic' | 'static' = useCached && cached ? cached.source : 'static'
     const pinned = settings.pinnedModelsByProvider[providerId] ?? []
     return ok({
       models: models.map((m) => ({
@@ -975,7 +982,7 @@ export const handlers: Record<string, AppToolHandler> = {
         contextWindow: m.contextWindow ?? null,
         pinned: pinned.includes(m.id),
       })),
-      source: usableCached ? usableCached.source : 'static',
+      source,
     })
   },
 
