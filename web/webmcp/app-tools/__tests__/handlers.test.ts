@@ -596,6 +596,19 @@ describe('list_models cache handling', () => {
     expect(r.source).toBe('dynamic')
   })
 
+  it('prefers a cached dynamic catalog over a static fallback from a failed refresh', async () => {
+    modelCache.set('codex-oauth:codex-oauth', {
+      models: [{ id: 'static-fallback', name: 'static-fallback', capabilities: [] }],
+      source: 'static',
+      fetchedAt: 1,
+      error: 'catalog refresh failed',
+    })
+    modelCache.set('codex-oauth', entry([{ id: 'older-dynamic' }], 'dynamic'))
+    const r = JSON.parse((await handlers.list_models({ providerId: 'codex-oauth' })).content)
+    expect(r.models.map((m: { id: string }) => m.id)).toEqual(['older-dynamic'])
+    expect(r.source).toBe('dynamic')
+  })
+
   it('reports static models as static when no cache entry holds any', async () => {
     const r = JSON.parse((await handlers.list_models({ providerId: 'deepseek' })).content)
     expect(r.source).toBe('static')

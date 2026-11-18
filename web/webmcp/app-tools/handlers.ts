@@ -28,6 +28,7 @@ import type { AgentState } from '@/store/agent.store'
 import type { WorkspaceRepository } from '@/sqlite/repositories/workspace.repository'
 import type { MessageRepository } from '@/sqlite/repositories/message.repository'
 import type { LLMProviderType } from '@/agent/providers/types'
+import type { CachedModels } from '@/agent/providers/model-store'
 
 // ─── Run registry ─────────────────────────────────────────────────────────────
 
@@ -949,10 +950,13 @@ export const handlers: Record<string, Handler> = {
     // refresh must not hide a usable older catalog — and only report `source`
     // for the entry the models came from, so a static fallback never claims to
     // be dynamic.
-    const cached =
-      [getCachedModelsResult(providerType, providerType), getCachedModelsResult(providerType)].find(
-        (entry) => entry?.models.length,
-      ) ?? null
+    const candidates = [
+      getCachedModelsResult(providerType, providerType),
+      getCachedModelsResult(providerType),
+    ].filter((entry): entry is CachedModels => Array.isArray(entry?.models) && entry.models.length > 0)
+    // A cached dynamic catalog beats a static fallback recorded by a failed
+    // refresh, whichever key it was written under.
+    const cached = candidates.find((entry) => entry.source === 'dynamic') ?? candidates[0] ?? null
     const staticModels = getModelsForProvider(providerType)
     const models = cached?.models ?? staticModels
     const pinned = settings.pinnedModelsByProvider[providerId] ?? []
