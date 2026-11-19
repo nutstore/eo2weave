@@ -5,7 +5,7 @@
  *   ┌──────────────────────────────────────────────────────┐
  *   │ [name]                          [category] [version]    │
  *   │ [description, multi-line]                            │
- *   │ [author · updated 3d]    [查看] [编辑] [导出] [删除]│
+ *   │ [author · updated 3d]    [View] [Edit] [Export] [Delete]│
  *   └──────────────────────────────────────────────────────┘
  *
  * The whole card opens the detail view (read-only preview);

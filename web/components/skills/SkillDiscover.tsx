@@ -1,9 +1,9 @@
 // ============================================================
-// SkillDiscover — Skill Store 发现面板
+// SkillDiscover — Skill Store discovery panel
 //
-// 拉取 /skills/manifest.json，展示可安装的 skill 卡片网格。
-// 一键安装：调用 installSkillFromUrl，复用现有 ZIP 导入管道。
-// 设计：minimalist，沿用 SkillsManager 风格。
+// Fetches /skills/manifest.json and renders a grid of installable skill cards.
+// One-click install: calls installSkillFromUrl, reusing the existing ZIP import pipeline.
+// Design: minimalist, following the SkillsManager style.
 // ============================================================
 
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -34,7 +34,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 }
 
 interface SkillDiscoverProps {
-  /** 导入成功后回调（通常用于刷新 SkillsManager 的列表） */
+  /** Callback fired after a successful import (usually to refresh the SkillsManager list) */
   onInstalled?: () => void
 }
 

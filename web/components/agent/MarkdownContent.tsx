@@ -31,7 +31,7 @@ import { useT } from '@/i18n'
 import { useWorkspaceStore } from '@/store/workspace.store'
 
 /**
- * Detect workspace-file links emitted by the AI (e.g. "[打开文档](daily/report.md)").
+ * Detect workspace-file links emitted by the AI (e.g. "[Open document](daily/report.md)").
  *
  * A relative markdown link like `daily/2026-08-OKR.md` resolves against the
  * CURRENT PAGE URL in the browser, so a plain <a href> would navigate the

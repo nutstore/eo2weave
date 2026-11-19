@@ -136,7 +136,7 @@ export function SiteHeader({ page, region, copy }: { page: MarketingPageKey; reg
           aria-label={copy.home}
           ref={navRef}
           // The static header closed the collapsed menu on any nav link; without
-          // this, target=_blank entries (定价/帮助) leave it open behind them.
+          // this, target=_blank entries (pricing / help) leave it open behind them.
           onClick={(event) => {
             if ((event.target as HTMLElement).closest('a:not([data-extension-trigger])')) setMenuOpen(false)
           }}

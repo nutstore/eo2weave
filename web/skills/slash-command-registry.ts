@@ -1,15 +1,15 @@
 /**
- * Slash Command Registry — 统一的命令注册中心
+ * Slash Command Registry — unified command registry
  *
- * 职责：
- * - 管理所有 slash 命令（内置命令 + skill 命令 + 未来扩展）
- * - 提供 get/filter API 给 UI 层消费
- * - 不依赖 TipTap / React / 任何 UI 框架
+ * Responsibilities:
+ * - Manage every slash command (builtin + skill + future extensions)
+ * - Expose get/filter APIs for the UI layer to consume
+ * - No dependency on TipTap / React / any UI framework
  *
- * 注册方：
- * - 内置命令（compact 等）：应用启动时直接注册
- * - Builtin skill 命令：skills-system 初始化后注册
- * - 未来：插件命令、用户自定义命令
+ * Registrants:
+ * - Builtin commands (compact, etc.): registered directly at app startup
+ * - Builtin skill commands: registered after the skills system initializes
+ * - Future: plugin commands and user-defined commands
  */
 
 // ============================================================================
@@ -17,11 +17,11 @@
 // ============================================================================
 
 export interface SlashCommandItem {
-  /** 命令 ID，如 'compact'、'brainstorm' */
+  /** Command ID, e.g. 'compact', 'brainstorm' */
   id: string
-  /** 显示名称（builtin 命令存 i18n key，UI 层翻译） */
+  /** Display name (builtin commands store an i18n key; the UI layer translates it) */
   label: string
-  /** 下拉菜单中的简短描述（builtin 命令存 i18n key，UI 层翻译） */
+  /** Short description shown in the dropdown (builtin commands store an i18n key; the UI layer translates it) */
   description: string
   /**
    * Optional localized descriptions keyed by locale (from
@@ -30,11 +30,11 @@ export interface SlashCommandItem {
    * does not require re-registering commands.
    */
   descriptionI18n?: Record<string, string>
-  /** 命令来源 — builtin 与 skill 在菜单中分组展示 */
+  /** Command source — builtin and skill commands are grouped separately in the menu */
   source: 'builtin' | 'skill' | 'plugin' | 'user'
-  /** 可选的图标名（Lucide icon） */
+  /** Optional icon name (Lucide icon) */
   icon?: string
-  /** builtin 命令是否接受参数（如 /translate <lang>），UI 用于占位提示 */
+  /** Whether a builtin command accepts arguments (e.g. /translate <lang>); the UI uses it for the placeholder hint */
   takesArg?: boolean
 }
 
@@ -61,15 +61,15 @@ export function resolveSlashCommandDescription(
 // Registry State
 // ============================================================================
 
-/** 所有已注册的命令（按注册顺序） */
+/** All registered commands (in registration order) */
 const commands: SlashCommandItem[] = []
 
-/** 按 ID 索引（用于去重和快速查找） */
+/** Indexed by ID (for dedup and fast lookup) */
 const commandsById = new Map<string, SlashCommandItem>()
 
 /**
- * 追踪所有 source='skill' 的命令 ID。
- * 用 Set 而不是靠 source 字段过滤，避免迭代中修改数组的潜在问题。
+ * Tracks the IDs of every command with source='skill'.
+ * A Set instead of filtering on the source field, which avoids mutating the array mid-iteration.
  */
 const _skillCommandIds = new Set<string>()
 
@@ -78,8 +78,8 @@ const _skillCommandIds = new Set<string>()
 // ============================================================================
 
 /**
- * 注册一个 slash 命令。
- * 如果 id 已存在，静默跳过（不覆盖）。
+ * Register a slash command.
+ * If the id already exists, skip silently (no overwrite).
  */
 export function registerSlashCommand(item: SlashCommandItem): void {
   if (commandsById.has(item.id)) return
@@ -88,7 +88,7 @@ export function registerSlashCommand(item: SlashCommandItem): void {
 }
 
 /**
- * 批量注册 slash 命令。
+ * Register slash commands in bulk.
  */
 export function registerSlashCommands(items: SlashCommandItem[]): void {
   for (const item of items) {
@@ -97,8 +97,8 @@ export function registerSlashCommands(items: SlashCommandItem[]): void {
 }
 
 /**
- * 注册技能来源的 slash 命令，同时记录 ID 以便后续清理。
- * 如果 id 已存在，静默跳过（不覆盖）。
+ * Register a skill-sourced slash command and record its ID for later cleanup.
+ * If the id already exists, skip silently (no overwrite).
  */
 export function registerSkillCommands(items: SlashCommandItem[]): void {
   for (const item of items) {
@@ -110,7 +110,7 @@ export function registerSkillCommands(items: SlashCommandItem[]): void {
 }
 
 /**
- * 注销一个 slash 命令。
+ * Unregister a slash command.
  */
 export function unregisterSlashCommand(id: string): boolean {
   if (!commandsById.has(id)) return false
@@ -121,7 +121,7 @@ export function unregisterSlashCommand(id: string): boolean {
 }
 
 /**
- * 清空所有命令（仅用于测试）。
+ * Clear all commands (test-only).
  */
 export function clearSlashCommands(): void {
   commands.length = 0
@@ -134,15 +134,15 @@ export function clearSlashCommands(): void {
 // ============================================================================
 
 /**
- * 获取所有已注册的命令。
+ * Get every registered command.
  */
 export function getAllSlashCommands(): SlashCommandItem[] {
   return [...commands]
 }
 
 /**
- * 按 query 过滤命令（模糊匹配 id 或 label）。
- * 这是给 TipTap Suggestion 的 items 回调用的。
+ * Filter commands by query (fuzzy match on id or label).
+ * Backs the items callback of the TipTap Suggestion plugin.
  */
 export function searchSlashCommands(query: string): SlashCommandItem[] {
   const q = query.toLowerCase().trim()
@@ -153,28 +153,28 @@ export function searchSlashCommands(query: string): SlashCommandItem[] {
 }
 
 /**
- * 按 ID 查找命令。
+ * Look up a command by ID.
  */
 export function getSlashCommand(id: string): SlashCommandItem | undefined {
   return commandsById.get(id)
 }
 
 /**
- * 按来源过滤命令。
+ * Filter commands by source.
  */
 export function getSlashCommandsBySource(source: SlashCommandItem['source']): SlashCommandItem[] {
   return commands.filter((cmd) => cmd.source === source)
 }
 
 /**
- * 清除所有 skill 来源的命令（source='skill'）。
- * 由 SkillManager.syncSlashCommands() 调用，确保切换项目时旧项目的技能命令被移除。
+ * Remove every skill-sourced command (source='skill').
+ * Called by SkillManager.syncSlashCommands() so switching projects drops the previous project's skill commands.
  */
 export function clearSkillCommands(): void {
   for (const id of _skillCommandIds) {
     commandsById.delete(id)
   }
-  // 从数组末尾向前遍历，安全删除 skill 来源的命令
+  // Walk backwards from the end of the array so removing skill-sourced commands stays safe
   for (let i = commands.length - 1; i >= 0; i--) {
     if (commands[i].source === 'skill') {
       commands.splice(i, 1)
@@ -184,19 +184,19 @@ export function clearSkillCommands(): void {
 }
 
 /**
- * 已注册命令数量。
+ * Number of registered commands.
  */
 export function getSlashCommandCount(): number {
   return commands.length
 }
 
 // ============================================================================
-// Built-in Commands（应用级内置命令，启动时注册）
+// Built-in Commands (app-level builtin commands, registered at startup)
 // ============================================================================
 
 /**
- * 注册应用级内置 slash 命令。
- * 在应用启动时调用一次。
+ * Register the app-level builtin slash commands.
+ * Called once at app startup.
  */
 export function registerBuiltinSlashCommands(): void {
   registerSlashCommand({

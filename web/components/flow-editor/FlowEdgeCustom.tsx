@@ -1,7 +1,7 @@
 /**
  * FlowEdgeCustom — custom React Flow edge.
  * Regular edges: bezier with selection highlight.
- * Loop edges: red dashed with "重做" label.
+ * Loop edges: red dashed with the redo label.
  *
  * Selection state (from React Flow's `selected` prop) is reflected via a
  * brighter color, thicker stroke, and a subtle glow so users get clear

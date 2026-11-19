@@ -1,7 +1,7 @@
 import { memo } from 'react'
 
 /**
- * BrushCleaning icon — a broom (扫把).
+ * BrushCleaning icon — a broom.
  *
  * lucide-react 0.460/0.468 pinned in this repo does not yet ship
  * `BrushCleaning` (added upstream in 0.469). This inlines the official

@@ -1,8 +1,8 @@
 /**
- * InlineModelSelector - 设置面板内使用的模型选择器
+ * InlineModelSelector - model selector used inside the settings panel
  *
- * 与顶栏 ModelQuickSwitch 不同，这个组件不使用 Popover/Portal，
- * 直接内联展示列表，避免 Radix Dialog modal 焦点陷阱冲突。
+ * Unlike the topbar ModelQuickSwitch, this component does not use Popover/Portal;
+ * it renders the list inline to avoid the focus-trap conflict with the Radix Dialog modal.
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -51,7 +51,7 @@ export function InlineModelSelector() {
   const [manualInput, setManualInput] = useState(false)
   const [manualModelName, setManualModelName] = useState('')
 
-  // 加载有 API Key 的服务商
+  // Load the providers that have an API key
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -77,7 +77,7 @@ export function InlineModelSelector() {
               models: allModels,
             }
           })
-          // 默认展开当前服务商
+          // Expand the current provider by default
           const initialCollapsed: Record<string, boolean> = {}
           for (const p of withModels) {
             initialCollapsed[p.providerType] = p.providerType !== providerType

@@ -12,11 +12,11 @@
  *   2. If the bound upstream tab hosts a disabled builtin package AND the
  *      user has not dismissed it within the 1-day cooldown → this modal
  *      renders.
- *   3. 「开启并刷新页面」→ `enablePackageAndReload()` enables the package
+ *   3. "Enable and reload" → `enablePackageAndReload()` enables the package
  *      extension-side (the same config the packages management page writes)
  *      and reloads the upstream page so the tools register. Success toast
  *      explains what happened.
- *   4. 「暂不开启」→ 1-day local cooldown, no nagging on every panel open.
+ *   4. "Not now" → 1-day local cooldown, no nagging on every panel open.
  *
  * The web app never persists the enabled state itself — extension storage is
  * the single source of truth (revocable in the extension's Supported Sites

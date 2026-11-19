@@ -7,7 +7,7 @@
  * - multi_choice: Checkbox list with submit + optional free text input
  * - free_text: Textarea with submit
  *
- * All choice-based types also offer a "自定义输入" (custom input) option so the user
+ * All choice-based types also offer a "custom input" option so the user
  * can type their own answer instead of (or in addition to) selecting from presets.
  *
  * Options MUST use the object form:
@@ -54,7 +54,7 @@ export interface QuestionCardProps {
   answered?: boolean
   /** The answer that was given (for answered state) */
   resultAnswer?: string
-  /** Optional warning (e.g. "[Interrupted] 页面刷新" — explains why the answer was synthetic) */
+  /** Optional warning (e.g. "[Interrupted] page refreshed" — explains why the answer was synthetic) */
   resultWarning?: string
   /**
    * Whether the recorded result is a real user answer. `false` means the question
