@@ -300,15 +300,29 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
 
   if (!showButton) return null
 
+  // Anchor horizontally to the message content column (max-w-3xl centered,
+  // same contract as ConversationMessages and MessageNavBar). The wrapper is
+  // the full-width messages area, so 50% is the area's center and the column's
+  // right edge sits at 50% + 384px; +40px more places the button just OUTSIDE
+  // the column (past MessageNavBar's rail), close to the chat but never
+  // covering text. When the area is too narrow for that (column fills the
+  // width, no outside room), min() collapses to the right-corner fallback
+  // (100% - button 32px - 12px inset), matching the classic floating-button
+  // behavior — no breakpoint, no clipping, smooth handoff between the two.
+  // The wrapper is pointer-events-none so it never blocks message
+  // interactions; only the button itself is clickable.
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      data-testid="scroll-to-bottom"
-      className="absolute bottom-3 right-4 rounded-full bg-neutral-800/70 p-2 text-white shadow-lg backdrop-blur-sm transition-opacity hover:bg-neutral-700/80 dark:bg-neutral-200/70 dark:text-neutral-900 dark:hover:bg-neutral-200/90"
-      title={t('conversation.buttons.scrollToBottom')}
-    >
-      <ChevronDown className="h-4 w-4" />
-    </button>
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
+      <button
+        type="button"
+        onClick={handleClick}
+        data-testid="scroll-to-bottom"
+        className="pointer-events-auto absolute bottom-3 rounded-full bg-neutral-800/70 p-2 text-white shadow-lg backdrop-blur-sm transition-opacity hover:bg-neutral-700/80 dark:bg-neutral-200/70 dark:text-neutral-900 dark:hover:bg-neutral-200/90"
+        style={{ left: 'min(calc(50% + 424px), calc(100% - 44px))' }}
+        title={t('conversation.buttons.scrollToBottom')}
+      >
+        <ChevronDown className="h-4 w-4" />
+      </button>
+    </div>
   )
 })
