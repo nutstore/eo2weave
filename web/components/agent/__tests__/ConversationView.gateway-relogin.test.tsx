@@ -1,6 +1,6 @@
 /**
  * Tests for the GATEWAY_CREDENTIALS_EXPIRED branch of ConversationErrorBanner
- * (issue #75): the Re-login entry replaces the generic "continue" retry, and
+ * (issue #75): the Re-login entry replaces the generic continue-retry, and
  * clicking it starts the gateway-relogin flow.
  */
 

@@ -156,7 +156,7 @@ export function ConversationView({
       ? lastActiveMessage.errorMessage || t('conversation.error.failed')
       : t('conversation.error.emptyTurn')
 
-  // ── Retry handler for error banner: send the "continue" message to start a new loop ──
+  // ── Retry handler for error banner: re-send the continue prompt to start a new loop ──
   // consumePendingAssets: false — the retry must not swallow the composer's
   // staged files (#307, same defect as the iteration-limit continue button).
   const handleRetry = useCallback(() => {
@@ -716,7 +716,7 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
 
   // Gateway credential fully dead (401 + refresh ended 'expired'): the only
   // correct recovery is re-running the Device Code Flow, so offer the
-  // Re-login entry instead of the generic "continue" retry (issue #75). The
+  // Re-login entry instead of the generic continue-retry (issue #75). The
   // fetch layer only stamps this prefix on llm-gateway 401s where the
   // automatic refresh definitively expired — transient refresh failures
   // keep the generic presentation below.
@@ -731,7 +731,7 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
   // Gateway credit exhausted (429 + code "insufficient_credit", stamped by
   // the fetch layer): retrying can never succeed (retriable: false) — the
   // only recovery is topping up, so offer the Recharge entry instead of the
-  // generic "continue" retry. Distinguished from the SAME 429 carrying code
+  // generic continue-retry. Distinguished from the SAME 429 carrying code
   // "rate_limited" (unsettled-request window), which keeps the generic
   // presentation.
   const isGatewayInsufficientCredit = errorCode === 'GATEWAY_INSUFFICIENT_CREDIT'
