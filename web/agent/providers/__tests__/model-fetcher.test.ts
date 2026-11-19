@@ -11,6 +11,34 @@ afterEach(() => {
 })
 
 describe('fetchModelsForProvider', () => {
+  it('loads Go models from its dedicated catalog with v2 metadata', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ data: [
+        { id: 'glm-5.3', name: 'GLM-5.3', type: 'chat', limit: { context: 1000000 },
+          modalities: { input: ['text', 'image/png'] }, capabilities: { tools: { supported: true }, reasoning: { supported: true } },
+          api: { 'chat-completions': { base_url: 'https://opencode.ai/inference/go/openai/v1' } } },
+        { id: 'grok-4.7', type: 'chat', limit: { context: 500000 }, modalities: { input: ['text'] },
+          capabilities: { tools: { supported: true } }, api: { responses: { base_url: 'https://opencode.ai/inference/go/openai/v1' } } },
+        { id: 'embedding-only', type: 'embedding', capabilities: { tools: { supported: false } } },
+      ] }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchModelsForProvider('opencode-go', { apiKey: 'test-key' })
+
+    expect(fetchMock).toHaveBeenCalledWith('https://opencode.ai/inference/go/v1/models', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer test-key' }),
+    }))
+    expect(result.source).toBe('dynamic')
+    expect(result.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1000000,
+        inputModalities: ['text', 'image/png'], capabilities: expect.arrayContaining(['vision', 'reasoning']) }),
+      expect.objectContaining({ id: 'grok-4.7', contextWindow: 500000 }),
+    ]))
+    expect(result.models).toHaveLength(2)
+  })
+
   it('discovers models through the connected extension without a browser request', async () => {
     const browserFetch = vi.fn().mockRejectedValue(new Error('Browser CORS blocked'))
     vi.stubGlobal('fetch', browserFetch)

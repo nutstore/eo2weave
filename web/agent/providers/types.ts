@@ -91,6 +91,12 @@ export interface ProviderMeta {
    * models, so consumers must not read an empty list as "all delisted".
    */
   catalogStatus?: ProviderCatalogStatus
+  /**
+   * The provider's endpoint refuses direct cross-origin browser requests, so
+   * the browser extension's network bridge is required. Marked in the settings
+   * UI so a keyless/failing setup is not mistaken for a bad key.
+   */
+  requiresExtension?: boolean
 }
 
 /** Built-in provider types */
@@ -102,6 +108,7 @@ export type BuiltinLLMProviderType =
   | 'groq'
   | 'mistral'
   | 'openrouter'
+  | 'opencode-go'
   // Chinese
   | 'deepseek'
   | 'glm'
@@ -144,6 +151,11 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProviderType, Omit<LLMProviderConfi
   },
   openrouter: {
     baseURL: 'https://openrouter.ai/api/v1',
+    modelName: '',
+    headers: {},
+  },
+  'opencode-go': {
+    baseURL: 'https://opencode.ai/inference/go/openai/v1',
     modelName: '',
     headers: {},
   },
@@ -448,6 +460,15 @@ export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
     website: 'https://openrouter.ai',
     models: [],
   },
+  'opencode-go': {
+    category: 'international',
+    displayName: 'OpenCode Go',
+    website: 'https://opencode.ai/console/go',
+    // Its CORS preflight rejects the POST to /chat/completions, so page-level
+    // fetch cannot reach it (the catalog GET is the exception).
+    requiresExtension: true,
+    models: [],
+  },
   deepseek: {
     category: 'chinese',
     displayName: 'DeepSeek',
@@ -471,6 +492,8 @@ export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
     category: 'chinese',
     displayName: '智谱 GLM',
     website: 'https://open.bigmodel.cn',
+    // bigmodel.cn answers no CORS headers, so page-level fetch cannot reach it.
+    requiresExtension: true,
     models: [
       {
         id: 'glm-5.1',
@@ -498,6 +521,7 @@ export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
     category: 'chinese',
     displayName: '智谱 GLM (Coding)',
     website: 'https://open.bigmodel.cn',
+    requiresExtension: true,
     models: [
       {
         id: 'glm-5.1',
@@ -618,6 +642,8 @@ export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
     category: 'chinese',
     displayName: '火山方舟 Coding',
     website: 'https://console.volcengine.com/ark',
+    // ark.cn-beijing.volces.com answers no CORS headers.
+    requiresExtension: true,
     // Fallback candidates from the Coding Plan quickstart (2026-11-13):
     // https://docs.volcengine.com/docs/ark/coding-plan-personal-get-started?lang=zh
     // Availability depends on the plan/region. Do not guess context or vision

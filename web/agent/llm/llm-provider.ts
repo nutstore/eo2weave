@@ -16,6 +16,12 @@ export interface ChatCompletionRequest {
   stream?: boolean
   /** If true, instruct the provider to disable thinking/reasoning (saves latency and tokens) */
   disableThinking?: boolean
+  /**
+   * Conversation id forwarded as the provider's session header. OpenCode Go
+   * rejects requests without one; providers that need it fall back to a stable
+   * per-provider-instance id when this is absent.
+   */
+  sessionId?: string
 }
 
 /** Message format sent to LLM API */

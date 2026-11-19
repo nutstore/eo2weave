@@ -473,6 +473,9 @@ export const settings = {
 
     // External Links
     getApiKey: "Get API Key",
+    requiresExtension: "Extension required",
+    requiresExtensionHint:
+      "This provider's API blocks direct browser requests, so it only works with the browser extension installed and connected.",
     notConfigured: "Not configured",
 
     // Default Model Selection
@@ -547,6 +550,7 @@ export const settings = {
       minimaxChina: "MiniMax",
       qwen: "Qwen (Tongyi)",
       volcengineCoding: "Volcengine Ark Coding",
+      opencodeGo: "OpenCode Go",
     },
     gatewayRateLimits: {
       availableCredit: "Available credits",

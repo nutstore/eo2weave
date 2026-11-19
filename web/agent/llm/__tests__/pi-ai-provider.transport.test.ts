@@ -20,6 +20,52 @@ afterEach(() => {
 })
 
 describe('native SDK extension transport', () => {
+  function stubProxy(sse: string) {
+    const proxy = vi.fn((_request: Record<string, unknown>) => ({
+      cancel: vi.fn(),
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'response_start' as const, status: 200, headers: { 'content-type': 'text/event-stream' } }
+        yield { type: 'bytes' as const, data: btoa(String.fromCharCode(...new TextEncoder().encode(sse))) }
+      },
+    }))
+    ;(window as unknown as { __agentWeb: unknown }).__agentWeb = {
+      ready: true, mcpNetworkCapabilities: { version: 2 }, mcpNetworkFetch: proxy,
+    }
+    return proxy
+  }
+
+  function goProvider(sessionId?: string) {
+    return new PiAIProvider({
+      providerType: 'opencode-go',
+      model: 'glm-5.3',
+      baseUrl: 'https://opencode.ai/inference/go/openai/v1',
+      apiKey: 'test-key',
+      sessionId,
+    })
+  }
+
+  it('sends the OpenCode Go session header on auxiliary calls', async () => {
+    const proxy = stubProxy(chatSse)
+    await goProvider('conv-123').chat({ messages: [{ role: 'user' as const, content: 'Hello' }] })
+
+    const payload = proxy.mock.calls[0][0]
+    expect(payload.url).toBe('https://opencode.ai/inference/go/openai/v1/chat/completions')
+    expect(new Headers(payload.headers as HeadersInit).get('x-opencode-session')).toBe('conv-123')
+  })
+
+  it('falls back to one stable session id per provider when the caller has none', async () => {
+    const proxy = stubProxy(chatSse)
+    const provider = goProvider()
+    await provider.chat({ messages: [{ role: 'user' as const, content: 'One' }] })
+    for await (const _chunk of provider.chatStream({ messages: [{ role: 'user' as const, content: 'Two' }] })) { /* drain */ }
+
+    const sessions = proxy.mock.calls.map((call) =>
+      new Headers(call[0].headers as HeadersInit).get('x-opencode-session'))
+    expect(sessions).toHaveLength(2)
+    expect(sessions[0]).toMatch(/^ses_cw_/)
+    expect(sessions[1]).toBe(sessions[0])
+  })
+
   const cases = [
     { providerType: 'openai', model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1', path: 'responses', sse: responsesSse },
     { providerType: 'groq', model: 'llama-3.3-70b-versatile', baseUrl: 'https://api.groq.com/openai/v1', path: 'chat/completions', sse: chatSse },

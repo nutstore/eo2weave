@@ -13,6 +13,14 @@ async function clearModelCache(providerType: string): Promise<void> {
 }
 
 describe('resolvePiAIModel', () => {
+  it('routes OpenCode Go models through its OpenAI-compatible endpoint without guessing reasoning support', () => {
+    const model = resolvePiAIModel('opencode-go', 'glm-5.3', 'https://opencode.ai/inference/go/openai/v1')
+    expect(model.provider).toBe('opencode-go')
+    expect(model.baseUrl).toBe('https://opencode.ai/inference/go/openai/v1')
+    expect(model.api).toBe('cw-openai-fetch')
+    expect(model.reasoning).toBe(false)
+  })
+
   it('should resolve known native provider/model', () => {
     const model = resolvePiAIModel('openai', 'gpt-4o', 'https://api.openai.com/v1')
     expect(model.provider).toBe('openai')

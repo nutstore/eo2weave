@@ -35,6 +35,7 @@ const OPENAI_COMPATIBLE_PROVIDERS: LLMProviderType[] = [
   'groq',
   'mistral',
   'openrouter',
+  'opencode-go',
   'glm',
   'glm-coding',
   'kimi',
@@ -125,6 +126,11 @@ async function fetchOpenAICompatibleModels(
     context_window?: number
     input_modalities?: string[]
     output_modalities?: string[]
+    // OpenCode Go publishes models.dev v2 metadata.
+    limit?: { context?: number }
+    modalities?: { input?: string[] }
+    type?: string
+    capabilities?: { tools?: { supported?: boolean }; reasoning?: { supported?: boolean } }
     pricing?: {
       prompt?: string
       completion?: string
@@ -140,22 +146,31 @@ async function fetchOpenAICompatibleModels(
   }
 
   return rawModels
-    .filter((m) => m.id && typeof m.id === 'string')
+    .filter((m) => m.id && typeof m.id === 'string' && (
+      // Console translates other text-model APIs to Chat Completions for harnesses.
+      !baseUrl.includes('/inference/go/') || (m.type === 'chat' && m.capabilities?.tools?.supported === true && m.modalities?.input?.includes('text'))
+    ))
     .map((m) => {
       // Context window resolution (first non-null wins):
       // 1. DeepSeek-style `context_window`
       // 2. OpenRouter's `top_provider.context_length` (actual usable context,
       //    may be smaller than the model's theoretical limit)
       // 3. OpenAI-legacy `context_length`
-      const effectiveContext = m.context_window ?? m.top_provider?.context_length ?? m.context_length
+      const isGo = baseUrl.includes('/inference/go/')
+      const effectiveContext = m.limit?.context ?? m.context_window ?? m.top_provider?.context_length ?? m.context_length
+      const modalities = m.modalities?.input ?? m.input_modalities
       const hasApiMetadata = Boolean(
-        m.context_window != null || m.input_modalities || m.name
+        effectiveContext != null || modalities || m.name
       )
-      return parseModelInfo(m.id, effectiveContext, m.pricing, {
+      const info = parseModelInfo(m.id, effectiveContext, m.pricing, {
         apiName: m.name,
-        apiInputModalities: m.input_modalities,
+        apiInputModalities: modalities,
         metadataFromApi: hasApiMetadata,
       })
+      if (isGo) {
+        if (m.capabilities?.reasoning?.supported && !info.capabilities.includes('reasoning')) info.capabilities.push('reasoning')
+      }
+      return info
     })
     .sort((a, b) => {
       // Sort: put more capable/recent models first
@@ -244,8 +259,9 @@ export async function fetchModelsForProvider(
   }
 
   const apiKey = options?.apiKey
-  const baseUrl =
-    options?.baseUrl || LLM_PROVIDER_CONFIGS[providerType]?.baseURL || ''
+  const baseUrl = providerType === 'opencode-go'
+    ? 'https://opencode.ai/inference/go/v1'
+    : options?.baseUrl || LLM_PROVIDER_CONFIGS[providerType]?.baseURL || ''
 
   // Custom providers may run keyless (e.g. Ollama at localhost:11434/v1),
   // so a missing key is not an immediate error for them — only built-in
@@ -335,7 +351,7 @@ function parseModelInfo(
     info.inputModalities = apiMeta.apiInputModalities
     // Translate input modalities into capability tags so existing UI
     // (vision eye icon etc.) picks them up without further changes.
-    if (apiMeta.apiInputModalities.includes('image') && !info.capabilities.includes('vision')) {
+    if (apiMeta.apiInputModalities.some((modality) => modality === 'image' || modality.startsWith('image/')) && !info.capabilities.includes('vision')) {
       info.capabilities = [...info.capabilities, 'vision']
     }
   }

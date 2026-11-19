@@ -26,6 +26,7 @@ import {
   CheckCircle2,
   XCircle,
   Copy,
+  Puzzle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSettingsStore } from '@/store/settings.store'
@@ -86,6 +87,7 @@ const PROVIDER_NAME_I18N_KEYS: Partial<Record<LLMProviderType, string>> = {
   'minimax-cn': 'settings.providerNames.minimaxChina',
   qwen: 'settings.providerNames.qwen',
   'volcengine-coding': 'settings.providerNames.volcengineCoding',
+  'opencode-go': 'settings.providerNames.opencodeGo',
 }
 
 /** Resolve a provider display name; falls back to the static meta name. */
@@ -104,6 +106,8 @@ interface ProviderCardProps {
   providerType: LLMProviderType
   displayName: string
   website?: string
+  /** The provider only works through the browser extension's network bridge. */
+  requiresExtension?: boolean
   isCustom: boolean
   customProvider?: CustomProviderConfig
   isExpanded: boolean
@@ -114,6 +118,7 @@ export function ProviderCard({
   providerType,
   displayName,
   website,
+  requiresExtension,
   isCustom,
   customProvider,
   isExpanded,
@@ -533,6 +538,15 @@ export function ProviderCard({
             }}
           />
           <span className="text-[13px] font-semibold text-secondary">{displayName}</span>
+          {requiresExtension && (
+            <span
+              title={t('settings.requiresExtensionHint')}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-500"
+            >
+              <Puzzle className="h-3 w-3" />
+              {t('settings.requiresExtension')}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {hasKey ? (
@@ -566,6 +580,13 @@ export function ProviderCard({
               {baseUrl || t('settings.notConfigured')}
             </p>
           </div>
+
+          {requiresExtension && (
+            <p className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+              <Puzzle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {t('settings.requiresExtensionHint')}
+            </p>
+          )}
 
           {/* API Mode indicator for custom providers (non-edit mode) */}
           {isCustom && customProvider && !isEditing && (
@@ -719,6 +740,17 @@ export function ProviderCard({
                 {saved ? <Check className="h-4 w-4" /> : t('settings.save')}
               </BrandButton>
             </div>
+            {providerType === 'opencode-go' && website && (
+              <a
+                href={website}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+              >
+                {t('settings.getApiKey')}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
             {isCustom && (
               <p className="text-[10px] leading-relaxed text-tertiary">{t('settings.apiKeyOptionalHint')}</p>
             )}
@@ -2348,6 +2380,7 @@ const groupedProviders = useMemo(
                 // without an i18n mapping (OpenAI, Anthropic, ...).
                 displayName={localizedProviderName(t, type, meta.displayName)}
                 website={meta.website}
+                requiresExtension={meta.requiresExtension}
                 isCustom={isCustomProviderType(type)}
                 customProvider={
                   isCustomProviderType(type)

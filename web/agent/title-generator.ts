@@ -33,6 +33,8 @@ export interface TitleGeneratorModelConfig {
   model: string
   /** API mode for custom providers. */
   apiMode?: 'chat-completions' | 'responses'
+  /** Conversation id used as the OpenCode Go session header. */
+  sessionId?: string
 }
 
 function approxTokens(text: string): number {
@@ -208,6 +210,7 @@ export async function generateConversationTitle(
       baseUrl: config.baseUrl,
       model: config.model,
       apiMode: config.apiMode,
+      sessionId: config.sessionId,
     })
 
     // We intentionally do NOT pass maxTokens. Sending a low value risks

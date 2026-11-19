@@ -45,6 +45,7 @@ const PROVIDER_NAME_I18N_KEYS: Partial<Record<string, string>> = {
   'minimax-cn': 'settings.providerNames.minimaxChina',
   qwen: 'settings.providerNames.qwen',
   'volcengine-coding': 'settings.providerNames.volcengineCoding',
+  'opencode-go': 'settings.providerNames.opencodeGo',
   // gateway handled separately below
   'llm-gateway': 'settings.gateway.name',
 }
