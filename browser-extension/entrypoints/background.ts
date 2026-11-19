@@ -2994,7 +2994,9 @@ export default defineBackground(() => {
             }
             if (codexModelsCache?.accessToken === accessToken && codexModelsCache.expiresAt > Date.now()) {
               models = codexModelsCache.models;
-              modelsEndpointProbe = codexModelsCache.probe;
+              // Mark reused probes as cached so a caller cannot read a stale
+              // status as a fresh endpoint check.
+              modelsEndpointProbe = { ...codexModelsCache.probe, cached: true };
             } else {
               const requestSequence = ++codexModelsRequestSequence;
               // The catalog uses the Codex client version (not the ChatGPT web
@@ -3020,14 +3022,20 @@ export default defineBackground(() => {
                 };
                 if (response.ok) {
                   models = CODEX!.parseCodexModels(parsed);
-                  // Only the latest request may populate the shared cache.
+                  // Only the latest request may populate the shared cache, and
+                  // only while the same token is still the current authorization
+                  // (a logout and re-login can land between the read above and
+                  // this write).
                   if (models.length > 0 && requestSequence === codexModelsRequestSequence) {
-                    codexModelsCache = {
-                      accessToken,
-                      models,
-                      probe: modelsEndpointProbe,
-                      expiresAt: Date.now() + CODEX_MODELS_CACHE_TTL_MS,
-                    };
+                    const currentTokens = await CODEX!.getCodexTokens();
+                    if (currentTokens?.access_token === accessToken) {
+                      codexModelsCache = {
+                        accessToken,
+                        models,
+                        probe: modelsEndpointProbe,
+                        expiresAt: Date.now() + CODEX_MODELS_CACHE_TTL_MS,
+                      };
+                    }
                   }
                 }
               } catch (error) {

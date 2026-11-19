@@ -76,7 +76,12 @@ describe('Codex status model catalog cache', () => {
       status: 200, ok: true, responseKeys: ['models', 'private_metadata'],
     })
     expect(JSON.stringify(first)).not.toContain('never-forward-this')
-    expect((await status()).data).toEqual(first.data)
+    const cached = await status()
+    expect(cached.data.models).toEqual(first.data.models)
+    // A reused probe is marked so callers do not read it as a fresh check.
+    expect(cached.data.modelsEndpointProbe).toMatchObject({
+      status: 200, ok: true, cached: true,
+    })
     expect(fetch).toHaveBeenCalledTimes(1)
 
     vi.advanceTimersByTime(5 * 60 * 1000)
@@ -154,5 +159,23 @@ describe('Codex status model catalog cache', () => {
 
     storage.codex_tokens = originalTokens
     expect((await status()).data.models.map(model => model.id)).toEqual(['fresh'])
+  })
+
+  it('does not cache a catalog fetched under a token replaced mid-request', async () => {
+    const { storage, fetch, status } = setup()
+    const originalTokens = storage.codex_tokens
+    const pendingResponse = deferredResponse()
+    fetch.mockReturnValueOnce(pendingResponse.promise).mockResolvedValueOnce(catalog('fresh-A'))
+
+    const pending = status()
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    storage.codex_tokens = { access_token: token('B') }
+    pendingResponse.resolve(catalog('stale-A'))
+    // The caller of that request still receives what its own fetch returned.
+    expect((await pending).data.models.map(model => model.id)).toEqual(['stale-A'])
+
+    storage.codex_tokens = originalTokens
+    expect((await status()).data.models.map(model => model.id)).toEqual(['fresh-A'])
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 })
