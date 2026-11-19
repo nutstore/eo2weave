@@ -20,6 +20,10 @@ describe('isSafeOriginPath', () => {
   it('keeps validating other segments when one escape is undecodable', () => {
     expect(isSafeOriginPath('/blog/x%zz/%252e%252e/%252e%252e/wp-admin')).toBe(false)
     expect(isSafeOriginPath('/blog/x%zz/ok')).toBe(true)
+    // A segment that is itself undecodable must not skip its own escapes:
+    // `%2f` here would decode to a separator and expose the `..` segments.
+    expect(isSafeOriginPath('/blog/x%zz..%2f..%2f')).toBe(false)
+    expect(isSafeOriginPath('/blog/x%zz..%5c..%5c')).toBe(false)
   })
 
   // Regression for the literal-percent slug that a whole-path decoder 404'd.
