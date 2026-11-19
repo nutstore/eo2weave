@@ -102,6 +102,7 @@ export type BuiltinLLMProviderType =
   | 'groq'
   | 'mistral'
   | 'openrouter'
+  | 'opencode-go'
   // Chinese
   | 'deepseek'
   | 'glm'
@@ -144,6 +145,11 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProviderType, Omit<LLMProviderConfi
   },
   openrouter: {
     baseURL: 'https://openrouter.ai/api/v1',
+    modelName: '',
+    headers: {},
+  },
+  'opencode-go': {
+    baseURL: 'https://opencode.ai/inference/go/openai/v1',
     modelName: '',
     headers: {},
   },
@@ -446,6 +452,12 @@ export const PROVIDER_META: Record<LLMProviderType, ProviderMeta> = {
     category: 'international',
     displayName: 'OpenRouter',
     website: 'https://openrouter.ai',
+    models: [],
+  },
+  'opencode-go': {
+    category: 'international',
+    displayName: 'OpenCode Go',
+    website: 'https://opencode.ai/console/go',
     models: [],
   },
   deepseek: {

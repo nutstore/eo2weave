@@ -222,6 +222,9 @@ export async function executePiCoreLoop(
 
     const mergedOptions: Record<string, unknown> = {
       ...(streamOptions || {}),
+      ...(model.provider === 'opencode-go' && input.sessionId
+        ? { headers: { ...((streamOptions?.headers as Record<string, string> | undefined) ?? {}), 'x-opencode-session': input.sessionId } }
+        : {}),
       onPayload: (payload: Record<string, unknown>) => {
         normalizeResponsesInputPayload(payload)
         // Responses API may omit tool_choice on some paths; default to "auto" when tools exist.

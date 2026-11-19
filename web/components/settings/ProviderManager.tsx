@@ -86,6 +86,7 @@ const PROVIDER_NAME_I18N_KEYS: Partial<Record<LLMProviderType, string>> = {
   'minimax-cn': 'settings.providerNames.minimaxChina',
   qwen: 'settings.providerNames.qwen',
   'volcengine-coding': 'settings.providerNames.volcengineCoding',
+  'opencode-go': 'settings.providerNames.opencodeGo',
 }
 
 /** Resolve a provider display name; falls back to the static meta name. */
@@ -719,6 +720,17 @@ export function ProviderCard({
                 {saved ? <Check className="h-4 w-4" /> : t('settings.save')}
               </BrandButton>
             </div>
+            {providerType === 'opencode-go' && website && (
+              <a
+                href={website}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+              >
+                {t('settings.getApiKey')}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
             {isCustom && (
               <p className="text-[10px] leading-relaxed text-tertiary">{t('settings.apiKeyOptionalHint')}</p>
             )}

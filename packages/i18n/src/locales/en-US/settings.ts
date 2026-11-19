@@ -547,6 +547,7 @@ export const settings = {
       minimaxChina: "MiniMax",
       qwen: "Qwen (Tongyi)",
       volcengineCoding: "Volcengine Ark Coding",
+      opencodeGo: "OpenCode Go",
     },
     gatewayRateLimits: {
       availableCredit: "Available credits",

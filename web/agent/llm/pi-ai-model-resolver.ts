@@ -136,7 +136,7 @@ function resolveInputModalities(modelName: string, providerType?: LLMProviderTyp
   if (providerType) {
     const cached = findCachedModelInfo(providerType, modelName)
     if (cached?.inputModalities?.length) {
-      return cached.inputModalities.includes('image') ? ['text', 'image'] : ['text']
+      return cached.inputModalities.some((modality) => modality === 'image' || modality.startsWith('image/')) ? ['text', 'image'] : ['text']
     }
     if (cached?.capabilities?.includes('vision')) return ['text', 'image']
   }
@@ -275,6 +275,7 @@ function createOpenAICompatibleFallback(
   // provider's i18n/store import chain (same practice as
   // pi-ai-custom-openai-fetch.ts).
   const usesCwOpenAIFetch =
+    providerType === 'opencode-go' ||
     providerType === 'minimax' ||
     providerType === 'minimax-cn' ||
     isPotentiallyDynamicProviderType(providerType)
@@ -309,6 +310,7 @@ function createOpenAICompatibleFallback(
   // compat over URL auto-detection).
   const isBigmodel = /bigmodel\.cn/i.test(baseUrl)
   const noDeveloperRole =
+    providerType === 'opencode-go' ||
     isBigmodel ||
     isChineseProviderType(providerType) ||
     isPotentiallyDynamicProviderType(providerType)

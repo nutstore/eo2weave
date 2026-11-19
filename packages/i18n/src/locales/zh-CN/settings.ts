@@ -532,6 +532,7 @@ export const settings = {
       minimaxChina: "MiniMax",
       qwen: "通义千问 (Qwen)",
       volcengineCoding: "火山方舟 Coding",
+      opencodeGo: "OpenCode Go",
     },
     gatewayRateLimits: {
       availableCredit: "可用积分",
