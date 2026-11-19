@@ -41,6 +41,8 @@ function originConfig() {
 }
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024; // Maker Cloud Functions request body limit
+const BODY_IDLE_TIMEOUT_MS = 15000; // no bytes received for this long = stalled upload
+const BODY_TOTAL_TIMEOUT_MS = 30000; // hard cap for the whole body, below the 60s maxDuration
 const ORIGIN_TIMEOUT_MS = 25000; // below the 60s maxDuration in edgeone.json
 
 // Hop-by-hop headers must not be forwarded in either direction (RFC 7230 6.1).
@@ -60,12 +62,13 @@ const HOP_BY_HOP = new Set([
 // allowlist or rate-limit on the client address would otherwise trust a value
 // the caller invented. Covers the whole `x-forwarded-*` family, not a list that
 // a new header name can outgrow.
-function isCallerForwardingHeader(name) {
+export function isCallerForwardingHeader(name) {
   return (
     name === 'forwarded' ||
     name === 'x-real-ip' ||
     name === 'x-client-ip' ||
     name === 'true-client-ip' ||
+    name === 'cf-connecting-ip' ||
     name.startsWith('x-forwarded-')
   );
 }
@@ -89,37 +92,43 @@ export function isUnderBlogPath(pathname) {
 
 // `new URL` normalizes encoded dot segments but leaves encoded separators
 // (`%2f`, `%5c`) intact, so `isUnderBlogPath` alone accepts paths that an origin
-// decoding them would route outside the proxied prefix. Decode layer by layer (a
-// second decode of `%252e%252e` yields `..`), then reject anything that leaves
-// /blog or carries a traversal segment.
+// decoding them would route outside the proxied prefix.
+//
+// Escapes are decoded leniently: every run of valid `%XX` sequences is decoded
+// on its own and a malformed escape stays literal. Decoding the path as a whole
+// let one bad escape (`%zz`) abort the chain, and skipping the segment entirely
+// let `x%zz..%2f..%2f` smuggle separators past the split — both validated a
+// shallower value than the origin sees. The loop re-splits after decoding so a
+// decoded `%2f` becomes a real separator before the dot-segment check.
+const PERCENT_RUN = /(?:%[0-9A-Fa-f]{2})+/g;
+
+function decodeLoose(value) {
+  return value.replace(PERCENT_RUN, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      // Valid escapes that do not form UTF-8: leave them literal, they cannot
+      // turn into a separator or a dot segment.
+      return run;
+    }
+  });
+}
+
 export function isSafeOriginPath(pathname) {
-  let decoded = pathname;
-  // Each pass consumes one layer of escaping, so the loop is bounded by the
-  // input length; the pass cap is a fail-closed guard, not the normal exit. An
-  // escape that cannot be decoded ends the chain here exactly as it does for
-  // the origin, so the last decodable value is the deepest one any decoder can
-  // reach — validate that rather than rejecting the request. Without this,
-  // `/blog/100%25-coverage` (a literal percent, common in slugs) decodes once
-  // to a value that no longer decodes and was returned as a 404.
+  let value = pathname;
   let settled = false;
   for (let pass = 0; pass < 32; pass += 1) {
-    let next;
-    try {
-      next = decodeURIComponent(decoded);
-    } catch {
+    const next = value.split(/[\\/]/).map(decodeLoose).join('/');
+    if (next === value) {
       settled = true;
       break;
     }
-    if (next === decoded) {
-      settled = true;
-      break;
-    }
-    decoded = next;
+    value = next;
   }
   if (!settled) return false;
-  if (!isUnderBlogPath(decoded) || decoded.includes('\0')) return false;
+  if (!isUnderBlogPath(value) || value.includes('\0')) return false;
   // Some origins and intermediaries treat a backslash as a path separator.
-  return decoded.split(/[\\/]/).every((segment) => segment !== '.' && segment !== '..');
+  return value.split(/[\\/]/).every((segment) => segment !== '.' && segment !== '..');
 }
 
 // Write to ServerResponse to preserve repeated Set-Cookie headers on Maker.
@@ -155,6 +164,9 @@ async function proxyBlog(request, response) {
   // escape the proxied prefix. Reject anything that no longer lands on /blog.
   if (url.origin !== PUBLIC_ORIGIN || !isUnderBlogPath(url.pathname) || !isSafeOriginPath(url.pathname)) {
     request.resume();
+    // Close the socket once the 404 is flushed: a client that keeps sending
+    // would otherwise hold the invocation until it reaches EOF.
+    response.once('close', () => request.destroy());
     return textResponse(response, 404, 'blog proxy: path outside /blog');
   }
   const origin = originConfig();
@@ -163,29 +175,9 @@ async function proxyBlog(request, response) {
 
   let body = null;
   if (method !== 'GET' && method !== 'HEAD') {
-    const declared = Number(request.headers['content-length'] ?? 0);
-    if (declared > MAX_BODY_BYTES) {
-      // Answer without draining: a client that keeps sending slowly would
-      // otherwise hold the invocation after the 413 was written.
-      textResponse(response, 413, 'blog proxy: payload exceeds the 6MB Maker function limit');
-      response.once('close', () => request.destroy());
-      return;
-    }
-    const chunks = [];
-    let size = 0;
-    for await (const chunk of request) {
-      size += chunk.length;
-      // Answer as soon as the limit is crossed: draining an oversized chunked
-      // upload would hold the invocation until the client reaches EOF.
-      if (size > MAX_BODY_BYTES) {
-        request.pause();
-        textResponse(response, 413, 'blog proxy: payload exceeds the 6MB Maker function limit');
-        response.once('close', () => request.destroy());
-        return;
-      }
-      chunks.push(chunk);
-    }
-    body = Buffer.concat(chunks);
+    body = await readRequestBody(request, response);
+    // The reader answered 413 / 408 itself and stopped reading.
+    if (body === null) return;
   }
 
   const headers = buildOriginRequestHeaders(request, url, body, origin);
@@ -193,6 +185,79 @@ async function proxyBlog(request, response) {
   // the origin, including any trailing slash restored above.
   const originUrl = new URL(originPath + url.search, PUBLIC_ORIGIN);
   await originRequest({ method, path: originPath + url.search, headers, body, origin, publicUrl: originUrl }, response);
+}
+
+// Read the request body, answering 413 / 408 itself when the upload exceeds the
+// function limit or stops making progress. Returns null after responding.
+//
+// Listener-based on purpose: a timeout must be able to stop reading and flush
+// the response without destroying the socket first, otherwise the client sees a
+// connection reset instead of the status. The idle timer allows slow uploads
+// that keep delivering bytes; the total timer bounds the invocation.
+function readRequestBody(request, response) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    let idleTimer = null;
+
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(idleTimer);
+      clearTimeout(totalTimer);
+      request.off('data', onData);
+      request.off('end', onEnd);
+      request.off('error', onError);
+      fn(value);
+    };
+
+    const respondAndStop = (status, message) => {
+      request.pause();
+      textResponse(response, status, message);
+      // Destroy once the response is flushed, never before.
+      response.once('finish', () => request.destroy());
+      settle(resolve, null);
+    };
+
+    const armIdle = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => respondAndStop(408, 'blog proxy: request body timed out'),
+        BODY_IDLE_TIMEOUT_MS,
+      );
+    };
+
+    const onData = (chunk) => {
+      size += chunk.length;
+      // Answer as soon as the limit is crossed: draining an oversized chunked
+      // upload would hold the invocation until the client reaches EOF.
+      if (size > MAX_BODY_BYTES) {
+        respondAndStop(413, 'blog proxy: payload exceeds the 6MB Maker function limit');
+        return;
+      }
+      chunks.push(chunk);
+      armIdle();
+    };
+    const onEnd = () => settle(resolve, Buffer.concat(chunks));
+    const onError = (err) => settle(reject, err);
+
+    const totalTimer = setTimeout(
+      () => respondAndStop(408, 'blog proxy: request body timed out'),
+      BODY_TOTAL_TIMEOUT_MS,
+    );
+
+    // Reject an oversized declared length before buffering anything.
+    if (Number(request.headers['content-length'] ?? 0) > MAX_BODY_BYTES) {
+      respondAndStop(413, 'blog proxy: payload exceeds the 6MB Maker function limit');
+      return;
+    }
+
+    request.on('data', onData);
+    request.on('end', onEnd);
+    request.on('error', onError);
+    armIdle();
+  });
 }
 
 function buildOriginRequestHeaders(request, url, body, origin) {
@@ -314,7 +379,10 @@ export function rewriteLocation(location, currentUrl, originHost) {
   if (!location) return location;
   try {
     const target = new URL(location, currentUrl ?? PUBLIC_ORIGIN);
-    if (target.host !== originHost && target.host !== PUBLIC_HOST) return location;
+    // `target.host` is lowercased by the URL parser; the configured origin host
+    // may not be, and a case mismatch would leak the private origin hostname.
+    const configuredHost = typeof originHost === 'string' ? originHost.toLowerCase() : '';
+    if (target.host !== configuredHost && target.host !== PUBLIC_HOST) return location;
     target.protocol = 'https:';
     target.host = PUBLIC_HOST;
     target.port = '';
