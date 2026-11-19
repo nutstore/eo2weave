@@ -33,6 +33,7 @@ export const chromeCopy: Record<'cn' | 'global', ChromeCopy> = {
       webmcp: 'WebMCP',
       pricing: '定价',
       help: '帮助',
+      blog: '博客',
       download: '浏览器扩展',
       online: '在线使用',
       openMenu: '打开导航菜单',

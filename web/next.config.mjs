@@ -72,6 +72,13 @@ const nextConfig = {
           { key: 'Cross-Origin-Embedder-Policy', value: 'require-corp' },
         ],
       },
+      {
+        // WordPress embeds third-party images that do not opt in to COEP.
+        source: '/blog/:path*',
+        headers: [
+          { key: 'Cross-Origin-Embedder-Policy', value: 'unsafe-none' },
+        ],
+      },
     ]
   },
   transpilePackages: [

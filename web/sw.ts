@@ -23,6 +23,18 @@ const IS_DEV =
   self.location.hostname === ''
 
 const API_PATTERNS = [/\/api\//, /\/mcp\//]
+// Same-origin path prefixes owned by a DIFFERENT backend (reverse proxy to a
+// separate WordPress site, served by a Maker Cloud Function). The service
+// worker must stay entirely out of these: they are not this app, and claiming
+// them breaks their behaviour.
+const EXTERNAL_PATH_PREFIXES = ['/blog']
+
+function isExternalPath(pathname: string): boolean {
+  return EXTERNAL_PATH_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  )
+}
+
 // The full Pyodide offline kit: wheels/packages (.whl/.tar) plus the runtime
 // bootstrap files (pyodide.js, pyodide.asm.wasm, *.mjs, pyodide-lock.json,
 // python stdlib zip, ...). Everything under /assets/pyodide/ participates in
@@ -52,6 +64,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
       await migrateLegacyCaches()
+      await purgeExternalPathEntries()
       const cacheNames = await caches.keys()
       await Promise.all(
         cacheNames
@@ -63,6 +76,26 @@ self.addEventListener('activate', (event) => {
 
   self.clients.claim()
 })
+
+/**
+ * Drop reverse-proxy pages (e.g. the WordPress site at /blog) that earlier
+ * worker versions captured through the navigation fallback. Those responses
+ * belong to another backend, must never be served from this cache, and in the
+ * wp-admin case would expose authenticated HTML to any same-origin script.
+ */
+async function purgeExternalPathEntries(): Promise<void> {
+  try {
+    const cache = await caches.open(APPSHELL_CACHE)
+    const keys = await cache.keys()
+    await Promise.all(
+      keys
+        .filter((request) => isExternalPath(new URL(request.url).pathname))
+        .map((request) => cache.delete(request))
+    )
+  } catch (error) {
+    console.warn('[ServiceWorker] Failed to purge reverse-proxy cache entries:', error)
+  }
+}
 
 /** Preserve cached Python packages and runtime files across worker upgrades. */
 async function migrateLegacyCaches(): Promise<void> {
@@ -116,6 +149,14 @@ self.addEventListener('fetch', (event) => {
 
   // Business data: freshness belongs to the app layer.
   if (API_PATTERNS.some((pattern) => pattern.test(url.pathname))) return
+
+  // Reverse-proxied backends (the WordPress site at /blog/*) own their cookies,
+  // their redirect chain and their HTML. Claiming a navigation here makes the
+  // worker re-issue it with a navigation-scoped fetch(), which cannot replay the
+  // origin's 302s faithfully — the WordPress login POST -> /blog/wp-admin ->
+  // wp-login.php?redirect_to=…&reauth=1 bounce is exactly that failure — and the
+  // app-shell fallback would answer unrelated URLs with this app's shell.
+  if (isExternalPath(url.pathname)) return
 
   // The real SW job: offline app shell.
   if (isNavigationRequest(request)) {
@@ -320,6 +361,9 @@ self.addEventListener('message', (event) => {
             const parsed = new URL(url, self.location.origin)
             if (parsed.origin !== self.location.origin) continue
             if (API_PATTERNS.some((pattern) => pattern.test(parsed.pathname))) continue
+            // Reverse-proxied backends own their responses and cookies: keep
+            // WordPress pages out of the app-shell cache entirely.
+            if (isExternalPath(parsed.pathname)) continue
             await cache.add(url)
           } catch (error) {
             console.warn('[ServiceWorker] Failed to cache URL:', url, error)
