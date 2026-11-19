@@ -38,7 +38,7 @@ export interface NotifyAgentCompleteParams {
   conversationId: string
   /** Project ID — used to build the correct URL on click */
   projectId: string
-  /** Notification title (e.g. "重构建议 · 方案已完成") */
+  /** Notification title (e.g. "refactor suggestion · plan complete") */
   title: string
   /** Notification body — short summary (typically first 60 chars of assistant reply) */
   body: string

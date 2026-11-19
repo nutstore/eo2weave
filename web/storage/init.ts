@@ -37,11 +37,11 @@ export interface InitStorageOptions {
   /**
    * Allow fallback to IndexedDB if SQLite fails
    *
-   * @deprecated 新架构下 SQLite 是唯一数据源，IndexedDB 中只有 legacy AppSessions。
-   * 静默回退会让 UI 显示空状态却伪装成初始化成功，导致用户感知为"数据丢失"。
-   * 保留参数仅为向后兼容，请显式传 `false`，未来版本会移除。
+   * @deprecated SQLite is the only data source in the new architecture; IndexedDB holds only legacy AppSessions.
+   * A silent fallback makes the UI show an empty state while pretending init succeeded, which users read as data loss.
+   * Kept for backward compatibility only — pass `false` explicitly; it will be removed in a future version.
    *
-   * 传 `true` 时只影响 `mode` 字段，不会再把 `success` 从 false 改成 true。
+   * Passing `true` now only affects `mode`; it no longer flips `success` from false to true.
    *
    * @default false
    */
@@ -266,9 +266,9 @@ export async function initStorage(options: InitStorageOptions = {}): Promise<Ini
         }
       }
 
-      // SQLite 是唯一数据源，失败时永远返回 success: false。
-      // 保留 allowFallback 只是为了让 mode 字段反映"假如回退会走哪条路"，
-      // 供诊断 UI 使用，但不会再把失败假装成成功。
+      // SQLite is the only data source, so a failure always returns success: false.
+      // allowFallback is kept only so the mode field reflects which path a fallback would take,
+      // for the diagnostics UI — a failure is no longer dressed up as success.
       if (allowFallback) {
         currentStorageMode = 'indexeddb-fallback'
         console.warn(

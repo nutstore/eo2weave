@@ -362,7 +362,7 @@ export async function readBaselineFileImpl(
    * Read a file directly from the native disk (bypassing OPFS cache).
    * Supports BOTH FS Access roots (via directoryHandle) and native-host
    * roots (via diskExec). Used by conflict resolution UI (FileDiffViewer)
-   * to show the "本机版本" side of a conflict.
+   * to show the "local version" side of a conflict.
    *
    * Returns null if the file does not exist on disk.
    */

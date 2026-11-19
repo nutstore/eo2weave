@@ -1,7 +1,7 @@
 // ============================================================
 // Upstream Page Content Script (MAIN world)
 //
-// Generic "上游页面元数据读取器" — runs on ALL URLs because CreatorWeave's
+// Generic "upstream page metadata reader" — runs on ALL URLs because CreatorWeave's
 // side panel feature works with any upstream site that opts in
 // (workspace.jianguoyun.com today, others later). The injected
 // `__cwUpstreamPage` namespace exposes a small, stable API:

@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
- * Streaming EventBus - 避免循环依赖的事件总线
+ * Streaming EventBus — an event bus that avoids circular dependencies
  *
- * 用于 conversation.store（SQLite 变体）→ conversation.store 之间的流式事件传递
+ * Carries streaming events between conversation.store (the SQLite variant) and conversation.store
  */
 
 type StreamingEventType =
@@ -25,23 +25,23 @@ type EventCallback = (data: any) => void
 class StreamingEventBus {
   private listeners = new Map<StreamingEventType, Set<EventCallback>>()
 
-  /** 订阅事件 */
+  /** Subscribe to an event */
   on(event: StreamingEventType, callback: EventCallback): () => void {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set())
     }
     this.listeners.get(event)!.add(callback)
 
-    // 返回取消订阅函数
+    // Return the unsubscribe function
     return () => this.off(event, callback)
   }
 
-  /** 取消订阅 */
+  /** Unsubscribe */
   off(event: StreamingEventType, callback: EventCallback): void {
     this.listeners.get(event)?.delete(callback)
   }
 
-  /** 发送事件 */
+  /** Emit an event */
   emit(event: StreamingEventType, data?: any): void {
     this.listeners.get(event)?.forEach((callback) => {
       try {
@@ -52,21 +52,21 @@ class StreamingEventBus {
     })
   }
 
-  /** 清理所有监听器 */
+  /** Remove all listeners */
   clear(): void {
     this.listeners.clear()
   }
 
-  /** 获取当前监听器数量（用于调试） */
+  /** Current listener count for an event (debugging) */
   getListenerCount(event: StreamingEventType): number {
     return this.listeners.get(event)?.size ?? 0
   }
 }
 
-// 单例导出
+// Singleton export
 export const streamingBus = new StreamingEventBus()
 
-// 便捷函数
+// Convenience helpers
 export const emitThinkingStart = () => streamingBus.emit('thinking:start')
 export const emitThinkingDelta = (delta: string) => streamingBus.emit('thinking:delta', delta)
 export const emitThinkingComplete = (reasoning: string) =>

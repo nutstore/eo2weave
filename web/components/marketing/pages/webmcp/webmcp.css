@@ -23,7 +23,7 @@
   line-height: 1.7;
 }
 
-/* 顶部导航 */
+/* Top navigation */
 :where(.marketing-page-webmcp) .header {
   position: sticky; top: 0; z-index: 100;
   background: rgba(4,6,7,.94);
@@ -164,12 +164,12 @@
   color:#1b7469; font-size:18px; font-weight:600;
 }
 :where(.marketing-page-webmcp) .hero .btn-outline:hover { border-color:#1b7469; background:rgba(255,255,255,.7); transform:translateY(-1px); }
-/* 通用 section */
+/* Generic section */
 :where(.marketing-page-webmcp) .section { padding: 56px 24px; max-width: 1080px; margin: 0 auto; }
 :where(.marketing-page-webmcp) .section-title { font-size: 32px; font-weight: 700; text-align: center; margin-bottom: 10px; }
 :where(.marketing-page-webmcp) .section-sub { text-align: center; color: var(--muted); margin-bottom: 36px; font-size: 15px; }
 
-/* WebMCP 介绍 */
+/* WebMCP intro */
 :where(.marketing-page-webmcp) #what.section { position:relative; isolation:isolate; max-width:1128px; padding-top:64px; padding-bottom:72px; }
 :where(.marketing-page-webmcp) .what-card {
   padding:62px 64px 106px;
@@ -229,7 +229,7 @@
 :where(.marketing-page-webmcp) .step h4 { font-size: 24px; margin-bottom: 12px; }
 :where(.marketing-page-webmcp) .step p { max-width: 400px; color: var(--muted); font-size: 16px; line-height: 1.8; }
 
-/* Demo 区域 */
+/* Demo area */
 :where(.marketing-page-webmcp) .demo-wrap {
   background: var(--card); border: 1px solid var(--border);
   border-radius: var(--radius); overflow: hidden;
@@ -281,7 +281,7 @@
 :where(.marketing-page-webmcp) .email-view .ev-meta { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
 :where(.marketing-page-webmcp) .email-view .ev-body { color: var(--muted); line-height: 1.9; }
 
-/* 对话面板 */
+/* Chat panel */
 :where(.marketing-page-webmcp) .chat-panel {
   background: var(--bg); border: 1px solid var(--border);
   border-radius: 10px; overflow: hidden; display: flex; flex-direction: column;
@@ -320,7 +320,7 @@
   white-space: nowrap;
 }
 
-/* 卖点条 */
+/* Selling-points bar */
 :where(.marketing-page-webmcp) .sell-badge {
   display: inline-flex; align-items: center; gap: 8px;
   background: rgba(61,214,140,0.07); border: 1px solid rgba(61,214,140,0.2);
@@ -328,7 +328,7 @@
 }
 :where(.marketing-page-webmcp) .sell-badge .tag { background: rgba(61,214,140,0.15); color: var(--green); padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
 
-/* jmail 展示卡片 */
+/* jmail showcase card */
 :where(.marketing-page-webmcp) .jmail-card {
   background: var(--card); border: 1px solid var(--border);
   border-radius: var(--radius); overflow: hidden;
@@ -364,7 +364,7 @@
 :where(.marketing-page-webmcp) .pill-purple { background: rgba(124,92,252,0.15); color: var(--accent-light); }
 :where(.marketing-page-webmcp) .pill-yellow { background: rgba(255,202,58,0.15); color: var(--yellow); }
 
-/* 弹窗 */
+/* Modal */
 :where(.marketing-page-webmcp) .modal-mask {
   position: fixed; inset: 0; background: rgba(0,0,0,0.65);
   display: flex; align-items: center; justify-content: center; z-index: 200;

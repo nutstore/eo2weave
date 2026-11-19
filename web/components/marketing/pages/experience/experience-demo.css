@@ -1,4 +1,4 @@
-/* 豆瓣体验区保留通栏的柔和绿背景，安装后只展示一次连续体验。 */
+/* The douban demo area keeps the full-bleed soft green background; after install the continuous experience is shown only once. */
 html.manual-route :where(.marketing-page-experience) .manual-guide { padding-bottom:64px; }
 html.manual-route :where(.marketing-page-experience) .douban-demo { padding-top:72px; }
 html.manual-route :where(.marketing-page-experience) .manual-guide .section-copy { margin-top:16px; }

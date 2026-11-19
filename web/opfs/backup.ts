@@ -38,7 +38,7 @@ const BACKUP_TMP_DIR = '.eo2weave-backup-tmp'
  * Timer for deferred cleanup of the spill directory. We defer cleanup to
  * give the browser time to asynchronously read the Blob URL data after
  * `<a>.click()` — removing the spill file before it is read produces a
- * "Failed - Network error" download ("请检查互联网连接状况"). Reset on each
+ * "Failed - Network error" download (localized per browser UI language). Reset on each
  * new export so rapid consecutive exports don't have their shared spill
  * file pulled out from under a still-in-flight download. See
  * downloadOPFSBackup's finally block for the full rationale.
@@ -570,7 +570,7 @@ export async function downloadOPFSBackup(): Promise<{
     // Defer spill cleanup so the browser has time to read the Blob URL data
     // asynchronously after `<a>.click()`. Without this 60s delay, the
     // "remove immediately" pattern can finish before the browser finishes
-    // reading → "Failed - Network error" / "请检查互联网连接状况" in the
+    // reading → "Failed - Network error" (localized) in the
     // downloads bar. The 60s window matches the URL.revokeObjectURL delay
     // above so the spill file is alive for at least as long as the Blob
     // URL.

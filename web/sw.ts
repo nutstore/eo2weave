@@ -319,7 +319,7 @@ self.addEventListener('notificationclick', (event) => {
             type: 'NAVIGATE_TO_CONVERSATION',
             conversationId,
             projectId,
-            // 注意：不带 url — 客户端自己拼
+            // Note: no url here — the client builds it itself
           })
           return
         }
@@ -328,7 +328,7 @@ self.addEventListener('notificationclick', (event) => {
       }
     }
 
-    // 2️⃣ 真兜底：原 tab 已关 → 开新窗口带目标 URL
+    // 2️⃣ Real fallback: the original tab is gone → open a new window with the target URL
     if (self.clients.openWindow && projectId && conversationId) {
       return self.clients.openWindow(buildConversationNotificationUrl(projectId, conversationId))
     }

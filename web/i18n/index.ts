@@ -3,10 +3,10 @@ import { createUseT } from '@creatorweave/i18n'
 import { useI18nStore } from './store'
 
 /**
- * web 项目的翻译 Hook
+ * Translation hooks for the web app
  * @example
  * const t = useT()
- * t('common.save') => '保存'
+ * t('common.save') => "Save" (localized for the active locale)
  */
 export function useT() {
   const locale = useI18nStore((state) => state.locale)
@@ -14,7 +14,7 @@ export function useT() {
 }
 
 /**
- * 获取和设置语言
+ * Read and set the active language
  * @example
  * const [locale, setLocale] = useLocale()
  * setLocale('en-US')
@@ -24,6 +24,6 @@ export function useLocale() {
   return [locale, setLocale] as const
 }
 
-// 重新导出类型和常量
+// Re-export types and constants
 export type { Locale } from '@creatorweave/i18n'
 export { LOCALE_LABELS } from '@creatorweave/i18n'

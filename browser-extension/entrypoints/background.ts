@@ -1741,7 +1741,7 @@ export default defineBackground(() => {
     // Must use tabId (not windowId) for the gesture to work.
     //
     // Triggered by side-panel-button.content.ts (which runs on <all_urls>)
-    // when the user clicks the "唤起怡氧®AI" floating button on any page.
+    // when the user clicks the floating "launch 怡氧®AI" button on any page.
     // Toggles: if the side panel is currently open for this tab, close it
     // (via setOptions { enabled: false }); otherwise open it.
     //

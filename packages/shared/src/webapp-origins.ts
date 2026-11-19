@@ -2,7 +2,7 @@
 // web app and the browser extension.
 //
 // Production is dual-site:
-//   - weave.eo2suite.cn  — domestic (国内) deployment
+//   - weave.eo2suite.cn  — domestic (cn) deployment
 //   - weave.eo2suite.com — international deployment
 // The legacy creatorweave.eo2suite.cn origin stays trusted during the
 // migration window so existing bookmarks/installed panels keep working

@@ -32,13 +32,13 @@ const POS_KEY = 'cw_side_panel_btn_pos'
 export default defineContentScript({
   matches: ['<all_urls>'],
   runAt: 'document_idle',
-  // 默认 ISOLATED world — 不需要 world: 'MAIN'
+  // Default is the ISOLATED world — no need for world: 'MAIN'
 
   main() {
     const BUTTON_ID = 'cw-side-panel-btn'
 
     // Don't inject the button on CreatorWeave's own pages — the side
-    // panel *is* CreatorWeave, so having a "唤起怡氧®AI" button there
+    // panel *is* CreatorWeave, so having a "launch 怡氧®AI" button there
     // is confusing and recursive.
     //
     // Detection: CreatorWeave sets `document.documentElement.dataset.creatorweave`
@@ -269,7 +269,7 @@ export default defineContentScript({
     }
     tryInject()
 
-    // SPA 路由变化时重新注入按钮
+    // Re-inject the button when the SPA route changes
     let lastUrl = window.location.href
     const urlObserver = new MutationObserver(() => {
       if (window.location.href !== lastUrl) {

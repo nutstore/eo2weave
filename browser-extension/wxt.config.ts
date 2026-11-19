@@ -259,8 +259,8 @@ export default defineConfig({
     // loads (dev + self-distribution zips) so the native messaging manifest's
     // `allowed_origins` stays valid across reinstalls.
     //
-    // CWS REJECTS uploads whose manifest contains `key` ("清单文件中不允许使用
-    // key 字段") — the store derives its own key/ID when the item is created.
+    // CWS REJECTS uploads whose manifest contains `key` (error: the key field
+    // is not allowed in the manifest) — the store derives its own key/ID on create.
     // So store builds omit it; the store item therefore gets a DIFFERENT
     // extension ID than kdnnhmagmghdhfinoipgbcddnpmffbkp. Once the item exists
     // and its ID is known, add that ID to native-host allowed_origins (or pin
