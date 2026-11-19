@@ -140,7 +140,7 @@ export function ConversationView({
     isUserAtBottomRef,
     draftTextToRestore, onDraftRestored,
     allAgents, activeAgentId, setActiveAgent, createAgent, deleteAgent, mentionAgents,
-    convId, activeMessages,
+    convId, activeMessages, sendScrollRequest,
     conversationError, activeContextWindowUsage,
     isProcessing, status, suggestedFollowUp, toolResults,
     hasApiKey, enableThinking, thinkingLevel, setEnableThinking, setThinkingLevel,
@@ -416,6 +416,7 @@ export function ConversationView({
             <ConversationMessages
               ref={conversationMessagesRef}
               activeMessages={activeMessages}
+              sendScrollRequest={sendScrollRequest}
               toolResults={toolResults}
               isProcessing={isProcessing}
               status={status}
@@ -473,17 +474,7 @@ export function ConversationView({
         {/* Flow canvas panel — overlay, opened from the TopBar workflow button */}
         <FlowCanvasPanel conversationId={convId} />
 
-        {/* Input area — no hard divider: a soft upward fade above the input
-            implies the split while keeping one continuous surface (the old
-            full-width border-t read as a heavy seam in the narrow panel). */}
         <div className="relative shrink-0 bg-white px-2 py-2 dark:bg-neutral-900 sm:px-4 sm:py-3">
-          {/* Fade overlay: sits over the scroll area's bottom edge; pointer-events
-              none so it never blocks scrolling/clicks on the last message.
-              Light/dark variants via the parent's dark: class. */}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-0 h-5 -translate-y-full bg-gradient-to-b from-transparent to-white dark:to-neutral-900"
-          />
           <div className="mx-auto flex max-w-3xl flex-col">
             {/* Keep progress in flow while task details float above the summary. */}
             <BackgroundSubagentTasks key={`background-${convId ?? 'new'}`} conversationId={convId} />

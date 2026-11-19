@@ -103,6 +103,7 @@ export function useConversationLogic() {
   // The draft text to inject into the editor when switching back to a workspace.
   // This is separate from `input` because Tiptap manages its own content.
   const [draftTextToRestore, setDraftTextToRestore] = useState<string | null>(null)
+  const [sendScrollRequest, setSendScrollRequest] = useState(0)
   // Track which convId the draft belongs to, so we can clear it after restore
   const draftConvIdRef = useRef<string | null>(null)
 
@@ -655,6 +656,7 @@ export function useConversationLogic() {
           pageContext: pageContext ?? undefined,
         })
         if (result.enqueued) {
+          setSendScrollRequest((request) => request + 1)
           useInputDraftStore.getState().clearDraft(targetConvId)
           setDraftTextToRestore(null)
           draftConvIdRef.current = null
@@ -672,6 +674,7 @@ export function useConversationLogic() {
 
       const userMsg = createUserMessage(text, assets, pageContext ?? undefined)
       updateMessages(targetConvId, targetConv ? [...targetConv.messages, userMsg] : [userMsg])
+      setSendScrollRequest((request) => request + 1)
       // Clear any draft for this conversation (message sent) and reset restore state
       useInputDraftStore.getState().clearDraft(targetConvId)
       setDraftTextToRestore(null)
@@ -859,6 +862,18 @@ export function useConversationLogic() {
     return true
   }, [t])
 
+  /**
+   * Edit-and-resend and regenerate also start a run whose reply GROWS IN PLACE.
+   * In a virtualized conversation the bottom-pinning loop is armed by the send
+   * request counter, so these two paths must arm it too — but only when the user
+   * was already at the bottom: regenerating a turn they scrolled up to read must
+   * not yank them back down.
+   */
+  const pinBottomForRun = useCallback(() => {
+    if (!isUserAtBottomRef.current) return
+    setSendScrollRequest((request) => request + 1)
+  }, [])
+
   const handleEditAndResend = useCallback(
     async (userMessageId: string, newContent: string) => {
       if (blockIfProviderUnregistered()) return
@@ -866,8 +881,9 @@ export function useConversationLogic() {
       if (!currentConvId) return
       const pageContext = await capturePageContextBestEffort('edit-and-resend')
       editAndResendUserMessage(currentConvId, userMessageId, newContent, pageContext ?? undefined)
+      pinBottomForRun()
     },
-    [editAndResendUserMessage, blockIfProviderUnregistered]
+    [editAndResendUserMessage, blockIfProviderUnregistered, pinBottomForRun]
   )
 
   // Always call unconditionally (rules-of-hooks); when convId is absent the
@@ -882,8 +898,9 @@ export function useConversationLogic() {
       // model keeps seeing whatever page was open the first time this was sent.
       const pageContext = await capturePageContextBestEffort('resend')
       regenerateUserMessage(currentConvId, id, pageContext ?? undefined)
+      pinBottomForRun()
     },
-    [convId, regenerateUserMessage, blockIfProviderUnregistered]
+    [convId, regenerateUserMessage, blockIfProviderUnregistered, pinBottomForRun]
   )
 
   return {
@@ -906,7 +923,7 @@ export function useConversationLogic() {
     mentionAgents,
     // Conversation state (NO streaming data — that's subscribed in ConversationMessages)
     convId,
-    activeMessages,
+    activeMessages, sendScrollRequest,
     conversationError,
     activeContextWindowUsage,
     isProcessing,

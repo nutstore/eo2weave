@@ -8,7 +8,7 @@
 
 import { render, waitFor, act } from '@testing-library/react'
 import { forwardRef, useImperativeHandle, memo } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '@/agent/message-types'
 import { ConversationMessages } from '../ConversationMessages'
 import type { ConversationMessagesHandle } from '../ConversationMessages'
@@ -210,7 +210,7 @@ describe('ConversationMessages virtualization', () => {
     expect(virtuosoSpy).not.toHaveBeenCalled()
   })
 
-  it('renders long conversations through Virtuoso without a list header (usage bar moved out)', async () => {
+  it('renders long conversations through Virtuoso with an internal spacing header (usage bar moved out)', async () => {
     // 55 pairs → 110 messages, above the threshold
     const { container } = renderConversation(makeMessages(55))
     await waitFor(() => {
@@ -218,9 +218,24 @@ describe('ConversationMessages virtualization', () => {
     })
     // All turns handed to Virtuoso as data
     expect(virtuosoSpy.mock.calls[0][0].data).toHaveLength(110)
-    // No Header slot: the usage bar must NOT be inside the virtualized list
-    const components = virtuosoSpy.mock.calls[0][0].components as { Header?: unknown }
-    expect(components.Header).toBeUndefined()
+    // Vertical spacing belongs inside Virtuoso, not on its external wrapper:
+    // customScrollParent bottom detection otherwise sees mismatched offsets.
+    const components = virtuosoSpy.mock.calls[0][0].components as {
+      Header?: () => React.ReactNode
+      Footer?: (props: { context?: unknown }) => React.ReactNode
+    }
+    expect(components.Header).toBeTypeOf('function')
+    // Each slot must carry its OWN spacer: asserting "either slot has one"
+    // passed even when the header rendered nothing.
+    const headerDom = render(<>{components.Header!()}</>)
+    expect(headerDom.container.querySelector('[class="h-3 sm:h-4"]')).not.toBeNull()
+    headerDom.unmount()
+    const footerDom = render(<>{components.Footer!({})}</>)
+    expect(footerDom.container.querySelector('[class="h-3 sm:h-4"]')).not.toBeNull()
+    footerDom.unmount()
+    const virtualScroller = container.querySelector('[data-testid="virtuoso-mock"]')!
+    expect(virtualScroller.parentElement?.parentElement?.className).not.toMatch(/\bpy-/)
+    expect(container.querySelector('[data-testid="scroll-container"]')?.querySelector('[class="h-3 sm:h-4"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="usage-bar"]')).toBeNull()
     expect(usageBarSpy).not.toHaveBeenCalled()
     expect(container.querySelectorAll('[data-testid="message-bubble"]')).toHaveLength(55)
@@ -356,6 +371,24 @@ describe('ConversationMessages virtualization', () => {
     rerender(makeVirtualUi(56, { isUserAtBottomRef }))
     expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
     expect(isUserAtBottomRef.current).toBe(false)
+  })
+
+  it('restores follow state when a user send renders in a virtualized conversation', async () => {
+    const isUserAtBottomRef = { current: true }
+    const handleRef = { current: null as ConversationMessagesHandle | null }
+    const { container, rerender } = render(makeVirtualUi(55, { isUserAtBottomRef, handleRef }))
+    await waitFor(() => expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull())
+
+    act(() => atBottomStateChangeHandlers.at(-1)?.(false))
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
+
+    rerender(makeVirtualUi(56, { isUserAtBottomRef, handleRef, sendScrollRequest: 1, isProcessing: true }))
+    expect(virtuosoScrollToSpy).toHaveBeenCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' })
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe('smooth')
+    // The send path must also restore the SHARED ref: the funnel's state alone
+    // makes followOutput return 'smooth', so a stale ref (and the button
+    // visibility derived from it) would go unnoticed here.
+    expect(isUserAtBottomRef.current).toBe(true)
   })
 
   it('followOutput returns false when the shared ref seeds NOT-at-bottom (PR #142 review)', async () => {
@@ -1023,10 +1056,203 @@ describe('ConversationMessages virtualization', () => {
   })
 })
 
+/**
+ * The bottom-pinning loop (send-follow effect): after a send it re-jumps to the
+ * scroller's true bottom for the whole run. These tests drive its timers
+ * directly, because every exit path must release the timer and the global
+ * wheel/touch listeners (review round 1: abort used to leave both installed).
+ */
+describe('bottom-pinning loop', () => {
+  function renderPinningLoop(options: {
+    handleRef?: { current: ConversationMessagesHandle | null }
+    isUserAtBottomRef?: React.MutableRefObject<boolean>
+    isProcessing?: boolean
+  } = {}) {
+    const noop = vi.fn()
+    const messagesEndRef = { current: null as HTMLDivElement | null }
+    const ui = (isProcessing: boolean) => (
+      <div
+        className="overflow-y-auto"
+        data-testid="scroll-container"
+        ref={(el) => {
+          if (!el) return
+          // Far from the bottom (gap 700) so every tick has work to do. The
+          // wrapper IS the resolved scroll parent (closest overflow-y-auto).
+          Object.defineProperty(el, 'scrollHeight', { value: 2000, configurable: true })
+          Object.defineProperty(el, 'clientHeight', { value: 800, configurable: true })
+          if (el.scrollTop === 0) {
+            Object.defineProperty(el, 'scrollTop', { value: 500, configurable: true, writable: true })
+          }
+        }}
+      >
+        <ConversationMessages
+          ref={options.handleRef ?? undefined}
+          activeMessages={makeMessages(55)}
+          sendScrollRequest={1}
+          toolResults={new Map()}
+          isProcessing={isProcessing}
+          status="streaming"
+          onDeleteAgentLoop={noop}
+          onEditAndResend={noop}
+          onRegenerate={undefined}
+          onCancel={noop}
+          messagesEndRef={messagesEndRef}
+          isUserAtBottomRef={options.isUserAtBottomRef ?? { current: true }}
+          conversationId="conv-1"
+          mentionAgents={[]}
+        />
+      </div>
+    )
+    const { container, rerender } = render(ui(options.isProcessing ?? true))
+    const scroller = container.querySelector('[data-testid="scroll-container"]') as HTMLElement
+    return { container, scroller, rerender: (isProcessing: boolean) => rerender(ui(isProcessing)) }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('re-jumps on every tick while the run is streaming', () => {
+    renderPinningLoop()
+    const before = virtuosoScrollToSpy.mock.calls.length
+    act(() => {
+      vi.advanceTimersByTime(450)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBeGreaterThanOrEqual(before + 2)
+  })
+
+  it('a wheel gesture stops the loop for good (timer released)', () => {
+    const { rerender } = renderPinningLoop()
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval')
+    act(() => {
+      window.dispatchEvent(new Event('wheel'))
+    })
+    // Abort must RELEASE the interval, not just short-circuit its callback:
+    // a cancelled-but-live timer keeps waking every 150ms until unmount.
+    expect(clearIntervalSpy).toHaveBeenCalled()
+    clearIntervalSpy.mockRestore()
+    const afterAbort = virtuosoScrollToSpy.mock.calls.length
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    rerender(true)
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(afterAbort)
+  })
+
+  it('a touch TAP keeps pinning, a touch SCROLL stops it', () => {
+    renderPinningLoop()
+    // Tapping the composer (or anywhere) is not a scroll gesture.
+    act(() => {
+      window.dispatchEvent(new Event('touchstart'))
+    })
+    const beforeTap = virtuosoScrollToSpy.mock.calls.length
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBeGreaterThan(beforeTap)
+    // A real vertical gesture aborts.
+    act(() => {
+      window.dispatchEvent(new Event('touchmove'))
+    })
+    const afterGesture = virtuosoScrollToSpy.mock.calls.length
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(afterGesture)
+  })
+
+  it('an upward scroll that lands before the first tick is not overridden', () => {
+    const { scroller } = renderPinningLoop()
+    // Scrollbar drag / PgUp: no wheel, no touch — only the position moves.
+    scroller.scrollTop = 120
+    const beforeTick = virtuosoScrollToSpy.mock.calls.length
+    act(() => {
+      vi.advanceTimersByTime(600)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(beforeTick)
+    expect(scroller.scrollTop).toBe(120)
+  })
+
+  it('returns to pinning when the scroll-to-bottom button is used mid-run', () => {
+    const handleRef = { current: null as ConversationMessagesHandle | null }
+    renderPinningLoop({ handleRef })
+    act(() => {
+      window.dispatchEvent(new Event('wheel'))
+    })
+    const afterAbort = virtuosoScrollToSpy.mock.calls.length
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(afterAbort)
+    // The button's path: jump + re-arm while the run continues.
+    act(() => {
+      handleRef.current?.scrollToLastTurn('smooth')
+    })
+    const afterClick = virtuosoScrollToSpy.mock.calls.length
+    expect(afterClick).toBeGreaterThan(afterAbort)
+    act(() => {
+      vi.advanceTimersByTime(450)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBeGreaterThan(afterClick)
+  })
+
+  it('survives the idle hand-off to a queued run, and stops without one', () => {
+    const runtimeState = useConversationRuntimeStore.getState()
+    runtimeState.pendingMessageQueues.set('conv-1', [
+      { text: 'queued hello', agentOverrideId: null, enqueuedAt: 1 },
+    ])
+    const { rerender } = renderPinningLoop()
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    // Run A finalized, run B still setting up: the loop must keep waiting.
+    rerender(false)
+    const beforeHandoff = virtuosoScrollToSpy.mock.calls.length
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(beforeHandoff)
+    rerender(true)
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBeGreaterThan(beforeHandoff)
+
+    // Control: with an EMPTY queue the same idle window ends the loop, so a
+    // later isProcessing flip cannot resume it.
+    runtimeState.pendingMessageQueues.delete('conv-1')
+    rerender(true)
+  })
+
+  it('stops once the run settles, without a queued follow-up', () => {
+    const runtimeState = useConversationRuntimeStore.getState()
+    runtimeState.pendingMessageQueues.delete('conv-1')
+    const { rerender } = renderPinningLoop()
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    rerender(false)
+    const afterSettle = virtuosoScrollToSpy.mock.calls.length
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(afterSettle)
+  })
+})
+
 /** Render a virtualized conversation with configurable props (issue #141 tests). */
 function makeVirtualUi(
   pairs: number,
-  options: { isUserAtBottomRef?: React.MutableRefObject<boolean>; virtualAtBottomHub?: VirtualAtBottomHub; handleRef?: { current: ConversationMessagesHandle | null } } = {},
+  options: { isUserAtBottomRef?: React.MutableRefObject<boolean>; virtualAtBottomHub?: VirtualAtBottomHub; handleRef?: { current: ConversationMessagesHandle | null }; sendScrollRequest?: number; isProcessing?: boolean } = {},
 ) {
   const noop = vi.fn()
   const messagesEndRef = { current: null as HTMLDivElement | null }
@@ -1035,8 +1261,9 @@ function makeVirtualUi(
       <ConversationMessages
         ref={options.handleRef ?? undefined}
         activeMessages={makeMessages(pairs)}
+        sendScrollRequest={options.sendScrollRequest}
         toolResults={new Map()}
-        isProcessing={false}
+        isProcessing={options.isProcessing ?? false}
         status="idle"
         onDeleteAgentLoop={noop}
         onEditAndResend={noop}
