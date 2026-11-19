@@ -865,6 +865,14 @@ interface CodexBlockExports {
   parseCodexModels: (value: unknown) => Array<{ id: string; name: string; contextWindow: number; capabilities: string[] }>;
 }
 let CODEX = null as null | CodexBlockExports;
+const CODEX_MODELS_CACHE_TTL_MS = 5 * 60 * 1000;
+let codexModelsRequestSequence = 0;
+let codexModelsCache: {
+  accessToken: string;
+  models: ReturnType<CodexBlockExports['parseCodexModels']>;
+  probe: Record<string, unknown>;
+  expiresAt: number;
+} | null = null;
 
 // The entire Codex block below is wrapped in `if (CODEX_OAUTH_ENABLED) {}`.
 // This is what makes the store build (CW_CODEX_OAUTH=0) actually DROP the
@@ -2980,34 +2988,67 @@ export default defineBackground(() => {
           let models: ReturnType<CodexBlockExports['parseCodexModels']> = [];
           let modelsEndpointProbe: Record<string, unknown> | null = null;
           if (authorized && tokens?.access_token) {
-            // The catalog uses the Codex client version (not the ChatGPT web
-            // version). Keep this probe separate from the extension version.
-            const url = `${CODEX!.CODEX_BACKEND_API_URL}/codex/models?client_version=0.156.1`;
-            try {
-              const response = await fetch(url, {
-                method: 'GET',
-                headers: CODEX!.codexHeaders(tokens.access_token),
-                signal: AbortSignal.timeout(10000),
-              });
-              const body = await response.text();
-              let parsed: unknown = null;
-              try { parsed = JSON.parse(body); } catch { /* preserve status/content-type only */ }
-              modelsEndpointProbe = {
-                url,
-                status: response.status,
-                ok: response.ok,
-                contentType: response.headers.get('content-type'),
-                // Only expose the response shape; never forward raw body data
-                // from an authenticated backend endpoint to the page.
-                responseKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : [],
-              };
-              if (response.ok) models = CODEX!.parseCodexModels(parsed);
-            } catch (error) {
-              modelsEndpointProbe = {
-                url,
-                error: error instanceof Error ? error.message : String(error),
-              };
+            const accessToken = tokens.access_token;
+            if (codexModelsCache?.accessToken !== accessToken) {
+              codexModelsCache = null;
             }
+            if (codexModelsCache?.accessToken === accessToken && codexModelsCache.expiresAt > Date.now()) {
+              models = codexModelsCache.models;
+              // Mark reused probes as cached so a caller cannot read a stale
+              // status as a fresh endpoint check.
+              modelsEndpointProbe = { ...codexModelsCache.probe, cached: true };
+            } else {
+              const requestSequence = ++codexModelsRequestSequence;
+              // The catalog uses the Codex client version (not the ChatGPT web
+              // version). Keep this probe separate from the extension version.
+              const url = `${CODEX!.CODEX_BACKEND_API_URL}/codex/models?client_version=0.156.1`;
+              try {
+                const response = await fetch(url, {
+                  method: 'GET',
+                  headers: CODEX!.codexHeaders(accessToken),
+                  signal: AbortSignal.timeout(10000),
+                });
+                const body = await response.text();
+                let parsed: unknown = null;
+                try { parsed = JSON.parse(body); } catch { /* preserve status/content-type only */ }
+                modelsEndpointProbe = {
+                  url,
+                  status: response.status,
+                  ok: response.ok,
+                  contentType: response.headers.get('content-type'),
+                  // Only expose the response shape; never forward raw body data
+                  // from an authenticated backend endpoint to the page.
+                  responseKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : [],
+                };
+                if (response.ok) {
+                  models = CODEX!.parseCodexModels(parsed);
+                  // Only the latest request may populate the shared cache, and
+                  // only while the same token is still the current authorization
+                  // (a logout and re-login can land between the read above and
+                  // this write).
+                  if (models.length > 0 && requestSequence === codexModelsRequestSequence) {
+                    const currentTokens = await CODEX!.getCodexTokens();
+                    if (currentTokens?.access_token === accessToken) {
+                      codexModelsCache = {
+                        accessToken,
+                        models,
+                        probe: modelsEndpointProbe,
+                        expiresAt: Date.now() + CODEX_MODELS_CACHE_TTL_MS,
+                      };
+                    }
+                  }
+                }
+              } catch (error) {
+                modelsEndpointProbe = {
+                  url,
+                  error: error instanceof Error ? error.message : String(error),
+                };
+              }
+            }
+          } else {
+            codexModelsCache = null;
+            // Pending catalog responses must not restore an invalidated cache.
+            codexModelsRequestSequence++;
           }
           sendResponse({
             ok: true,
