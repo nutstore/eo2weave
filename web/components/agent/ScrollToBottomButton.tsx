@@ -300,15 +300,32 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
 
   if (!showButton) return null
 
+  // Anchor horizontally to the message content column (max-w-3xl = 48rem
+  // centered, same contract as ConversationMessages and MessageNavBar). All
+  // offsets are in rem so the geometry tracks the root font size exactly like
+  // the column itself does: the column's right edge sits at 50% + 24rem, and
+  // +2.5rem more places the button just OUTSIDE the column (past
+  // MessageNavBar's rail), close to the chat but never covering text. When
+  // the area is too narrow for that (column fills the width, no outside
+  // room), min() collapses to the right-corner fallback (100% - 2.75rem:
+  // 2rem button + 0.75rem inset), matching the classic floating-button
+  // behavior — no breakpoint, no clipping, smooth handoff between the two.
+  // The wrapper is z-20 (above the nav rail's z-10) and pointer-events-none,
+  // so in the narrow crossover band where the fallback position overlaps the
+  // rail's hover area the button still paints on top and keeps receiving
+  // clicks; only the button itself is interactive.
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      data-testid="scroll-to-bottom"
-      className="absolute bottom-3 right-4 rounded-full bg-neutral-800/70 p-2 text-white shadow-lg backdrop-blur-sm transition-opacity hover:bg-neutral-700/80 dark:bg-neutral-200/70 dark:text-neutral-900 dark:hover:bg-neutral-200/90"
-      title={t('conversation.buttons.scrollToBottom')}
-    >
-      <ChevronDown className="h-4 w-4" />
-    </button>
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
+      <button
+        type="button"
+        onClick={handleClick}
+        data-testid="scroll-to-bottom"
+        className="pointer-events-auto absolute bottom-3 rounded-full bg-neutral-800/70 p-2 text-white shadow-lg backdrop-blur-sm transition-opacity hover:bg-neutral-700/80 dark:bg-neutral-200/70 dark:text-neutral-900 dark:hover:bg-neutral-200/90"
+        style={{ left: 'min(calc(50% + 26.5rem), calc(100% - 2.75rem))' }}
+        title={t('conversation.buttons.scrollToBottom')}
+      >
+        <ChevronDown className="h-4 w-4" />
+      </button>
+    </div>
   )
 })
