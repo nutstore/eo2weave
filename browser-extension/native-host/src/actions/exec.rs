@@ -1,4 +1,4 @@
-//! `exec` — execute a command in a scope root, streaming stdout/stderr (档位 1.5).
+//! `exec` — execute a command in a scope root, streaming stdout/stderr (tier 1.5).
 //!
 //! This is a **streaming** action (handled via `connectNative`, see main.rs).
 //! The protocol:
@@ -156,7 +156,7 @@ fn execute_and_stream(
     }
 
     // Inherit stdin from the host process (which is the NM pipe — typically empty).
-    // For interactive commands, stdin won't work well, but that's acceptable for 档位 1.5.
+    // For interactive commands, stdin won't work well, but that's acceptable for tier 1.5.
     cmd.stdin(Stdio::null());
 
     // Optional: additional env vars from request

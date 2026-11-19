@@ -13,7 +13,7 @@ const meta: Meta<typeof BrandBadge> = {
 export default meta
 type Story = StoryObj<typeof BrandBadge>
 
-// 设计稿中的 Badges
+// Badges from the design spec
 export const Badges: Story = {
   name: 'Status Badges',
   render: () => (
@@ -26,7 +26,7 @@ export const Badges: Story = {
   ),
 }
 
-// 设计稿中的 Tags
+// Tags from the design spec
 export const Tags: Story = {
   name: 'Color Tags',
   render: () => (

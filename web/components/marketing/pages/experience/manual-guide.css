@@ -1,4 +1,4 @@
-/* Mirrors the manual-install tutorial styles on 下载.html. */
+/* Mirrors the manual-install tutorial styles on the marketing site's download page. */
 :where(.marketing-page-experience) .manual-guide { background:#fff; padding:106px 0 126px; }
 :where(.marketing-page-experience) .manual-guide { --brand-deep:#1b7469; }
 :where(.marketing-page-experience) .manual-guide h2 { margin:0; letter-spacing:-.045em; line-height:1.16; }

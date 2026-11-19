@@ -1,6 +1,6 @@
 /**
  * ConversationList - displays list of conversations with active indication.
- * Matches Host端 Sidebar styles for consistency.
+ * Matches the host's Sidebar styles for consistency.
  */
 
 import type { Conversation } from '../types/conversation'

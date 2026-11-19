@@ -1,4 +1,4 @@
-//! ExecPolicy — command whitelist engine for the exec action (档位 1.5).
+//! ExecPolicy — command whitelist engine for the exec action (tier 1.5).
 //!
 //! Reads `~/.creatorweave/execpolicy.json`. Each rule matches a command
 //! (and optionally a prefix of its arguments) and assigns a decision:

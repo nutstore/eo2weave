@@ -23,7 +23,7 @@ const meta: Meta<typeof BrandButton> = {
 export default meta
 type Story = StoryObj<typeof BrandButton>
 
-// ========== 普通按钮 ==========
+// ========== Standard buttons ==========
 export const Primary: Story = {
   args: {
     variant: 'primary',
@@ -79,7 +79,7 @@ export const Danger: Story = {
   },
 }
 
-// ========== 图标按钮 ==========
+// ========== Icon buttons ==========
 export const IconButtons: Story = {
   name: 'Icon Buttons',
   render: () => (

@@ -1,6 +1,6 @@
 /**
  * ConversationDetail - displays messages of a conversation with pagination.
- * Matches Host端 ConversationView styles for consistency.
+ * Matches the host's ConversationView styles for consistency.
  */
 
 import { useEffect, useRef } from 'react'

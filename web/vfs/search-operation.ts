@@ -621,10 +621,10 @@ export const searchExecutor: ToolExecutor = async (args, context) => {
     }
   }
 
-  // 根据 contextUsage 智能调整 max_results
+  // Adjust max_results based on contextUsage
   let userMaxResults = typeof args.max_results === 'number' ? args.max_results : 50
 
-  // 如果上下文已经用了 50% 以上，进一步减少默认结果数量
+  // If the context window is already over 50% used, shrink the default result count further
   if (context.contextUsage && args.max_results === undefined) {
     const usageRatio = context.contextUsage.usedTokens / context.contextUsage.maxTokens
     if (usageRatio > 0.6) {
@@ -737,10 +737,10 @@ export const searchExecutor: ToolExecutor = async (args, context) => {
     const manager = getSearchWorkerManager()
     const userContextLines = typeof args.context_lines === 'number' ? args.context_lines : 0
 
-    // 当结果数量多时，自动减少上下文行数以控制返回大小
+    // With many results, trim context lines to keep the response size bounded
     let contextLines = userContextLines
     if (userMaxResults > 100 && userContextLines > 3) {
-      // 结果很多且上下文很多时，降低上下文行数
+      // Many results AND a large context request — cap the context lines
       contextLines = Math.min(userContextLines, 3)
     }
 

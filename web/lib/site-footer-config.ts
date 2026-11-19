@@ -27,7 +27,7 @@ export function resolveIcpNumber(raw: string | undefined): string | null {
 export type SiteFooterConfig = {
   /** Operator shown in the copyright line, already localized. */
   operator: string
-  /** "保留所有权利" / "All rights reserved." */
+  /** "All rights reserved" (localized per deploy region) */
   rights: string
   /** ICP filing number to display, or null when unset (entry hidden). */
   icpNumber: string | null
