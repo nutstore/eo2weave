@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { toast } from 'sonner'
 import { TextSelectionToolbar } from '../TextSelectionToolbar'
 
 vi.mock('@/i18n', () => ({
@@ -59,7 +60,7 @@ describe('TextSelectionToolbar', () => {
     vi.unstubAllGlobals()
   })
 
-  it('offers Copy and Quote without copying text when selection settles', async () => {
+  it('shows the menu and auto-copies the selection once it settles', async () => {
     render(<Message onQuote={vi.fn()} />)
 
     selectMessage()
@@ -68,11 +69,15 @@ describe('TextSelectionToolbar', () => {
     expect(screen.getByRole('button', { name: 'common.copy' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'common.quote' })).toBeInTheDocument()
 
-    await act(async () => vi.advanceTimersByTime(1000))
     expect(writeText).not.toHaveBeenCalled()
+    advanceTime(250)
+    await act(async () => {})
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(writeText).toHaveBeenCalledWith('First line\nSecond line')
+    expect(toast.success).toHaveBeenCalledWith('common.copied', { duration: 1500 })
   })
 
-  it('copies the selected text only after Copy is activated', async () => {
+  it('copies immediately when Copy is activated before the auto-copy debounce', async () => {
     render(<Message onQuote={vi.fn()} />)
     selectMessage()
     advanceTime(150)
@@ -85,6 +90,20 @@ describe('TextSelectionToolbar', () => {
     expect(screen.queryByRole('button', { name: 'common.copy' })).not.toBeInTheDocument()
     await act(async () => vi.advanceTimersByTime(1000))
     expect(writeText).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels the pending auto-copy when the selection collapses', async () => {
+    render(<Message onQuote={vi.fn()} />)
+    selectMessage()
+    advanceTime(100)
+
+    window.getSelection()!.removeAllRanges()
+    fireEvent(document, new Event('selectionchange'))
+    advanceTime(1000)
+    await act(async () => {})
+
+    expect(writeText).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'common.copy' })).not.toBeInTheDocument()
   })
 
   it('preserves selection while aiming at Quote and clears it before invoking onQuote', () => {
@@ -110,19 +129,21 @@ describe('TextSelectionToolbar', () => {
     expect(writeText).not.toHaveBeenCalled()
   })
 
-  it.each(dismissActions)('cancels the pending menu on %s', (_name, dismiss) => {
+  it.each(dismissActions)('cancels the pending menu on %s while keeping auto-copy', async (_name, dismiss) => {
     render(<Message onQuote={vi.fn()} />)
     selectMessage()
     advanceTime(100)
 
     dismiss()
     advanceTime(1000)
+    await act(async () => {})
 
     expect(screen.queryByRole('button', { name: 'common.copy' })).not.toBeInTheDocument()
-    expect(writeText).not.toHaveBeenCalled()
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(writeText).toHaveBeenCalledWith('First line\nSecond line')
   })
 
-  it.each(dismissActions)('dismisses the visible menu on %s', (_name, dismiss) => {
+  it.each(dismissActions)('dismisses the visible menu on %s while keeping auto-copy', async (_name, dismiss) => {
     render(<Message onQuote={vi.fn()} />)
     selectMessage()
     advanceTime(150)
@@ -130,8 +151,10 @@ describe('TextSelectionToolbar', () => {
 
     dismiss()
     advanceTime(1000)
+    await act(async () => {})
 
     expect(screen.queryByRole('button', { name: 'common.copy' })).not.toBeInTheDocument()
-    expect(writeText).not.toHaveBeenCalled()
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(writeText).toHaveBeenCalledWith('First line\nSecond line')
   })
 })

@@ -1,8 +1,10 @@
 /**
  * TextSelectionToolbar — selection actions for assistant message content.
  *
- * Selecting text inside a message content area raises a small floating menu
- * with Copy / Quote. Clipboard writes require an explicit Copy action.
+ * Selecting text inside a message content area auto-copies it to the
+ * clipboard once the selection settles (debounced), and raises a small
+ * floating menu with Copy / Quote. The Copy button doubles as a manual
+ * retry when the automatic clipboard write is blocked by permissions.
  *
  * Quote hands the selection lines to the composer, which inserts them as a
  * quote block. The text sent to the model is the same markdown blockquote the
@@ -28,6 +30,9 @@ const MIN_SELECTION_LENGTH = 2
 
 /** Debounce delay before the floating menu appears */
 const MENU_DEBOUNCE_MS = 150
+
+/** Debounce delay before the settled selection is auto-copied to the clipboard */
+const AUTO_COPY_DEBOUNCE_MS = 400
 
 /** Gap between the selection and the floating menu, in px */
 const MENU_GAP_PX = 8
@@ -116,6 +121,7 @@ export const TextSelectionToolbar = memo(function TextSelectionToolbar({
   const activeRef = useRef<SelectionSnapshot | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const menuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const clearMenuTimer = useCallback(() => {
     if (menuTimerRef.current) {
@@ -123,6 +129,25 @@ export const TextSelectionToolbar = memo(function TextSelectionToolbar({
       menuTimerRef.current = null
     }
   }, [])
+
+  const clearCopyTimer = useCallback(() => {
+    if (copyTimerRef.current) {
+      clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = null
+    }
+  }, [])
+
+  const copyText = useCallback(
+    async (text: string) => {
+      try {
+        await navigator.clipboard.writeText(text)
+        toast.success(t('common.copied'), { duration: 1500 })
+      } catch {
+        // Silently ignore clipboard errors (e.g. permissions)
+      }
+    },
+    [t]
+  )
 
   const closeMenu = useCallback(() => {
     clearMenuTimer()
@@ -135,12 +160,14 @@ export const TextSelectionToolbar = memo(function TextSelectionToolbar({
   useEffect(() => {
     return () => {
       clearMenuTimer()
+      clearCopyTimer()
     }
-  }, [clearMenuTimer])
+  }, [clearMenuTimer, clearCopyTimer])
 
   const handleSelectionChange = useCallback(
     (snapshot: SelectionSnapshot | null) => {
       if (!snapshot) {
+        clearCopyTimer()
         closeMenu()
         return
       }
@@ -153,8 +180,17 @@ export const TextSelectionToolbar = memo(function TextSelectionToolbar({
         activeRef.current = snapshot
         setActive(snapshot)
       }, MENU_DEBOUNCE_MS)
+
+      // Auto-copy the selection once it stops changing. Menu dismissal
+      // (scroll, Escape, ...) does not cancel this — only a collapsed or
+      // replaced selection does.
+      clearCopyTimer()
+      copyTimerRef.current = setTimeout(() => {
+        copyTimerRef.current = null
+        void copyText(snapshot.text)
+      }, AUTO_COPY_DEBOUNCE_MS)
     },
-    [clearMenuTimer, closeMenu]
+    [clearMenuTimer, clearCopyTimer, closeMenu, copyText]
   )
 
   useEffect(() => {
@@ -189,22 +225,20 @@ export const TextSelectionToolbar = memo(function TextSelectionToolbar({
     }
   }, [trackingSelection, closeMenu])
 
-  const handleCopy = useCallback(async () => {
+  const handleCopy = useCallback(() => {
     const snapshot = activeRef.current
     if (!snapshot) return
-    try {
-      await navigator.clipboard.writeText(snapshot.text)
-      toast.success(t('common.copied'), { duration: 1500 })
-    } catch {
-      // Silently ignore clipboard errors (e.g. permissions)
-    }
+    // The explicit copy satisfies the pending auto-copy; don't fire it twice.
+    clearCopyTimer()
+    void copyText(snapshot.text)
     closeMenu()
-  }, [closeMenu, t])
+  }, [clearCopyTimer, closeMenu, copyText])
 
   const handleQuote = useCallback(() => {
     const snapshot = activeRef.current
     if (!snapshot || !onQuote) return
     const { lines } = toQuotedSelection(snapshot.text)
+    clearCopyTimer()
     closeMenu()
     if (lines.length === 0) return
     // Drop our own selection BEFORE handing over: the composer focuses itself
