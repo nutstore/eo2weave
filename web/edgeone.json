@@ -8,6 +8,18 @@
       ]
     },
     {
+      "source": "/blog",
+      "headers": [
+        { "key": "Cross-Origin-Embedder-Policy", "value": "unsafe-none" }
+      ]
+    },
+    {
+      "source": "/blog/*",
+      "headers": [
+        { "key": "Cross-Origin-Embedder-Policy", "value": "unsafe-none" }
+      ]
+    },
+    {
       "source": "/wasm/*.wasm",
       "headers": [
         { "key": "Content-Type", "value": "application/wasm" }
@@ -19,5 +31,10 @@
         { "key": "Cross-Origin-Resource-Policy", "value": "cross-origin" }
       ]
     }
-  ]
+  ],
+  "cloudFunctions": {
+    "nodejs": {
+      "maxDuration": 60
+    }
+  }
 }

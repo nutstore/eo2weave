@@ -16,6 +16,7 @@ export type HeaderCopy = ExtensionCopy & {
   /** Domestic build only: the overseas site does not offer the Nutstore AI plan. */
   pricing?: string
   help: string
+  blog?: string
   download: string
   online: string
   openMenu: string
@@ -154,6 +155,7 @@ export function SiteHeader({ page, region, copy }: { page: MarketingPageKey; reg
           <a href={HELP_HREF[region]} target="_blank" rel="noopener noreferrer">
             {copy.help}
           </a>
+          {region === 'cn' && copy.blog && <a href="/blog">{copy.blog}</a>}
           <Link href="/download" onClick={page === 'download' ? onCurrentPageClick : undefined} {...active('download')}>
             {copy.download}
           </Link>
