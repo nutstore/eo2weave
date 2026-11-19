@@ -3027,10 +3027,19 @@ export default defineBackground(() => {
                   // (a logout and re-login can land between the read above and
                   // this write).
                   if (models.length > 0 && requestSequence === codexModelsRequestSequence) {
-                    const currentTokens = await CODEX!.getCodexTokens();
-                    // The await above can let a newer request or a fresh
-                    // authorization land, so re-check both before assigning.
-                    if (requestSequence === codexModelsRequestSequence && currentTokens?.access_token === accessToken) {
+                    // The token read is an await, so a newer request or a fresh
+                    // authorization can land in between. Keep its failure out of
+                    // the endpoint probe: a storage hiccup is not an endpoint
+                    // error.
+                    let stillCurrent = false;
+                    try {
+                      const currentTokens = await CODEX!.getCodexTokens();
+                      stillCurrent = requestSequence === codexModelsRequestSequence
+                        && currentTokens?.access_token === accessToken;
+                    } catch {
+                      stillCurrent = false;
+                    }
+                    if (stillCurrent) {
                       codexModelsCache = {
                         accessToken,
                         models,
