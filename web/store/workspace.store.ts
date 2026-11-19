@@ -154,7 +154,7 @@ export const PENDING_RESET_PATCH: Partial<WorkspaceState> = {
  *
  * Without the native host check, roots authorized via pick_folder (which
  * don't have a FileSystemDirectoryHandle) would make this return false,
- * causing the PendingSyncPanel to incorrectly show "未挂载本地目录".
+ * causing the PendingSyncPanel to incorrectly show that no local directory is mounted.
  */
 async function deriveLiveHasDirectoryHandle(activeProjectId: string | null): Promise<boolean> {
   if (!activeProjectId) return false
@@ -585,7 +585,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             // folder-access hydration (triggered earlier via initializeProjects
             // -> setActiveProject -> hydrateProject) may have already bound the
             // native handle and set this to `true`; blindly resetting it here
-            // would make the PendingSyncPanel show "未挂载本地目录" even when a
+            // would make the PendingSyncPanel show "no local directory mounted" even when a
             // directory is mounted.
             const liveHasDirectoryHandle = await deriveLiveHasDirectoryHandle(activeProjectId)
 
@@ -859,7 +859,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               // every real folder. The result: after a page refresh,
               // switchWorkspace reset hasDirectoryHandle to false (via
               // PENDING_RESET_PATCH) and never restored it, leaving the
-              // PendingSyncPanel showing "未挂载本地目录".
+              // PendingSyncPanel showing "no local directory mounted".
               const allHandles = getRuntimeHandlesForProject(activeProjectId)
               const anyHandle = allHandles.values().next().value ?? null
               if (anyHandle) {
@@ -869,7 +869,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 // deriveLiveHasDirectoryHandle checks folder-access.store for
                 // backend='native-host' roots. Without this, switching to a
                 // workspace backed by a native-host root would leave
-                // hasDirectoryHandle=false, showing "未挂载本地目录" in the
+                // hasDirectoryHandle=false, showing "no local directory mounted" in the
                 // PendingSyncPanel even though a scope is authorized.
                 const liveHasDir = await deriveLiveHasDirectoryHandle(activeProjectId)
                 if (liveHasDir) {

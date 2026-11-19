@@ -125,7 +125,7 @@ export interface SettingsState {
   enableThinking: boolean
   thinkingLevel: ExtendedThinkingLevel
 
-  // 实验性功能 (Experimental features, disabled by default)
+  // Experimental features (disabled by default)
   enableBatchSpawn: boolean
   enableWebMCP: boolean
   agentLoopNotifications: {
@@ -875,7 +875,7 @@ async function runProviderDiscovery(get: () => SettingsState): Promise<Awaited<R
         const catalogStatus = getDynCatalogStatus(llmGatewayProviderKey) ?? 'failed'
         results.push({
           providerType: llmGatewayProviderKey,
-          // Locale-aware provider name (zh: 坚果云 AI / others: Nutstore AI);
+          // Locale-aware provider name (zh uses the Chinese product name, others: Nutstore AI);
           // helper covers the llm-gateway -> settings.gateway.name mapping.
           displayName: localizedProviderDisplayName(llmGatewayProviderKey, gwMeta?.displayName || 'Nutstore AI'),
           models,

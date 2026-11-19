@@ -1,8 +1,8 @@
 /**
  * Agent store - manages global agent configuration.
  *
- * @deprecated 使用 folder-access.store 替代
- * 此文件保留作为向后兼容层，内部委托给 folder-access.store
+ * @deprecated Use folder-access.store instead
+ * Kept as a backwards-compatibility layer that delegates to folder-access.store
  */
 
 import { create } from 'zustand'
@@ -10,29 +10,29 @@ import { toast } from 'sonner'
 import { i18nText } from './conversation-message-ops'
 
 export interface AgentState {
-  /** @deprecated 使用 folder-access.store */
+  /** @deprecated Use folder-access.store */
   activeProjectId: string
-  /** @deprecated 使用 folder-access.store */
+  /** @deprecated Use folder-access.store */
   directoryHandle: FileSystemDirectoryHandle | null
-  /** @deprecated 使用 folder-access.store */
+  /** @deprecated Use folder-access.store */
   directoryName: string | null
-  /** @deprecated 使用 folder-access.store */
+  /** @deprecated Use folder-access.store */
   isRestoringHandle: boolean
-  /** @deprecated 使用 folder-access.store */
+  /** @deprecated Use folder-access.store */
   pendingHandle: FileSystemDirectoryHandle | null
 
   setActiveProject: (projectId: string) => Promise<void>
-  /** @deprecated 使用 folder-access.store */
+  /** @deprecated Use folder-access.store */
   setDirectoryHandle: (handle: FileSystemDirectoryHandle | null) => void
   /** @deprecated */
   restoreDirectoryHandle: () => Promise<void>
-  /** @deprecated 使用 folder-access.store */
+  /** @deprecated Use folder-access.store */
   requestPendingHandlePermission: () => Promise<boolean>
 }
 
 /**
- * 同步 agent.store 状态到 folder-access.store
- * 需要在应用初始化时调用
+ * Mirrors the agent.store state into folder-access.store
+ * Must be called during app initialization
  */
 async function syncFromFolderAccess() {
   try {
@@ -62,12 +62,12 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   setActiveProject: async (projectId: string) => {
     set({ activeProjectId: projectId })
 
-    // 同步到 folder-access.store
+    // Mirror into folder-access.store
     try {
       const { useFolderAccessStore } = await import('./folder-access.store')
       await useFolderAccessStore.getState().setActiveProject(projectId || null)
 
-      // 同步状态回来
+      // Mirror the state back
       await syncFromFolderAccess()
     } catch (error) {
       console.error('[AgentStore] Failed to set active project in folder-access:', error)
@@ -86,13 +86,13 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       const folderStore = useFolderAccessStore.getState()
 
       if (handle) {
-        // 保存传入的 handle 到 folder-access.store
+        // Persist the incoming handle into folder-access.store
         await folderStore.setHandle(activeProjectId, handle)
-        // 同步状态
+        // Mirror the state
         await syncFromFolderAccess()
       } else {
         await folderStore.release(activeProjectId)
-        // 同步清空状态
+        // Mirror the cleared state
         set({
           directoryHandle: null,
           directoryName: null,
@@ -143,16 +143,16 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
 }))
 
 // ============================================================================
-// 初始化同步
+// Initial sync
 // ============================================================================
 
-// 当 folder-access.store 变化时，同步到 agent.store
+// When folder-access.store changes, mirror it into agent.store
 import { useFolderAccessStore } from './folder-access.store'
 
-// 订阅 folder-access.store 变化并同步
+// Subscribe to folder-access.store changes and mirror them
 let previousStatus: string | null = null
 
-// 在 store 初始化后检查状态变化
+// Check for state changes after the store initializes
 const checkAndSync = () => {
   const folderRecord = useFolderAccessStore.getState().getRecord()
   if (!folderRecord) return
@@ -164,7 +164,7 @@ const checkAndSync = () => {
   }
 }
 
-// 创建定时器检查状态变化
+// Poll for state changes on a timer
 let syncInterval: ReturnType<typeof setInterval> | null = null
 
 export function startFolderAccessSync() {

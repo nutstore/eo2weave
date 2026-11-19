@@ -1,8 +1,8 @@
 /**
  * Agents Store
  *
- * 管理多 Agent 系统的状态。
- * 每个 Agent 有独立的 SOUL.md、IDENTITY.md 等配置文件。
+ * Manages the state of the multi-agent system.
+ * Each agent keeps its own SOUL.md, IDENTITY.md and related config files.
  */
 
 import { create } from 'zustand'
@@ -12,7 +12,7 @@ import { ProjectManager, type AgentMeta, type AgentInfo } from '@/opfs'
 import { useProjectStore } from './project.store'
 
 /**
- * Agent 档案文件的读取结果
+ * Result of reading an agent's profile files
  */
 export interface AgentFiles {
   soul: string
@@ -20,29 +20,29 @@ export interface AgentFiles {
   agents: string
   user: string
   memory: string
-  /** 日记日期列表，倒序（最新的在前） */
+  /** Diary dates, newest first */
   diaries: string[]
 }
 
 interface AgentsState {
   /** Project whose Agent catalog is currently loaded. */
   loadedProjectId: string | null
-  // 当前活跃的 agent
+  // Currently active agent
   activeAgentId: string | null
   activeAgent: AgentInfo | null
 
-  // Agent 列表 (仅元数据，轻量)
+  // Agent list (metadata only, lightweight)
   agents: AgentMeta[]
 
-  // 状态
+  // Status
   isLoading: boolean
   isInitialized: boolean
   error: string | null
 
-  // ProjectManager 实例 (由外部注入)
+  // ProjectManager instance (injected from outside)
   projectManager: ProjectManager | null
 
-  // agent 写文件后的通知计数 —— 供打开中的 Agent 档案面板感知变更并刷新
+  // Bumped after an agent writes files — an open Agent profile panel watches it to refresh
   agentsRevision: number
 
   // Actions
@@ -55,27 +55,27 @@ interface AgentsState {
   createAgent: (id: string) => Promise<AgentInfo | null>
   deleteAgent: (id: string) => Promise<boolean>
 
-  // Agent 文件编辑
+  // Agent file editing
   updateAgentFile: (
     agentId: string,
     file: 'soul' | 'identity' | 'agents' | 'user' | 'memory',
     content: string
   ) => Promise<boolean>
 
-  // Agent 档案读取
+  // Agent profile reading
   readAgentFiles: (agentId: string) => Promise<AgentFiles | null>
   readAgentDiary: (agentId: string, date: string) => Promise<string | null>
 
-  // Agent 档案写入（按日期的日记）
+  // Agent profile writing (diary entries keyed by date)
   updateAgentDiary: (agentId: string, date: string, content: string) => Promise<boolean>
 
-  // 通知 agent 档案面板 agent 文件已变更
+  // Notify the Agent profile panel that agent files changed
   bumpAgentsRevision: () => void
 
-  // 日记
+  // Diaries
   appendTodayLog: (agentId: string, content: string) => Promise<boolean>
 
-  // 技能
+  // Skills
   listSkills: (agentId: string) => Promise<string[]>
   readSkill: (agentId: string, skillName: string) => Promise<string | null>
   writeSkill: (agentId: string, skillName: string, content: string) => Promise<boolean>
@@ -266,7 +266,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
         return null
       }
 
-      // 验证 ID 格式
+      // Validate the id format
       if (!/^[\p{L}\p{N}_-]+$/u.test(id)) {
         toast.error(
           i18nText(
@@ -292,7 +292,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
           return null
         }
 
-        // 检查是否已存在
+        // Reject a duplicate id
         const exists = await project.agentManager.hasAgent(id)
         if (exists) {
           toast.error(`Agent "${id}" already exists`)
@@ -300,10 +300,10 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
           return null
         }
 
-        // 创建 agent
+        // Create the agent
         const agentInfo = await project.agentManager.createAgent(id)
 
-        // 刷新列表 — but only while the user is still on the project this
+        // Refresh the list — but only while the user is still on the project this
         // agent belongs to. A create that settles after a project switch must
         // not overwrite the new project's freshly loaded catalog (the composer
         // would offer stale Agents it cannot select).
@@ -331,7 +331,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
       const { projectManager, activeAgentId } = get()
       if (!projectManager) return false
 
-      // 不允许删除 default
+      // The default agent cannot be deleted
       if (id === 'default') {
         toast.error('Cannot delete default agent')
         return false
@@ -362,7 +362,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
           return true
         }
 
-        // 如果删除的是当前活跃的，切换到 default
+        // If the deleted agent was the active one, fall back to default
         if (activeAgentId === id) {
           const defaultAgent = await project.agentManager.getAgent('default')
           set({
@@ -371,7 +371,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
           })
         }
 
-        // 刷新列表 — but only while the user is still on the project the
+        // Refresh the list — but only while the user is still on the project the
         // deletion belongs to (same staleness rule as createAgent).
         const agents = await project.agentManager.listAgents()
         if (useProjectStore.getState().activeProjectId !== currentProjectId) {
@@ -419,7 +419,7 @@ export const useAgentsStore = create<AgentsState>()((set, get) => ({
             break
         }
 
-        // 更新缓存中的 activeAgent
+        // Update the cached activeAgent
         if (activeAgent && activeAgent.id === agentId) {
           set({
             activeAgent: { ...activeAgent, [file]: content },

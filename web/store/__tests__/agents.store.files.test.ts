@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentsStore } from '../agents.store'
 
 /**
- * useAgentsStore — agent 档案读取相关
+ * useAgentsStore — Agent profile reading
  *
  * The store resolves the active project's AgentManager through the
  * ProjectManager, so the whole chain is stubbed here. Tests must never

@@ -7,7 +7,7 @@
  *    enabled in the extension popup, hand-entered MCP servers) were annoying.
  * 2. A per-source "always trust" list was added, then a global default-trust
  *    switch — but combining them (default + per-source overrides) made the
- *    per-site switch confusing ("单个站点的那个信任开关，现在就不好用了").
+ *    per-site switch confusing ("the per-site trust toggle just doesn't work anymore").
  * 3. Final model: ONLY the global switch. When ON (the default), tools from
  *    every discovered MCP server / WebMCP page run without the approval
  *    modal in plan AND act mode. When OFF, every call prompts again.
