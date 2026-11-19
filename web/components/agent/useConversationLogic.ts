@@ -103,6 +103,7 @@ export function useConversationLogic() {
   // The draft text to inject into the editor when switching back to a workspace.
   // This is separate from `input` because Tiptap manages its own content.
   const [draftTextToRestore, setDraftTextToRestore] = useState<string | null>(null)
+  const [sendScrollRequest, setSendScrollRequest] = useState(0)
   // Track which convId the draft belongs to, so we can clear it after restore
   const draftConvIdRef = useRef<string | null>(null)
 
@@ -655,6 +656,7 @@ export function useConversationLogic() {
           pageContext: pageContext ?? undefined,
         })
         if (result.enqueued) {
+          setSendScrollRequest((request) => request + 1)
           useInputDraftStore.getState().clearDraft(targetConvId)
           setDraftTextToRestore(null)
           draftConvIdRef.current = null
@@ -672,6 +674,7 @@ export function useConversationLogic() {
 
       const userMsg = createUserMessage(text, assets, pageContext ?? undefined)
       updateMessages(targetConvId, targetConv ? [...targetConv.messages, userMsg] : [userMsg])
+      setSendScrollRequest((request) => request + 1)
       // Clear any draft for this conversation (message sent) and reset restore state
       useInputDraftStore.getState().clearDraft(targetConvId)
       setDraftTextToRestore(null)
@@ -906,7 +909,7 @@ export function useConversationLogic() {
     mentionAgents,
     // Conversation state (NO streaming data — that's subscribed in ConversationMessages)
     convId,
-    activeMessages,
+    activeMessages, sendScrollRequest,
     conversationError,
     activeContextWindowUsage,
     isProcessing,

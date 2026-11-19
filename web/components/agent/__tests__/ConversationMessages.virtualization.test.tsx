@@ -210,7 +210,7 @@ describe('ConversationMessages virtualization', () => {
     expect(virtuosoSpy).not.toHaveBeenCalled()
   })
 
-  it('renders long conversations through Virtuoso without a list header (usage bar moved out)', async () => {
+  it('renders long conversations through Virtuoso with an internal spacing header (usage bar moved out)', async () => {
     // 55 pairs → 110 messages, above the threshold
     const { container } = renderConversation(makeMessages(55))
     await waitFor(() => {
@@ -218,9 +218,13 @@ describe('ConversationMessages virtualization', () => {
     })
     // All turns handed to Virtuoso as data
     expect(virtuosoSpy.mock.calls[0][0].data).toHaveLength(110)
-    // No Header slot: the usage bar must NOT be inside the virtualized list
-    const components = virtuosoSpy.mock.calls[0][0].components as { Header?: unknown }
-    expect(components.Header).toBeUndefined()
+    // Vertical spacing belongs inside Virtuoso, not on its external wrapper:
+    // customScrollParent bottom detection otherwise sees mismatched offsets.
+    const components = virtuosoSpy.mock.calls[0][0].components as { Header?: () => React.ReactNode }
+    expect(components.Header).toBeTypeOf('function')
+    const virtualScroller = container.querySelector('[data-testid="virtuoso-mock"]')!
+    expect(virtualScroller.parentElement?.parentElement?.className).not.toMatch(/\bpy-/)
+    expect(container.querySelector('[data-testid="scroll-container"]')?.querySelector('[class="h-3 sm:h-4"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="usage-bar"]')).toBeNull()
     expect(usageBarSpy).not.toHaveBeenCalled()
     expect(container.querySelectorAll('[data-testid="message-bubble"]')).toHaveLength(55)
@@ -356,6 +360,20 @@ describe('ConversationMessages virtualization', () => {
     rerender(makeVirtualUi(56, { isUserAtBottomRef }))
     expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
     expect(isUserAtBottomRef.current).toBe(false)
+  })
+
+  it('restores follow state when a user send renders in a virtualized conversation', async () => {
+    const isUserAtBottomRef = { current: true }
+    const handleRef = { current: null as ConversationMessagesHandle | null }
+    const { container, rerender } = render(makeVirtualUi(55, { isUserAtBottomRef, handleRef }))
+    await waitFor(() => expect(container.querySelector('[data-testid="virtuoso-mock"]')).not.toBeNull())
+
+    act(() => atBottomStateChangeHandlers.at(-1)?.(false))
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe(false)
+
+    rerender(makeVirtualUi(56, { isUserAtBottomRef, handleRef, sendScrollRequest: 1, isProcessing: true }))
+    expect(virtuosoScrollToSpy).toHaveBeenCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' })
+    expect(virtuosoSpy.mock.calls.at(-1)![0].followOutput()).toBe('smooth')
   })
 
   it('followOutput returns false when the shared ref seeds NOT-at-bottom (PR #142 review)', async () => {
@@ -1026,7 +1044,7 @@ describe('ConversationMessages virtualization', () => {
 /** Render a virtualized conversation with configurable props (issue #141 tests). */
 function makeVirtualUi(
   pairs: number,
-  options: { isUserAtBottomRef?: React.MutableRefObject<boolean>; virtualAtBottomHub?: VirtualAtBottomHub; handleRef?: { current: ConversationMessagesHandle | null } } = {},
+  options: { isUserAtBottomRef?: React.MutableRefObject<boolean>; virtualAtBottomHub?: VirtualAtBottomHub; handleRef?: { current: ConversationMessagesHandle | null }; sendScrollRequest?: number; isProcessing?: boolean } = {},
 ) {
   const noop = vi.fn()
   const messagesEndRef = { current: null as HTMLDivElement | null }
@@ -1035,8 +1053,9 @@ function makeVirtualUi(
       <ConversationMessages
         ref={options.handleRef ?? undefined}
         activeMessages={makeMessages(pairs)}
+        sendScrollRequest={options.sendScrollRequest}
         toolResults={new Map()}
-        isProcessing={false}
+        isProcessing={options.isProcessing ?? false}
         status="idle"
         onDeleteAgentLoop={noop}
         onEditAndResend={noop}

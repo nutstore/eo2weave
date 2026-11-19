@@ -8,7 +8,7 @@
  * streaming token (~60fps). Only this component tree re-renders.
  */
 
-import { memo, useMemo, forwardRef, useImperativeHandle, useCallback, useRef, useState, useLayoutEffect } from 'react'
+import { memo, useMemo, forwardRef, useImperativeHandle, useCallback, useRef, useState, useEffect, useLayoutEffect } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import type { VirtuosoHandle } from 'react-virtuoso'
 import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
@@ -38,6 +38,14 @@ const SCROLL_SEEK_VELOCITY = 800
 
 /** Extra rendered runway (px) on both sides of the visible window. */
 const INCREASE_VIEWPORT_BY = 900
+
+/**
+ * Bounded verification loop for the post-send jump (see the send-follow
+ * effect). Each tick re-checks the scroller's real bottom gap and re-jumps
+ * if Virtuoso's internal total height was still stale when the previous
+ * scrollTo was clamped.
+ */
+const SEND_JUMP_VERIFY_INTERVAL_MS = 150
 
 /**
  * How the virtualized renderer receives footer content (draft bubble + queued
@@ -255,6 +263,8 @@ const ConversationFooter = memo(ConversationFooterInner)
 
 type ConversationMessagesProps = {
   activeMessages: Message[]
+  /** Incremented when a user send is committed or queued. */
+  sendScrollRequest?: number
   /** Tool results from committed messages only (not runtime) */
   toolResults: Map<string, string>
   isProcessing: boolean
@@ -351,6 +361,7 @@ function getRuntimeProps(
 
 export const ConversationMessages = memo(forwardRef(function ConversationMessages({
   activeMessages,
+  sendScrollRequest,
   toolResults: committedToolResults,
   isProcessing,
   status,
@@ -488,9 +499,8 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   // Virtuoso's own at-bottom tracking (drives followOutput). Seeded from the
   // shared isUserAtBottomRef maintained by ConversationView/ScrollToBottomButton
   // so the very first streaming turn respects the current scroll position.
-  // Issue #141: this state is now the SINGLE source of truth for the
-  // virtualized path — atBottomStateChange is the only writer below, and the
-  // ScrollToBottomButton mirrors the same value through the listener channel.
+  // Keep Virtuoso's measured bottom as the single source of truth for the
+  // virtualized path; outer vertical padding would offset its measurements.
   const [isUserAtBottom, setIsUserAtBottom] = useState(() => isUserAtBottomRef?.current ?? true)
   /**
    * Single funnel for every virtualized at-bottom transition:
@@ -527,6 +537,78 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot resolution; scrollParent intentionally omitted
   }, [shouldVirtualize, conversationId])
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
+
+  // The send jump is DELAYED until the runtime picks the send up (loading
+  // draft bubble / queued card rendered in the footer) and VERIFIED against
+  // real scroller geometry afterwards. Jumping once at commit time lands on a
+  // geometry that is stale by one render: the footer's loading bubble mounts
+  // but Virtuoso's ResizeObserver measurement of it lands asynchronously, so
+  // scrollTo(MAX) is clamped against the OLD total height — leaving a ~32px
+  // gap that Virtuoso then reports as not-at-bottom, killing followOutput
+  // (observed live: gap stayed 32 with no scroll events). The verify loop
+  // re-jumps until the browser-measured gap is settled; it aborts on any user
+  // scroll intent so a manual scroll-away always wins.
+  const handledSendScrollRef = useRef(0)
+  const stopSendVerifyRef = useRef<(() => void) | null>(null)
+  const isProcessingRef = useRef(isProcessing)
+  useEffect(() => {
+    isProcessingRef.current = isProcessing
+  }, [isProcessing])
+  // Unmount safety: read the stopper through the ref at unmount time (it may
+  // have been installed long after this effect ran).
+  useEffect(() => () => stopSendVerifyRef.current?.(), [])
+  useLayoutEffect(() => {
+    if (!sendScrollRequest || sendScrollRequest === handledSendScrollRef.current) return
+    if (!isProcessing || !shouldVirtualize || !scrollParent) return
+    handledSendScrollRef.current = sendScrollRequest
+    // A previous send's verify loop may still be alive (its deadline not yet
+    // reached): stop it so two loops never drive the scroller at once.
+    stopSendVerifyRef.current?.()
+    if (isUserAtBottomRef) isUserAtBottomRef.current = true
+    setIsUserAtBottom(true)
+    const jump = () => virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' })
+    jump()
+    // Two live-observed failure modes, one guard loop:
+    // 1. The first scrollTo is clamped against a stale total height (the
+    //    footer bubble's ResizeObserver measurement lands a frame later),
+    //    leaving a ~32px gap that reads as not-at-bottom.
+    // 2. Streaming grows the LAST ITEM in place — followOutput never fires
+    //    (it only reacts to items being added), so the reply's growth reopens
+    //    the gap and Virtuoso kills follow for the rest of the run.
+    // So after a send we keep pinning to the true bottom for the whole run.
+    // It yields to wheel/touch gestures and to any upward scroll (scrollbar
+    // drag, PgUp) — manual scroll-away always wins. Typing in the composer
+    // deliberately does NOT abort it (queued sends must keep following).
+    let cancelled = false
+    let lastTop = -1
+    const abort = () => { cancelled = true }
+    const stop = () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('wheel', abort, true)
+      window.removeEventListener('touchstart', abort, true)
+      if (stopSendVerifyRef.current === stop) stopSendVerifyRef.current = null
+    }
+    const timer = window.setInterval(() => {
+      if (cancelled) return
+      // Any upward movement we did not cause is the user taking over.
+      if (lastTop >= 0 && scrollParent.scrollTop < lastTop - 4) { stop(); return }
+      const gap = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight
+      if (gap <= 1) {
+        if (!isProcessingRef.current) stop()
+        return
+      }
+      // Run over but not settled: stop chasing, the user may be reading.
+      if (!isProcessingRef.current) { stop(); return }
+      jump()
+      lastTop = scrollParent.scrollTop
+      if (isUserAtBottomRef) isUserAtBottomRef.current = true
+      setIsUserAtBottom(true)
+    }, SEND_JUMP_VERIFY_INTERVAL_MS)
+    stopSendVerifyRef.current = stop
+    window.addEventListener('wheel', abort, { capture: true, passive: true })
+    window.addEventListener('touchstart', abort, { capture: true, passive: true })
+  }, [sendScrollRequest, isProcessing, shouldVirtualize, scrollParent, isUserAtBottomRef])
 
   // ── Expose navigation handle to parent ──
   useImperativeHandle(ref, useCallback(() => ({
@@ -697,7 +779,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   const lastTurnIndex = turns.length - 1
 
   return (
-    <div className="min-h-0 px-2 py-3 sm:px-4 sm:py-4">
+    <div className="min-h-0 px-2 sm:px-4">
       <div className="mx-auto w-full max-w-3xl">
         <Virtuoso
           ref={virtuosoRef}
@@ -711,6 +793,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
           increaseViewportBy={INCREASE_VIEWPORT_BY}
           scrollSeekConfiguration={scrollSeekConfiguration}
           components={{
+            Header: VirtuosoHeader,
             Footer: VirtuosoFooter,
             ScrollSeekPlaceholder: TurnPlaceholder,
           }}
@@ -738,8 +821,12 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
  * Content arrives through Virtuoso's `context` prop so the memoized Footer
  * slot re-renders whenever ConversationMessages publishes a new footer node.
  */
+function VirtuosoHeader() {
+  return <div className="h-3 sm:h-4" />
+}
+
 function VirtuosoFooter({ context }: { context?: { footerNode: React.ReactNode } }) {
-  return <>{context?.footerNode ?? null}</>
+  return <>{context?.footerNode ?? null}<div className="h-3 sm:h-4" /></>
 }
 
 /** Lightweight placeholder shown for off-window turns during fast scrolling. */
