@@ -468,6 +468,9 @@ export const settings = {
 
     // 외부 링크
     getApiKey: "API Key 받기",
+    requiresExtension: "확장 프로그램 필요",
+    requiresExtensionHint:
+      "이 공급자의 API는 브라우저에서 직접 호출할 수 없어 브라우저 확장 프로그램을 설치하고 연결해야 사용할 수 있습니다.",
     notConfigured: "설정되지 않음",
 
     // 기본 모델 선택

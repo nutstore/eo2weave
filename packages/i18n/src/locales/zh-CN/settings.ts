@@ -459,6 +459,9 @@ export const settings = {
 
     // 外部链接
     getApiKey: "获取 API Key",
+    requiresExtension: "需装扩展",
+    requiresExtensionHint:
+      "该服务商的接口不允许浏览器直接跨域调用，需要安装并连接浏览器扩展后才能使用。",
     notConfigured: "未配置",
 
     // 默认模型选择

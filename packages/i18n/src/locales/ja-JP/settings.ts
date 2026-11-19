@@ -475,6 +475,9 @@ export const settings = {
 
     // 外部リンク
     getApiKey: "API Key を取得",
+    requiresExtension: "拡張機能が必要",
+    requiresExtensionHint:
+      "このプロバイダーの API はブラウザからの直接呼び出しを許可していないため、ブラウザ拡張機能をインストールして接続する必要があります。",
     notConfigured: "未設定",
 
     // デフォルトモデル選択
