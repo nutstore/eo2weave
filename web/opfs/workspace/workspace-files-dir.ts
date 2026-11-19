@@ -203,7 +203,7 @@ export async function deleteFromFilesDirImpl(
     const parts = path.split('/').filter(Boolean)
     if (parts.length === 0) return
 
-    // 记录父目录 handle 链，删除后向上清理空目录
+    // Record the parent-handle chain so empty directories can be pruned upward after deletion
     const handleChain: Array<{ handle: FileSystemDirectoryHandle; name: string }> = []
     let current = filesDir
     for (let i = 0; i < parts.length - 1; i++) {
@@ -212,9 +212,9 @@ export async function deleteFromFilesDirImpl(
     }
     await current.removeEntry(parts[parts.length - 1])
 
-    // 向上清理变空的父目录（bottom-up，遇到非空即停）。
-    // 否则 OPFS files/ 会残留空目录树，后续同步/扫描将它们当作有效
-    // 条目处理，导致已迁移目录在磁盘侧被反复重建（幽灵目录）。
+    // Prune the now-empty parents bottom-up, stopping at the first non-empty one.
+    // Otherwise OPFS files/ keeps an empty directory tree, which later syncs/scans treat as
+    // valid entries, so migrated-away directories get recreated on disk over and over (ghost dirs).
     for (let i = handleChain.length - 1; i >= 0; i--) {
       const { handle, name } = handleChain[i]
       try {

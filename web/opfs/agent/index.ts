@@ -1,7 +1,7 @@
 /**
  * Agent Module
  *
- * 管理项目中的 Agent 系统。
+ * Manages the per-project agent system.
  */
 
 export { AgentManager, type AgentMeta, type AgentInfo } from './agent-manager'

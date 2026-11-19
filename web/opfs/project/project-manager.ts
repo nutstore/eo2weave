@@ -1,10 +1,10 @@
 /**
  * Project Manager
  *
- * 管理项目系统。每个项目包含 agents、workspaces。
- * 创建项目时会自动初始化默认 agent。
+ * Manages the project system. Each project holds agents and workspaces.
+ * Creating a project initializes a default agent automatically.
  *
- * 目录结构:
+ * Directory layout:
  * projects/{projectId}/
  * ├── agents/{agentId}/
  * └── workspaces/{workspaceId}/
@@ -21,7 +21,7 @@ const AGENTS_DIR = 'agents'
 const WORKSPACES_DIR = 'workspaces'
 
 /**
- * 项目信息
+ * Project info
  */
 export interface ProjectInfo {
   id: string
@@ -40,7 +40,7 @@ export class ProjectManager {
   }
 
   /**
-   * 从 OPFS root 创建 ProjectManager
+   * Create a ProjectManager from the OPFS root
    */
   static async create(): Promise<ProjectManager> {
     const opfsRoot = await navigator.storage.getDirectory()
@@ -49,7 +49,7 @@ export class ProjectManager {
   }
 
   /**
-   * 检查项目是否存在
+   * Check whether a project exists
    */
   async hasProject(id: string): Promise<boolean> {
     try {
@@ -93,8 +93,8 @@ export class ProjectManager {
   }
 
   /**
-   * 创建新项目
-   * @param path 项目路径（用于生成 ID）
+   * Create a new project
+   * @param path Project path (used to derive the ID)
    */
   async createProject(path: string): Promise<ProjectInfo> {
     // Legacy behavior: keep path hashing for backward compatibility.
@@ -103,10 +103,10 @@ export class ProjectManager {
   }
 
   /**
-   * 获取项目
+   * Get a project
    */
   async getProject(id: string): Promise<ProjectInfo | null> {
-    // 检查缓存
+    // Check the cache
     if (this.projectCache.has(id)) {
       return this.projectCache.get(id)!
     }
@@ -135,7 +135,7 @@ export class ProjectManager {
   }
 
   /**
-   * 删除项目
+   * Delete a project
    */
   async deleteProject(id: string): Promise<void> {
     await this.projectsDir.removeEntry(id, { recursive: true })
@@ -143,7 +143,7 @@ export class ProjectManager {
   }
 
   /**
-   * 根据路径获取或创建项目
+   * Get or create a project by path
    */
   async getOrCreateProject(path: string): Promise<ProjectInfo> {
     const id = this.hashPath(path)
@@ -162,7 +162,7 @@ export class ProjectManager {
   }
 
   /**
-   * 获取项目的 workspaces 目录
+   * Get the project's workspaces directory
    */
   async getWorkspacesDir(id: string): Promise<FileSystemDirectoryHandle | null> {
     try {
@@ -174,7 +174,7 @@ export class ProjectManager {
   }
 
   /**
-   * 路径 hash
+   * Path hash
    */
   hashPath(path: string): string {
     let hash = 0

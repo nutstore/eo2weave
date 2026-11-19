@@ -388,8 +388,8 @@ export class WorkspacePendingManager {
               const targetStat = await disk.exec.stat(disk.rootId, nativePath)
               recursive = targetStat !== null && !targetStat.isFile
             }
-            // pruneEmptyParents: 文件删掉后向上清理空父目录，避免磁盘侧
-            // 残留空目录树（与 FS Access 路径的 deleteFile 行为对齐）。
+            // pruneEmptyParents: after the file is deleted, prune now-empty parents
+            // so no empty directory tree is left on disk (matches deleteFile on the FS Access path).
             await disk.exec.delete(disk.rootId, nativePath, {
               pruneEmptyParents: true,
               recursive,
