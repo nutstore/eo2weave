@@ -2,7 +2,7 @@
  * MarkdownLink workspace-file link interception tests.
  *
  * AI replies reference workspace files with plain relative markdown links
- * (e.g. `[打开更新后的文档](daily/2026-08-OKR.md)`). Those hrefs resolve
+ * (e.g. `[Open the updated document](daily/2026-08-OKR.md)`). Those hrefs resolve
  * against the PAGE URL in the browser, so a plain anchor would navigate the
  * whole app away (404 / download). The interceptor must:
  *  - detect relative file links (no scheme, not anchor, not root-relative)

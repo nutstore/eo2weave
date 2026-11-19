@@ -14,7 +14,7 @@ export interface ProjectGridProps {
   isDisabled?: boolean
   /** Set of project IDs with a pending destructive/mutation action. */
   pendingActionIds?: Set<string>
-  /** Header subtitle to render next to the title (e.g. "8 个项目 138 个对话"). */
+  /** Header subtitle to render next to the title (e.g. "8 projects, 138 conversations"). */
   headerSubtitle?: React.ReactNode
   onOpenProject: (projectId: string) => void
   onRenameProject: (project: Project) => void

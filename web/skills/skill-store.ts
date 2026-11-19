@@ -1,10 +1,10 @@
 // ============================================================
-// skill-store.ts — Skill Store 发现页数据源 + URL 导入
+// skill-store.ts — Skill Store discovery-page data source + URL import
 //
-// 提供两个核心能力：
-// 1. fetchSkillStoreManifest() — 拉取 /skills/manifest.json
-// 2. installSkillFromUrl() — 从 URL 下载 ZIP → 走现有 ZIP 导入管道
-// 3. 缓存 + 错误处理 + 进度上报
+// Provides two core capabilities:
+// 1. fetchSkillStoreManifest() — fetch /skills/manifest.json
+// 2. installSkillFromUrl() — download a ZIP from a URL → run it through the existing ZIP import pipeline
+// 3. Caching + error handling + progress reporting
 // ============================================================
 
 import {
@@ -53,7 +53,7 @@ export interface SkillStoreEntry {
   version: string
   zipUrl: string
   fileCount?: number
-  /** 本地是否已安装（按 dirName 判断） */
+  /** Whether it is already installed locally (keyed by dirName) */
   installed?: boolean
 }
 

@@ -73,7 +73,7 @@ describe('text-preview-window', () => {
   })
 
   it('splits a CJK file into exact consecutive windows across multi-byte boundaries', async () => {
-    // Each '中' is 3 bytes, so a 200k-char window boundary falls mid-sequence
+    // Each CJK char is 3 bytes in UTF-8, so a 200k-char window boundary falls mid-sequence
     // in raw byte terms; the boundary trim must land on real characters.
     const content = '中文内容'.repeat(WINDOW_CHARS)
     const file = makeFile(content)

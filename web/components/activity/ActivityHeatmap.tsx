@@ -4,8 +4,8 @@
  * Theme-aware, uses project accent color.
  * Staggered cell reveal animation, summary stats, and a proper React tooltip.
  *
- * P0: Metrics redesigned — shows "N 个文档 · N 次对话 · N 个活跃天"
- *     instead of the opaque "N 次活动" aggregate. Removed streak.
+ * P0: Metrics redesigned — shows "N documents · N conversations · N active days"
+ *     instead of the opaque "N activities" aggregate. Removed streak.
  * P1: Clickable cells — click any cell to expand that day's work
  *     (documents edited, conversations had), with jump-to entries.
  */

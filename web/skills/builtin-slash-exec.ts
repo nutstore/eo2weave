@@ -3,7 +3,7 @@
  * (useConversationLogic.handleSend) and the command pack templates.
  *
  * Subject resolution order (works in BOTH main-app and side-panel modes):
- *   1. Inline subject after the command — "/polish 文字", "/translate en 文字"
+ *   1. Inline subject after the command — "/polish <text>", "/translate en <text>"
  *   2. Live page selection (side-panel mode)
  *   3. Page body text (side-panel mode; page-mode toast keeps it perceivable)
  */
@@ -89,8 +89,8 @@ async function fetchPageBodyText(): Promise<string | null> {
  * a user-facing toast) when no subject is available.
  *
  * Subject resolution order (works in BOTH main-app and side-panel modes):
- *   1. Inline subject typed after the command — "/polish 这段文字" or
- *      "/translate en 这段文字" (translate: first token = target lang)
+ *   1. Inline subject typed after the command — "/polish <text>" or
+ *      "/translate en <text>" (translate: first token = target lang)
  *   2. Live page selection (side-panel mode)
  *   3. Page body text (side-panel mode, surfaced with a page-mode toast)
  */

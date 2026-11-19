@@ -7,8 +7,8 @@ import { useI18nStore } from '@/i18n/store'
 /**
  * ImageGenDropdown — i18n wiring
  *
- * The popover used to hardcode Chinese copy ("搜索模型...", "宽高比",
- * "未找到匹配的模型"), which leaked into every other locale. Renders the
+ * The popover used to hardcode Chinese copy (model-search placeholder, aspect-
+ * ratio label, the "no matching model" message), leaking into every locale. Renders the
  * dropdown against the real translation table and fails if a key is missing.
  */
 

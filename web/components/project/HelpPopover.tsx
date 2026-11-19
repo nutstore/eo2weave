@@ -9,7 +9,7 @@ export interface HelpPopoverProps {
 }
 
 /**
- * Header help button + popover (文档中心 / GitHub / 隐私政策).
+ * Header help button + popover (docs center / GitHub / privacy policy).
  *
  * Replaces the old full-width hero "Docs Hub" button. Closes on outside click
  * and on Escape.

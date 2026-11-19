@@ -1,11 +1,11 @@
 /**
- * ModelSettings - LLM 设置面板
+ * ModelSettings - LLM settings panel
  *
- * 拆分为两个子区域：
- * 1. 默认模型选择 (Select) - 选择当前使用的服务商和模型
- * 2. 服务商管理 (ProviderManager) - 管理所有服务商的配置
+ * Split into two sub-sections:
+ * 1. Default model selection (Select) - pick the provider and model in use
+ * 2. Provider management (ProviderManager) - manage the configuration of every provider
  *
- * 高级参数和 Token 统计保留在此组件中
+ * Advanced parameters and token stats stay in this component
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'

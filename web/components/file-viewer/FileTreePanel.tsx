@@ -871,7 +871,7 @@ export const FileTreePanel = memo(function FileTreePanel({
         // When directoryHandle points to a deleted/inaccessible directory,
         // loadChildren throws (e.g. NotFoundError). Without setLoaded(true),
         // the auto-load effect would keep re-triggering because
-        // !loaded && !loading stays true, causing "加载中" to flash forever.
+        // !loaded && !loading stays true, causing the loading placeholder to flash forever.
         setRootNodes([])
         setLoaded(true)
         setLoadError(error instanceof Error ? error.message : String(error))

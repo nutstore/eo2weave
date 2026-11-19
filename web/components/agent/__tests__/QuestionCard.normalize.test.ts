@@ -82,7 +82,7 @@ describe('normalizeOption', () => {
 
     it('does NOT parse ⭐ prefix as a recommended flag', () => {
       // The string form was removed — there is no parsing of leading ⭐,
-      // em-dash separators, or "(推荐)" suffixes. Strings render as-is.
+      // em-dash separators, or a "recommended" marker inside the label. Strings render as-is.
       expect(normalizeOption('⭐ PostgreSQL — 推荐：成熟稳定' as unknown as RawOption)).toEqual({
         label: '⭐ PostgreSQL — 推荐：成熟稳定',
         description: undefined,

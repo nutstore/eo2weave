@@ -32,7 +32,7 @@ export interface BuiltinSlashCommandDef {
   takesLangArg?: boolean
   /**
    * True when trailing text after the command is the SUBJECT itself
-   * ("/polish 这段文字" works in ANY mode, no page context needed).
+   * ("/polish <text>" works in ANY mode, no page context needed).
    * When false, trailing text is meaningless (no such command today).
    */
   takesInlineSubject?: boolean
@@ -174,7 +174,7 @@ const LANG_MAP: Record<string, string> = {
   ru: '俄文',
 }
 
-/** /translate zh | /translate en | /translate 简体中文 → canonical name. */
+/** "/translate zh" | "/translate en" | a localized language label → canonical name. */
 export function normalizeLang(arg?: string): string {
   if (!arg || !arg.trim()) return '中文'
   const key = arg.trim().toLowerCase()

@@ -1,7 +1,7 @@
 /**
  * TextareaWithLines - Enhanced textarea with line numbers
  *
- * 行号区与文本区同步滚动，Tab 键插入两个空格而不是切换焦点。
+ * The line-number gutter scrolls in sync with the text area; Tab inserts two spaces instead of moving focus.
  */
 
 import { useCallback, useRef } from 'react'

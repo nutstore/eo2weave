@@ -1,11 +1,11 @@
 /**
- * ProviderManager - 服务商管理面板
+ * ProviderManager - provider management panel
  *
- * 功能：
- * - 列出所有服务商（内置 + 自定义），分组展示
- * - 每个服务商可展开管理：API Key、模型列表
- * - 模型列表：/models 动态获取 + 硬编码 + 手动输入补充
- * - 自定义服务商额外支持编辑 baseURL
+ * Features:
+ * - List every provider (builtin + custom), grouped
+ * - Each provider expands for management: API key, model list
+ * - Model list: dynamic /models fetch + hardcoded entries + manual additions
+ * - Custom providers additionally support editing baseURL
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
@@ -99,7 +99,7 @@ function localizedProviderName(t: (key: string) => string, type: LLMProviderType
 }
 
 // =============================================================================
-// ProviderCard - 单个服务商卡片
+// ProviderCard - card for a single provider
 // =============================================================================
 
 interface ProviderCardProps {
@@ -2375,7 +2375,7 @@ const groupedProviders = useMemo(
                 key={type}
                 providerType={type}
                 // Locale-aware display name for the Chinese-brand providers
-                // (zh: 原中文品牌 / others: company pinyin/English brand).
+                // (zh: original Chinese brand / others: company pinyin or English brand).
                 // Falls back to the static meta.displayName for providers
                 // without an i18n mapping (OpenAI, Anthropic, ...).
                 displayName={localizedProviderName(t, type, meta.displayName)}

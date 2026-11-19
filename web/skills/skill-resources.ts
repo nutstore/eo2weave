@@ -1,5 +1,5 @@
 /**
- * Skill Resources - 资源文件处理模块
+ * Skill Resources - resource file handling module
  *
  * Handles scanning, storing, and formatting of skill resource files
  * from references/, scripts/, and assets/ directories.
