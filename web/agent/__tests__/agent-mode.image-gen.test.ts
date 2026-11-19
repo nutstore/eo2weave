@@ -3,7 +3,7 @@
  * generate_image is EXEMPT from the Plan-mode write gate.
  *
  * Rationale: the tool writes only into the OPFS assets directory — never
- * workspace files — so Plan mode can generate images directly ("随手画" must
+ * workspace files — so Plan mode can generate images directly ("a quick doodle" must
  * not require a mode switch). This test locks the classification so a future
  * refactor cannot silently re-gate it.
  */

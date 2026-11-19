@@ -1,6 +1,6 @@
 /**
  * Schedule Management Tool — allows the LLM to create, edit, delete, list,
- * and trigger scheduled tasks (定时任务) bound to the current conversation.
+ * and trigger scheduled tasks bound to the current conversation.
  *
  * Actions:
  * - create: Create a new schedule with a cron expression and prompt

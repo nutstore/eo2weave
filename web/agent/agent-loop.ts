@@ -51,7 +51,7 @@ const TOOL_TIMEOUT_EXEMPTIONS = new Set<string>([
   // outer timer would kill parallel calls that were still waiting to run.
   'exec',
   // Page action tools — interact with the upstream page which may involve
-  // complex editors (ProseMirror, Yjs协同) that take unbounded time.
+  // complex editors (ProseMirror, Yjs collaboration) that take unbounded time.
   'page_snapshot', 'page_text_content', 'page_find_elements', 'page_synthesize_locators',
   'page_click', 'page_fill', 'page_type', 'page_scroll', 'page_evaluate',
   'page_screenshot',

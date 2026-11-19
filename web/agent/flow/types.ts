@@ -47,7 +47,7 @@ export interface LlmNodeConfig {
   temperature?: number
   /**
    * Output format. When 'json', the engine will:
-   * 1. Append "请仅输出合法 JSON" to the prompt
+   * 1. Append a "respond with valid JSON only" instruction to the prompt
    * 2. Parse the LLM response as JSON
    * 3. Store the parsed object so downstream nodes can access fields via {{field_name}}
    * Default: 'text' (raw string output).
@@ -62,7 +62,7 @@ export interface LlmNodeConfig {
 }
 
 export interface ReviewNodeConfig {
-  /** Acceptance criteria, e.g. "不超过200字，包含关键事项" */
+  /** Acceptance criteria, e.g. "no more than 200 characters, cover the key points" */
   criteria: string
   /** Minimum passing score (0-100), default 80 */
   minScore?: number
@@ -74,7 +74,7 @@ export interface OutputNodeConfig {
 }
 
 export interface RouterRule {
-  /** Human-readable label for this branch, e.g. "高质量" */
+  /** Human-readable label for this branch, e.g. "high quality" */
   label: string
   /**
    * Expression evaluated against the upstream output.

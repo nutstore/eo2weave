@@ -1,5 +1,5 @@
 /**
- * Nutstore AI (坚果云 AI) — persisted provider id: `llm-gateway`
+ * Nutstore AI — persisted provider id: `llm-gateway`
  *
  * The api-key-store identity the gateway advertises in
  * `getEffectiveProviderConfig().apiKeyProviderKey`.

@@ -59,7 +59,7 @@ export function buildAgentTools(input: BuildAgentToolsInput): AgentTool[] {
       }
 
       try {
-        // 计算当前上下文使用情况，传递给工具用于自我调节
+        // Compute current context usage and pass it to the tool for self-adjustment
         const contextConfig = input.contextManager.getConfig()
         const maxContextTokens = contextConfig.maxContextTokens || input.provider.maxContextTokens || 200000
         const reserveTokens = contextConfig.reserveTokens ?? 8192

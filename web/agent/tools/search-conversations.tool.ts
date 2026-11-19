@@ -7,7 +7,7 @@
  *   - Keyword mode  (query is non-empty): LIKE search on messages.content_json/meta_json
  *                                          (existing behavior, plus optional time/project filters).
  *   - List mode    (query is empty)     : pure time-window/project listing of conversations
- *                                          — useful for daily briefings like "最近 3 天".
+ *                                          — useful for daily briefings like "last 3 days".
  *
  * Time parameters use Unix epoch milliseconds.
  */
@@ -193,7 +193,7 @@ function decodeMessageContent(raw: string | null | undefined): string | null {
  * Note: The `messages` table only has `timestamp` (per-message time), not `updated_at`.
  * Time-window filtering is therefore applied at the *conversation* level (c.updated_at)
  * which represents "when the conversation was last active" — that's what users actually
- * care about for "最近 3 天 / 今天" briefings.
+ * care about for "last 3 days / today" briefings.
  */
 function buildMessageWhere(query: string): { sql: string; params: unknown[] } {
   if (!query) {

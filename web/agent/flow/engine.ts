@@ -75,7 +75,7 @@ export class NodeOutputStore {
    * upstream outputs rather than just the first one. Each upstream node's
    * label is used as the key so the consuming prompt reads naturally.
    *
-   * Returns a structured object like `{ "分析A": "...", "分析B": "..." }`,
+   * Returns a structured object like `{ "analysisA": "...", "analysisB": "..." }`,
    * or `undefined` when there are no upstream outputs.
    */
   getAllUpstreamOutputs(nodeId: string, edges: FlowEdge[], nodes: FlowNode[]): Record<string, string> | undefined {

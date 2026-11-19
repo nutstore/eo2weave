@@ -1,15 +1,15 @@
 /**
- * Snapshot Tools - OPFS 变更快照审查工具（非真实 Git）
+ * Snapshot Tools - OPFS change-snapshot review tools (not real Git)
  *
- * 基于 OPFS 变更追踪和快照系统（pending_ops / fs_changesets）实现，
- * 用于 agent 编辑的审查/撤销/回滚。真实 git 请通过 exec 工具执行。
+ * Built on OPFS change tracking and the snapshot system (pending_ops / fs_changesets),
+ * for reviewing / reverting / rolling back agent edits. For real git, use the exec tool.
  */
 
 import type { ToolDefinition, ToolExecutor, ToolPromptDoc } from './tool-types'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { toolErrorJson, toolOkJson } from './tool-envelope'
 
-// 导入 Git 工具实现
+// Git-like tool implementations
 import { 
   snapshotStatus, 
   formatSnapshotStatus,
@@ -49,11 +49,11 @@ function parseBooleanArg(value: unknown, name: string): { ok: true; value: boole
 }
 
 /**
- * 当 path 过滤无结果时，构建路径提示信息。
- * 检查已有文件路径中是否有以某个公共前缀开头的，暗示用户可能遗漏了 root 前缀。
+ * Build a path hint for when a `path` filter returns nothing.
+ * If existing paths share a common prefix, the caller may have omitted the root prefix.
  */
 function buildPathHint(inputPath: string, existingFiles: Array<{ path: string }>): string | undefined {
-  // 从已有文件路径中提取所有可能的 root 前缀（第一个 / 之前的部分）
+  // Collect every possible root prefix (the part before the first /) from existing paths
   const roots = new Set<string>()
   for (const f of existingFiles) {
     const slashIdx = f.path.indexOf('/')
@@ -62,17 +62,17 @@ function buildPathHint(inputPath: string, existingFiles: Array<{ path: string }>
     }
   }
 
-  // 如果没有任何 root 前缀（单根项目），无需提示
+  // No root prefixes at all (single-root project) - nothing to hint about
   if (roots.size === 0) return undefined
 
-  // 检查用户输入是否以某个 root 开头
+  // Check whether the input already starts with a root
   const alreadyHasRoot = [...roots].some((r) => inputPath.startsWith(r + '/'))
   if (alreadyHasRoot) {
-    // 已有正确前缀但无结果，可能是路径本身有误
+    // Correct prefix but no result - the path itself is probably wrong
     return undefined
   }
 
-  // 猜测：用户可能遗漏了 root 前缀
+  // Guess: the caller omitted the root prefix
   const suggestions = [...roots]
     .map((r) => `${r}/${inputPath}`)
     .filter((candidate) =>
@@ -85,14 +85,14 @@ function buildPathHint(inputPath: string, existingFiles: Array<{ path: string }>
     return `Possible paths: ${suggestions.map((s) => `"${s}"`).join(', ')}`
   }
 
-  // 没有精确匹配，但还是提示用户 root 前缀
+  // No exact match, but still surface the available roots
   const rootList = [...roots].join(', ')
   const firstRoot = roots.values().next().value
   return `This project has multi-root layout. Available roots: [${rootList}]. Try "${firstRoot}/${inputPath}"`
 }
 
 //=============================================================================
-// snapshot_status - 查看工作区状态
+// snapshot_status - show workspace status
 //=============================================================================
 
 export const snapshotStatusDefinition: ToolDefinition = {
@@ -152,7 +152,7 @@ export const snapshotStatusExecutor: ToolExecutor = async (args, context) => {
 }
 
 //=============================================================================
-// snapshot_diff - 查看文件差异
+// snapshot_diff - show file differences
 //=============================================================================
 
 export const snapshotDiffDefinition: ToolDefinition = {
@@ -302,13 +302,13 @@ export const snapshotDiffExecutor: ToolExecutor = async (args, context) => {
       contextLines: unified,
     })
 
-    // 如果 path 过滤后无结果，检查是否需要提示路径前缀
+    // If the path filter returned nothing, check whether a root prefix hint applies
     const filesChanged = result?.summary?.filesChanged ?? result?.files?.length ?? 0
     const hasPath = !!path
     let pathHint: string | undefined
 
     if (hasPath && filesChanged === 0) {
-      // 额外查一次不带 path 的 diff，提取 root 前缀用于提示
+      // Re-query the diff without a path to collect root prefixes for the hint
       try {
         const fullResult = await snapshotDiff(workspaceId, {
           mode,
@@ -319,7 +319,7 @@ export const snapshotDiffExecutor: ToolExecutor = async (args, context) => {
         })
         pathHint = buildPathHint(path, fullResult?.files ?? [])
       } catch {
-        // 查询失败不影响主流程
+        // A failed query must not break the main flow
         pathHint = undefined
       }
     }
@@ -334,7 +334,7 @@ export const snapshotDiffExecutor: ToolExecutor = async (args, context) => {
 
     let output = formatSnapshotDiff(result, renderOptions)
 
-    // 附加路径提示
+    // Append the path hint
     if (pathHint) {
       output = `No changes matched path "${path}".\n${pathHint}\n\n${output}`
     }
@@ -362,7 +362,7 @@ export const snapshotDiffExecutor: ToolExecutor = async (args, context) => {
 }
 
 //=============================================================================
-// snapshot_log - 查看提交历史
+// snapshot_log - show commit history
 //=============================================================================
 
 export const snapshotLogDefinition: ToolDefinition = {
@@ -467,7 +467,7 @@ export const snapshotLogExecutor: ToolExecutor = async (args, context) => {
 }
 
 //=============================================================================
-// snapshot_show - 查看提交详情
+// snapshot_show - show commit details
 //=============================================================================
 
 export const snapshotShowDefinition: ToolDefinition = {
@@ -551,7 +551,7 @@ export const snapshotShowExecutor: ToolExecutor = async (args, context) => {
 }
 
 //=============================================================================
-// snapshot_restore - 恢复文件
+// snapshot_restore - restore files
 //=============================================================================
 
 export const snapshotRestoreDefinition: ToolDefinition = {
@@ -621,7 +621,7 @@ export const snapshotRestoreExecutor: ToolExecutor = async (args, context) => {
       directoryHandle: null,
     })
 
-    // 刷新状态
+    // Refresh the status
     await useConversationContextStore.getState().updateCurrentCounts()
     await useConversationContextStore.getState().refreshPendingChanges(true)
 

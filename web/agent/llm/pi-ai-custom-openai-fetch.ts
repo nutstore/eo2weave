@@ -578,7 +578,7 @@ const BASE_URL_THINKING_FORMAT_MAP: Array<{ pattern: string; format: ThinkingFor
   // OpenRouter-compatible endpoints
   { pattern: 'openrouter.ai', format: 'openrouter' },
   { pattern: 'ai-assistant.jianguoyun.net.cn', format: 'openrouter' },  // 坚果云内部 OpenRouter 代理
-  // Tencent TokenHub (坚果云 AI Gateway 等基于 TokenHub 的服务)
+  // Tencent TokenHub (services built on TokenHub, e.g. the Nutstore AI gateway)
   { pattern: 'jianguoyun.com', format: 'tencent-tokenhub' },  // ai.jianguoyun.com 等
   // DeepSeek
   { pattern: 'deepseek.com', format: 'deepseek' },

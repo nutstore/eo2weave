@@ -503,8 +503,8 @@ export async function capturePageContext(): Promise<PageContextSnapshot | null> 
     // Hostname comes from the LIVE page URL, not the panel-binding hostname:
     // since page context follows the active tab, the URL may belong to a
     // different site than the one the panel was opened on. Showing the
-    // binding hostname here pairs it with a foreign URL ("网站： lyn.one /
-    // 链接： photopea.com") and misleads both the user and the model. The
+    // binding hostname here pairs it with a foreign URL (a "site" label beside
+    // another site's link) and misleads both the user and the model. The
     // binding hostname stays the PROJECT-routing key only.
     const liveUrl = pick<string>('url')
     let hostname: string | null = null
