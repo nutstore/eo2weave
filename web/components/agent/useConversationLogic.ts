@@ -862,6 +862,18 @@ export function useConversationLogic() {
     return true
   }, [t])
 
+  /**
+   * Edit-and-resend and regenerate also start a run whose reply GROWS IN PLACE.
+   * In a virtualized conversation the bottom-pinning loop is armed by the send
+   * request counter, so these two paths must arm it too — but only when the user
+   * was already at the bottom: regenerating a turn they scrolled up to read must
+   * not yank them back down.
+   */
+  const pinBottomForRun = useCallback(() => {
+    if (!isUserAtBottomRef.current) return
+    setSendScrollRequest((request) => request + 1)
+  }, [])
+
   const handleEditAndResend = useCallback(
     async (userMessageId: string, newContent: string) => {
       if (blockIfProviderUnregistered()) return
@@ -869,8 +881,9 @@ export function useConversationLogic() {
       if (!currentConvId) return
       const pageContext = await capturePageContextBestEffort('edit-and-resend')
       editAndResendUserMessage(currentConvId, userMessageId, newContent, pageContext ?? undefined)
+      pinBottomForRun()
     },
-    [editAndResendUserMessage, blockIfProviderUnregistered]
+    [editAndResendUserMessage, blockIfProviderUnregistered, pinBottomForRun]
   )
 
   // Always call unconditionally (rules-of-hooks); when convId is absent the
@@ -885,8 +898,9 @@ export function useConversationLogic() {
       // model keeps seeing whatever page was open the first time this was sent.
       const pageContext = await capturePageContextBestEffort('resend')
       regenerateUserMessage(currentConvId, id, pageContext ?? undefined)
+      pinBottomForRun()
     },
-    [convId, regenerateUserMessage, blockIfProviderUnregistered]
+    [convId, regenerateUserMessage, blockIfProviderUnregistered, pinBottomForRun]
   )
 
   return {

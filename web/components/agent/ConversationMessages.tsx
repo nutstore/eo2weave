@@ -48,6 +48,15 @@ const INCREASE_VIEWPORT_BY = 900
 const SEND_JUMP_VERIFY_INTERVAL_MS = 150
 
 /**
+ * How long the pinning loop keeps waiting for the next run in the queue after
+ * the current run ends. A queued run starts within a fraction of a second and
+ * grows its reply in place exactly like a normal one, so the loop must survive
+ * the idle hand-off window instead of stopping at the first `isProcessing`
+ * false tick.
+ */
+const QUEUE_HANDOFF_WAIT_MS = 10_000
+
+/**
  * How the virtualized renderer receives footer content (draft bubble + queued
  * messages): via Virtuoso's `context` prop, NOT a module-level slot.
  *
@@ -554,13 +563,26 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   useEffect(() => {
     isProcessingRef.current = isProcessing
   }, [isProcessing])
+  // Queue length is read from inside the interval callback, which cannot
+  // depend on render state without re-arming the loop on every enqueue.
+  const queuedCountRef = useRef(queuedMessages.length)
+  useEffect(() => {
+    queuedCountRef.current = queuedMessages.length
+  }, [queuedMessages.length])
+  // Explicit re-arms (the scroll-to-bottom button during a run). A counter, not
+  // a boolean: every click must restart the loop, not just the first one.
+  const [pinRearmRequest, setPinRearmRequest] = useState(0)
+  const handledPinRearmRef = useRef(0)
   // Unmount safety: read the stopper through the ref at unmount time (it may
   // have been installed long after this effect ran).
   useEffect(() => () => stopSendVerifyRef.current?.(), [])
   useLayoutEffect(() => {
-    if (!sendScrollRequest || sendScrollRequest === handledSendScrollRef.current) return
+    const fromSend = !!sendScrollRequest && sendScrollRequest !== handledSendScrollRef.current
+    const fromExplicitRearm = pinRearmRequest !== handledPinRearmRef.current
+    if (!fromSend && !fromExplicitRearm) return
     if (!isProcessing || !shouldVirtualize || !scrollParent) return
-    handledSendScrollRef.current = sendScrollRequest
+    if (fromSend) handledSendScrollRef.current = sendScrollRequest ?? 0
+    handledPinRearmRef.current = pinRearmRequest
     // A previous send's verify loop may still be alive (its deadline not yet
     // reached): stop it so two loops never drive the scroller at once.
     stopSendVerifyRef.current?.()
@@ -576,30 +598,44 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     //    (it only reacts to items being added), so the reply's growth reopens
     //    the gap and Virtuoso kills follow for the rest of the run.
     // So after a send we keep pinning to the true bottom for the whole run.
-    // It yields to wheel/touch gestures and to any upward scroll (scrollbar
-    // drag, PgUp) — manual scroll-away always wins. Typing in the composer
-    // deliberately does NOT abort it (queued sends must keep following).
+    // It yields to wheel/vertical touch gestures and to any upward scroll
+    // (scrollbar drag, PgUp) — manual scroll-away always wins. Tapping the
+    // composer deliberately does NOT abort it: a tap is not a scroll gesture,
+    // and queued sends must keep following.
     let cancelled = false
-    let lastTop = -1
-    const abort = () => { cancelled = true }
+    // Baseline the position BEFORE the first jump, so an upward scroll that
+    // lands before the first tick still reads as user movement.
+    let lastTop = scrollParent.scrollTop
+    let lastProcessingAt = Date.now()
+    let timer = 0
     const stop = () => {
       cancelled = true
       window.clearInterval(timer)
       window.removeEventListener('wheel', abort, true)
-      window.removeEventListener('touchstart', abort, true)
+      window.removeEventListener('touchmove', abort, true)
       if (stopSendVerifyRef.current === stop) stopSendVerifyRef.current = null
     }
-    const timer = window.setInterval(() => {
+    // An aborted loop must release its timer and global listeners too —
+    // otherwise they keep waking every interval until the next send/unmount.
+    const abort = () => stop()
+    timer = window.setInterval(() => {
       if (cancelled) return
       // Any upward movement we did not cause is the user taking over.
-      if (lastTop >= 0 && scrollParent.scrollTop < lastTop - 4) { stop(); return }
+      if (scrollParent.scrollTop < lastTop - 4) { stop(); return }
       const gap = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight
       if (gap <= 1) {
         if (!isProcessingRef.current) stop()
         return
       }
-      // Run over but not settled: stop chasing, the user may be reading.
-      if (!isProcessingRef.current) { stop(); return }
+      // Run over but not settled: stop chasing, the user may be reading —
+      // unless a queued run is about to take over, which grows its reply in
+      // place and needs the very same pinning.
+      if (!isProcessingRef.current) {
+        if (queuedCountRef.current > 0 && Date.now() - lastProcessingAt < QUEUE_HANDOFF_WAIT_MS) return
+        stop()
+        return
+      }
+      lastProcessingAt = Date.now()
       jump()
       lastTop = scrollParent.scrollTop
       if (isUserAtBottomRef) isUserAtBottomRef.current = true
@@ -607,8 +643,8 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     }, SEND_JUMP_VERIFY_INTERVAL_MS)
     stopSendVerifyRef.current = stop
     window.addEventListener('wheel', abort, { capture: true, passive: true })
-    window.addEventListener('touchstart', abort, { capture: true, passive: true })
-  }, [sendScrollRequest, isProcessing, shouldVirtualize, scrollParent, isUserAtBottomRef])
+    window.addEventListener('touchmove', abort, { capture: true, passive: true })
+  }, [sendScrollRequest, pinRearmRequest, isProcessing, shouldVirtualize, scrollParent, isUserAtBottomRef])
 
   // ── Expose navigation handle to parent ──
   useImperativeHandle(ref, useCallback(() => ({
@@ -655,6 +691,10 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     scrollToLastTurn: (behavior: 'smooth' | 'auto' = 'smooth') => {
       if (shouldVirtualize && virtuosoRef.current) {
         virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior })
+        // An explicit return to the bottom DURING a run must resume the pinning
+        // loop: an earlier scroll-away aborted it, and followOutput never reacts
+        // to in-place streaming growth, so the reply would drift away again.
+        if (isProcessing) setPinRearmRequest((request) => request + 1)
         return
       }
       // Plain renderer: the scroll container is the nearest overflow-y-auto
@@ -679,7 +719,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
       if (isUserAtBottomRef) isUserAtBottomRef.current = atBottom
       setIsUserAtBottom(atBottom)
     },
-  }), [turns, shouldVirtualize, handleVirtualAtBottomChange]))
+  }), [turns, shouldVirtualize, isProcessing, handleVirtualAtBottomChange]))
 
   const shouldRenderDraftAssistant = isProcessing && (!lastTurn || lastTurn.type !== 'assistant')
   const shouldAttachRuntimeToDraft = shouldRenderDraftAssistant
