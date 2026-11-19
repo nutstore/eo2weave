@@ -3028,7 +3028,9 @@ export default defineBackground(() => {
                   // this write).
                   if (models.length > 0 && requestSequence === codexModelsRequestSequence) {
                     const currentTokens = await CODEX!.getCodexTokens();
-                    if (currentTokens?.access_token === accessToken) {
+                    // The await above can let a newer request or a fresh
+                    // authorization land, so re-check both before assigning.
+                    if (requestSequence === codexModelsRequestSequence && currentTokens?.access_token === accessToken) {
                       codexModelsCache = {
                         accessToken,
                         models,
