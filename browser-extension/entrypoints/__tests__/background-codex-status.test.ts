@@ -42,13 +42,24 @@ function catalog(id: string) {
   return Response.json({ models: [{ slug: id }], private_metadata: 'never-forward-this' })
 }
 
-function setup() {
+function setup(options: { failTokenRead?: number } = {}) {
   const storage: Record<string, unknown> = { codex_tokens: { access_token: token('A') } }
   const fetch = vi.fn<typeof globalThis.fetch>()
+  let tokenReads = 0
   const context = createContext({
     Date, atob, fetch, AbortSignal,
     chrome: {
-      storage: { local: { get: async (key: string) => ({ [key]: storage[key] }) } },
+      storage: {
+        local: {
+          get: async (key: string) => {
+            if (key === 'codex_tokens') {
+              tokenReads += 1
+              if (options.failTokenRead === tokenReads) throw new Error('storage unavailable')
+            }
+            return { [key]: storage[key] }
+          },
+        },
+      },
     },
   })
   const handle = runInContext(source, context) as (respond: (status: Status) => void) => Promise<void>
@@ -84,8 +95,28 @@ describe('Codex status model catalog cache', () => {
     })
     expect(fetch).toHaveBeenCalledTimes(1)
 
-    vi.advanceTimersByTime(5 * 60 * 1000)
+    // The cache must hold for the full five minutes, not just the next poll.
+    vi.advanceTimersByTime(5 * 60 * 1000 - 1000)
+    expect((await status()).data.models.map(model => model.id)).toEqual(['first'])
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    vi.advanceTimersByTime(2000)
     expect((await status()).data.models.map(model => model.id)).toEqual(['updated'])
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the endpoint probe when the cache-validation token read fails', async () => {
+    // Read 1 is the handler's token snapshot, read 2 is the pre-cache re-read.
+    const { fetch, status } = setup({ failTokenRead: 2 })
+    fetch.mockResolvedValueOnce(catalog('first')).mockResolvedValueOnce(catalog('second'))
+
+    const first = await status()
+    expect(first.data.models.map(model => model.id)).toEqual(['first'])
+    expect(first.data.modelsEndpointProbe).toMatchObject({ status: 200, ok: true })
+    expect(first.data.modelsEndpointProbe).not.toHaveProperty('error')
+
+    // The cache write was skipped, so the next poll fetches again.
+    expect((await status()).data.models.map(model => model.id)).toEqual(['second'])
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 
