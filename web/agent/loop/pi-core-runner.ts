@@ -7,6 +7,7 @@ import type { AgentMode } from '../agent-mode'
 import type { ContextManager } from '../context-manager'
 import type { PiAIProvider } from '../llm/pi-ai-provider'
 import { applyMaxThinkingOverride, stripDeveloperRoleForDynamicProviders, type ExtendedThinkingLevel } from '../llm/pi-ai-custom-openai-fetch'
+import { opencodeGoSessionHeaders } from '../llm/opencode-go-session'
 import { generateId, type Message } from '../message-types'
 import type { ToolRegistry } from '../tool-registry'
 import type { ToolDefinition } from '../tools/tool-types'
@@ -220,11 +221,17 @@ export async function executePiCoreLoop(
       | (Record<string, unknown> & { reasoning?: ExtendedThinkingLevel })
       | undefined)?.reasoning
 
+    // OpenCode Go rejects requests without a session header; the conversation
+    // id is stable across every turn of the same conversation.
+    const goSessionHeaders = opencodeGoSessionHeaders(
+      model.provider,
+      input.sessionId,
+      streamOptions?.headers as Record<string, string> | undefined,
+    )
+
     const mergedOptions: Record<string, unknown> = {
       ...(streamOptions || {}),
-      ...(model.provider === 'opencode-go' && input.sessionId
-        ? { headers: { ...((streamOptions?.headers as Record<string, string> | undefined) ?? {}), 'x-opencode-session': input.sessionId } }
-        : {}),
+      ...(goSessionHeaders ? { headers: goSessionHeaders } : {}),
       onPayload: (payload: Record<string, unknown>) => {
         normalizeResponsesInputPayload(payload)
         // Responses API may omit tool_choice on some paths; default to "auto" when tools exist.

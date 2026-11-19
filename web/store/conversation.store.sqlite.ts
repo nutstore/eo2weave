@@ -1642,6 +1642,7 @@ export const useConversationStoreSQLite = create<ConversationState>()(
           providerType,
           baseUrl: providerConfig.baseUrl,
           model: providerConfig.modelName,
+          sessionId: id,
           apiMode: isCustomProviderType(providerType)
             ? settingsState.customProviders.find((p) => p.id === providerType)?.apiMode ||
               'chat-completions'

@@ -13,6 +13,7 @@ import { resolvePiAIModel } from './pi-ai-model-resolver'
 import { CW_OPENAI_FETCH_API, detectThinkingFormat, ensurePiAICustomProvidersRegistered, stripDeveloperRoleForDynamicProviders } from './pi-ai-custom-openai-fetch'
 import { extractTextContent } from '../loop/message-mappers'
 import { installLlmBridgeFetch } from './llm-fetch'
+import { createProviderSessionId, opencodeGoSessionHeaders } from './opencode-go-session'
 
 const MAX_CONTEXT_TOKENS = 128000
 
@@ -23,6 +24,8 @@ export interface PiAIProviderConfig {
   model: string
   /** API mode for custom providers: 'chat-completions' or 'responses' */
   apiMode?: 'chat-completions' | 'responses'
+  /** Conversation id used as the OpenCode Go session header. */
+  sessionId?: string
 }
 
 export class PiAIProvider implements LLMProvider {
@@ -31,10 +34,13 @@ export class PiAIProvider implements LLMProvider {
 
   private apiKey: string
   private model: Model<Api>
+  /** Stable fallback session id for auxiliary calls without a conversation id. */
+  private readonly sessionId: string
 
   constructor(config: PiAIProviderConfig) {
     ensurePiAICustomProvidersRegistered()
     this.apiKey = config.apiKey
+    this.sessionId = config.sessionId || createProviderSessionId()
     this.model = resolvePiAIModel(config.providerType, config.model, config.baseUrl, config.apiMode)
     installLlmBridgeFetch(config.providerType === 'codex-oauth' ? undefined : this.model.baseUrl)
     this.maxContextTokens = this.model.contextWindow || MAX_CONTEXT_TOKENS
@@ -50,12 +56,14 @@ export class PiAIProvider implements LLMProvider {
 
   async chat(request: ChatCompletionRequest, signal?: AbortSignal): Promise<ChatCompletionResponse> {
     const context = this.toPiAIContext(request)
+    const sessionHeaders = opencodeGoSessionHeaders(this.model.provider, request.sessionId || this.sessionId)
     const message = await complete(this.model, context, {
       apiKey: this.apiKey,
       temperature: request.temperature,
       maxTokens: request.maxTokens,
       toolChoice: request.toolChoice,
       signal,
+      ...(sessionHeaders ? { headers: sessionHeaders } : {}),
       onPayload: (payload: unknown) => {
         const p = payload as Record<string, unknown>
         // The custom fetch and Responses adapters do not project toolChoice themselves.
@@ -248,12 +256,14 @@ export class PiAIProvider implements LLMProvider {
     const context = this.toPiAIContext(request)
     const streamId = this.createId()
     const seenToolDelta = new Set<number>()
+    const sessionHeaders = opencodeGoSessionHeaders(this.model.provider, request.sessionId || this.sessionId)
 
     const streamOptions: Record<string, unknown> = {
       apiKey: this.apiKey,
       signal,
       temperature: request.temperature,
       maxTokens: request.maxTokens,
+      ...(sessionHeaders ? { headers: sessionHeaders } : {}),
       onPayload: (payload: unknown) => {
         const p = payload as Record<string, unknown>
         // openai-responses API: 'instructions' is required
