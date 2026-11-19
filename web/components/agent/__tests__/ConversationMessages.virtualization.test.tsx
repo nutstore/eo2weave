@@ -1249,6 +1249,37 @@ describe('bottom-pinning loop', () => {
   })
 })
 
+describe('virtualized load-follow pin', () => {
+  it('re-pins after Virtuoso moves the list up during initial layout', () => {
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    virtuosoScrollToSpy.mockClear()
+    const { container } = render(makeVirtualUi(55))
+    const scroller = container.querySelector('[data-testid="scroll-container"]') as HTMLElement
+    Object.defineProperty(scroller, 'scrollHeight', { value: 2000, configurable: true })
+    Object.defineProperty(scroller, 'clientHeight', { value: 800, configurable: true })
+    Object.defineProperty(scroller, 'scrollTop', { value: 500, configurable: true, writable: true })
+    const frame = () => act(() => { frames.shift()?.(performance.now()) })
+    frame()
+    const beforeCorrection = virtuosoScrollToSpy.mock.calls.length
+    // The first pin can reach bottom before Virtuoso's own layout correction
+    // scrolls upward without any wheel/touch gesture or height change.
+    scroller.scrollTop = 1200
+    frame()
+    scroller.scrollTop = 734
+    frame()
+    expect(virtuosoScrollToSpy.mock.calls.length).toBeGreaterThan(beforeCorrection)
+    act(() => { window.dispatchEvent(new WheelEvent('wheel')) })
+    const afterGesture = virtuosoScrollToSpy.mock.calls.length
+    frame()
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(afterGesture)
+    raf.mockRestore()
+  })
+})
+
 /** Render a virtualized conversation with configurable props (issue #141 tests). */
 function makeVirtualUi(
   pairs: number,

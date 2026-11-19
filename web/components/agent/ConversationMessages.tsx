@@ -57,6 +57,13 @@ const SEND_JUMP_VERIFY_INTERVAL_MS = 150
 const QUEUE_HANDOFF_WAIT_MS = 10_000
 
 /**
+ * Upper bound for the mount-time bottom pin (see the initial-pin effect below).
+ * Generous enough to outlast late layout growth (fonts, code highlighting,
+ * mermaid/KaTeX, image decode), but never traps the scroller indefinitely.
+ */
+const INITIAL_PIN_MAX_WAIT_MS = 4000
+
+/**
  * How the virtualized renderer receives footer content (draft bubble + queued
  * messages): via Virtuoso's `context` prop, NOT a module-level slot.
  *
@@ -646,6 +653,125 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     window.addEventListener('touchmove', abort, { capture: true, passive: true })
   }, [sendScrollRequest, pinRearmRequest, isProcessing, shouldVirtualize, scrollParent, isUserAtBottomRef])
 
+  // ── Load-follow bottom pin on mount (virtualized conversations) ──
+  // `initialTopMostItemIndex` aligns the LAST turn's TOP with the viewport
+  // top, so a conversation whose latest turn is taller than the viewport
+  // (long reply, tool cards) opens ABOVE the real bottom — Virtuoso then
+  // reports not-at-bottom and followOutput never engages for the next run.
+  // The plain renderer needs no help here: useConversationLogic's append
+  // effect already scrolls on the DB-load 0→N transition and settles
+  // against late height growth.
+  // The pin is a WINDOW, not a one-shot: very large conversations deliver
+  // their turns in several batches, and each batch re-opens the gap after
+  // the previous pin finished (observed live: a 60k-px conversation arrived
+  // in waves and stranded the view 28k px above the bottom). The window
+  // restarts on every turn-count growth and retires once loading has been
+  // quiet for INITIAL_PIN_MAX_WAIT_MS with the view at the true bottom.
+  // Explicit wheel or touch input stops the window for good; Virtuoso's
+  // own position corrections must not be mistaken for user scrolling. The button
+  // takes over from there. While a run is already streaming when the
+  // conversation mounts, defer to the send guard loop instead: it has no
+  // deadline, handles in-place growth and queue hand-off, and jumps
+  // Virtuoso-safely.
+  const initialPinStopRef = useRef<(() => void) | null>(null)
+  const pinAbortedRef = useRef(false)
+  const followTurnsCountRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!shouldVirtualize || !scrollParent) return
+    if (followTurnsCountRef.current !== null) {
+      // Resume ONLY for a fresh batch of turns. A user takeover is terminal;
+      // re-evaluations without growth are no-ops. If a run started (guard
+      // loop owns the scroller), never fight it.
+      if (pinAbortedRef.current) return
+      if (turns.length <= followTurnsCountRef.current) return
+      if (isProcessingRef.current) {
+        followTurnsCountRef.current = turns.length
+        return
+      }
+    } else if (isProcessingRef.current) {
+      // A run is already streaming on first evaluation: arm the send guard
+      // loop (unless it is already alive) and step aside — two loops must
+      // never drive the scroller at once, and the loop below would hit its
+      // deadline mid-stream.
+      if (!stopSendVerifyRef.current) {
+        setPinRearmRequest((request) => request + 1)
+      }
+      followTurnsCountRef.current = turns.length
+      return
+    }
+    // NOTE: deliberately NO at-bottom seed check. WorkspaceLayout remounts
+    // this component per conversation (key={convId}), so isUserAtBottomRef
+    // is always freshly seeded true; a false value here can only be
+    // Virtuoso's first misaligned verdict after initialTopMostItemIndex
+    // (observed live: the false lands before this effect evaluates and
+    // permanently suppressed the pin) — exactly the state this loop
+    // corrects.
+    followTurnsCountRef.current = turns.length
+    const jump = () => {
+      // Same Virtuoso scrollTo(MAX) primitive as the button (issue #141),
+      // but invoked during mount rather than after a user click. Virtuoso may
+      // reposition the list after this jump while initial layout settles.
+      if (virtuosoRef.current) {
+        virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' })
+      } else {
+        scrollParent.scrollTop = scrollParent.scrollHeight
+      }
+    }
+    let cancelled = false
+    let lastHeight = -1
+    let lastChangeAt = Date.now()
+    const stop = () => {
+      cancelled = true
+      if (initialPinStopRef.current === stop) initialPinStopRef.current = null
+      window.removeEventListener('wheel', abort, true)
+      window.removeEventListener('touchmove', abort, true)
+    }
+    const abort = () => {
+      // A wheel/vertical-touch gesture is real user intent — kill the whole
+      // follow window, not just this tick.
+      pinAbortedRef.current = true
+      stop()
+    }
+    window.addEventListener('wheel', abort, { capture: true, passive: true })
+    window.addEventListener('touchmove', abort, { capture: true, passive: true })
+    const tick = () => {
+      if (cancelled) return
+      // The send guard loop took over (user sent mid-window) — it owns the
+      // scroller now; two loops must never drive it at once.
+      if (stopSendVerifyRef.current) { stop(); return }
+      const now = Date.now()
+      const grew = scrollParent.scrollHeight !== lastHeight
+      if (grew) {
+        lastHeight = scrollParent.scrollHeight
+        lastChangeAt = now
+      } else if (now - lastChangeAt > INITIAL_PIN_MAX_WAIT_MS) {
+        // Height has been quiet for the whole grace period: loading is
+        // done — hand control back to Virtuoso/the user. Do not exit just
+        // because a jump landed: initial layout can reposition it afterwards.
+        stop()
+        return
+      }
+      // Virtuoso can programmatically correct the position *upward* after
+      // our jump (observed live: 60926 → 60460 with unchanged height).
+      // Geometry alone cannot distinguish that from a user scroll. Only
+      // explicit input events abort the load-follow window.
+      const gap = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight
+      if (gap > 1) {
+        jump()
+        // Same re-seed the send guard loop does every tick: Virtuoso may
+        // broadcast not-at-bottom mid-flight (its measurement lags the jump);
+        // keep followOutput armed so the next appended turn is followed as
+        // soon as we land.
+        if (isUserAtBottomRef) isUserAtBottomRef.current = true
+        setIsUserAtBottom(true)
+      }
+      requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+    initialPinStopRef.current = stop
+    return stop
+  }, [shouldVirtualize, scrollParent, turns.length, isUserAtBottomRef])
+
   // ── Expose navigation handle to parent ──
   useImperativeHandle(ref, useCallback(() => ({
     getUserNavItems: () => {
@@ -819,7 +945,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   const lastTurnIndex = turns.length - 1
 
   return (
-    <div className="min-h-0 px-2 sm:px-4">
+    <div ref={rootRef} className="min-h-0 px-2 sm:px-4">
       <div className="mx-auto w-full max-w-3xl">
         <Virtuoso
           ref={virtuosoRef}

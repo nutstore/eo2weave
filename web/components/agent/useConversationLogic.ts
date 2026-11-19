@@ -306,6 +306,11 @@ export function useConversationLogic() {
 
   // ── Smart auto-scroll (only scroll when user is already at the bottom) ──
   const activeMessagesLength = activeMessages.length
+  // A new conversation can mount with an empty list. The button's scroll
+  // listener may mark the ref false as the persisted messages appear, before
+  // this effect gets to perform the initial scroll. Only the first populated
+  // render bypasses that guard; later appends still respect user scrolling.
+  const initialMessagesScrolledRef = useRef(false)
 
   // PR #142 review (Sourcery, Medium): under virtual scrolling the message
   // list is rendered by react-virtuoso, which owns the scroll position via
@@ -330,8 +335,11 @@ export function useConversationLogic() {
     // Virtualized mode: Virtuoso's followOutput owns the scroll position —
     // a native scrollTop write here would fight it (see comment above).
     if (isVirtualizedScroll) return
-    // Don't auto-scroll if user is browsing history above
-    if (!isUserAtBottomRef.current) return
+    const initialLoad = activeMessagesLength > 0 && !initialMessagesScrolledRef.current
+    if (initialLoad) initialMessagesScrolledRef.current = true
+    // Don't auto-scroll if user is browsing history above after initial load.
+    if (!initialLoad && !isUserAtBottomRef.current) return
+    if (initialLoad) isUserAtBottomRef.current = true
     // Use scrollTo on the scroll container directly instead of scrollIntoView.
     // scrollIntoView bubbles up through all scrollable ancestors and can
     // shift the layout container itself (pushing it out of the viewport),

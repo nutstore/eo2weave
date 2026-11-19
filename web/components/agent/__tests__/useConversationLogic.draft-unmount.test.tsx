@@ -173,6 +173,36 @@ function resetDraftStore() {
   useInputDraftStore.setState({ drafts: {} })
 }
 
+describe('useConversationLogic initial scroll', () => {
+  it('scrolls the first loaded messages even if the scroll listener reported not-at-bottom, but leaves later appends alone', () => {
+    seedActiveConversation()
+    const { result, rerender } = renderHook(() => useConversationLogic())
+    const container = document.createElement('div')
+    const scrollTo = vi.fn()
+    container.scrollTo = scrollTo
+    Object.defineProperty(container, 'scrollHeight', { value: 1200, configurable: true })
+    ;(result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container
+    result.current.isUserAtBottomRef.current = false
+
+    const conversation = (conversationStoreModule as unknown as {
+      getState: () => { conversations: Array<{ messages: unknown[] }> }
+    }).getState().conversations[0]
+    act(() => {
+      conversation.messages = [{ id: 'first', role: 'user', content: 'hello', timestamp: 1 }]
+      rerender()
+    })
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1200, behavior: 'smooth' })
+
+    scrollTo.mockClear()
+    result.current.isUserAtBottomRef.current = false
+    act(() => {
+      conversation.messages = [...conversation.messages, { id: 'second', role: 'user', content: 'more', timestamp: 2 }]
+      rerender()
+    })
+    expect(scrollTo).not.toHaveBeenCalled()
+  })
+})
+
 describe('useConversationLogic unmount draft persistence (PR #142 round 5)', () => {
   beforeEach(() => {
     resetDraftStore()
