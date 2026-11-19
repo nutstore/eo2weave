@@ -173,6 +173,99 @@ function resetDraftStore() {
   useInputDraftStore.setState({ drafts: {} })
 }
 
+describe('useConversationLogic initial scroll', () => {
+  it('scrolls the first loaded messages even if the scroll listener reported not-at-bottom, but leaves later appends alone', () => {
+    seedActiveConversation()
+    const { result, rerender } = renderHook(() => useConversationLogic())
+    const container = document.createElement('div')
+    const scrollTo = vi.fn()
+    container.scrollTo = scrollTo
+    Object.defineProperty(container, 'scrollHeight', { value: 1200, configurable: true })
+    ;(result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container
+    result.current.isUserAtBottomRef.current = false
+
+    const conversation = (conversationStoreModule as unknown as {
+      getState: () => { conversations: Array<{ messages: unknown[] }> }
+    }).getState().conversations[0]
+    act(() => {
+      conversation.messages = [{ id: 'first', role: 'user', content: 'hello', timestamp: 1 }]
+      rerender()
+    })
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1200, behavior: 'smooth' })
+
+    scrollTo.mockClear()
+    result.current.isUserAtBottomRef.current = false
+    act(() => {
+      conversation.messages = [...conversation.messages, { id: 'second', role: 'user', content: 'more', timestamp: 2 }]
+      rerender()
+    })
+    expect(scrollTo).not.toHaveBeenCalled()
+  })
+
+  it('keeps settling an initial load after the scroll listener reports not-at-bottom mid-animation', () => {
+    seedActiveConversation()
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    const { result, rerender } = renderHook(() => useConversationLogic())
+    const container = document.createElement('div')
+    const scrollTo = vi.fn()
+    container.scrollTo = scrollTo
+    let height = 1200
+    Object.defineProperty(container, 'scrollHeight', { get: () => height, configurable: true })
+    container.scrollTop = 0
+    ;(result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container
+    result.current.isUserAtBottomRef.current = false
+
+    const conversation = (conversationStoreModule as unknown as {
+      getState: () => { conversations: Array<{ messages: unknown[] }> }
+    }).getState().conversations[0]
+    act(() => {
+      conversation.messages = [{ id: 'first', role: 'user', content: 'hello', timestamp: 1 }]
+      rerender()
+    })
+    expect(scrollTo).toHaveBeenCalled()
+
+    // The initial smooth scroll is still animating: the scroll listener reads
+    // the intermediate offset as not-at-bottom, then content grows once more.
+    // The settle loop must correct that growth instead of bailing out.
+    result.current.isUserAtBottomRef.current = false
+    height = 1400
+    act(() => { frames.shift()?.(performance.now()) })
+    expect(container.scrollTop).toBe(1400)
+    raf.mockRestore()
+  })
+
+  it('does not treat a drop below the virtualization threshold as the initial load', () => {
+    seedActiveConversation()
+    const { result, rerender } = renderHook(() => useConversationLogic())
+    const container = document.createElement('div')
+    const scrollTo = vi.fn()
+    container.scrollTo = scrollTo
+    Object.defineProperty(container, 'scrollHeight', { value: 5000, configurable: true })
+    ;(result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container
+
+    const conversation = (conversationStoreModule as unknown as {
+      getState: () => { conversations: Array<{ messages: unknown[] }> }
+    }).getState().conversations[0]
+    const makeMessage = (index: number) => ({ id: `m${index}`, role: 'user', content: `hi ${index}`, timestamp: index })
+    act(() => {
+      conversation.messages = Array.from({ length: 150 }, (_, index) => makeMessage(index))
+      rerender()
+    })
+    // Loaded above the threshold (Virtuoso owns the scroll), then shrunk below
+    // it by a compression/deletion while the user reads history.
+    result.current.isUserAtBottomRef.current = false
+    act(() => {
+      conversation.messages = Array.from({ length: 3 }, (_, index) => makeMessage(index))
+      rerender()
+    })
+    expect(scrollTo).not.toHaveBeenCalled()
+  })
+})
+
 describe('useConversationLogic unmount draft persistence (PR #142 round 5)', () => {
   beforeEach(() => {
     resetDraftStore()

@@ -1249,6 +1249,108 @@ describe('bottom-pinning loop', () => {
   })
 })
 
+describe('virtualized load-follow pin', () => {
+  /** Capture rAF callbacks so the pin can be stepped frame by frame. */
+  function stubFrames() {
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    return {
+      frames,
+      frame: () => act(() => { frames.shift()?.(performance.now()) }),
+      raf,
+    }
+  }
+
+  /** Render a virtualized conversation with deterministic scroller geometry. */
+  function renderPinned(pairs: number) {
+    const rendered = render(makeVirtualUi(pairs))
+    const scroller = rendered.container.querySelector('[data-testid="scroll-container"]') as HTMLElement
+    Object.defineProperty(scroller, 'scrollHeight', { value: 2000, configurable: true })
+    Object.defineProperty(scroller, 'clientHeight', { value: 800, configurable: true })
+    Object.defineProperty(scroller, 'scrollTop', { value: 500, configurable: true, writable: true })
+    return { ...rendered, scroller }
+  }
+
+  it('re-pins after Virtuoso moves the list up during initial layout', () => {
+    const { frame, raf } = stubFrames()
+    virtuosoScrollToSpy.mockClear()
+    const { scroller } = renderPinned(55)
+    frame()
+    const beforeCorrection = virtuosoScrollToSpy.mock.calls.length
+    // The first pin can reach bottom before Virtuoso's own layout correction
+    // scrolls upward without any wheel/touch gesture or height change.
+    scroller.scrollTop = 1200
+    frame()
+    scroller.scrollTop = 734
+    frame()
+    expect(virtuosoScrollToSpy.mock.calls.length).toBeGreaterThan(beforeCorrection)
+    // A wheel INSIDE the conversation is browsing intent: the pin stops.
+    act(() => { scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true })) })
+    const afterGesture = virtuosoScrollToSpy.mock.calls.length
+    frame()
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(afterGesture)
+    raf.mockRestore()
+  })
+
+  it('keeps pinning when the wheel happens outside the conversation', () => {
+    const { frame, raf } = stubFrames()
+    virtuosoScrollToSpy.mockClear()
+    const { scroller } = renderPinned(55)
+    frame()
+    // The sidebar scrolls while the conversation is still loading — that is
+    // not intent to stop following THIS scroller.
+    act(() => { document.body.dispatchEvent(new WheelEvent('wheel', { bubbles: true })) })
+    const before = virtuosoScrollToSpy.mock.calls.length
+    scroller.scrollTop = 500
+    frame()
+    expect(virtuosoScrollToSpy.mock.calls.length).toBeGreaterThan(before)
+    raf.mockRestore()
+  })
+
+  it('stops for a scroll key, but not for the same key typed in the composer', () => {
+    const { frame, raf } = stubFrames()
+    virtuosoScrollToSpy.mockClear()
+    const { scroller } = renderPinned(55)
+    frame()
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    })
+    const afterTyping = virtuosoScrollToSpy.mock.calls.length
+    scroller.scrollTop = 500
+    frame()
+    expect(virtuosoScrollToSpy.mock.calls.length).toBeGreaterThan(afterTyping)
+    textarea.remove()
+    // PageUp with no input target is the user paging through history.
+    act(() => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true })) })
+    const afterKey = virtuosoScrollToSpy.mock.calls.length
+    scroller.scrollTop = 500
+    frame()
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(afterKey)
+    raf.mockRestore()
+  })
+
+  it('does not restart the pin for a later batch after the user took over', () => {
+    const { frame, raf } = stubFrames()
+    virtuosoScrollToSpy.mockClear()
+    const { scroller, rerender } = renderPinned(55)
+    frame()
+    act(() => { scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true })) })
+    const afterTakeover = virtuosoScrollToSpy.mock.calls.length
+    // A later load batch arrives after the takeover — the user is reading
+    // history and must not be dragged back to the bottom.
+    act(() => { rerender(makeVirtualUi(60)) })
+    frame()
+    frame()
+    expect(virtuosoScrollToSpy.mock.calls.length).toBe(afterTakeover)
+    raf.mockRestore()
+  })
+})
+
 /** Render a virtualized conversation with configurable props (issue #141 tests). */
 function makeVirtualUi(
   pairs: number,
