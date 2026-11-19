@@ -1,8 +1,8 @@
 /**
  * Agent Manager
  *
- * 管理项目中的 Agent 系统。
- * 每个 Agent 有独立的目录，包含 SOUL.md、IDENTITY.md 等文件。
+ * Manages the per-project agent system.
+ * Each agent has its own directory holding SOUL.md, IDENTITY.md and friends.
  */
 
 import { getDefaultAgentTemplate, type AgentTemplate } from './agent-templates'
@@ -11,7 +11,7 @@ const AGENTS_DIR = 'agents'
 const SKILLS_DIR = 'skills'
 const MEMORY_DIR = 'memory'
 
-// Agent 文件名
+// Agent file names
 const SOUL_FILE = 'SOUL.md'
 const IDENTITY_FILE = 'IDENTITY.md'
 const AGENTS_FILE = 'AGENTS.md'
@@ -19,7 +19,7 @@ const USER_FILE = 'USER.md'
 const MEMORY_FILE = 'MEMORY.md'
 
 /**
- * Agent 元数据
+ * Agent metadata
  */
 export interface AgentMeta {
   id: string
@@ -29,7 +29,7 @@ export interface AgentMeta {
 }
 
 /**
- * Agent 完整信息
+ * Full agent info
  */
 export interface AgentInfo {
   id: string
@@ -44,7 +44,7 @@ export interface AgentInfo {
 /**
  * Agent Manager
  *
- * 管理单个项目的 Agent 系统。
+ * Manages the agent system of a single project.
  */
 export class AgentManager {
   private agentsDir: FileSystemDirectoryHandle
@@ -54,17 +54,17 @@ export class AgentManager {
   }
 
   /**
-   * 从项目目录创建 AgentManager
+   * Create an AgentManager from a project directory
    */
   static async fromProjectDir(projectDir: FileSystemDirectoryHandle): Promise<AgentManager> {
     const agentsDir = await projectDir.getDirectoryHandle(AGENTS_DIR, { create: true })
     return new AgentManager(agentsDir)
   }
 
-  // ==================== Agent 列表 ====================
+  // ==================== Agent list ====================
 
   /**
-   * 列出所有 Agent
+   * List all agents
    */
   async listAgents(): Promise<AgentMeta[]> {
     const agents: AgentMeta[] = []
@@ -86,7 +86,7 @@ export class AgentManager {
   }
 
   /**
-   * 检查 Agent 是否存在
+   * Check whether an agent exists
    */
   async hasAgent(id: string): Promise<boolean> {
     try {
@@ -100,29 +100,29 @@ export class AgentManager {
   // ==================== Agent CRUD ====================
 
   /**
-   * 创建新 Agent
+   * Create a new agent
    * @param id Agent ID (e.g., 'default', 'frontend')
-   * @param template 可选的自定义模板，默认使用通用模板
+   * @param template Optional custom template; defaults to the generic one
    */
   async createAgent(id: string, template?: Partial<AgentTemplate>): Promise<AgentInfo> {
     const defaultTemplate = getDefaultAgentTemplate()
     const t = { ...defaultTemplate, ...template }
 
-    // 创建 Agent 目录
+    // Create the agent directory
     const agentDir = await this.agentsDir.getDirectoryHandle(id, { create: true })
 
-    // 创建子目录
+    // Create subdirectories
     await agentDir.getDirectoryHandle(SKILLS_DIR, { create: true })
     await agentDir.getDirectoryHandle(MEMORY_DIR, { create: true })
 
-    // 写入文件
+    // Write files
     await this.writeFile(agentDir, SOUL_FILE, t.SOUL)
     await this.writeFile(agentDir, IDENTITY_FILE, t.IDENTITY)
     await this.writeFile(agentDir, AGENTS_FILE, t.AGENTS)
     await this.writeFile(agentDir, USER_FILE, t.USER)
     await this.writeFile(agentDir, MEMORY_FILE, t.MEMORY)
 
-    // 写入元数据
+    // Write metadata
     const meta: AgentMeta = {
       id,
       name: id,
@@ -143,7 +143,7 @@ export class AgentManager {
   }
 
   /**
-   * 获取 Agent 信息
+   * Get agent info
    */
   async getAgent(id: string): Promise<AgentInfo | null> {
     try {
@@ -175,20 +175,20 @@ export class AgentManager {
   }
 
   /**
-   * 删除 Agent
+   * Delete an agent
    */
   async deleteAgent(id: string): Promise<void> {
-    // 不允许删除 default agent
+    // The default agent must not be deleted
     if (id === 'default') {
       throw new Error('Cannot delete default agent')
     }
     await this.agentsDir.removeEntry(id, { recursive: true })
   }
 
-  // ==================== Agent 文件读写 ====================
+  // ==================== Agent file IO ====================
 
   /**
-   * 读取 Agent 的 SOUL.md
+   * Read the agent's SOUL.md
    */
   async readSoul(id: string): Promise<string | null> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -196,7 +196,7 @@ export class AgentManager {
   }
 
   /**
-   * 写入 Agent 的 SOUL.md
+   * Write the agent's SOUL.md
    */
   async writeSoul(id: string, content: string): Promise<void> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -204,7 +204,7 @@ export class AgentManager {
   }
 
   /**
-   * 读取 Agent 的 IDENTITY.md
+   * Read the agent's IDENTITY.md
    */
   async readIdentity(id: string): Promise<string | null> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -212,7 +212,7 @@ export class AgentManager {
   }
 
   /**
-   * 写入 Agent 的 IDENTITY.md
+   * Write the agent's IDENTITY.md
    */
   async writeIdentity(id: string, content: string): Promise<void> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -220,7 +220,7 @@ export class AgentManager {
   }
 
   /**
-   * 读取 Agent 的 MEMORY.md
+   * Read the agent's MEMORY.md
    */
   async readMemory(id: string): Promise<string | null> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -228,7 +228,7 @@ export class AgentManager {
   }
 
   /**
-   * 写入 Agent 的 MEMORY.md
+   * Write the agent's MEMORY.md
    */
   async writeMemory(id: string, content: string): Promise<void> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -236,7 +236,7 @@ export class AgentManager {
   }
 
   /**
-   * 读取 Agent 的 USER.md
+   * Read the agent's USER.md
    */
   async readUser(id: string): Promise<string | null> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -244,7 +244,7 @@ export class AgentManager {
   }
 
   /**
-   * 写入 Agent 的 USER.md
+   * Write the agent's USER.md
    */
   async writeUser(id: string, content: string): Promise<void> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -252,7 +252,7 @@ export class AgentManager {
   }
 
   /**
-   * 读取 Agent 的 AGENTS.md
+   * Read the agent's AGENTS.md
    */
   async readAgents(id: string): Promise<string | null> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -260,7 +260,7 @@ export class AgentManager {
   }
 
   /**
-   * 写入 Agent 的 AGENTS.md
+   * Write the agent's AGENTS.md
    */
   async writeAgents(id: string, content: string): Promise<void> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -268,7 +268,7 @@ export class AgentManager {
   }
 
   /**
-   * 读取 Agent 相对路径文件（支持子目录）
+   * Read a file at a path relative to the agent root (subdirectories supported)
    */
   async readPath(id: string, relativePath: string): Promise<string | null> {
     const normalized = this.normalizeRelativePath(relativePath)
@@ -278,7 +278,7 @@ export class AgentManager {
   }
 
   /**
-   * 写入 Agent 相对路径文件（支持子目录）
+   * Write a file at a path relative to the agent root (subdirectories supported)
    */
   async writePath(id: string, relativePath: string, content: string): Promise<void> {
     const normalized = this.normalizeRelativePath(relativePath)
@@ -288,7 +288,7 @@ export class AgentManager {
   }
 
   /**
-   * 删除 Agent 相对路径文件（支持子目录）
+   * Delete a file at a path relative to the agent root (subdirectories supported)
    */
   async deletePath(id: string, relativePath: string): Promise<void> {
     const normalized = this.normalizeRelativePath(relativePath)
@@ -298,7 +298,7 @@ export class AgentManager {
   }
 
   /**
-   * 解析 Agent 目录相对路径并返回目录句柄（支持空路径返回 agent 根目录）
+   * Resolve a path relative to the agent directory and return its directory handle (an empty path yields the agent root)
    */
   async getDirectoryHandle(
     id: string,
@@ -328,12 +328,12 @@ export class AgentManager {
     return { handle: current, exists: true }
   }
 
-  // ==================== 日记记忆 ====================
+  // ==================== Diary memory ====================
 
   /**
-   * 列出 Agent 的日记日期（倒序，最新的在前）
+   * List the agent's diary dates (descending, newest first)
    *
-   * @returns 日期字符串数组，如 ['2026-10-22', '2026-10-21']
+   * @returns Date strings, e.g. ['2026-10-22', '2026-10-21']
    */
   async listDiaries(id: string): Promise<string[]> {
     const dates: string[] = []
@@ -347,14 +347,14 @@ export class AgentManager {
         }
       }
     } catch {
-      // 目录或 agent 不存在
+      // Directory or agent does not exist
     }
 
     return dates.sort().reverse()
   }
 
   /**
-   * 获取今日日记路径
+   * Get today's diary path
    */
   private getTodayLogPath(): string {
     const today = new Date()
@@ -365,7 +365,7 @@ export class AgentManager {
   }
 
   /**
-   * 读取 Agent 今日日记
+   * Read the agent's diary for today
    */
   async readTodayLog(id: string): Promise<string | null> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -375,7 +375,7 @@ export class AgentManager {
   }
 
   /**
-   * 写入 Agent 今日日记（追加）
+   * Append to the agent's diary for today
    */
   async appendTodayLog(id: string, content: string): Promise<void> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -386,7 +386,7 @@ export class AgentManager {
     try {
       existing = (await this.readFile(memoryDir, logPath)) || ''
     } catch {
-      // 文件不存在
+      // File does not exist
     }
 
     const timestamp = new Date().toLocaleTimeString()
@@ -394,10 +394,10 @@ export class AgentManager {
     await this.writeFile(memoryDir, logPath, newContent.trim())
   }
 
-  // ==================== 技能 ====================
+  // ==================== Skills ====================
 
   /**
-   * 列出 Agent 的技能
+   * List the agent's skills
    */
   async listSkills(id: string): Promise<string[]> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -411,13 +411,13 @@ export class AgentManager {
         }
       }
     } catch {
-      // 目录不存在
+      // Directory does not exist
     }
     return skills
   }
 
   /**
-   * 读取技能
+   * Read a skill
    */
   async readSkill(id: string, skillName: string): Promise<string | null> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -426,7 +426,7 @@ export class AgentManager {
   }
 
   /**
-   * 写入技能
+   * Write a skill
    */
   async writeSkill(id: string, skillName: string, content: string): Promise<void> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -435,7 +435,7 @@ export class AgentManager {
   }
 
   /**
-   * 删除技能
+   * Delete a skill
    */
   async deleteSkill(id: string, skillName: string): Promise<void> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
@@ -443,7 +443,7 @@ export class AgentManager {
     await skillsDir.removeEntry(`${skillName}.md`)
   }
 
-  // ==================== 私有方法 ====================
+  // ==================== Private methods ====================
 
   private async readFile(dir: FileSystemDirectoryHandle, filename: string): Promise<string | null> {
     try {

@@ -1,8 +1,8 @@
 /**
- * Folder Access Repository - IndexedDB 持久化封装
+ * Folder Access Repository - IndexedDB persistence wrapper
  *
- * 负责文件夹句柄的存储、读取、删除
- * 每条记录以 `${projectId}/${rootName}` 为复合键，支持多 root。
+ * Owns storage, loading and deletion of folder handles.
+ * Each record is keyed by `${projectId}/${rootName}`, supporting multiple roots.
  */
 
 import type { FolderAccessRecord } from '@/types/folder-access'
@@ -17,14 +17,14 @@ function compoundKey(projectId: string, rootName?: string): string {
 }
 
 /**
- * IndexedDB 操作封装
+ * IndexedDB operation wrapper
  */
 class FolderAccessRepository {
   private db: IDBDatabase | null = null
   private initPromise: Promise<void> | null = null
 
   /**
-   * 初始化数据库
+   * Initialize the database
    */
   async initialize(): Promise<void> {
     if (this.db) return
@@ -40,7 +40,7 @@ class FolderAccessRepository {
 
       request.onsuccess = async () => {
         this.db = request.result
-        // 迁移旧数据库（如果需要）
+        // Migrate the legacy database (if needed)
         this.migrateFromLegacy().then(resolve).catch(reject)
       }
 
@@ -78,13 +78,13 @@ class FolderAccessRepository {
   }
 
   /**
-   * 从旧数据库迁移数据
+   * Migrate data from the legacy database
    */
   private async migrateFromLegacy(): Promise<void> {
     const LEGACY_DB_NAME = 'app-dir-handle'
 
     return new Promise((resolve) => {
-      // 尝试打开旧数据库
+      // Try to open the legacy database
       const request = indexedDB.open(LEGACY_DB_NAME)
 
       request.onsuccess = async () => {
@@ -95,7 +95,7 @@ class FolderAccessRepository {
           return
         }
 
-        // 读取旧数据
+        // Read legacy data
         const tx = legacyDb.transaction('handles', 'readonly')
         const store = tx.objectStore('handles')
         const getAll = store.getAll()
@@ -110,7 +110,7 @@ class FolderAccessRepository {
               'records from legacy DB'
             )
 
-            // 写入新数据库
+            // Write to the new database
             for (const record of legacyRecords) {
               await this.save({
                 projectId: record.projectId,
@@ -123,7 +123,7 @@ class FolderAccessRepository {
               })
             }
 
-            // 删除旧数据库
+            // Delete the legacy database
             indexedDB.deleteDatabase(LEGACY_DB_NAME)
             console.log('[FolderAccessRepository] Legacy DB migration complete')
           }
@@ -139,14 +139,14 @@ class FolderAccessRepository {
       }
 
       request.onerror = () => {
-        // 旧数据库不存在，正常流程
+        // Legacy database absent - normal flow
         resolve()
       }
     })
   }
 
   /**
-   * 确保数据库已初始化
+   * Ensure the database is initialized
    */
   private async ensureDB(): Promise<IDBDatabase> {
     await this.initialize()
@@ -157,7 +157,7 @@ class FolderAccessRepository {
   }
 
   /**
-   * 保存记录
+   * Save a record
    */
   async save(record: FolderAccessRecord): Promise<void> {
     const db = await this.ensureDB()
@@ -196,7 +196,7 @@ class FolderAccessRepository {
   }
 
   /**
-   * 加载记录（单 root 兼容：不传 rootName 返回该项目的第一条记录）
+   * Load a record (single-root compatible: omitting rootName returns the project's first record)
    */
   async load(projectId: string, rootName?: string): Promise<FolderAccessRecord | null> {
     const db = await this.ensureDB()
@@ -226,7 +226,7 @@ class FolderAccessRepository {
   }
 
   /**
-   * 删除记录
+   * Delete a record
    */
   async delete(projectId: string, rootName?: string): Promise<void> {
     const db = await this.ensureDB()
@@ -259,7 +259,7 @@ class FolderAccessRepository {
   }
 
   /**
-   * 检查记录是否存在
+   * Check whether a record exists
    */
   async exists(projectId: string, rootName?: string): Promise<boolean> {
     const record = await this.load(projectId, rootName)
@@ -267,7 +267,7 @@ class FolderAccessRepository {
   }
 
   /**
-   * 获取所有项目 ID
+   * List all project IDs
    */
   async getAllProjectIds(): Promise<string[]> {
     const db = await this.ensureDB()
@@ -290,7 +290,7 @@ class FolderAccessRepository {
   }
 
   /**
-   * 按 projectId + rootName 查找记录（多 root 支持）
+   * Find a record by projectId + rootName (multi-root)
    */
   async findByProjectAndRoot(
     projectId: string,
@@ -320,7 +320,7 @@ class FolderAccessRepository {
   }
 
   /**
-   * 按 projectId + rootName 删除记录（多 root 支持）
+   * Delete a record by projectId + rootName (multi-root)
    */
   async deleteByProjectAndRoot(projectId: string, rootName: string): Promise<void> {
     return this.delete(projectId, rootName)

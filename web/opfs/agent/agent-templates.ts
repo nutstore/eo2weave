@@ -144,7 +144,7 @@ Periodically review diaries and distill important content here.
 }
 
 /**
- * 获取默认模板
+ * Get the default template
  */
 export function getDefaultAgentTemplate(): AgentTemplate {
   return { ...DEFAULT_AGENT_TEMPLATE }

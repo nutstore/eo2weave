@@ -2,12 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { WorkspaceRuntime } from '../workspace-runtime'
 
 /**
- * 回归测试：deleteFromFilesDir 删除文件后必须向上清理变空的父目录。
+ * Regression: deleteFromFilesDir must prune now-empty parent directories after deleting a file.
  *
- * 背景（web/src → 根级目录迁移时发现）：
- * - OPFS files/ 只删文件不清空目录 → 残留空目录树
- * - 空目录不产生文件级 pending 操作，同步层无法感知
- * - 后续 flush 按目录条目重建父目录链 → 磁盘侧「幽灵目录」复活
+ * Background (found during the web/src -> root-level directory migration):
+ * - OPFS files/ deletes files but never clears directories -> empty directory trees linger
+ * - Empty directories produce no file-level pending op, so the sync layer never sees them
+ * - A later flush rebuilds the parent chain from directory entries -> "ghost directories" reappear on disk
  */
 describe('deleteFromFilesDir empty-parent pruning', () => {
   type DirEntry = { name: string; kind: 'file' | 'directory' }
@@ -87,7 +87,7 @@ describe('deleteFromFilesDir empty-parent pruning', () => {
     const runtime = makeRuntime(filesDir)
     await runtime.deleteFromFilesDir('src/a/b/deep.ts')
 
-    // b 变空被删；a 因还有 keep.ts 保留；src/a 链保留
+    // b became empty and is removed; a is kept thanks to keep.ts; the src/a chain survives
     expect(aDir.children.has('b')).toBe(false)
     expect(aDir.children.has('keep.ts')).toBe(true)
     expect(srcDir.children.has('a')).toBe(true)
