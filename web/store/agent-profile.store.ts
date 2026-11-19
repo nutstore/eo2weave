@@ -1,16 +1,16 @@
 /**
  * Agent Profile Store
  *
- * 管理「Agent 档案」面板的开关状态。
- * 面板需要跨 WelcomeScreen 与 ConversationView 共享，故独立成一个 store。
+ * Owns the open/closed state of the Agent Profile panel.
+ * The panel is shared between WelcomeScreen and ConversationView, so it lives in its own store.
  */
 
 import { create } from 'zustand'
 
 interface AgentProfileState {
-  /** 面板是否打开 */
+  /** Whether the panel is open */
   isOpen: boolean
-  /** 面板当前正在编辑的 agent id */
+  /** Id of the agent currently being edited in the panel */
   agentId: string | null
 
   open: (agentId: string) => void

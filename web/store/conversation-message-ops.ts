@@ -318,7 +318,7 @@ export function findSpawnStepInDraft(draft: {
 /**
  * Produce a short text summary suitable for a system notification body.
  * Trims whitespace, normalises newlines, and truncates to ~60 chars with
- * an ellipsis. If the input is empty, returns '已完成'.
+ * an ellipsis. If the input is empty, returns the localized "completed" fallback.
  */
 export function summarizeForNotification(content: string, maxChars = 60): string {
   const normalised = content.replace(/\s+/g, ' ').trim()

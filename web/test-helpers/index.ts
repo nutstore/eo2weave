@@ -1,19 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
- * 测试工具函数库
+ * Test helper library
  *
- * 提供 Mock 对象、测试辅助函数等
+ * Provides mock objects, test helpers, and more
  */
 
 import { renderHook } from '@testing-library/react'
 import { vi } from 'vitest'
 
 // ============================================================================
-// Mock 对象工厂
+// Mock object factories
 // ============================================================================
 
 /**
- * 创建假的 FileSystemDirectoryHandle
+ * Create a fake FileSystemDirectoryHandle
  *
  * @example
  * const mockHandle = createMockDirHandle({
@@ -61,7 +61,7 @@ export function createMockDirHandle(
 }
 
 /**
- * 创建假的 FileSystemFileHandle
+ * Create a fake FileSystemFileHandle
  */
 export function createMockFileHandle(
   name: string,
@@ -87,7 +87,7 @@ export function createMockFileHandle(
 }
 
 /**
- * 创建假的 Zustand store
+ * Create a fake Zustand store
  *
  * @example
  * const mockStore = createMockStore({ count: 0, name: 'test' })
@@ -117,7 +117,7 @@ export function createMockStore<T extends object>(initialState: T) {
 }
 
 /**
- * 创建假的 Worker
+ * Create a fake Worker
  *
  * @example
  * const { worker, postMessage, on } = createMockWorker()
@@ -150,7 +150,7 @@ export function createMockWorker() {
       }
     }),
     dispatchEvent: vi.fn(),
-    // 测试辅助方法
+    // Test helpers
     _emit: (event: string, data: any) => {
       const eventHandlers = handlers.get(event)
       eventHandlers?.forEach((handler) => handler({ data }))
@@ -175,7 +175,7 @@ export function createMockWorker() {
 }
 
 /**
- * 创建假的 LLM Provider
+ * Create a fake LLM Provider
  */
 export function createMockLLMProvider() {
   return {
@@ -186,7 +186,7 @@ export function createMockLLMProvider() {
 }
 
 /**
- * 创建假的 ToolRegistry
+ * Create a fake ToolRegistry
  */
 export function createMockToolRegistry() {
   const mockTools = new Map()
@@ -205,7 +205,7 @@ export function createMockToolRegistry() {
 }
 
 /**
- * 创建假的 ContextManager
+ * Create a fake ContextManager
  */
 export function createMockContextManager() {
   return {
@@ -217,11 +217,11 @@ export function createMockContextManager() {
 }
 
 // ============================================================================
-// 异步测试辅助函数
+// Async test helpers
 // ============================================================================
 
 /**
- * 等待条件成立
+ * Wait until the condition holds
  *
  * @example
  * await waitFor(() => store.getState().count > 0)
@@ -242,7 +242,7 @@ export async function waitFor(
 }
 
 /**
- * 等待元素出现
+ * Wait for an element to appear
  */
 export async function waitForElement<T>(
   getter: () => T | null | undefined,
@@ -263,14 +263,14 @@ export async function waitForElement<T>(
 }
 
 /**
- * 等待指定时间
+ * Wait for the given duration
  */
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**
- * 等待所有 pending 的 Promise 完成
+ * Wait for all pending promises to settle
  */
 export async function waitForMicrotasks(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -278,11 +278,11 @@ export async function waitForMicrotasks(): Promise<void> {
 }
 
 // ============================================================================
-// Store 测试辅助函数
+// Store test helpers
 // ============================================================================
 
 /**
- * 渲染 store hook 并返回辅助方法
+ * Render a store hook and return helper accessors
  *
  * @example
  * const { store, getState, setState } = renderStoreHook(() => useConversationStore())
@@ -295,7 +295,7 @@ export function renderStoreHook<T>(hook: () => T) {
     rerender,
     getState: () => {
       const state = result.current
-      // 处理 Zustand store
+      // Zustand store
       if (state && typeof state === 'object' && 'getState' in state) {
         return (state as any).getState()
       }
@@ -303,7 +303,7 @@ export function renderStoreHook<T>(hook: () => T) {
     },
     setState: (update: any) => {
       const state = result.current
-      // 处理 Zustand store
+      // Zustand store
       if (state && typeof state === 'object' && 'setState' in state) {
         (state as any).setState(update)
       }
@@ -312,7 +312,7 @@ export function renderStoreHook<T>(hook: () => T) {
 }
 
 /**
- * 重置 store 状态
+ * Reset the store state
  */
 export function resetStore(store: any) {
   if (store && typeof store.setState === 'function') {
@@ -320,17 +320,17 @@ export function resetStore(store: any) {
       conversations: [],
       activeConversationId: null,
       loaded: true,
-      // 根据具体 store 调整
+      // Adjust per concrete store
     })
   }
 }
 
 // ============================================================================
-// 事件测试辅助函数
+// Event test helpers
 // ============================================================================
 
 /**
- * 创建 Mock 事件
+ * Create a mock event
  */
 export function createMockEvent<T extends Event = Event>(type: string, properties?: Partial<T>): T {
   return {
@@ -343,7 +343,7 @@ export function createMockEvent<T extends Event = Event>(type: string, propertie
 }
 
 /**
- * 模拟用户输入事件
+ * Simulate a user input event
  */
 export function createMockInputEvent(value: string) {
   return {
@@ -355,25 +355,25 @@ export function createMockInputEvent(value: string) {
 }
 
 // ============================================================================
-// 时间测试辅助函数
+// Timer test helpers
 // ============================================================================
 
 /**
- * Mock 定时器
+ * Mock timers
  */
 export function mockTimers() {
   vi.useFakeTimers()
 }
 
 /**
- * 恢复真实定时器
+ * Restore real timers
  */
 export function restoreTimers() {
   vi.useRealTimers()
 }
 
 /**
- * 快进时间
+ * Fast-forward time
  */
 export async function advanceTimers(ms: number) {
   vi.advanceTimersByTime(ms)
@@ -381,11 +381,11 @@ export async function advanceTimers(ms: number) {
 }
 
 // ============================================================================
-// 性能测试辅助函数
+// Performance test helpers
 // ============================================================================
 
 /**
- * 测量函数执行时间
+ * Measure how long a function takes
  */
 export async function measureTime<T>(
   fn: () => T | Promise<T>
@@ -397,7 +397,7 @@ export async function measureTime<T>(
 }
 
 /**
- * 测量内存使用 (需要在支持 performance.measureUserAgentSpecificMemory() 的环境中)
+ * Measure memory usage (requires an environment supporting performance.measureUserAgentSpecificMemory())
  */
 export async function measureMemory(): Promise<number> {
   // @ts-ignore
@@ -410,11 +410,11 @@ export async function measureMemory(): Promise<number> {
 }
 
 // ============================================================================
-// 断言辅助函数
+// Assertion helpers
 // ============================================================================
 
 /**
- * 断言元素存在
+ * Assert the element exists
  */
 export function assertExists<T>(value: T | null | undefined, message?: string): asserts value is T {
   if (value == null) {
@@ -423,10 +423,10 @@ export function assertExists<T>(value: T | null | undefined, message?: string): 
 }
 
 /**
- * 断言函数被调用
+ * Assert a function was called
  */
 export function assertCalled(fn: ReturnType<typeof vi.fn>, times = 1): void {
-  // 使用 vitest 的 vi.fn 进行断言
+  // Assert via vitest's vi.fn
   const mock = fn as any
   if (mock._isMockFunction) {
     const actualTimes = mock.mock.calls.length
@@ -439,7 +439,7 @@ export function assertCalled(fn: ReturnType<typeof vi.fn>, times = 1): void {
 }
 
 /**
- * 断言函数未调用
+ * Assert a function was not called
  */
 export function assertNotCalled(fn: ReturnType<typeof vi.fn>): void {
   const mock = fn as any
@@ -451,25 +451,25 @@ export function assertNotCalled(fn: ReturnType<typeof vi.fn>): void {
 }
 
 // ============================================================================
-// 快照测试辅助函数
+// Snapshot test helpers
 // ============================================================================
 
 /**
- * 创建带快照的测试
- * 注意：使用此函数需要在测试文件中导入 expect
+ * Create a test with a snapshot
+ * Note: using this function requires importing expect in the test file
  */
 export function createSnapshotTest(name: string, _component: React.ReactNode) {
-  // 快照测试需要在测试文件中使用 it() 和 expect()
-  // 这里仅作为占位符，实际使用时在测试文件中编写
+  // Snapshot tests need it() and expect() in the test file
+  // This only serves as a placeholder; write the real assertion in the test file
   return name
 }
 
 // ============================================================================
-// 导出所有工具
+// Export everything
 // ============================================================================
 
 export const testHelpers = {
-  // Mock 对象工厂
+  // Mock object factories
   createMockDirHandle,
   createMockFileHandle,
   createMockStore,
@@ -478,30 +478,30 @@ export const testHelpers = {
   createMockToolRegistry,
   createMockContextManager,
 
-  // 异步辅助函数
+  // Async helpers
   waitFor,
   waitForElement,
   delay,
   waitForMicrotasks,
 
-  // Store 辅助函数
+  // Store helpers
   renderStoreHook,
   resetStore,
 
-  // 事件辅助函数
+  // Event helpers
   createMockEvent,
   createMockInputEvent,
 
-  // 时间辅助函数
+  // Timer helpers
   mockTimers,
   restoreTimers,
   advanceTimers,
 
-  // 性能辅助函数
+  // Performance helpers
   measureTime,
   measureMemory,
 
-  // 断言辅助函数
+  // Assertion helpers
   assertExists,
   assertCalled,
   assertNotCalled,
