@@ -866,6 +866,7 @@ interface CodexBlockExports {
 }
 let CODEX = null as null | CodexBlockExports;
 const CODEX_MODELS_CACHE_TTL_MS = 5 * 60 * 1000;
+let codexModelsRequestSequence = 0;
 let codexModelsCache: {
   accessToken: string;
   models: ReturnType<CodexBlockExports['parseCodexModels']>;
@@ -2988,10 +2989,14 @@ export default defineBackground(() => {
           let modelsEndpointProbe: Record<string, unknown> | null = null;
           if (authorized && tokens?.access_token) {
             const accessToken = tokens.access_token;
+            if (codexModelsCache?.accessToken !== accessToken) {
+              codexModelsCache = null;
+            }
             if (codexModelsCache?.accessToken === accessToken && codexModelsCache.expiresAt > Date.now()) {
               models = codexModelsCache.models;
               modelsEndpointProbe = codexModelsCache.probe;
             } else {
+              const requestSequence = ++codexModelsRequestSequence;
               // The catalog uses the Codex client version (not the ChatGPT web
               // version). Keep this probe separate from the extension version.
               const url = `${CODEX!.CODEX_BACKEND_API_URL}/codex/models?client_version=0.156.1`;
@@ -3015,7 +3020,8 @@ export default defineBackground(() => {
                 };
                 if (response.ok) {
                   models = CODEX!.parseCodexModels(parsed);
-                  if (models.length > 0) {
+                  // Only the latest request may populate the shared cache.
+                  if (models.length > 0 && requestSequence === codexModelsRequestSequence) {
                     codexModelsCache = {
                       accessToken,
                       models,
@@ -3033,6 +3039,8 @@ export default defineBackground(() => {
             }
           } else {
             codexModelsCache = null;
+            // Pending catalog responses must not restore an invalidated cache.
+            codexModelsRequestSequence++;
           }
           sendResponse({
             ok: true,
