@@ -1,9 +1,9 @@
 /**
- * Nutstore AI (坚果云 AI) — persisted provider id: `llm-gateway`
+ * Nutstore AI — persisted provider id: `llm-gateway`
  *
  * Provider Registration
  *
- * Registers "坚果云 AI" as a built-in LLM provider that uses
+ * Registers "Nutstore AI" as a built-in LLM provider that uses
  * Device Code Flow for authentication (no manual API key needed).
  *
  * The provider automatically:
@@ -397,7 +397,7 @@ export async function fetchGatewayRateLimits(): Promise<RateLimitsResponse> {
 
   let token = await getValidAccessToken(baseURL, clientId)
   if (!token) {
-    // Locale-aware error (zh: 坚果云 AI / others: Nutstore AI).
+    // Locale-aware error text (the provider name is localized).
     // "expired" and "never logged in" need different recovery steps, so the
     // message must match the credential state the auth layer just recorded.
     const locale = useI18nStore.getState().locale

@@ -286,7 +286,7 @@ export class PiAIProvider implements LLMProvider {
           // request with `unexpected keyword argument`. Match the upstream format.
           switch (detectThinkingFormat(this.model.baseUrl)) {
             case 'tencent-tokenhub':
-              // TokenHub / 坚果云 AI Gateway — only accepts reasoning_effort with 'off'
+              // TokenHub / Nutstore AI gateway — only accepts reasoning_effort with 'off'
               p.reasoning_effort = 'off'
               break
             case 'minimax':

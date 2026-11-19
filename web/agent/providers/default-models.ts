@@ -7,7 +7,7 @@
  * usable. Removing the pins is always respected — the seed only runs on an
  * empty pin list and never re-runs afterwards.
  *
- * Curation rule: pick the best value-for-money ("性价比") model per provider,
+ * Curation rule: pick the best value-for-money model per provider,
  * typically the fast/flash/mini tier that is still strong enough for agent
  * work. Model ids must match what the provider's API actually serves; ids
  * absent from a fetched /models response are simply not pinned (the helper
@@ -22,7 +22,7 @@
  *     in store/extension.store.ts (RECOMMENDED_FIRST).
  *   - custom-* providers: user-defined catalogs.
  *
- * 火山方舟 Coding (volcengine-coding) defaults to the console-managed
+ * Volcengine Ark Coding (volcengine-coding) defaults to the console-managed
  * ark-code-latest alias. It is included in the static fallback catalog;
  * when live discovery succeeds, the same catalog intersection applies.
  */
@@ -48,7 +48,7 @@ export const DEFAULT_PINNED_MODELS: Partial<Record<string, readonly string[]>> =
   'volcengine-coding': ['ark-code-latest'],
 
   // ── Dynamic providers ──
-  // Nutstore AI (坚果云 AI) gateway — catalog comes from GET /v1/models;
+  // Nutstore AI gateway — catalog comes from GET /v1/models;
   // deepseek-v4.1-flash is the curated value default.
   'llm-gateway': ['deepseek-v4.1-flash'],
 }

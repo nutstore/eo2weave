@@ -4,7 +4,7 @@
  * Called by the agent AFTER the user confirms via ask_user_question.
  * The agent flow is:
  *   1. search_skills("code review") → finds cw-code-review-expert
- *   2. ask_user_question("找到代码审查技能，要安装吗？") → user says Yes
+ *   2. ask_user_question("Found a code-review skill. Install it?") → user says Yes
  *   3. install_skill("cw-code-review-expert") → installs → returns success
  *   4. read_skill("cw-code-review-expert") → loads and uses the skill
  *

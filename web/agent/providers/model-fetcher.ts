@@ -504,7 +504,7 @@ const CONTEXT_WINDOW_MAP: Array<{ pattern: string; context: number }> = [
   { pattern: 'mixtral-8x22b', context: 65536 },
   { pattern: 'mixtral-8x7b', context: 32768 },
 
-  // ─── GLM (智谱) ────────────────────────────────────────────────────────
+  // ─── GLM (Zhipu) ────────────────────────────────────────────────────────
   { pattern: 'glm-4-plus', context: 128000 },
   { pattern: 'glm-4-air', context: 128000 },
   { pattern: 'glm-4-flash', context: 128000 },
@@ -513,7 +513,7 @@ const CONTEXT_WINDOW_MAP: Array<{ pattern: string; context: number }> = [
   { pattern: 'glm-4v', context: 128000 },
   { pattern: 'glm', context: 128000 },
 
-  // ─── Kimi (月之暗面) ───────────────────────────────────────────────────
+  // ─── Kimi (Moonshot AI) ─────────────────────────────────────────────────
   { pattern: 'moonshot-v1-128k', context: 131072 },
   { pattern: 'moonshot-v1-32k', context: 32768 },
   { pattern: 'moonshot-v1-8k', context: 8192 },
@@ -526,7 +526,7 @@ const CONTEXT_WINDOW_MAP: Array<{ pattern: string; context: number }> = [
   { pattern: 'abab5.5', context: 16384 },
   { pattern: 'minimax', context: 245760 },
 
-  // ─── Qwen (通义千问) ──────────────────────────────────────────────────
+  // ─── Qwen (Alibaba Tongyi) ──────────────────────────────────────────────
   { pattern: 'qwen-max', context: 32768 },
   { pattern: 'qwen-plus', context: 131072 },
   { pattern: 'qwen-turbo', context: 131072 },
