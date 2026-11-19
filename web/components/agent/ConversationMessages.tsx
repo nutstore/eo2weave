@@ -64,6 +64,14 @@ const QUEUE_HANDOFF_WAIT_MS = 10_000
 const INITIAL_PIN_MAX_WAIT_MS = 4000
 
 /**
+ * Keys that scroll the conversation without producing a wheel event. Pressed
+ * while the load-follow pin is running they mean "the user is browsing
+ * history", the same takeover a wheel signals. Keys pressed inside an input
+ * are excluded at the handler.
+ */
+const SCROLL_INTENT_KEYS = new Set(['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' '])
+
+/**
  * How the virtualized renderer receives footer content (draft bubble + queued
  * messages): via Virtuoso's `context` prop, NOT a module-level slot.
  *
@@ -667,17 +675,65 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   // in waves and stranded the view 28k px above the bottom). The window
   // restarts on every turn-count growth and retires once loading has been
   // quiet for INITIAL_PIN_MAX_WAIT_MS with the view at the true bottom.
-  // Explicit wheel or touch input stops the window for good; Virtuoso's
-  // own position corrections must not be mistaken for user scrolling. The button
-  // takes over from there. While a run is already streaming when the
-  // conversation mounts, defer to the send guard loop instead: it has no
-  // deadline, handles in-place growth and queue hand-off, and jumps
-  // Virtuoso-safely.
+  // Explicit input INSIDE the conversation — wheel, vertical touch, a
+  // scrollbar drag or a scroll key — stops the window for good; Virtuoso's
+  // own position corrections produce no input events and must not be mistaken
+  // for user scrolling. The button takes over from there. While a run is
+  // already streaming when the conversation mounts, defer to the send guard
+  // loop instead: it has no deadline, handles in-place growth and queue
+  // hand-off, and jumps Virtuoso-safely.
   const initialPinStopRef = useRef<(() => void) | null>(null)
   const pinAbortedRef = useRef(false)
   const followTurnsCountRef = useRef<number | null>(null)
+  // User-intent takeover, scoped to THIS conversation's scroller and kept
+  // alive for the whole mount. Scoping matters in both directions: wheeling
+  // the sidebar is not browsing intent and must not cancel the pin, while a
+  // scrollbar drag or a scroll key is. The flag outlives the pin window on
+  // purpose — a later batch must not restart the pin for a user who already
+  // scrolled away.
   useEffect(() => {
-    if (!shouldVirtualize || !scrollParent) return
+    if (!scrollParent) return
+    const abortPin = () => {
+      pinAbortedRef.current = true
+      initialPinStopRef.current?.()
+    }
+    const onGesture = (event: Event) => {
+      if (!scrollParent.contains(event.target as Node | null)) return
+      abortPin()
+    }
+    const onPointerDown = (event: Event) => {
+      // A scrollbar drag targets the scrolling element itself; clicking a
+      // message is not browsing intent.
+      if (event.target !== scrollParent) return
+      abortPin()
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!SCROLL_INTENT_KEYS.has(event.key)) return
+      const target = event.target as HTMLElement | null
+      // Typing (or moving the caret) in the composer is not browsing.
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      abortPin()
+    }
+    scrollParent.addEventListener('wheel', onGesture, { capture: true, passive: true })
+    scrollParent.addEventListener('touchmove', onGesture, { capture: true, passive: true })
+    scrollParent.addEventListener('pointerdown', onPointerDown, { capture: true })
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      scrollParent.removeEventListener('wheel', onGesture, true)
+      scrollParent.removeEventListener('touchmove', onGesture, true)
+      scrollParent.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [scrollParent])
+  useEffect(() => {
+    if (!shouldVirtualize) {
+      // Leaving virtualization (threshold drop, deletions) drops the recorded
+      // batch count: re-entering is a fresh load, not a resume that would
+      // compare against a stale, larger count and skip the pin entirely.
+      followTurnsCountRef.current = null
+      return
+    }
+    if (!scrollParent) return
     if (followTurnsCountRef.current !== null) {
       // Resume ONLY for a fresh batch of turns. A user takeover is terminal;
       // re-evaluations without growth are no-ops. If a run started (guard
@@ -723,19 +779,12 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
     const stop = () => {
       cancelled = true
       if (initialPinStopRef.current === stop) initialPinStopRef.current = null
-      window.removeEventListener('wheel', abort, true)
-      window.removeEventListener('touchmove', abort, true)
     }
-    const abort = () => {
-      // A wheel/vertical-touch gesture is real user intent — kill the whole
-      // follow window, not just this tick.
-      pinAbortedRef.current = true
-      stop()
-    }
-    window.addEventListener('wheel', abort, { capture: true, passive: true })
-    window.addEventListener('touchmove', abort, { capture: true, passive: true })
     const tick = () => {
       if (cancelled) return
+      // Explicit user intent landed since the last frame — stop BEFORE the
+      // next jump instead of pulling the view back under them.
+      if (pinAbortedRef.current) { stop(); return }
       // The send guard loop took over (user sent mid-window) — it owns the
       // scroller now; two loops must never drive it at once.
       if (stopSendVerifyRef.current) { stop(); return }
