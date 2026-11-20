@@ -97,9 +97,23 @@ async function notifyWorkspaceNativeDirectoryGranted(handle: FileSystemDirectory
  * banner path re-requests the permission under a real user gesture. Rejections
  * are still propagated, so the expired-handle path keeps its old behaviour.
  */
-const PERMISSION_QUERY_TIMEOUT_MS = 3000
+const PERMISSION_QUERY_TIMEOUT_MS = 2000
 
 export type PermissionProbe = PermissionState | 'timeout'
+
+/**
+ * Handles whose permission probe already timed out, keyed by project + root.
+ *
+ * Activation probes the same handle twice — once in `hydrateProject`, once per
+ * root in `loadRoots` — so without this one unanswerable handle costs the
+ * deadline twice and the startup screen waits for both. The key is dropped as
+ * soon as a probe answers, so a recovered handle is never remembered as stuck.
+ */
+const permissionProbeTimeouts = new Set<string>()
+
+function probeKey(projectId: string, rootName: string): string {
+  return `${projectId}:${rootName}`
+}
 
 async function probePermission(
   handle: FileSystemDirectoryHandle,
@@ -351,7 +365,9 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           if (permission === 'timeout') {
             // The probe never answered. Do not delete the record and do not keep
             // waiting: fall back to the re-authorization state, whose banner
-            // re-requests the permission under a real user gesture.
+            // re-requests the permission under a real user gesture. Remember the
+            // verdict so loadRoots does not pay the same deadline again.
+            permissionProbeTimeouts.add(probeKey(projectId, handle.name ?? existing.rootName ?? projectId))
             console.warn(
               `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_TIMEOUT_MS}ms; falling back to re-authorization for "${handle.name}"`
             )
@@ -608,6 +624,12 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
               r.updatedAt = Date.now()
             }
           })
+
+          // The handle answers again: forget the earlier timeout verdict so the
+          // next loadRoots probes it normally instead of skipping it.
+          permissionProbeTimeouts.delete(
+            probeKey(projectId, record.rootName ?? handle.name ?? projectId)
+          )
 
           // Update persistence
           await folderAccessRepo.save(get().records[projectId])
@@ -952,19 +974,33 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
                 const record = await folderAccessRepo.findByProjectAndRoot(projectId, dbRoot.name)
                 if (record?.persistedHandle) {
                   persistedHandle = record.persistedHandle
-                  // Auto-check if browser still has cached permission
-                  const permission = await probePermission(persistedHandle)
-                  if (permission === 'timeout') {
+                  // Auto-check if browser still has cached permission — unless
+                  // hydrateProject already gave up on this same handle during
+                  // this activation. Paying the deadline twice would double the
+                  // startup wait for one unanswerable handle.
+                  const key = probeKey(projectId, dbRoot.name)
+                  if (permissionProbeTimeouts.has(key)) {
                     console.warn(
-                      `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_TIMEOUT_MS}ms for root "${dbRoot.name}"; marking it for re-authorization`
+                      `[FolderAccessStore] Skipping the permission probe for root "${dbRoot.name}": it did not answer during this activation`
                     )
-                  }
-                  if (permission === 'granted') {
-                    handle = persistedHandle
-                    status = 'ready'
-                    bindRuntimeDirectoryHandle(projectId, dbRoot.name, handle)
-                  } else {
                     status = 'needs_user_activation'
+                  } else {
+                    const permission = await probePermission(persistedHandle)
+                    if (permission === 'timeout') {
+                      permissionProbeTimeouts.add(key)
+                      console.warn(
+                        `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_TIMEOUT_MS}ms for root "${dbRoot.name}"; marking it for re-authorization`
+                      )
+                    } else {
+                      permissionProbeTimeouts.delete(key)
+                    }
+                    if (permission === 'granted') {
+                      handle = persistedHandle
+                      status = 'ready'
+                      bindRuntimeDirectoryHandle(projectId, dbRoot.name, handle)
+                    } else {
+                      status = 'needs_user_activation'
+                    }
                   }
                 } else {
                   status = 'idle'

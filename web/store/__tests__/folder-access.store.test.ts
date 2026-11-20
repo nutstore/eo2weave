@@ -214,7 +214,7 @@ describe('folder-access.store runtime handle binding', () => {
 
       const activation = useFolderAccessStore.getState().setActiveProject(projectId)
       // The probe deadline is 3s; activation must settle on its own after it.
-      await vi.advanceTimersByTimeAsync(9500)
+      await vi.advanceTimersByTimeAsync(2100)
       await activation
 
       const record = useFolderAccessStore.getState().records[projectId]
@@ -224,7 +224,7 @@ describe('folder-access.store runtime handle binding', () => {
       expect(record.handle).toBeNull()
       expect(mockNativeFS.bindRuntimeDirectoryHandle).not.toHaveBeenCalled()
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('Permission query did not answer within 3000ms')
+        expect.stringContaining('Permission query did not answer within 2000ms')
       )
 
       // The two gates the UI uses after activation:
@@ -235,6 +235,9 @@ describe('folder-access.store runtime handle binding', () => {
       expect(state.roots).toHaveLength(1)
       expect(state.roots[0].status).toBe('needs_user_activation')
       expect(state.roots[0].backend).toBe('fsaccess')
+      // One activation pays the deadline once: hydrateProject probes the handle,
+      // loadRoots reuses that verdict instead of waiting again.
+      expect(handle.queryPermission).toHaveBeenCalledTimes(1)
       warn.mockRestore()
     } finally {
       vi.useRealTimers()
