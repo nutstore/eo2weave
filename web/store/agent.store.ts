@@ -73,7 +73,12 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       console.log('[AgentStore] folder-access mirror: module imported', {
         elapsedMs: Math.round(performance.now() - folderStartedAt),
       })
-      await useFolderAccessStore.getState().setActiveProject(projectId || null)
+      // Non-blocking: entering the project must not wait for the folder handle.
+      // The folder store converges (ready / needs_user_activation) in the
+      // background and the UI reacts to that (issue #316).
+      await useFolderAccessStore.getState().setActiveProject(projectId || null, {
+        awaitHydration: false,
+      })
       console.log('[AgentStore] folder-access mirror: store updated', {
         elapsedMs: Math.round(performance.now() - folderStartedAt),
       })

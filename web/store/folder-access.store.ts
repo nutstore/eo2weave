@@ -16,7 +16,13 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import { toast } from 'sonner'
-import type { FolderAccessRecord, FolderAccessStatus, FolderAccessStore, RootInfo } from '@/types/folder-access'
+import type {
+  FolderAccessRecord,
+  FolderAccessStatus,
+  FolderAccessStore,
+  FolderHydrationOptions,
+  RootInfo,
+} from '@/types/folder-access'
 import { folderAccessRepo } from '@/services/folder-access.repository'
 import { selectFolderReadWrite } from '@/services/fsAccess.service'
 import { isSidePanelMode } from '@/agent/workspace-assistant-context'
@@ -270,7 +276,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
      * For same-project switches, avoid full hydrate but still reload roots to
      * keep runtime handle/roots view consistent.
      */
-    setActiveProject: async (projectId: string | null) => {
+    setActiveProject: async (projectId: string | null, options?: FolderHydrationOptions) => {
       const prevId = get().activeProjectId
       set((state) => {
         state.activeProjectId = projectId
@@ -300,6 +306,10 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       if (prevId === projectId) {
         const record = get().records[projectId]
         if (record && (record.status === 'ready' || record.status === 'needs_user_activation')) {
+          if (options?.awaitHydration === false) {
+            void runHydrationInBackground(projectId, at, 'same-project')
+            return
+          }
           await get().loadRoots()
           console.log('[FolderAccessActivation] same-project fast path done', { projectId, atMs: at() })
           return
@@ -311,6 +321,14 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
         set((state) => {
           state.records[projectId] = createEmptyRecord(projectId)
         })
+      }
+
+      if (options?.awaitHydration === false) {
+        // Entering a project must not wait for a folder handle: the record is
+        // 'checking' now, the UI opens, and hydration converges in the
+        // background (bounded by the permission-probe deadline).
+        void runHydrationInBackground(projectId, at, 'activation')
+        return
       }
 
       await get().hydrateProject(projectId)
@@ -1467,4 +1485,52 @@ export function useCurrentFolderAccess() {
     handle: record?.handle ?? null,
     error: record?.error,
   }
+}
+
+/**
+ * Background hydration for the non-blocking activation path.
+ *
+ * Project activation calls `setActiveProject(id, { awaitHydration: false })` so
+ * entering a project never waits for a folder permission probe (issue #316). The
+ * work still has to happen: this runs it after the UI is free.
+ *
+ * Generation-guarded — a switch that lands while a probe is in flight must win,
+ * so a superseded run stops before publishing roots for a project the user has
+ * already left. Failures are logged, never thrown: this task has no caller.
+ */
+let hydrationGeneration = 0
+
+function runHydrationInBackground(
+  projectId: string,
+  at: () => number,
+  reason: 'activation' | 'same-project'
+): void {
+  const generation = ++hydrationGeneration
+  const superseded = () => generation !== hydrationGeneration
+
+  void (async () => {
+    try {
+      if (reason === 'activation') {
+        await useFolderAccessStore.getState().hydrateProject(projectId)
+        if (superseded()) {
+          console.log('[FolderAccessActivation] background hydration superseded', {
+            projectId,
+            stage: 'hydrateProject',
+            atMs: at(),
+          })
+          return
+        }
+        console.log('[FolderAccessActivation] background hydrateProject done', {
+          projectId,
+          atMs: at(),
+        })
+      }
+
+      if (superseded()) return
+      await useFolderAccessStore.getState().loadRoots()
+      console.log('[FolderAccessActivation] background loadRoots done', { projectId, atMs: at() })
+    } catch (error) {
+      console.warn('[FolderAccessActivation] background hydration failed:', error)
+    }
+  })()
 }
