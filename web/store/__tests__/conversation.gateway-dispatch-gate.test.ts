@@ -189,7 +189,7 @@ vi.mock('@/agent/subagent/runtime', () => ({
 }))
 
 vi.mock('@/store/workspace-preferences.store', () => ({
-  getCurrentWorkspaceAgentMode: vi.fn(() => 'yolo'),
+  getAgentModeForWorkspace: vi.fn(() => 'yolo'),
 }))
 
 import { useConversationStore } from '@/store/conversation.store'

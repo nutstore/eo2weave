@@ -145,6 +145,12 @@ interface WorkspacePreferencesState extends WorkspacePreferences {
 
   // Agent mode actions
   setAgentMode: (mode: 'plan' | 'act') => void
+  /**
+   * Write ONE conversation's mode. The open-tab mirror (`agentMode`) only
+   * follows when that conversation is the active one, so a run that switches its
+   * own mode in a background conversation can never relabel the UI.
+   */
+  setAgentModeForWorkspace: (mode: 'plan' | 'act', workspaceId: string) => void
   syncAgentModeForWorkspace: (workspaceId: string | null) => void
 
   // Run completion application policy
@@ -265,6 +271,14 @@ export const useWorkspacePreferencesStore = create<WorkspacePreferencesState>()(
           state.agentMode = mode
           if (workspaceId) {
             state.agentModeByWorkspace[workspaceId] = mode
+          }
+        }),
+
+      setAgentModeForWorkspace: (mode, workspaceId) =>
+        set((state) => {
+          state.agentModeByWorkspace[workspaceId] = mode
+          if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+            state.agentMode = mode
           }
         }),
 
@@ -408,9 +422,51 @@ export function getCurrentWorkspaceAgentMode(): 'plan' | 'act' {
 /**
  * Set the current workspace's agent mode.
  * Reads from workspace store to identify the active workspace.
+ *
+ * UI only. Anything that runs on behalf of a specific conversation (an agent
+ * loop, a subagent, an externally dispatched run) must use
+ * `getAgentModeForWorkspace` / `setAgentModeForWorkspace` instead: the active
+ * workspace is whatever tab the user happens to be looking at, which is not
+ * necessarily the conversation the work belongs to.
  */
 export function setCurrentWorkspaceAgentMode(mode: 'plan' | 'act'): void {
   useWorkspacePreferencesStore.getState().setAgentMode(mode)
+}
+
+/**
+ * Get the agent mode OWNED BY one conversation, independent of the open tab.
+ *
+ * A running agent loop resolves its mode boundary through this. Reading
+ * `getCurrentWorkspaceAgentMode()` from a loop instead lets a mode switch in a
+ * *different* conversation reach into it: with conversation B set to Act, a
+ * Plan run in conversation A could execute write tools, and with B set to Plan a
+ * running Act run in A suddenly had its write tools rejected mid-turn.
+ *
+ * Missing workspace: `DEFAULT_PREFERENCES.agentMode`, the same default a
+ * never-touched conversation resolves to.
+ */
+export function getAgentModeForWorkspace(
+  workspaceId: string | null | undefined
+): 'plan' | 'act' {
+  if (!workspaceId) return DEFAULT_PREFERENCES.agentMode
+  const state = useWorkspacePreferencesStore.getState()
+  return state.agentModeByWorkspace[workspaceId] ?? DEFAULT_PREFERENCES.agentMode
+}
+
+/**
+ * Set one conversation's agent mode, regardless of which conversation is open.
+ * Omitted workspace keeps the legacy UI behaviour (the active conversation).
+ */
+export function setAgentModeForWorkspace(
+  mode: 'plan' | 'act',
+  workspaceId: string | null | undefined
+): void {
+  const store = useWorkspacePreferencesStore.getState()
+  if (!workspaceId) {
+    store.setAgentMode(mode)
+    return
+  }
+  store.setAgentModeForWorkspace(mode, workspaceId)
 }
 
 /**

@@ -8,8 +8,8 @@
 import type { ToolDefinition, ToolExecutor, ToolPromptDoc } from './tool-types'
 import type { AgentMode } from '../agent-mode'
 import {
-  getCurrentWorkspaceAgentMode,
-  setCurrentWorkspaceAgentMode,
+  getAgentModeForWorkspace,
+  setAgentModeForWorkspace,
 } from '@/store/workspace-preferences.store'
 import { usePageActionSessionStore } from '@/store/page-action-session.store'
 import { useYoloModeStore, syncLegacyPageActionYolo } from '@/store/yolo-mode.store'
@@ -58,15 +58,32 @@ export type OnModeSwitched = (payload: {
 /**
  * Create an executor for switch_agent_mode.
  *
- * The executor reads/writes mode from the workspace-preferences store.
+ * The executor reads/writes the mode of the conversation that ISSUED the call
+ * (`context.workspaceId`), not whichever conversation is on screen. A loop keeps
+ * running while the user browses other conversations, so resolving through the
+ * active workspace let an agent switch somebody else's mode.
  */
 export function createSwitchModeExecutor(opts?: {
   /** Optional callback when mode is switched */
   onModeSwitched?: OnModeSwitched
 }): ToolExecutor {
-  return async (args: Record<string, unknown>) => {
+  return async (args: Record<string, unknown>, context) => {
     const { mode, reason } = args as { mode: AgentMode; reason: string }
-    const currentMode = getCurrentWorkspaceAgentMode()
+    const workspaceId = context?.workspaceId
+
+    // No conversation context: refuse. Falling back to the open tab here would
+    // reintroduce exactly the leak this tool now avoids — a run without a
+    // workspace (script agent, nested invocation) silently rewriting whichever
+    // conversation the user happens to be looking at.
+    if (!workspaceId) {
+      console.warn('[switch_agent_mode] refused: no conversation context in the tool call')
+      return JSON.stringify({
+        success: false,
+        error: 'switch_agent_mode needs a conversation context; no mode was changed.',
+      })
+    }
+
+    const currentMode = getAgentModeForWorkspace(workspaceId)
 
     // YOLO is an explicit user choice. An LLM-initiated mode switch may
     // disable it, but must never preserve or enable it implicitly.
@@ -87,8 +104,8 @@ export function createSwitchModeExecutor(opts?: {
 
     const previousMode = currentMode
 
-    // Perform the switch in workspace-preferences store
-    setCurrentWorkspaceAgentMode(mode)
+    // Perform the switch for THIS conversation
+    setAgentModeForWorkspace(mode, workspaceId)
 
     // Notify callback (for AgentLoop to update its internal state)
     opts?.onModeSwitched?.({ newMode: mode, previousMode, reason })

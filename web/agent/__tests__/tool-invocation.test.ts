@@ -3,7 +3,11 @@ import { invokeTool } from '@/services/tool-invocation'
 import type { ToolInvocationInput } from '@/services/tool-invocation'
 import type { ToolContext } from '@/agent/tools/tool-types'
 
-vi.mock('@/store/workspace-preferences.store', () => ({ getCurrentWorkspaceAgentMode: () => 'act' }))
+const modeState = vi.hoisted(() => ({ modes: {} as Record<string, 'plan' | 'act'> }))
+
+vi.mock('@/store/workspace-preferences.store', () => ({
+  getAgentModeForWorkspace: (workspaceId: string) => modeState.modes[workspaceId] ?? 'act',
+}))
 
 function input(execute: (name: string, args: unknown, context: ToolContext) => Promise<string>) {
   return {
@@ -19,6 +23,30 @@ function input(execute: (name: string, args: unknown, context: ToolContext) => P
 }
 
 describe('shared tool invocation', () => {
+  it('gates tools on the conversation that owns the run, not the open workspace', async () => {
+    modeState.modes = { 'conv-a': 'act', 'conv-b': 'plan' }
+    const execute = vi.fn(async () => '{}')
+    const config = input(execute)
+    config.toolRegistry.getToolDefinitionsForMode = () => [
+      { type: 'function', function: { name: 'write', description: '', parameters: { type: 'object', properties: {} } } },
+    ]
+
+    // Run owned by conv-a (Act): writes execute even though conv-b sits in Plan.
+    await invokeTool(config, {
+      toolName: 'write', toolCallId: 'w1', args: {},
+      context: { directoryHandle: null, workspaceId: 'conv-a' },
+    })
+    expect(execute).toHaveBeenCalledTimes(1)
+
+    // Same loop mode, but the owning conversation is in Plan (e.g. the user just
+    // switched it): the write must be refused.
+    await expect(invokeTool(config, {
+      toolName: 'write', toolCallId: 'w2', args: {},
+      context: { directoryHandle: null, workspaceId: 'conv-b' },
+    })).rejects.toThrow(/not available in plan mode/)
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps full structured data and per-call contexts isolated', async () => {
     const contexts: ToolContext[] = []
     const config = input(async (_name, _args, context) => {
