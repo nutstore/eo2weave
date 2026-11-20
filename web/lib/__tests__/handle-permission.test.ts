@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  describeHandle,
   PERMISSION_QUERY_DEADLINE_MS,
   PERMISSION_REQUEST_DEADLINE_MS,
   queryPermissionWithDeadline,
@@ -60,6 +61,61 @@ describe('handle permission deadlines', () => {
 
     await vi.advanceTimersByTimeAsync(PERMISSION_REQUEST_DEADLINE_MS)
     await expect(result).resolves.toBe('timeout')
+  })
+
+  it('tells a live directory from a dead handle when permission stalls', async () => {
+    // Directory still answers `keys()`: the tree exists and is readable, so a
+    // stalled permission call is a permissions-only problem, not a lost folder.
+    const readable = {
+      name: '鹅来面CSDN',
+      keys: () => ({
+        [Symbol.asyncIterator]: () => ({
+          next: async () => ({ done: false, value: 'notes.md' }),
+        }),
+      }),
+    } as unknown as FileSystemDirectoryHandle
+
+    await expect(describeHandle(readable)).resolves.toEqual({
+      name: '鹅来面CSDN',
+      readable: true,
+      firstEntry: 'notes.md',
+      error: null,
+    })
+
+    // A handle whose directory disappeared rejects while iterating.
+    const dead = {
+      name: 'moved',
+      keys: () => ({
+        [Symbol.asyncIterator]: () => ({
+          next: async () => {
+            throw new DOMException('A requested file or directory could not be found', 'NotFoundError')
+          },
+        }),
+      }),
+    } as unknown as FileSystemDirectoryHandle
+
+    const diagnosis = await describeHandle(dead)
+    expect(diagnosis.readable).toBe(false)
+    expect(diagnosis.error).toContain('NotFoundError')
+  })
+
+  it('reports an unreadable directory whose iteration never answers', async () => {
+    vi.useFakeTimers()
+    const stuck = {
+      name: 'stuck',
+      keys: () => ({
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }),
+      }),
+    } as unknown as FileSystemDirectoryHandle
+
+    const diagnosis = describeHandle(stuck, 1500)
+    await vi.advanceTimersByTimeAsync(1600)
+    await expect(diagnosis).resolves.toEqual({
+      name: 'stuck',
+      readable: false,
+      firstEntry: null,
+      error: 'keys() timed out',
+    })
   })
 
   it('propagates a rejection instead of reporting a timeout', async () => {

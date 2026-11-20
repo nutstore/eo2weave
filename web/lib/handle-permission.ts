@@ -73,3 +73,52 @@ export function requestPermissionWithDeadline(
 ): Promise<DeadlineResult<PermissionState>> {
   return withDeadline(() => handle.requestPermission({ mode: 'readwrite' }), timeoutMs)
 }
+
+/**
+ * What can be learned about a handle whose permission call never answered.
+ *
+ * `queryPermission`/`requestPermission` hanging says nothing about *why*: the
+ * directory may be gone, the volume may be unmounted, another tab may hold the
+ * same tree, or only the permission entry may be missing. Iterating one entry
+ * separates those cases — a directory that still answers `keys()` exists and is
+ * readable, so the stall is permissions-only; a handle that throws
+ * `NotFoundError`/`NotReadableError` is genuinely dead. Field reports are the
+ * only place this distinction is visible, so the result is logged, not thrown.
+ */
+export interface HandleDiagnosis {
+  name: string
+  readable: boolean
+  firstEntry: string | null
+  error: string | null
+}
+
+export async function describeHandle(
+  handle: FileSystemDirectoryHandle,
+  timeoutMs = 1500
+): Promise<HandleDiagnosis> {
+  const name = typeof handle?.name === 'string' ? handle.name : '<unnamed>'
+
+  try {
+    // `keys()` is missing from some TS DOM libs; the shape is the standard
+    // async iterator from the File System Access spec.
+    const iterable = handle as unknown as {
+      keys(): AsyncIterableIterator<string>
+    }
+    const first = await withDeadline(async () => {
+      for await (const key of iterable.keys()) return String(key)
+      return null
+    }, timeoutMs)
+
+    if (first === 'timeout') {
+      return { name, readable: false, firstEntry: null, error: 'keys() timed out' }
+    }
+    return { name, readable: true, firstEntry: first, error: null }
+  } catch (error) {
+    return {
+      name,
+      readable: false,
+      firstEntry: null,
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    }
+  }
+}
