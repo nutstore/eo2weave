@@ -127,7 +127,13 @@
   - 顺带记下：`runKey` 是**按轮次**的，跨轮的「重跑某成员」落的是一个新板。L1 就按这个算（能读旧板/旧账本，但不是同一个 manifest）。
   - 写入顺序：manifest 先（state），ledger 后（history）—— ledger 失败只丢历史，不丢事实
 - [ ] **P4-7**（可选）`subagent_tasks` 保留期清理：只做 DELETE，不做 schema 变更
-- [ ] **P4-验收** A4 / A6 通过
+- [x] **P4-验收** A4 / A6 通过 —— 四条断言各自有真机证据：
+  - **A6-① 跨轮写回**（`cd80fb2c` 验证）：`b1` 在轮 A 的板上登记（`…1795184885244-19557ha3`），**跨过三次轮次边界**（新板 `…904266` / `…931058` / `…981989`），最后在旧板上写下了 `"b1": "done"` + 账本 `done`（`1795184981339`）。修复前这个写回会静默丢失。
+  - **A6-② failed → blocked**：`tfail` 真失败，板上 `blocked`、账本 `blocked` 带 `error` 原文。
+  - **A6-③ 同 task_id 重跑**：`b3` 同轮内 spawn 两次 → 板上**一条**、账本 `spawned×2 + done×2`；任务身份不变，执行历史全留。
+  - **A6-④ artifacts 从目录取**：`tok` 写下 `by/tok/ok.md` → 板上 `artifacts: ["by/tok/ok.md"]`，与磁盘实际文件一致。
+  - **A4**：成员只引回自己那条（`OTHER TASKS: none`）、能引回 `00-brief.md` 的 goal、写区文案与 ACL 一致（`by/t1/`）、越位写被拒。
+  - **已知缺口（记为 L1 限制）**：`spawn_subagent` 的 schema **不暴露 `timeout_ms`**，lead 无法主动造出“确定性超时”；而“让它回空”不是可靠开关（模型会回一句括号说明）。要测超时分支目前只能从 `agent()` 侧传 `timeout_ms` 或改代码。
 
 ### P5 清理（2 天 + 2 周观察）
 
