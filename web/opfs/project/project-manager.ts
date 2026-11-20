@@ -174,6 +174,25 @@ export class ProjectManager {
   }
 
   /**
+   * Get the project's team board directory.
+   *
+   * A sibling of `agents/` and `workspaces/`, deliberately outside every
+   * workspace root: boards never enter git, never enter the sync-to-disk review
+   * queue, and never appear in a project listing.
+   *
+   * `create` is false by default on purpose — reading a board must not bring one
+   * into existence, otherwise "which runs exist" becomes unknowable.
+   */
+  async getTeamDir(id: string, options?: { create?: boolean }): Promise<FileSystemDirectoryHandle | null> {
+    try {
+      const projectDir = await this.projectsDir.getDirectoryHandle(id)
+      return await projectDir.getDirectoryHandle('team', { create: options?.create ?? false })
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * Path hash
    */
   hashPath(path: string): string {

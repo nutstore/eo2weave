@@ -26,6 +26,18 @@ export interface AgentMeta {
   name: string
   createdAt: number
   lastAccessedAt: number
+  /** One-line responsibility, shown in the peer roster. Optional. */
+  role?: string
+  /**
+   * Capability boundary applied when this agent acts as a subagent actor.
+   * Classes are coarse by design; see agent/tools/tool-capabilities.ts.
+   */
+  capabilities?: {
+    classes?: string[]
+    readonly?: boolean
+  }
+  /** Memory write policy; 'propose' queues writes for review. Default 'propose'. */
+  memoryPolicy?: 'off' | 'propose' | 'direct'
 }
 
 /**

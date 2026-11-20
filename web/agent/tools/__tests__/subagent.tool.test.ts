@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SubagentError, SubagentErrorCode, type SubagentRuntime, type ToolContext } from '../tool-types'
 import {
-  batchSpawnDefinition,
-  batchSpawnExecutor,
   getSubagentStatusDefinition,
   getSubagentStatusExecutor,
   getSubagentTraceDefinition,
@@ -78,14 +76,9 @@ function createMockRuntime(): SubagentRuntime {
 describe('subagent tools', () => {
   it('exposes expected tool names', () => {
     expect(spawnSubagentDefinition.function.name).toBe('spawn_subagent')
-    expect(batchSpawnDefinition.function.name).toBe('batch_spawn')
     expect(sendMessageToSubagentDefinition.function.name).toBe('send_message_to_subagent')
     expect(getSubagentStatusDefinition.function.name).toBe('get_subagent_status')
     expect(getSubagentTraceDefinition.function.name).toBe('get_subagent_trace')
-  })
-
-  it('caps batch concurrency at five in its public schema', () => {
-    expect(batchSpawnDefinition.function.parameters.properties.max_concurrency.maximum).toBe(5)
   })
 
   it('returns runtime unavailable when runtime is missing', async () => {
@@ -118,13 +111,6 @@ describe('subagent tools', () => {
     expect(result).toMatchObject({ ok: true, data: { status: 'pending', agentId: 'subagent_1' } })
     expect(result.health).toBeUndefined()
     expect(runtime.spawn).not.toHaveBeenCalled()
-  })
-
-  it('keeps valid batch members when another member fails validation', async () => {
-    const runtime = createMockRuntime()
-    const result = parseJson(await batchSpawnExecutor({ tasks: [{ description: '', prompt: 'bad' }, { description: 'task', prompt: 'work' }] },
-      { directoryHandle: null, subagentRuntime: runtime }))
-    expect(result).toMatchObject({ ok: true, data: { accepted: [{ task_index: 1 }], rejected: [{ task_index: 0 }] } })
   })
 
   it('maps status query error to TASK_NOT_FOUND', async () => {
@@ -161,19 +147,5 @@ describe('subagent tools', () => {
     const parsed = parseJson(result)
     expect(parsed.ok).toBe(false)
     expect((parsed.error as { code: string }).code).toBe('SUBAGENT_RUNTIME_UNAVAILABLE')
-  })
-
-  it('supports batch spawn tool', async () => {
-    const runtime = createMockRuntime()
-    const result = await batchSpawnExecutor(
-      {
-        tasks: [{ description: 't1', prompt: 'p1' }],
-        max_concurrency: 2,
-      },
-      { directoryHandle: null, subagentRuntime: runtime } as ToolContext
-    )
-    const parsed = parseJson(result)
-    expect(parsed.ok).toBe(true)
-    expect((runtime.batchStart as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
   })
 })

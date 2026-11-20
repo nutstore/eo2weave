@@ -81,11 +81,22 @@ When done, your final response should include:
  * For 'general-purpose', returns the base prompt unchanged.
  * For other types, appends the role-specific suffix.
  */
+export interface SubagentRoleOptions {
+  /** Inline role statement for an ephemeral member (no persona files). */
+  role?: string
+  /** Actor the execution runs as; identity reaches the model via context sources, not here. */
+  actorId?: string | null
+}
+
 export function buildSubagentSystemPrompt(
   basePrompt: string,
-  subagentType: SubagentType
+  subagentType: SubagentType,
+  options: SubagentRoleOptions = {}
 ): string {
+  const sections = [basePrompt]
+  const role = options.role?.trim()
+  if (role) sections.push(`## Assigned role\n${role}`)
   const suffix = SUBAGENT_TYPE_SUFFIXES[subagentType]
-  if (!suffix) return basePrompt
-  return `${basePrompt}\n\n${suffix.trim()}`
+  if (suffix?.trim()) sections.push(suffix.trim())
+  return sections.join('\n\n')
 }

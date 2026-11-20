@@ -90,14 +90,6 @@ import {
 
 // Delegate to another agent persona (one-way handoff)
 import {
-  delegateToDefinition,
-  delegateToExecutor,
-  delegateToPromptDoc,
-} from './tools/delegate.tool'
-
-import {
-  batchSpawnDefinition,
-  batchSpawnExecutor,
   getSubagentStatusDefinition,
   getSubagentStatusExecutor,
   getSubagentTraceDefinition,
@@ -269,9 +261,7 @@ const BUILTIN_TOOLS: Array<{ definition: ToolDefinition; executor: ToolExecutor 
   // Meta tools
   { definition: switchAgentModeDefinition, executor: createSwitchModeExecutor() },
   { definition: askUserQuestionDefinition, executor: askUserQuestionExecutor },
-  { definition: delegateToDefinition, executor: delegateToExecutor },
   { definition: spawnSubagentDefinition, executor: spawnSubagentExecutor },
-  { definition: batchSpawnDefinition, executor: batchSpawnExecutor },
   { definition: sendMessageToSubagentDefinition, executor: sendMessageToSubagentExecutor },
   { definition: stopSubagentDefinition, executor: stopSubagentExecutor },
   { definition: resumeSubagentDefinition, executor: resumeSubagentExecutor },
@@ -309,7 +299,6 @@ const ALL_PROMPT_DOCS: ToolPromptDoc[] = [
   subagentPromptDoc,
   switchModePromptDoc,
   askUserQuestionPromptDoc,
-  delegateToPromptDoc,
   webBridgePromptDoc,
   skillPromptDoc,
   searchSkillsPromptDoc,
@@ -400,13 +389,15 @@ export class ToolRegistry {
     }
   }
 
-  /** Filter out tools disabled by feature flags (e.g. batch_spawn) */
+  /**
+   * Filter out tools disabled by feature flags.
+   *
+   * Empty today: `batch_spawn` was the only entry and it is gone for good —
+   * orchestration has exactly one entry point (`run_code` + `agent()`), so a
+   * parallel batch is a script, not a second tool with drifting semantics.
+   */
   private filterByFeatureFlags(definitions: ToolDefinition[]): ToolDefinition[] {
-    const { enableBatchSpawn } = useSettingsStore.getState()
-    return definitions.filter(tool => {
-      if (!enableBatchSpawn && tool.function.name === 'batch_spawn') return false
-      return true
-    })
+    return definitions
   }
 
   /**

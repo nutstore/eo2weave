@@ -10,7 +10,7 @@ import { isToolEnvelopeV2 } from '@/agent/tools/tool-envelope'
 import type { ToolContext } from '@/agent/tools/tool-types'
 
 /** Tools a run_code script may not reach: itself, and the receipt-based spawns. */
-const RUN_CODE_BLOCKED_TOOLS = new Set(['run_code', 'spawn_subagent', 'batch_spawn'])
+const RUN_CODE_BLOCKED_TOOLS = new Set(['run_code', 'spawn_subagent'])
 
 export interface ToolInvocation {
   toolName: string

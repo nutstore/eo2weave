@@ -213,7 +213,7 @@ type DiscoveryScope =
       ) => Promise<{ handle: FileSystemDirectoryHandle; exists: boolean }>
     }
   | {
-      kind: 'assets' | 'skills'
+      kind: 'assets' | 'skills' | 'team'
       subPath: string
       resolveHandle: (
         path: string,
@@ -241,7 +241,7 @@ async function resolveDiscoveryScope(
       }
     }
 
-    if (resolved.kind === 'assets' || resolved.kind === 'skills') {
+    if (resolved.kind === 'assets' || resolved.kind === 'skills' || resolved.kind === 'team') {
       const rootHandle = await resolved.backend.getDirectoryHandle?.()
       if (!rootHandle) {
         throw new Error(`${resolved.backend.label} directory not available.`)

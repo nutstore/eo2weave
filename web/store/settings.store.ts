@@ -126,7 +126,6 @@ export interface SettingsState {
   thinkingLevel: ExtendedThinkingLevel
 
   // Experimental features (disabled by default)
-  enableBatchSpawn: boolean
   enableWebMCP: boolean
   agentLoopNotifications: {
     enabled: boolean
@@ -208,7 +207,6 @@ export interface SettingsState {
   setThinkingLevel: (v: ExtendedThinkingLevel) => void
   setImageGenModel: (v: string) => void
   setImageGenAspectRatio: (v: string) => void
-  setEnableBatchSpawn: (v: boolean) => void
   setEnableWebMCP: (v: boolean) => void
   setSnapshotHighWatermark: (n: number) => void
   setSnapshotLowWatermark: (n: number) => void
@@ -1013,7 +1011,6 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       // whatever was stored, so these defaults only apply to fresh installs.
       enableThinking: true,
       thinkingLevel: 'medium' as ExtendedThinkingLevel,
-      enableBatchSpawn: false,
       enableWebMCP: true,
       snapshotHighWatermark: 100,
       snapshotLowWatermark: 50,
@@ -1252,7 +1249,6 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
       setThinkingLevel: (thinkingLevel) => set({ thinkingLevel }),
       setImageGenModel: (imageGenModel) => set({ imageGenModel }),
       setImageGenAspectRatio: (imageGenAspectRatio) => set({ imageGenAspectRatio }),
-      setEnableBatchSpawn: (enableBatchSpawn) => set({ enableBatchSpawn }),
       setEnableWebMCP: (enableWebMCP) => set({ enableWebMCP }),
       setSnapshotHighWatermark: (snapshotHighWatermark) => {
         const low = get().snapshotLowWatermark
@@ -1713,7 +1709,6 @@ export const useSettingsStore = create<SettingsState, [['zustand/persist', unkno
         compressionAbsoluteCap: state.compressionAbsoluteCap,
         enableThinking: state.enableThinking,
         thinkingLevel: state.thinkingLevel,
-        enableBatchSpawn: state.enableBatchSpawn,
         enableWebMCP: state.enableWebMCP,
         snapshotHighWatermark: state.snapshotHighWatermark,
         snapshotLowWatermark: state.snapshotLowWatermark,
@@ -1865,7 +1860,6 @@ interface PersistedSettingsState {
   compressionAbsoluteCap: number
   enableThinking: boolean
   thinkingLevel: ExtendedThinkingLevel
-  enableBatchSpawn: boolean
   enableWebMCP: boolean
   snapshotHighWatermark: number
   snapshotLowWatermark: number
@@ -1937,7 +1931,6 @@ function restoreCurrentSnapshotToStorage(): void {
       compressionAbsoluteCap: current.compressionAbsoluteCap as number,
       enableThinking: current.enableThinking as boolean,
       thinkingLevel: current.thinkingLevel as PersistedSettingsState['thinkingLevel'],
-      enableBatchSpawn: current.enableBatchSpawn as boolean,
       enableWebMCP: current.enableWebMCP as boolean,
       snapshotHighWatermark: current.snapshotHighWatermark as number,
       snapshotLowWatermark: current.snapshotLowWatermark as number,

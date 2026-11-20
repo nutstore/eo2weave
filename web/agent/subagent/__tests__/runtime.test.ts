@@ -442,6 +442,30 @@ describe('subagent runtime', () => {
     expect(hoisted.loopConfigs).toHaveLength(0)
   })
 
+  it('runs children under the inherited iteration limit instead of the loop default', async () => {
+    const runtime = getOrCreateSubagentRuntime({
+      workspaceId: 'inherited-iteration-limit', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null },
+      // 0 = unlimited, matching a parent conversation that runs without a cap.
+      maxIterations: 0,
+    })
+    await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.loopConfigs.at(-1)?.maxIterations).toBe(0)
+  })
+
+  it('leaves the loop default in place when the parent supplies no setting', async () => {
+    const runtime = getOrCreateSubagentRuntime({
+      workspaceId: 'default-iteration-limit', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null },
+    })
+    await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.loopConfigs.at(-1)?.maxIterations).toBeUndefined()
+  })
+
   it('persists an async result and announces completion automatically without a parent wait API', async () => {
     const ready = vi.fn()
     const runtime = getOrCreateSubagentRuntime({

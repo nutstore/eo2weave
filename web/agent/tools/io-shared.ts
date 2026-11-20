@@ -90,6 +90,7 @@ export function getResolvedPathForLoopGuard(target: Awaited<ReturnType<typeof im
     return `vfs://${target.kind}/${target.path}`
   }
   if (target.kind === 'external') return `vfs://external/${target.mountName}/${target.path}`
+  if (target.kind === 'team') return `vfs://team/${target.runKey}/${target.path}`
   return `vfs://agents/${target.agentId}/${target.path}`
 }
 

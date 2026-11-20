@@ -224,7 +224,7 @@ export class IntelligenceCoordinator {
       return [
         '## Available Agents',
         '',
-        'You can hand off the conversation to any of these personas using `delegate_to(target_agent_id, task, reason?)`. This is a one-way handoff — the target agent takes over with full history.',
+        'You can hand a self-contained task to a teammate with `spawn_subagent(description, prompt, as: <agentId>)`, or run several in parallel from a `run_code` script via `await agent(prompt, { as: <agentId> })`. The child inherits the current history but runs as that agent.',
         '',
         ...lines,
       ].join('\n')

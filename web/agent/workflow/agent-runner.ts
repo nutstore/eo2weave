@@ -14,7 +14,7 @@
  */
 
 import type { JsonValue } from '@creatorweave/quickjs-runtime'
-import type { SubagentRuntime, SubagentType } from '@/agent/tools/tool-types'
+import type { SubagentCapabilities, SubagentRuntime, SubagentType } from '@/agent/tools/tool-types'
 
 /** Upper bound on agent() calls per script — bounds the cost of a runaway run. */
 export const MAX_SCRIPT_AGENTS = 32
@@ -95,6 +95,12 @@ interface NormalizedOptions {
   subagent_type?: SubagentType
   mode?: 'plan' | 'act'
   timeout_ms?: number
+  /** Actor the child runs as; `null` makes the anonymous intent explicit. */
+  as?: string | null
+  /** Inline role statement for an ephemeral member. */
+  role?: string
+  /** Capability boundary requested for this step (merged with the actor's). */
+  capabilities?: SubagentCapabilities
   /** Exact identity of everything that shapes the child's answer. */
   optionsKey: string
 }
@@ -113,6 +119,22 @@ function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'
   if (typeof record.timeout_ms === 'number' && Number.isFinite(record.timeout_ms) && record.timeout_ms > 0) {
     resolved.timeout_ms = Math.min(record.timeout_ms, 3_600_000)
   }
+  if (record.as === null) resolved.as = null
+  else if (typeof record.as === 'string' && record.as.trim()) resolved.as = record.as.trim().slice(0, 64)
+  if (typeof record.role === 'string' && record.role.trim()) resolved.role = record.role.trim().slice(0, 500)
+  // Capability boundary requested by the script. Class names are validated in
+  // the runtime (unknown names throw), so only shape normalization happens here.
+  if (record.capabilities && typeof record.capabilities === 'object' && !Array.isArray(record.capabilities)) {
+    const raw = record.capabilities as { classes?: unknown; readonly?: unknown }
+    const classes = Array.isArray(raw.classes) ? raw.classes.filter((value): value is string => typeof value === 'string') : undefined
+    const readonly = raw.readonly === true
+    if (classes || readonly) {
+      resolved.capabilities = {
+        ...(classes ? { classes: classes as SubagentCapabilities['classes'] } : {}),
+        ...(readonly ? { readonly } : {}),
+      }
+    }
+  }
   // The run's own mode wins over the guest's request, so it belongs to identity:
   // a plan-mode rerun must not be served an act-mode result.
   const effectiveMode = agentMode === 'plan' ? 'plan' : resolved.mode
@@ -123,6 +145,13 @@ function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'
       resolved.subagent_type ?? null,
       effectiveMode ?? null,
       resolved.timeout_ms ?? null,
+      // Identity, not styling: swapping the actor or the role must never be
+      // served a cached answer produced under different instructions.
+      resolved.as ?? null,
+      resolved.role ?? null,
+      // Restricting tools changes what the answer could possibly be; a narrowed
+      // rerun must not be served a cached result from an unrestricted one.
+      resolved.capabilities ? JSON.stringify(resolved.capabilities) : null,
     ]),
   }
 }
@@ -261,6 +290,9 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
         mode: options.agentMode === 'plan' ? 'plan' : normalized.mode,
         subagent_type: normalized.subagent_type,
         timeout_ms: normalized.timeout_ms,
+        as: normalized.as,
+        role: normalized.role,
+        capabilities: normalized.capabilities,
         parentToolCallId: options.parentToolCallId,
       }, signal)
       const usage = spawned.usage as unknown as JsonValue | undefined

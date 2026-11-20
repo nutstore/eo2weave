@@ -1,4 +1,5 @@
 import type { SubagentAcceptedReceipt, SubagentBatchAcceptance } from '@/agent/subagent/async-types'
+import type { TeamTaskHandoff } from '@/agent/team/team-manifest'
 /**
  * Tool system types for Agent tool calling.
  * Compatible with OpenAI function calling format.
@@ -148,6 +149,21 @@ export interface SubagentStepNotification {
  */
 export type SubagentType = 'general-purpose' | 'explorer' | 'worker' | 'awaiter'
 
+/**
+ * Subagent capability boundary. Declared by a caller (ephemeral member) or read
+ * from an actor's meta.json; both are merged, and the intersection wins.
+ */
+export interface SubagentCapabilities {
+  /**
+   * Tool classes this execution may use. Omitted = every class the mode allows.
+   * Classes are coarse on purpose (read/write/shell/external/orchestrate) so a
+   * newly added tool cannot slip in through a stale allowlist.
+   */
+  classes?: import('./tool-capabilities').ToolCapabilityClass[]
+  /** Shorthand: only read tools, and the execution is forced into plan mode. */
+  readonly?: boolean
+}
+
 export interface SpawnSubagentInput {
   description: string
   prompt: string
@@ -156,6 +172,26 @@ export interface SpawnSubagentInput {
   timeout_ms?: number
   /** Subagent role — controls behavior suffix appended to system prompt. */
   subagent_type?: SubagentType
+  /**
+   * Optional actor: run this execution as an existing project agent so its
+   * persona files (SOUL/IDENTITY/AGENTS/USER/MEMORY) apply. `null` or omitted
+   * means anonymous — no persona is injected at all.
+   */
+  as?: string | null
+  /**
+   * Inline role statement for an ephemeral member. Reaches the model through the
+   * system prompt and is never persisted, so it creates no agent directory.
+   */
+  role?: string
+  /** Capability boundary for this execution (merged with the actor's meta). */
+  capabilities?: SubagentCapabilities
+  /**
+   * Team board task this execution fulfils. The lead writes it into the run's
+   * `manifest.json` (status `running`) and the member sees only this task.
+   */
+  task_id?: string
+  /** What the lead expects back, what to read first, what to produce. */
+  handoff?: TeamTaskHandoff
   /** Internal UI correlation ID for the parent spawn tool call. */
   parentToolCallId?: string
 }
@@ -280,7 +316,7 @@ export interface ReadFileStateEntry {
   offset?: number
   limit?: number
   isPartialView?: boolean
-  source?: 'workspace' | 'native' | 'opfs' | 'agent' | 'assets' | 'skills' | 'provider' | 'native_fallback'
+  source?: 'workspace' | 'native' | 'opfs' | 'agent' | 'assets' | 'skills' | 'provider' | 'native_fallback' | 'team'
 }
 
 /** Tool definition in OpenAI function calling format */
@@ -303,6 +339,24 @@ export interface ToolContext {
   directoryHandle: FileSystemDirectoryHandle | null
   /** True when this tool call originates from a delegated subagent. */
   isSubagent?: boolean
+  /**
+   * Tool classes this execution is limited to (see tools/tool-capabilities).
+   * Context sources that merely *document* a capability outside this set must
+   * stay silent — otherwise the model is handed a manual for a door it cannot
+   * open, and spends turns trying.
+   */
+  capabilityClasses?: readonly import('./tool-capabilities').ToolCapabilityClass[]
+  /**
+   * Team board run key for this execution (`vfs://team/{runKey}/...`).
+   * Absent means "no active board"; the team namespace then refuses every path
+   * rather than inventing a run directory.
+   */
+  teamRunKey?: string
+  /**
+   * Team board task this execution fulfils. Also the fallback write slot for an
+   * anonymous member, so it must travel with the member's own context.
+   */
+  teamTaskId?: string
   /** Workspace ID bound to the current agent run */
   toolCallId?: string
   workspaceId?: string | null

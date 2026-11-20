@@ -2,16 +2,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolContext } from '../tool-types'
 import { isProtectedAgentCoreFile, resolveVfsTarget } from '../vfs-resolver'
 
-const { getProjectMock, createProjectManagerMock, activeAgentState } = vi.hoisted(() => {
+const { getProjectMock, getTeamDirMock, createProjectManagerMock, activeAgentState } = vi.hoisted(() => {
   const getProjectMockInner = vi.fn()
+  const getTeamDirMockInner = vi.fn()
   const createProjectManagerMockInner = vi.fn(async () => ({
     getProject: getProjectMockInner,
+    getTeamDir: getTeamDirMockInner,
   }))
   const activeAgentStateInner: { activeAgentId: string | null } = {
     activeAgentId: 'default',
   }
   return {
     getProjectMock: getProjectMockInner,
+    getTeamDirMock: getTeamDirMockInner,
     createProjectManagerMock: createProjectManagerMockInner,
     activeAgentState: activeAgentStateInner,
   }
@@ -236,5 +239,83 @@ describe('vfs-resolver', () => {
     )
 
     expect(result.kind).toBe('agent')
+  })
+})
+
+describe('vfs-resolver team namespace', () => {
+  const runKey = 'conv-1-turn-1'
+  const otherRunKey = 'conv-1-turn-2'
+
+  function makeTeamProject() {
+    const runDir = { name: runKey, kind: 'directory' }
+    getTeamDirMock.mockResolvedValue({
+      getDirectoryHandle: async () => runDir,
+    })
+    return getTeamDirMock
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('refuses every team path when the execution has no run key', async () => {
+    makeTeamProject()
+    await expect(
+      resolveVfsTarget(`vfs://team/${runKey}/by/me/notes.md`, makeContext(), 'write')
+    ).rejects.toThrow('no active team run')
+    await expect(
+      resolveVfsTarget(`vfs://team/${runKey}/by/me/notes.md`, makeContext(), 'read')
+    ).rejects.toThrow('no active team run')
+  })
+
+  it('requires a run key in the path', async () => {
+    makeTeamProject()
+    await expect(
+      resolveVfsTarget('vfs://team', makeContext({ teamRunKey: runKey }), 'list')
+    ).rejects.toThrow('requires a run key')
+  })
+
+  it('lets a member write inside its own actor directory', async () => {
+    const getTeamDir = makeTeamProject()
+    const result = await resolveVfsTarget(
+      `vfs://team/${runKey}/by/member-a/notes.md`,
+      makeContext({ teamRunKey: runKey, currentAgentId: 'member-a', isSubagent: true }),
+      'write'
+    )
+    expect(result.kind).toBe('team')
+    if (result.kind === 'team') {
+      expect(result.runKey).toBe(runKey)
+      expect(result.path).toBe('by/member-a/notes.md')
+      expect(result.backend.label).toBe('team')
+    }
+    // A write may create the board; the directory is resolved with create.
+    expect(getTeamDir).toHaveBeenCalledWith('project-1', { create: true })
+  })
+
+  it('refuses a member writing another actor directory or a reserved file', async () => {
+    makeTeamProject()
+    const member = makeContext({ teamRunKey: runKey, currentAgentId: 'member-a', isSubagent: true })
+    await expect(
+      resolveVfsTarget(`vfs://team/${runKey}/by/member-b/notes.md`, member, 'write')
+    ).rejects.toThrow('PERMISSION_DENIED')
+    await expect(
+      resolveVfsTarget(`vfs://team/${runKey}/manifest.json`, member, 'write')
+    ).rejects.toThrow('PERMISSION_DENIED')
+  })
+
+  it('lets the lead write reserved files and refuses cross-run writes', async () => {
+    makeTeamProject()
+    const lead = makeContext({ teamRunKey: runKey })
+    const manifest = await resolveVfsTarget(`vfs://team/${runKey}/manifest.json`, lead, 'write')
+    expect(manifest.kind).toBe('team')
+    await expect(
+      resolveVfsTarget(`vfs://team/${otherRunKey}/manifest.json`, lead, 'write')
+    ).rejects.toThrow('PERMISSION_DENIED')
+  })
+
+  it('never creates the board on read', async () => {
+    const getTeamDir = makeTeamProject()
+    await resolveVfsTarget(`vfs://team/${runKey}/by/member-a/notes.md`, makeContext({ teamRunKey: runKey }), 'read')
+    expect(getTeamDir).toHaveBeenCalledWith('project-1', { create: false })
   })
 })
