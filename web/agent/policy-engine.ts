@@ -11,6 +11,7 @@
  *
  * Decision order (first match wins, see redesign doc §3.2):
  *   1. forbidden                        → deny
+ *   1.5 manual-apply policy + gated tool → prompt (skips 2 / 3 / 3.5 below)
  *   2. session memory hit               → allow   ("always allow this convo")
  *   3. yolo mode on                     → allow   (never for forbidden)
  *   3.5 trusted source (settings)       → allow   (plan AND act)
@@ -57,6 +58,15 @@ export interface ToolPolicy {
    * rollbacks like snapshot_restore).
    */
   memoryKey?: (args: unknown) => string | null
+  /**
+   * Tools that write the pending-change set to disk must never ride an
+   * unattended shortcut while the user's run-completion policy is "manual
+   * apply" — that policy means the USER applies pending changes. When the
+   * caller reports `manualApply`, session memory, yolo and trusted-source
+   * short-circuits are all skipped and no new "always allow" grant is
+   * offered, so every call shows the modal.
+   */
+  requiresExplicitApprovalUnderManualApply?: boolean
 }
 
 export interface AuthorizeRequest {
@@ -86,6 +96,14 @@ export interface AuthorizeRequest {
   conversationId?: string | null
   /** Abort signal of the originating run — aborting resolves as deny. */
   signal?: AbortSignal
+  /**
+   * Whether the conversation's run-completion policy is "manual apply" (the
+   * user applies pending changes themselves; auto-apply is off). Resolved by
+   * the CALLER from workspace preferences — the engine deliberately does not
+   * import that store, which would drag the workspace/OPFS store into every
+   * policy decision (and into every engine unit test).
+   */
+  manualApply?: boolean
   /**
    * Extra runtime constraints beyond the static policy table.
    * Currently: plan mode downgrades call_tool to per-call approval
@@ -123,12 +141,23 @@ export async function authorize(req: AuthorizeRequest): Promise<AuthResult> {
     }
   }
 
+  // 1.5 manual-apply policy — "手动应用变更" means the USER decides when the
+  // pending changes reach the disk, so a tool that flushes them must stay
+  // interactive: no session memory, no yolo, no trusted-source shortcut, and
+  // no new "always allow" grant (see the prompt branch below). Checked after
+  // forbidden (still absolute) and before every shortcut. Only the tools that
+  // opt in via `requiresExplicitApprovalUnderManualApply` are affected; the
+  // caller decides whether the policy is active at all.
+  const explicitOnly =
+    req.manualApply === true && policy.requiresExplicitApprovalUnderManualApply === true
+
   // 2. conversation-scoped "always allow" memory. Suppressed in plan mode —
   // an approval granted during plan exploration must not pre-authorize the
   // execution phase (possibly after a plan→act switch).
   const memoryKey = policy.memoryKey?.(req.args) ?? null
   const memoryAllowed = req.mode !== 'plan'
   if (
+    !explicitOnly &&
     memoryAllowed &&
     memoryKey !== null &&
     useSessionAllowStore.getState().has(req.conversationId, memoryKey)
@@ -136,9 +165,10 @@ export async function authorize(req: AuthorizeRequest): Promise<AuthResult> {
     return { decision: 'allow', via: 'session-memory' }
   }
 
-  // 3. yolo mode — skips every prompt-level modal (still not forbidden).
+  // 3. yolo mode — skips every prompt-level modal (still not forbidden) with
+  // one exception: tools gated by the manual-apply policy above.
   // Conversation-scoped (yolo-mode.store): switches conversation → off.
-  if (isYoloOn(req.conversationId)) {
+  if (!explicitOnly && isYoloOn(req.conversationId)) {
     return { decision: 'allow', via: 'yolo' }
   }
 
@@ -153,6 +183,7 @@ export async function authorize(req: AuthorizeRequest): Promise<AuthResult> {
   // tool permanently unusable). Authorization follows call-side side effects
   // only; untrusted RETURN values hit the downstream write gates regardless.
   if (
+    !explicitOnly &&
     req.trustedSource &&
     isToolSourceTrusted(req.trustedSource.kind, req.trustedSource.sourceId)
   ) {
@@ -165,7 +196,10 @@ export async function authorize(req: AuthorizeRequest): Promise<AuthResult> {
   }
 
   // 5. prompt — unified modal. Resolves false on deny or abort. In plan mode
-  // the "always allow" option is stripped (memoryKey forced null).
+  // the "always allow" option is stripped (memoryKey forced null); the same
+  // applies under the manual-apply policy, where a standing grant would be
+  // exactly the unattended disk write the user turned off.
+  const offerMemoryKey = memoryAllowed && !explicitOnly ? memoryKey : null
   const resolution = await useToolAuthStore.getState().request({
     toolName: req.toolName,
     // i18n descriptor — ToolAuthModal renders it with useT (locale-aware).
@@ -173,7 +207,7 @@ export async function authorize(req: AuthorizeRequest): Promise<AuthResult> {
     toolDescription: req.toolDescription ?? null,
     toolArgs: req.toolArgs,
     fileChanges: req.fileChanges,
-    memoryKey: memoryAllowed ? memoryKey : null,
+    memoryKey: offerMemoryKey,
     conversationId: req.conversationId ?? null,
     signal: req.signal,
   })
@@ -184,9 +218,12 @@ export async function authorize(req: AuthorizeRequest): Promise<AuthResult> {
     }
   }
   // "Always allow" — write the grant into conversation-scoped memory so the
-  // short-circuit at step 2 hits on subsequent invocations.
-  if (resolution.remembered && memoryKey !== null) {
-    useSessionAllowStore.getState().add(req.conversationId, memoryKey)
+  // short-circuit at step 2 hits on subsequent invocations. Gated on the key
+  // we actually OFFERED: a grant the modal never showed must never be stored
+  // (plan mode / manual-apply), otherwise it would silently take effect the
+  // next time that policy is off.
+  if (resolution.remembered && offerMemoryKey !== null) {
+    useSessionAllowStore.getState().add(req.conversationId, offerMemoryKey)
   }
   return { decision: 'allow', via: 'auto' }
 }
@@ -244,6 +281,10 @@ function createPolicyTable(): Map<string, ToolPolicy> {
   // never silently covers deletions — each grant must match what it covers.
   set('sync-to-disk', {
     level: 'prompt',
+    // "手动应用变更" (auto-apply off) is the user's statement that THEY apply
+    // pending changes. YOLO / session memory must not turn that into a silent
+    // mid-run disk write, so this tool always asks while the policy is on.
+    requiresExplicitApprovalUnderManualApply: true,
     describe: (args): ToolAuthDescription => {
       const a = args as { count?: number; deletes?: string[] } | null
       const deletes = Array.isArray(a?.deletes) ? a.deletes : []

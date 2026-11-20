@@ -375,6 +375,88 @@ describe('policy-engine: yolo generalization (PR-4)', () => {
   })
 })
 
+describe('policy-engine: manual-apply policy (disk flush stays interactive)', () => {
+  beforeEach(() => {
+    useYoloModeStore.getState().clearAll()
+    useSessionAllowStore.getState().clearAll()
+    useToolAuthStore.getState().clear()
+  })
+  afterEach(() => {
+    useYoloModeStore.getState().clearAll()
+    useSessionAllowStore.getState().clearAll()
+    useToolAuthStore.getState().clear()
+  })
+
+  it('yolo does NOT skip the disk flush while manual apply is on', async () => {
+    useYoloModeStore.getState().setYolo('conv-1', true)
+
+    const pending = authorize({
+      toolName: 'sync-to-disk',
+      args: { count: 2 },
+      conversationId: 'conv-1',
+      manualApply: true,
+    })
+    // The modal is queued despite yolo — the user still decides when changes
+    // reach the real disk.
+    expect(useToolAuthStore.getState().queue).toHaveLength(1)
+    expect(useToolAuthStore.getState().pending?.toolName).toBe('sync-to-disk')
+
+    useToolAuthStore.getState().approve()
+    expect(await pending).toEqual({ decision: 'allow', via: 'auto' })
+  })
+
+  it('manual apply ignores a standing "always allow" grant', async () => {
+    useSessionAllowStore.getState().add('conv-1', 'sync-to-disk')
+
+    const pending = authorize({
+      toolName: 'sync-to-disk',
+      args: { count: 1 },
+      conversationId: 'conv-1',
+      manualApply: true,
+    })
+    expect(useToolAuthStore.getState().queue).toHaveLength(1)
+    useToolAuthStore.getState().approve()
+    expect(await pending).toEqual({ decision: 'allow', via: 'auto' })
+  })
+
+  it('manual apply never offers or stores "always allow"', async () => {
+    const pending = authorize({
+      toolName: 'sync-to-disk',
+      args: { count: 1 },
+      conversationId: 'conv-1',
+      manualApply: true,
+    })
+    // No "always allow" button (memoryKey stripped)…
+    expect(useToolAuthStore.getState().pending?.memoryKey).toBeNull()
+    // …and a remembered verdict cannot sneak a grant into the session store.
+    useToolAuthStore.getState().approve(true)
+    expect(await pending).toEqual({ decision: 'allow', via: 'auto' })
+    expect(useSessionAllowStore.getState().has('conv-1', 'sync-to-disk')).toBe(false)
+  })
+
+  it('manual apply only gates disk-writing tools, not other prompt-level tools', async () => {
+    useYoloModeStore.getState().setYolo('conv-1', true)
+    const result = await authorize({
+      toolName: 'call_tool',
+      args: { full_tool_name: 'github:create_issue' },
+      conversationId: 'conv-1',
+      mode: 'act',
+      manualApply: true,
+    })
+    expect(result).toEqual({ decision: 'allow', via: 'yolo' })
+  })
+
+  it('omitting manualApply keeps the yolo shortcut (auto-apply workspaces)', async () => {
+    useYoloModeStore.getState().setYolo('conv-1', true)
+    const result = await authorize({
+      toolName: 'sync-to-disk',
+      args: { count: 2 },
+      conversationId: 'conv-1',
+    })
+    expect(result).toEqual({ decision: 'allow', via: 'yolo' })
+  })
+})
+
 describe('policy-engine: plan mode (call_tool double gating)', () => {
   beforeEach(() => {
     useSessionAllowStore.getState().clearAll()

@@ -413,6 +413,21 @@ export function setCurrentWorkspaceAgentMode(mode: 'plan' | 'act'): void {
   useWorkspacePreferencesStore.getState().setAgentMode(mode)
 }
 
+/**
+ * Is the run-completion policy "manual apply" for this workspace?
+ *
+ * Ground truth mirrors the run-end reader in store/conversation-agent-run.ts
+ * (`autoApplyOnRunCompleteByWorkspace[id] ?? false`): a workspace without an
+ * explicit entry does NOT auto-apply, so it counts as manual. Disk-writing
+ * tools use this to decide whether they must stay interactive — see
+ * policy-engine's `requiresExplicitApprovalUnderManualApply`.
+ */
+export function isManualApplyPolicy(workspaceId?: string | null): boolean {
+  const state = useWorkspacePreferencesStore.getState()
+  if (!workspaceId) return !state.autoApplyOnRunComplete
+  return !(state.autoApplyOnRunCompleteByWorkspace[workspaceId] ?? false)
+}
+
 // Keep current UI mode in sync with active workspace changes.
 // Lazy-init to avoid TDZ from circular dependency with workspace.store.ts:
 // workspace-preferences.store → (static import) → workspace.store

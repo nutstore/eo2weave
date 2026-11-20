@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getCurrentWorkspaceAgentMode,
+  isManualApplyPolicy,
   useWorkspacePreferencesStore,
 } from '../workspace-preferences.store'
 import { useWorkspaceStore } from '../workspace.store'
@@ -62,6 +63,24 @@ describe('workspace-preferences.store agent mode isolation', () => {
       'ws-a': true,
       'ws-b': true,
     })
+  })
+
+  it('isManualApplyPolicy mirrors the run-end auto-apply read (missing entry = manual)', () => {
+    // No per-workspace entry → the run-end flow does NOT auto-apply, so the
+    // disk-write gate must treat it as manual too.
+    expect(isManualApplyPolicy('ws-a')).toBe(true)
+
+    useWorkspacePreferencesStore.setState({
+      autoApplyOnRunCompleteByWorkspace: { 'ws-a': true },
+    })
+    expect(isManualApplyPolicy('ws-a')).toBe(false)
+    expect(isManualApplyPolicy('ws-b')).toBe(true)
+
+    // No workspace id (pre-conversation) falls back to the global switch.
+    useWorkspacePreferencesStore.setState({ autoApplyOnRunComplete: true })
+    expect(isManualApplyPolicy(null)).toBe(false)
+    useWorkspacePreferencesStore.setState({ autoApplyOnRunComplete: false })
+    expect(isManualApplyPolicy(undefined)).toBe(true)
   })
 })
 
