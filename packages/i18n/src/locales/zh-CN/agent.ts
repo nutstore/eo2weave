@@ -22,7 +22,7 @@ export const agent = {
         actDescription: "可读取、写入和调用外部工具，但每个敏感操作都会先征求你的确认。",
         planShort: "只读分析",
         actShort: "允许写入，操作逐次确认",
-        yoloShort: "自动批准所有需确认的操作（外部调用、磁盘写入、命令执行等；仅本对话）。手动应用变更时，写入磁盘仍需确认。",
+        yoloShort: "自动批准所有需确认的操作（外部调用、磁盘写入、命令执行等；仅本对话）。手动应用变更时，变更集写入仍需确认；shell 命令会直接写入。",
         planLabel: "只读分析模式",
         actLabel: "允许写入，逐次确认",
         switchTo: "切换到",
@@ -36,7 +36,7 @@ export const agent = {
     runEndPolicy: {
         manual: "手动应用",
         auto: "完成后自动应用",
-        manualDescription: "由你检查后，再应用修改到本地文件夹。",
+        manualDescription: "由你检查后，再应用 agent 的文件改动到本地文件夹。shell 命令仍会直接写入磁盘。",
         autoDescription: "此设置保存到当前工作区。开启时，仅自动应用新增和修改（不含删除）；删除操作始终需要你手动确认。",
         menuLabel: "完成后的应用策略",
         currentAriaLabel: "完成后的应用策略：{policy}。点击更改。",
