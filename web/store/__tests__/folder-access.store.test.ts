@@ -244,6 +244,98 @@ describe('folder-access.store runtime handle binding', () => {
     }
   })
 
+  it('enters the project without waiting for the permission probe', async () => {
+    // Product rule (issue #316): opening a project must not block on folder
+    // permissions. Activation passes `awaitHydration: false`, the UI opens, and
+    // the handle converges in the background — here it ends in the
+    // re-authorization state after the probe deadline.
+    vi.useFakeTimers()
+    try {
+      const projectId = 'project-bg'
+      const handle = {
+        name: 'bg-root',
+        queryPermission: vi.fn(() => new Promise<PermissionState>(() => {})),
+      } as unknown as FileSystemDirectoryHandle
+
+      mockRepo.load.mockResolvedValue({
+        projectId,
+        rootName: 'bg-root',
+        folderName: 'bg-root',
+        handle: null,
+        persistedHandle: handle,
+        status: 'needs_user_activation',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+      mockProjectRootRepo.findByProject.mockResolvedValue([
+        { id: 'root-bg', projectId, name: 'bg-root', isDefault: true, readOnly: false, backend: 'fsaccess' },
+      ])
+      mockRepo.findByProjectAndRoot.mockResolvedValue({
+        projectId,
+        rootName: 'bg-root',
+        folderName: 'bg-root',
+        handle: null,
+        persistedHandle: handle,
+        status: 'needs_user_activation',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      // No timer advance: the call itself must settle immediately.
+      await useFolderAccessStore.getState().setActiveProject(projectId, { awaitHydration: false })
+
+      expect(useFolderAccessStore.getState().activeProjectId).toBe(projectId)
+      // Hydration has not answered yet — and nothing is blocking.
+      expect(useFolderAccessStore.getState().records[projectId].status).not.toBe('ready')
+
+      // Background hydration still converges, bounded by the probe deadline.
+      await vi.advanceTimersByTimeAsync(2100)
+      expect(useFolderAccessStore.getState().records[projectId].status).toBe('needs_user_activation')
+      expect(useFolderAccessStore.getState().rootsHydrated).toBe(true)
+      warn.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a newer project switch supersedes a slow background hydration', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = 'project-old'
+      const second = 'project-new'
+      const stuck = {
+        name: 'old-root',
+        queryPermission: vi.fn(() => new Promise<PermissionState>(() => {})),
+      } as unknown as FileSystemDirectoryHandle
+
+      mockRepo.load.mockResolvedValue({
+        projectId: first,
+        rootName: 'old-root',
+        folderName: 'old-root',
+        handle: null,
+        persistedHandle: stuck,
+        status: 'needs_user_activation',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+      mockProjectRootRepo.findByProject.mockResolvedValue([])
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      await useFolderAccessStore.getState().setActiveProject(first, { awaitHydration: false })
+      await useFolderAccessStore.getState().setActiveProject(second, { awaitHydration: false })
+
+      await vi.advanceTimersByTimeAsync(2100)
+
+      // The switch wins: the stale hydration must not publish the old project.
+      expect(useFolderAccessStore.getState().activeProjectId).toBe(second)
+      expect(useFolderAccessStore.getState().roots).toEqual([])
+      warn.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it.each(['denied', 'prompt'])('does not bind a persisted directory for permission state %s', async (permission) => {
     const projectId = 'project-permission-not-granted'
     const handle = { name: 'repo', requestPermission: vi.fn().mockResolvedValue(permission) } as unknown as FileSystemDirectoryHandle

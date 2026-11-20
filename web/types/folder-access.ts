@@ -42,11 +42,30 @@ export interface FolderAccessRecord {
 }
 
 /**
+ * Options for `setActiveProject`.
+ *
+ * Defaults to awaiting hydration (callers that need the roots list ready when
+ * the promise resolves). Project activation passes `false` so entering a project
+ * never blocks on a folder permission probe.
+ */
+export interface FolderHydrationOptions {
+  awaitHydration?: boolean
+}
+
+/**
  * Store action types
  */
 export interface FolderAccessActions {
-  /** Set active project */
-  setActiveProject: (projectId: string | null) => Promise<void>
+  /**
+   * Set active project.
+   *
+   * `awaitHydration: false` returns as soon as the store state is reset and the
+   * handle hydration runs in the background: project activation must not wait
+   * for a folder permission probe before the UI can open (issue #316). The
+   * record starts in 'checking' and converges to ready / needs_user_activation,
+   * which is what the file tree and the re-authorization banner react to.
+   */
+  setActiveProject: (projectId: string | null, options?: FolderHydrationOptions) => Promise<void>
   /** Initialize project data (hydration) */
   hydrateProject: (projectId: string) => Promise<void>
   /** Pick a new folder (shows folder picker dialog) */
