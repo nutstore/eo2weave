@@ -161,6 +161,14 @@ type SubagentTaskInternal = {
   parentToolCallId?: string
   /** Team board task this execution fulfils (see team-board.ts). */
   teamTaskId?: string
+  /**
+   * Board run this task belongs to, pinned when the spawn is accepted.
+   *
+   * Deliberately not read from `deps.baseToolContext` later: the live context
+   * follows whatever run is current, and a member that outlives its turn would
+   * then write its outcome to the next turn's board — or silently nowhere.
+   */
+  teamRunKey?: string
   /** Prompt-ready view of that task; undefined = no board task recorded. */
   teamBrief?: string | null
   /** The run's shared goal from 00-brief.md, so a member knows why it is here. */
@@ -457,6 +465,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     // spawn — but it travels into the prompt instead of being swallowed.
     if (input.task_id && this.deps.baseToolContext.teamRunKey) {
       task.teamTaskId = input.task_id.trim()
+      task.teamRunKey = this.deps.baseToolContext.teamRunKey
       const assigned = await assignTeamTask(this.deps.baseToolContext, {
         taskId: task.teamTaskId,
         goal: description,
@@ -492,8 +501,14 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     status: 'done' | 'blocked',
     error?: string,
   ): Promise<void> {
-    if (!task.teamTaskId || !this.deps.baseToolContext.teamRunKey) return
-    const context = this.deps.baseToolContext
+    if (!task.teamTaskId) return
+    if (!task.teamRunKey) {
+      task.teamBoardError = 'the board run was not captured at spawn, so this outcome was not recorded'
+      return
+    }
+    // The board this task was created on, not whatever run happens to be current
+    // now: a member can finish after its turn has ended.
+    const context = { ...this.deps.baseToolContext, teamRunKey: task.teamRunKey }
     const slot = teamMemberSlot({ actorId: task.actorId ?? null, taskId: task.teamTaskId })
     try {
       const artifacts = status === 'done' && slot ? await listTeamSlotFiles(context, slot) : undefined
@@ -1368,7 +1383,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     // Team board: a member sees its own task and where it may write, never the
     // lead's full plan. The section is built once per task (at spawn) so a
     // long-running child cannot be re-scoped mid-flight.
-    const teamRunKey = deps.baseToolContext.teamRunKey
+    const teamRunKey = task.teamRunKey
     const withTeamTask = task.teamTaskId && teamRunKey
       ? `${finalSystemPrompt}\n\n${buildTeamTaskSection({
           runKey: teamRunKey,

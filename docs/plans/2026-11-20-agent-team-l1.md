@@ -120,9 +120,11 @@
   - **实测揭出的 bug（已修）**：`resolveActorAgentId` 在 `currentAgentId` 为空时回退到 `useAgentsStore.activeAgentId`（UI 状态）再回退 `'default'` → 匿名成员实际写 `by/default/`，**和 lead 同一目录**；而提示词里我自己编了个 `by/anonymous/` → 三个名字全对不上，子代理直接拒绝写。
   - **修法（D8）**：`teamMemberSlot({actorId, taskId})` 成为**唯一**答案：有 actor → `by/{actorId}/`，匿名 → `by/{taskId}/`，都没有 → 无写区（不编名）；ACL / 提示词 / handoff 三处均调它；`resolveActorAgentId` 对子代理**不再回退 UI 状态**；`handoff.writes` 落在槽位外 → spawn 当场 `INVALID_INPUT`（`fatal`），不让成员跑到一半才发现写不了。
   - **run goal 的单一来源（补 A4 最后一环）**：goal 只在 `00-brief.md` 里，manifest 不存副本；spawn 时 `readTeamBrief()` 读一次（截断 800 字）拼进成员段落的 `Run goal (from 00-brief.md):`，位置在任务之上。以前 `manifest.goal` 恒为空 → 成员只看得到“我这条任务”，看不到“这次 run 在干什么”。
-- [ ] **P4-4** 按成员重跑：`runKey` + step 名定位（复用 replay，不依赖新 DB 列）
-- [ ] **P4-5** 显式 `step_id` 取代自增 index（`workflow_agent_steps` 属既有表，**不改结构**）
+- [x] **P4-4** 按成员重跑：落到 `agent(prompt, { retry: true })` —— 只跳过该步缓存，**不置 `diverged`**，其余步骤照常命中；被跳过的旧行同时加入 `consumedPrior`，防止兜底循环把它喂给后面同 prompt 的步；`retry` **不进 `optionsKey`**（它只决定服务哪一行，不改变子代理的身份）。实测：`agent-runner.replay.test.ts` 7/7；`agent(prompt)` 不传 options 也不再报错。
+- [x] ~~**P4-5** 显式 `step_id`~~ → **降级为可选**：读码坐实 `const index = stepIndex++` 在首个 `await` 之前执行（`agent-runner.ts:271`），所以**步序不会按完成顺序漂**（推翻先前 P2-3 的判断）；正确性由 prompt 文本精确比对保证，不靠 `diverged`，也不靠位置编号。
 - [x] **P4-6** task 状态机 + `_ledger.jsonl` 追加 → 终态回写已接：`done`（completed）/ `blocked`（failed / timeout / queue-empty / kill）四处调用点；`artifacts` **从目录列出来**（`listTeamSlotFiles`），不采信成员“我写了什么”的宣称；ledger 每事件一行 JSON（`spawned` / `done` / `blocked`），写失败不影响 manifest
+  - **真机揭出的第二个 bug（已修）**：成员在**下一轮**才结束时，板上那条永远停在 `running`、账本也没有 `done`。根因不是写失败，是终态回写读的是**实时** `deps.baseToolContext.teamRunKey` —— 轮次一切换它就没了，于是第 495 行直接 `return`，**静默不写**。修法：spawn 受理时把 runKey 钉在 task 上（`task.teamRunKey`），终态回写与提示词构建都读它。和 D8 同一族：**身份必须在做决策的那一刻定下来，不能事后从可变状态里再取一次**。
+  - 顺带记下：`runKey` 是**按轮次**的，跨轮的「重跑某成员」落的是一个新板。L1 就按这个算（能读旧板/旧账本，但不是同一个 manifest）。
   - 写入顺序：manifest 先（state），ledger 后（history）—— ledger 失败只丢历史，不丢事实
 - [ ] **P4-7**（可选）`subagent_tasks` 保留期清理：只做 DELETE，不做 schema 变更
 - [ ] **P4-验收** A4 / A6 通过
@@ -532,7 +534,7 @@ interface Handoff {
 现在：`${name}; delegate_to target_agent_id: ${id}`
 改为：`${name} — ${role || '未声明职责'}（只读）→ spawn(as: "${id}")`，且**子代理不注入**。
 
-### 6.6 按成员重跑（P4-4 设计，**待 recon 结论补齐 replay 细节**）
+### 6.6 按成员重跑（P4-4，已落地）
 
 目标：**给定一个 `taskId`，让那个成员重新跑一次**，而不是重跑整段脚本。
 
