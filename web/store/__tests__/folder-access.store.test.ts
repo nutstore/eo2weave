@@ -196,9 +196,25 @@ describe('folder-access.store runtime handle binding', () => {
       })
 
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      // A real mounted root: loadRoots must also probe it (same stuck handle)
+      // and still finish, so the UI gates below can open.
+      mockProjectRootRepo.findByProject.mockResolvedValue([
+        { id: 'root-1', projectId, name: 'stalled', isDefault: true, readOnly: false, backend: 'fsaccess' },
+      ])
+      mockRepo.findByProjectAndRoot.mockResolvedValue({
+        projectId,
+        rootName: 'stalled',
+        folderName: 'stalled',
+        handle: null,
+        persistedHandle: handle,
+        status: 'needs_user_activation',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+
       const activation = useFolderAccessStore.getState().setActiveProject(projectId)
       // The probe deadline is 3s; activation must settle on its own after it.
-      await vi.advanceTimersByTimeAsync(3100)
+      await vi.advanceTimersByTimeAsync(9500)
       await activation
 
       const record = useFolderAccessStore.getState().records[projectId]
@@ -210,6 +226,15 @@ describe('folder-access.store runtime handle binding', () => {
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining('Permission query did not answer within 3000ms')
       )
+
+      // The two gates the UI uses after activation:
+      // - WelcomeScreen blocks while !rootsHydrated
+      // - FolderPermissionBanner renders on an fsaccess root in needs_user_activation
+      const state = useFolderAccessStore.getState()
+      expect(state.rootsHydrated).toBe(true)
+      expect(state.roots).toHaveLength(1)
+      expect(state.roots[0].status).toBe('needs_user_activation')
+      expect(state.roots[0].backend).toBe('fsaccess')
       warn.mockRestore()
     } finally {
       vi.useRealTimers()
