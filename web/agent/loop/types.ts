@@ -121,6 +121,19 @@ export interface AgentLoopConfig {
   /** Agent execution mode: 'plan' (read-only) or 'act' (full access). Defaults to 'act'. */
   mode?: AgentMode
   /**
+   * Re-read the mode between turns (typically: this conversation's stored mode).
+   *
+   * Without it `mode` is frozen for the whole run, so a mid-run
+   * `switch_agent_mode` only took effect on the next user message: the model was
+   * told write tools were available while the tool list it was given still
+   * excluded them. With it, the loop re-resolves after every turn and rebuilds
+   * the tool list when the mode changed.
+   *
+   * Omit it wherever the mode is a capability boundary instead of a preference
+   * (subagents: explorer/readonly must stay `plan` for their whole life).
+   */
+  resolveMode?: () => AgentMode
+  /**
    * When true, skip system prompt enhancements (skills injection, MCP summaries,
    * tool docs, prefetch, etc.). Used by specialized subagents that provide
    * their own self-contained system prompt.

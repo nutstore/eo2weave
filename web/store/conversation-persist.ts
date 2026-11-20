@@ -7,7 +7,7 @@
 
 import type { Conversation, Message } from '@/agent/message-types'
 import { getConversationRepository, getMessageRepository } from '@/sqlite'
-import { getCurrentWorkspaceAgentMode } from './workspace-preferences.store'
+import { getAgentModeForWorkspace } from './workspace-preferences.store'
 
 //=============================================================================
 // Persistence Functions (SQLite)
@@ -375,7 +375,7 @@ export async function loadConversationsMeta(): Promise<Conversation[]> {
     compressionConvertCallCount: 0,
     compressionLastSummaryConvertCall: Number.NEGATIVE_INFINITY,
     collectedAssets: [],
-    agentMode: getCurrentWorkspaceAgentMode(),
+    agentMode: getAgentModeForWorkspace(meta.id),
   }))
 }
 

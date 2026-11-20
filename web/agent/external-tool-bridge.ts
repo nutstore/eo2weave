@@ -873,7 +873,7 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
   // (no "Always allow" button — every call needs explicit approval).
   // In plan mode the memory short-circuit is suppressed: an approval granted
   // during exploration must not pre-authorize later calls.
-  const { getCurrentWorkspaceAgentMode } = await import(
+  const { getAgentModeForWorkspace } = await import(
     '@/store/workspace-preferences.store'
   )
   const auth = await authorize({
@@ -896,7 +896,10 @@ export const callToolExecutor: ToolExecutor = async (args, context) => {
     trustedSource: { kind: tool.source, sourceId: tool.sourceId },
     conversationId: context.workspaceId,
     signal: context.abortSignal,
-    mode: getCurrentWorkspaceAgentMode(),
+    // Authorization is scoped to the conversation that invoked the tool; the
+    // open tab's mode must not decide it (a Plan run elsewhere would happily
+    // inherit Act's approval memory short-circuit, and vice versa).
+    mode: context.agentMode ?? getAgentModeForWorkspace(context.workspaceId),
   })
   if (auth.decision === 'deny') {
     return toolErrorJson(

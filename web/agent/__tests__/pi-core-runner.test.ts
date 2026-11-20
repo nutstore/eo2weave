@@ -81,6 +81,112 @@ describe('pi-core-runner', () => {
     expect(result.reachedMaxIterations).toBe(false)
   })
 
+  it('rebuilds the tool list when the run mode changes between turns', async () => {
+    const { buildAgentTools } = await import('../loop/build-agent-tools')
+    const buildSpy = vi.mocked(buildAgentTools)
+    let mode: 'plan' | 'act' = 'plan'
+    let prepareNextTurn: ((ctx: unknown) => unknown) | undefined
+    let initialTools: unknown
+
+    mockAgentLoopContinue.mockImplementation((context: any, config: any) => {
+      prepareNextTurn = config.prepareNextTurn
+      initialTools = context.tools
+      return (async function* () {})()
+    })
+
+    const base = {
+      signal: new AbortController().signal,
+      initialMessages: [{ id: 'u1', role: 'user' as const, content: 'hi', timestamp: Date.now() }],
+      callbacks: {},
+      baseSystemPrompt: 'sys',
+      mode: 'plan' as const,
+      // Mid-run `switch_agent_mode` writes the conversation's mode; the runner
+      // must see it on the next turn instead of waiting for the next user message.
+      getMode: () => mode,
+      toolRegistry: { getToolDefinitionsForMode: () => [] } as never,
+      getToolContext: () => ({ directoryHandle: null }),
+      provider: {
+        getModel: () => ({ api: 'openai', provider: 'openai', id: 'm', maxTokens: 1024 }),
+        getApiKey: () => 'k',
+        maxContextTokens: 128000,
+        estimateTokens: () => 1,
+      } as never,
+      contextManager: {
+        getConfig: () => ({ systemPrompt: 'sys', maxContextTokens: 128000, reserveTokens: 4096 }),
+      } as never,
+      toolExecutionTimeout: 30000,
+      toolTimeoutExemptions: new Set<string>(),
+      maxIterations: 20,
+      convertCallCount: 0,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      generateContextSummaryWithLLM: async () => ({ summary: null, mode: 'skip' as const }),
+    }
+
+    await executePiCoreLoop(base as never)
+    expect(buildSpy).toHaveBeenCalledTimes(1)
+    expect(buildSpy).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'plan' }))
+
+    mode = 'act'
+    const update = await prepareNextTurn!({
+      message: { role: 'assistant', content: [{ type: 'text', text: 'switched' }], stopReason: 'stop' },
+      toolResults: [],
+      context: { systemPrompt: 'sys', messages: [], tools: initialTools },
+      newMessages: [],
+    }) as { context: { tools: unknown } }
+
+    expect(buildSpy).toHaveBeenCalledTimes(2)
+    expect(buildSpy).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'act' }))
+    // The next turn is advertised — and gated — under the new mode.
+    expect(update.context.tools).toBe(buildSpy.mock.results[1].value)
+  })
+
+  it('keeps the tool list untouched when the mode did not change', async () => {
+    let prepareNextTurn: ((ctx: unknown) => unknown) | undefined
+    mockAgentLoopContinue.mockImplementation((_context: any, config: any) => {
+      prepareNextTurn = config.prepareNextTurn
+      return (async function* () {})()
+    })
+
+    await executePiCoreLoop({
+      signal: new AbortController().signal,
+      initialMessages: [{ id: 'u1', role: 'user', content: 'hi', timestamp: Date.now() }],
+      callbacks: {},
+      baseSystemPrompt: 'sys',
+      mode: 'act',
+      getMode: () => 'act',
+      toolRegistry: { getToolDefinitionsForMode: () => [] } as never,
+      getToolContext: () => ({ directoryHandle: null }),
+      provider: {
+        getModel: () => ({ api: 'openai', provider: 'openai', id: 'm', maxTokens: 1024 }),
+        getApiKey: () => 'k',
+        maxContextTokens: 128000,
+        estimateTokens: () => 1,
+      } as never,
+      contextManager: {
+        getConfig: () => ({ systemPrompt: 'sys', maxContextTokens: 128000, reserveTokens: 4096 }),
+      } as never,
+      toolExecutionTimeout: 30000,
+      toolTimeoutExemptions: new Set<string>(),
+      maxIterations: 20,
+      convertCallCount: 0,
+      lastSummaryConvertCall: Number.NEGATIVE_INFINITY,
+      compressedMemoryPrefix: 'Earlier conversation summary:',
+      generateContextSummaryWithLLM: async () => ({ summary: null, mode: 'skip' }),
+    } as never)
+
+    const update = await prepareNextTurn!({
+      message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'stop' },
+      toolResults: [],
+      context: { systemPrompt: 'sys', messages: [], tools: [] },
+      newMessages: [],
+    })
+
+    // No change → undefined, so the loop keeps its existing context (and the
+    // provider's prompt cache stays valid).
+    expect(update).toBeUndefined()
+  })
+
   it('retains injected context summary in final messages when loop events continue', async () => {
     mockConvertAgentMessagesToLlm.mockImplementation(async (input: any) => {
       input.onSummaryInjected?.('compressed snapshot')

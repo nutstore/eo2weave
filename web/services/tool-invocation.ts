@@ -65,9 +65,16 @@ export async function invokeTool(
   let prepared: string
   let presentation: ReturnType<typeof normalizeToolResult>
   try {
-    const { getCurrentWorkspaceAgentMode } = await import('@/store/workspace-preferences.store')
-    const currentMode = getCurrentWorkspaceAgentMode()
-    if (!isToolAllowedInMode(toolName, input.mode) || !isToolAllowedInMode(toolName, currentMode)) {
+    const { getAgentModeForWorkspace } = await import('@/store/workspace-preferences.store')
+    // The RUN owns its conversation. Never resolve the mode boundary from the
+    // workspace the user happens to have open: `getCurrentWorkspaceAgentMode()`
+    // reads the active tab, so switching mode in ANOTHER conversation used to
+    // reach into this one's loop — Act there unlocked write tools in a Plan run
+    // here, and Plan there had a running Act run's write calls rejected.
+    const runMode = call.context.workspaceId
+      ? getAgentModeForWorkspace(call.context.workspaceId)
+      : input.mode
+    if (!isToolAllowedInMode(toolName, input.mode) || !isToolAllowedInMode(toolName, runMode)) {
       throw new Error(
         `Tool "${toolName}" is not available in plan mode. Switch to Act mode to use it.`
       )
@@ -102,7 +109,9 @@ export async function invokeTool(
       abortSignal.throwIfAborted()
       return input.toolRegistry.execute(toolName, args, {
         ...call.context,
-        agentMode: currentMode,
+        // Preserve the loop's own mode (subagents force `plan` regardless of the
+        // parent conversation's mode); only fill it in when absent.
+        agentMode: call.context.agentMode ?? runMode,
         abortSignal,
         currentToolCallId: toolCallId,
         codeTools: isRunCode

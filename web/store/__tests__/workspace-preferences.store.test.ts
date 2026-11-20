@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  getAgentModeForWorkspace,
   getCurrentWorkspaceAgentMode,
   isManualApplyPolicy,
+  setAgentModeForWorkspace,
   useWorkspacePreferencesStore,
 } from '../workspace-preferences.store'
 import { useWorkspaceStore } from '../workspace.store'
@@ -43,6 +45,49 @@ describe('workspace-preferences.store agent mode isolation', () => {
     localStorage.setItem('bfosa-workspace-preferences', persisted)
     await useWorkspacePreferencesStore.persist.rehydrate()
     expect(useWorkspacePreferencesStore.getState().agentIdByWorkspace).toMatchObject({ 'chat-a': 'resource-loop', 'chat-b': 'default' })
+  })
+
+  it('resolves the mode of a named conversation regardless of the open one', () => {
+    useWorkspacePreferencesStore.setState({
+      agentMode: 'act',
+      agentModeByWorkspace: { 'conv-a': 'plan', 'conv-b': 'act' },
+    })
+
+    // The user is looking at conv-b…
+    useWorkspaceStore.setState({ activeWorkspaceId: 'conv-b' })
+    expect(getCurrentWorkspaceAgentMode()).toBe('act')
+    // …but conv-a's run must still resolve conv-a's own mode.
+    expect(getAgentModeForWorkspace('conv-a')).toBe('plan')
+    expect(getAgentModeForWorkspace('conv-b')).toBe('act')
+
+    // Switching the open conversation must not move either answer.
+    useWorkspaceStore.setState({ activeWorkspaceId: 'conv-a' })
+    expect(getAgentModeForWorkspace('conv-b')).toBe('act')
+    expect(getAgentModeForWorkspace('conv-a')).toBe('plan')
+
+    // No entry / no conversation → the default the UI would show.
+    expect(getAgentModeForWorkspace('conv-untouched')).toBe('act')
+    expect(getAgentModeForWorkspace(null)).toBe('act')
+  })
+
+  it('writes a named conversation without relabelling the open one', () => {
+    useWorkspacePreferencesStore.setState({
+      agentMode: 'act',
+      agentModeByWorkspace: { 'conv-a': 'act', 'conv-b': 'act' },
+    })
+    useWorkspaceStore.setState({ activeWorkspaceId: 'conv-b' })
+
+    // A run in conv-a switches itself to Plan.
+    setAgentModeForWorkspace('plan', 'conv-a')
+
+    expect(getAgentModeForWorkspace('conv-a')).toBe('plan')
+    // The open conversation (conv-b) keeps its own mode and its UI mirror.
+    expect(getAgentModeForWorkspace('conv-b')).toBe('act')
+    expect(useWorkspacePreferencesStore.getState().agentMode).toBe('act')
+
+    // Writing the open conversation does update the mirror.
+    setAgentModeForWorkspace('plan', 'conv-b')
+    expect(useWorkspacePreferencesStore.getState().agentMode).toBe('plan')
   })
 
   it('isolates completion auto-apply by workspace', () => {

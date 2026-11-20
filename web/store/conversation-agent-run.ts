@@ -41,7 +41,7 @@ import { getApiKeyRepository } from '@/sqlite'
 import { LLM_PROVIDER_CONFIGS, isCustomProviderType, isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { generateFollowUp } from '@/agent/follow-up-generator'
 import { useSettingsStore } from './settings.store'
-import { getCurrentWorkspaceAgentMode } from './workspace-preferences.store'
+import { getAgentModeForWorkspace } from './workspace-preferences.store'
 import type { LLMProviderType } from '@/agent/providers/types'
 import type { SubagentTaskNotification, SubagentStepNotification } from '@/agent/tools/tool-types'
 import { persistConversationMeta, persistMessageReplace } from './conversation-persist'
@@ -1057,7 +1057,11 @@ async function runAgentBody(
               ? Math.max(1, Math.min(100, Math.floor(configuredMaxIterations)))
               : 20
 
-        const agentMode = getCurrentWorkspaceAgentMode()
+        // The mode boundary belongs to the conversation this run works on. The
+        // active-workspace lookup made a run inherit whatever conversation the
+        // user was looking at (externally dispatched runs and background
+        // conversations ran under somebody else's mode).
+        const agentMode = getAgentModeForWorkspace(conversationId)
         // Direct conversations (kind='direct') have no folder authorization:
         // folder-dependent tools are never registered and the project context
         // block is omitted. Read through the store so a mid-session upgrade
@@ -1158,6 +1162,10 @@ async function runAgentBody(
           toolRegistry,
           contextManager,
           mode: agentMode,
+          // Re-read this conversation's own mode between turns: a mid-run
+          // `switch_agent_mode` (or the user flipping the mode) applies to the
+          // next turn instead of the next user message.
+          resolveMode: () => getAgentModeForWorkspace(conversationId),
           sessionId: conversationId,
           toolContext: {
             directoryHandle,

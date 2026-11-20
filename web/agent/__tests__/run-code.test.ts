@@ -8,7 +8,7 @@ import type { ToolDefinition, ToolExecutor } from '@/agent/tools/tool-types'
 
 let wasm: WebAssembly.Module
 vi.mock('@/runtime/quickjs/client', () => ({ executeCode: (...args: Parameters<typeof import('@/runtime/quickjs/client').executeCode>) => executeQuickJs(wasm, ...args) }))
-vi.mock('@/store/workspace-preferences.store', () => ({ getCurrentWorkspaceAgentMode: () => 'act' }))
+vi.mock('@/store/workspace-preferences.store', () => ({ getAgentModeForWorkspace: () => 'act' }))
 beforeAll(async () => {
   const require = createRequire(import.meta.url)
   const runtimeRequire = createRequire(require.resolve('@creatorweave/quickjs-runtime/package.json'))

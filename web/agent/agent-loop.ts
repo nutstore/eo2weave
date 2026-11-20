@@ -83,6 +83,11 @@ export class AgentLoop {
   private convertCallCount = 0
   private lastSummaryConvertCall = Number.NEGATIVE_INFINITY
   private mode: AgentMode
+  /**
+   * Per-turn mode source (the conversation's own mode). Cleared by `setMode`,
+   * which pins the mode for the rest of the run.
+   */
+  private resolveMode?: () => AgentMode
   private shouldYieldForQueue?: () => boolean
 
   constructor(config: AgentLoopConfig) {
@@ -104,6 +109,7 @@ export class AgentLoop {
     this.onCompressionStateUpdate = config.onCompressionStateUpdate
     this.compressionBaseline = config.initialCompressionBaseline ?? null
     this.mode = config.mode || 'act'
+    this.resolveMode = config.resolveMode
     this.skipEnhancements = config.skipEnhancements ?? false
     this.disableThinking = config.disableThinking ?? false
     this.shouldYieldForQueue = config.shouldYieldForQueue
@@ -122,9 +128,25 @@ export class AgentLoop {
     return this.mode
   }
 
-  /** Set agent mode */
+  /**
+   * Re-resolve the mode from this run's conversation and keep `toolContext`
+   * (read by bash / mcp_tasks / run_code) in step. Called between turns; a no-op
+   * for loops whose mode is pinned (no `resolveMode` in the config).
+   */
+  refreshMode(): AgentMode {
+    if (!this.resolveMode) return this.mode
+    const next = this.resolveMode()
+    if (next !== this.mode) {
+      this.mode = next
+      this.toolContext.agentMode = next
+    }
+    return this.mode
+  }
+
+  /** Set agent mode. Pins it: a later `refreshMode()` no longer overrides it. */
   setMode(mode: AgentMode): void {
     this.mode = mode
+    this.resolveMode = undefined
     // Keep toolContext.agentMode in sync so tools (e.g. bash) can read it
     this.toolContext.agentMode = mode
   }
@@ -170,7 +192,11 @@ export class AgentLoop {
           return () => this.skipEnhancements ? collectContextSources(sources) : collectRuntimeContext(sources)
         })(),
         baseSystemPrompt: this.baseSystemPrompt,
-        mode: this.mode,
+        mode: this.refreshMode(),
+        // Per-turn mode source: the runner rebuilds the tool list when this
+        // changes, so a mid-run `switch_agent_mode` takes effect on the next
+        // turn instead of the next user message.
+        getMode: () => this.refreshMode(),
         toolRegistry: this.toolRegistry,
         beforeToolCall: this.beforeToolCall,
         afterToolCall: this.afterToolCall,

@@ -82,6 +82,12 @@ export interface ExecutePiCoreLoopInput {
   callbacks?: AgentCallbacks
   baseSystemPrompt: string
   mode: AgentMode
+  /**
+   * Re-read the run's mode between turns. The loop rebuilds the tool list when
+   * it returns something different from `mode` — that is what makes a mid-run
+   * `switch_agent_mode` effective (see AgentLoopConfig.resolveMode).
+   */
+  getMode?: () => AgentMode
   toolRegistry: ToolRegistry
   beforeToolCall?: AgentLoopConfig['beforeToolCall']
   afterToolCall?: AgentLoopConfig['afterToolCall']
@@ -176,10 +182,10 @@ export async function executePiCoreLoop(
   const apiKey = input.provider.getApiKey()
 
   await bashCommandRegistry.refresh()
-  const agentTools = buildAgentTools({
+  const buildToolsForMode = (mode: AgentMode) => buildAgentTools({
     stableDescriptions: !!input.collectContext,
     toolRegistry: input.toolRegistry,
-    mode: input.mode,
+    mode,
     callbacks: input.callbacks,
     beforeToolCall: input.beforeToolCall,
     afterToolCall: input.afterToolCall,
@@ -195,6 +201,9 @@ export async function executePiCoreLoop(
       input.onAbortRequested?.()
     },
   })
+
+  let appliedMode = input.mode
+  let agentTools = buildToolsForMode(appliedMode)
 
   const context = {
     systemPrompt: input.contextManager.getConfig().systemPrompt || input.baseSystemPrompt,
@@ -320,6 +329,19 @@ export async function executePiCoreLoop(
       temperature: settingsState.temperature,
       reasoning,
       prepareNextTurn: ({ message, context: turnContext }) => {
+        // Mid-run mode switch: rebuild the tool list when the mode changed, so
+        // the next turn is advertised (and gated) under the new mode instead of
+        // waiting for the next user message. Only on a real change — rebuilding
+        // every turn would churn the prompt cache.
+        const turnMode = input.getMode?.() ?? appliedMode
+        const toolsChanged = turnMode !== appliedMode
+        if (toolsChanged) {
+          appliedMode = turnMode
+          agentTools = buildToolsForMode(turnMode)
+        }
+        const nextTurn = () =>
+          toolsChanged ? { context: { ...turnContext, tools: agentTools } } : undefined
+
         // Image-capable providers deliver generated images as image content
         // blocks on the assistant message (not expressible in AssistantMessage's
         // static type, hence the cast). An image is visible output: the
@@ -331,7 +353,7 @@ export async function executePiCoreLoop(
         )
         if (hasOutput) {
           emptyTurnRetried = false
-          return
+          return nextTurn()
         }
         if (
           message.stopReason === 'error' ||
@@ -339,10 +361,16 @@ export async function executePiCoreLoop(
           emptyTurnRetried ||
           input.signal?.aborted ||
           input.shouldYieldForQueue?.()
-        ) return
+        ) return nextTurn()
         emptyTurnRetried = true
         emptyTurnRetryPending = true
-        return { context: { ...turnContext, messages: turnContext.messages.slice(0, -1) } }
+        return {
+          context: {
+            ...turnContext,
+            messages: turnContext.messages.slice(0, -1),
+            tools: toolsChanged ? agentTools : turnContext.tools,
+          },
+        }
       },
       getFollowUpMessages: async () => {
         if (!emptyTurnRetryPending || input.signal?.aborted) return []
