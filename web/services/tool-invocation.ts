@@ -9,6 +9,9 @@ import { notifyOtherToolCall } from '@/agent/tools/loop-guard'
 import { isToolEnvelopeV2 } from '@/agent/tools/tool-envelope'
 import type { ToolContext } from '@/agent/tools/tool-types'
 
+/** Tools a run_code script may not reach: itself, and the receipt-based spawns. */
+const RUN_CODE_BLOCKED_TOOLS = new Set(['run_code', 'spawn_subagent', 'batch_spawn'])
+
 export interface ToolInvocation {
   toolName: string
   toolCallId: string
@@ -87,8 +90,13 @@ export async function invokeTool(
     if (before?.block) throw new Error(before.reason || 'Tool execution was blocked by policy.')
 
     const isRunCode = toolName === 'run_code'
+    // Agent orchestration has exactly one entry: the blocking agent() primitive
+    // inside the sandbox. Letting the same script also reach spawn_subagent
+    // would give two spawn paths with different semantics (receipt vs awaited
+    // result) and no replay coverage for the second one.
     const codeToolNames = isRunCode
-      ? definitions.map((def) => def.function.name).filter((name) => name !== 'run_code' && (!input.allowedToolNames || input.allowedToolNames().includes(name)))
+      ? definitions.map((def) => def.function.name).filter((name) =>
+          !RUN_CODE_BLOCKED_TOOLS.has(name) && (!input.allowedToolNames || input.allowedToolNames().includes(name)))
       : []
     const execute = (abortSignal: AbortSignal) => {
       abortSignal.throwIfAborted()

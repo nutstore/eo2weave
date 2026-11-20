@@ -50,6 +50,10 @@ const TOOL_TIMEOUT_EXEMPTIONS = new Set<string>([
   // before exec_auth queueing and the serializeExecExecution chain — so a 30s
   // outer timer would kill parallel calls that were still waiting to run.
   'exec',
+  // run_code can await complete subagent runs via agent() inside the sandbox —
+  // wall clock is bounded by the sandbox limits (30 min when agents are used),
+  // never by the outer 30s wrapper timer.
+  'run_code',
   // Page action tools — interact with the upstream page which may involve
   // complex editors (ProseMirror, Yjs collaboration) that take unbounded time.
   'page_snapshot', 'page_text_content', 'page_find_elements', 'page_synthesize_locators',

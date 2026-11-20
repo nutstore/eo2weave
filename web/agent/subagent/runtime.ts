@@ -25,6 +25,7 @@ import type {
   ToolContext,
 } from '@/agent/tools/tool-types'
 import { SubagentError, SubagentErrorCode } from '@/agent/tools/tool-types'
+import type { SubagentTraceMessage } from '@/agent/tools/tool-types'
 import { TranscriptWriter, getTranscriptDir, getTranscriptFile } from './transcript'
 import { buildSubagentSystemPrompt } from './role-prompts'
 
@@ -36,6 +37,49 @@ type SubagentExecution = SubagentExecutionMetadata & {
   startedAt?: number
   priorMessageIds?: Set<string>
   trace?: SubagentStreamTrace
+}
+
+/** Project one message for parent-facing trace reads, capping content size. */
+function projectTraceMessage(message: Message, maxChars = TRACE_MESSAGE_MAX_CHARS): SubagentTraceMessage {
+  const content = typeof message.content === 'string' ? message.content : null
+  const projected: SubagentTraceMessage = {
+    role: message.role,
+    timestamp: message.timestamp,
+    ...(message.toolCalls?.length ? { tool_calls: message.toolCalls } : {}),
+    ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+    ...(message.name ? { tool_name: message.name } : {}),
+  }
+  if (content === null) return { ...projected, content: null }
+  if (content.length <= maxChars) return { ...projected, content }
+  return { ...projected, content: `${content.slice(0, maxChars)}…`, content_truncated: true }
+}
+
+/**
+ * Build a compact last-steps digest for failed completion notifications, so
+ * the parent sees what the child was doing when it died without a second
+ * query. Reads the in-memory execution snapshot; empty when the child died
+ * before producing any steps (e.g. expired queue).
+ */
+function buildFailureExecutionTail(
+  messages: Message[] | undefined,
+  priorMessageIds: Set<string> | undefined
+): string {
+  const executionMessages = messages?.filter((message) => !priorMessageIds?.has(message.id)) ?? []
+  const steps: string[] = []
+  for (let i = executionMessages.length - 1; i >= 0 && steps.length < FAILURE_TAIL_MAX_STEPS; i -= 1) {
+    const projected = projectTraceMessage(executionMessages[i], FAILURE_TAIL_STEP_MAX_CHARS)
+    if (projected.role === 'assistant' && !projected.content && !projected.tool_calls) continue
+    const toolCalls = projected.tool_calls?.map((call) => call.function.name).join(', ')
+    const headline = projected.role === 'assistant'
+      ? `assistant${toolCalls ? ` [tool call: ${toolCalls}]` : ''}`
+      : projected.role === 'tool'
+        ? `tool ${projected.tool_name ?? projected.tool_call_id ?? ''}`.trim()
+        : projected.role
+    const detail = projected.content ? `: ${projected.content}` : ''
+    steps.push(`- ${headline}${detail}`)
+  }
+  if (!steps.length) return ''
+  return `Execution tail (last ${steps.length} step${steps.length === 1 ? '' : 's'}, newest first):\n${[...steps].reverse().join('\n')}`
 }
 type QueuedSubagentMessage = { message: string; enqueued_at: number; execution?: SubagentExecution }
 type SubagentTaskInternal = {
@@ -107,6 +151,7 @@ const SUBAGENT_CONTROL_TOOLS = new Set([
   'stop_subagent',
   'resume_subagent',
   'get_subagent_status',
+  'get_subagent_trace',
   'list_subagents',
 ])
 
@@ -123,6 +168,12 @@ const DEFAULT_QUEUE_SIZE = 100
 const DEFAULT_OVERFLOW_ACTION: 'reject' | 'drop_oldest' = 'reject'
 const DEFAULT_MESSAGE_TIMEOUT_MS = 300000
 const SUMMARY_MAX_CHARS = 500
+/** Per-message content cap for trace projections — parent reads evidence, not full tool payloads. */
+const TRACE_MESSAGE_MAX_CHARS = 2000
+/** Steps appended to failed completion notifications so the parent can self-diagnose. */
+const FAILURE_TAIL_MAX_STEPS = 3
+/** Max characters per projected step inside a failure notification tail. */
+const FAILURE_TAIL_STEP_MAX_CHARS = 400
 const CAS_MAX_RETRIES = 3
 const CAS_RETRY_DELAY_MS = 10
 const DEFAULT_MAX_CONCURRENT = 5
@@ -301,9 +352,27 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     })
   }
 
-  async spawn(input: SpawnSubagentInput): Promise<SpawnSubagentResult> {
+  async spawn(input: SpawnSubagentInput, options: { signal?: AbortSignal } = {}): Promise<SpawnSubagentResult> {
     const task = await this.createTask(input, false)
-    await this.ensureProcessing(task)
+    // Cancellation must reach the running child, not just the caller: stop()
+    // cancels its loop, and the await below then resolves with a killed task.
+    const signal = options.signal
+    let canceled = false
+    const onAbort = () => {
+      canceled = true
+      void this.stop({ agentId: task.agentId, force: true }).catch(() => {})
+    }
+    if (signal) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+    try {
+      await this.ensureProcessing(task)
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+    }
+    if (canceled)
+      throw new SubagentError(SubagentErrorCode.CANCELED, 'subagent canceled by the caller')
     if (task.status !== 'completed') {
       throw new SubagentError((task.error?.code || SubagentErrorCode.RESOURCE_EXHAUSTED) as keyof typeof SubagentErrorCode,
         `subagent finished with status ${task.status}`)
@@ -588,6 +657,53 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       // Omit when unset: a top-level `error: null` in the tool payload makes
       // the tool card render a failure badge even though the call succeeded.
       ...(task.error ? { error: task.error } : {}),
+    }
+  }
+
+  async getTrace(input: {
+    agentId: string
+    execution_id?: string
+    limit?: number
+    offset?: number
+  }): Promise<{
+    agentId: string
+    executionId: string
+    status: SubagentTaskStatus
+    description: string
+    total: number
+    offset: number
+    truncated: boolean
+    messages: SubagentTraceMessage[]
+  }> {
+    await this.ensureHydrated()
+    const task = this.getByIdOrName((input.agentId || '').trim())
+    if (!task) {
+      throw new SubagentError(SubagentErrorCode.TASK_NOT_FOUND, `subagent ${input.agentId} not found`)
+    }
+    // Default to the current execution; a persisted completion covers earlier attempts.
+    const execution = input.execution_id
+      ? (task.execution?.executionId === input.execution_id ? task.execution : undefined)
+      : (task.execution ?? task.latestExecution)
+    if (!execution) {
+      throw new SubagentError(SubagentErrorCode.TASK_NOT_FOUND,
+        `execution ${input.execution_id || '(current)'} not found for subagent ${task.agentId}`)
+    }
+    const messages = execution.completion?.messages ?? task.messages
+    const limit = Number.isFinite(input.limit) ? Math.max(1, Math.min(50, Math.floor(input.limit!))) : 20
+    // offset counts from the END: parents diagnose what the child did last,
+    // so the default window is the most recent steps.
+    const offset = Number.isFinite(input.offset) ? Math.max(0, Math.floor(input.offset!)) : 0
+    const start = Math.max(0, messages.length - offset - limit)
+    const window = messages.slice(start, messages.length - offset)
+    return {
+      agentId: task.agentId,
+      executionId: execution.executionId,
+      status: task.status,
+      description: task.description,
+      total: messages.length,
+      offset,
+      truncated: offset + limit < messages.length,
+      messages: window.map((message) => projectTraceMessage(message)),
     }
   }
 
@@ -984,6 +1100,12 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           return
         }
         task.running_notification_armed = false
+        this.collectUsage(task, execution)
+        const finalResult = this.extractLatestAssistantContent(
+          task.messages.filter(message => !execution.priorMessageIds?.has(message.id))
+        )
+        if (!finalResult) throw new Error('Subagent finished without a non-empty assistant response.')
+        const structured = this.parseStructuredResult(finalResult)
         const transitionedToCompleted = await this.applyStatusTransition(task, 'running', 'completed')
         console.info('[SubagentRuntime] processQueue.completed', {
           agentId: task.agentId,
@@ -997,9 +1119,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         const completedAt = task.updated_at
         this.clearRunTimeout(task)
 
-        this.collectUsage(task, execution)
-        const finalResult = this.extractLatestAssistantContent(task.messages)
-        const structured = this.parseStructuredResult(finalResult)
         await this.completeExecution(task)
         this.emitNotification({
           event_type: 'task_notification',
@@ -1045,6 +1164,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
             message: task.error.message,
             recoverable: true,
           },
+          execution_tail: buildFailureExecutionTail(task.messages, task.execution?.priorMessageIds),
           timestamp: task.updated_at,
         })
         await this.closeTranscript(task)
@@ -1129,8 +1249,9 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   }
 
   private extractLatestAssistantContent(messages: Message[]): string {
-    const assistant = [...messages].reverse().find((msg) => msg.role === 'assistant')
-    return (assistant?.content || '').trim()
+    return [...messages].reverse().find((msg) =>
+      msg.role === 'assistant' && typeof msg.content === 'string' && msg.content.trim().length > 0
+    )?.content?.trim() ?? ''
   }
 
   private parseStructuredResult(content: string): Record<string, unknown> | null {
@@ -1419,6 +1540,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         message: task.error.message,
         recoverable: true,
       },
+      execution_tail: buildFailureExecutionTail(task.messages, task.execution?.priorMessageIds),
       timestamp: task.updated_at,
     })
     task.loop?.cancel()
@@ -1571,7 +1693,9 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       taskStatus: task.status, description: task.description, name: task.name,
       result: this.extractLatestAssistantContent(executionMessages),
       messages: structuredClone(task.messages),
-      usage: task.usage, error: task.error, changedPaths: [...execution.changedPaths],
+      usage: task.usage, error: task.error,
+      ...(task.error ? { executionTail: buildFailureExecutionTail(task.messages, priorMessageIds) } : {}),
+      changedPaths: [...execution.changedPaths],
       createdAt: Date.now(), updatedAt: Date.now(),
     }
   }

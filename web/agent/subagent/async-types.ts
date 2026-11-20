@@ -62,6 +62,8 @@ export interface SubagentCompletion {
   messages: Message[]
   usage?: SubagentTaskUsage
   error?: { code: string; message: string }
+  /** Last execution steps for failed executions — lets the parent self-diagnose. */
+  executionTail?: string
   changedPaths: string[]
   createdAt: number
   updatedAt: number

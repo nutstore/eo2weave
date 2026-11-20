@@ -13,9 +13,9 @@ import { isCodeRunResult } from '@creatorweave/shared/code-output'
  * which calls registerRenderer() at module load time.
  */
 
-import { useId, useState, memo, lazy, Suspense } from 'react'
+import { useId, useState, memo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { selectSubagentTasks, selectSubagentTask, useSubagentTaskStore } from '@/store/subagent-task.store'
+import { selectSubagentTasks, useSubagentTaskStore } from '@/store/subagent-task.store'
 import { ChevronDown, ChevronRight, Wrench, CheckCircle2, XCircle, Loader2, Bot } from 'lucide-react'
 import { parse as bestEffortParse } from 'best-effort-json-parser'
 import type { ToolCall } from '@/agent/message-types'
@@ -30,6 +30,7 @@ import { getPendingQuestion, removePendingQuestion } from '@/store/pending-quest
 import { useT } from '@/i18n'
 import { getRenderer } from './tool-renderers/registry'
 import type { ToolRenderCtx } from './tool-renderers/types'
+import { SubagentHistoryRow, SubagentStatusBadge } from './subagent-card-parts'
 
 // Side-effect imports: each file calls registerRenderer() on load
 import './tool-renderers/RunCodeRenderer'
@@ -80,16 +81,6 @@ interface ToolCallDisplayProps {
 // ─── Subagent helpers (kept from original) ────────────────────
 
 const SUBAGENT_TOOLS = new Set(['spawn_subagent', 'batch_spawn'])
-
-function SubagentStatusBadge({ status }: { status: string }) {
-  const t = useT()
-  const color = status === 'failed' || status === 'killed' || status === 'rejected'
-    ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400'
-    : status === 'completed'
-      ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-neutral-200'
-      : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300'
-  return <span className={`inline-flex shrink-0 items-center rounded-md px-1.5 py-0.5 text-xs leading-4 ${color}`}>{t(`conversation.backgroundTasks.${status}`)}</span>
-}
 
 function parseSpawnResult(result: string | undefined): { content?: string; agentId?: string; status?: string; usage?: { total_tokens?: number; duration_ms?: number } } | null {
   if (!result) return null
@@ -154,6 +145,8 @@ function buildCtx(props: ToolCallDisplayProps): ToolRenderCtx {
 
   return {
     toolName: toolCall.function.name,
+    toolCallId: toolCall.id,
+    conversationId: props.conversationId,
     args,
     rawArgs,
     result: parsedResult,
@@ -292,6 +285,13 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
             <StatusIcon ctx={ctx} executingText={t('toolCallDisplay.executing')} />
           </span>
         </button>
+        {!expanded && renderer.Aside && (
+          /* empty:hidden — an Aside that yields nothing (no step agents) must not
+             leave an empty bordered strip under the header. */
+          <div className="border-t border-neutral-200 px-3 py-1.5 dark:border-neutral-800 empty:hidden">
+            <renderer.Aside {...ctx} />
+          </div>
+        )}
         {expanded && (
           <div className="border-t border-neutral-200 dark:border-neutral-800">
             <renderer.Detail {...ctx} />
@@ -358,36 +358,6 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
 
 // ─── Subagent card with individual execution disclosure ──────
 
-// Lazy load SubagentDetailPanel to avoid circular dependency
-// (SubagentDetailPanel imports ToolCallDisplay, which imports SubagentDetailPanel)
-const SubagentDetailPanel = lazy(() =>
-  import('./SubagentDetailPanel').then((m) => ({ default: m.SubagentDetailPanel }))
-)
-
-function SubagentHistoryRow({ agentId, conversationId, name, status }: { agentId: string; conversationId?: string; name?: string; status?: string }) {
-  const t = useT()
-  const task = useSubagentTaskStore(selectSubagentTask(agentId))
-  const [expanded, setExpanded] = useState(false)
-  const detailId = useId()
-  const label = task?.name || task?.description || name || agentId
-  return <div className="min-w-0">
-    <button type="button" aria-expanded={expanded} aria-controls={detailId}
-      aria-label={`${t('conversation.backgroundTasks.details')}: ${label}`}
-      className="flex w-full min-w-0 items-center gap-2 rounded py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-      onClick={() => setExpanded(!expanded)}>
-      {expanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-      <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
-      {(task?.status || status) && <SubagentStatusBadge status={task?.status || status!} />}
-    </button>
-    {expanded && <div id={detailId} className="min-w-0 overflow-x-hidden">
-      <Suspense fallback={<div className="py-2 text-xs text-neutral-400">{t('common.loading')}</div>}>
-        <SubagentDetailPanel agentId={agentId} conversationId={conversationId} />
-        {task?.error && <p className="break-words py-1 text-xs text-red-600 dark:text-red-400">{task.error.message}</p>}
-      </Suspense>
-    </div>}
-  </div>
-}
-
 function SubagentCard({
   ctx,
   toolCallId,
@@ -431,9 +401,11 @@ function SubagentCard({
     ...projected.filter(task => task.parentToolCallId === toolCallId).map(task => task.agentId),
   ]))
   const tasks = projected.filter(task => agentIds.includes(task.agentId))
-  const subagentTitle = typeof ctx.args.description === 'string' && ctx.args.description.trim()
-    ? ctx.args.description
-    : tasks.length === 1 ? tasks[0].description : t('conversation.backgroundTasks.label')
+  const subagentTitle = typeof ctx.args.purpose === 'string' && ctx.args.purpose.trim()
+    ? ctx.args.purpose
+    : typeof ctx.args.description === 'string' && ctx.args.description.trim()
+      ? ctx.args.description
+      : tasks.length === 1 ? tasks[0].description : t('conversation.backgroundTasks.label')
   const status = tasks.some(task => task.status === 'running') ? 'running'
     : tasks.some(task => task.status === 'pending') ? 'pending'
     : tasks.some(task => task.status === 'failed' || task.status === 'killed') ? 'failed'
