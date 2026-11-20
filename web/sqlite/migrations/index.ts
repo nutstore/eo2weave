@@ -305,7 +305,7 @@ function repairSubagentExecutions(db: any): void {
  * Run-level metadata (history UI, crash recovery) is deliberately not stored
  * yet — add it when a feature reads it.
  */
-function repairWorkflowScriptTables(db: any): void {
+function repairWorkflowScriptTables(db: any, version = 24): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS workflow_agent_steps (
       run_id TEXT NOT NULL,
@@ -337,7 +337,11 @@ function repairWorkflowScriptTables(db: any): void {
   if (!hasColumn('prompt')) db.exec('ALTER TABLE workflow_agent_steps ADD COLUMN prompt TEXT')
   if (!hasColumn('options_key')) db.exec('ALTER TABLE workflow_agent_steps ADD COLUMN options_key TEXT')
 
-  bumpUserVersionFloor(db, 24)
+  // Each migration bumps only its own floor: sharing one `up` that floors to 24
+  // made the runner's post-migration version check fail while executing v23
+  // (user_version was already 24), which aborted the upgrade of every existing
+  // database.
+  bumpUserVersionFloor(db, version)
 }
 
 function verifySubagentTimeoutSchema(db: any): void {
@@ -350,7 +354,9 @@ function verifySubagentTimeoutSchema(db: any): void {
   }
 }
 
-// Base schema version
+// Base schema version: the version sqlite-schema.sql ships with. New
+// migrations append AFTER it; LATEST_SCHEMA_VERSION (below the registry) tracks
+// the last entry.
 export const BASE_SCHEMA_VERSION = 22
 
 // ============================================================================
@@ -602,9 +608,12 @@ export const migrations: Migration[] = [
     up: repairManagedMcpTasks,
   },
   { version: 22, name: 'add_async_subagent_executions', up: repairSubagentExecutions },
-  { version: 23, name: 'add_workflow_script_tables', up: repairWorkflowScriptTables },
-  { version: 24, name: 'add_workflow_step_identity_columns', up: repairWorkflowScriptTables },
+  { version: 23, name: 'add_workflow_script_tables', up: (db) => repairWorkflowScriptTables(db, 23) },
+  { version: 24, name: 'add_workflow_step_identity_columns', up: (db) => repairWorkflowScriptTables(db, 24) },
 ]
+
+/** Highest migration in the registry — where an up-to-date database ends. */
+export const LATEST_SCHEMA_VERSION = migrations.at(-1)?.version ?? BASE_SCHEMA_VERSION
 
 // ============================================================================
 // Migration Executor

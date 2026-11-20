@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm'
 import schema from '../../sqlite-schema.sql?raw'
-import { initializeSchema } from '../../migrations'
+import { LATEST_SCHEMA_VERSION, initializeSchema } from '../../migrations'
 import type { SQLiteTransaction } from '../../sqlite-database'
 import type { StoredSubagentTask } from '../subagent.repository'
 import type { SubagentCompletion } from '@/agent/subagent/async-types'
@@ -275,7 +275,7 @@ describe('durable subagent completions', () => {
     expect(await outbox.consume('a1:e1')).toBe(true)
   })
 
-  it('keeps migration v22 and fresh schema physically equivalent', async () => {
+  it('keeps migration v24 and fresh schema physically equivalent', async () => {
     const freshTaskColumns = db.exec({
       sql: 'PRAGMA table_info(subagent_tasks)',
       returnValue: 'resultRows',
@@ -290,7 +290,7 @@ describe('durable subagent completions', () => {
     db.exec('ALTER TABLE subagent_tasks DROP COLUMN execution_json')
     db.exec('PRAGMA user_version = 21')
     await initializeSchema(db)
-    expect(db.exec({ sql: 'PRAGMA user_version', returnValue: 'resultRows' })).toEqual([[22]])
+    expect(db.exec({ sql: 'PRAGMA user_version', returnValue: 'resultRows' })).toEqual([[LATEST_SCHEMA_VERSION]])
     const upgradedTasks = db.exec({
       sql: 'PRAGMA table_info(subagent_tasks)',
       returnValue: 'resultRows',
