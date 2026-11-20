@@ -430,6 +430,9 @@ export const toolCallDisplay = {
     workflowItems: "{count}개 항목",
     workflowReplay: "재생 키",
     workflowStepFallback: "단계 {index}",
+    workflowListTab: "목록",
+    workflowGraphTab: "그래프",
+    workflowGraphHint: "실행 시간이 겹치는 정도로 추정한 병렬 단계입니다 (실제 연결선이 아님)",
     // Web renderers
     fetching: "가져오는 중",
     noResults: "결과 없음",

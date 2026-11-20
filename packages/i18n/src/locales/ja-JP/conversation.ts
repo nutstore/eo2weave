@@ -431,6 +431,9 @@ export const toolCallDisplay = {
     workflowItems: "{count} 項目",
     workflowReplay: "再生キー",
     workflowStepFallback: "ステップ {index}",
+    workflowListTab: "リスト",
+    workflowGraphTab: "図",
+    workflowGraphHint: "実行時間の重なりから推定した並列段階です（実際の配線ではありません）",
     // Web renderers
     fetching: "取得中",
     noResults: "結果なし",

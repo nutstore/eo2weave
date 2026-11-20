@@ -462,6 +462,9 @@ export const toolCallDisplay = {
     workflowItems: "{count} items",
     workflowReplay: "Replay key",
     workflowStepFallback: "Step {index}",
+    workflowListTab: "List",
+    workflowGraphTab: "Graph",
+    workflowGraphHint: "Layers inferred from overlapping run times, not the script's real edges",
     // Web renderers
     fetching: "fetching",
     noResults: "No results",

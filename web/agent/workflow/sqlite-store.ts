@@ -16,7 +16,10 @@ interface StepRow {
   options_key: string | null
   status: string
   agent_id: string | null
+  name: string | null
   result: string | null
+  started_at: number | null
+  finished_at: number | null
 }
 
 export function createWorkflowStore(): AgentStepStore {
@@ -25,7 +28,7 @@ export function createWorkflowStore(): AgentStepStore {
     async listSteps(runId) {
       const rows = await db().queryAll<StepRow>(
         [
-          'SELECT step_index, prompt_hash, prompt, options_key, status, agent_id, result',
+          'SELECT step_index, prompt_hash, prompt, options_key, status, agent_id, name, result, started_at, finished_at',
           'FROM workflow_agent_steps',
           'WHERE run_id = ?',
           'ORDER BY step_index ASC',
@@ -39,7 +42,10 @@ export function createWorkflowStore(): AgentStepStore {
         optionsKey: row.options_key,
         status: row.status === 'completed' ? 'completed' : 'failed',
         agentId: row.agent_id,
+        name: row.name,
         result: row.result,
+        startedAt: row.started_at ?? undefined,
+        finishedAt: row.finished_at ?? undefined,
       }))
     },
 

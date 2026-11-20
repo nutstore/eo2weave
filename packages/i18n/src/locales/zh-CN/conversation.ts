@@ -464,6 +464,9 @@ export const toolCallDisplay = {
     workflowItems: "{count} 项",
     workflowReplay: "重放键",
     workflowStepFallback: "步骤 {index}",
+    workflowListTab: "列表",
+    workflowGraphTab: "图",
+    workflowGraphHint: "按时间重叠推断的并行层次，不是脚本里的真实连线",
     // Web renderers
     fetching: "获取中",
     noResults: "无结果",

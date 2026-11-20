@@ -29,6 +29,9 @@ export interface AgentStepTrace {
   chars?: number
   usage?: JsonValue
   error?: string
+  /** Wall clock of the step, so the card can infer which steps ran in parallel. */
+  startedAt?: number
+  finishedAt?: number
 }
 
 export interface AgentStepRecord {
@@ -39,7 +42,11 @@ export interface AgentStepRecord {
   optionsKey: string | null
   status: 'completed' | 'failed'
   agentId: string | null
+  name?: string | null
   result: string | null
+  /** Read back by the UI so a reloaded card can still draw the run. */
+  startedAt?: number
+  finishedAt?: number
 }
 
 /** Persistence port — production uses SQLite, tests use an in-memory fake. */
@@ -289,6 +296,8 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
         name: normalized.name,
         chars: spawned.content.length,
         usage,
+        startedAt,
+        finishedAt: now(),
       })
       return { content: spawned.content, agentId: spawned.agentId, usage: usage ?? null, cached: false }
     } catch (error) {
@@ -316,7 +325,7 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
           // Keep the original failure.
         }
       }
-      steps.push({ index, status: 'failed', name: normalized.name, error: message })
+      steps.push({ index, status: 'failed', name: normalized.name, error: message, startedAt, finishedAt: now() })
       throw error
     }
   }
