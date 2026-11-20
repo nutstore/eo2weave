@@ -82,6 +82,61 @@ async function notifyWorkspaceNativeDirectoryGranted(handle: FileSystemDirectory
 }
 
 /**
+ * Bound `FileSystemHandle.queryPermission()`.
+ *
+ * The browser API has no timeout and cannot be cancelled. On some handles
+ * Chromium never settles it at all — a stale persisted handle, a volume that is
+ * no longer reachable, or a permission prompt the browser cannot present.
+ * `hydrateProject` awaited it directly, so one such handle froze project
+ * activation permanently: the app stayed on the startup screen with `isLoading`
+ * stuck true, no error and no recovery (issue #316; the field log stops right
+ * after the IndexedDB record load, which is the line before this await).
+ *
+ * A probe that does not answer within the deadline resolves as 'timeout' so the
+ * caller can fall back to `needs_user_activation` — the state whose existing
+ * banner path re-requests the permission under a real user gesture. Rejections
+ * are still propagated, so the expired-handle path keeps its old behaviour.
+ */
+const PERMISSION_QUERY_TIMEOUT_MS = 3000
+
+export type PermissionProbe = PermissionState | 'timeout'
+
+async function probePermission(
+  handle: FileSystemDirectoryHandle,
+  timeoutMs: number = PERMISSION_QUERY_TIMEOUT_MS
+): Promise<PermissionProbe> {
+  return new Promise<PermissionProbe>((resolve, reject) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const settle = (state: PermissionProbe) => {
+      if (settled) return
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      resolve(state)
+    }
+
+    const fail = (error: unknown) => {
+      if (settled) return
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      reject(error)
+    }
+
+    timer = setTimeout(() => settle('timeout'), timeoutMs)
+
+    try {
+      handle.queryPermission({ mode: 'readwrite' }).then(
+        (state) => settle(state),
+        (error) => fail(error)
+      )
+    } catch (error) {
+      fail(error)
+    }
+  })
+}
+
+/**
  * Reconcile the SQLite `project_roots` table with the folder handles that exist
  * in IndexedDB (folderAccessRepo) and/or are bound in the runtime handle map.
  *
@@ -286,12 +341,30 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
 
         try {
           const permissionQueryStartedAt = performance.now()
-          const permission = await handle.queryPermission({ mode: 'readwrite' })
+          const permission = await probePermission(handle)
           console.log('[FolderAccessActivation] hydrateProject: permission queried', {
             projectId,
             permission,
             elapsedMs: Math.round(performance.now() - permissionQueryStartedAt),
           })
+
+          if (permission === 'timeout') {
+            // The probe never answered. Do not delete the record and do not keep
+            // waiting: fall back to the re-authorization state, whose banner
+            // re-requests the permission under a real user gesture.
+            console.warn(
+              `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_TIMEOUT_MS}ms; falling back to re-authorization for "${handle.name}"`
+            )
+            set((state) => {
+              state.records[projectId] = {
+                ...existing,
+                handle: null,
+                status: 'needs_user_activation',
+                updatedAt: Date.now(),
+              }
+            })
+            return
+          }
 
           if (permission === 'granted') {
             // Permission already granted -> ready
@@ -880,7 +953,12 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
                 if (record?.persistedHandle) {
                   persistedHandle = record.persistedHandle
                   // Auto-check if browser still has cached permission
-                  const permission = await persistedHandle.queryPermission({ mode: 'readwrite' })
+                  const permission = await probePermission(persistedHandle)
+                  if (permission === 'timeout') {
+                    console.warn(
+                      `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_TIMEOUT_MS}ms for root "${dbRoot.name}"; marking it for re-authorization`
+                    )
+                  }
                   if (permission === 'granted') {
                     handle = persistedHandle
                     status = 'ready'

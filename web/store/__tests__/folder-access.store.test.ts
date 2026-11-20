@@ -172,6 +172,50 @@ describe('folder-access.store runtime handle binding', () => {
     expect(mockWorkspaceStore.onNativeDirectoryGranted).toHaveBeenCalledWith(handle)
   })
 
+  it('falls back to re-authorization when the permission query never answers', async () => {
+    // Issue #316: `queryPermission` never settles for some persisted handles.
+    // Awaiting it froze project activation forever; the probe must give up and
+    // leave the record recoverable instead.
+    vi.useFakeTimers()
+    try {
+      const projectId = 'project-3'
+      const handle = {
+        name: 'stalled',
+        queryPermission: vi.fn(() => new Promise<PermissionState>(() => {})),
+      } as unknown as FileSystemDirectoryHandle
+
+      mockRepo.load.mockResolvedValue({
+        projectId,
+        rootName: 'stalled',
+        folderName: 'stalled',
+        handle: null,
+        persistedHandle: handle,
+        status: 'needs_user_activation',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const activation = useFolderAccessStore.getState().setActiveProject(projectId)
+      // The probe deadline is 3s; activation must settle on its own after it.
+      await vi.advanceTimersByTimeAsync(3100)
+      await activation
+
+      const record = useFolderAccessStore.getState().records[projectId]
+      expect(record.status).toBe('needs_user_activation')
+      // The handle is kept so the banner can re-request permission on a gesture.
+      expect(record.persistedHandle).toBe(handle)
+      expect(record.handle).toBeNull()
+      expect(mockNativeFS.bindRuntimeDirectoryHandle).not.toHaveBeenCalled()
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Permission query did not answer within 3000ms')
+      )
+      warn.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it.each(['denied', 'prompt'])('does not bind a persisted directory for permission state %s', async (permission) => {
     const projectId = 'project-permission-not-granted'
     const handle = { name: 'repo', requestPermission: vi.fn().mockResolvedValue(permission) } as unknown as FileSystemDirectoryHandle
