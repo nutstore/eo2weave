@@ -218,12 +218,21 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
 
       if (!projectId) return
 
+      // Sub-step timing for issue #316: project activation stalls inside this
+      // call. Each await below gets its own line so the next repro names the
+      // exact operation (IndexedDB open/tx, permission query, native-host
+      // hydrate) instead of only "somewhere in folder-access".
+      const startedAt = performance.now()
+      const at = () => Math.round(performance.now() - startedAt)
+      console.log('[FolderAccessActivation] start', { projectId, prevId })
+
       // Same-project fast path:
       // Skip full hydrate, but still reload roots so UI/runtime bindings stay fresh.
       if (prevId === projectId) {
         const record = get().records[projectId]
         if (record && (record.status === 'ready' || record.status === 'needs_user_activation')) {
           await get().loadRoots()
+          console.log('[FolderAccessActivation] same-project fast path done', { projectId, atMs: at() })
           return
         }
       }
@@ -236,9 +245,11 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       }
 
       await get().hydrateProject(projectId)
+      console.log('[FolderAccessActivation] hydrateProject done', { projectId, atMs: at() })
 
       // Load multi-root state
       await get().loadRoots()
+      console.log('[FolderAccessActivation] loadRoots done', { projectId, atMs: at() })
     },
 
     /**
@@ -254,7 +265,13 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
 
       try {
         // Load record from IndexedDB
+        const loadStartedAt = performance.now()
         const existing = await folderAccessRepo.load(projectId)
+        console.log('[FolderAccessActivation] hydrateProject: IndexedDB record loaded', {
+          projectId,
+          found: Boolean(existing),
+          elapsedMs: Math.round(performance.now() - loadStartedAt),
+        })
 
         if (!existing || !existing.persistedHandle) {
           // No record -> idle
@@ -268,7 +285,13 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
         const handle = existing.persistedHandle
 
         try {
+          const permissionQueryStartedAt = performance.now()
           const permission = await handle.queryPermission({ mode: 'readwrite' })
+          console.log('[FolderAccessActivation] hydrateProject: permission queried', {
+            projectId,
+            permission,
+            elapsedMs: Math.round(performance.now() - permissionQueryStartedAt),
+          })
 
           if (permission === 'granted') {
             // Permission already granted -> ready
