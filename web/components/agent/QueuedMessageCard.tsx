@@ -9,12 +9,14 @@
  * This replaces the old minimal bubble that only showed text + a delete button.
  */
 
-import { useState, useCallback, useEffect } from 'react'
-import { ChevronUp, ChevronDown, X, Pencil, Paperclip } from 'lucide-react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { ChevronUp, ChevronDown, X, Pencil, Paperclip, Image as ImageIcon } from 'lucide-react'
 import { useT } from '@/i18n'
 import { InlineMessageEditor } from './InlineMessageEditor'
+import { Lightbox } from './Lightbox'
 import type { FileMentionItem } from './FileMentionExtension'
 import type { AssetMeta } from '@/types/asset'
+import { inferMimeType } from '@/types/asset'
 import { readAssetBlob } from './asset-utils'
 import { writePendingAssetsToOPFS } from '@/services/asset.service'
 import { useWorkspaceStore } from '@/store/workspace.store'
@@ -35,6 +37,8 @@ interface QueuedMessageCardProps {
   mentionAgents: { id: string; name?: string }[]
   /** Async file search callback for # file mention in edit mode */
   onSearchFiles?: (query: string) => Promise<FileMentionItem[]>
+  /** Open the shared FilePreview drawer with a pre-loaded blob (queued attachments) */
+  onPreviewAsset?: (name: string, blob: Blob) => void
   /** Update the message (text + assets) */
   onUpdate: (index: number, patch: { text: string; assets?: AssetMeta[] }) => void
   /** Remove from queue */
@@ -47,40 +51,137 @@ interface QueuedMessageCardProps {
 
 // ─── Asset thumbnail (for queued message attachments) ──────────────────────
 
-function QueuedAssetThumbnail({ asset }: { asset: AssetMeta }) {
-  const [imageUrl, setImageUrl] = useState<string | null>(null)
-  const mime = asset.mimeType || ''
+/**
+ * Queued attachment chip with preview support.
+ *
+ * Queued assets are already written to the conversation's OPFS assets dir
+ * before the message is enqueued, so both preview paths can read the blob:
+ *   - images → click opens the shared Lightbox (click-to-enlarge)
+ *   - other files → click delegates to `onPreviewAsset` (FilePreview drawer)
+ */
+function QueuedAssetThumbnail({
+  asset,
+  onPreviewAsset,
+}: {
+  asset: AssetMeta
+  onPreviewAsset?: (name: string, blob: Blob) => void
+}) {
+  const t = useT()
+  const mime = asset.mimeType || inferMimeType(asset.name)
   const isImage = mime.startsWith('image/')
 
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [lightboxOpen, setLightboxOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  // Blob cache — avoids re-reading OPFS when the user clicks after mount.
+  const blobRef = useRef<Blob | null>(null)
+
+  // Auto-load image thumbnails on mount.
   useEffect(() => {
     if (!isImage) return
     let cancelled = false
-    let blobUrl: string | null = null
     readAssetBlob(asset.name).then((blob) => {
-      if (blob && !cancelled) {
-        blobUrl = URL.createObjectURL(blob)
-        setImageUrl(blobUrl)
-      }
+      if (!blob || cancelled) return
+      blobRef.current = blob
+      setImageUrl(URL.createObjectURL(blob))
     })
     return () => {
       cancelled = true
-      if (blobUrl) URL.revokeObjectURL(blobUrl)
     }
   }, [isImage, asset.name])
 
-  return (
-    <div className="flex items-center gap-1.5 rounded-lg border border-primary-200/60 bg-white/60 px-2 py-1 dark:border-primary-700/30 dark:bg-primary-900/20">
+  // Revoke the object URL when it is replaced or the chip unmounts — the
+  // Lightbox keeps using it while open, so it must outlive the click.
+  useEffect(() => {
+    if (!imageUrl) return
+    return () => URL.revokeObjectURL(imageUrl)
+  }, [imageUrl])
+
+  const loadBlob = useCallback(async (): Promise<Blob | null> => {
+    if (blobRef.current) return blobRef.current
+    setLoading(true)
+    try {
+      const blob = await readAssetBlob(asset.name)
+      if (blob) blobRef.current = blob
+      return blob
+    } finally {
+      setLoading(false)
+    }
+  }, [asset.name])
+
+  const handleOpen = useCallback(async () => {
+    if (isImage) {
+      if (imageUrl) {
+        setLightboxOpen(true)
+        return
+      }
+      // Thumbnail still loading / failed — retry on demand.
+      const blob = await loadBlob()
+      if (!blob) return
+      setImageUrl(URL.createObjectURL(blob))
+      setLightboxOpen(true)
+      return
+    }
+    if (!onPreviewAsset) return
+    const blob = await loadBlob()
+    if (blob) onPreviewAsset(asset.name, blob)
+  }, [asset.name, imageUrl, isImage, loadBlob, onPreviewAsset])
+
+  const interactive = isImage || Boolean(onPreviewAsset)
+  const previewLabel = t('filePreview.preview')
+
+  const chipClassName = [
+    'flex items-center gap-1.5 rounded-lg border border-primary-200/60 bg-white/60 px-2 py-1 text-left dark:border-primary-700/30 dark:bg-primary-900/20',
+    interactive
+      ? 'cursor-pointer transition-colors hover:border-primary-300 hover:bg-primary-50 dark:hover:border-primary-600/50 dark:hover:bg-primary-900/40'
+      : '',
+    loading ? 'opacity-60' : '',
+  ].filter(Boolean).join(' ')
+
+  const content = (
+    <>
       {isImage && imageUrl ? (
-        <img src={imageUrl} alt={asset.name} className="h-8 w-8 rounded object-cover" />
+        <img
+          src={imageUrl}
+          alt={asset.name}
+          loading="lazy"
+          className="h-8 w-8 rounded object-cover"
+        />
       ) : (
         <div className="flex h-8 w-8 items-center justify-center rounded bg-primary-100 dark:bg-primary-900/40">
-          <Paperclip className="h-3.5 w-3.5 text-primary-500 dark:text-primary-400" />
+          {isImage ? (
+            <ImageIcon className="h-3.5 w-3.5 text-primary-500 dark:text-primary-400" />
+          ) : (
+            <Paperclip className="h-3.5 w-3.5 text-primary-500 dark:text-primary-400" />
+          )}
         </div>
       )}
       <span className="max-w-[100px] truncate text-[11px] text-primary-600 dark:text-primary-300">
         {asset.name}
       </span>
-    </div>
+    </>
+  )
+
+  return (
+    <>
+      {interactive ? (
+        <button
+          type="button"
+          onClick={handleOpen}
+          disabled={loading}
+          className={chipClassName}
+          title={previewLabel}
+          aria-label={`${previewLabel}: ${asset.name}`}
+        >
+          {content}
+        </button>
+      ) : (
+        <div className={chipClassName}>{content}</div>
+      )}
+      {lightboxOpen && imageUrl && (
+        <Lightbox src={imageUrl} alt={asset.name} onClose={() => setLightboxOpen(false)} />
+      )}
+    </>
   )
 }
 
@@ -94,6 +195,7 @@ export function QueuedMessageCard({
   assets,
   mentionAgents,
   onSearchFiles,
+  onPreviewAsset,
   onUpdate,
   onRemove,
   onMoveUp,
@@ -212,7 +314,11 @@ export function QueuedMessageCard({
           {assets && assets.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {assets.map((asset) => (
-                <QueuedAssetThumbnail key={asset.id} asset={asset} />
+                <QueuedAssetThumbnail
+                  key={asset.id}
+                  asset={asset}
+                  onPreviewAsset={onPreviewAsset}
+                />
               ))}
             </div>
           )}
