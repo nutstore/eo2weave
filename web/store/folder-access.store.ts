@@ -17,6 +17,7 @@ import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import { toast } from 'sonner'
 import {
+  describeHandle,
   PERMISSION_QUERY_DEADLINE_MS,
   PERMISSION_REQUEST_DEADLINE_MS,
   queryPermissionWithDeadline,
@@ -325,6 +326,10 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
             console.warn(
               `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_DEADLINE_MS}ms; falling back to re-authorization for "${handle.name}"`
             )
+            console.warn('[FolderAccessStore] Handle diagnosis', await describeHandle(handle), {
+              visibilityState: typeof document === 'undefined' ? 'n/a' : document.visibilityState,
+              hadFocus: typeof document === 'undefined' ? 'n/a' : document.hasFocus(),
+            })
             set((state) => {
               state.records[projectId] = {
                 ...existing,
@@ -581,6 +586,12 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           console.warn(
             `[FolderAccessStore] requestPermission did not answer within ${PERMISSION_REQUEST_DEADLINE_MS}ms for "${record.folderName ?? record.rootName ?? projectId}"`
           )
+          if (record.persistedHandle) {
+            console.warn('[FolderAccessStore] Handle diagnosis', await describeHandle(record.persistedHandle), {
+              visibilityState: typeof document === 'undefined' ? 'n/a' : document.visibilityState,
+              hadFocus: typeof document === 'undefined' ? 'n/a' : document.hasFocus(),
+            })
+          }
           toast.error(
             i18nText(
               'projectRoots.permissionTimedOut',
@@ -971,6 +982,10 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
                       console.warn(
                         `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_DEADLINE_MS}ms for root "${dbRoot.name}"; marking it for re-authorization`
                       )
+                      console.warn('[FolderAccessStore] Handle diagnosis', await describeHandle(persistedHandle), {
+                        visibilityState: typeof document === 'undefined' ? 'n/a' : document.visibilityState,
+                        hadFocus: typeof document === 'undefined' ? 'n/a' : document.hasFocus(),
+                      })
                     } else {
                       permissionProbeTimeouts.delete(key)
                     }

@@ -11,7 +11,11 @@
 
 import { toast } from 'sonner'
 import { bindRuntimeDirectoryHandle } from '@/native-fs'
-import { PERMISSION_REQUEST_DEADLINE_MS, requestPermissionWithDeadline } from '@/lib/handle-permission'
+import {
+  describeHandle,
+  PERMISSION_REQUEST_DEADLINE_MS,
+  requestPermissionWithDeadline,
+} from '@/lib/handle-permission'
 import type { RootInfo } from '@/types/folder-access'
 
 export interface RestoreRootPermissionOptions {
@@ -67,6 +71,10 @@ export async function restoreRootPermission({
       console.warn(
         `[folder-permission] requestPermission did not answer within ${PERMISSION_REQUEST_DEADLINE_MS}ms for "${root.name}"`
       )
+      console.warn('[folder-permission] Handle diagnosis', await describeHandle(root.persistedHandle), {
+        visibilityState: typeof document === 'undefined' ? 'n/a' : document.visibilityState,
+        hadFocus: typeof document === 'undefined' ? 'n/a' : document.hasFocus(),
+      })
       toast.error(strings.timedOut)
       return false
     }
