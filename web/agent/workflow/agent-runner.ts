@@ -101,15 +101,25 @@ interface NormalizedOptions {
   role?: string
   /** Capability boundary requested for this step (merged with the actor's). */
   capabilities?: SubagentCapabilities
+  /**
+   * Skip the cache for this step only. Used to retry a member without losing
+   * the steps around it. Deliberately NOT part of `optionsKey`: it changes which
+   * row is served, not what the child is asked or who it runs as.
+   */
+  retry?: true
   /** Exact identity of everything that shapes the child's answer. */
   optionsKey: string
 }
 
 function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'): NormalizedOptions {
-  if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+  // `agent(prompt)` with no options is a valid call — absent means "no
+  // overrides", not a caller mistake. Keeping it strict here would reject the
+  // plainest form of the call while the tool description advertises it.
+  const rawOptions = raw === undefined ? {} : raw
+  if (rawOptions === null || typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
     throw new Error('agent(prompt, options?) — options must be a plain object')
   }
-  const record = raw as Record<string, JsonValue>
+  const record = rawOptions as Record<string, JsonValue>
   const resolved: Omit<NormalizedOptions, 'optionsKey'> = {}
   if (typeof record.name === 'string' && record.name.trim()) resolved.name = record.name.trim().slice(0, 80)
   if (typeof record.subagent_type === 'string' && SUBAGENT_TYPES.includes(record.subagent_type as SubagentType)) {
@@ -122,6 +132,7 @@ function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'
   if (record.as === null) resolved.as = null
   else if (typeof record.as === 'string' && record.as.trim()) resolved.as = record.as.trim().slice(0, 64)
   if (typeof record.role === 'string' && record.role.trim()) resolved.role = record.role.trim().slice(0, 500)
+  if (record.retry === true) resolved.retry = true
   // Capability boundary requested by the script. Class names are validated in
   // the runtime (unknown names throw), so only shape normalization happens here.
   if (record.capabilities && typeof record.capabilities === 'object' && !Array.isArray(record.capabilities)) {
@@ -272,13 +283,20 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
     const promptHash = hashText(`${prompt}\u0000${normalized.optionsKey}`)
 
     if (store) {
-      const prior = diverged ? undefined : findCachedStep(await loadPrior(), index, prompt, normalized.optionsKey)
+      // A retry re-executes this step and leaves the others alone. It must not
+      // flip `diverged`: the later steps decide for themselves whether their old
+      // rows still apply, because a hit needs an exact prompt match. The skipped
+      // row is consumed so the "any unconsumed prior step" fallback cannot hand
+      // this stale answer to a later step with the same prompt.
+      const forced = normalized.retry === true
+      const prior = forced || diverged ? undefined : findCachedStep(await loadPrior(), index, prompt, normalized.optionsKey)
       if (prior) {
         consumedPrior.add(prior.stepIndex)
         steps.push({ index, status: 'cached', agentId: prior.agentId ?? undefined })
         return { content: prior.result ?? '', agentId: prior.agentId, usage: null, cached: true }
       }
-      diverged = true
+      if (forced) consumedPrior.add(index)
+      else diverged = true
     }
 
     const startedAt = now()

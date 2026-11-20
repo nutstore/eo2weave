@@ -532,6 +532,61 @@ interface Handoff {
 现在：`${name}; delegate_to target_agent_id: ${id}`
 改为：`${name} — ${role || '未声明职责'}（只读）→ spawn(as: "${id}")`，且**子代理不注入**。
 
+### 6.6 按成员重跑（P4-4 设计，**待 recon 结论补齐 replay 细节**）
+
+目标：**给定一个 `taskId`，让那个成员重新跑一次**，而不是重跑整段脚本。
+
+#### 板上语义（已真机验证，可直接实现）
+
+重跑 = 同一个 `taskId` 再 spawn 一次。现有代码已自然支持，无需新概念：
+
+| 环节 | 行为 |
+|---|---|
+| `assignTeamTask` | 同 id 命中 `upsertTeamTask` → **保留 lead 已写的 goal**、状态回到 `running`、`updatedAt` 刷新 |
+| `handoff` | 按字段合并（新值覆盖同名、旧值保留），不会因重跑丢掉 `reads` |
+| `artifacts` | 上一轮的记录**保留**（`existing.artifacts` 续写），本次完成后由目录重新列举覆盖 |
+| `_ledger.jsonl` | 多一条 `spawned`；完成后多一条 `done` / `blocked` —— 重跑历史天然可见 |
+| 成员槽位 | 仍是 `by/{actorId|taskId}/`，**同一目录**（重跑的产物就该盖掉上一版） |
+
+需要的唯一新能力：**从板上读出某个 task 的「上一次 prompt」**，否则“重跑”只能靠 lead 自己记得原话。两种做法：
+
+- **A（推荐）**：manifest 的 task 增一个 `prompt_ref`（或不存，直接读 ledger + `subagent_tasks` 按 `taskId` 找最近一次 execution 的 prompt）
+- **B**：不存 prompt，重跑必须由 lead 重新给 prompt（等于“再派一次活”，不是“重跑”)
+
+倾向 **A 的第二个形式**（不改 manifest 结构，从既有表取），因为 `subagent_tasks` 已经存了每次执行的 messages。
+
+#### replay 侧（已核实，`agent/workflow/agent-runner.ts`）
+
+| 事实 | 位置 | 含义 |
+|---|---|---|
+| 步序在**调用时**分配：`const index = stepIndex++`（在 `await` 之前） | `:271` | 位置在**同一次 run 内是确定的**（等于脚本的调用顺序），所以“第 3 步”这个锚点并不像先前担心的那样会漂 |
+| 命中判定：`record.prompt === prompt && record.optionsKey === optionsKey`，优先取同 index，否则在未消费的旧步里找同 prompt | `:246-262` | 比较是**文本精确**，所以重排序不会串结果；`optionsKey` 覆盖 mode/model/超时等 |
+| 每个旧步只能被服务一次（`consumedPrior`） | `:238-262` | 同 prompt 出现两次不会被同一个旧步满足 |
+| 一旦有一步未命中：`diverged = true` | `:281` | **重放是“前缀式”的**：从第一个分歧点往后的每一步都重跑，即使后面 prompt 没改 |
+| 行写入：`runId + stepIndex + promptHash + prompt + optionsKey + agentId + name + status + result + usageJson` | `:307-320` | `name` **已落库**，但目前只用于展示；查找逻辑完全不看它 |
+| run 键：`${context.workspaceId ?? 'global'}:${replay}` | `tools/run-code.tool.ts:77` | 缓存按会话隔离 |
+
+#### 结论：P4-4 不需要 `step_id`，但需要把 `diverged` 改成“可定向”
+
+关键发现：**“只重跑一个成员”现在表达不出来**，原因不是步序会漂，而是 `diverged = true` 把后面的步也一起拉下水。而“步序会漂”这个先前写进 P2-3 的担心，读代码后**不成立**（index 在 await 之前分配）。
+
+所以最小改动是三件事，且不新增 DB 列：
+
+1. **`AgentRunnerOptions` 加 `retryIndexes?: number[]`（或 `forceMiss` 谓词）**：命中这些 index 时**不设 `diverged`**，只跳过该步的缓存，其余照常命中。
+
+   **为什么这样安全**：正确性并不是`diverged`给的，而是 **prompt 文本精确比对**给的。如果第 N 步的新答案会被拼进第 M 步的 prompt，那 M 的 prompt 就变了 → 它自然 miss（不会拿旧答案充新）。`diverged` 只是个**性能捷径**（“已经脏了，后面不看缓存的”），拿掉它不会让任何一步拿到错答案，只会让它们多比对一次字符串。
+2. **`name` 当显式锚点**：team 路径下把 `taskId` 作为 `name` 传给 `agent()`，重跑时用“同 name + 同 prompt”定位。`name` 已经在落库里，不需 schema 变更；需要改的只是 `findCachedStep` 之外新增一个“按 name 找上一次”的查询。
+3. **跨轮语义说清楚**：`runKey` 是**按轮次**的，所以“重跑昨天那个成员”不是重跑，而是新一次 run（能读到旧板、旧产物、旧账本，但不是同一个 manifest）。L1 就按这个算，不引入跨轮复用。
+
+P4-5（显式 `step_id`）因此可以**降级为可选**：只在“脚本自身改动导致调用顺序变化、但仍想命中旧结果”时才真正需要，而这已由 prompt 精确比对兑底；也不用担心老行没有 `step_id` 的兼容问题。
+
+#### 验收（A6）
+
+- 同一 `runKey` 下只重跑一个成员 → 其它成员的 `subagent_tasks` 行数**不增加**（靠 `cached: true` 而非新 spawn）；
+- 重跑后板上 `status` 从 `blocked`/`done` 回到 `running` 再到终态；
+- 账本里能看出「第一次 blocked → 第二次 done」；
+- 产物目录被新版本覆盖，而不是出现两份。
+
 ---
 
 ## 7. 分阶段实施
