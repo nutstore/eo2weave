@@ -675,6 +675,62 @@ describe('subagent runtime', () => {
     expect(second.messages.filter((message) => message.role === 'assistant')).toHaveLength(2)
   })
 
+  it('delivers the last non-empty assistant response when a trailing assistant turn is empty', async () => {
+    const notifications: (SubagentTaskNotification | SubagentStepNotification)[] = []
+    hoisted.setRunImpl(async messages => [
+      ...messages, createAssistantMessage('analysis result'), createAssistantMessage(''),
+    ])
+    const runtime = createRuntime('async-trailing-empty', notifications)
+    await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.repo.finishExecution.mock.calls.at(-1)?.[0].completion.result).toBe('analysis result')
+    expect(taskNotifications(notifications).at(-1)).toMatchObject({ status: 'completed', result: 'analysis result' })
+  })
+
+  it('reports a failed completion instead of delivering completed with an empty result', async () => {
+    const notifications: (SubagentTaskNotification | SubagentStepNotification)[] = []
+    hoisted.setRunImpl(async messages => [
+      ...messages,
+      { ...createAssistantMessage(''), toolCalls: [{ id: 'call-1', type: 'function' as const, function: { name: 'ls', arguments: '{}' } }] },
+      createAssistantMessage(''),
+    ])
+    const runtime = createRuntime('async-no-answer', notifications)
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await waitForStatusWithTimers(runtime, receipt.agentId, 'failed')
+    expect(hoisted.repo.finishExecution.mock.calls.at(-1)?.[0].completion).toMatchObject({
+      taskStatus: 'failed', error: { code: 'SUBAGENT_FAILED', message: 'Subagent finished without a non-empty assistant response.' },
+    })
+    const failure = taskNotifications(notifications).at(-1)
+    expect(failure).toMatchObject({ status: 'failed' })
+    // The failure notification carries a last-steps tail so the parent can
+    // self-diagnose without a trace query.
+    expect(failure?.execution_tail).toContain('[tool call: ls]')
+    expect(hoisted.repo.finishExecution.mock.calls.at(-1)?.[0].completion.executionTail).toBe(failure?.execution_tail)
+  })
+
+  it('exposes the execution trace to the parent through getTrace', async () => {
+    const runtime = createRuntime('async-trace-read', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    hoisted.setRunImpl(async messages => [
+      ...messages,
+      { ...createAssistantMessage(''), toolCalls: [{ id: 'call-9', type: 'function' as const, function: { name: 'read', arguments: '{"path":"a.ts"}' } }] },
+      { id: 'tool-9', role: 'tool', toolCallId: 'call-9', name: 'read', content: 'file body'.repeat(300), timestamp: Date.now() },
+      createAssistantMessage('final answer'),
+    ])
+    await waitForStatusWithTimers(runtime, receipt.agentId, 'completed')
+    const trace = await runtime.getTrace({ agentId: receipt.agentId, limit: 2 })
+    expect(trace.status).toBe('completed')
+    expect(trace.total).toBe(4) // user prompt + tool-call turn + tool result + answer
+    expect(trace.messages.map((m) => m.role)).toEqual(['tool', 'assistant'])
+    expect(trace.messages[0]).toMatchObject({ tool_name: 'read', content_truncated: true })
+    expect(trace.messages[1]).toMatchObject({ content: 'final answer' })
+    expect(trace.messages[1].content_truncated).toBeUndefined()
+    // offset walks further back through the same window
+    const older = await runtime.getTrace({ agentId: receipt.agentId, limit: 2, offset: 2 })
+    expect(older.messages.map((m) => m.role)).toEqual(['user', 'assistant'])
+    await expect(runtime.getTrace({ agentId: 'missing-agent' })).rejects.toMatchObject({ code: 'TASK_NOT_FOUND' })
+  })
+
   it('notifies ready only after terminal trace and usage are durable', async () => {
     let finishPersist!: () => void
     hoisted.repo.finishExecution.mockImplementationOnce(() => new Promise((resolve) => { finishPersist = resolve }))

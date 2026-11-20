@@ -49,6 +49,8 @@ export const SubagentErrorCode = {
   QUEUE_EMPTY: 'QUEUE_EMPTY',
   CONCURRENCY_LIMIT: 'CONCURRENCY_LIMIT',
   PERMISSION_DENIED: 'PERMISSION_DENIED',
+  // The caller canceled (e.g. an aborted run_code script), not a task failure.
+  CANCELED: 'CANCELED',
   // System errors (5xx)
   PERSISTENCE_WRITE_FAILED: 'PERSISTENCE_WRITE_FAILED',
   TRANSCRIPT_NOT_FOUND: 'TRANSCRIPT_NOT_FOUND',
@@ -116,6 +118,8 @@ export interface SubagentTaskNotification {
     message: string
     recoverable: boolean
   }
+  /** Last execution steps for failed notifications — lets the parent self-diagnose. */
+  execution_tail?: string
   timestamp: number
 }
 
@@ -168,11 +172,23 @@ export interface SpawnSubagentResult {
   usage?: SubagentTaskUsage
 }
 
+/** One projected execution-history message returned by get_subagent_trace. */
+export interface SubagentTraceMessage {
+  role: Message['role']
+  content?: string | null
+  /** Set when content exceeded the per-message projection cap. */
+  content_truncated?: boolean
+  tool_calls?: Message['toolCalls']
+  tool_call_id?: Message['toolCallId']
+  tool_name?: Message['name']
+  timestamp?: number
+}
+
 export interface SubagentRuntime {
   acknowledge(input: { agentId: string; executionId: string }): Promise<void>
   start(input: SpawnSubagentInput): Promise<SubagentAcceptedReceipt>
   batchStart(input: BatchSpawnSubagentInput): Promise<SubagentBatchAcceptance>
-  spawn(input: SpawnSubagentInput): Promise<SpawnSubagentResult>
+  spawn(input: SpawnSubagentInput, options?: { signal?: AbortSignal }): Promise<SpawnSubagentResult>
   sendMessage(input: {
     to: string
     message: string
@@ -223,6 +239,22 @@ export interface SubagentRuntime {
   }): Promise<{
     agents: SubagentTaskSummary[]
     total: number
+  }>
+  /** Read a child's execution history (the trace humans see in the detail panel). */
+  getTrace(input: {
+    agentId: string
+    execution_id?: string
+    limit?: number
+    offset?: number
+  }): Promise<{
+    agentId: string
+    executionId: string
+    status: SubagentTaskStatus
+    description: string
+    total: number
+    offset: number
+    truncated: boolean
+    messages: SubagentTraceMessage[]
   }>
   batchSpawn(input: BatchSpawnSubagentInput): Promise<{
     completed: Array<{

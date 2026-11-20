@@ -17,6 +17,7 @@ const TOOL_NAME_SEND = 'send_message_to_subagent'
 const TOOL_NAME_STOP = 'stop_subagent'
 const TOOL_NAME_RESUME = 'resume_subagent'
 const TOOL_NAME_GET_STATUS = 'get_subagent_status'
+const TOOL_NAME_GET_TRACE = 'get_subagent_trace'
 const TOOL_NAME_LIST = 'list_subagents'
 
 /**
@@ -242,6 +243,38 @@ export const getSubagentStatusDefinition: ToolDefinition = {
   },
 }
 
+export const getSubagentTraceDefinition: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: TOOL_NAME_GET_TRACE,
+    description:
+      "Read a subagent's execution history (the same trace humans see in the task detail panel): assistant turns, tool calls, and results of the current or a past execution. Use when a child failed, delivered no answer, or you need to verify what it actually did. Content is size-capped per message; offset counts from the END so the default window is the most recent steps.",
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: {
+          type: 'string',
+          description: 'Target subagent id or alias.',
+        },
+        execution_id: {
+          type: 'string',
+          description: 'Optional execution id (from a completion notification Trace line). Defaults to the latest execution.',
+        },
+        limit: {
+          type: 'number',
+          maximum: 50,
+          description: 'Max messages returned (default 20, max 50).',
+        },
+        offset: {
+          type: 'number',
+          description: 'Skip this many messages counted from the end (older history). Default 0 = most recent window.',
+        },
+      },
+      required: ['agentId'],
+    },
+  },
+}
+
 export const listSubagentsDefinition: ToolDefinition = {
   type: 'function',
   function: {
@@ -401,6 +434,24 @@ export const getSubagentStatusExecutor: ToolExecutor = async (args, context) => 
   }
 }
 
+export const getSubagentTraceExecutor: ToolExecutor = async (args, context) => {
+  const runtime = context.subagentRuntime
+  if (!runtime) return runtimeMissing(TOOL_NAME_GET_TRACE)
+
+  try {
+    const agentId = validateAgentId(args.agentId)
+    const result = await runtime.getTrace({
+      agentId,
+      execution_id: typeof args.execution_id === 'string' ? args.execution_id : undefined,
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+      offset: typeof args.offset === 'number' ? args.offset : undefined,
+    })
+    return toolOkJson(TOOL_NAME_GET_TRACE, result)
+  } catch (error) {
+    return formatError(TOOL_NAME_GET_TRACE, error)
+  }
+}
+
 export const listSubagentsExecutor: ToolExecutor = async (args, context) => {
   const runtime = context.subagentRuntime
   if (!runtime) return runtimeMissing(TOOL_NAME_LIST)
@@ -424,6 +475,7 @@ export const subagentPromptDoc: ToolPromptDoc = {
     '- `stop_subagent(agentId)` - Stop a child task when scope changes',
     '- `resume_subagent(agentId, prompt)` - Resume a stopped/failed/completed child with new instructions',
     '- `get_subagent_status(agentId)` - Query child status, queue depth, and errors',
+    '- `get_subagent_trace(agentId, execution_id?, limit?, offset?)` - Read a child\'s execution history (tool calls + results, size-capped, newest-first window). Use this to investigate a failed child or verify what it did',
     '- `list_subagents(status?, limit?, offset?)` - Enumerate all child tasks in this workspace',
   ],
 }

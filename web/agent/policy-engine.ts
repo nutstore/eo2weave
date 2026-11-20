@@ -222,7 +222,7 @@ function createPolicyTable(): Map<string, ToolPolicy> {
     'read_skill', 'read_skill_resource',
     'ask_user_question', 'delegate_to',
     'spawn_subagent', 'batch_spawn', 'send_message_to_subagent',
-    'stop_subagent', 'resume_subagent', 'get_subagent_status', 'list_subagents',
+    'stop_subagent', 'resume_subagent', 'get_subagent_status', 'get_subagent_trace', 'list_subagents',
     'sync-to-opfs', 'search_tools', 'get_page_tools',
     'web_search', 'web_fetch', 'generate_image',
     'page_snapshot', 'page_text_content', 'page_find_elements',

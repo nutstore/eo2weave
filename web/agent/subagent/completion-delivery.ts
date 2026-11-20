@@ -295,6 +295,7 @@ export function completionMessage(rows: SubagentCompletion[]): Message {
           `Subagent ${r.name ?? r.agentId}: ${r.taskStatus}`,
           r.description,
           r.error ? `${r.error.code}: ${r.error.message}` : r.result,
+          r.error && r.executionTail ? r.executionTail : '',
           r.changedPaths.length ? `Changed paths: ${r.changedPaths.join(', ')}` : '',
           `Trace: subagent ${r.agentId}, execution ${r.executionId}`,
         ]

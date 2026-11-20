@@ -53,17 +53,28 @@ export async function executeCode(
           message: 'Execution canceled; in-flight host operations may have side effects',
         },
       })
-    const timer = setTimeout(
-      () =>
-        finish({
-          ok: false,
-          error: {
-            code: 'JS_TIMEOUT',
-            message: 'Execution timed out; in-flight host operations may have side effects',
-          },
-        }),
-      request.limits.timeoutMs + 5000
-    )
+    const timeoutFailure = () =>
+      finish({
+        ok: false,
+        error: {
+          code: 'JS_TIMEOUT',
+          message: 'Execution timed out; in-flight host operations may have side effects',
+        },
+      })
+    // The deadline is a moving target: a host call that legitimately waits for a
+    // subagent pushes it out, so a tools-only script keeps the short ceiling.
+    let deadline = Date.now() + request.limits.timeoutMs + 5000
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const arm = () => {
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(timeoutFailure, Math.max(0, deadline - Date.now()))
+    }
+    arm()
+    bindings.extendTimeout = (ms) => {
+      if (closed || !Number.isFinite(ms) || ms <= 0) return
+      deadline = Math.max(deadline, Date.now() + ms)
+      arm()
+    }
     signal.addEventListener('abort', abort, { once: true })
     worker.onerror = (event) =>
       finish({ ok: false, error: { code: 'JS_WORKER_FAILED', message: event.message } })

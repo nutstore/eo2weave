@@ -180,6 +180,13 @@ export async function refreshAsyncSubagentWorkspace(conversationId: string): Pro
     await useConversationContextStore.getState().refreshPendingChanges(true)
   }
 }
+export function hasReadySubagentReturns(conversationId: string): boolean {
+  return Object.values(useSubagentTaskStore.getState().tasks).some(task =>
+    task.conversationId === conversationId && task.isAsync &&
+    task.deliveryPhase === 'pending' && !task.acknowledged
+  )
+}
+
 export function hasRunningAsyncSubagents(conversationId: string): boolean {
   return Object.values(useSubagentTaskStore.getState().tasks).some(
     (task) =>

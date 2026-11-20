@@ -94,6 +94,7 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
   ['stop_subagent', { name: 'stop_subagent', category: 'read' }],
   ['resume_subagent', { name: 'resume_subagent', category: 'read' }],
   ['get_subagent_status', { name: 'get_subagent_status', category: 'read' }],
+  ['get_subagent_trace', { name: 'get_subagent_trace', category: 'read' }],
   ['list_subagents', { name: 'list_subagents', category: 'read' }],
   
   // ============================================================================

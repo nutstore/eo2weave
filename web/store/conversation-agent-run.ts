@@ -1,7 +1,7 @@
 import { restoreCompressionBaseline } from '@/agent/loop/context-compression'
 import { isViewingConversation } from '@/lib/conversation-view'
 import { useConversationStoreSQLite } from './conversation.store.sqlite'
-import { getSubagentContinuation, onSubagentCompletionReady, recordAsyncSubagentPaths, isAsyncSubagentPath, drainSubagentContinuations, hasRunningAsyncSubagents, retainPendingSubagentPaths } from './subagent-continuation'
+import { getSubagentContinuation, onSubagentCompletionReady, recordAsyncSubagentPaths, isAsyncSubagentPath, drainSubagentContinuations, hasReadySubagentReturns, hasRunningAsyncSubagents, retainPendingSubagentPaths } from './subagent-continuation'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Conversation Agent Run — extracted from conversation.store.sqlite.ts
@@ -1398,7 +1398,8 @@ async function runAgentBody(
           // Codex/Claude Code's "interrupt at tool boundary" feel instead of
           // waiting for the entire agent run to finish.
           shouldYieldForQueue: () =>
-            useConversationRuntimeStore.getState().getQueueDepth(conversationId) > 0,
+            useConversationRuntimeStore.getState().getQueueDepth(conversationId) > 0 ||
+            hasReadySubagentReturns(conversationId),
         })
 
         setAgentLoop(conversationId, agentLoop)

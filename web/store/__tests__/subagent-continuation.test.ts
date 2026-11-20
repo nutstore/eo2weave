@@ -25,6 +25,7 @@ import {
   isAsyncSubagentPath,
   retainPendingSubagentPaths,
   refreshAsyncSubagentWorkspace,
+  hasReadySubagentReturns,
   stopPendingSubagentReturns,
 } from '../subagent-continuation'
 beforeEach(() => {
@@ -50,6 +51,22 @@ describe('async child workspace ownership', () => {
     expect(fixture.visibleRefresh).not.toHaveBeenCalled()
     expect(fixture.context.activeWorkspaceId).toBe('other')
   })
+})
+
+it('yields only for unacknowledged pending async returns in the owning conversation', () => {
+  const base: SubagentTaskProjection = { agentId: 'ready', conversationId: 'original', description: 'Inspect', role: 'worker', status: 'completed', createdAt: 1, updatedAt: 2, lastActivity: 2, isAsync: true, executionId: 'attempt', deliveryPhase: 'pending', messages: [] }
+  expect(hasReadySubagentReturns('original')).toBe(false)
+  useSubagentTaskStore.getState().publish(base)
+  expect(hasReadySubagentReturns('original')).toBe(true)
+  expect(hasReadySubagentReturns('other')).toBe(false)
+  for (const phase of ['processing', 'delivered', 'handled', 'suppressed'] as const) {
+    useSubagentTaskStore.getState().publish({ ...base, deliveryPhase: phase })
+    expect(hasReadySubagentReturns('original')).toBe(false)
+  }
+  useSubagentTaskStore.getState().publish({ ...base, acknowledged: true })
+  expect(hasReadySubagentReturns('original')).toBe(false)
+  useSubagentTaskStore.getState().publish({ ...base, isAsync: false })
+  expect(hasReadySubagentReturns('original')).toBe(false)
 })
 
 it('suppresses only unhandled terminal background returns in the original conversation', async () => {

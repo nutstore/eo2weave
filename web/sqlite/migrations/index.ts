@@ -293,6 +293,53 @@ function repairSubagentExecutions(db: any): void {
   bumpUserVersionFloor(db, 22)
 }
 
+/**
+ * Workflow-script persistence.
+ *
+ * workflow_agent_steps doubles as the replay cache: completed steps are
+ * matched by (run_id, step_index) plus the exact step identity. v24 added
+ * prompt/options_key so identity is compared as text — a 32-bit digest cannot
+ * prove two prompts are equal, and a false hit would serve content for a
+ * prompt that never ran.
+ *
+ * Run-level metadata (history UI, crash recovery) is deliberately not stored
+ * yet — add it when a feature reads it.
+ */
+function repairWorkflowScriptTables(db: any): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workflow_agent_steps (
+      run_id TEXT NOT NULL,
+      step_index INTEGER NOT NULL,
+      prompt_hash TEXT NOT NULL,
+      agent_id TEXT,
+      name TEXT,
+      status TEXT NOT NULL,
+      result TEXT,
+      usage_json TEXT,
+      error_json TEXT,
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER NOT NULL,
+      PRIMARY KEY (run_id, step_index)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workflow_agent_steps_run
+      ON workflow_agent_steps(run_id, step_index);
+  `)
+
+  // v24: exact step identity. Rows written before this column existed have
+  // prompt = NULL and therefore never match — an old cache entry costs one
+  // rerun instead of risking a wrong hit.
+  const columns = (db.exec('PRAGMA table_info(workflow_agent_steps)', {
+    returnValue: 'resultRows',
+    rowMode: 'object',
+  }) ?? []) as { name?: string }[]
+  const hasColumn = (name: string) => columns.some((column) => column.name === name)
+  if (!hasColumn('prompt')) db.exec('ALTER TABLE workflow_agent_steps ADD COLUMN prompt TEXT')
+  if (!hasColumn('options_key')) db.exec('ALTER TABLE workflow_agent_steps ADD COLUMN options_key TEXT')
+
+  bumpUserVersionFloor(db, 24)
+}
+
 function verifySubagentTimeoutSchema(db: any): void {
   try {
     db.exec('SELECT timeout_ms FROM subagent_tasks LIMIT 0')
@@ -555,6 +602,8 @@ export const migrations: Migration[] = [
     up: repairManagedMcpTasks,
   },
   { version: 22, name: 'add_async_subagent_executions', up: repairSubagentExecutions },
+  { version: 23, name: 'add_workflow_script_tables', up: repairWorkflowScriptTables },
+  { version: 24, name: 'add_workflow_step_identity_columns', up: repairWorkflowScriptTables },
 ]
 
 // ============================================================================
@@ -734,9 +783,14 @@ export async function initializeSchema(
   // v20: subagent_tasks.timeout_ms
   repairSubagentTimeoutColumn(db)
 
-  // Same guard for the v21 managed MCP task tables and mcp_servers.protocol_mode.
+  // v21 managed MCP task tables and mcp_servers.protocol_mode.
   repairManagedMcpTasks(db)
   repairSubagentExecutions(db)
+
+  // v23 workflow_agent_steps. Same reasoning as above: the table is created by
+  // DDL that can race the user_version bump, and a missing table would surface
+  // later as a failed run_workflow instead of a clean startup error.
+  repairWorkflowScriptTables(db)
 
   // Version numbers alone are not enough: validate the physical columns after
   // migration so the app fails safely with an exportable database instead of

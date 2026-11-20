@@ -39,6 +39,13 @@ export interface RuntimeBindings {
   functions: Record<string, (args: JsonValue[], signal: AbortSignal) => Promise<JsonValue>>
   /** Invocation-local JSON events. They are execution output, not host tool calls. */
   onEvent?: (value: JsonValue) => void
+  /**
+   * Set by the runtime client, not the caller: pushes the wall-clock deadline
+   * out. Host calls that block for minutes (waiting on a subagent) call this on
+   * entry so only the runs that need a long ceiling get one. CPU time and the
+   * host-call budget stay unchanged.
+   */
+  extendTimeout?: (ms: number) => void
 }
 
 export interface RuntimeFailure {

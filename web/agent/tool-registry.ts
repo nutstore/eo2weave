@@ -100,6 +100,8 @@ import {
   batchSpawnExecutor,
   getSubagentStatusDefinition,
   getSubagentStatusExecutor,
+  getSubagentTraceDefinition,
+  getSubagentTraceExecutor,
   listSubagentsDefinition,
   listSubagentsExecutor,
   resumeSubagentDefinition,
@@ -274,6 +276,7 @@ const BUILTIN_TOOLS: Array<{ definition: ToolDefinition; executor: ToolExecutor 
   { definition: stopSubagentDefinition, executor: stopSubagentExecutor },
   { definition: resumeSubagentDefinition, executor: resumeSubagentExecutor },
   { definition: getSubagentStatusDefinition, executor: getSubagentStatusExecutor },
+  { definition: getSubagentTraceDefinition, executor: getSubagentTraceExecutor },
   { definition: listSubagentsDefinition, executor: listSubagentsExecutor },
   // Schedule management
   { definition: manageScheduleDefinition, executor: manageScheduleExecutor },

@@ -5,6 +5,8 @@ import {
   batchSpawnExecutor,
   getSubagentStatusDefinition,
   getSubagentStatusExecutor,
+  getSubagentTraceDefinition,
+  getSubagentTraceExecutor,
   sendMessageToSubagentDefinition,
   spawnSubagentDefinition,
   spawnSubagentExecutor,
@@ -52,6 +54,19 @@ function createMockRuntime(): SubagentRuntime {
       agents: [],
       total: 0,
     }),
+    getTrace: vi.fn().mockResolvedValue({
+      agentId: 'subagent_1',
+      executionId: 'attempt-1',
+      status: 'failed',
+      description: 'task',
+      total: 2,
+      offset: 0,
+      truncated: false,
+      messages: [
+        { role: 'tool', content: 'src', tool_name: 'ls', tool_call_id: 'call-1' },
+        { role: 'assistant', content: null },
+      ],
+    }),
     batchSpawn: vi.fn().mockResolvedValue({
       completed: [{ task_index: 0, agentId: 'subagent_1', content: 'done' }],
       failed: [],
@@ -66,6 +81,7 @@ describe('subagent tools', () => {
     expect(batchSpawnDefinition.function.name).toBe('batch_spawn')
     expect(sendMessageToSubagentDefinition.function.name).toBe('send_message_to_subagent')
     expect(getSubagentStatusDefinition.function.name).toBe('get_subagent_status')
+    expect(getSubagentTraceDefinition.function.name).toBe('get_subagent_trace')
   })
 
   it('caps batch concurrency at five in its public schema', () => {
@@ -121,6 +137,30 @@ describe('subagent tools', () => {
     const parsed = parseJson(result)
     expect(parsed.ok).toBe(false)
     expect((parsed.error as { code: string }).code).toBe('TASK_NOT_FOUND')
+  })
+
+  it('reads a child trace through the runtime and returns it', async () => {
+    const runtime = createMockRuntime()
+    const result = await getSubagentTraceExecutor(
+      { agentId: 'subagent_1', limit: 2 },
+      { directoryHandle: null, subagentRuntime: runtime } as ToolContext
+    )
+    const parsed = parseJson(result)
+    expect(parsed.ok).toBe(true)
+    expect((runtime.getTrace as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ agentId: 'subagent_1', limit: 2 })
+    const data = parsed.data as { messages: Array<{ tool_name?: string }>; status: string }
+    expect(data.status).toBe('failed')
+    expect(data.messages[0].tool_name).toBe('ls')
+  })
+
+  it('returns runtime unavailable for trace reads without a runtime', async () => {
+    const result = await getSubagentTraceExecutor(
+      { agentId: 'subagent_1' },
+      { directoryHandle: null } as ToolContext
+    )
+    const parsed = parseJson(result)
+    expect(parsed.ok).toBe(false)
+    expect((parsed.error as { code: string }).code).toBe('SUBAGENT_RUNTIME_UNAVAILABLE')
   })
 
   it('supports batch spawn tool', async () => {

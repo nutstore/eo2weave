@@ -116,6 +116,26 @@ describe('durable completion delivery', () => {
     expect(f.dispatch).toHaveBeenCalledTimes(1)
     expect(f.dispatch.mock.calls[0][1].modelName).toBe('original-model')
   })
+  it('includes the execution tail in failed completion notification bodies', async () => {
+    const f = fixture()
+    f.add('bad', {
+      taskStatus: 'failed',
+      result: '',
+      error: { code: 'SUBAGENT_FAILED', message: 'Subagent finished without a non-empty assistant response.' },
+      executionTail: 'Execution tail (last 1 step, newest first):\n- tool ls: src',
+    })
+    await f.coordinator.flush('conv')
+    expect(f.history[1].content).toContain('SUBAGENT_FAILED')
+    expect(f.history[1].content).toContain('Execution tail')
+    expect(f.history[1].content).toContain('tool ls')
+  })
+  it('omits the execution tail from successful completions', async () => {
+    const f = fixture()
+    f.add('good', { executionTail: 'should not surface' })
+    await f.coordinator.flush('conv')
+    expect(f.history[1].content).toContain('Result good')
+    expect(f.history[1].content).not.toContain('should not surface')
+  })
   it('parks behind busy parent and user queue work', async () => {
     const f = fixture()
     f.add('one')

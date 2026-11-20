@@ -281,11 +281,12 @@ export function findSpawnStepInDraft(draft: {
     const step = draft.steps.find(
       (candidate): candidate is Extract<DraftAssistantStep, { type: 'tool_call' }> =>
         candidate.type === 'tool_call' &&
-        candidate.toolCall.id === parentToolCallId &&
-        (candidate.toolCall.function.name === 'spawn_subagent' || candidate.toolCall.function.name === 'batch_spawn')
+        candidate.toolCall.id === parentToolCallId
     )
-    // A correlated notification must never be routed to a different spawn
-    // card. If its parent step is gone, drop it rather than guessing.
+    // A correlated notification must never be routed to a different card.
+    // Matching is by unique tool-call id, so any orchestration tool that spawns
+    // agents (spawn_subagent / batch_spawn / run_workflow) can own its children.
+    // If its parent step is gone, drop the notification rather than guessing.
     return step
   }
 

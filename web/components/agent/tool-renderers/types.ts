@@ -9,6 +9,10 @@ import type { ReactNode } from 'react'
 export interface ToolRenderCtx {
   /** Raw tool call */
   toolName: string
+  /** Tool call id — lets a renderer correlate children (e.g. agent steps). */
+  toolCallId?: string
+  /** Owning conversation, for renderers that drill into per-agent detail. */
+  conversationId?: string
   /** Parsed arguments (may be partial during streaming) */
   args: Record<string, unknown>
   /** Raw args string (for copy / fallback) */
@@ -33,6 +37,12 @@ export interface ToolRenderer {
   icon?: ReactNode
   /** Collapsed summary — renders inside the card header button */
   Summary: (ctx: ToolRenderCtx) => ReactNode
+  /**
+   * Optional strip rendered below the header while the card is collapsed, for
+   * state a user must see without expanding (live children, step status).
+   * Skipped when the card is open so it never duplicates Detail.
+   */
+  Aside?: (ctx: ToolRenderCtx) => ReactNode
   /** Expanded detail — renders below the header when open */
   Detail: (ctx: ToolRenderCtx) => ReactNode
 }

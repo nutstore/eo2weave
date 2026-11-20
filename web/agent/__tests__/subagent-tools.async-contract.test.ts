@@ -12,7 +12,7 @@ describe('event-driven subagent tool surface', () => {
     expect(getToolRegistry().has('wait_subagents')).toBe(false)
     expect(names).toEqual(expect.arrayContaining([
       'spawn_subagent', 'batch_spawn', 'send_message_to_subagent', 'stop_subagent',
-      'resume_subagent', 'get_subagent_status', 'list_subagents',
+      'resume_subagent', 'get_subagent_status', 'get_subagent_trace', 'list_subagents',
     ]))
   })
 
