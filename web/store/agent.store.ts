@@ -63,12 +63,26 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     set({ activeProjectId: projectId })
 
     // Mirror into folder-access.store
+    // Each sub-await is timed because this whole call is the confirmed stall
+    // point of project activation (issue #316): the parent trace names this
+    // step, these lines say which sub-await inside it never settles.
+    const folderStartedAt = performance.now()
+    console.log('[AgentStore] folder-access mirror start', { projectId })
     try {
       const { useFolderAccessStore } = await import('./folder-access.store')
+      console.log('[AgentStore] folder-access mirror: module imported', {
+        elapsedMs: Math.round(performance.now() - folderStartedAt),
+      })
       await useFolderAccessStore.getState().setActiveProject(projectId || null)
+      console.log('[AgentStore] folder-access mirror: store updated', {
+        elapsedMs: Math.round(performance.now() - folderStartedAt),
+      })
 
       // Mirror the state back
       await syncFromFolderAccess()
+      console.log('[AgentStore] folder-access mirror done', {
+        elapsedMs: Math.round(performance.now() - folderStartedAt),
+      })
     } catch (error) {
       console.error('[AgentStore] Failed to set active project in folder-access:', error)
     }

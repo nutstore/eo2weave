@@ -72,6 +72,18 @@ class FolderAccessRepository {
           }
         }
       }
+
+      // Issue #316: `onblocked` is the one open event this promise never
+      // listened for. When another tab/connection holds an older open
+      // version, `indexedDB.open` blocks indefinitely without firing
+      // `onsuccess` or `onerror` — the await never settles and project
+      // activation stalls with no log line. Naming the blocker turns that
+      // silent wait into an observable event.
+      request.onblocked = () => {
+        console.warn(
+          '[FolderAccessRepo] IndexedDB open blocked by another connection holding an older version — waiting for it to close.'
+        )
+      }
     })
 
     return this.initPromise
