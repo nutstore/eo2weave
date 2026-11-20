@@ -16,6 +16,12 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import { toast } from 'sonner'
+import {
+  PERMISSION_QUERY_DEADLINE_MS,
+  PERMISSION_REQUEST_DEADLINE_MS,
+  queryPermissionWithDeadline,
+  requestPermissionWithDeadline,
+} from '@/lib/handle-permission'
 import type {
   FolderAccessRecord,
   FolderAccessStatus,
@@ -78,6 +84,20 @@ function createEmptyRecord(projectId: string, rootName?: string): FolderAccessRe
   }
 }
 
+/**
+ * Handles whose permission probe already timed out, keyed by project + root.
+ *
+ * Activation probes the same handle twice — hydrateProject, then loadRoots per
+ * root — so without this one unanswerable handle costs the deadline twice. The
+ * key is dropped as soon as a probe answers, so a recovered handle is never
+ * remembered as stuck.
+ */
+const permissionProbeTimeouts = new Set<string>()
+
+function probeKey(projectId: string, rootName: string): string {
+  return `${projectId}:${rootName}`
+}
+
 async function notifyWorkspaceNativeDirectoryGranted(handle: FileSystemDirectoryHandle): Promise<void> {
   try {
     const { useWorkspaceStore } = await import('./workspace.store')
@@ -87,90 +107,6 @@ async function notifyWorkspaceNativeDirectoryGranted(handle: FileSystemDirectory
   }
 }
 
-/**
- * Bound `FileSystemHandle.queryPermission()`.
- *
- * The browser API has no timeout and cannot be cancelled. On some handles
- * Chromium never settles it at all — a stale persisted handle, a volume that is
- * no longer reachable, or a permission prompt the browser cannot present.
- * `hydrateProject` awaited it directly, so one such handle froze project
- * activation permanently: the app stayed on the startup screen with `isLoading`
- * stuck true, no error and no recovery (issue #316; the field log stops right
- * after the IndexedDB record load, which is the line before this await).
- *
- * A probe that does not answer within the deadline resolves as 'timeout' so the
- * caller can fall back to `needs_user_activation` — the state whose existing
- * banner path re-requests the permission under a real user gesture. Rejections
- * are still propagated, so the expired-handle path keeps its old behaviour.
- */
-const PERMISSION_QUERY_TIMEOUT_MS = 2000
-
-export type PermissionProbe = PermissionState | 'timeout'
-
-/**
- * Handles whose permission probe already timed out, keyed by project + root.
- *
- * Activation probes the same handle twice — once in `hydrateProject`, once per
- * root in `loadRoots` — so without this one unanswerable handle costs the
- * deadline twice and the startup screen waits for both. The key is dropped as
- * soon as a probe answers, so a recovered handle is never remembered as stuck.
- */
-const permissionProbeTimeouts = new Set<string>()
-
-function probeKey(projectId: string, rootName: string): string {
-  return `${projectId}:${rootName}`
-}
-
-async function probePermission(
-  handle: FileSystemDirectoryHandle,
-  timeoutMs: number = PERMISSION_QUERY_TIMEOUT_MS
-): Promise<PermissionProbe> {
-  return new Promise<PermissionProbe>((resolve, reject) => {
-    let settled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-
-    const settle = (state: PermissionProbe) => {
-      if (settled) return
-      settled = true
-      if (timer !== undefined) clearTimeout(timer)
-      resolve(state)
-    }
-
-    const fail = (error: unknown) => {
-      if (settled) return
-      settled = true
-      if (timer !== undefined) clearTimeout(timer)
-      reject(error)
-    }
-
-    timer = setTimeout(() => settle('timeout'), timeoutMs)
-
-    try {
-      handle.queryPermission({ mode: 'readwrite' }).then(
-        (state) => settle(state),
-        (error) => fail(error)
-      )
-    } catch (error) {
-      fail(error)
-    }
-  })
-}
-
-/**
- * Reconcile the SQLite `project_roots` table with the folder handles that exist
- * in IndexedDB (folderAccessRepo) and/or are bound in the runtime handle map.
- *
- * WHY: `resolvePath()` / `ensureRootMap()` / `syncToDiskMultiRoot()` rely on the
- * SQLite `project_roots` table to route multi-root paths. If a root is present
- * in IndexedDB (handle persisted) but missing from SQLite (e.g. SQLite was reset
- * during schema migration, or a root was bound via `bindRuntimeDirectoryHandle`
- * without a corresponding `createRoot`), `resolvePath` falls back to the default
- * root, causing files to be synced to the WRONG disk location (root prefix not
- * stripped) or silently skipped.
- *
- * This is called on hydrate / loadRoots to self-heal the SQLite table so that
- * every persisted handle has a matching `project_roots` row.
- */
 async function reconcileProjectRoots(projectId: string): Promise<void> {
   try {
     const rootRepo = getProjectRootRepository()
@@ -373,7 +309,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
 
         try {
           const permissionQueryStartedAt = performance.now()
-          const permission = await probePermission(handle)
+          const permission = await queryPermissionWithDeadline(handle)
           console.log('[FolderAccessActivation] hydrateProject: permission queried', {
             projectId,
             permission,
@@ -387,7 +323,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
             // verdict so loadRoots does not pay the same deadline again.
             permissionProbeTimeouts.add(probeKey(projectId, handle.name ?? existing.rootName ?? projectId))
             console.warn(
-              `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_TIMEOUT_MS}ms; falling back to re-authorization for "${handle.name}"`
+              `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_DEADLINE_MS}ms; falling back to re-authorization for "${handle.name}"`
             )
             set((state) => {
               state.records[projectId] = {
@@ -630,7 +566,33 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
 
       try {
         const handle = record.persistedHandle
-        const result = await handle.requestPermission({ mode: 'readwrite' })
+        // Same handle, same browser API as the probe: bound it, or a click on
+        // "re-authorize" looks like it did nothing when the promise never
+        // settles (issue #316).
+        const requestedAt = performance.now()
+        const result = await requestPermissionWithDeadline(handle)
+        console.log('[FolderAccessStore] requestPermission settled', {
+          projectId,
+          result,
+          elapsedMs: Math.round(performance.now() - requestedAt),
+        })
+
+        if (result === 'timeout') {
+          console.warn(
+            `[FolderAccessStore] requestPermission did not answer within ${PERMISSION_REQUEST_DEADLINE_MS}ms for "${record.folderName ?? record.rootName ?? projectId}"`
+          )
+          toast.error(
+            i18nText(
+              'projectRoots.permissionTimedOut',
+              'The browser did not answer the authorization request. Re-add the folder or reload the page.'
+            )
+          )
+          set((state) => {
+            const r = state.records[projectId]
+            if (r) r.status = 'needs_user_activation'
+          })
+          return false
+        }
 
         if (result === 'granted') {
           set((state) => {
@@ -1003,11 +965,11 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
                     )
                     status = 'needs_user_activation'
                   } else {
-                    const permission = await probePermission(persistedHandle)
+                    const permission = await queryPermissionWithDeadline(persistedHandle)
                     if (permission === 'timeout') {
                       permissionProbeTimeouts.add(key)
                       console.warn(
-                        `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_TIMEOUT_MS}ms for root "${dbRoot.name}"; marking it for re-authorization`
+                        `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_DEADLINE_MS}ms for root "${dbRoot.name}"; marking it for re-authorization`
                       )
                     } else {
                       permissionProbeTimeouts.delete(key)

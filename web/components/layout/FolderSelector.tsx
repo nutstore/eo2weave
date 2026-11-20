@@ -154,6 +154,7 @@ export function FolderSelector() {
           restored: t('projectRoots.permissionRestored'),
           denied: t('projectRoots.permissionDenied'),
           failed: t('projectRoots.permissionFailed'),
+          timedOut: t('projectRoots.permissionTimedOut'),
         },
         loadRoots,
       })

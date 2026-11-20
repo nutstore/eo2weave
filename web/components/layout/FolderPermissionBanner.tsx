@@ -39,6 +39,11 @@ export function FolderPermissionBanner() {
   const activeProjectId = useFolderAccessStore((s) => s.activeProjectId)
   const loadRoots = useFolderAccessStore((s) => s.loadRoots)
   const [dismissed, setDismissed] = useState(true)
+  // Root id whose authorization request is in flight. The browser call is
+  // bounded (30s), so without this the button looks inert for its whole
+  // duration — which is exactly how a stalled permission request was reported
+  // (issue #316).
+  const [grantingRootId, setGrantingRootId] = useState<string | null>(null)
   // Serialize refreshes: two restores triggered close together must not let
   // the earlier loadRoots() resolution overwrite the newer roots snapshot
   // (which would flip a just-granted root back to needs_user_activation).
@@ -58,7 +63,8 @@ export function FolderPermissionBanner() {
   if (!rootsHydrated || dismissed || expiredRoots.length === 0) return null
 
   const handleRestore = async (root: (typeof expiredRoots)[number]) => {
-    if (!activeProjectId) return
+    if (!activeProjectId || grantingRootId !== null) return
+    setGrantingRootId(root.id)
     const granted = await restoreRootPermission({
       projectId: activeProjectId,
       root,
@@ -67,6 +73,7 @@ export function FolderPermissionBanner() {
         restored: t('projectRoots.permissionRestored'),
         denied: t('projectRoots.permissionDenied'),
         failed: t('projectRoots.permissionFailed'),
+        timedOut: t('projectRoots.permissionTimedOut'),
       },
       loadRoots: async () => {
         // Chain onto the previous refresh so invocations run in order and
@@ -76,6 +83,7 @@ export function FolderPermissionBanner() {
         await run
       },
     })
+    setGrantingRootId(null)
     if (granted) {
       try {
         window.sessionStorage.removeItem(DISMISS_KEY)
@@ -120,17 +128,22 @@ export function FolderPermissionBanner() {
               e.stopPropagation()
               void handleRestore(root)
             }}
+            disabled={grantingRootId !== null}
+            aria-busy={grantingRootId === root.id}
             className={cn(
               'flex items-center gap-1.5 rounded-md border border-warning px-3 py-1',
               'text-xs font-medium text-warning transition-colors hover:bg-warning-50',
               'dark:hover:bg-warning-100/10',
-              'focus:outline-none focus:ring-2 focus:ring-warning focus:ring-offset-2'
+              'focus:outline-none focus:ring-2 focus:ring-warning focus:ring-offset-2',
+              grantingRootId !== null && 'cursor-progress opacity-60'
             )}
           >
-            <RefreshCw className="h-3.5 w-3.5" />
-            {expiredRoots.length === 1
-              ? t('projectRoots.bannerReauthorize')
-              : root.name}
+            <RefreshCw className={cn('h-3.5 w-3.5', grantingRootId === root.id && 'animate-spin')} />
+            {grantingRootId === root.id
+              ? t('projectRoots.bannerGranting')
+              : expiredRoots.length === 1
+                ? t('projectRoots.bannerReauthorize')
+                : root.name}
           </button>
         ))}
         <button

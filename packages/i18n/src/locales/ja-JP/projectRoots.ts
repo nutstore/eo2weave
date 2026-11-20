@@ -15,6 +15,8 @@ export const projectRoots = {
     bannerSingleTitle: "フォルダ「{name}」のアクセス許可の有効期限が切れています",
     bannerMultiTitle: "{count} 個のフォルダのアクセス許可の有効期限が切れています",
     bannerReauthorize: "再許可",
+    bannerGranting: "認可中…",
+    permissionTimedOut: "ブラウザが認可リクエストに応答しませんでした。フォルダを追加し直すか、ページを再読み込みしてください。",
     bannerDismiss: "閉じる",
     permissionDenied: "権限が拒否されました",
     permissionFailed: "権限の回復に失敗しました",
