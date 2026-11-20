@@ -565,6 +565,19 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         const folderRecord = folderState.getRecord()
 
         if (folderRecord?.status === 'needs_user_activation' && folderRecord.projectId) {
+          // The re-authorization banner owns this case: its button is a real
+          // user gesture for the folder it names, and it runs the same request.
+          // Firing one here on the first unrelated click makes the banner's
+          // request a second pending prompt for the same handle, which Chromium
+          // drops silently — the "clicking re-authorize does nothing" report.
+          const bannerOwnsIt = folderState.roots.some(
+            (root) =>
+              (root.backend ?? 'fsaccess') === 'fsaccess' && root.status === 'needs_user_activation'
+          )
+          if (bannerOwnsIt) {
+            console.log('[Storage] Folder needs activation — leaving it to the re-authorization banner')
+            return
+          }
           console.log('[Storage] Folder needs activation, requesting permission...')
           const granted = await folderState.requestPermission(folderRecord.projectId)
           console.log('[Storage] Handle permission result:', granted ? 'GRANTED ✅' : 'DENIED ❌')

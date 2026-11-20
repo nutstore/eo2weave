@@ -11,6 +11,7 @@
 
 import { toast } from 'sonner'
 import { bindRuntimeDirectoryHandle } from '@/native-fs'
+import { PERMISSION_REQUEST_DEADLINE_MS, requestPermissionWithDeadline } from '@/lib/handle-permission'
 import type { RootInfo } from '@/types/folder-access'
 
 export interface RestoreRootPermissionOptions {
@@ -23,6 +24,8 @@ export interface RestoreRootPermissionOptions {
     restored: string
     denied: string
     failed: string
+    /** Shown when the browser never answers the request. */
+    timedOut: string
   }
   /** Store action that reloads root statuses after a successful grant. */
   loadRoots: () => Promise<void>
@@ -48,7 +51,26 @@ export async function restoreRootPermission({
   }
 
   try {
-    const permission = await root.persistedHandle.requestPermission({ mode: 'readwrite' })
+    // Bounded: `requestPermission` is not cancellable and Chromium can leave it
+    // pending forever on the same handle whose probe already timed out — the
+    // click then looked like it did nothing at all (issue #316).
+    const requestedAt = performance.now()
+    const permission = await requestPermissionWithDeadline(root.persistedHandle)
+    console.log('[folder-permission] requestPermission settled', {
+      projectId,
+      root: root.name,
+      permission,
+      elapsedMs: Math.round(performance.now() - requestedAt),
+    })
+
+    if (permission === 'timeout') {
+      console.warn(
+        `[folder-permission] requestPermission did not answer within ${PERMISSION_REQUEST_DEADLINE_MS}ms for "${root.name}"`
+      )
+      toast.error(strings.timedOut)
+      return false
+    }
+
     if (permission === 'granted') {
       bindRuntimeDirectoryHandle(projectId, root.name, root.persistedHandle)
 
