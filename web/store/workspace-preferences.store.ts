@@ -424,7 +424,10 @@ export function setCurrentWorkspaceAgentMode(mode: 'plan' | 'act'): void {
  */
 export function isManualApplyPolicy(workspaceId?: string | null): boolean {
   const state = useWorkspacePreferencesStore.getState()
-  if (!workspaceId) return !state.autoApplyOnRunComplete
+  // No id means no policy entry to read, and the run-end reader treats exactly
+  // that as manual (`…ByWorkspace[id] ?? false`). Falling back to the global
+  // flag here would answer "auto" for a conversation run-end considers manual.
+  if (!workspaceId) return true
   return !(state.autoApplyOnRunCompleteByWorkspace[workspaceId] ?? false)
 }
 

@@ -253,7 +253,10 @@ export const syncToDiskExecutor: ToolExecutor = async (args, context) => {
   try {
     const { isManualApplyPolicy } = await import('@/store/workspace-preferences.store')
     manualApply = isManualApplyPolicy(context.workspaceId)
-  } catch {
+  } catch (error) {
+    // Strict fallback, but never silent: a broken module graph would otherwise
+    // degrade every flush to "always ask" with no trace explaining why.
+    console.warn('[sync-to-disk] manual-apply policy unavailable; requiring approval:', error)
     manualApply = true
   }
   const includeDeletions = deletionPaths.length > 0
