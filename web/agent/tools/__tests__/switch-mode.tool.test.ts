@@ -42,9 +42,28 @@ describe('switch_agent_mode', () => {
   it.each(['plan', 'act'] as const)('turns off YOLO when switching to %s', async (mode) => {
     modeState.value = mode === 'plan' ? 'act' : 'plan'
 
-    await createSwitchModeExecutor()({ mode, reason: 'test mode transition' }, {} as never)
+    await createSwitchModeExecutor()(
+      { mode, reason: 'test mode transition' },
+      { workspaceId: 'conv-a' } as never
+    )
 
     expect(pageActionState.pageActionYolo).toBe(false)
+  })
+
+  it('refuses to switch anything without a conversation context', async () => {
+    // No workspace: the old fallback wrote the OPEN tab's mode, which is the
+    // cross-conversation leak this change exists to remove.
+    modeState.value = 'plan'
+    modeState.byWorkspace = { 'conv-open': 'plan' }
+
+    const result = JSON.parse(
+      await createSwitchModeExecutor()({ mode: 'act', reason: 'let me write' }, {} as never)
+    )
+
+    expect(result.success).toBe(false)
+    expect(modeState.value).toBe('plan')
+    expect(modeState.byWorkspace['conv-open']).toBe('plan')
+    expect(pageActionState.pageActionYolo).toBe(true)
   })
 
   it('switches the mode of the conversation that called it, not the open one', async () => {

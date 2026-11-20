@@ -9,7 +9,6 @@ import type { ToolDefinition, ToolExecutor, ToolPromptDoc } from './tool-types'
 import type { AgentMode } from '../agent-mode'
 import {
   getAgentModeForWorkspace,
-  getCurrentWorkspaceAgentMode,
   setAgentModeForWorkspace,
 } from '@/store/workspace-preferences.store'
 import { usePageActionSessionStore } from '@/store/page-action-session.store'
@@ -71,9 +70,20 @@ export function createSwitchModeExecutor(opts?: {
   return async (args: Record<string, unknown>, context) => {
     const { mode, reason } = args as { mode: AgentMode; reason: string }
     const workspaceId = context?.workspaceId
-    const currentMode = workspaceId
-      ? getAgentModeForWorkspace(workspaceId)
-      : getCurrentWorkspaceAgentMode()
+
+    // No conversation context: refuse. Falling back to the open tab here would
+    // reintroduce exactly the leak this tool now avoids — a run without a
+    // workspace (script agent, nested invocation) silently rewriting whichever
+    // conversation the user happens to be looking at.
+    if (!workspaceId) {
+      console.warn('[switch_agent_mode] refused: no conversation context in the tool call')
+      return JSON.stringify({
+        success: false,
+        error: 'switch_agent_mode needs a conversation context; no mode was changed.',
+      })
+    }
+
+    const currentMode = getAgentModeForWorkspace(workspaceId)
 
     // YOLO is an explicit user choice. An LLM-initiated mode switch may
     // disable it, but must never preserve or enable it implicitly.
