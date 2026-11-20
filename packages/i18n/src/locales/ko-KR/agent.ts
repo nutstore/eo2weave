@@ -22,7 +22,7 @@ export const agent = {
         actDescription: "읽기·쓰기·외부 도구 호출이 가능하지만, 민감한 작업마다 확인을 요청합니다.",
         planShort: "읽기 전용 분석",
         actShort: "쓰기 허용, 작업마다 확인",
-        yoloShort: "확인이 필요한 모든 작업 자동 승인(외부 호출, 디스크 쓰기, 명령 실행 등. 이 대화만). 수동 적용 모드에서는 디스크 쓰기 확인이 유지됩니다.",
+        yoloShort: "모든 확인(외부 호출, 디스크 쓰기, 명령 실행 등. 이 대화만 해당)을 자동 승인합니다. 수동 적용 시 변경 집합 쓰기는 확인을 거치지만, 셸 명령은 디스크에 직접 기록됩니다.",
         planLabel: "읽기 전용 분석 모드",
         actLabel: "쓰기 허용(작업마다 확인)",
         switchTo: "전환",
@@ -37,7 +37,7 @@ export const agent = {
     runEndPolicy: {
         manual: "수동 적용",
         auto: "완료 후 자동 적용",
-        manualDescription: "검토한 뒤 로컬 폴더에 수정을 적용합니다.",
+        manualDescription: "에이전트의 파일 변경을 직접 검토한 뒤 로컬 폴더에 적용합니다. 셸 명령은 계속 디스크에 직접 기록됩니다.",
         autoDescription: "이 설정은 현재 작업 공간에 저장됩니다. 새로 만들기와 편집만 자동 적용되며, 삭제는 항상 수동 확인이 필요합니다.",
         menuLabel: "완료 후 적용 정책",
         currentAriaLabel: "완료 후 적용 정책: {policy}. 클릭하여 변경합니다.",

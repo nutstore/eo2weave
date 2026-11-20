@@ -22,7 +22,7 @@ export const agent = {
         actDescription: "Can read, write, and call external tools — but every sensitive operation asks for your confirmation first.",
         planShort: "Read-only analysis",
         actShort: "Writes allowed, each operation confirmed",
-        yoloShort: "Auto-approves all confirmations (external calls, disk writes, command execution; this conversation only). With manual apply, disk writes still ask.",
+        yoloShort: "Auto-approves all confirmations (external calls, disk writes, command execution; this conversation only). With manual apply, change-set writes still ask; shell commands write directly.",
         planLabel: "Read-only analysis mode",
         actLabel: "Writes allowed, confirmed per operation",
         switchTo: "Switch to",
@@ -36,7 +36,7 @@ export const agent = {
     runEndPolicy: {
         manual: "Manual apply",
         auto: "Auto-apply when complete",
-        manualDescription: "Review and apply changes to your local folder yourself.",
+        manualDescription: "Review and apply the agent's file changes yourself. Shell commands still write to disk directly.",
         autoDescription: "Saved for this workspace. Only creates and edits are auto-applied; deletions always require manual review.",
         menuLabel: "Completion apply policy",
         currentAriaLabel: "Completion policy: {policy}. Click to change.",
