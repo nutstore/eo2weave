@@ -38,6 +38,7 @@ export function FolderPermissionBanner() {
   const rootsHydrated = useFolderAccessStore((s) => s.rootsHydrated)
   const activeProjectId = useFolderAccessStore((s) => s.activeProjectId)
   const loadRoots = useFolderAccessStore((s) => s.loadRoots)
+  const repickRoot = useFolderAccessStore((s) => s.repickRoot)
   const [dismissed, setDismissed] = useState(true)
   // Root id whose authorization request is in flight. The browser call is
   // bounded (30s), so without this the button looks inert for its whole
@@ -65,6 +66,23 @@ export function FolderPermissionBanner() {
   const handleRestore = async (root: (typeof expiredRoots)[number]) => {
     if (!activeProjectId || grantingRootId !== null) return
     setGrantingRootId(root.id)
+
+    // A root whose stored handle never answered its probe cannot be revived by
+    // asking it again — only a fresh pick creates a usable handle (field
+    // report: re-adding the folder worked, re-authorizing did nothing).
+    if (root.stalled) {
+      const repicked = await repickRoot(root.name)
+      setGrantingRootId(null)
+      if (repicked) {
+        try {
+          window.sessionStorage.removeItem(DISMISS_KEY)
+        } catch {
+          // ignore
+        }
+      }
+      return
+    }
+
     const granted = await restoreRootPermission({
       projectId: activeProjectId,
       root,
@@ -141,9 +159,11 @@ export function FolderPermissionBanner() {
             <RefreshCw className={cn('h-3.5 w-3.5', grantingRootId === root.id && 'animate-spin')} />
             {grantingRootId === root.id
               ? t('projectRoots.bannerGranting')
-              : expiredRoots.length === 1
-                ? t('projectRoots.bannerReauthorize')
-                : root.name}
+              : root.stalled
+                ? t('projectRoots.bannerReselect')
+                : expiredRoots.length === 1
+                  ? t('projectRoots.bannerReauthorize')
+                  : root.name}
           </button>
         ))}
         <button

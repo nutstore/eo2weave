@@ -16,6 +16,8 @@ export const projectRoots = {
     bannerMultiTitle: "{count}개 폴더의 접근 권한이 만료되었습니다",
     bannerReauthorize: "다시 허용",
     bannerGranting: "권한 승인 중…",
+    bannerReselect: "폴더 다시 선택",
+    pickDifferentFolder: "\"{name}\" 폴더를 선택하세요",
     permissionTimedOut: "브라우저가 권한 요청에 응답하지 않았습니다. 폴더를 다시 추가하거나 페이지를 새로 고치세요.",
     bannerDismiss: "닫기",
     permissionDenied: "권한이 거부되었습니다",

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   describeHandle,
+  isSameEntryWithDeadline,
   PERMISSION_QUERY_DEADLINE_MS,
   PERMISSION_REQUEST_DEADLINE_MS,
   queryPermissionWithDeadline,
@@ -116,6 +117,25 @@ describe('handle permission deadlines', () => {
       firstEntry: null,
       error: 'keys() timed out',
     })
+  })
+
+  it('bounds isSameEntry when the other handle is dead', async () => {
+    // The identity check in the re-pick flow compares against the *old*
+    // handle, which is exactly the one that may never answer.
+    const live = {
+      isSameEntry: vi.fn(() => new Promise<boolean>(() => {})),
+    } as unknown as FileSystemDirectoryHandle
+    const other = {} as FileSystemDirectoryHandle
+
+    vi.useFakeTimers()
+    const pending = isSameEntryWithDeadline(live, other, 50)
+    await vi.advanceTimersByTimeAsync(60)
+    await expect(pending).resolves.toBe('timeout')
+
+    const healthy = {
+      isSameEntry: vi.fn().mockResolvedValue(true),
+    } as unknown as FileSystemDirectoryHandle
+    await expect(isSameEntryWithDeadline(healthy, other)).resolves.toBe(true)
   })
 
   it('propagates a rejection instead of reporting a timeout', async () => {

@@ -113,6 +113,11 @@ export interface RootInfo {
   persistedHandle: FileSystemDirectoryHandle | null
   status: FolderAccessStatus
   error?: string
+  /**
+   * The stored handle never answered its permission probe, so asking it again
+   * is pointless: only a fresh pick (a new handle) can restore access.
+   */
+  stalled?: boolean
 }
 
 /**
@@ -174,6 +179,12 @@ export interface FolderAccessStore extends FolderAccessActions {
    * Returns false when the handle is missing or the root already exists.
    */
   adoptPickedRoot: (name: string, pickId: string, pickedProjectId: string | null) => Promise<boolean>
+  /**
+   * Re-pick an fsaccess root whose stored handle stopped answering permission
+   * calls. A fresh pick is the only recovery; the root row is reused, so the
+   * project keeps its configuration and relative paths.
+   */
+  repickRoot: (rootName: string) => Promise<boolean>
   /** Add a root through the explicitly selected Native Host picker. */
   /** Add a root through the explicitly selected Native Host picker. `projectIdOverride` binds the new root to a specific project (e.g. the conversation's project for exec in-flow authorization); defaults to the active project. */
   addNativeHostRoot: (projectIdOverride?: string) => Promise<boolean>
